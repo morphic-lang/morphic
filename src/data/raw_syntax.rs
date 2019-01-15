@@ -1,19 +1,22 @@
 #[derive(Clone, Debug)]
-pub struct TypeName(String);
+pub struct TypeName(pub String);
 
 #[derive(Clone, Debug)]
-pub struct CtorName(String);
+pub struct CtorName(pub String);
 
 #[derive(Clone, Debug)]
-pub struct TypeParam(String);
+pub struct TypeParam(pub String);
 
 #[derive(Clone, Debug)]
-pub struct ValName(String);
+pub struct ValName(pub String);
+
+#[derive(Clone, Debug)]
+pub struct Program(pub Vec<Item>);
 
 #[derive(Clone, Debug)]
 pub enum Item {
-    TypeDef(TypeName, Vec<TypeParam>, Vec<(CtorName, Vec<Type>)>),
-    ValDef(ValName, Expr),
+    TypeDef(TypeName, Vec<TypeParam>, Vec<(CtorName, Type)>),
+    ValDef(ValName, Type, Expr),
 }
 
 #[derive(Clone, Debug)]
@@ -22,16 +25,13 @@ pub enum Type {
     App(TypeName, Vec<Type>),
     Tuple(Vec<Type>),
     Func(Box<Type>, Box<Type>),
-
-    Array(Box<Type>),
-    Int,
-    Float,
-    Text,
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr {
     Var(ValName),
+    Op(Op),
+    Ctor(CtorName),
     Tuple(Vec<Expr>),
     Lam(Pattern, Box<Expr>),
     App(Box<Expr>, Box<Expr>),
@@ -45,13 +45,43 @@ pub enum Expr {
 }
 
 #[derive(Clone, Debug)]
+pub enum Op {
+    AddInt,
+    SubInt,
+    MulInt,
+    DivInt,
+    NegInt,
+
+    EqInt,
+    LtInt,
+    LteInt,
+
+    AddFloat,
+    SubFloat,
+    MulFloat,
+    DivFloat,
+    NegFloat,
+
+    EqFloat,
+    LtFloat,
+    LteFloat,
+}
+
+pub fn binop(op: Op, left: Expr, right: Expr) -> Expr {
+    Expr::App(
+        Box::new(Expr::Op(op)),
+        Box::new(Expr::Tuple(vec![left, right])),
+    )
+}
+
+#[derive(Clone, Debug)]
 pub enum Pattern {
     Any,
     Var(ValName),
     Tuple(Vec<Pattern>),
-    Ctor(CtorName, Vec<Pattern>),
+    Ctor(CtorName, Box<Pattern>),
 
     IntConst(i64),
-    FloatConst(i64),
+    FloatConst(f64),
     TextConst(String),
 }

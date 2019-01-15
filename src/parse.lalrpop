@@ -1,0 +1,241 @@
+use crate::data::raw_syntax as syntax;
+
+grammar;
+
+// Macros
+
+CommaSep<T>: Vec<T> = {
+  <items: (<T> ",")*> <last: T?> => match last {
+    None => items,
+    Some(item) => {
+      let mut result = items;
+      result.push(item);
+      result
+    }
+  }
+};
+
+// Names and Strings
+
+TypeName: syntax::TypeName = {
+  r"[A-Z][A-Za-z0-9_]*" => syntax::TypeName(<>.to_owned()),
+};
+
+CtorName: syntax::CtorName = {
+  r"[A-Z][A-Za-z0-9_]*" => syntax::CtorName(<>.to_owned()),
+};
+
+TypeParam: syntax::TypeParam = {
+  r"[a-z][A-Za-z0-9_]*" => syntax::TypeParam(<>.to_owned()),
+};
+
+ValName: syntax::ValName = {
+  r"[a-z][A-Za-z0-9_]*" => syntax::ValName(<>.to_owned()),
+};
+
+TextLit: String = {
+  <r#""([^"]|\\")*""#> => <>.to_owned(),
+};
+
+// Top-Level Items
+
+pub Program: syntax::Program = {
+  <Item*> => syntax::Program(<>),
+};
+
+Item: syntax::Item = {
+  <TypeDef>,
+  <ValDef>,
+};
+
+TypeDef: syntax::Item = {
+  "type" <name: TypeName> <params: TypeParam*>
+    "{" <cases: CommaSep<TypeCase>> "}" =>
+      syntax::Item::TypeDef(name, params, cases),
+};
+
+TypeCase: (syntax::CtorName, syntax::Type) = {
+  <CtorName> => (<>, syntax::Type::Tuple(Vec::new())),
+  <name: CtorName> "(" <content: Types> ")" => (name, content),
+};
+
+ValDef: syntax::Item = {
+  <name: ValName>
+  "(" <args: CommaSep<(<ValName> ":" <Type>)>> ")"
+  ":" <ret_type: Type>
+  "=" <body: Expr> => {
+    let (arg_pat, arg_type) = if args.len() == 1 {
+      let (arg_name, arg_type) = args.into_iter().next().unwrap();
+      (syntax::Pattern::Var(arg_name), arg_type)
+    } else {
+      let mut pat_items = Vec::new();
+      let mut type_items = Vec::new();
+
+      for (pat_item, type_item) in args {
+        pat_items.push(syntax::Pattern::Var(pat_item));
+        type_items.push(type_item);
+      }
+
+      (syntax::Pattern::Tuple(pat_items), syntax::Type::Tuple(type_items))
+    };
+
+    let def_type = syntax::Type::Func(Box::new(arg_type), Box::new(ret_type));
+    let def_body = syntax::Expr::Lam(arg_pat, Box::new(body));
+
+    syntax::Item::ValDef(name, def_type, def_body)
+  },
+
+  <name: ValName> ":" <def_type: Type> "=" <val: Expr> => {
+    syntax::Item::ValDef(name, def_type, val)
+  },
+};
+
+// Types
+
+AtomicType: syntax::Type = {
+  "(" <Types> ")",
+  <TypeParam> => syntax::Type::Var(<>),
+  <TypeName> => syntax::Type::App(<>, Vec::new()),
+};
+
+AppType: syntax::Type = {
+  <AtomicType>,
+  <name: TypeName> <args: AtomicType+> => syntax::Type::App(name, args),
+};
+
+FuncType: syntax::Type = {
+  <AppType>,
+  <arg: AppType> "->" <ret: FuncType> => syntax::Type::Func(Box::new(arg), Box::new(ret)),
+};
+
+Type: syntax::Type = {
+  <FuncType>,
+};
+
+Types: syntax::Type = {
+  <types: CommaSep<Type>> => {
+    if types.len() == 1 {
+      types.into_iter().next().unwrap()
+    } else {
+      syntax::Type::Tuple(types)
+    }
+  },
+};
+
+// Expressions
+
+AtomicExpr: syntax::Expr = {
+  "(" <Exprs> ")",
+
+  <ValName> => syntax::Expr::Var(<>),
+
+  <CtorName> => syntax::Expr::Ctor(<>),
+
+  "[" <CommaSep<Expr>> "]" => syntax::Expr::ArrayLit(<>),
+
+  <r"[0-9]+"> => syntax::Expr::IntLit(<>.parse().unwrap()),
+
+  <r"[0-9]+\.[0-9]*"> => syntax::Expr::FloatLit(<>.parse().unwrap()),
+
+  <TextLit> => syntax::Expr::TextLit(<>),
+
+  <MatchExpr>,
+};
+
+MatchExpr: syntax::Expr = {
+  "match" <expr: Expr> "{" <cases: CommaSep<(<Pattern> "->" <Expr>)>> "}" =>
+    syntax::Expr::Match(Box::new(expr), cases),
+};
+
+AppExpr: syntax::Expr = {
+  <AtomicExpr>,
+
+  <func: AppExpr> "(" <args: Exprs> ")" => syntax::Expr::App(Box::new(func), Box::new(args)),
+};
+
+ArithSumExpr: syntax::Expr = {
+  <AppExpr>,
+
+  <left: ArithSumExpr> "+" <right: AppExpr> => syntax::binop(syntax::Op::AddInt, left, right),
+  <left: ArithSumExpr> "-" <right: AppExpr> => syntax::binop(syntax::Op::SubInt, left, right),
+
+  <left: ArithSumExpr> "+." <right: AppExpr> => syntax::binop(syntax::Op::AddFloat, left, right),
+  <left: ArithSumExpr> "-." <right: AppExpr> => syntax::binop(syntax::Op::SubFloat, left, right),
+};
+
+ArithProdExpr: syntax::Expr = {
+  <ArithSumExpr>,
+
+  <left: ArithProdExpr> "*" <right: ArithSumExpr> => syntax::binop(syntax::Op::MulInt, left, right),
+  <left: ArithProdExpr> "/" <right: ArithSumExpr> => syntax::binop(syntax::Op::SubInt, left, right),
+
+  <left: ArithProdExpr> "*." <right: ArithSumExpr> => syntax::binop(syntax::Op::MulFloat, left, right),
+  <left: ArithProdExpr> "/." <right: ArithSumExpr> => syntax::binop(syntax::Op::DivFloat, left, right),
+};
+
+ArithCompExpr: syntax::Expr = {
+  <ArithProdExpr>,
+
+  <left: ArithProdExpr> "=" <right: ArithProdExpr> => syntax::binop(syntax::Op::EqInt, left, right),
+  <left: ArithProdExpr> "<" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtInt, left, right),
+  <left: ArithProdExpr> "<=" <right: ArithProdExpr> => syntax::binop(syntax::Op::LteInt, left, right),
+  <left: ArithProdExpr> ">" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtInt, right, left),
+  <left: ArithProdExpr> ">=" <right: ArithProdExpr> => syntax::binop(syntax::Op::LteInt, right, left),
+
+  <left: ArithProdExpr> "=." <right: ArithProdExpr> => syntax::binop(syntax::Op::EqFloat, left, right),
+  <left: ArithProdExpr> "<." <right: ArithProdExpr> => syntax::binop(syntax::Op::LtFloat, left, right),
+  <left: ArithProdExpr> "<=." <right: ArithProdExpr> => syntax::binop(syntax::Op::LteFloat, left, right),
+  <left: ArithProdExpr> ">." <right: ArithProdExpr> => syntax::binop(syntax::Op::LtFloat, right, left),
+  <left: ArithProdExpr> ">=." <right: ArithProdExpr> => syntax::binop(syntax::Op::LteFloat, right, left),
+};
+
+BlockExpr: syntax::Expr = {
+  <ArithCompExpr>,
+
+  "\\" <param: Pattern> "->" <body: BlockExpr> => syntax::Expr::Lam(param, Box::new(body)),
+
+  "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> =>
+    syntax::Expr::Let(lhs, Box::new(rhs), Box::new(body)),
+};
+
+Expr: syntax::Expr = {
+  <BlockExpr>,
+};
+
+Exprs: syntax::Expr = {
+  <exprs: CommaSep<Expr>> => {
+    if exprs.len() == 1 {
+      exprs.into_iter().next().unwrap()
+    } else {
+      syntax::Expr::Tuple(exprs)
+    }
+  },
+};
+
+// Patterns
+
+Pattern: syntax::Pattern = {
+  "(" <Patterns> ")",
+
+  <ValName> => syntax::Pattern::Var(<>),
+
+  <CtorName> => syntax::Pattern::Ctor(<>, Box::new(syntax::Pattern::Tuple(Vec::new()))),
+
+  <ctor: CtorName> "(" <args: Patterns> ")" => syntax::Pattern::Ctor(ctor, Box::new(args)),
+
+  <r"[0-9]+"> => syntax::Pattern::IntConst(<>.parse().unwrap()),
+
+  <r"[0-9]+\.[0-9]*"> => syntax::Pattern::FloatConst(<>.parse().unwrap()),
+
+  <TextLit> => syntax::Pattern::TextConst(<>),
+};
+
+Patterns: syntax::Pattern = {
+  <patterns: CommaSep<Pattern>> => {
+    if patterns.len() == 1 {
+      patterns.into_iter().next().unwrap()
+    } else {
+      syntax::Pattern::Tuple(patterns)
+    }
+  }
+};
