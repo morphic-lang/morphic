@@ -1,4 +1,4 @@
-use crate::data::raw_syntax as syntax;
+use crate::data::raw_ast as syntax;
 use crate::lex;
 
 grammar;

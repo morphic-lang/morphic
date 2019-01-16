@@ -1,1 +1,2 @@
-pub mod raw_syntax;
+pub mod raw_ast;
+pub mod resolved_ast;
