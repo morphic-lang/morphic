@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod data;
+mod lex;
 
 use lalrpop_util::lalrpop_mod;
 
@@ -9,8 +10,9 @@ lalrpop_mod!(parse);
 fn main() {
     println!(
         "{:#?}",
-        parse::ProgramParser::new().parse(
+        parse::ProgramParser::new().parse(lex::Lexer::new(
             "
+            // This is a comment
             type Option a {
                 Some(a),
                 None,
@@ -41,7 +43,10 @@ fn main() {
                     True -> y0,
                     False -> func(x),
                 }
+
+            main(): IO () =
+                print(\"Hello, \\\"world\\\"!\")
         "
-        )
+        ))
     );
 }

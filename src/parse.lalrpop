@@ -1,6 +1,58 @@
 use crate::data::raw_syntax as syntax;
+use crate::lex;
 
 grammar;
+
+// Lexer Integration
+
+extern {
+  type Location = usize;
+  type Error = lex::Error;
+
+  enum lex::Token {
+    "UpperName" => lex::Token::UpperName(<String>),
+    "LowerName" => lex::Token::LowerName(<String>),
+    "FloatLit" => lex::Token::FloatLit(<f64>),
+    "IntLit" => lex::Token::IntLit(<i64>),
+    "StringLit" => lex::Token::StringLit(<String>),
+
+    "type" => lex::Token::Type,
+    "match" => lex::Token::Match,
+    "let" => lex::Token::Let,
+    "in" => lex::Token::In,
+
+    "(" => lex::Token::LParen,
+    ")" => lex::Token::RParen,
+    "[" => lex::Token::LSquare,
+    "]" => lex::Token::RSquare,
+    "{" => lex::Token::LCurly,
+    "}" => lex::Token::RCurly,
+
+    "," => lex::Token::Comma,
+    ":" => lex::Token::Colon,
+    "=" => lex::Token::Equal,
+    "->" => lex::Token::Arrow,
+    "\\" => lex::Token::BackSlash,
+
+    "+" => lex::Token::Add,
+    "-" => lex::Token::Sub,
+    "*" => lex::Token::Mul,
+    "/" => lex::Token::Div,
+    "<" => lex::Token::Lt,
+    "<=" => lex::Token::Lte,
+    ">" => lex::Token::Gt,
+    ">=" => lex::Token::Gte,
+    "+." => lex::Token::AddDot,
+    "-." => lex::Token::SubDot,
+    "*." => lex::Token::MulDot,
+    "/." => lex::Token::DivDot,
+    "=." => lex::Token::EqualDot,
+    "<." => lex::Token::LtDot,
+    "<=." => lex::Token::LteDot,
+    ">." => lex::Token::GtDot,
+    ">=." => lex::Token::GteDot,
+  }
+}
 
 // Macros
 
@@ -18,23 +70,19 @@ CommaSep<T>: Vec<T> = {
 // Names and Strings
 
 TypeName: syntax::TypeName = {
-  r"[A-Z][A-Za-z0-9_]*" => syntax::TypeName(<>.to_owned()),
+  <"UpperName"> => syntax::TypeName(<>),
 };
 
 CtorName: syntax::CtorName = {
-  r"[A-Z][A-Za-z0-9_]*" => syntax::CtorName(<>.to_owned()),
+  <"UpperName"> => syntax::CtorName(<>),
 };
 
 TypeParam: syntax::TypeParam = {
-  r"[a-z][A-Za-z0-9_]*" => syntax::TypeParam(<>.to_owned()),
+  <"LowerName"> => syntax::TypeParam(<>),
 };
 
 ValName: syntax::ValName = {
-  r"[a-z][A-Za-z0-9_]*" => syntax::ValName(<>.to_owned()),
-};
-
-TextLit: String = {
-  <r#""([^"]|\\")*""#> => <>.to_owned(),
+  <"LowerName"> => syntax::ValName(<>),
 };
 
 // Top-Level Items
@@ -133,11 +181,11 @@ AtomicExpr: syntax::Expr = {
 
   "[" <CommaSep<Expr>> "]" => syntax::Expr::ArrayLit(<>),
 
-  <r"[0-9]+"> => syntax::Expr::IntLit(<>.parse().unwrap()),
+  <"IntLit"> => syntax::Expr::IntLit(<>),
 
-  <r"[0-9]+\.[0-9]*"> => syntax::Expr::FloatLit(<>.parse().unwrap()),
+  <"FloatLit"> => syntax::Expr::FloatLit(<>),
 
-  <TextLit> => syntax::Expr::TextLit(<>),
+  <"StringLit"> => syntax::Expr::TextLit(<>),
 
   <MatchExpr>,
 };
@@ -223,11 +271,11 @@ Pattern: syntax::Pattern = {
 
   <ctor: CtorName> "(" <args: Patterns> ")" => syntax::Pattern::Ctor(ctor, Box::new(args)),
 
-  <r"[0-9]+"> => syntax::Pattern::IntConst(<>.parse().unwrap()),
+  <"IntLit"> => syntax::Pattern::IntConst(<>),
 
-  <r"[0-9]+\.[0-9]*"> => syntax::Pattern::FloatConst(<>.parse().unwrap()),
+  <"FloatLit"> => syntax::Pattern::FloatConst(<>),
 
-  <TextLit> => syntax::Pattern::TextConst(<>),
+  <"StringLit"> => syntax::Pattern::TextConst(<>),
 };
 
 Patterns: syntax::Pattern = {
