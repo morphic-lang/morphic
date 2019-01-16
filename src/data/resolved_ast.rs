@@ -1,39 +1,37 @@
 use crate::data::raw_ast::Op;
 
-#[derive(Clone, Debug)]
-pub struct TypeId(pub usize);
-
-#[derive(Clone, Debug)]
-pub struct VariantId(pub usize);
-
-#[derive(Clone, Debug)]
-pub struct TypeParamId(pub usize);
-
-#[derive(Clone, Debug)]
-pub struct GlobalId(pub usize);
-
-#[derive(Clone, Debug)]
-pub struct LocalId(pub usize);
-
-#[derive(Clone, Debug)]
-pub struct Program {
-    types: Vec<TypeDef>,
-    vals: Vec<ValDef>,
-}
-
-#[derive(Clone, Debug)]
-pub enum TypeDef {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TypeId {
+    Bool,
     Int,
     Float,
     Text,
     Array,
-    Custom {
-        num_params: usize,
-        variants: Vec<Type>,
-    },
+    Custom(CustomTypeId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CustomTypeId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VariantId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TypeParamId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GlobalId {
+    ArithOp(Op),
+    ArrayOp(ArrayOp),
+    TextOp(TextOp),
+    Ctor(TypeId, VariantId),
+    Custom(CustomGlobalId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CustomGlobalId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ArrayOp {
     Item,
     Len,
@@ -41,19 +39,35 @@ pub enum ArrayOp {
     Pop,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TextOp {
+    // TODO:
+// Char,
+// NextCharIndex,
+// PushChar,
+// PopChar,
+// TruncateText,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LocalId(pub usize);
+
 #[derive(Clone, Debug)]
-pub enum ValDef {
-    ArithOp(Op),
-    ArrayOp(Op),
-    Ctor {
-        type_: TypeId,
-        variant: VariantId,
-    },
-    Custom {
-        scheme_params: usize,
-        scheme: Type,
-        body: Expr,
-    },
+pub struct Program {
+    pub custom_types: Vec<TypeDef>,
+    pub vals: Vec<ValDef>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeDef {
+    pub num_params: usize,
+    pub variants: Vec<Type>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValDef {
+    pub scheme: TypeScheme,
+    pub body: Expr,
 }
 
 #[derive(Clone, Debug)]
@@ -66,8 +80,8 @@ pub enum Type {
 
 #[derive(Clone, Debug)]
 pub struct TypeScheme {
-    num_params: usize,
-    body: Type,
+    pub num_params: usize,
+    pub body: Type,
 }
 
 #[derive(Clone, Debug)]
@@ -88,16 +102,16 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub struct Pattern {
-    num_vars: usize,
-    body: PatternBody,
+    pub num_vars: usize,
+    pub body: PatternBody,
 }
 
 #[derive(Clone, Debug)]
 pub enum PatternBody {
     Any,
     Var,
-    Tuple(Vec<Pattern>),
-    Ctor(TypeId, VariantId, Box<Pattern>),
+    Tuple(Vec<PatternBody>),
+    Ctor(TypeId, VariantId, Box<PatternBody>),
     IntConst(i64),
     FloatConst(f64),
     TextConst(String),

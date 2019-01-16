@@ -2,6 +2,7 @@
 
 mod data;
 mod lex;
+mod resolve;
 
 use lalrpop_util::lalrpop_mod;
 

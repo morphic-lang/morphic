@@ -11,3 +11,4 @@ lalrpop = "0.16.2"
 [dependencies]
 lalrpop-util = "0.16.2"
 regex = "1.1.0"
+failure = "0.1.5"
