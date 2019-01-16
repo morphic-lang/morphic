@@ -218,7 +218,6 @@ impl<'a> Iterator for Lexer<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.pos = skip_invisibles(self.pos, self.src);
-        println!("Skipped to {}", self.pos);
 
         if self.pos == self.src.len() {
             return None;
