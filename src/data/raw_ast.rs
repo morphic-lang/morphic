@@ -15,7 +15,7 @@ pub struct Program(pub Vec<Item>);
 
 #[derive(Clone, Debug)]
 pub enum Item {
-    TypeDef(TypeName, Vec<TypeParam>, Vec<(CtorName, Type)>),
+    TypeDef(TypeName, Vec<TypeParam>, Vec<(CtorName, Option<Type>)>),
     ValDef(ValName, Type, Expr),
 }
 
@@ -79,7 +79,7 @@ pub enum Pattern {
     Any,
     Var(ValName),
     Tuple(Vec<Pattern>),
-    Ctor(CtorName, Box<Pattern>),
+    Ctor(CtorName, Option<Box<Pattern>>),
 
     IntConst(i64),
     FloatConst(f64),

@@ -61,7 +61,7 @@ pub struct Program {
 #[derive(Clone, Debug)]
 pub struct TypeDef {
     pub num_params: usize,
-    pub variants: Vec<Type>,
+    pub variants: Vec<Option<Type>>,
 }
 
 #[derive(Clone, Debug)]
@@ -111,7 +111,7 @@ pub enum PatternBody {
     Any,
     Var,
     Tuple(Vec<PatternBody>),
-    Ctor(TypeId, VariantId, Box<PatternBody>),
+    Ctor(TypeId, VariantId, Option<Box<PatternBody>>),
     IntConst(i64),
     FloatConst(f64),
     TextConst(String),

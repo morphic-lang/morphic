@@ -103,9 +103,8 @@ TypeDef: syntax::Item = {
       syntax::Item::TypeDef(name, params, cases),
 };
 
-TypeCase: (syntax::CtorName, syntax::Type) = {
-  <CtorName> => (<>, syntax::Type::Tuple(Vec::new())),
-  <name: CtorName> "(" <content: Types> ")" => (name, content),
+TypeCase: (syntax::CtorName, Option<syntax::Type>) = {
+  <name: CtorName> <content: ("(" <Types> ")")?> => (name, content),
 };
 
 ValDef: syntax::Item = {
@@ -270,9 +269,9 @@ Pattern: syntax::Pattern = {
 
   <ValName> => syntax::Pattern::Var(<>),
 
-  <CtorName> => syntax::Pattern::Ctor(<>, Box::new(syntax::Pattern::Tuple(Vec::new()))),
+  <CtorName> => syntax::Pattern::Ctor(<>, None),
 
-  <ctor: CtorName> "(" <args: Patterns> ")" => syntax::Pattern::Ctor(ctor, Box::new(args)),
+  <ctor: CtorName> "(" <args: Patterns> ")" => syntax::Pattern::Ctor(ctor, Some(Box::new(args))),
 
   <"IntLit"> => syntax::Pattern::IntConst(<>),
 

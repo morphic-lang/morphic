@@ -73,7 +73,7 @@ fn builtin_names() -> (
 struct TypeDef(
     raw::TypeName,
     Vec<raw::TypeParam>,
-    Vec<(raw::CtorName, raw::Type)>,
+    Vec<(raw::CtorName, Option<raw::Type>)>,
 );
 
 #[derive(Clone, Debug)]
@@ -161,7 +161,11 @@ fn resolve_typedefs(
 
         let mut resolved_variants = Vec::new();
         for (variant_index, (ctor_name, content)) in variants.iter().enumerate() {
-            let res_content = resolve_type(&type_map, &param_map, content)?;
+            let res_content = if let Some(content) = content {
+                Some(resolve_type(&type_map, &param_map, content)?)
+            } else {
+                None
+            };
 
             let existing = ctor_map.insert(
                 ctor_name.clone(),
@@ -308,12 +312,13 @@ fn resolve_pattern(
 
         raw::Pattern::Ctor(ctor_name, content) => {
             if let Some(&(type_, variant)) = ctor_map.get(ctor_name) {
-                let res_content = resolve_pattern(ctor_map, content, vars)?;
-                Ok(res::PatternBody::Ctor(
-                    type_,
-                    variant,
-                    Box::new(res_content),
-                ))
+                let res_content = if let Some(content) = content {
+                    Some(Box::new(resolve_pattern(ctor_map, &*content, vars)?))
+                } else {
+                    None
+                };
+
+                Ok(res::PatternBody::Ctor(type_, variant, res_content))
             } else {
                 Err(Error::VarNotFound(ctor_name.0.clone()))
             }
