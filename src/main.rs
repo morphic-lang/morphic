@@ -4,50 +4,67 @@ mod data;
 mod lex;
 mod resolve;
 
+use failure::Fail;
 use lalrpop_util::lalrpop_mod;
+use std::env::args_os;
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+use std::process::exit;
 
-lalrpop_mod!(parse);
+lalrpop_mod!(pub parse);
+
+#[derive(Debug, Fail)]
+enum Error {
+    #[fail(display = "Could not read source file: {}", _0)]
+    ReadFailed(#[cause] io::Error),
+
+    #[fail(display = "Could not parse source file: {}", _0)]
+    ParseFailed(#[cause] lalrpop_util::ParseError<usize, lex::Token, lex::Error>),
+}
+
+#[derive(Clone, Debug)]
+struct Config {
+    src_path: PathBuf,
+}
+
+fn parse_args() -> Option<Config> {
+    let mut args = args_os();
+    args.next()?; // Consume program name
+
+    let src_path = args.next()?.into();
+
+    if args.next().is_some() {
+        return None;
+    }
+
+    Some(Config { src_path })
+}
+
+fn usage() -> String {
+    "Usage: opt-proto <src.txt>".to_owned()
+}
 
 fn main() {
-    println!(
-        "{:#?}",
-        parse::ProgramParser::new().parse(lex::Lexer::new(
-            "
-            // This is a comment
-            type Option a {
-                Some(a),
-                None,
-            }
+    if let Some(config) = parse_args() {
+        let result = run(config);
+        if let Err(err) = result {
+            eprintln!("{}", err);
+            exit(1);
+        }
+    } else {
+        println!("{}", usage());
+    }
+}
 
-            type Iter a {
-                Iter(() -> Option (a, Iter a)),
-            }
+fn run(config: Config) -> Result<(), Error> {
+    let src = fs::read_to_string(&config.src_path).map_err(Error::ReadFailed)?;
 
-            map(f: a -> b, opt: Option a): Option b =
-                match opt {
-                    Some(x) -> Some(f(x)),
-                    None -> None,
-                }
+    let raw = parse::ProgramParser::new()
+        .parse(lex::Lexer::new(&src))
+        .map_err(Error::ParseFailed)?;
 
-            circ_area(r: Float): Float =
-                3.14159265 *. r *. r
+    println!("Raw AST:\n{:#?}", raw);
 
-            circ_area_gt_1(r: Float): Bool =
-                3.14159265 *. r *. r >. 1
-
-            curry(func: (a, b) -> c): a -> b -> c =
-                \\x -> \\y -> func(x, y)
-
-            cache(func: Int -> a, x0: Int): Int -> a =
-                let y0 = func(x0) in
-                \\x -> match x = x0 {
-                    True -> y0,
-                    False -> func(x),
-                }
-
-            main(): IO () =
-                print(\"Hello, \\\"world\\\"!\")
-        "
-        ))
-    );
+    Ok(())
 }

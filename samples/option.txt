@@ -1,0 +1,40 @@
+type Option a {
+  Some(a),
+  None,
+}
+
+or_default(opt: Option a, def: a): a =
+  match opt {
+    Some(x) -> x,
+    None -> def,
+  }
+
+map(opt: Option a, fn: a -> b): Option b =
+  match opt {
+    Some(x) -> Some(f(x)),
+    None -> None,
+  }
+
+and_then(opt: Option a, fn: a -> Option b): Option b =
+  match opt {
+    Some(x) -> fn(x),
+    None -> None,
+  }
+
+identity(x: a): a = x
+
+flatten(opt: Option (Option a)): Option a =
+  and_then(opt, identity)
+
+both(fst: Option a, snd: Option b): Option (a, b) =
+  match (fst, snd) {
+    (Some(x), Some(y)) -> Some(x, y),
+    _ -> None,
+  }
+
+either(fst: Option a, snd: Option a): Option a =
+  match (fst, snd) {
+    (Some(x), _) -> Some(x),
+    (_, Some(y)) -> Some(y),
+    (None, None) -> None,
+  }

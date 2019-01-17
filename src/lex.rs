@@ -1,4 +1,8 @@
-#[derive(Clone, Copy, Debug)]
+use failure::Fail;
+use std::fmt;
+
+#[derive(Clone, Copy, Debug, Fail)]
+#[fail(display = "Unrecognized token at position {}", _0)]
 pub struct Error(pub usize);
 
 #[derive(Clone, Debug)]
@@ -26,6 +30,7 @@ pub enum Token {
     Equal,
     Arrow,
     BackSlash,
+    Underscore,
 
     Add,
     Sub,
@@ -44,6 +49,51 @@ pub enum Token {
     LteDot,
     GtDot,
     GteDot,
+}
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Token::UpperName(name) => write!(f, "{}", name),
+            Token::LowerName(name) => write!(f, "{}", name),
+            Token::FloatLit(val) => write!(f, "{}", val),
+            Token::IntLit(val) => write!(f, "{}", val),
+            Token::StringLit(text) => write!(f, "{:?}", text),
+            Token::Type => write!(f, "type"),
+            Token::Match => write!(f, "match"),
+            Token::Let => write!(f, "Let"),
+            Token::In => write!(f, "in"),
+            Token::LParen => write!(f, "("),
+            Token::RParen => write!(f, ")"),
+            Token::LSquare => write!(f, "["),
+            Token::RSquare => write!(f, "]"),
+            Token::LCurly => write!(f, "{{"),
+            Token::RCurly => write!(f, "}}"),
+            Token::Comma => write!(f, ","),
+            Token::Colon => write!(f, ":"),
+            Token::Equal => write!(f, "="),
+            Token::Arrow => write!(f, "->"),
+            Token::BackSlash => write!(f, "\\"),
+            Token::Underscore => write!(f, "_"),
+            Token::Add => write!(f, "+"),
+            Token::Sub => write!(f, "-"),
+            Token::Mul => write!(f, "*"),
+            Token::Div => write!(f, "/"),
+            Token::Lt => write!(f, "<"),
+            Token::Lte => write!(f, "<="),
+            Token::Gt => write!(f, ">"),
+            Token::Gte => write!(f, ">="),
+            Token::AddDot => write!(f, "+."),
+            Token::SubDot => write!(f, "-."),
+            Token::MulDot => write!(f, "*."),
+            Token::DivDot => write!(f, "/."),
+            Token::EqualDot => write!(f, "=."),
+            Token::LtDot => write!(f, "<."),
+            Token::LteDot => write!(f, "<=."),
+            Token::GtDot => write!(f, ">."),
+            Token::GteDot => write!(f, ">=."),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -296,6 +346,7 @@ impl<'a> Iterator for Lexer<'a> {
                 ("=", Token::Equal),
                 ("->", Token::Arrow),
                 ("\\", Token::BackSlash),
+                ("_", Token::Underscore),
                 // Int arithmetic
                 ("+", Token::Add),
                 ("-", Token::Sub),

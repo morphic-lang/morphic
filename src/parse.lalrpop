@@ -33,6 +33,7 @@ extern {
     "=" => lex::Token::Equal,
     "->" => lex::Token::Arrow,
     "\\" => lex::Token::BackSlash,
+    "_" => lex::Token::Underscore,
 
     "+" => lex::Token::Add,
     "-" => lex::Token::Sub,
@@ -264,6 +265,8 @@ Exprs: syntax::Expr = {
 
 Pattern: syntax::Pattern = {
   "(" <Patterns> ")",
+
+  "_" => syntax::Pattern::Any,
 
   <ValName> => syntax::Pattern::Var(<>),
 

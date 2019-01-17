@@ -1,0 +1,85 @@
+type Option a {
+  Some(a),
+  None,
+}
+
+type Iter a {
+  Iter(() -> Option (a, Iter a))
+}
+
+// Creating iterators:
+
+empty: Iter a =
+  Iter(\() -> None)
+
+once(x: a): Iter a =
+  Iter(\() -> Some(x, empty))
+
+forever(x: a): Iter a =
+  Iter(\() -> Some(x, forever(x)))
+
+range(lo: Int, hi: Int): Iter Int =
+  match lo < hi {
+    True -> Iter(\() -> Some(lo, range(lo + 1, hi))),
+    False -> empty,
+  }
+
+// Transforming iterators:
+
+chain(fst: Iter a, snd: Iter a): Iter a =
+  Iter(\() ->
+    match next(fst) {
+      Some(x, xs) -> Some(x, chain(xs, snd)),
+      None -> next(snd),
+    }
+  )
+
+map(it: Iter a, f: a -> b): Iter b =
+  Iter(\() ->
+    match next(it) {
+      Some(x, xs) -> Some(f, map(xs, f)),
+      None -> None,
+    }
+  )
+
+filter(it: Iter a, f: a -> Bool): Iter a =
+  Iter(\() ->
+    match next(it) {
+      Some(x, xs) -> match f(x) {
+        True -> Some(x, filter(xs, f)),
+        False -> next(filter(xs, f)),
+      },
+      None -> None,
+    }
+  )
+
+take(it: Iter a, count: Int): Iter a =
+  match count > 0 {
+    True -> Iter(\() ->
+      match next(it) {
+        Some(x, xs) -> Some(x, take(xs, count - 1)),
+        None -> None,
+      }
+    ),
+    False -> empty,
+  }
+
+// Consuming iterators:
+
+next(it: Iter a): Option (a, Iter a) =
+  let Iter(body) = it in body()
+
+foldl(it: Iter a, init: b, combine: (b, a) -> b): b =
+  match next(it) {
+    Some(x, xs) -> foldl(xs, combine(init, x), combine),
+    None -> init,
+  }
+
+foldr(it: Iter a, init: b, combine: (a, b) -> b): b =
+  match next(it) {
+    Some(x, xs) -> combine(x, foldr(xs, init, combine)),
+    None -> init,
+  }
+
+sum(it: Iter Int): Iter Int =
+  foldl(it, 0, \(x, y) -> x + y)
