@@ -21,6 +21,9 @@ enum Error {
 
     #[fail(display = "Could not parse source file: {}", _0)]
     ParseFailed(#[cause] lalrpop_util::ParseError<usize, lex::Token, lex::Error>),
+
+    #[fail(display = "{}", _0)]
+    ResolveFailed(#[cause] resolve::Error),
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +68,10 @@ fn run(config: Config) -> Result<(), Error> {
         .map_err(Error::ParseFailed)?;
 
     println!("Raw AST:\n{:#?}", raw);
+
+    let resolved = resolve::resolve(raw).map_err(Error::ResolveFailed)?;
+
+    println!("Resolved ADT:\n{:#?}", resolved);
 
     Ok(())
 }

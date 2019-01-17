@@ -11,7 +11,7 @@ or_default(opt: Option a, def: a): a =
 
 map(opt: Option a, fn: a -> b): Option b =
   match opt {
-    Some(x) -> Some(f(x)),
+    Some(x) -> Some(fn(x)),
     None -> None,
   }
 
