@@ -24,6 +24,15 @@ range(lo: Int, hi: Int): Iter Int =
     False -> empty,
   }
 
+ints(lo: Int): Iter Int =
+  Iter(\() -> Some(lo, ints(lo + 1)))
+
+items(arr: Array a): Iter a =
+  map(range(0, len(arr)), \idx ->
+    let (val, _) = item(arr, idx) in
+    val
+  )
+
 // Transforming iterators:
 
 chain(fst: Iter a, snd: Iter a): Iter a =
@@ -63,6 +72,17 @@ take(it: Iter a, count: Int): Iter a =
     ),
     False -> empty,
   }
+
+zip(it1: Iter a, it2: Iter b): Iter (a, b) =
+  Iter(\() ->
+    match (next(it1), next(it2)) {
+      (Some(x, xs), Some(y, ys)) -> Some((x, y), zip(xs, ys)),
+      _ -> None,
+    }
+  )
+
+enumerate(it: Iter a): Iter (Int, a) =
+  zip(ints(0), it)
 
 // Consuming iterators:
 
