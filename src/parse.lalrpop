@@ -1,4 +1,5 @@
 use crate::data::raw_ast as syntax;
+use crate::data::purity::Purity;
 use crate::lex;
 
 grammar;
@@ -20,6 +21,9 @@ extern {
     "match" => lex::Token::Match,
     "let" => lex::Token::Let,
     "in" => lex::Token::In,
+    "proc" => lex::Token::Proc,
+    "do" => lex::Token::Do,
+    "then" => lex::Token::Then,
 
     "(" => lex::Token::LParen,
     ")" => lex::Token::RParen,
@@ -86,6 +90,12 @@ ValName: syntax::ValName = {
   <"LowerName"> => syntax::ValName(<>),
 };
 
+#[inline]
+OptProc: Purity = {
+  "proc" => Purity::Impure,
+  () => Purity::Pure,
+};
+
 // Top-Level Items
 
 pub Program: syntax::Program = {
@@ -108,6 +118,7 @@ TypeCase: (syntax::CtorName, Option<syntax::Type>) = {
 };
 
 ValDef: syntax::Item = {
+  <purity: OptProc>
   <name: ValName>
   "(" <args: CommaSep<(<ValName> ":" <Type>)>> ")"
   ":" <ret_type: Type>
@@ -127,8 +138,8 @@ ValDef: syntax::Item = {
       (syntax::Pattern::Tuple(pat_items), syntax::Type::Tuple(type_items))
     };
 
-    let def_type = syntax::Type::Func(Box::new(arg_type), Box::new(ret_type));
-    let def_body = syntax::Expr::Lam(arg_pat, Box::new(body));
+    let def_type = syntax::Type::Func(purity, Box::new(arg_type), Box::new(ret_type));
+    let def_body = syntax::Expr::Lam(purity, arg_pat, Box::new(body));
 
     syntax::Item::ValDef(name, def_type, def_body)
   },
@@ -153,7 +164,8 @@ AppType: syntax::Type = {
 
 FuncType: syntax::Type = {
   <AppType>,
-  <arg: AppType> "->" <ret: FuncType> => syntax::Type::Func(Box::new(arg), Box::new(ret)),
+  <purity: OptProc> <arg: AppType> "->" <ret: FuncType> =>
+    syntax::Type::Func(purity, Box::new(arg), Box::new(ret)),
 };
 
 Type: syntax::Type = {
@@ -198,7 +210,8 @@ MatchExpr: syntax::Expr = {
 AppExpr: syntax::Expr = {
   <AtomicExpr>,
 
-  <func: AppExpr> "(" <args: Exprs> ")" => syntax::Expr::App(Box::new(func), Box::new(args)),
+  <func: AppExpr> "(" <args: Exprs> ")" =>
+    syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
 };
 
 ArithSumExpr: syntax::Expr = {
@@ -240,10 +253,20 @@ ArithCompExpr: syntax::Expr = {
 BlockExpr: syntax::Expr = {
   <ArithCompExpr>,
 
-  "\\" <param: Pattern> "->" <body: BlockExpr> => syntax::Expr::Lam(param, Box::new(body)),
+  <purity: OptProc> "\\" <param: Pattern> "->" <body: BlockExpr> =>
+    syntax::Expr::Lam(purity, param, Box::new(body)),
 
   "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> =>
     syntax::Expr::Let(lhs, Box::new(rhs), Box::new(body)),
+
+  "do" <func: AppExpr> "(" <arg: Exprs> ")" <rest: ("then" <BlockExpr>)?> => {
+    let app = syntax::Expr::App(Purity::Impure, Box::new(func), Box::new(arg));
+
+    match rest {
+      Some(rest) => syntax::Expr::Let(syntax::Pattern::Any, Box::new(app), Box::new(rest)),
+      None => app,
+    }
+  }
 };
 
 Expr: syntax::Expr = {

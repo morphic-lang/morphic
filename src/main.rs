@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod check_purity;
 mod data;
 mod lex;
 mod resolve;
@@ -25,6 +26,9 @@ enum Error {
 
     #[fail(display = "{}", _0)]
     ResolveFailed(#[cause] resolve::Error),
+
+    #[fail(display = "{}", _0)]
+    PurityCheckFailed(#[cause] check_purity::Error),
 
     #[fail(display = "{}", _0)]
     TypeInferFailed(#[cause] type_infer::LocatedError),
@@ -77,6 +81,8 @@ fn run(config: Config) -> Result<(), Error> {
     let resolved = resolve::resolve(raw).map_err(Error::ResolveFailed)?;
 
     println!("Resolved AST:\n{:#?}", resolved);
+
+    check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;
 
     let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
 

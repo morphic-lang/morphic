@@ -2,6 +2,7 @@ use failure::Fail;
 use std::borrow::Cow;
 use std::mem::replace;
 
+use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
 
@@ -35,6 +36,9 @@ pub enum Error {
 
     #[fail(display = "Unexpected constructor argument")]
     UnexpectedCtorArg(res::TypeId, res::VariantId),
+
+    #[fail(display = "Function purity mismatch")]
+    PurityMismatch,
 }
 
 // TODO: Display human readable name of `def`!
@@ -56,7 +60,7 @@ enum Assign {
     Param(res::TypeParamId),
     App(res::TypeId, Vec<TypeVar>),
     Tuple(Vec<TypeVar>),
-    Func(TypeVar, TypeVar),
+    Func(Purity, TypeVar, TypeVar),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,7 +167,11 @@ impl Context {
                 }
             }
 
-            (Assign::Func(arg1, ret1), Assign::Func(arg2, ret2)) => {
+            (Assign::Func(purity1, arg1, ret1), Assign::Func(purity2, arg2, ret2)) => {
+                if purity1 != purity2 {
+                    return Err(Error::PurityMismatch);
+                }
+
                 self.unify(*arg1, *arg2)?;
                 self.unify(*ret1, *ret2)?;
             }
@@ -204,9 +212,11 @@ impl Context {
                 res::Type::Tuple(items.iter().map(|&item| self.extract(item)).collect())
             }
 
-            &Assign::Func(arg, ret) => {
-                res::Type::Func(Box::new(self.extract(arg)), Box::new(self.extract(ret)))
-            }
+            &Assign::Func(purity, arg, ret) => res::Type::Func(
+                purity,
+                Box::new(self.extract(arg)),
+                Box::new(self.extract(ret)),
+            ),
         }
     }
 }
@@ -246,8 +256,8 @@ enum AnnotExpr {
     Global(res::GlobalId, Vec<TypeVar>),
     Local(res::LocalId),
     Tuple(Vec<AnnotExpr>),
-    Lam(res::Pattern, Box<AnnotExpr>),
-    App(Box<AnnotExpr>, Box<AnnotExpr>),
+    Lam(Purity, res::Pattern, Box<AnnotExpr>),
+    App(Purity, Box<AnnotExpr>, Box<AnnotExpr>),
     Match(Box<AnnotExpr>, Vec<(res::Pattern, AnnotExpr)>),
     Let(res::Pattern, Box<AnnotExpr>, Box<AnnotExpr>),
 
@@ -279,7 +289,7 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
     }
 
     fn func(arg: res::Type, ret: res::Type) -> res::Type {
-        Func(Box::new(arg), Box::new(ret))
+        Func(Purity::Pure, Box::new(arg), Box::new(ret))
     }
 
     fn pair(fst: res::Type, snd: res::Type) -> res::Type {
@@ -397,11 +407,11 @@ fn instantiate_with(ctx: &mut Context, param_vars: &[TypeVar], body: &res::Type)
             ctx.new_var(Assign::Tuple(item_vars))
         }
 
-        res::Type::Func(arg, ret) => {
+        res::Type::Func(purity, arg, ret) => {
             let arg_var = instantiate_with(ctx, param_vars, arg);
             let ret_var = instantiate_with(ctx, param_vars, ret);
 
-            ctx.new_var(Assign::Func(arg_var, ret_var))
+            ctx.new_var(Assign::Func(*purity, arg_var, ret_var))
         }
     }
 }
@@ -514,24 +524,24 @@ fn infer_expr(
             Ok((tuple_annot, tuple_var))
         }
 
-        res::Expr::Lam(pat, body) => scope.with_subscope(|subscope| {
+        res::Expr::Lam(purity, pat, body) => scope.with_subscope(|subscope| {
             let pat_var = infer_pat(program, ctx, subscope, &pat.body)?;
             let (body_annot, body_var) = infer_expr(program, ctx, subscope, &body)?;
 
-            let lam_annot = AnnotExpr::Lam(pat.clone(), Box::new(body_annot));
-            let lam_var = ctx.new_var(Assign::Func(pat_var, body_var));
+            let lam_annot = AnnotExpr::Lam(*purity, pat.clone(), Box::new(body_annot));
+            let lam_var = ctx.new_var(Assign::Func(*purity, pat_var, body_var));
             Ok((lam_annot, lam_var))
         }),
 
-        res::Expr::App(func, arg) => {
+        res::Expr::App(purity, func, arg) => {
             let (func_annot, func_var) = infer_expr(program, ctx, scope, &func)?;
             let (arg_annot, arg_var) = infer_expr(program, ctx, scope, &arg)?;
 
             let ret_var = ctx.new_var(Assign::Unknown);
-            let expected_func_var = ctx.new_var(Assign::Func(arg_var, ret_var));
+            let expected_func_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
             ctx.unify(expected_func_var, func_var)?;
 
-            let app_annot = AnnotExpr::App(Box::new(func_annot), Box::new(arg_annot));
+            let app_annot = AnnotExpr::App(*purity, Box::new(func_annot), Box::new(arg_annot));
             Ok((app_annot, ret_var))
         }
 
@@ -630,9 +640,12 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> typed::Expr {
                 .collect(),
         ),
 
-        AnnotExpr::Lam(pat, body) => typed::Expr::Lam(pat, Box::new(extract_solution(ctx, *body))),
+        AnnotExpr::Lam(purity, pat, body) => {
+            typed::Expr::Lam(purity, pat, Box::new(extract_solution(ctx, *body)))
+        }
 
-        AnnotExpr::App(func, arg) => typed::Expr::App(
+        AnnotExpr::App(purity, func, arg) => typed::Expr::App(
+            purity,
             Box::new(extract_solution(ctx, *func)),
             Box::new(extract_solution(ctx, *arg)),
         ),

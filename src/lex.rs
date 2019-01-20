@@ -17,6 +17,9 @@ pub enum Token {
     Match,
     Let,
     In,
+    Proc,
+    Do,
+    Then,
 
     LParen,
     RParen,
@@ -63,6 +66,9 @@ impl fmt::Display for Token {
             Token::Match => write!(f, "match"),
             Token::Let => write!(f, "Let"),
             Token::In => write!(f, "in"),
+            Token::Proc => write!(f, "proc"),
+            Token::Do => write!(f, "do"),
+            Token::Then => write!(f, "then"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
             Token::LSquare => write!(f, "["),
@@ -282,6 +288,9 @@ impl<'a> Iterator for Lexer<'a> {
                 "match" => Some(Ok((name_start, Token::Match, name_end))),
                 "let" => Some(Ok((name_start, Token::Let, name_end))),
                 "in" => Some(Ok((name_start, Token::In, name_end))),
+                "proc" => Some(Ok((name_start, Token::Proc, name_end))),
+                "do" => Some(Ok((name_start, Token::Do, name_end))),
+                "then" => Some(Ok((name_start, Token::Then, name_end))),
                 name => {
                     if char_at(name, 0).unwrap().is_uppercase() {
                         Some(Ok((

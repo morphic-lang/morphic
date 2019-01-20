@@ -129,7 +129,8 @@ fn resolve_type(
                 .collect::<Result<_, _>>()?,
         )),
 
-        raw::Type::Func(arg, ret) => Ok(res::Type::Func(
+        raw::Type::Func(purity, arg, ret) => Ok(res::Type::Func(
+            *purity,
             Box::new(resolve_type(type_map, param_map, &*arg)?),
             Box::new(resolve_type(type_map, param_map, &*ret)?),
         )),
@@ -225,20 +226,24 @@ fn resolve_expr(
                 .collect::<Result<_, _>>()?,
         )),
 
-        raw::Expr::Lam(pattern, body) => with_pattern(
+        raw::Expr::Lam(purity, pattern, body) => with_pattern(
             ctor_map,
             local_map,
             pattern,
             |res_pattern, sub_local_map| {
                 let res_body = resolve_expr(ctor_map, global_map, sub_local_map, body)?;
-                Ok(res::Expr::Lam(res_pattern, Box::new(res_body)))
+                Ok(res::Expr::Lam(*purity, res_pattern, Box::new(res_body)))
             },
         ),
 
-        raw::Expr::App(func, arg) => {
+        raw::Expr::App(purity, func, arg) => {
             let res_func = resolve_expr(ctor_map, global_map, local_map, &*func)?;
             let res_arg = resolve_expr(ctor_map, global_map, local_map, &*arg)?;
-            Ok(res::Expr::App(Box::new(res_func), Box::new(res_arg)))
+            Ok(res::Expr::App(
+                *purity,
+                Box::new(res_func),
+                Box::new(res_arg),
+            ))
         }
 
         raw::Expr::Match(discrim, cases) => {
@@ -388,7 +393,7 @@ fn find_scheme_params(scheme: &raw::Type, params: &mut BTreeMap<raw::TypeParam, 
             }
         }
 
-        raw::Type::Func(arg, ret) => {
+        raw::Type::Func(_, arg, ret) => {
             find_scheme_params(&*arg, params);
             find_scheme_params(&*ret, params);
         }

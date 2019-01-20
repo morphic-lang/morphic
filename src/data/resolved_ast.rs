@@ -1,3 +1,4 @@
+use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,7 +65,7 @@ pub enum Type {
     Var(TypeParamId),
     App(TypeId, Vec<Type>),
     Tuple(Vec<Type>),
-    Func(Box<Type>, Box<Type>),
+    Func(Purity, Box<Type>, Box<Type>),
 }
 
 #[derive(Clone, Debug)]
@@ -78,8 +79,8 @@ pub enum Expr {
     Global(GlobalId),
     Local(LocalId),
     Tuple(Vec<Expr>),
-    Lam(Pattern, Box<Expr>),
-    App(Box<Expr>, Box<Expr>),
+    Lam(Purity, Pattern, Box<Expr>),
+    App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     Let(Pattern, Box<Expr>, Box<Expr>),
 

@@ -1,3 +1,5 @@
+use crate::data::purity::Purity;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeName(pub String);
 
@@ -24,7 +26,7 @@ pub enum Type {
     Var(TypeParam),
     App(TypeName, Vec<Type>),
     Tuple(Vec<Type>),
-    Func(Box<Type>, Box<Type>),
+    Func(Purity, Box<Type>, Box<Type>),
 }
 
 #[derive(Clone, Debug)]
@@ -33,8 +35,8 @@ pub enum Expr {
     Op(Op),
     Ctor(CtorName),
     Tuple(Vec<Expr>),
-    Lam(Pattern, Box<Expr>),
-    App(Box<Expr>, Box<Expr>),
+    Lam(Purity, Pattern, Box<Expr>),
+    App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     Let(Pattern, Box<Expr>, Box<Expr>),
 
@@ -69,6 +71,7 @@ pub enum Op {
 
 pub fn binop(op: Op, left: Expr, right: Expr) -> Expr {
     Expr::App(
+        Purity::Pure,
         Box::new(Expr::Op(op)),
         Box::new(Expr::Tuple(vec![left, right])),
     )

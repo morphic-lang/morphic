@@ -1,3 +1,4 @@
+use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 
 #[derive(Clone, Debug)]
@@ -17,8 +18,8 @@ pub enum Expr {
     Global(res::GlobalId, Vec<res::Type>),
     Local(res::LocalId),
     Tuple(Vec<Expr>),
-    Lam(res::Pattern, Box<Expr>),
-    App(Box<Expr>, Box<Expr>),
+    Lam(Purity, res::Pattern, Box<Expr>),
+    App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(res::Pattern, Expr)>),
     Let(res::Pattern, Box<Expr>, Box<Expr>),
 
