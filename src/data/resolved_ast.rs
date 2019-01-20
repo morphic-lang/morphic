@@ -23,7 +23,6 @@ pub struct TypeParamId(pub usize);
 pub enum GlobalId {
     ArithOp(Op),
     ArrayOp(ArrayOp),
-    TextOp(TextOp),
     Ctor(TypeId, VariantId),
     Custom(CustomGlobalId),
 }
@@ -37,16 +36,6 @@ pub enum ArrayOp {
     Len,
     Push,
     Pop,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum TextOp {
-    // TODO:
-// Char,
-// NextCharIndex,
-// PushChar,
-// PopChar,
-// TruncateText,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

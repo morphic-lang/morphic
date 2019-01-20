@@ -3,6 +3,7 @@
 mod data;
 mod lex;
 mod resolve;
+mod type_infer;
 
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;
@@ -24,6 +25,9 @@ enum Error {
 
     #[fail(display = "{}", _0)]
     ResolveFailed(#[cause] resolve::Error),
+
+    #[fail(display = "{}", _0)]
+    TypeInferFailed(#[cause] type_infer::LocatedError),
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +57,7 @@ fn main() {
         let result = run(config);
         if let Err(err) = result {
             eprintln!("{}", err);
+            eprintln!("{:?}", err);
             exit(1);
         }
     } else {
@@ -71,7 +76,11 @@ fn run(config: Config) -> Result<(), Error> {
 
     let resolved = resolve::resolve(raw).map_err(Error::ResolveFailed)?;
 
-    println!("Resolved ADT:\n{:#?}", resolved);
+    println!("Resolved AST:\n{:#?}", resolved);
+
+    let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
+
+    println!("Typed AST:\n{:#?}", typed);
 
     Ok(())
 }

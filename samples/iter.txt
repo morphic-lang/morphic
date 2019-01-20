@@ -46,7 +46,7 @@ chain(fst: Iter a, snd: Iter a): Iter a =
 map(it: Iter a, f: a -> b): Iter b =
   Iter(\() ->
     match next(it) {
-      Some(x, xs) -> Some(f, map(xs, f)),
+      Some(x, xs) -> Some(f(x), map(xs, f)),
       None -> None,
     }
   )
@@ -101,5 +101,5 @@ foldr(it: Iter a, init: b, combine: (a, b) -> b): b =
     None -> init,
   }
 
-sum(it: Iter Int): Iter Int =
+sum(it: Iter Int): Int =
   foldl(it, 0, \(x, y) -> x + y)
