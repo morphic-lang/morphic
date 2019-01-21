@@ -18,13 +18,29 @@ pub enum Expr {
     Global(res::GlobalId, Vec<res::Type>),
     Local(res::LocalId),
     Tuple(Vec<Expr>),
-    Lam(Purity, res::Pattern, Box<Expr>),
+    Lam(Purity, Pattern, Box<Expr>),
     App(Purity, Box<Expr>, Box<Expr>),
-    Match(Box<Expr>, Vec<(res::Pattern, Expr)>),
-    Let(res::Pattern, Box<Expr>, Box<Expr>),
+    Match(Box<Expr>, Vec<(Pattern, Expr)>),
+    Let(Pattern, Box<Expr>, Box<Expr>),
 
-    ArrayLit(Vec<Expr>),
+    ArrayLit(res::Type, Vec<Expr>),
     IntLit(i64),
     FloatLit(f64),
     TextLit(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum Pattern {
+    Any(res::Type),
+    Var(res::Type),
+    Tuple(Vec<Pattern>),
+    Ctor(
+        res::TypeId,
+        Vec<res::Type>,
+        res::VariantId,
+        Option<Box<Pattern>>,
+    ),
+    IntConst(i64),
+    FloatConst(f64),
+    TextConst(String),
 }
