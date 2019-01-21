@@ -299,16 +299,16 @@ fn resolve_pattern(
     ctor_map: &BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)>,
     pattern: &raw::Pattern,
     vars: &mut Vec<raw::ValName>,
-) -> Result<res::PatternBody, Error> {
+) -> Result<res::Pattern, Error> {
     match pattern {
-        raw::Pattern::Any => Ok(res::PatternBody::Any),
+        raw::Pattern::Any => Ok(res::Pattern::Any),
 
         raw::Pattern::Var(name) => {
             vars.push(name.clone());
-            Ok(res::PatternBody::Var)
+            Ok(res::Pattern::Var)
         }
 
-        raw::Pattern::Tuple(items) => Ok(res::PatternBody::Tuple(
+        raw::Pattern::Tuple(items) => Ok(res::Pattern::Tuple(
             items
                 .iter()
                 .map(|item| resolve_pattern(ctor_map, item, vars))
@@ -323,17 +323,17 @@ fn resolve_pattern(
                     None
                 };
 
-                Ok(res::PatternBody::Ctor(type_, variant, res_content))
+                Ok(res::Pattern::Ctor(type_, variant, res_content))
             } else {
                 Err(Error::VarNotFound(ctor_name.0.clone()))
             }
         }
 
-        &raw::Pattern::IntConst(val) => Ok(res::PatternBody::IntConst(val)),
+        &raw::Pattern::IntConst(val) => Ok(res::Pattern::IntConst(val)),
 
-        &raw::Pattern::FloatConst(val) => Ok(res::PatternBody::FloatConst(val)),
+        &raw::Pattern::FloatConst(val) => Ok(res::Pattern::FloatConst(val)),
 
-        raw::Pattern::TextConst(text) => Ok(res::PatternBody::TextConst(text.clone())),
+        raw::Pattern::TextConst(text) => Ok(res::Pattern::TextConst(text.clone())),
     }
 }
 
@@ -359,13 +359,7 @@ where
         }
     }
 
-    let result = body(
-        res::Pattern {
-            num_vars: vars.len(),
-            body: res_pattern,
-        },
-        local_map,
-    )?;
+    let result = body(res_pattern, local_map)?;
 
     for var in &vars {
         local_map.remove(var);

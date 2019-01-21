@@ -447,21 +447,21 @@ fn infer_pat(
     program: &res::Program,
     ctx: &mut Context,
     scope: &mut Scope,
-    pat: &res::PatternBody,
+    pat: &res::Pattern,
 ) -> Result<(AnnotPattern, TypeVar), Error> {
     match pat {
-        res::PatternBody::Any => {
+        res::Pattern::Any => {
             let var = ctx.new_var(Assign::Unknown);
             Ok((AnnotPattern::Any(var), var))
         }
 
-        res::PatternBody::Var => {
+        res::Pattern::Var => {
             let var = ctx.new_var(Assign::Unknown);
             scope.add_local(var);
             Ok((AnnotPattern::Var(var), var))
         }
 
-        res::PatternBody::Tuple(items) => {
+        res::Pattern::Tuple(items) => {
             let mut items_annot = Vec::new();
             let mut item_vars = Vec::new();
             for item in items {
@@ -475,7 +475,7 @@ fn infer_pat(
             Ok((tuple_annot, tuple_var))
         }
 
-        res::PatternBody::Ctor(id, variant, content) => {
+        res::Pattern::Ctor(id, variant, content) => {
             let (num_params, expected_content) = match id {
                 res::TypeId::Custom(custom) => {
                     let typedef = &program.custom_types[custom.0];
@@ -514,17 +514,17 @@ fn infer_pat(
             Ok((ctor_annot, ctor_var))
         }
 
-        &res::PatternBody::IntConst(val) => Ok((
+        &res::Pattern::IntConst(val) => Ok((
             AnnotPattern::IntConst(val),
             ctx.new_var(Assign::App(res::TypeId::Int, vec![])),
         )),
 
-        &res::PatternBody::FloatConst(val) => Ok((
+        &res::Pattern::FloatConst(val) => Ok((
             AnnotPattern::FloatConst(val),
             ctx.new_var(Assign::App(res::TypeId::Float, vec![])),
         )),
 
-        res::PatternBody::TextConst(text) => Ok((
+        res::Pattern::TextConst(text) => Ok((
             AnnotPattern::TextConst(text.clone()),
             ctx.new_var(Assign::App(res::TypeId::Text, vec![])),
         )),
@@ -561,7 +561,7 @@ fn infer_expr(
         }
 
         res::Expr::Lam(purity, pat, body) => scope.with_subscope(|subscope| {
-            let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, &pat.body)?;
+            let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, pat)?;
             let (body_annot, body_var) = infer_expr(program, ctx, subscope, &body)?;
 
             let lam_annot = AnnotExpr::Lam(*purity, pat_annot, Box::new(body_annot));
@@ -590,7 +590,7 @@ fn infer_expr(
                 .iter()
                 .map(|(pat, body)| {
                     scope.with_subscope(|subscope| {
-                        let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, &pat.body)?;
+                        let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, pat)?;
                         let (body_annot, body_var) = infer_expr(program, ctx, subscope, &body)?;
 
                         ctx.unify(pat_var, discrim_var)?;
@@ -610,7 +610,7 @@ fn infer_expr(
         res::Expr::Let(lhs, rhs, body) => {
             let (rhs_annot, rhs_var) = infer_expr(program, ctx, scope, rhs)?;
             let (lhs_annot, (body_annot, body_var)) = scope.with_subscope(|subscope| {
-                let (lhs_annot, lhs_var) = infer_pat(program, ctx, subscope, &lhs.body)?;
+                let (lhs_annot, lhs_var) = infer_pat(program, ctx, subscope, lhs)?;
                 ctx.unify(lhs_var, rhs_var)?;
                 Ok((lhs_annot, infer_expr(program, ctx, subscope, body)?))
             })?;

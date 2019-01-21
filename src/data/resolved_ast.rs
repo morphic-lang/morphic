@@ -91,17 +91,11 @@ pub enum Expr {
 }
 
 #[derive(Clone, Debug)]
-pub struct Pattern {
-    pub num_vars: usize,
-    pub body: PatternBody,
-}
-
-#[derive(Clone, Debug)]
-pub enum PatternBody {
+pub enum Pattern {
     Any,
     Var,
-    Tuple(Vec<PatternBody>),
-    Ctor(TypeId, VariantId, Option<Box<PatternBody>>),
+    Tuple(Vec<Pattern>),
+    Ctor(TypeId, VariantId, Option<Box<Pattern>>),
     IntConst(i64),
     FloatConst(f64),
     TextConst(String),
