@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod check_exhaustive;
 mod check_purity;
 mod data;
 mod lex;
@@ -32,6 +33,9 @@ enum Error {
 
     #[fail(display = "{}", _0)]
     TypeInferFailed(#[cause] type_infer::LocatedError),
+
+    #[fail(display = "{}", _0)]
+    CheckExhaustiveFailed(#[cause] check_exhaustive::Error),
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +91,8 @@ fn run(config: Config) -> Result<(), Error> {
     let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
 
     println!("Typed AST:\n{:#?}", typed);
+
+    check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;
 
     Ok(())
 }
