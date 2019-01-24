@@ -46,6 +46,7 @@ pub struct LocalId(pub usize);
 pub struct Program {
     pub custom_types: Vec<TypeDef>,
     pub vals: Vec<ValDef>,
+    pub main: CustomGlobalId,
 }
 
 #[derive(Clone, Debug)]
@@ -60,7 +61,7 @@ pub struct ValDef {
     pub body: Expr,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Var(TypeParamId),
     App(TypeId, Vec<Type>),
@@ -68,7 +69,7 @@ pub enum Type {
     Func(Purity, Box<Type>, Box<Type>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeScheme {
     pub num_params: usize,
     pub body: Type,

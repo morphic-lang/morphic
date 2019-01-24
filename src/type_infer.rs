@@ -778,5 +778,6 @@ pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError>
     Ok(typed::Program {
         custom_types: program.custom_types,
         vals: vals_inferred,
+        main: program.main,
     })
 }

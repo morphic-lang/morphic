@@ -21,6 +21,9 @@ pub enum Error {
 
     #[fail(display = "Could not find a variable named '{}'", _0)]
     VarNotFound(String),
+
+    #[fail(display = "Could not find main procedure")]
+    MainNotFound,
 }
 
 fn builtin_names() -> (
@@ -448,8 +451,14 @@ pub fn resolve(program: raw::Program) -> Result<res::Program, Error> {
 
     let resolved_defs = resolve_val_defs(&type_map, &ctor_map, &mut global_map, &vals)?;
 
+    let resolved_main = match global_map.get(&raw::ValName("main".to_owned())) {
+        Some(&res::GlobalId::Custom(id)) => id,
+        _ => return Err(Error::MainNotFound),
+    };
+
     Ok(res::Program {
         custom_types: resolved_types,
         vals: resolved_defs,
+        main: resolved_main,
     })
 }

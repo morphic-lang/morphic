@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
 mod check_exhaustive;
+mod check_main;
 mod check_purity;
 mod data;
 mod lex;
+mod monomorphize;
 mod resolve;
 mod type_infer;
 
@@ -36,6 +38,9 @@ enum Error {
 
     #[fail(display = "{}", _0)]
     CheckExhaustiveFailed(#[cause] check_exhaustive::Error),
+
+    #[fail(display = "{}", _0)]
+    CheckMainFailed(#[cause] check_main::Error),
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +98,12 @@ fn run(config: Config) -> Result<(), Error> {
     println!("Typed AST:\n{:#?}", typed);
 
     check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;
+
+    check_main::check_main(&typed).map_err(Error::CheckMainFailed)?;
+
+    let mono = monomorphize::monomorphize(typed);
+
+    println!("Monomorphic AST:\n{:#?}", mono);
 
     Ok(())
 }

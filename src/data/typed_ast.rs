@@ -5,6 +5,7 @@ use crate::data::resolved_ast as res;
 pub struct Program {
     pub custom_types: Vec<res::TypeDef>,
     pub vals: Vec<ValDef>,
+    pub main: res::CustomGlobalId,
 }
 
 #[derive(Clone, Debug)]
