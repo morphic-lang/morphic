@@ -298,7 +298,7 @@ fn resolve_pattern(
 
         &typed::Pattern::IntConst(val) => mono::Pattern::IntConst(val),
         &typed::Pattern::FloatConst(val) => mono::Pattern::FloatConst(val),
-        typed::Pattern::TextConst(text) => mono::Pattern::TextCont(text.clone()),
+        typed::Pattern::TextConst(text) => mono::Pattern::TextConst(text.clone()),
     }
 }
 

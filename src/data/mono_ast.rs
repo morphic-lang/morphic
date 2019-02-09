@@ -54,7 +54,7 @@ pub enum Pattern {
     BoolConst(bool),
     IntConst(i64),
     FloatConst(f64),
-    TextCont(String),
+    TextConst(String),
 }
 
 #[derive(Clone, Debug)]
