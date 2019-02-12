@@ -5,6 +5,7 @@ mod check_main;
 mod check_purity;
 mod data;
 mod graph;
+mod lambda_lift;
 mod lex;
 mod monomorphize;
 mod resolve;
@@ -105,6 +106,10 @@ fn run(config: Config) -> Result<(), Error> {
     let mono = monomorphize::monomorphize(typed);
 
     println!("Monomorphic AST:\n{:#?}", mono);
+
+    let lifted = lambda_lift::lambda_lift(mono);
+
+    println!("Lambda-lifted AST:\n{:#?}", lifted);
 
     Ok(())
 }
