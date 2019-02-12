@@ -12,3 +12,7 @@ lalrpop = "0.16.2"
 lalrpop-util = "0.16.2"
 regex = "1.1.0"
 failure = "0.1.5"
+
+# RNG used for procedurally (but deterministically) generating test inputs
+rand = "0.6.5"
+rand_pcg = "0.1.1"

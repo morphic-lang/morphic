@@ -4,6 +4,7 @@ mod check_exhaustive;
 mod check_main;
 mod check_purity;
 mod data;
+mod graph;
 mod lex;
 mod monomorphize;
 mod resolve;
