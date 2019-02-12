@@ -104,4 +104,6 @@ foldr(it: Iter a, init: b, combine: (a, b) -> b): b =
 sum(it: Iter Int): Int =
   foldl(it, 0, \(x, y) -> x + y)
 
-proc main(): () = ()
+proc main(): () =
+  let _ = sum(items([1, 2, 3])) in
+  ()
