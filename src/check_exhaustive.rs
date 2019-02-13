@@ -371,7 +371,7 @@ fn check_expr(custom_types: &[res::TypeDef], expr: &typed::Expr) -> Result<(), (
             Ok(())
         }
 
-        typed::Expr::Lam(_, lhs, body) => {
+        typed::Expr::Lam(_, lhs, _, body) => {
             let mut tree = DecisionTree::new();
             tree.add(lhs);
             if !tree.is_exhaustive(custom_types) {

@@ -256,7 +256,12 @@ enum AnnotExpr {
     Global(res::GlobalId, Vec<TypeVar>),
     Local(res::LocalId),
     Tuple(Vec<AnnotExpr>),
-    Lam(Purity, AnnotPattern, Box<AnnotExpr>),
+    Lam(
+        Purity,
+        AnnotPattern,
+        TypeVar, // Return type
+        Box<AnnotExpr>,
+    ),
     App(Purity, Box<AnnotExpr>, Box<AnnotExpr>),
     Match(Box<AnnotExpr>, Vec<(AnnotPattern, AnnotExpr)>),
     Let(AnnotPattern, Box<AnnotExpr>, Box<AnnotExpr>),
@@ -564,7 +569,7 @@ fn infer_expr(
             let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, pat)?;
             let (body_annot, body_var) = infer_expr(program, ctx, subscope, &body)?;
 
-            let lam_annot = AnnotExpr::Lam(*purity, pat_annot, Box::new(body_annot));
+            let lam_annot = AnnotExpr::Lam(*purity, pat_annot, body_var, Box::new(body_annot));
             let lam_var = ctx.new_var(Assign::Func(*purity, pat_var, body_var));
             Ok((lam_annot, lam_var))
         }),
@@ -702,9 +707,10 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> typed::Expr {
                 .collect(),
         ),
 
-        AnnotExpr::Lam(purity, pat, body) => typed::Expr::Lam(
+        AnnotExpr::Lam(purity, pat, ret, body) => typed::Expr::Lam(
             purity,
             extract_pat_solution(ctx, pat),
+            ctx.extract(ret),
             Box::new(extract_solution(ctx, *body)),
         ),
 

@@ -44,6 +44,7 @@ pub struct LamDef {
     pub purity: Purity,
     pub captures: Vec<mono::Type>,
     pub arg: mono::Pattern,
+    pub ret: mono::Type,
     pub body: Expr,
 }
 

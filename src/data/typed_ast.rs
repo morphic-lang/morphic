@@ -19,7 +19,12 @@ pub enum Expr {
     Global(res::GlobalId, Vec<res::Type>),
     Local(res::LocalId),
     Tuple(Vec<Expr>),
-    Lam(Purity, Pattern, Box<Expr>),
+    Lam(
+        Purity,
+        Pattern,
+        res::Type, // Return type
+        Box<Expr>,
+    ),
     App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     Let(Pattern, Box<Expr>, Box<Expr>),

@@ -98,8 +98,8 @@ fn lift_expr<'a>(
                 .collect(),
         ),
 
-        mono::Expr::Lam(purity, arg, body) => {
-            let (id, captured) = lift_lam(lambdas, ctx, *purity, arg, body);
+        mono::Expr::Lam(purity, arg, ret, body) => {
+            let (id, captured) = lift_lam(lambdas, ctx, *purity, arg, ret, body);
             let captures_translated = captured.iter().map(|id| captures.translate(*id)).collect();
             lifted::Expr::Lam(id, captures_translated)
         }
@@ -160,6 +160,7 @@ fn lift_lam<'a>(
     ctx: &mut TypeContext<'a>,
     purity: Purity,
     arg: &'a mono::Pattern,
+    ret: &'a mono::Type,
     body: &'a mono::Expr,
 ) -> (lifted::LamId, Vec<res::LocalId>) {
     let mut sub_captures = CaptureMap {
@@ -187,6 +188,7 @@ fn lift_lam<'a>(
             .map(|type_| type_.unwrap())
             .collect(),
         arg: arg.clone(),
+        ret: ret.clone(),
         body: body_lifted,
     };
 
