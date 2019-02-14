@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod annot_closures;
 mod check_exhaustive;
 mod check_main;
 mod check_purity;
@@ -110,6 +111,10 @@ fn run(config: Config) -> Result<(), Error> {
     let lifted = lambda_lift::lambda_lift(mono);
 
     println!("Lambda-lifted AST:\n{:#?}", lifted);
+
+    let parameterized = annot_closures::parameterize_typedefs(&lifted.custom_types);
+
+    println!("Parameterized AST:\n{:#?}", parameterized);
 
     Ok(())
 }

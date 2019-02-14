@@ -3,7 +3,7 @@ pub struct NodeId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct Graph {
-    edges_out: Vec<Vec<NodeId>>, // Indexed by NodeId
+    pub edges_out: Vec<Vec<NodeId>>, // Indexed by NodeId
 }
 
 // Reversal
