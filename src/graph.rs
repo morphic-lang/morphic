@@ -227,3 +227,52 @@ mod test {
         }
     }
 }
+
+// Connected components
+
+#[derive(Clone, Debug)]
+pub struct Undirected(Graph);
+
+impl Undirected {
+    pub fn from_directed_unchecked(graph: Graph) -> Self {
+        Undirected(graph)
+    }
+
+    pub fn into_directed(self) -> Graph {
+        self.0
+    }
+}
+
+pub fn connected_components(graph: &Undirected) -> Vec<Vec<NodeId>> {
+    let mut components = Vec::new();
+
+    let mut visited = vec![false; graph.0.edges_out.len()];
+
+    for root_id in 0..graph.0.edges_out.len() {
+        if visited[root_id] {
+            continue;
+        }
+
+        let mut component = Vec::new();
+
+        let mut to_visit = vec![NodeId(root_id)];
+
+        while let Some(node) = to_visit.pop() {
+            if visited[node.0] {
+                continue;
+            }
+
+            component.push(node);
+
+            for &neighbor in &graph.0.edges_out[node.0] {
+                to_visit.push(neighbor);
+            }
+
+            visited[node.0] = true;
+        }
+
+        components.push(component);
+    }
+
+    components
+}
