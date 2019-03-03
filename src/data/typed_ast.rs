@@ -21,8 +21,9 @@ pub enum Expr {
     Tuple(Vec<Expr>),
     Lam(
         Purity,
-        Pattern,
+        res::Type, // Argument type
         res::Type, // Return type
+        Pattern,
         Box<Expr>,
     ),
     App(Purity, Box<Expr>, Box<Expr>),

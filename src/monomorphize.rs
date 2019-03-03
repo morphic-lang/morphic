@@ -125,11 +125,18 @@ fn resolve_expr(
                 .collect(),
         ),
 
-        typed::Expr::Lam(purity, pat, ret, body) => {
+        typed::Expr::Lam(purity, arg_type, ret_type, pat, body) => {
             let pat_resolved = resolve_pattern(type_insts, inst_args, pat);
-            let ret_resolved = resolve_type(type_insts, inst_args, ret);
+            let arg_type_resolved = resolve_type(type_insts, inst_args, arg_type);
+            let ret_type_resolved = resolve_type(type_insts, inst_args, ret_type);
             let body_resolved = resolve_expr(val_insts, type_insts, inst_args, body);
-            mono::Expr::Lam(*purity, pat_resolved, ret_resolved, Box::new(body_resolved))
+            mono::Expr::Lam(
+                *purity,
+                arg_type_resolved,
+                ret_type_resolved,
+                pat_resolved,
+                Box::new(body_resolved),
+            )
         }
 
         typed::Expr::App(purity, func, arg) => {
