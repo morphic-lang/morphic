@@ -1015,3 +1015,140 @@ fn instantiate_expr(
         lifted::Expr::TextLit(text) => (SolverExpr::TextLit(text.clone()), SolverType::Text),
     }
 }
+
+fn instantiate_lam_sig(
+    typedefs: &[annot::TypeDef],
+    graph: &mut ConstraintGraph,
+    lam_def: &lifted::LamDef,
+) -> SolverLamSig {
+    let solver_captures = lam_def
+        .captures
+        .iter()
+        .map(|capture| instantiate_mono(typedefs, graph, capture))
+        .collect();
+
+    let solver_arg = instantiate_mono(typedefs, graph, &lam_def.arg_type);
+    let solver_ret = instantiate_mono(typedefs, graph, &lam_def.ret_type);
+
+    SolverLamSig {
+        purity: lam_def.purity,
+        captures: solver_captures,
+        arg: solver_arg,
+        ret: solver_ret,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SolverScc {
+    val_sigs: BTreeMap<mono::CustomGlobalId, SolverType>,
+    lam_sigs: BTreeMap<lifted::LamId, SolverLamSig>,
+
+    solver_vals: BTreeMap<mono::CustomGlobalId, SolverExpr>,
+    solver_lams: BTreeMap<lifted::LamId, (SolverPattern, SolverExpr)>,
+
+    constraints: ConstraintGraph,
+}
+
+fn instantiate_scc(
+    typedefs: &[annot::TypeDef],
+    annot_vals: &[Option<annot::ValDef>],
+    annot_lams: &[Option<annot::LamDef>],
+    vals: &[lifted::ValDef],
+    lams: &[lifted::LamDef],
+    scc_vals: &[mono::CustomGlobalId],
+    scc_lams: &[lifted::LamId],
+) -> SolverScc {
+    let mut graph = ConstraintGraph::new();
+
+    let curr_val_sigs: BTreeMap<_, _> = scc_vals
+        .iter()
+        .map(|&val_id| {
+            (
+                val_id,
+                instantiate_mono(typedefs, &mut graph, &vals[val_id.0].type_),
+            )
+        })
+        .collect();
+
+    let curr_lam_sigs: BTreeMap<_, _> = scc_lams
+        .iter()
+        .map(|&lam_id| {
+            (
+                lam_id,
+                instantiate_lam_sig(typedefs, &mut graph, &lams[lam_id.0]),
+            )
+        })
+        .collect();
+
+    let global_ctx = GlobalContext {
+        annot_vals,
+        annot_lams,
+
+        curr_vals: &curr_val_sigs,
+        curr_lams: &curr_lam_sigs,
+    };
+
+    let solver_vals: BTreeMap<_, _> = scc_vals
+        .iter()
+        .map(|&val_id| {
+            let mut local_ctx = LocalContext::new();
+
+            let (solver_val, solver_val_type) = instantiate_expr(
+                typedefs,
+                global_ctx,
+                &mut graph,
+                &[],
+                &mut local_ctx,
+                &vals[val_id.0].body,
+            );
+
+            debug_assert!(local_ctx.types.is_empty());
+
+            equate_types(&mut graph, &global_ctx.curr_vals[&val_id], &solver_val_type);
+
+            (val_id, solver_val)
+        })
+        .collect();
+
+    let solver_lams: BTreeMap<_, _> = scc_lams
+        .iter()
+        .map(|&lam_id| {
+            let solver_sig = &global_ctx.curr_lams[&lam_id];
+            let lam_def = &lams[lam_id.0];
+
+            let mut local_ctx = LocalContext::new();
+
+            let (solver_arg, solver_body) = local_ctx.with_scope(|sub_locals| {
+                let solver_arg =
+                    instantiate_pattern(typedefs, sub_locals, &solver_sig.arg, &lam_def.arg);
+
+                let (solver_body, solver_body_type) = instantiate_expr(
+                    typedefs,
+                    global_ctx,
+                    &mut graph,
+                    &solver_sig.captures,
+                    sub_locals,
+                    &lam_def.body,
+                );
+
+                equate_types(&mut graph, &solver_sig.ret, &solver_body_type);
+
+                (solver_arg, solver_body)
+            });
+
+            debug_assert!(local_ctx.types.is_empty());
+
+            (lam_id, (solver_arg, solver_body))
+        })
+        .collect();
+
+    SolverScc {
+        val_sigs: curr_val_sigs,
+        lam_sigs: curr_lam_sigs,
+
+        solver_vals,
+        solver_lams,
+
+        constraints: graph,
+    }
+}
