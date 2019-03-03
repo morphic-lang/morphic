@@ -23,7 +23,7 @@ pub enum Expr {
     Tuple(Vec<Expr>),
     Lam(LamId, Vec<Expr>),
     App(Purity, Box<Expr>, Box<Expr>),
-    Match(Box<Expr>, Vec<(mono::Pattern, Expr)>),
+    Match(Box<Expr>, Vec<(mono::Pattern, Expr)>, mono::Type),
     Let(mono::Pattern, Box<Expr>, Box<Expr>),
 
     ArrayLit(mono::Type, Vec<Expr>),

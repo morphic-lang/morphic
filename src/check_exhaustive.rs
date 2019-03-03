@@ -389,7 +389,7 @@ fn check_expr(custom_types: &[res::TypeDef], expr: &typed::Expr) -> Result<(), (
             Ok(())
         }
 
-        typed::Expr::Match(discrim, cases) => {
+        typed::Expr::Match(discrim, cases, _) => {
             check_expr(custom_types, discrim)?;
 
             let mut tree = DecisionTree::new();

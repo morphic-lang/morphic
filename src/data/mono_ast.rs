@@ -40,7 +40,7 @@ pub enum Expr {
         Box<Expr>,
     ),
     App(Purity, Box<Expr>, Box<Expr>),
-    Match(Box<Expr>, Vec<(Pattern, Expr)>),
+    Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
     Let(Pattern, Box<Expr>, Box<Expr>),
 
     ArrayLit(Type, Vec<Expr>),

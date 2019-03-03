@@ -112,9 +112,5 @@ fn run(config: Config) -> Result<(), Error> {
 
     println!("Lambda-lifted AST:\n{:#?}", lifted);
 
-    let parameterized = annot_closures::parameterize_typedefs(&lifted.custom_types);
-
-    println!("Parameterized AST:\n{:#?}", parameterized);
-
     Ok(())
 }

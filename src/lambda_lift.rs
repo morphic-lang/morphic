@@ -110,7 +110,7 @@ fn lift_expr<'a>(
             lifted::Expr::App(*purity, Box::new(func_lifted), Box::new(arg_lifted))
         }
 
-        mono::Expr::Match(discrim, cases) => {
+        mono::Expr::Match(discrim, cases, result_type) => {
             let discrim_lifted = lift_expr(lambdas, ctx, captures, discrim);
 
             let cases_lifted = cases
@@ -123,7 +123,7 @@ fn lift_expr<'a>(
                 })
                 .collect();
 
-            lifted::Expr::Match(Box::new(discrim_lifted), cases_lifted)
+            lifted::Expr::Match(Box::new(discrim_lifted), cases_lifted, result_type.clone())
         }
 
         mono::Expr::Let(lhs, rhs, body) => {

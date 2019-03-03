@@ -138,7 +138,7 @@ fn resolve_expr(
             mono::Expr::App(*purity, Box::new(func_resolved), Box::new(arg_resolved))
         }
 
-        typed::Expr::Match(discrim, cases) => {
+        typed::Expr::Match(discrim, cases, result_type) => {
             let discrim_resolved = resolve_expr(val_insts, type_insts, inst_args, discrim);
 
             let cases_resolved = cases
@@ -150,7 +150,9 @@ fn resolve_expr(
                 })
                 .collect();
 
-            mono::Expr::Match(Box::new(discrim_resolved), cases_resolved)
+            let result_resolved = resolve_type(type_insts, inst_args, result_type);
+
+            mono::Expr::Match(Box::new(discrim_resolved), cases_resolved, result_resolved)
         }
 
         typed::Expr::Let(lhs, rhs, body) => {

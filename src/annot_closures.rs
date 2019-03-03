@@ -1,251 +1,98 @@
-use std::collections::btree_map::{BTreeMap, Entry};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::closure_annot_ast as annot;
+use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
-use crate::graph::{strongly_connected, Graph, NodeId};
+use crate::data::raw_ast::Op;
+use crate::data::resolved_ast::{self as res, ArrayOp};
+use crate::graph::{self, Graph};
 
-fn invert_polarity(polarity: annot::Polarity) -> annot::Polarity {
-    match polarity {
-        annot::Polarity::Positive => annot::Polarity::Negative,
-        annot::Polarity::Negative => annot::Polarity::Positive,
-    }
-}
-
-fn compose_polarities(p1: annot::Polarity, p2: annot::Polarity) -> annot::Polarity {
-    match p1 {
-        annot::Polarity::Positive => p2,
-        annot::Polarity::Negative => invert_polarity(p2),
-    }
-}
-
-fn add_type_dependencies(
-    type_: &mono::Type,
-    polarity: annot::Polarity,
-    target: &mut Vec<(mono::CustomTypeId, annot::Polarity)>,
-) {
+fn count_params(parameterized: &[Option<annot::TypeDef>], type_: &mono::Type) -> usize {
     match type_ {
-        mono::Type::Bool => {}
-        mono::Type::Int => {}
-        mono::Type::Float => {}
-        mono::Type::Text => {}
-        mono::Type::Array(item) => add_type_dependencies(item, polarity, target),
-
-        mono::Type::Tuple(items) => {
-            for item in items {
-                add_type_dependencies(item, polarity, target)
-            }
-        }
-
+        mono::Type::Bool => 0,
+        mono::Type::Int => 0,
+        mono::Type::Float => 0,
+        mono::Type::Text => 0,
+        mono::Type::Array(item) => count_params(parameterized, item),
+        mono::Type::Tuple(items) => items
+            .iter()
+            .map(|item| count_params(parameterized, item))
+            .sum(),
         mono::Type::Func(_, arg, ret) => {
-            add_type_dependencies(arg, invert_polarity(polarity), target);
-            add_type_dependencies(ret, polarity, target);
+            1 + count_params(parameterized, arg) + count_params(parameterized, ret)
         }
-
-        &mono::Type::Custom(other) => {
-            target.push((other, polarity));
-        }
-    }
-}
-
-fn type_dependencies(typedef: &mono::TypeDef) -> Vec<(mono::CustomTypeId, annot::Polarity)> {
-    let mut result = Vec::new();
-    for variant in &typedef.variants {
-        if let Some(content) = variant {
-            add_type_dependencies(content, annot::Polarity::Positive, &mut result);
-        }
-    }
-    result
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Color {
-    Blue,
-    Red,
-}
-
-fn opposite_color(color: Color) -> Color {
-    match color {
-        Color::Blue => Color::Red,
-        Color::Red => Color::Blue,
-    }
-}
-
-fn color_typedef_scc(
-    typedefs: &[mono::TypeDef],
-    scc: &[mono::CustomTypeId],
-) -> Option<BTreeMap<mono::CustomTypeId, Color>> {
-    let mut colors = BTreeMap::new();
-
-    let mut fringe = vec![(scc[0], Color::Blue)];
-
-    while let Some((node, color)) = fringe.pop() {
-        match colors.entry(node) {
-            Entry::Vacant(vacant) => {
-                vacant.insert(color);
-
-                for (dep, polarity) in type_dependencies(&typedefs[node.0]) {
-                    match polarity {
-                        annot::Polarity::Positive => fringe.push((dep, color)),
-                        annot::Polarity::Negative => fringe.push((dep, opposite_color(color))),
-                    }
-                }
-            }
-
-            Entry::Occupied(occupied) => {
-                if occupied.get() != &color {
-                    return None;
-                }
-            }
-        }
-    }
-
-    Some(colors)
-}
-
-#[derive(Clone, Debug)]
-enum PendingPType {
-    Bool,
-    Int,
-    Float,
-    Text,
-    Array(Box<PendingPType>),
-    Tuple(Vec<PendingPType>),
-    Func(
-        Purity,
-        annot::ClosureParamId,
-        Box<PendingPType>,
-        Box<PendingPType>,
-    ),
-    Custom(mono::CustomTypeId, Vec<annot::ClosureParamId>),
-    CustomPending(mono::CustomTypeId),
-}
-
-fn register_typedef_param(
-    color: Color,
-    polarity: annot::Polarity,
-    param_pos_colors: &mut Vec<Color>,
-) -> annot::ClosureParamId {
-    let id = annot::ClosureParamId(param_pos_colors.len());
-
-    match polarity {
-        annot::Polarity::Positive => {
-            param_pos_colors.push(color);
-        }
-
-        annot::Polarity::Negative => {
-            param_pos_colors.push(opposite_color(color));
-        }
-    }
-
-    id
-}
-
-fn partial_parameterize_inner(
-    parameterized: &[Option<annot::TypeDef>],
-    color: Color,
-    type_: &mono::Type,
-    polarity: annot::Polarity,
-    param_pos_colors: &mut Vec<Color>,
-) -> PendingPType {
-    match type_ {
-        mono::Type::Bool => PendingPType::Bool,
-        mono::Type::Int => PendingPType::Int,
-        mono::Type::Float => PendingPType::Float,
-        mono::Type::Text => PendingPType::Text,
-
-        mono::Type::Array(item) => {
-            let pending_item =
-                partial_parameterize_inner(parameterized, color, item, polarity, param_pos_colors);
-
-            PendingPType::Array(Box::new(pending_item))
-        }
-
-        mono::Type::Tuple(items) => {
-            let pending_items = items
-                .iter()
-                .map(|item| {
-                    partial_parameterize_inner(
-                        parameterized,
-                        color,
-                        item,
-                        polarity,
-                        param_pos_colors,
-                    )
-                })
-                .collect();
-
-            PendingPType::Tuple(pending_items)
-        }
-
-        mono::Type::Func(purity, arg, ret) => {
-            let param = register_typedef_param(color, polarity, param_pos_colors);
-
-            let pending_arg = partial_parameterize_inner(
-                parameterized,
-                color,
-                arg,
-                invert_polarity(polarity),
-                param_pos_colors,
-            );
-
-            let pending_ret =
-                partial_parameterize_inner(parameterized, color, ret, polarity, param_pos_colors);
-
-            PendingPType::Func(*purity, param, Box::new(pending_arg), Box::new(pending_ret))
-        }
-
         mono::Type::Custom(other) => match &parameterized[other.0] {
-            Some(annotated) => {
-                let params = annotated
-                    .param_polarities
-                    .iter()
-                    .map(|&sub_polarity| {
-                        register_typedef_param(
-                            color,
-                            compose_polarities(polarity, sub_polarity),
-                            param_pos_colors,
-                        )
-                    })
-                    .collect();
-
-                PendingPType::Custom(*other, params)
-            }
-
-            None => PendingPType::CustomPending(*other),
+            Some(typedef) => typedef.num_params,
+            // This is a typedef in the same SCC; the reference to it here contributes no additional
+            // parameters to the entire SCC.
+            None => 0,
         },
     }
 }
 
-fn complete_pending(num_params: usize, pending: PendingPType) -> annot::PType {
-    match pending {
-        PendingPType::Bool => annot::PType::Bool,
-        PendingPType::Int => annot::PType::Int,
-        PendingPType::Float => annot::PType::Float,
-        PendingPType::Text => annot::PType::Text,
+#[derive(Clone, Debug)]
+struct ParamIdGen(usize);
 
-        PendingPType::Array(item) => {
-            annot::PType::Array(Box::new(complete_pending(num_params, *item)))
-        }
+impl ParamIdGen {
+    fn fresh(&mut self) -> annot::RepVarId {
+        let result = annot::RepVarId(self.0);
+        self.0 += 1;
+        result
+    }
+}
 
-        PendingPType::Tuple(items) => annot::PType::Tuple(
+fn parameterize(
+    parameterized: &[Option<annot::TypeDef>],
+    scc_num_params: usize,
+    id_gen: &mut ParamIdGen,
+    type_: &mono::Type,
+) -> annot::Type {
+    match type_ {
+        mono::Type::Bool => annot::Type::Bool,
+        mono::Type::Int => annot::Type::Int,
+        mono::Type::Float => annot::Type::Float,
+        mono::Type::Text => annot::Type::Text,
+
+        mono::Type::Array(item) => annot::Type::Array(Box::new(parameterize(
+            parameterized,
+            scc_num_params,
+            id_gen,
+            item,
+        ))),
+
+        mono::Type::Tuple(items) => annot::Type::Tuple(
             items
-                .into_iter()
-                .map(|item| complete_pending(num_params, item))
+                .iter()
+                .map(|item| parameterize(parameterized, scc_num_params, id_gen, item))
                 .collect(),
         ),
 
-        PendingPType::Func(purity, param, arg, ret) => annot::PType::Func(
-            purity,
-            param,
-            Box::new(complete_pending(num_params, *arg)),
-            Box::new(complete_pending(num_params, *ret)),
-        ),
+        mono::Type::Func(purity, arg, ret) => {
+            let func_param = id_gen.fresh();
+            let parameterized_arg = parameterize(parameterized, scc_num_params, id_gen, arg);
+            let parameterized_ret = parameterize(parameterized, scc_num_params, id_gen, ret);
+            annot::Type::Func(
+                *purity,
+                func_param,
+                Box::new(parameterized_arg),
+                Box::new(parameterized_ret),
+            )
+        }
 
-        PendingPType::Custom(other, params) => annot::PType::Custom(other, params),
+        mono::Type::Custom(other) => {
+            match &parameterized[other.0] {
+                Some(typedef) => annot::Type::Custom(
+                    *other,
+                    (0..typedef.num_params).map(|_| id_gen.fresh()).collect(),
+                ),
 
-        PendingPType::CustomPending(other) => {
-            annot::PType::Custom(other, (0..num_params).map(annot::ClosureParamId).collect())
+                None => {
+                    // This is a typedef in the same SCC, so we need to parameterize it by
+                    // all the SCC parameters.
+                    annot::Type::Custom(*other, (0..scc_num_params).map(annot::RepVarId).collect())
+                }
+            }
         }
     }
 }
@@ -255,89 +102,916 @@ fn parameterize_typedef_scc(
     parameterized: &mut [Option<annot::TypeDef>],
     scc: &[mono::CustomTypeId],
 ) {
-    let coloring = color_typedef_scc(typedefs, scc)
-        .expect("Internal compiler error: negative recursion in typedefs is not yet supported");
-
-    let mut param_pos_colors = Vec::new();
-
-    let pending_typedefs = scc
+    let num_params = scc
         .iter()
-        .map(|typedef_id| {
-            (
-                typedef_id,
-                typedefs[typedef_id.0]
-                    .variants
-                    .iter()
-                    .map(|variant| {
-                        variant.as_ref().map(|variant| {
-                            partial_parameterize_inner(
-                                parameterized,
-                                coloring[typedef_id],
-                                variant,
-                                annot::Polarity::Positive,
-                                &mut param_pos_colors,
-                            )
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    for (typedef_id, pending_variants) in pending_typedefs {
-        let completed = annot::TypeDef {
-            param_polarities: param_pos_colors
+        .map(|type_id| {
+            typedefs[type_id.0]
+                .variants
                 .iter()
-                .map(|&color| {
-                    if color == coloring[typedef_id] {
-                        annot::Polarity::Positive
-                    } else {
-                        annot::Polarity::Negative
-                    }
+                .map(|variant| match variant {
+                    Some(content) => count_params(parameterized, content),
+                    None => 0,
                 })
-                .collect(),
+                .sum::<usize>()
+        })
+        .sum::<usize>();
 
-            variants: pending_variants
-                .into_iter()
-                .map(|variant| {
-                    variant.map(|variant| complete_pending(param_pos_colors.len(), variant))
-                })
-                .collect(),
-        };
+    let mut id_gen = ParamIdGen(0);
 
-        parameterized[typedef_id.0] = Some(completed);
+    for type_id in scc {
+        let typedef = &typedefs[type_id.0];
+        let parameterized_variants = typedef
+            .variants
+            .iter()
+            .map(|variant| {
+                variant
+                    .as_ref()
+                    .map(|content| parameterize(parameterized, num_params, &mut id_gen, content))
+            })
+            .collect();
+
+        debug_assert!(parameterized[type_id.0].is_none());
+
+        parameterized[type_id.0] = Some(annot::TypeDef {
+            num_params,
+            variants: parameterized_variants,
+        });
     }
 }
 
-pub fn parameterize_typedefs(typedefs: &[mono::TypeDef]) -> Vec<annot::TypeDef> {
-    let dependency_graph = Graph {
+fn add_dependencies(type_: &mono::Type, deps: &mut BTreeSet<mono::CustomTypeId>) {
+    match type_ {
+        mono::Type::Bool => {}
+        mono::Type::Int => {}
+        mono::Type::Float => {}
+        mono::Type::Text => {}
+
+        mono::Type::Array(item) => {
+            add_dependencies(item, deps);
+        }
+
+        mono::Type::Tuple(items) => {
+            for item in items {
+                add_dependencies(item, deps);
+            }
+        }
+
+        mono::Type::Func(_, arg, ret) => {
+            add_dependencies(arg, deps);
+            add_dependencies(ret, deps);
+        }
+
+        mono::Type::Custom(other) => {
+            deps.insert(*other);
+        }
+    }
+}
+
+fn parameterize_typedefs(typedefs: &[mono::TypeDef]) -> Vec<annot::TypeDef> {
+    let dep_graph = Graph {
         edges_out: typedefs
             .iter()
             .map(|typedef| {
-                type_dependencies(typedef)
-                    .into_iter()
-                    .map(|(mono::CustomTypeId(dep), _)| NodeId(dep))
+                let mut deps = BTreeSet::new();
+                for variant in &typedef.variants {
+                    if let Some(content) = variant {
+                        add_dependencies(content, &mut deps);
+                    }
+                }
+                deps.iter()
+                    .map(|&mono::CustomTypeId(id)| graph::NodeId(id))
                     .collect()
             })
             .collect(),
     };
 
-    let sccs = strongly_connected(&dependency_graph);
+    let sccs = graph::strongly_connected(&dep_graph);
 
-    let mut parameterized: Vec<Option<annot::TypeDef>> = vec![None; typedefs.len()];
+    let mut parameterized = vec![None; typedefs.len()];
 
     for scc in sccs {
-        parameterize_typedef_scc(
-            typedefs,
-            &mut parameterized,
-            &scc.iter()
-                .map(|&NodeId(idx)| mono::CustomTypeId(idx))
-                .collect::<Vec<_>>(),
-        );
+        let type_ids: Vec<_> = scc
+            .iter()
+            .map(|&graph::NodeId(id)| mono::CustomTypeId(id))
+            .collect();
+
+        parameterize_typedef_scc(typedefs, &mut parameterized, &type_ids);
     }
 
     parameterized
         .into_iter()
         .map(|typedef| typedef.unwrap())
         .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SolverVarId(usize);
+
+#[derive(Clone, Debug)]
+enum SolverType {
+    Bool,
+    Int,
+    Float,
+    Text,
+    Array(Box<SolverType>),
+    Tuple(Vec<SolverType>),
+    Func(Purity, SolverVarId, Box<SolverType>, Box<SolverType>),
+    Custom(mono::CustomTypeId, Vec<SolverVarId>),
+}
+
+#[derive(Clone, Debug)]
+enum SolverRequirement {
+    Lam(lifted::LamId, Vec<SolverVarId>),
+    PendingLam(lifted::LamId),
+    Alias(annot::AliasId, Vec<SolverVarId>),
+    ArithOp(Op),
+    ArrayOp(ArrayOp, SolverType),
+    ArrayReplace(SolverType),
+    Ctor(mono::CustomTypeId, Vec<SolverVarId>, res::VariantId),
+}
+
+#[derive(Clone, Debug)]
+enum SolverExpr {
+    ArithOp(Op),
+    ArrayOp(ArrayOp, SolverType),
+    Ctor(mono::CustomTypeId, Vec<SolverVarId>, res::VariantId),
+    Global(mono::CustomGlobalId, Vec<SolverVarId>),
+    PendingGlobal(mono::CustomGlobalId), // A global belonging to the current SCC
+    Local(lifted::LocalId),
+    Capture(lifted::CaptureId),
+    Tuple(Vec<SolverExpr>),
+    Lam(
+        lifted::LamId,
+        Vec<SolverVarId>, // Parameters on the lambda
+        SolverVarId,      // Representation of the lambda expression
+        Vec<SolverExpr>,  // Captures
+    ),
+    PendingLam(lifted::LamId, Vec<SolverExpr>), // A lambda belonging to the current SCC
+    App(
+        Purity,
+        SolverVarId, // Representation being called
+        Box<SolverExpr>,
+        Box<SolverExpr>,
+    ),
+    Match(
+        Box<SolverExpr>,
+        Vec<(SolverPattern, SolverExpr)>,
+        SolverType,
+    ),
+    Let(SolverPattern, Box<SolverExpr>, Box<SolverExpr>),
+
+    ArrayLit(
+        SolverType, // Item type
+        Vec<SolverExpr>,
+    ),
+    BoolLit(bool),
+    IntLit(i64),
+    FloatLit(f64),
+    TextLit(String),
+}
+
+#[derive(Clone, Debug)]
+enum SolverPattern {
+    Any(SolverType),
+    Var(SolverType),
+    Tuple(Vec<SolverPattern>),
+    Ctor(
+        mono::CustomTypeId,
+        Vec<SolverVarId>,
+        res::VariantId,
+        Option<Box<SolverPattern>>,
+    ),
+    BoolConst(bool),
+    IntConst(i64),
+    FloatConst(f64),
+    TextConst(String),
+}
+
+#[derive(Clone, Debug)]
+struct SolverLamSig {
+    purity: Purity,
+    captures: Vec<SolverType>,
+    arg: SolverType,
+    ret: SolverType,
+}
+
+#[derive(Clone, Debug)]
+struct VarConstraints {
+    equalities: BTreeSet<SolverVarId>,
+    requirements: Vec<SolverRequirement>,
+}
+
+#[derive(Clone, Debug)]
+struct ConstraintGraph {
+    var_constraints: Vec<VarConstraints>,
+}
+
+impl ConstraintGraph {
+    fn new() -> Self {
+        ConstraintGraph {
+            var_constraints: Vec::new(),
+        }
+    }
+
+    fn new_var(&mut self) -> SolverVarId {
+        let id = SolverVarId(self.var_constraints.len());
+        self.var_constraints.push(VarConstraints {
+            equalities: BTreeSet::new(),
+            requirements: Vec::new(),
+        });
+        id
+    }
+
+    fn equate(&mut self, fst: SolverVarId, snd: SolverVarId) {
+        self.var_constraints[fst.0].equalities.insert(snd);
+        self.var_constraints[snd.0].equalities.insert(fst);
+    }
+
+    fn require(&mut self, var: SolverVarId, req: SolverRequirement) {
+        self.var_constraints[var.0].requirements.push(req);
+    }
+}
+
+fn instantiate_mono(
+    typedefs: &[annot::TypeDef],
+    graph: &mut ConstraintGraph,
+    type_: &mono::Type,
+) -> SolverType {
+    match type_ {
+        mono::Type::Bool => SolverType::Bool,
+        mono::Type::Int => SolverType::Int,
+        mono::Type::Float => SolverType::Float,
+        mono::Type::Text => SolverType::Text,
+
+        mono::Type::Array(item) => {
+            SolverType::Array(Box::new(instantiate_mono(typedefs, graph, item)))
+        }
+
+        mono::Type::Tuple(items) => SolverType::Tuple(
+            items
+                .iter()
+                .map(|item| instantiate_mono(typedefs, graph, item))
+                .collect(),
+        ),
+
+        mono::Type::Func(purity, arg, ret) => SolverType::Func(
+            *purity,
+            graph.new_var(),
+            Box::new(instantiate_mono(typedefs, graph, arg)),
+            Box::new(instantiate_mono(typedefs, graph, ret)),
+        ),
+
+        mono::Type::Custom(custom) => {
+            let vars = (0..typedefs[custom.0].num_params)
+                .map(|_| graph.new_var())
+                .collect();
+
+            SolverType::Custom(*custom, vars)
+        }
+    }
+}
+
+fn equate_types(graph: &mut ConstraintGraph, type1: &SolverType, type2: &SolverType) {
+    match (type1, type2) {
+        (SolverType::Bool, SolverType::Bool) => {}
+        (SolverType::Int, SolverType::Int) => {}
+        (SolverType::Float, SolverType::Float) => {}
+        (SolverType::Text, SolverType::Text) => {}
+
+        (SolverType::Array(item1), SolverType::Array(item2)) => {
+            equate_types(graph, item1, item2);
+        }
+
+        (SolverType::Tuple(items1), SolverType::Tuple(items2)) => {
+            debug_assert_eq!(items1.len(), items2.len());
+
+            for (item1, item2) in items1.iter().zip(items2.iter()) {
+                equate_types(graph, item1, item2);
+            }
+        }
+
+        (
+            SolverType::Func(purity1, var1, arg1, ret1),
+            SolverType::Func(purity2, var2, arg2, ret2),
+        ) => {
+            debug_assert_eq!(purity1, purity2);
+
+            graph.equate(*var1, *var2);
+
+            equate_types(graph, arg1, arg2);
+            equate_types(graph, ret1, ret2);
+        }
+
+        (SolverType::Custom(custom1, args1), SolverType::Custom(custom2, args2)) => {
+            debug_assert_eq!(custom1, custom2);
+            debug_assert_eq!(args1.len(), args2.len());
+
+            for (arg1, arg2) in args1.iter().zip(args2.iter()) {
+                graph.equate(*arg1, *arg2);
+            }
+        }
+
+        _ => unreachable!(),
+    }
+}
+
+// TODO: Determine if this should be merged with similar structures in other passes
+#[derive(Clone, Debug)]
+struct LocalContext {
+    types: Vec<SolverType>,
+}
+
+impl LocalContext {
+    fn new() -> Self {
+        LocalContext { types: Vec::new() }
+    }
+
+    fn add_local(&mut self, type_: SolverType) {
+        self.types.push(type_);
+    }
+
+    fn local_type(&mut self, local: lifted::LocalId) -> SolverType {
+        self.types[local.0].clone()
+    }
+
+    fn with_scope<R, F: for<'a> FnOnce(&'a mut LocalContext) -> R>(&mut self, body: F) -> R {
+        let old_len = self.types.len();
+        let result = body(self);
+        self.types.truncate(old_len);
+        result
+    }
+}
+
+fn instantiate_subst(vars: &[SolverVarId], type_: &annot::Type) -> SolverType {
+    match type_ {
+        annot::Type::Bool => SolverType::Bool,
+        annot::Type::Int => SolverType::Int,
+        annot::Type::Float => SolverType::Float,
+        annot::Type::Text => SolverType::Text,
+
+        annot::Type::Array(item) => SolverType::Array(Box::new(instantiate_subst(vars, item))),
+
+        annot::Type::Tuple(items) => SolverType::Tuple(
+            items
+                .iter()
+                .map(|item| instantiate_subst(vars, item))
+                .collect(),
+        ),
+
+        annot::Type::Func(purity, annot::RepVarId(id), arg, ret) => SolverType::Func(
+            *purity,
+            vars[*id],
+            Box::new(instantiate_subst(vars, arg)),
+            Box::new(instantiate_subst(vars, ret)),
+        ),
+
+        annot::Type::Custom(custom, args) => SolverType::Custom(
+            *custom,
+            args.iter().map(|&annot::RepVarId(id)| vars[id]).collect(),
+        ),
+    }
+}
+
+fn instantiate_pattern(
+    typedefs: &[annot::TypeDef],
+    locals: &mut LocalContext,
+    rhs: &SolverType,
+    pat: &mono::Pattern,
+) -> SolverPattern {
+    match (pat, rhs) {
+        (mono::Pattern::Any(_), _) => {
+            // Invariant: rhs should equal the type this 'any' pattern is annotated with.
+            SolverPattern::Any(rhs.clone())
+        }
+
+        (mono::Pattern::Var(_), _) => {
+            // Invariant: rhs should equal the type this 'var' pattern is annotated with.
+            locals.add_local(rhs.clone());
+            SolverPattern::Var(rhs.clone())
+        }
+
+        (mono::Pattern::Tuple(items), SolverType::Tuple(rhs_items)) => {
+            debug_assert_eq!(items.len(), rhs_items.len());
+
+            SolverPattern::Tuple(
+                items
+                    .iter()
+                    .zip(rhs_items.iter())
+                    .map(|(item, rhs_item)| instantiate_pattern(typedefs, locals, rhs_item, item))
+                    .collect(),
+            )
+        }
+
+        (
+            mono::Pattern::Ctor(custom, variant, content),
+            SolverType::Custom(rhs_custom, rhs_args),
+        ) => {
+            debug_assert_eq!(custom, rhs_custom);
+
+            let solver_content = match (content, &typedefs[custom.0].variants[variant.0]) {
+                (Some(content_pat), Some(content_type)) => {
+                    let solver_content_type = instantiate_subst(rhs_args, content_type);
+                    Some(Box::new(instantiate_pattern(
+                        typedefs,
+                        locals,
+                        &solver_content_type,
+                        content_pat,
+                    )))
+                }
+
+                (None, None) => None,
+
+                _ => unreachable!(),
+            };
+
+            SolverPattern::Ctor(*custom, rhs_args.clone(), *variant, solver_content)
+        }
+
+        (&mono::Pattern::BoolConst(val), SolverType::Bool) => SolverPattern::BoolConst(val),
+
+        (&mono::Pattern::IntConst(val), SolverType::Int) => SolverPattern::IntConst(val),
+
+        (&mono::Pattern::FloatConst(val), SolverType::Float) => SolverPattern::FloatConst(val),
+
+        (mono::Pattern::TextConst(text), SolverType::Text) => {
+            SolverPattern::TextConst(text.clone())
+        }
+
+        (_, _) => unreachable!(),
+    }
+}
+
+fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> SolverType {
+    let op_var = graph.new_var();
+    graph.require(op_var, SolverRequirement::ArithOp(op));
+
+    fn int_binop(op_var: SolverVarId) -> SolverType {
+        SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Tuple(vec![SolverType::Int, SolverType::Int])),
+            Box::new(SolverType::Int),
+        )
+    }
+
+    fn float_binop(op_var: SolverVarId) -> SolverType {
+        SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Tuple(vec![
+                SolverType::Float,
+                SolverType::Float,
+            ])),
+            Box::new(SolverType::Int),
+        )
+    }
+
+    fn int_comp(op_var: SolverVarId) -> SolverType {
+        SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Tuple(vec![SolverType::Int, SolverType::Int])),
+            Box::new(SolverType::Bool),
+        )
+    }
+
+    fn float_comp(op_var: SolverVarId) -> SolverType {
+        SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Tuple(vec![SolverType::Int, SolverType::Int])),
+            Box::new(SolverType::Float),
+        )
+    }
+
+    fn int_unop(op_var: SolverVarId) -> SolverType {
+        SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Int),
+            Box::new(SolverType::Int),
+        )
+    }
+
+    fn float_unop(op_var: SolverVarId) -> SolverType {
+        SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Float),
+            Box::new(SolverType::Float),
+        )
+    }
+
+    match op {
+        Op::AddInt => int_binop(op_var),
+        Op::SubInt => int_binop(op_var),
+        Op::MulInt => int_binop(op_var),
+        Op::DivInt => int_binop(op_var),
+        Op::NegInt => int_unop(op_var),
+
+        Op::EqInt => int_comp(op_var),
+        Op::LtInt => int_comp(op_var),
+        Op::LteInt => int_comp(op_var),
+
+        Op::AddFloat => float_binop(op_var),
+        Op::SubFloat => float_binop(op_var),
+        Op::MulFloat => float_binop(op_var),
+        Op::DivFloat => float_binop(op_var),
+        Op::NegFloat => float_unop(op_var),
+
+        Op::EqFloat => float_comp(op_var),
+        Op::LtFloat => float_comp(op_var),
+        Op::LteFloat => float_comp(op_var),
+    }
+}
+
+fn array_op_type(
+    graph: &mut ConstraintGraph,
+    op: ArrayOp,
+    solver_item_type: SolverType,
+) -> SolverType {
+    let op_var = graph.new_var();
+    graph.require(
+        op_var,
+        SolverRequirement::ArrayOp(op, solver_item_type.clone()),
+    );
+
+    match op {
+        ArrayOp::Item => {
+            let ret_closure_var = graph.new_var();
+            graph.require(
+                ret_closure_var,
+                SolverRequirement::ArrayReplace(solver_item_type.clone()),
+            );
+
+            SolverType::Func(
+                Purity::Pure,
+                op_var,
+                Box::new(SolverType::Tuple(vec![
+                    SolverType::Array(Box::new(solver_item_type.clone())),
+                    SolverType::Int,
+                ])),
+                Box::new(SolverType::Tuple(vec![
+                    solver_item_type.clone(),
+                    SolverType::Func(
+                        Purity::Pure,
+                        ret_closure_var,
+                        Box::new(solver_item_type.clone()),
+                        Box::new(SolverType::Array(Box::new(solver_item_type))),
+                    ),
+                ])),
+            )
+        }
+
+        ArrayOp::Len => SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Array(Box::new(solver_item_type))),
+            Box::new(SolverType::Int),
+        ),
+
+        ArrayOp::Push => SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Tuple(vec![
+                SolverType::Array(Box::new(solver_item_type.clone())),
+                solver_item_type.clone(),
+            ])),
+            Box::new(SolverType::Array(Box::new(solver_item_type))),
+        ),
+
+        ArrayOp::Pop => SolverType::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(SolverType::Array(Box::new(solver_item_type.clone()))),
+            Box::new(SolverType::Tuple(vec![
+                SolverType::Array(Box::new(solver_item_type.clone())),
+                solver_item_type,
+            ])),
+        ),
+    }
+}
+
+fn instantiate_req_subst(vars: &[SolverVarId], req: &annot::Requirement) -> SolverRequirement {
+    match req {
+        annot::Requirement::Lam(lam_id, args) => SolverRequirement::Lam(
+            *lam_id,
+            args.iter().map(|&annot::RepVarId(id)| vars[id]).collect(),
+        ),
+
+        annot::Requirement::Alias(alias_id, args) => SolverRequirement::Alias(
+            *alias_id,
+            args.iter().map(|&annot::RepVarId(id)| vars[id]).collect(),
+        ),
+
+        &annot::Requirement::ArithOp(op) => SolverRequirement::ArithOp(op),
+
+        annot::Requirement::ArrayOp(op, item_type) => {
+            SolverRequirement::ArrayOp(*op, instantiate_subst(vars, item_type))
+        }
+
+        annot::Requirement::ArrayReplace(item_type) => {
+            SolverRequirement::ArrayReplace(instantiate_subst(vars, item_type))
+        }
+
+        annot::Requirement::Ctor(custom, args, variant) => SolverRequirement::Ctor(
+            *custom,
+            args.iter().map(|&annot::RepVarId(id)| vars[id]).collect(),
+            *variant,
+        ),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GlobalContext<'a> {
+    annot_vals: &'a [Option<annot::ValDef>], // Indexed by mono::CustomGlobalId
+    annot_lams: &'a [Option<annot::LamDef>], // Indexed by lifted::LamId
+    curr_vals: &'a BTreeMap<mono::CustomGlobalId, SolverType>,
+    curr_lams: &'a BTreeMap<lifted::LamId, SolverLamSig>,
+}
+
+fn instantiate_with_reqs(
+    graph: &mut ConstraintGraph,
+    param_reqs: &[Vec<annot::Requirement>],
+) -> Vec<SolverVarId> {
+    let param_vars: Vec<_> = (0..param_reqs.len()).map(|_| graph.new_var()).collect();
+
+    for (&var, var_reqs) in param_vars.iter().zip(param_reqs.iter()) {
+        for req in var_reqs {
+            let solver_req = instantiate_req_subst(&param_vars, req);
+            graph.require(var, solver_req);
+        }
+    }
+
+    param_vars
+}
+
+fn instantiate_expr(
+    typedefs: &[annot::TypeDef],
+    globals: GlobalContext,
+    graph: &mut ConstraintGraph,
+    captures: &[SolverType],
+    locals: &mut LocalContext,
+    expr: &lifted::Expr,
+) -> (SolverExpr, SolverType) {
+    match expr {
+        &lifted::Expr::ArithOp(op) => {
+            let solver_type = arith_op_type(graph, op);
+            (SolverExpr::ArithOp(op), solver_type)
+        }
+
+        lifted::Expr::ArrayOp(op, item_type) => {
+            let solver_item_type = instantiate_mono(typedefs, graph, item_type);
+            let solver_type = array_op_type(graph, *op, solver_item_type.clone());
+            (SolverExpr::ArrayOp(*op, solver_item_type), solver_type)
+        }
+
+        &lifted::Expr::Ctor(custom, variant) => {
+            let typedef = &typedefs[custom.0];
+
+            let params: Vec<_> = (0..typedef.num_params).map(|_| graph.new_var()).collect();
+
+            let solver_type = match &typedef.variants[variant.0] {
+                Some(content_type) => {
+                    let op_closure_var = graph.new_var();
+                    graph.require(
+                        op_closure_var,
+                        SolverRequirement::Ctor(custom, params.clone(), variant),
+                    );
+
+                    let solver_content_type = instantiate_subst(&params, content_type);
+
+                    SolverType::Func(
+                        Purity::Pure,
+                        op_closure_var,
+                        Box::new(solver_content_type),
+                        Box::new(SolverType::Custom(custom, params.clone())),
+                    )
+                }
+
+                None => SolverType::Custom(custom, params.clone()),
+            };
+
+            let solver_expr = SolverExpr::Ctor(custom, params, variant);
+
+            (solver_expr, solver_type)
+        }
+
+        &lifted::Expr::Global(global) => match &globals.annot_vals[global.0] {
+            Some(global_def) => {
+                let scheme_params = instantiate_with_reqs(graph, &global_def.type_.params);
+
+                let solver_type = instantiate_subst(&scheme_params, &global_def.type_.body);
+
+                (SolverExpr::Global(global, scheme_params), solver_type)
+            }
+
+            None => (
+                SolverExpr::PendingGlobal(global),
+                globals.curr_vals[&global].clone(),
+            ),
+        },
+
+        &lifted::Expr::Local(local) => (SolverExpr::Local(local), locals.local_type(local)),
+
+        &lifted::Expr::Capture(capture) => {
+            (SolverExpr::Capture(capture), captures[capture.0].clone())
+        }
+
+        lifted::Expr::Tuple(items) => {
+            let mut solver_items = Vec::new();
+            let mut solver_types = Vec::new();
+
+            for item in items {
+                let (solver_item, solver_type) =
+                    instantiate_expr(typedefs, globals, graph, captures, locals, item);
+
+                solver_items.push(solver_item);
+                solver_types.push(solver_type);
+            }
+
+            (
+                SolverExpr::Tuple(solver_items),
+                SolverType::Tuple(solver_types),
+            )
+        }
+
+        lifted::Expr::Lam(lam, lam_captures) => {
+            let mut solver_captures = Vec::new();
+            let mut solver_capture_types = Vec::new();
+
+            for capture in lam_captures {
+                let (solver_capture, solver_type) =
+                    instantiate_expr(typedefs, globals, graph, captures, locals, capture);
+                solver_captures.push(solver_capture);
+                solver_capture_types.push(solver_type);
+            }
+
+            match &globals.annot_lams[lam.0] {
+                Some(lam_def) => {
+                    let scheme_params = instantiate_with_reqs(graph, &lam_def.params);
+
+                    debug_assert_eq!(lam_def.captures.len(), lam_captures.len());
+
+                    for (expected, actual) in
+                        lam_def.captures.iter().zip(solver_capture_types.iter())
+                    {
+                        let solver_expected = instantiate_subst(&scheme_params, expected);
+                        equate_types(graph, &solver_expected, actual);
+                    }
+
+                    let solver_arg = instantiate_subst(&scheme_params, &lam_def.arg);
+                    let solver_ret = instantiate_subst(&scheme_params, &lam_def.ret);
+
+                    let lam_var = graph.new_var();
+                    let lam_req = SolverRequirement::Lam(*lam, scheme_params.clone());
+                    graph.require(lam_var, lam_req);
+
+                    let solver_expr =
+                        SolverExpr::Lam(*lam, scheme_params, lam_var, solver_captures);
+
+                    let solver_type = SolverType::Func(
+                        lam_def.purity,
+                        lam_var,
+                        Box::new(solver_arg),
+                        Box::new(solver_ret),
+                    );
+
+                    (solver_expr, solver_type)
+                }
+
+                None => {
+                    let solver_sig = &globals.curr_lams[lam];
+
+                    debug_assert_eq!(solver_sig.captures.len(), lam_captures.len());
+
+                    for (expected, actual) in
+                        solver_sig.captures.iter().zip(solver_capture_types.iter())
+                    {
+                        equate_types(graph, expected, actual);
+                    }
+
+                    let lam_var = graph.new_var();
+                    let lam_req = SolverRequirement::PendingLam(*lam);
+                    graph.require(lam_var, lam_req);
+
+                    let solver_expr = SolverExpr::PendingLam(*lam, solver_captures);
+
+                    let solver_type = SolverType::Func(
+                        solver_sig.purity,
+                        lam_var,
+                        Box::new(solver_sig.arg.clone()),
+                        Box::new(solver_sig.ret.clone()),
+                    );
+
+                    (solver_expr, solver_type)
+                }
+            }
+        }
+
+        lifted::Expr::App(purity, func, arg) => {
+            let (solver_func, solver_func_type) =
+                instantiate_expr(typedefs, globals, graph, captures, locals, func);
+
+            let (solver_arg, solver_arg_type) =
+                instantiate_expr(typedefs, globals, graph, captures, locals, arg);
+
+            if let SolverType::Func(func_purity, func_var, func_arg, func_ret) = solver_func_type {
+                debug_assert_eq!(func_purity, *purity);
+
+                equate_types(graph, &func_arg, &solver_arg_type);
+
+                let solver_expr = SolverExpr::App(
+                    *purity,
+                    func_var,
+                    Box::new(solver_func),
+                    Box::new(solver_arg),
+                );
+
+                (solver_expr, *func_ret)
+            } else {
+                unreachable!()
+            }
+        }
+
+        lifted::Expr::Match(discrim, cases, result_type) => {
+            let (solver_discrim, solver_discrim_type) =
+                instantiate_expr(typedefs, globals, graph, captures, locals, discrim);
+
+            let solver_result_type = instantiate_mono(typedefs, graph, result_type);
+
+            let solver_cases = cases
+                .iter()
+                .map(|(pat, body)| {
+                    locals.with_scope(|sub_locals| {
+                        let solver_pat =
+                            instantiate_pattern(typedefs, sub_locals, &solver_discrim_type, pat);
+
+                        let (solver_body, solver_body_type) =
+                            instantiate_expr(typedefs, globals, graph, captures, sub_locals, body);
+
+                        equate_types(graph, &solver_body_type, &solver_result_type);
+
+                        (solver_pat, solver_body)
+                    })
+                })
+                .collect();
+
+            let solver_expr = SolverExpr::Match(
+                Box::new(solver_discrim),
+                solver_cases,
+                solver_result_type.clone(),
+            );
+
+            (solver_expr, solver_result_type)
+        }
+
+        lifted::Expr::Let(lhs, rhs, body) => {
+            let (solver_rhs, solver_rhs_type) =
+                instantiate_expr(typedefs, globals, graph, captures, locals, rhs);
+
+            let (solver_lhs, solver_body, solver_body_type) = locals.with_scope(|sub_locals| {
+                let solver_lhs = instantiate_pattern(typedefs, sub_locals, &solver_rhs_type, lhs);
+
+                let (solver_body, solver_body_type) =
+                    instantiate_expr(typedefs, globals, graph, captures, sub_locals, body);
+
+                (solver_lhs, solver_body, solver_body_type)
+            });
+
+            let solver_expr =
+                SolverExpr::Let(solver_lhs, Box::new(solver_rhs), Box::new(solver_body));
+
+            (solver_expr, solver_body_type)
+        }
+
+        lifted::Expr::ArrayLit(item_type, items) => {
+            let solver_item_type = instantiate_mono(typedefs, graph, item_type);
+
+            let solver_items = items
+                .iter()
+                .map(|item| {
+                    let (solver_item, solver_this_item_type) =
+                        instantiate_expr(typedefs, globals, graph, captures, locals, item);
+
+                    equate_types(graph, &solver_this_item_type, &solver_item_type);
+
+                    solver_item
+                })
+                .collect();
+
+            (
+                SolverExpr::ArrayLit(solver_item_type.clone(), solver_items),
+                SolverType::Array(Box::new(solver_item_type)),
+            )
+        }
+
+        &lifted::Expr::BoolLit(val) => (SolverExpr::BoolLit(val), SolverType::Bool),
+
+        &lifted::Expr::IntLit(val) => (SolverExpr::IntLit(val), SolverType::Int),
+
+        &lifted::Expr::FloatLit(val) => (SolverExpr::FloatLit(val), SolverType::Float),
+
+        lifted::Expr::TextLit(text) => (SolverExpr::TextLit(text.clone()), SolverType::Text),
+    }
 }

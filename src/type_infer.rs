@@ -263,7 +263,7 @@ enum AnnotExpr {
         Box<AnnotExpr>,
     ),
     App(Purity, Box<AnnotExpr>, Box<AnnotExpr>),
-    Match(Box<AnnotExpr>, Vec<(AnnotPattern, AnnotExpr)>),
+    Match(Box<AnnotExpr>, Vec<(AnnotPattern, AnnotExpr)>, TypeVar),
     Let(AnnotPattern, Box<AnnotExpr>, Box<AnnotExpr>),
 
     ArrayLit(TypeVar, Vec<AnnotExpr>),
@@ -607,7 +607,7 @@ fn infer_expr(
                 .collect::<Result<_, _>>()?;
 
             Ok((
-                AnnotExpr::Match(Box::new(discrim_annot), cases_annot),
+                AnnotExpr::Match(Box::new(discrim_annot), cases_annot, result_var),
                 result_var,
             ))
         }
@@ -720,12 +720,13 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> typed::Expr {
             Box::new(extract_solution(ctx, *arg)),
         ),
 
-        AnnotExpr::Match(discrim, cases) => typed::Expr::Match(
+        AnnotExpr::Match(discrim, cases, result_var) => typed::Expr::Match(
             Box::new(extract_solution(ctx, *discrim)),
             cases
                 .into_iter()
                 .map(|(pat, body)| (extract_pat_solution(ctx, pat), extract_solution(ctx, body)))
                 .collect(),
+            ctx.extract(result_var),
         ),
 
         AnnotExpr::Let(lhs, rhs, body) => typed::Expr::Let(
