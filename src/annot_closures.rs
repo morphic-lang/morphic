@@ -1152,3 +1152,45 @@ fn instantiate_scc(
         constraints: graph,
     }
 }
+
+#[derive(Clone, Debug)]
+struct ConstraintSolution {
+    equiv_classes: Vec<annot::RepVarId>, // Indexed by SolverVarId
+    reqs: Vec<Vec<annot::Requirement>>,  // Indexed by annot::RepVarId
+}
+
+fn solve(constraints: &ConstraintGraph) -> ConstraintSolution {
+    let equality_graph = graph::Undirected::from_directed_unchecked(Graph {
+        edges_out: constraints
+            .var_constraints
+            .iter()
+            .map(|var_constraints| {
+                var_constraints
+                    .equalities
+                    .iter()
+                    .map(|&SolverVarId(other)| graph::NodeId(other))
+                    .collect()
+            })
+            .collect(),
+    });
+
+    let components = graph::connected_components(&equality_graph);
+
+    let equiv_classes: Vec<_> = {
+        let mut equiv_classes = vec![None; constraints.var_constraints.len()];
+
+        for (rep_var_id, solver_vars) in components.iter().enumerate() {
+            for &graph::NodeId(solver_var) in solver_vars {
+                debug_assert!(equiv_classes[solver_var].is_none());
+                equiv_classes[solver_var] = Some(annot::RepVarId(rep_var_id));
+            }
+        }
+
+        equiv_classes
+            .iter()
+            .map(|rep_var| rep_var.unwrap())
+            .collect()
+    };
+
+    unimplemented!()
+}
