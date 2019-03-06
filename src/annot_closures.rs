@@ -1153,13 +1153,19 @@ fn instantiate_scc(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct EquivClassId(usize);
+
 #[derive(Clone, Debug)]
-struct ConstraintSolution {
-    equiv_classes: Vec<annot::RepVarId>, // Indexed by SolverVarId
-    reqs: Vec<Vec<annot::Requirement>>,  // Indexed by annot::RepVarId
+struct EquivClasses(Vec<EquivClassId>); // Indexed by SolverVarId
+
+impl EquivClasses {
+    fn class(&self, var: SolverVarId) -> EquivClassId {
+        self.0[var.0]
+    }
 }
 
-fn solve(constraints: &ConstraintGraph) -> ConstraintSolution {
+fn solve_equiv_classes(constraints: &ConstraintGraph) -> EquivClasses {
     let equality_graph = graph::Undirected::from_directed_unchecked(Graph {
         edges_out: constraints
             .var_constraints
@@ -1179,18 +1185,159 @@ fn solve(constraints: &ConstraintGraph) -> ConstraintSolution {
     let equiv_classes: Vec<_> = {
         let mut equiv_classes = vec![None; constraints.var_constraints.len()];
 
-        for (rep_var_id, solver_vars) in components.iter().enumerate() {
+        for (equiv_class, solver_vars) in components.iter().enumerate() {
             for &graph::NodeId(solver_var) in solver_vars {
                 debug_assert!(equiv_classes[solver_var].is_none());
-                equiv_classes[solver_var] = Some(annot::RepVarId(rep_var_id));
+                equiv_classes[solver_var] = Some(EquivClassId(equiv_class));
             }
         }
 
-        equiv_classes
-            .iter()
-            .map(|rep_var| rep_var.unwrap())
-            .collect()
+        equiv_classes.into_iter().map(Option::unwrap).collect()
     };
 
-    unimplemented!()
+    EquivClasses(equiv_classes)
+}
+
+fn add_mentioned_classes(
+    equiv_classes: &EquivClasses,
+    type_: &SolverType,
+    mentioned: &mut BTreeSet<EquivClassId>,
+) {
+    match type_ {
+        SolverType::Bool => {}
+        SolverType::Int => {}
+        SolverType::Float => {}
+        SolverType::Text => {}
+
+        SolverType::Array(item) => add_mentioned_classes(equiv_classes, item, mentioned),
+
+        SolverType::Tuple(items) => {
+            for item in items {
+                add_mentioned_classes(equiv_classes, item, mentioned);
+            }
+        }
+
+        SolverType::Func(_, var, arg, ret) => {
+            mentioned.insert(equiv_classes.class(*var));
+
+            add_mentioned_classes(equiv_classes, arg, mentioned);
+            add_mentioned_classes(equiv_classes, ret, mentioned);
+        }
+
+        SolverType::Custom(_, args) => {
+            for &var in args {
+                mentioned.insert(equiv_classes.class(var));
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ExternVars(Vec<EquivClassId>); // Indexed by RepVarId
+
+#[derive(Clone, Debug)]
+struct SccExternVars {
+    val_externs: BTreeMap<mono::CustomGlobalId, ExternVars>,
+    lam_externs: BTreeMap<lifted::LamId, ExternVars>,
+}
+
+fn find_extern_vars(scc: &SolverScc, equiv_classes: &EquivClasses) -> SccExternVars {
+    SccExternVars {
+        val_externs: scc
+            .val_sigs
+            .iter()
+            .map(|(&val_id, sig)| {
+                let mut mentioned = BTreeSet::new();
+                add_mentioned_classes(equiv_classes, sig, &mut mentioned);
+                (val_id, ExternVars(mentioned.into_iter().collect()))
+            })
+            .collect(),
+
+        lam_externs: scc
+            .lam_sigs
+            .iter()
+            .map(|(&lam_id, sig)| {
+                let mut mentioned = BTreeSet::new();
+
+                for capture in &sig.captures {
+                    add_mentioned_classes(equiv_classes, capture, &mut mentioned);
+                }
+
+                add_mentioned_classes(equiv_classes, &sig.arg, &mut mentioned);
+                add_mentioned_classes(equiv_classes, &sig.ret, &mut mentioned);
+
+                (lam_id, ExternVars(mentioned.into_iter().collect()))
+            })
+            .collect(),
+    }
+}
+
+fn req_graph_sccs(
+    constraints: &ConstraintGraph,
+    equiv_classes: &EquivClasses,
+    scc_externs: &SccExternVars,
+) -> Vec<Vec<EquivClassId>> {
+    let mut req_graph = Graph {
+        edges_out: vec![Vec::new(); equiv_classes.0.len()],
+    };
+
+    fn to_node(class: EquivClassId) -> graph::NodeId {
+        graph::NodeId(class.0)
+    }
+
+    for (var_id, var_constraints) in constraints.var_constraints.iter().enumerate() {
+        let class = equiv_classes.class(SolverVarId(var_id));
+
+        let class_reqs = &mut req_graph.edges_out[class.0];
+
+        for req in &var_constraints.requirements {
+            match req {
+                SolverRequirement::Lam(_, vars) => {
+                    for var in vars {
+                        class_reqs.push(to_node(equiv_classes.class(*var)));
+                    }
+                }
+
+                SolverRequirement::PendingLam(lam_id) => {
+                    for dep_class in &scc_externs.lam_externs[lam_id].0 {
+                        class_reqs.push(to_node(*dep_class));
+                    }
+                }
+
+                SolverRequirement::Alias(_, vars) => {
+                    for var in vars {
+                        class_reqs.push(to_node(equiv_classes.class(*var)));
+                    }
+                }
+
+                SolverRequirement::ArithOp(_) => {}
+
+                SolverRequirement::ArrayOp(_, item_type)
+                | SolverRequirement::ArrayReplace(item_type) => {
+                    let mut mentioned = BTreeSet::new();
+                    add_mentioned_classes(equiv_classes, item_type, &mut mentioned);
+
+                    for dep_class in &mentioned {
+                        class_reqs.push(to_node(*dep_class));
+                    }
+                }
+
+                SolverRequirement::Ctor(_, vars, _) => {
+                    for var in vars {
+                        class_reqs.push(to_node(equiv_classes.class(*var)));
+                    }
+                }
+            }
+        }
+    }
+
+    let sccs = graph::strongly_connected(&req_graph);
+
+    sccs.iter()
+        .map(|scc| {
+            scc.iter()
+                .map(|&graph::NodeId(id)| EquivClassId(id))
+                .collect()
+        })
+        .collect()
 }
