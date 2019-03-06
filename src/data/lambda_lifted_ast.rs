@@ -50,9 +50,16 @@ pub struct LamDef {
 }
 
 #[derive(Clone, Debug)]
+pub struct LamData {
+    pub lifted_from: mono::CustomGlobalId,
+}
+#[derive(Clone)]
 pub struct Program {
     pub custom_types: Vec<mono::TypeDef>,
+    pub custom_type_data: Vec<mono::TypeData>,
     pub vals: Vec<ValDef>,
+    pub val_data: Vec<mono::ValData>,
     pub lams: Vec<LamDef>,
+    pub lam_data: Vec<LamData>,
     pub main: mono::CustomGlobalId,
 }

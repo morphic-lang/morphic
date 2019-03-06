@@ -41,11 +41,10 @@ pub enum Error {
     PurityMismatch,
 }
 
-// TODO: Display human readable name of `def`!
 #[derive(Clone, Debug, Fail)]
-#[fail(display = "Type error: {}", error)]
+#[fail(display = "Type error in {}: {}", def, error)]
 pub struct LocatedError {
-    def: res::CustomGlobalId,
+    def: String,
     #[cause]
     error: Error,
 }
@@ -780,7 +779,7 @@ pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError>
         .enumerate()
         .map(|(idx, def)| {
             infer_def(&program, def).map_err(|error| LocatedError {
-                def: res::CustomGlobalId(idx),
+                def: program.custom_type_data[idx].type_name.0.clone(),
                 error,
             })
         })
@@ -788,7 +787,9 @@ pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError>
 
     Ok(typed::Program {
         custom_types: program.custom_types,
+        custom_type_data: program.custom_type_data,
         vals: vals_inferred,
+        val_data: program.val_data,
         main: program.main,
     })
 }

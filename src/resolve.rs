@@ -144,7 +144,7 @@ fn resolve_typedefs(
     type_map: &mut BTreeMap<raw::TypeName, res::TypeId>,
     ctor_map: &mut BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)>,
     types: &[TypeDef],
-) -> Result<Vec<res::TypeDef>, Error> {
+) -> Result<(Vec<res::TypeDef>, Vec<res::TypeData>), Error> {
     for (index, TypeDef(name, _, _)) in types.iter().enumerate() {
         let existing = type_map.insert(name.clone(), res::TypeId::Custom(res::CustomTypeId(index)));
         if existing.is_some() {
@@ -153,8 +153,9 @@ fn resolve_typedefs(
     }
 
     let mut resolved_types = Vec::new();
+    let mut resolved_type_data = Vec::new();
 
-    for (index, TypeDef(_, params, variants)) in types.iter().enumerate() {
+    for (index, TypeDef(type_name, params, variants)) in types.iter().enumerate() {
         let mut param_map = BTreeMap::new();
         for (param_index, param) in params.iter().enumerate() {
             let existing = param_map.insert(param.clone(), res::TypeParamId(param_index));
@@ -164,6 +165,7 @@ fn resolve_typedefs(
         }
 
         let mut resolved_variants = Vec::new();
+        let mut resolved_variant_data = Vec::new();
         for (variant_index, (ctor_name, content)) in variants.iter().enumerate() {
             let res_content = if let Some(content) = content {
                 Some(resolve_type(&type_map, &param_map, content)?)
@@ -183,15 +185,23 @@ fn resolve_typedefs(
             }
 
             resolved_variants.push(res_content);
+            resolved_variant_data.push(res::VariantData {
+                variant_name: ctor_name.clone(),
+            });
         }
 
         resolved_types.push(res::TypeDef {
             num_params: params.len(),
             variants: resolved_variants,
         });
+
+        resolved_type_data.push(res::TypeData {
+            type_name: type_name.clone(),
+            variant_data: resolved_variant_data,
+        })
     }
 
-    Ok(resolved_types)
+    Ok((resolved_types, resolved_type_data))
 }
 
 // Invariant: always leaves `local_map` exactly how it found it!
@@ -417,7 +427,7 @@ fn resolve_val_defs(
     ctor_map: &BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)>,
     global_map: &mut BTreeMap<raw::ValName, res::GlobalId>,
     vals: &[ValDef],
-) -> Result<Vec<res::ValDef>, Error> {
+) -> Result<(Vec<res::ValDef>, Vec<res::ValData>), Error> {
     for (index, ValDef(name, _, _)) in vals.iter().enumerate() {
         let existing = global_map.insert(
             name.clone(),
@@ -429,17 +439,21 @@ fn resolve_val_defs(
     }
 
     let mut res_defs = Vec::new();
+    let mut res_def_names = Vec::new();
 
-    for ValDef(_, scheme, body) in vals {
+    for ValDef(val_name, scheme, body) in vals {
         let res_scheme = resolve_scheme(type_map, scheme)?;
         let res_body = resolve_expr(ctor_map, global_map, &mut BTreeMap::new(), body)?;
         res_defs.push(res::ValDef {
             scheme: res_scheme,
             body: res_body,
         });
+        res_def_names.push(res::ValData {
+            val_name: val_name.clone(),
+        })
     }
 
-    Ok(res_defs)
+    Ok((res_defs, res_def_names))
 }
 
 pub fn resolve(program: raw::Program) -> Result<res::Program, Error> {
@@ -447,9 +461,11 @@ pub fn resolve(program: raw::Program) -> Result<res::Program, Error> {
 
     let (mut type_map, mut ctor_map, mut global_map) = builtin_names();
 
-    let resolved_types = resolve_typedefs(&mut type_map, &mut ctor_map, &types)?;
+    let (resolved_types, resolved_type_data) =
+        resolve_typedefs(&mut type_map, &mut ctor_map, &types)?;
 
-    let resolved_defs = resolve_val_defs(&type_map, &ctor_map, &mut global_map, &vals)?;
+    let (resolved_defs, resolved_def_data) =
+        resolve_val_defs(&type_map, &ctor_map, &mut global_map, &vals)?;
 
     let resolved_main = match global_map.get(&raw::ValName("main".to_owned())) {
         Some(&res::GlobalId::Custom(id)) => id,
@@ -458,7 +474,9 @@ pub fn resolve(program: raw::Program) -> Result<res::Program, Error> {
 
     Ok(res::Program {
         custom_types: resolved_types,
+        custom_type_data: resolved_type_data,
         vals: resolved_defs,
+        val_data: resolved_def_data,
         main: resolved_main,
     })
 }

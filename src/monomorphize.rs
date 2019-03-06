@@ -364,6 +364,7 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
     let main_new_id = val_insts.resolve(program.main, vec![]);
 
     let mut val_defs_resolved = Vec::new();
+    let mut val_defs_resolved_data = Vec::new();
 
     while let Some((mono::CustomGlobalId(new_idx), res::CustomGlobalId(orig_idx), inst_args)) =
         val_insts.pop_pending()
@@ -376,11 +377,17 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
         let def = &program.vals[orig_idx];
 
         let def_resolved = resolve_val_def(&mut val_insts, &mut type_insts, &inst_args, def);
+        let def_resolved_data = mono::ValData {
+            val_name: program.val_data[orig_idx].val_name.clone(),
+            mono_with: inst_args,
+        };
 
         val_defs_resolved.push(def_resolved);
+        val_defs_resolved_data.push(def_resolved_data)
     }
 
     let mut typedefs_resolved = Vec::new();
+    let mut typedefs_resolved_data = Vec::new();
 
     while let Some((mono::CustomTypeId(new_idx), res::CustomTypeId(orig_idx), inst_args)) =
         type_insts.pop_pending()
@@ -391,13 +398,21 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
         let typedef = &program.custom_types[orig_idx];
 
         let typedef_resolved = resolve_typedef(&mut type_insts, &inst_args, typedef);
+        let typedef_resolved_data = mono::TypeData {
+            type_name: program.custom_type_data[orig_idx].type_name.clone(),
+            mono_with: inst_args,
+            variant_data: program.custom_type_data[orig_idx].variant_data.clone(),
+        };
 
         typedefs_resolved.push(typedef_resolved);
+        typedefs_resolved_data.push(typedef_resolved_data);
     }
 
     mono::Program {
         custom_types: typedefs_resolved,
+        custom_type_data: typedefs_resolved_data,
         vals: val_defs_resolved,
+        val_data: val_defs_resolved_data,
         main: main_new_id,
     }
 }

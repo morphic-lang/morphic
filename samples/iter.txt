@@ -105,5 +105,16 @@ sum(it: Iter Int): Int =
   foldl(it, 0, \(x, y) -> x + y)
 
 proc main(): () =
-  let _ = sum(items([1, 2, 3])) in
+  // it = 6
+  let it = sum(items([1, 2, 3])) in
+  // it2 = ((5, 5), (5, 6), (5, 7), (5, 8), (5, 9), (5, 10))
+  let it2 = zip(take(forever(5), it), ints(5)) in
+  // it3 = (10, 11, 12, 13, 14, 15)
+  let it3 = map(it2, \(x, y) -> x + y) in
+  // it4 = (13, 14, 15)
+  let it4 = filter(it3, \n -> n > 12) in
+  // it5 = (13, 14, 15, 0)
+  let it5 = chain(it4, once(0)) in
+  // it6 = 42
+  let it6 = foldr(it5, 0, \(x, y) -> x + y) in
   ()
