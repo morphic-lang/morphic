@@ -11,6 +11,7 @@ lalrpop = "0.16.2"
 [dependencies]
 lalrpop-util = "0.16.2"
 regex = "1.1.0"
+pretty = "0.5.2"
 failure = "0.1.5"
 
 # RNG used for procedurally (but deterministically) generating test inputs

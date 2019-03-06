@@ -1,4 +1,5 @@
 use crate::data::purity::Purity;
+use crate::data::raw_ast as raw;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp};
 
@@ -15,6 +16,13 @@ pub enum Type {
     Tuple(Vec<Type>),
     Func(Purity, Box<Type>, Box<Type>),
     Custom(CustomTypeId),
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeData {
+    pub type_name: raw::TypeName,
+    pub mono_with: Vec<Type>,
+    pub variant_data: Vec<res::VariantData>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,8 +78,16 @@ pub struct ValDef {
 }
 
 #[derive(Clone, Debug)]
+pub struct ValData {
+    pub val_name: raw::ValName,
+    pub mono_with: Vec<Type>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: Vec<TypeDef>,
+    pub custom_type_data: Vec<TypeData>,
     pub vals: Vec<ValDef>,
+    pub val_data: Vec<ValData>,
     pub main: CustomGlobalId,
 }

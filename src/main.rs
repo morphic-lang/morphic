@@ -9,6 +9,7 @@ mod graph;
 mod lambda_lift;
 mod lex;
 mod monomorphize;
+mod pretty_print;
 mod resolve;
 mod type_infer;
 
@@ -88,25 +89,17 @@ fn run(config: Config) -> Result<(), Error> {
         .parse(lex::Lexer::new(&src))
         .map_err(Error::ParseFailed)?;
 
-    println!("Raw AST:\n{:#?}", raw);
-
     let resolved = resolve::resolve(raw).map_err(Error::ResolveFailed)?;
-
-    println!("Resolved AST:\n{:#?}", resolved);
 
     check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;
 
     let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
-
-    println!("Typed AST:\n{:#?}", typed);
 
     check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;
 
     check_main::check_main(&typed).map_err(Error::CheckMainFailed)?;
 
     let mono = monomorphize::monomorphize(typed);
-
-    println!("Monomorphic AST:\n{:#?}", mono);
 
     let lifted = lambda_lift::lambda_lift(mono);
 

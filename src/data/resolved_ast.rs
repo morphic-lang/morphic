@@ -1,5 +1,5 @@
 use crate::data::purity::Purity;
-use crate::data::raw_ast::Op;
+use crate::data::raw_ast::{self as raw, Op};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TypeId {
@@ -45,7 +45,9 @@ pub struct LocalId(pub usize);
 #[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: Vec<TypeDef>,
+    pub custom_type_data: Vec<TypeData>,
     pub vals: Vec<ValDef>,
+    pub val_data: Vec<ValData>,
     pub main: CustomGlobalId,
 }
 
@@ -56,9 +58,25 @@ pub struct TypeDef {
 }
 
 #[derive(Clone, Debug)]
+pub struct VariantData {
+    pub variant_name: raw::CtorName,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeData {
+    pub type_name: raw::TypeName,
+    pub variant_data: Vec<VariantData>,
+}
+
+#[derive(Clone, Debug)]
 pub struct ValDef {
     pub scheme: TypeScheme,
     pub body: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValData {
+    pub val_name: raw::ValName,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
