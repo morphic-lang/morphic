@@ -41,8 +41,7 @@ pub enum Requirement {
 #[derive(Clone, Debug)]
 pub struct Alias {
     pub num_params: usize,
-    // Invariant: each internal var's requirements are expressed entirely in terms of vars with
-    // strictly lower ids
+    // Invariant: each internal var's requirements are expressed entirely in terms of external vars.
     pub internal_vars: Vec<Vec<Requirement>>,
     pub reqs: Vec<Requirement>,
 }
@@ -108,8 +107,7 @@ pub struct TypeScheme {
 #[derive(Clone, Debug)]
 pub struct ValDef {
     pub type_: TypeScheme,
-    // Invariant: each internal var's requirements are expressed entirely in terms of vars with
-    // strictly lower ids.
+    // Invariant: each internal var's requirements are expressed entirely in terms of external vars.
     pub internal_vars: Vec<Vec<Requirement>>,
     pub body: Expr,
 }
@@ -124,8 +122,7 @@ pub struct LamDef {
     pub arg: Type,
     // Same as above
     pub ret: Type,
-    // Invariant: each internal var's requirements are expressed entirely in terms of vars with
-    // strictly lower ids.
+    // Invariant: each internal var's requirements are expressed entirely in terms of external vars.
     pub internal_vars: Vec<Vec<Requirement>>,
     pub arg_pat: Pattern,
     pub body: Expr,
