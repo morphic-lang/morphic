@@ -1272,41 +1272,38 @@ fn find_extern_vars(scc: &SolverScc, equiv_classes: &EquivClasses) -> SccExternV
     }
 }
 
-fn req_graph_sccs(
+#[derive(Clone, Debug)]
+struct RequirementDependencyGraph(Vec<BTreeSet<EquivClassId>>); // Indexed by EquivClassId
+
+fn req_dep_graph(
     constraints: &ConstraintGraph,
     equiv_classes: &EquivClasses,
     scc_externs: &SccExternVars,
-) -> Vec<Vec<EquivClassId>> {
-    let mut req_graph = Graph {
-        edges_out: vec![Vec::new(); equiv_classes.0.len()],
-    };
-
-    fn to_node(class: EquivClassId) -> graph::NodeId {
-        graph::NodeId(class.0)
-    }
+) -> RequirementDependencyGraph {
+    let mut deps = vec![BTreeSet::new(); equiv_classes.0.len()];
 
     for (var_id, var_constraints) in constraints.var_constraints.iter().enumerate() {
         let class = equiv_classes.class(SolverVarId(var_id));
 
-        let class_reqs = &mut req_graph.edges_out[class.0];
+        let class_deps = &mut deps[class.0];
 
         for req in &var_constraints.requirements {
             match req {
                 SolverRequirement::Lam(_, vars) => {
                     for var in vars {
-                        class_reqs.push(to_node(equiv_classes.class(*var)));
+                        class_deps.insert(equiv_classes.class(*var));
                     }
                 }
 
                 SolverRequirement::PendingLam(lam_id) => {
                     for dep_class in &scc_externs.lam_externs[lam_id].0 {
-                        class_reqs.push(to_node(*dep_class));
+                        class_deps.insert(*dep_class);
                     }
                 }
 
                 SolverRequirement::Alias(_, vars) => {
                     for var in vars {
-                        class_reqs.push(to_node(equiv_classes.class(*var)));
+                        class_deps.insert(equiv_classes.class(*var));
                     }
                 }
 
@@ -1318,26 +1315,18 @@ fn req_graph_sccs(
                     add_mentioned_classes(equiv_classes, item_type, &mut mentioned);
 
                     for dep_class in &mentioned {
-                        class_reqs.push(to_node(*dep_class));
+                        class_deps.insert(*dep_class);
                     }
                 }
 
                 SolverRequirement::Ctor(_, vars, _) => {
                     for var in vars {
-                        class_reqs.push(to_node(equiv_classes.class(*var)));
+                        class_deps.insert(equiv_classes.class(*var));
                     }
                 }
             }
         }
     }
 
-    let sccs = graph::strongly_connected(&req_graph);
-
-    sccs.iter()
-        .map(|scc| {
-            scc.iter()
-                .map(|&graph::NodeId(id)| EquivClassId(id))
-                .collect()
-        })
-        .collect()
+    RequirementDependencyGraph(deps)
 }
