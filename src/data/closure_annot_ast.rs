@@ -4,74 +4,100 @@ use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp};
 
+use std::collections::BTreeSet;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RepVarId(pub usize);
+pub struct RepParamId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TemplateVarId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
     pub num_params: usize,
-    pub variants: Vec<Option<Type>>,
+    pub variants: Vec<Option<Type<RepParamId>>>,
 }
 
 #[derive(Clone, Debug)]
-pub enum Type {
+pub enum Type<Rep> {
     Bool,
     Int,
     Float,
     Text,
-    Array(Box<Type>),
-    Tuple(Vec<Type>),
-    Func(Purity, RepVarId, Box<Type>, Box<Type>),
-    Custom(mono::CustomTypeId, Vec<RepVarId>),
+    Array(Box<Type<Rep>>),
+    Tuple(Vec<Type<Rep>>),
+    Func(Purity, Rep, Box<Type<Rep>>, Box<Type<Rep>>),
+    Custom(mono::CustomTypeId, Vec<Rep>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AliasId(pub usize);
+pub struct TemplateId(pub usize);
 
 #[derive(Clone, Debug)]
-pub enum Requirement {
-    Lam(lifted::LamId, Vec<RepVarId>),
-    Alias(AliasId, Vec<RepVarId>),
-    ArithOp(Op),
-    ArrayOp(ArrayOp, Type),
-    ArrayReplace(Type),
-    Ctor(mono::CustomTypeId, Vec<RepVarId>, res::VariantId),
+pub enum Constraint {
+    Lam(
+        TemplateVarId, // Representation which must support the given lambda
+        lifted::LamId,
+        Vec<TemplateVarId>, // Parameters of the lambda
+    ),
+    Template(Vec<TemplateVarId>),
+    ArithOp(
+        TemplateVarId, // Representation which must support the given operation
+        Op,
+    ),
+    ArrayOp(
+        TemplateVarId, // Representation which must support the given operation
+        ArrayOp,
+        Type<TemplateVarId>, // Array item type
+    ),
+    ArrayReplace(
+        TemplateVarId,       // Representation which must support the given operation
+        Type<TemplateVarId>, // Array item type
+    ),
+    Ctor(
+        TemplateVarId, // Representation which must support the given operation
+        mono::CustomTypeId,
+        Vec<TemplateVarId>, // Parameters of the type being constructed
+        res::VariantId,
+    ),
 }
 
 #[derive(Clone, Debug)]
-pub struct Alias {
-    pub num_params: usize,
-    // Invariant: each internal var's requirements are expressed entirely in terms of external vars.
-    pub internal_vars: Vec<Vec<Requirement>>,
-    pub reqs: Vec<Requirement>,
+pub struct Template {
+    pub num_vars: usize,
+    pub params: Vec<TemplateVarId>, // Indexed by RepParamId
+    pub constraints: Vec<Constraint>,
+
+    pub deps: Vec<BTreeSet<TemplateVarId>>, // Indexed by TemplateVarId
+    pub param_deps: Vec<BTreeSet<RepParamId>>, // Indexed by RepParamId
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr {
     ArithOp(Op),
-    ArrayOp(ArrayOp, Type),
-    Ctor(mono::CustomTypeId, Vec<RepVarId>, res::VariantId),
-    Global(mono::CustomGlobalId, Vec<RepVarId>),
+    ArrayOp(ArrayOp, Type<TemplateVarId>),
+    Ctor(mono::CustomTypeId, Vec<TemplateVarId>, res::VariantId),
+    Global(mono::CustomGlobalId, Vec<TemplateVarId>),
     Local(lifted::LocalId),
     Capture(lifted::CaptureId),
     Tuple(Vec<Expr>),
     Lam(
         lifted::LamId,
-        Vec<RepVarId>, // Parameters on the lambda
-        RepVarId,      // Representation of the lambda expression
-        Vec<Expr>,     // Captures
+        Vec<TemplateVarId>, // Parameters on the lambda
+        TemplateVarId,      // Representation of the lambda expression
+        Vec<Expr>,          // Captures
     ),
     App(
         Purity,
-        RepVarId, // Representation being called
+        TemplateVarId, // Representation being called
         Box<Expr>,
         Box<Expr>,
     ),
-    Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
+    Match(Box<Expr>, Vec<(Pattern, Expr)>, Type<TemplateVarId>),
     Let(Pattern, Box<Expr>, Box<Expr>),
 
     ArrayLit(
-        Type, // Item type
+        Type<TemplateVarId>, // Item type
         Vec<Expr>,
     ),
     BoolLit(bool),
@@ -82,12 +108,12 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub enum Pattern {
-    Any(Type),
-    Var(Type),
+    Any(Type<TemplateVarId>),
+    Var(Type<TemplateVarId>),
     Tuple(Vec<Pattern>),
     Ctor(
         mono::CustomTypeId,
-        Vec<RepVarId>,
+        Vec<TemplateVarId>,
         res::VariantId,
         Option<Box<Pattern>>,
     ),
@@ -98,32 +124,19 @@ pub enum Pattern {
 }
 
 #[derive(Clone, Debug)]
-pub struct TypeScheme {
-    pub params: Vec<Vec<Requirement>>,
-    // Invariant: mentions only external vars (vars with id < params.len())
-    pub body: Type,
-}
-
-#[derive(Clone, Debug)]
 pub struct ValDef {
-    pub type_: TypeScheme,
-    // Invariant: each internal var's requirements are expressed entirely in terms of external vars.
-    pub internal_vars: Vec<Vec<Requirement>>,
+    pub template: TemplateId,
+    pub type_: Type<RepParamId>,
     pub body: Expr,
 }
 
 #[derive(Clone, Debug)]
 pub struct LamDef {
     pub purity: Purity,
-    pub params: Vec<Vec<Requirement>>,
-    // Invariant: mentions only external vars (vars with id < num_params)
-    pub captures: Vec<Type>,
-    // Same as above
-    pub arg: Type,
-    // Same as above
-    pub ret: Type,
-    // Invariant: each internal var's requirements are expressed entirely in terms of external vars.
-    pub internal_vars: Vec<Vec<Requirement>>,
+    pub template: TemplateId,
+    pub captures: Vec<Type<RepParamId>>,
+    pub arg: Type<RepParamId>,
+    pub ret: Type<RepParamId>,
     pub arg_pat: Pattern,
     pub body: Expr,
 }
@@ -131,8 +144,8 @@ pub struct LamDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: Vec<TypeDef>,
+    pub templates: Vec<Template>,
     pub vals: Vec<ValDef>,
     pub lams: Vec<LamDef>,
-    pub aliases: Vec<Alias>,
     pub main: mono::CustomGlobalId,
 }
