@@ -40,7 +40,7 @@ pub enum Constraint {
         lifted::LamId,
         Vec<TemplateVarId>, // Parameters of the lambda
     ),
-    Template(Vec<TemplateVarId>),
+    Template(TemplateId, Vec<TemplateVarId>),
     ArithOp(
         TemplateVarId, // Representation which must support the given operation
         Op,

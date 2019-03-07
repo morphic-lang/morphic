@@ -214,7 +214,7 @@ struct SolverVarId(usize);
 enum SolverConstraint {
     Lam(SolverVarId, lifted::LamId, Vec<SolverVarId>),
     PendingLam(SolverVarId, lifted::LamId),
-    Template(Vec<SolverVarId>),
+    Template(annot::TemplateId, Vec<SolverVarId>),
     ArithOp(SolverVarId, Op),
     ArrayOp(SolverVarId, ArrayOp, annot::Type<SolverVarId>),
     ArrayReplace(SolverVarId, annot::Type<SolverVarId>),
@@ -242,7 +242,7 @@ enum SolverExpr {
         SolverVarId,      // Representation of the lambda expression
         Vec<SolverExpr>,  // Captures
     ),
-    PendingLam(lifted::LamId, Vec<SolverExpr>), // A lambda belonging to the current SCC
+    PendingLam(lifted::LamId, SolverVarId, Vec<SolverExpr>), // A lambda belonging to the current SCC
     App(
         Purity,
         SolverVarId, // Representation being called
@@ -709,7 +709,7 @@ fn instantiate_template(
         .map(|_| graph.new_var())
         .collect();
 
-    graph.constrain(SolverConstraint::Template(param_vars.clone()));
+    graph.constrain(SolverConstraint::Template(template_id, param_vars.clone()));
 
     param_vars
 }
@@ -865,7 +865,7 @@ fn instantiate_expr(
                     let lam_var = graph.new_var();
                     graph.constrain(SolverConstraint::PendingLam(lam_var, *lam));
 
-                    let solver_expr = SolverExpr::PendingLam(*lam, solver_captures);
+                    let solver_expr = SolverExpr::PendingLam(*lam, lam_var, solver_captures);
 
                     let solver_type = annot::Type::Func(
                         solver_sig.purity,
@@ -1220,4 +1220,233 @@ fn find_params(scc: &SolverScc, equiv_classes: &EquivClasses) -> Params {
     }
 
     Params(mentioned.into_iter().collect())
+}
+
+fn extract_type(
+    equiv_classes: &EquivClasses,
+    type_: &annot::Type<SolverVarId>,
+) -> annot::Type<annot::TemplateVarId> {
+    match type_ {
+        annot::Type::Bool => annot::Type::Bool,
+        annot::Type::Int => annot::Type::Int,
+        annot::Type::Float => annot::Type::Float,
+        annot::Type::Text => annot::Type::Text,
+
+        annot::Type::Array(item) => annot::Type::Array(Box::new(extract_type(equiv_classes, item))),
+
+        annot::Type::Tuple(items) => annot::Type::Tuple(
+            items
+                .iter()
+                .map(|item| extract_type(equiv_classes, item))
+                .collect(),
+        ),
+
+        annot::Type::Func(purity, var, arg, ret) => annot::Type::Func(
+            *purity,
+            equiv_classes.class(*var),
+            Box::new(extract_type(equiv_classes, arg)),
+            Box::new(extract_type(equiv_classes, ret)),
+        ),
+
+        annot::Type::Custom(custom, vars) => annot::Type::Custom(
+            *custom,
+            vars.iter().map(|&var| equiv_classes.class(var)).collect(),
+        ),
+    }
+}
+
+fn extract_constraint(
+    equiv_classes: &EquivClasses,
+    params: &Params,
+    constraint: &SolverConstraint,
+) -> annot::Constraint {
+    match constraint {
+        SolverConstraint::Lam(var, lam_id, params) => annot::Constraint::Lam(
+            equiv_classes.class(*var),
+            *lam_id,
+            params
+                .iter()
+                .map(|param| equiv_classes.class(*param))
+                .collect(),
+        ),
+
+        SolverConstraint::PendingLam(var, lam_id) => {
+            annot::Constraint::Lam(equiv_classes.class(*var), *lam_id, params.0.clone())
+        }
+
+        SolverConstraint::Template(template_id, params) => annot::Constraint::Template(
+            *template_id,
+            params.iter().map(|&var| equiv_classes.class(var)).collect(),
+        ),
+
+        SolverConstraint::ArithOp(var, op) => {
+            annot::Constraint::ArithOp(equiv_classes.class(*var), *op)
+        }
+
+        SolverConstraint::ArrayOp(var, op, item_type) => annot::Constraint::ArrayOp(
+            equiv_classes.class(*var),
+            *op,
+            extract_type(equiv_classes, item_type),
+        ),
+
+        SolverConstraint::ArrayReplace(var, item_type) => annot::Constraint::ArrayReplace(
+            equiv_classes.class(*var),
+            extract_type(equiv_classes, item_type),
+        ),
+
+        SolverConstraint::Ctor(var, custom, params, variant) => annot::Constraint::Ctor(
+            equiv_classes.class(*var),
+            *custom,
+            params
+                .iter()
+                .map(|&param| equiv_classes.class(param))
+                .collect(),
+            *variant,
+        ),
+    }
+}
+
+fn extract_expr(equiv_classes: &EquivClasses, params: &Params, expr: &SolverExpr) -> annot::Expr {
+    match expr {
+        // TODO: Add fields to primitive opeations (ArithOp, ArrayOp, Ctor) to track what
+        // representation they should be coerced to upon construction.
+        SolverExpr::ArithOp(op) => annot::Expr::ArithOp(*op),
+
+        SolverExpr::ArrayOp(op, item_type) => {
+            annot::Expr::ArrayOp(*op, extract_type(equiv_classes, item_type))
+        }
+
+        SolverExpr::Ctor(custom, type_params, variant) => annot::Expr::Ctor(
+            *custom,
+            type_params
+                .iter()
+                .map(|&param| equiv_classes.class(param))
+                .collect(),
+            *variant,
+        ),
+
+        SolverExpr::Global(global_id, global_params) => annot::Expr::Global(
+            *global_id,
+            global_params
+                .iter()
+                .map(|&param| equiv_classes.class(param))
+                .collect(),
+        ),
+
+        SolverExpr::PendingGlobal(global_id) => annot::Expr::Global(*global_id, params.0.clone()),
+
+        SolverExpr::Local(local_id) => annot::Expr::Local(*local_id),
+
+        SolverExpr::Capture(capture_id) => annot::Expr::Capture(*capture_id),
+
+        SolverExpr::Tuple(items) => annot::Expr::Tuple(
+            items
+                .iter()
+                .map(|item| extract_expr(equiv_classes, params, item))
+                .collect(),
+        ),
+
+        SolverExpr::Lam(lam_id, lam_params, rep_var, captures) => annot::Expr::Lam(
+            *lam_id,
+            lam_params
+                .iter()
+                .map(|&param| equiv_classes.class(param))
+                .collect(),
+            equiv_classes.class(*rep_var),
+            captures
+                .iter()
+                .map(|capture| extract_expr(equiv_classes, params, capture))
+                .collect(),
+        ),
+
+        SolverExpr::PendingLam(lam_id, rep_var, captures) => annot::Expr::Lam(
+            *lam_id,
+            params.0.clone(),
+            equiv_classes.class(*rep_var),
+            captures
+                .iter()
+                .map(|capture| extract_expr(equiv_classes, params, capture))
+                .collect(),
+        ),
+
+        SolverExpr::App(purity, func_rep_var, func, arg) => annot::Expr::App(
+            *purity,
+            equiv_classes.class(*func_rep_var),
+            Box::new(extract_expr(equiv_classes, params, func)),
+            Box::new(extract_expr(equiv_classes, params, arg)),
+        ),
+
+        SolverExpr::Match(discrim, cases, result_type) => annot::Expr::Match(
+            Box::new(extract_expr(equiv_classes, params, discrim)),
+            cases
+                .iter()
+                .map(|(pat, body)| {
+                    (
+                        extract_pattern(equiv_classes, pat),
+                        extract_expr(equiv_classes, params, body),
+                    )
+                })
+                .collect(),
+            extract_type(equiv_classes, result_type),
+        ),
+
+        SolverExpr::Let(lhs, rhs, body) => annot::Expr::Let(
+            extract_pattern(equiv_classes, lhs),
+            Box::new(extract_expr(equiv_classes, params, rhs)),
+            Box::new(extract_expr(equiv_classes, params, body)),
+        ),
+
+        SolverExpr::ArrayLit(item_type, items) => annot::Expr::ArrayLit(
+            extract_type(equiv_classes, item_type),
+            items
+                .iter()
+                .map(|item| extract_expr(equiv_classes, params, item))
+                .collect(),
+        ),
+
+        &SolverExpr::BoolLit(val) => annot::Expr::BoolLit(val),
+
+        &SolverExpr::IntLit(val) => annot::Expr::IntLit(val),
+
+        &SolverExpr::FloatLit(val) => annot::Expr::FloatLit(val),
+
+        SolverExpr::TextLit(text) => annot::Expr::TextLit(text.clone()),
+
+        _ => unimplemented!(),
+    }
+}
+
+fn extract_pattern(equiv_classes: &EquivClasses, pat: &SolverPattern) -> annot::Pattern {
+    match pat {
+        SolverPattern::Any(type_) => annot::Pattern::Any(extract_type(equiv_classes, type_)),
+
+        SolverPattern::Var(type_) => annot::Pattern::Var(extract_type(equiv_classes, type_)),
+
+        SolverPattern::Tuple(items) => annot::Pattern::Tuple(
+            items
+                .iter()
+                .map(|item| extract_pattern(equiv_classes, item))
+                .collect(),
+        ),
+
+        SolverPattern::Ctor(custom, params, variant, content) => annot::Pattern::Ctor(
+            *custom,
+            params
+                .iter()
+                .map(|&param| equiv_classes.class(param))
+                .collect(),
+            *variant,
+            content
+                .as_ref()
+                .map(|content| Box::new(extract_pattern(equiv_classes, content))),
+        ),
+
+        &SolverPattern::BoolConst(val) => annot::Pattern::BoolConst(val),
+
+        &SolverPattern::IntConst(val) => annot::Pattern::IntConst(val),
+
+        &SolverPattern::FloatConst(val) => annot::Pattern::FloatConst(val),
+
+        SolverPattern::TextConst(text) => annot::Pattern::TextConst(text.clone()),
+    }
 }
