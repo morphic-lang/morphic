@@ -1448,3 +1448,96 @@ fn extract_pattern(equiv_classes: &EquivClasses, pat: &SolverPattern) -> annot::
         SolverPattern::TextConst(text) => annot::Pattern::TextConst(text.clone()),
     }
 }
+
+#[derive(Clone, Debug)]
+struct ConstraintDeps(Vec<BTreeSet<annot::TemplateVarId>>); // Indexed by TemplateVarId
+
+// TODO: Is there some way to merge this with add_mentioned_classes?  The logic is essentially
+// identical.
+fn add_type_deps(
+    type_: &annot::Type<annot::TemplateVarId>,
+    deps: &mut BTreeSet<annot::TemplateVarId>,
+) {
+    match type_ {
+        annot::Type::Bool => {}
+        annot::Type::Int => {}
+        annot::Type::Float => {}
+        annot::Type::Text => {}
+
+        annot::Type::Array(item) => add_type_deps(item, deps),
+
+        annot::Type::Tuple(items) => {
+            for item in items {
+                add_type_deps(item, deps);
+            }
+        }
+
+        annot::Type::Func(_, var, arg, ret) => {
+            deps.insert(*var);
+            add_type_deps(arg, deps);
+            add_type_deps(ret, deps);
+        }
+
+        annot::Type::Custom(_, args) => {
+            for &var in args {
+                deps.insert(var);
+            }
+        }
+    }
+}
+
+fn constraint_deps(
+    templates: &[annot::Template],
+    num_vars: usize,
+    constraints: &[annot::Constraint],
+) -> ConstraintDeps {
+    let mut deps = vec![BTreeSet::new(); num_vars];
+
+    for constraint in constraints {
+        match constraint {
+            annot::Constraint::Lam(var, _, params) => {
+                let var_deps = &mut deps[var.0];
+
+                for param in params {
+                    var_deps.insert(*param);
+                }
+            }
+
+            annot::Constraint::Template(template_id, params) => {
+                let template = &templates[template_id.0];
+
+                for (&annot::TemplateVarId(param_var), param_deps) in
+                    params.iter().zip(template.param_deps.iter())
+                {
+                    let var_deps = &mut deps[param_var];
+
+                    for &annot::RepParamId(dep) in param_deps {
+                        var_deps.insert(params[dep]);
+                    }
+                }
+            }
+
+            annot::Constraint::ArithOp(_, _) => {}
+
+            annot::Constraint::ArrayOp(var, _, item_type) => {
+                let var_deps = &mut deps[var.0];
+                add_type_deps(item_type, var_deps);
+            }
+
+            annot::Constraint::ArrayReplace(var, item_type) => {
+                let var_deps = &mut deps[var.0];
+                add_type_deps(item_type, var_deps);
+            }
+
+            annot::Constraint::Ctor(var, _, params, _) => {
+                let var_deps = &mut deps[var.0];
+
+                for &param in params {
+                    var_deps.insert(param);
+                }
+            }
+        }
+    }
+
+    ConstraintDeps(deps)
+}
