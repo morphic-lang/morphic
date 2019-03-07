@@ -1411,8 +1411,6 @@ fn extract_expr(equiv_classes: &EquivClasses, params: &Params, expr: &SolverExpr
         &SolverExpr::FloatLit(val) => annot::Expr::FloatLit(val),
 
         SolverExpr::TextLit(text) => annot::Expr::TextLit(text.clone()),
-
-        _ => unimplemented!(),
     }
 }
 
