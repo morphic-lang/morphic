@@ -1125,14 +1125,11 @@ fn instantiate_scc(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct EquivClassId(usize);
-
 #[derive(Clone, Debug)]
-struct EquivClasses(Vec<EquivClassId>); // Indexed by SolverVarId
+struct EquivClasses(Vec<annot::TemplateVarId>); // Indexed by SolverVarId
 
 impl EquivClasses {
-    fn class(&self, var: SolverVarId) -> EquivClassId {
+    fn class(&self, var: SolverVarId) -> annot::TemplateVarId {
         self.0[var.0]
     }
 }
@@ -1159,7 +1156,7 @@ fn solve_equiv_classes(constraints: &ConstraintGraph) -> EquivClasses {
         for (equiv_class, solver_vars) in components.iter().enumerate() {
             for &graph::NodeId(solver_var) in solver_vars {
                 debug_assert!(equiv_classes[solver_var].is_none());
-                equiv_classes[solver_var] = Some(EquivClassId(equiv_class));
+                equiv_classes[solver_var] = Some(annot::TemplateVarId(equiv_class));
             }
         }
 
@@ -1172,7 +1169,7 @@ fn solve_equiv_classes(constraints: &ConstraintGraph) -> EquivClasses {
 fn add_mentioned_classes(
     equiv_classes: &EquivClasses,
     type_: &annot::Type<SolverVarId>,
-    mentioned: &mut BTreeSet<EquivClassId>,
+    mentioned: &mut BTreeSet<annot::TemplateVarId>,
 ) {
     match type_ {
         annot::Type::Bool => {}
@@ -1204,41 +1201,23 @@ fn add_mentioned_classes(
 }
 
 #[derive(Clone, Debug)]
-struct ExternVars(Vec<EquivClassId>); // Indexed by RepVarId
+struct Params(Vec<annot::TemplateVarId>); // Indexed by annot::RepParamId
 
-#[derive(Clone, Debug)]
-struct SccExternVars {
-    val_externs: BTreeMap<mono::CustomGlobalId, ExternVars>,
-    lam_externs: BTreeMap<lifted::LamId, ExternVars>,
-}
+fn find_params(scc: &SolverScc, equiv_classes: &EquivClasses) -> Params {
+    let mut mentioned = BTreeSet::new();
 
-fn find_extern_vars(scc: &SolverScc, equiv_classes: &EquivClasses) -> SccExternVars {
-    SccExternVars {
-        val_externs: scc
-            .val_sigs
-            .iter()
-            .map(|(&val_id, sig)| {
-                let mut mentioned = BTreeSet::new();
-                add_mentioned_classes(equiv_classes, sig, &mut mentioned);
-                (val_id, ExternVars(mentioned.into_iter().collect()))
-            })
-            .collect(),
-
-        lam_externs: scc
-            .lam_sigs
-            .iter()
-            .map(|(&lam_id, sig)| {
-                let mut mentioned = BTreeSet::new();
-
-                for capture in &sig.captures {
-                    add_mentioned_classes(equiv_classes, capture, &mut mentioned);
-                }
-
-                add_mentioned_classes(equiv_classes, &sig.arg, &mut mentioned);
-                add_mentioned_classes(equiv_classes, &sig.ret, &mut mentioned);
-
-                (lam_id, ExternVars(mentioned.into_iter().collect()))
-            })
-            .collect(),
+    for sig in scc.val_sigs.values() {
+        add_mentioned_classes(equiv_classes, sig, &mut mentioned);
     }
+
+    for sig in scc.lam_sigs.values() {
+        for capture in &sig.captures {
+            add_mentioned_classes(equiv_classes, capture, &mut mentioned);
+        }
+
+        add_mentioned_classes(equiv_classes, &sig.arg, &mut mentioned);
+        add_mentioned_classes(equiv_classes, &sig.ret, &mut mentioned);
+    }
+
+    Params(mentioned.into_iter().collect())
 }
