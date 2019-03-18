@@ -2115,3 +2115,35 @@ fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
         })
         .collect()
 }
+
+pub fn annot_closures(program: lifted::Program) -> annot::Program {
+    let typedefs = parameterize_typedefs(&program.custom_types);
+
+    let mut annot_vals = vec![None; program.vals.len()];
+    let mut annot_lams = vec![None; program.lams.len()];
+
+    let mut templates = Vec::new();
+
+    let sccs = item_sccs(&program);
+
+    for scc in sccs {
+        solve_scc(
+            &typedefs,
+            &program.vals,
+            &program.lams,
+            &mut annot_vals,
+            &mut annot_lams,
+            &mut templates,
+            &scc.vals,
+            &scc.lams,
+        );
+    }
+
+    annot::Program {
+        custom_types: typedefs,
+        templates,
+        vals: annot_vals.into_iter().map(Option::unwrap).collect(),
+        lams: annot_lams.into_iter().map(Option::unwrap).collect(),
+        main: program.main,
+    }
+}
