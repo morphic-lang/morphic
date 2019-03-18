@@ -4,13 +4,8 @@ use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp};
 
-use std::collections::BTreeSet;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RepParamId(pub usize);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TemplateVarId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
@@ -33,71 +28,61 @@ pub enum Type<Rep> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TemplateId(pub usize);
 
-#[derive(Clone, Debug)]
-pub enum Constraint {
-    Lam(
-        TemplateVarId, // Representation which must support the given lambda
-        lifted::LamId,
-        Vec<TemplateVarId>, // Parameters of the lambda
-    ),
-    Template(TemplateId, Vec<TemplateVarId>),
-    ArithOp(
-        TemplateVarId, // Representation which must support the given operation
-        Op,
-    ),
-    ArrayOp(
-        TemplateVarId, // Representation which must support the given operation
-        ArrayOp,
-        Type<TemplateVarId>, // Array item type
-    ),
-    ArrayReplace(
-        TemplateVarId,       // Representation which must support the given operation
-        Type<TemplateVarId>, // Array item type
-    ),
-    Ctor(
-        TemplateVarId, // Representation which must support the given operation
-        mono::CustomTypeId,
-        Vec<TemplateVarId>, // Parameters of the type being constructed
-        res::VariantId,
-    ),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InCycle {
+    NoCycle,
+    Cycle,
 }
 
 #[derive(Clone, Debug)]
 pub struct Template {
-    pub num_vars: usize,
-    pub params: Vec<TemplateVarId>, // Indexed by RepParamId
-    pub constraints: Vec<Constraint>,
+    pub in_cycle: InCycle,
+    pub num_params: usize,
+    pub requirements: Vec<Requirement>,
+}
 
-    pub deps: Vec<BTreeSet<TemplateVarId>>, // Indexed by TemplateVarId
-    pub param_deps: Vec<BTreeSet<RepParamId>>, // Indexed by RepParamId
+#[derive(Clone, Debug)]
+pub enum Requirement {
+    Lam(lifted::LamId, Vec<Solution>),
+    Template(TemplateId, Vec<Solution>),
+    ArithOp(Op),
+    ArrayOp(ArrayOp, Type<Solution>),
+    ArrayReplace(Type<Solution>),
+    Ctor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
+}
+
+#[derive(Clone, Debug)]
+pub enum Solution {
+    Param(RepParamId),
+    MinSolutionTo(TemplateId, Vec<RepParamId>),
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr {
     ArithOp(Op),
-    ArrayOp(ArrayOp, Type<TemplateVarId>),
-    Ctor(mono::CustomTypeId, Vec<TemplateVarId>, res::VariantId),
-    Global(mono::CustomGlobalId, Vec<TemplateVarId>),
+    ArrayOp(ArrayOp, Type<Solution>),
+    Ctor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
+    Global(mono::CustomGlobalId, Vec<Solution>),
     Local(lifted::LocalId),
     Capture(lifted::CaptureId),
     Tuple(Vec<Expr>),
     Lam(
         lifted::LamId,
-        Vec<TemplateVarId>, // Parameters on the lambda
-        TemplateVarId,      // Representation of the lambda expression
-        Vec<Expr>,          // Captures
+        Vec<Solution>, // Parameters on the lambda
+        Solution,      // Representation of the lambda expression
+        Vec<Expr>,     // Captures
     ),
     App(
         Purity,
-        TemplateVarId, // Representation being called
+        Solution, // Representation being called
         Box<Expr>,
         Box<Expr>,
     ),
-    Match(Box<Expr>, Vec<(Pattern, Expr)>, Type<TemplateVarId>),
+    Match(Box<Expr>, Vec<(Pattern, Expr)>, Type<Solution>),
     Let(Pattern, Box<Expr>, Box<Expr>),
 
     ArrayLit(
-        Type<TemplateVarId>, // Item type
+        Type<Solution>, // Item type
         Vec<Expr>,
     ),
     BoolLit(bool),
@@ -108,12 +93,12 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub enum Pattern {
-    Any(Type<TemplateVarId>),
-    Var(Type<TemplateVarId>),
+    Any(Type<Solution>),
+    Var(Type<Solution>),
     Tuple(Vec<Pattern>),
     Ctor(
         mono::CustomTypeId,
-        Vec<TemplateVarId>,
+        Vec<Solution>,
         res::VariantId,
         Option<Box<Pattern>>,
     ),
@@ -124,8 +109,21 @@ pub enum Pattern {
 }
 
 #[derive(Clone, Debug)]
+pub struct Params {
+    // Indexed by RepParamId
+    // Number of parameters is implicit in the length of this vector
+    pub requirements: Vec<(TemplateId, Vec<RepParamId>)>,
+}
+
+impl Params {
+    pub fn num_params(&self) -> usize {
+        self.requirements.len()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct ValDef {
-    pub template: TemplateId,
+    pub params: Params,
     pub type_: Type<RepParamId>,
     pub body: Expr,
 }
@@ -133,7 +131,7 @@ pub struct ValDef {
 #[derive(Clone, Debug)]
 pub struct LamDef {
     pub purity: Purity,
-    pub template: TemplateId,
+    pub params: Params,
     pub captures: Vec<Type<RepParamId>>,
     pub arg: Type<RepParamId>,
     pub ret: Type<RepParamId>,
