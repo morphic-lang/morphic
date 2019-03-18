@@ -105,5 +105,9 @@ fn run(config: Config) -> Result<(), Error> {
 
     println!("Lambda-lifted AST:\n{:#?}", lifted);
 
+    let annot = annot_closures::annot_closures(lifted);
+
+    println!("Closure-annotated AST:\n{:#?}", annot);
+
     Ok(())
 }

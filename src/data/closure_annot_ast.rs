@@ -5,74 +5,84 @@ use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RepVarId(pub usize);
+pub struct RepParamId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
     pub num_params: usize,
-    pub variants: Vec<Option<Type>>,
+    pub variants: Vec<Option<Type<RepParamId>>>,
 }
 
 #[derive(Clone, Debug)]
-pub enum Type {
+pub enum Type<Rep> {
     Bool,
     Int,
     Float,
     Text,
-    Array(Box<Type>),
-    Tuple(Vec<Type>),
-    Func(Purity, RepVarId, Box<Type>, Box<Type>),
-    Custom(mono::CustomTypeId, Vec<RepVarId>),
+    Array(Box<Type<Rep>>),
+    Tuple(Vec<Type<Rep>>),
+    Func(Purity, Rep, Box<Type<Rep>>, Box<Type<Rep>>),
+    Custom(mono::CustomTypeId, Vec<Rep>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AliasId(pub usize);
+pub struct TemplateId(pub usize);
 
-#[derive(Clone, Debug)]
-pub enum Requirement {
-    Lam(lifted::LamId, Vec<RepVarId>),
-    Alias(AliasId, Vec<RepVarId>),
-    ArithOp(Op),
-    ArrayOp(ArrayOp, Type),
-    ArrayReplace(Type),
-    Ctor(mono::CustomTypeId, Vec<RepVarId>, res::VariantId),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InCycle {
+    NoCycle,
+    Cycle,
 }
 
 #[derive(Clone, Debug)]
-pub struct Alias {
+pub struct Template {
+    pub in_cycle: InCycle,
     pub num_params: usize,
-    // Invariant: each internal var's requirements are expressed entirely in terms of vars with
-    // strictly lower ids
-    pub internal_vars: Vec<Vec<Requirement>>,
-    pub reqs: Vec<Requirement>,
+    pub requirements: Vec<Requirement>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Requirement {
+    Lam(lifted::LamId, Vec<Solution>),
+    Template(TemplateId, Vec<Solution>),
+    ArithOp(Op),
+    ArrayOp(ArrayOp, Type<Solution>),
+    ArrayReplace(Type<Solution>),
+    Ctor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
+}
+
+#[derive(Clone, Debug)]
+pub enum Solution {
+    Param(RepParamId),
+    MinSolutionTo(TemplateId, Vec<RepParamId>),
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr {
     ArithOp(Op),
-    ArrayOp(ArrayOp, Type),
-    Ctor(mono::CustomTypeId, Vec<RepVarId>, res::VariantId),
-    Global(mono::CustomGlobalId, Vec<RepVarId>),
+    ArrayOp(ArrayOp, Type<Solution>),
+    Ctor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
+    Global(mono::CustomGlobalId, Vec<Solution>),
     Local(lifted::LocalId),
     Capture(lifted::CaptureId),
     Tuple(Vec<Expr>),
     Lam(
         lifted::LamId,
-        Vec<RepVarId>, // Parameters on the lambda
-        RepVarId,      // Representation of the lambda expression
+        Vec<Solution>, // Parameters on the lambda
+        Solution,      // Representation of the lambda expression
         Vec<Expr>,     // Captures
     ),
     App(
         Purity,
-        RepVarId, // Representation being called
+        Solution, // Representation being called
         Box<Expr>,
         Box<Expr>,
     ),
-    Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
+    Match(Box<Expr>, Vec<(Pattern, Expr)>, Type<Solution>),
     Let(Pattern, Box<Expr>, Box<Expr>),
 
     ArrayLit(
-        Type, // Item type
+        Type<Solution>, // Item type
         Vec<Expr>,
     ),
     BoolLit(bool),
@@ -83,12 +93,12 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub enum Pattern {
-    Any(Type),
-    Var(Type),
+    Any(Type<Solution>),
+    Var(Type<Solution>),
     Tuple(Vec<Pattern>),
     Ctor(
         mono::CustomTypeId,
-        Vec<RepVarId>,
+        Vec<Solution>,
         res::VariantId,
         Option<Box<Pattern>>,
     ),
@@ -99,34 +109,32 @@ pub enum Pattern {
 }
 
 #[derive(Clone, Debug)]
-pub struct TypeScheme {
-    pub params: Vec<Vec<Requirement>>,
-    // Invariant: mentions only external vars (vars with id < params.len())
-    pub body: Type,
+pub struct Params {
+    // Indexed by RepParamId
+    // Number of parameters is implicit in the length of this vector
+    pub requirements: Vec<(TemplateId, Vec<RepParamId>)>,
+}
+
+impl Params {
+    pub fn num_params(&self) -> usize {
+        self.requirements.len()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ValDef {
-    pub type_: TypeScheme,
-    // Invariant: each internal var's requirements are expressed entirely in terms of vars with
-    // strictly lower ids.
-    pub internal_vars: Vec<Vec<Requirement>>,
+    pub params: Params,
+    pub type_: Type<RepParamId>,
     pub body: Expr,
 }
 
 #[derive(Clone, Debug)]
 pub struct LamDef {
     pub purity: Purity,
-    pub params: Vec<Vec<Requirement>>,
-    // Invariant: mentions only external vars (vars with id < num_params)
-    pub captures: Vec<Type>,
-    // Same as above
-    pub arg: Type,
-    // Same as above
-    pub ret: Type,
-    // Invariant: each internal var's requirements are expressed entirely in terms of vars with
-    // strictly lower ids.
-    pub internal_vars: Vec<Vec<Requirement>>,
+    pub params: Params,
+    pub captures: Vec<Type<RepParamId>>,
+    pub arg: Type<RepParamId>,
+    pub ret: Type<RepParamId>,
     pub arg_pat: Pattern,
     pub body: Expr,
 }
@@ -134,8 +142,8 @@ pub struct LamDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: Vec<TypeDef>,
+    pub templates: Vec<Template>,
     pub vals: Vec<ValDef>,
     pub lams: Vec<LamDef>,
-    pub aliases: Vec<Alias>,
     pub main: mono::CustomGlobalId,
 }
