@@ -1982,3 +1982,136 @@ fn solve_scc(
         annot_lams[lam_id.0] = Some(annot_lam);
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Item {
+    Val(mono::CustomGlobalId),
+    Lam(lifted::LamId),
+}
+
+fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
+    match expr {
+        lifted::Expr::ArithOp(_) => {}
+
+        lifted::Expr::ArrayOp(_, _) => {}
+
+        lifted::Expr::Ctor(_, _) => {}
+
+        &lifted::Expr::Global(dep) => {
+            deps.insert(Item::Val(dep));
+        }
+
+        lifted::Expr::Local(_) => {}
+
+        lifted::Expr::Capture(_) => {}
+
+        lifted::Expr::Tuple(items) => {
+            for item in items {
+                add_expr_deps(deps, item);
+            }
+        }
+
+        lifted::Expr::Lam(dep, captures) => {
+            deps.insert(Item::Lam(*dep));
+
+            for capture in captures {
+                add_expr_deps(deps, capture);
+            }
+        }
+
+        lifted::Expr::App(_purity, func, arg) => {
+            add_expr_deps(deps, func);
+            add_expr_deps(deps, arg);
+        }
+
+        lifted::Expr::Match(discrim, cases, _result_type) => {
+            add_expr_deps(deps, discrim);
+
+            for (_pat, body) in cases {
+                add_expr_deps(deps, body);
+            }
+        }
+
+        lifted::Expr::Let(_lhs, rhs, body) => {
+            add_expr_deps(deps, rhs);
+            add_expr_deps(deps, body);
+        }
+
+        lifted::Expr::ArrayLit(_item_type, items) => {
+            for item in items {
+                add_expr_deps(deps, item);
+            }
+        }
+
+        lifted::Expr::BoolLit(_) => {}
+        lifted::Expr::IntLit(_) => {}
+        lifted::Expr::FloatLit(_) => {}
+        lifted::Expr::TextLit(_) => {}
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ItemScc {
+    vals: Vec<mono::CustomGlobalId>,
+    lams: Vec<lifted::LamId>,
+}
+
+fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
+    fn item_to_node(program: &lifted::Program, item: Item) -> graph::NodeId {
+        match item {
+            Item::Val(mono::CustomGlobalId(id)) => graph::NodeId(id),
+            Item::Lam(lifted::LamId(id)) => graph::NodeId(program.vals.len() + id),
+        }
+    }
+
+    fn node_to_item(program: &lifted::Program, node: graph::NodeId) -> Item {
+        if node.0 < program.vals.len() {
+            Item::Val(mono::CustomGlobalId(node.0))
+        } else {
+            Item::Lam(lifted::LamId(node.0 - program.vals.len()))
+        }
+    }
+
+    let val_deps = program.vals.iter().map(|val_def| {
+        let mut deps = BTreeSet::new();
+        add_expr_deps(&mut deps, &val_def.body);
+        deps
+    });
+
+    let lam_deps = program.lams.iter().map(|lam_def| {
+        let mut deps = BTreeSet::new();
+        add_expr_deps(&mut deps, &lam_def.body);
+        deps
+    });
+
+    let dep_graph = Graph {
+        edges_out: (val_deps.chain(lam_deps))
+            .map(|deps| {
+                deps.into_iter()
+                    .map(|item| item_to_node(program, item))
+                    .collect()
+            })
+            .collect(),
+    };
+
+    let sccs = graph::strongly_connected(&dep_graph);
+
+    sccs.into_iter()
+        .map(|scc| {
+            let mut scc_vals = Vec::new();
+            let mut scc_lams = Vec::new();
+
+            for node in scc {
+                match node_to_item(program, node) {
+                    Item::Val(val_id) => scc_vals.push(val_id),
+                    Item::Lam(lam_id) => scc_lams.push(lam_id),
+                }
+            }
+
+            ItemScc {
+                vals: scc_vals,
+                lams: scc_lams,
+            }
+        })
+        .collect()
+}
