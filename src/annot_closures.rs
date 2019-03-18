@@ -121,24 +121,35 @@ fn parameterize_typedef_scc(
 
     let mut id_gen = ParamIdGen(0);
 
-    for type_id in scc {
-        let typedef = &typedefs[type_id.0];
-        let parameterized_variants = typedef
-            .variants
-            .iter()
-            .map(|variant| {
-                variant
-                    .as_ref()
-                    .map(|content| parameterize(parameterized, num_params, &mut id_gen, content))
-            })
-            .collect();
+    let to_populate: BTreeMap<mono::CustomTypeId, _> = scc
+        .iter()
+        .map(|&type_id| {
+            let typedef = &typedefs[type_id.0];
+            let parameterized_variants = typedef
+                .variants
+                .iter()
+                .map(|variant| {
+                    variant.as_ref().map(|content| {
+                        parameterize(parameterized, num_params, &mut id_gen, content)
+                    })
+                })
+                .collect();
 
+            debug_assert!(parameterized[type_id.0].is_none());
+
+            (
+                type_id,
+                annot::TypeDef {
+                    num_params,
+                    variants: parameterized_variants,
+                },
+            )
+        })
+        .collect();
+
+    for (type_id, typedef) in to_populate {
         debug_assert!(parameterized[type_id.0].is_none());
-
-        parameterized[type_id.0] = Some(annot::TypeDef {
-            num_params,
-            variants: parameterized_variants,
-        });
+        parameterized[type_id.0] = Some(typedef);
     }
 }
 
