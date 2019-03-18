@@ -1846,3 +1846,139 @@ fn extract_expr(
         SolverExpr::TextLit(text) => annot::Expr::TextLit(text.clone()),
     }
 }
+
+fn extract_param(
+    equiv_classes: &EquivClasses,
+    class_solutions: &[annot::Solution],
+    var: SolverVarId,
+) -> annot::RepParamId {
+    match &class_solutions[equiv_classes.class(var).0] {
+        &annot::Solution::Param(param) => param,
+        _ => unreachable!(),
+    }
+}
+
+fn extract_sig_type(
+    equiv_classes: &EquivClasses,
+    class_solutions: &[annot::Solution],
+    type_: &annot::Type<SolverVarId>,
+) -> annot::Type<annot::RepParamId> {
+    match type_ {
+        annot::Type::Bool => annot::Type::Bool,
+        annot::Type::Int => annot::Type::Int,
+        annot::Type::Float => annot::Type::Float,
+        annot::Type::Text => annot::Type::Text,
+
+        annot::Type::Array(item_type) => annot::Type::Array(Box::new(extract_sig_type(
+            equiv_classes,
+            class_solutions,
+            item_type,
+        ))),
+
+        annot::Type::Tuple(items) => annot::Type::Tuple(
+            items
+                .iter()
+                .map(|item| extract_sig_type(equiv_classes, class_solutions, item))
+                .collect(),
+        ),
+
+        annot::Type::Func(purity, var, arg, ret) => annot::Type::Func(
+            *purity,
+            extract_param(equiv_classes, class_solutions, *var),
+            Box::new(extract_sig_type(equiv_classes, class_solutions, arg)),
+            Box::new(extract_sig_type(equiv_classes, class_solutions, ret)),
+        ),
+
+        annot::Type::Custom(custom, vars) => annot::Type::Custom(
+            *custom,
+            vars.iter()
+                .map(|&var| extract_param(equiv_classes, class_solutions, var))
+                .collect(),
+        ),
+    }
+}
+
+fn solve_scc(
+    typedefs: &[annot::TypeDef],
+    vals: &[lifted::ValDef],
+    lams: &[lifted::LamDef],
+    annot_vals: &mut [Option<annot::ValDef>],
+    annot_lams: &mut [Option<annot::LamDef>],
+    templates: &mut Vec<annot::Template>,
+    scc_vals: &[mono::CustomGlobalId],
+    scc_lams: &[lifted::LamId],
+) {
+    let instantiated = instantiate_scc(
+        typedefs,
+        &annot_vals,
+        &annot_lams,
+        vals,
+        lams,
+        scc_vals,
+        scc_lams,
+    );
+
+    let equiv_classes = solve_equiv_classes(&instantiated.constraints);
+
+    let params = find_params(&instantiated, &equiv_classes);
+
+    let req_deps = requirement_deps(&equiv_classes, &params, &instantiated.constraints);
+
+    let reqs = consolidate_class_requirements(&equiv_classes, instantiated.constraints);
+
+    let solutions = solve_requirements(&equiv_classes, &params, &req_deps, &reqs, templates);
+
+    for val_id in scc_vals {
+        let annot_val = annot::ValDef {
+            params: annot::Params {
+                requirements: solutions.param_reqs.clone(),
+            },
+            type_: extract_sig_type(
+                &equiv_classes,
+                &solutions.class_solutions,
+                &instantiated.val_sigs[val_id],
+            ),
+            body: extract_expr(
+                &equiv_classes,
+                &params,
+                &solutions.class_solutions,
+                &instantiated.solver_vals[val_id],
+            ),
+        };
+
+        debug_assert!(annot_vals[val_id.0].is_none());
+        annot_vals[val_id.0] = Some(annot_val);
+    }
+
+    for lam_id in scc_lams {
+        let solver_sig = &instantiated.lam_sigs[lam_id];
+
+        let (solver_pat, solver_body) = &instantiated.solver_lams[lam_id];
+
+        let annot_lam = annot::LamDef {
+            purity: solver_sig.purity,
+            params: annot::Params {
+                requirements: solutions.param_reqs.clone(),
+            },
+            captures: solver_sig
+                .captures
+                .iter()
+                .map(|capture_type| {
+                    extract_sig_type(&equiv_classes, &solutions.class_solutions, capture_type)
+                })
+                .collect(),
+            arg: extract_sig_type(&equiv_classes, &solutions.class_solutions, &solver_sig.arg),
+            ret: extract_sig_type(&equiv_classes, &solutions.class_solutions, &solver_sig.ret),
+            arg_pat: extract_pattern(&equiv_classes, &solutions.class_solutions, solver_pat),
+            body: extract_expr(
+                &equiv_classes,
+                &params,
+                &solutions.class_solutions,
+                solver_body,
+            ),
+        };
+
+        debug_assert!(annot_lams[lam_id.0].is_none());
+        annot_lams[lam_id.0] = Some(annot_lam);
+    }
+}
