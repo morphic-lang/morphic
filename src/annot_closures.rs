@@ -1644,3 +1644,205 @@ fn solve_requirements(
         param_reqs: param_reqs.into_iter().map(Option::unwrap).collect(),
     }
 }
+
+fn extract_type(
+    equiv_classes: &EquivClasses,
+    class_solutions: &[annot::Solution],
+    type_: &annot::Type<SolverVarId>,
+) -> annot::Type<annot::Solution> {
+    match type_ {
+        annot::Type::Bool => annot::Type::Bool,
+        annot::Type::Int => annot::Type::Int,
+        annot::Type::Float => annot::Type::Float,
+        annot::Type::Text => annot::Type::Text,
+
+        annot::Type::Array(item_type) => annot::Type::Array(Box::new(extract_type(
+            equiv_classes,
+            class_solutions,
+            item_type,
+        ))),
+
+        annot::Type::Tuple(items) => annot::Type::Tuple(
+            items
+                .iter()
+                .map(|item| extract_type(equiv_classes, class_solutions, item))
+                .collect(),
+        ),
+
+        annot::Type::Func(purity, var, arg, ret) => annot::Type::Func(
+            *purity,
+            class_solutions[equiv_classes.class(*var).0].clone(),
+            Box::new(extract_type(equiv_classes, class_solutions, arg)),
+            Box::new(extract_type(equiv_classes, class_solutions, ret)),
+        ),
+
+        annot::Type::Custom(custom, vars) => annot::Type::Custom(
+            *custom,
+            vars.iter()
+                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
+                .collect(),
+        ),
+    }
+}
+
+fn extract_pattern(
+    equiv_classes: &EquivClasses,
+    class_solutions: &[annot::Solution],
+    pat: &SolverPattern,
+) -> annot::Pattern {
+    match pat {
+        SolverPattern::Any(type_) => {
+            annot::Pattern::Any(extract_type(equiv_classes, class_solutions, type_))
+        }
+
+        SolverPattern::Var(type_) => {
+            annot::Pattern::Var(extract_type(equiv_classes, class_solutions, type_))
+        }
+
+        SolverPattern::Tuple(items) => annot::Pattern::Tuple(
+            items
+                .iter()
+                .map(|item| extract_pattern(equiv_classes, class_solutions, item))
+                .collect(),
+        ),
+
+        SolverPattern::Ctor(custom, vars, variant, content) => annot::Pattern::Ctor(
+            *custom,
+            vars.iter()
+                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
+                .collect(),
+            *variant,
+            content
+                .as_ref()
+                .map(|content| Box::new(extract_pattern(equiv_classes, class_solutions, content))),
+        ),
+
+        &SolverPattern::BoolConst(val) => annot::Pattern::BoolConst(val),
+        &SolverPattern::IntConst(val) => annot::Pattern::IntConst(val),
+        &SolverPattern::FloatConst(val) => annot::Pattern::FloatConst(val),
+
+        SolverPattern::TextConst(text) => annot::Pattern::TextConst(text.clone()),
+    }
+}
+
+fn extract_expr(
+    equiv_classes: &EquivClasses,
+    params: &Params,
+    class_solutions: &[annot::Solution],
+    expr: &SolverExpr,
+) -> annot::Expr {
+    match expr {
+        &SolverExpr::ArithOp(op) => annot::Expr::ArithOp(op),
+
+        SolverExpr::ArrayOp(op, item_type) => {
+            annot::Expr::ArrayOp(*op, extract_type(equiv_classes, class_solutions, item_type))
+        }
+
+        SolverExpr::Ctor(custom, vars, variant) => annot::Expr::Ctor(
+            *custom,
+            vars.iter()
+                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
+                .collect(),
+            *variant,
+        ),
+
+        SolverExpr::Global(global, vars) => annot::Expr::Global(
+            *global,
+            vars.iter()
+                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
+                .collect(),
+        ),
+
+        SolverExpr::PendingGlobal(global) => annot::Expr::Global(
+            *global,
+            params
+                .0
+                .iter()
+                .map(|param| class_solutions[param.0].clone())
+                .collect(),
+        ),
+
+        &SolverExpr::Local(local) => annot::Expr::Local(local),
+
+        &SolverExpr::Capture(capture) => annot::Expr::Capture(capture),
+
+        SolverExpr::Tuple(items) => annot::Expr::Tuple(
+            items
+                .iter()
+                .map(|item| extract_expr(equiv_classes, params, class_solutions, item))
+                .collect(),
+        ),
+
+        SolverExpr::Lam(lam, rep_params, lam_rep_var, captures) => annot::Expr::Lam(
+            *lam,
+            rep_params
+                .iter()
+                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
+                .collect(),
+            class_solutions[equiv_classes.class(*lam_rep_var).0].clone(),
+            captures
+                .iter()
+                .map(|capture| extract_expr(equiv_classes, params, class_solutions, capture))
+                .collect(),
+        ),
+
+        SolverExpr::PendingLam(lam, lam_rep_var, captures) => annot::Expr::Lam(
+            *lam,
+            params
+                .0
+                .iter()
+                .map(|param| class_solutions[param.0].clone())
+                .collect(),
+            class_solutions[equiv_classes.class(*lam_rep_var).0].clone(),
+            captures
+                .iter()
+                .map(|capture| extract_expr(equiv_classes, params, class_solutions, capture))
+                .collect(),
+        ),
+
+        SolverExpr::App(purity, func_rep_var, func, arg) => annot::Expr::App(
+            *purity,
+            class_solutions[equiv_classes.class(*func_rep_var).0].clone(),
+            Box::new(extract_expr(equiv_classes, params, class_solutions, func)),
+            Box::new(extract_expr(equiv_classes, params, class_solutions, arg)),
+        ),
+
+        SolverExpr::Match(discrim, cases, result_type) => annot::Expr::Match(
+            Box::new(extract_expr(
+                equiv_classes,
+                params,
+                class_solutions,
+                discrim,
+            )),
+            cases
+                .iter()
+                .map(|(pat, body)| {
+                    (
+                        extract_pattern(equiv_classes, class_solutions, pat),
+                        extract_expr(equiv_classes, params, class_solutions, body),
+                    )
+                })
+                .collect(),
+            extract_type(equiv_classes, class_solutions, result_type),
+        ),
+
+        SolverExpr::Let(lhs, rhs, body) => annot::Expr::Let(
+            extract_pattern(equiv_classes, class_solutions, lhs),
+            Box::new(extract_expr(equiv_classes, params, class_solutions, rhs)),
+            Box::new(extract_expr(equiv_classes, params, class_solutions, body)),
+        ),
+
+        SolverExpr::ArrayLit(item_type, items) => annot::Expr::ArrayLit(
+            extract_type(equiv_classes, class_solutions, item_type),
+            items
+                .iter()
+                .map(|item| extract_expr(equiv_classes, params, class_solutions, item))
+                .collect(),
+        ),
+
+        &SolverExpr::BoolLit(val) => annot::Expr::BoolLit(val),
+        &SolverExpr::IntLit(val) => annot::Expr::IntLit(val),
+        &SolverExpr::FloatLit(val) => annot::Expr::FloatLit(val),
+        SolverExpr::TextLit(text) => annot::Expr::TextLit(text.clone()),
+    }
+}
