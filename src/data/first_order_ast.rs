@@ -84,9 +84,13 @@ pub enum Expr {
     Tuple(Vec<Expr>),
     Call(Purity, CustomFuncId, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
-    Let(Pattern, Box<Expr>, Box<Expr>),
+    Let(
+        Pattern,   // lhs
+        Box<Expr>, // rhs
+        Box<Expr>, // body
+    ),
 
-    ArrayLit(Type, Box<Expr>),
+    ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
     IntLit(i64),
     FloatLit(f64),
