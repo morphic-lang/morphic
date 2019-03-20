@@ -1,2 +1,7 @@
 /target
 **/*.rs.bk
+
+# Editor/system files
+.swp
+*~
+.DS_Store
