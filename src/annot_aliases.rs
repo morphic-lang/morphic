@@ -1,6 +1,6 @@
 use crate::data::first_order_ast as ast;
 use crate::graph::{self, Graph};
-use im_rc::{vector, Vector};
+use im_rc::Vector;
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -277,40 +277,47 @@ fn annot_expression(
     }
 }
 
-// Computes the `FieldPath`s in `type_` at which there is a name, and adds them to the end of `names`.
-fn add_names_from_type(
+// Computes the fields in `type_` at which there is a name
+fn get_names_in(
     type_defs: &[ast::TypeDef],
-    names: &mut Vec<FieldPath>,
     type_: &ast::Type,
-    prefix: FieldPath,
-) {
-    // note that the empty FieldPath refers to the variable in question itself; i.e. if a value
-    // contains a field `x` that is an array, it has a name `.x` but if a value *is* an array, then
-    // the name is `.`, represented as an empty Vector.
-    match type_ {
-        ast::Type::Bool | ast::Type::Int | ast::Type::Float => {}
-        ast::Type::Text => names.push(prefix),
-        ast::Type::Array(item_type) | ast::Type::HoleArray(item_type) => {
-            // The array itself:
-            names.push(prefix.clone());
-            // The names in elements of the array:
-            let mut new_prefix = prefix.clone();
-            new_prefix.push_back(FieldId::ArrayMembers);
-            add_names_from_type(type_defs, names, item_type, new_prefix);
-        }
-        ast::Type::Tuple(item_types) => {
-            for (i, item_type) in item_types.iter().enumerate() {
+) -> Vec<FieldPath> {
+    let mut names = Vec::new();
+    add_names_from_type(type_defs, &mut names, type_, Vector::new());
+    return names;
+
+    // Recursively appends paths to names in `type_` to `names`
+    fn add_names_from_type(
+        type_defs: &[ast::TypeDef],
+        names: &mut Vec<FieldPath>,
+        type_: &ast::Type,
+        prefix: FieldPath,
+    ) {
+        match type_ {
+            ast::Type::Bool | ast::Type::Int | ast::Type::Float => {}
+            ast::Type::Text => names.push(prefix),
+            ast::Type::Array(item_type) | ast::Type::HoleArray(item_type) => {
+                // The array itself:
+                names.push(prefix.clone());
+                // The names in elements of the array:
                 let mut new_prefix = prefix.clone();
-                new_prefix.push_back(FieldId::Field(i));
+                new_prefix.push_back(FieldId::ArrayMembers);
                 add_names_from_type(type_defs, names, item_type, new_prefix);
             }
-        }
-        ast::Type::Custom(ast::CustomTypeId(id)) => {
-            for (i, variant) in type_defs[*id].variants.iter().enumerate() {
-                if let Some(variant_type) = variant {
+            ast::Type::Tuple(item_types) => {
+                for (i, item_type) in item_types.iter().enumerate() {
                     let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(FieldId::Variant(ast::VariantId(i)));
-                    add_names_from_type(type_defs, names, variant_type, new_prefix);
+                    new_prefix.push_back(FieldId::Field(i));
+                    add_names_from_type(type_defs, names, item_type, new_prefix);
+                }
+            }
+            ast::Type::Custom(ast::CustomTypeId(id)) => {
+                for (i, variant) in type_defs[*id].variants.iter().enumerate() {
+                    if let Some(variant_type) = variant {
+                        let mut new_prefix = prefix.clone();
+                        new_prefix.push_back(FieldId::Variant(ast::VariantId(i)));
+                        add_names_from_type(type_defs, names, variant_type, new_prefix);
+                    }
                 }
             }
         }
@@ -324,8 +331,7 @@ fn annot_func(
 ) -> UniqueInfo {
     let mut locals = Vec::new();
     // Compute the names in the arg
-    let mut names = vec![];
-    add_names_from_type(type_defs, &mut names, &func.arg_type, vector![]);
+    let names = get_names_in(type_defs, &func.arg_type);
     let arg_unique_info = UniqueInfo {
         edges: names
             .into_iter()
@@ -466,6 +472,7 @@ pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use im_rc::vector;
 
     #[test]
     pub fn test_without_aliasing() {
