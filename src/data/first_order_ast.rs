@@ -26,27 +26,22 @@ pub struct TypeDef {
     pub variants: Vec<Option<Type>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
 #[derive(Clone, Debug)]
 pub enum ArithOp {
-    AddInt(Box<Expr>, Box<Expr>),
-    SubInt(Box<Expr>, Box<Expr>),
-    MulInt(Box<Expr>, Box<Expr>),
-    DivInt(Box<Expr>, Box<Expr>),
-    NegInt(Box<Expr>),
-
-    EqInt(Box<Expr>, Box<Expr>),
-    LtInt(Box<Expr>, Box<Expr>),
-    LteInt(Box<Expr>, Box<Expr>),
-
-    AddFloat(Box<Expr>, Box<Expr>),
-    SubFloat(Box<Expr>, Box<Expr>),
-    MulFloat(Box<Expr>, Box<Expr>),
-    DivFloat(Box<Expr>, Box<Expr>),
-    NegFloat(Box<Expr>),
-
-    EqFloat(Box<Expr>, Box<Expr>),
-    LtFloat(Box<Expr>, Box<Expr>),
-    LteFloat(Box<Expr>, Box<Expr>),
+    IntOp(BinOp, Box<Expr>, Box<Expr>),
+    FloatOp(BinOp, Box<Expr>, Box<Expr>),
+    IntCmp(std::cmp::Ordering, Box<Expr>, Box<Expr>),
+    FloatCmp(std::cmp::Ordering, Box<Expr>, Box<Expr>),
+    NegateInt(Box<Expr>),
+    NegateFloat(Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
@@ -89,9 +84,13 @@ pub enum Expr {
     Tuple(Vec<Expr>),
     Call(Purity, CustomFuncId, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
-    Let(Pattern, Box<Expr>, Box<Expr>),
+    Let(
+        Pattern,   // lhs
+        Box<Expr>, // rhs
+        Box<Expr>, // body
+    ),
 
-    ArrayLit(Type, Box<Expr>),
+    ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
     IntLit(i64),
     FloatLit(f64),

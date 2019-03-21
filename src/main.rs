@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod annot_aliases;
 mod annot_closures;
 mod check_exhaustive;
 mod check_main;
