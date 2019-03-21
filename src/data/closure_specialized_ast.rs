@@ -99,8 +99,8 @@ pub struct LamDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: Vec<TypeDef>,
-    pub reps: Vec<FuncRep>, // Indexed by OpaqueFuncRepId
-    pub vals: Vec<ValDef>, // Indexed by CustomGlobalId
-    pub lams: Vec<LamDef>, // Indexed by LamId
+    pub opaque_reps: Vec<FuncRep>, // Indexed by OpaqueFuncRepId
+    pub vals: Vec<ValDef>,         // Indexed by CustomGlobalId
+    pub lams: Vec<LamDef>,         // Indexed by LamId
     pub main: CustomGlobalId,
 }
