@@ -559,3 +559,57 @@ impl<'a> Context<'a> {
         val_id
     }
 }
+
+pub fn closure_specialize(program: annot::Program) -> special::Program {
+    let mut ctx = Context::new(&program);
+
+    let main_def = &program.vals[program.main.0];
+
+    // TODO: Using an opaque representation to monomorphize every representation parameter in main's
+    // SCC is a hack to avoid doing proper analysis of the dependencies among these representation
+    // variables.  There should be some way to do this dependency analysis during the prior closure
+    // annotation pass.
+
+    let main_param_opaque_ids: Vec<_> = (0..main_def.params.num_params())
+        .map(|_| special::OpaqueFuncRepId(fresh_id(&mut ctx.opaque_reps)))
+        .collect();
+
+    let main_param_opaque_reps: Vec<_> = main_param_opaque_ids
+        .iter()
+        .map(|&opaque_id| {
+            let mut param_rep = special::FuncRep(BTreeSet::new());
+            param_rep.0.insert(special::FuncCase::Opaque(opaque_id));
+            param_rep
+        })
+        .collect();
+
+    for (opaque_id, (template_id, template_params)) in main_param_opaque_ids
+        .iter()
+        .zip(main_def.params.requirements.iter())
+    {
+        let resolved_template_params = template_params
+            .iter()
+            .map(|param| main_param_opaque_reps[param.0].clone())
+            .collect();
+
+        let rep = ctx.resolve_template(Request {
+            head: *template_id,
+            params: resolved_template_params,
+        });
+
+        populate(&mut ctx.opaque_reps[opaque_id.0], rep);
+    }
+
+    let resolved_main_id = ctx.resolve_val(Request {
+        head: program.main,
+        params: main_param_opaque_reps,
+    });
+
+    special::Program {
+        custom_types: ctx.custom_types.into_iter().map(Option::unwrap).collect(),
+        opaque_reps: ctx.opaque_reps.into_iter().map(Option::unwrap).collect(),
+        vals: ctx.vals.into_iter().map(Option::unwrap).collect(),
+        lams: ctx.lams.into_iter().map(Option::unwrap).collect(),
+        main: resolved_main_id,
+    }
+}

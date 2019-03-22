@@ -111,5 +111,9 @@ fn run(config: Config) -> Result<(), Error> {
 
     println!("Closure-annotated AST:\n{:#?}", annot);
 
+    let special = closure_specialize::closure_specialize(annot);
+
+    println!("Closure-specialized AST:\n{:#?}", special);
+
     Ok(())
 }
