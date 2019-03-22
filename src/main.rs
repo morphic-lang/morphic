@@ -5,6 +5,7 @@ mod annot_closures;
 mod check_exhaustive;
 mod check_main;
 mod check_purity;
+mod closure_specialize;
 mod data;
 mod graph;
 mod lambda_lift;

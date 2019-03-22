@@ -10,7 +10,6 @@ pub struct CustomTypeId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
-    pub num_params: usize,
     pub variants: Vec<Option<Type>>,
 }
 
@@ -26,6 +25,7 @@ pub enum Type {
     Array(Box<Type>),
     Tuple(Vec<Type>),
     Func(FuncRep),
+    Custom(CustomTypeId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -47,7 +47,7 @@ pub enum FuncCase {
 #[derive(Clone, Debug)]
 pub enum Expr {
     ArithOp(Op, FuncRep),
-    ArrayOp(ArrayOp, FuncRep),
+    ArrayOp(ArrayOp, Type, FuncRep),
     Ctor(CustomTypeId, res::VariantId, FuncRep),
     Global(CustomGlobalId),
     Local(lifted::LocalId),
