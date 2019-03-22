@@ -779,7 +779,7 @@ pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError>
         .enumerate()
         .map(|(idx, def)| {
             infer_def(&program, def).map_err(|error| LocatedError {
-                def: program.custom_type_data[idx].type_name.0.clone(),
+                def: program.val_data[idx].val_name.0.clone(),
                 error,
             })
         })
