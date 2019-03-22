@@ -109,11 +109,16 @@ fn run(config: Config) -> Result<(), Error> {
 
     let annot = annot_closures::annot_closures(lifted);
 
-    println!("Closure-annotated AST:\n{:#?}", annot);
+    println!("Built closure-annotated AST");
 
     let special = closure_specialize::closure_specialize(annot);
 
-    println!("Closure-specialized AST:\n{:#?}", special);
+    println!("Built closure-specialized AST");
+    println!("Statistics:");
+    println!("  # custom types: {}", special.custom_types.len());
+    println!("  # opaque reps: {}", special.opaque_reps.len());
+    println!("  # globals: {}", special.vals.len());
+    println!("  # lambdas: {}", special.lams.len());
 
     Ok(())
 }
