@@ -376,15 +376,17 @@ impl<'a> Context<'a> {
 
     fn resolve_expr(&mut self, expr: &annot::Expr, params: &[special::FuncRep]) -> special::Expr {
         match expr {
-            // FIXME: We need to modfiy the closure-annotated AST to include function representation
-            // annotations on primitve operations.
-            annot::Expr::ArithOp(op) => special::Expr::ArithOp(*op, unimplemented!()),
-
-            annot::Expr::ArrayOp(op, item_type) => {
-                special::Expr::ArrayOp(*op, self.resolve_type(item_type, params), unimplemented!())
+            annot::Expr::ArithOp(op, solution) => {
+                special::Expr::ArithOp(*op, self.resolve_solution(solution, params))
             }
 
-            annot::Expr::Ctor(custom, custom_params, variant) => {
+            annot::Expr::ArrayOp(op, item_type, solution) => special::Expr::ArrayOp(
+                *op,
+                self.resolve_type(item_type, params),
+                self.resolve_solution(solution, params),
+            ),
+
+            annot::Expr::NullaryCtor(custom, custom_params, variant) => {
                 let resolved_custom_params = custom_params
                     .iter()
                     .map(|solution| self.resolve_solution(solution, params))
@@ -395,7 +397,23 @@ impl<'a> Context<'a> {
                     params: resolved_custom_params,
                 });
 
-                special::Expr::Ctor(resolved_custom, *variant, unimplemented!())
+                special::Expr::NullaryCtor(resolved_custom, *variant)
+            }
+
+            annot::Expr::Ctor(custom, custom_params, variant, solution) => {
+                let resolved_custom_params = custom_params
+                    .iter()
+                    .map(|solution| self.resolve_solution(solution, params))
+                    .collect();
+
+                let resolved_custom = self.resolve_custom_type(Request {
+                    head: *custom,
+                    params: resolved_custom_params,
+                });
+
+                let resolved_rep = self.resolve_solution(solution, params);
+
+                special::Expr::Ctor(resolved_custom, *variant, resolved_rep)
             }
 
             annot::Expr::Global(val_id, val_params) => {

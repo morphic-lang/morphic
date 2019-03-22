@@ -48,6 +48,7 @@ pub enum FuncCase {
 pub enum Expr {
     ArithOp(Op, FuncRep),
     ArrayOp(ArrayOp, Type, FuncRep),
+    NullaryCtor(CustomTypeId, res::VariantId),
     Ctor(CustomTypeId, res::VariantId, FuncRep),
     Global(CustomGlobalId),
     Local(lifted::LocalId),

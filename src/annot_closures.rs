@@ -234,9 +234,15 @@ enum SolverRequirement {
 
 #[derive(Clone, Debug)]
 enum SolverExpr {
-    ArithOp(Op),
-    ArrayOp(ArrayOp, annot::Type<SolverVarId>),
-    Ctor(mono::CustomTypeId, Vec<SolverVarId>, res::VariantId),
+    ArithOp(Op, SolverVarId),
+    ArrayOp(ArrayOp, annot::Type<SolverVarId>, SolverVarId),
+    NullaryCtor(mono::CustomTypeId, Vec<SolverVarId>, res::VariantId),
+    Ctor(
+        mono::CustomTypeId,
+        Vec<SolverVarId>,
+        res::VariantId,
+        SolverVarId,
+    ),
     Global(mono::CustomGlobalId, Vec<SolverVarId>),
     PendingGlobal(mono::CustomGlobalId), // A global belonging to the current SCC
     Local(lifted::LocalId),
@@ -552,7 +558,7 @@ fn instantiate_pattern(
     }
 }
 
-fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> annot::Type<SolverVarId> {
+fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> (annot::Type<SolverVarId>, SolverVarId) {
     let op_var = graph.new_var();
     graph.require(op_var, SolverRequirement::ArithOp(op));
 
@@ -613,7 +619,7 @@ fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> annot::Type<SolverVarId
         )
     }
 
-    match op {
+    let op_type = match op {
         Op::AddInt => int_binop(op_var),
         Op::SubInt => int_binop(op_var),
         Op::MulInt => int_binop(op_var),
@@ -633,21 +639,23 @@ fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> annot::Type<SolverVarId
         Op::EqFloat => float_comp(op_var),
         Op::LtFloat => float_comp(op_var),
         Op::LteFloat => float_comp(op_var),
-    }
+    };
+
+    (op_type, op_var)
 }
 
 fn array_op_type(
     graph: &mut ConstraintGraph,
     op: ArrayOp,
     solver_item_type: annot::Type<SolverVarId>,
-) -> annot::Type<SolverVarId> {
+) -> (annot::Type<SolverVarId>, SolverVarId) {
     let op_var = graph.new_var();
     graph.require(
         op_var,
         SolverRequirement::ArrayOp(op, solver_item_type.clone()),
     );
 
-    match op {
+    let op_type = match op {
         ArrayOp::Item => {
             let ret_closure_var = graph.new_var();
             graph.require(
@@ -700,7 +708,9 @@ fn array_op_type(
                 solver_item_type,
             ])),
         ),
-    }
+    };
+
+    (op_type, op_var)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -741,14 +751,17 @@ fn instantiate_expr(
 ) -> (SolverExpr, annot::Type<SolverVarId>) {
     match expr {
         &lifted::Expr::ArithOp(op) => {
-            let solver_type = arith_op_type(graph, op);
-            (SolverExpr::ArithOp(op), solver_type)
+            let (solver_type, op_var) = arith_op_type(graph, op);
+            (SolverExpr::ArithOp(op, op_var), solver_type)
         }
 
         lifted::Expr::ArrayOp(op, item_type) => {
             let solver_item_type = instantiate_mono(typedefs, graph, item_type);
-            let solver_type = array_op_type(graph, *op, solver_item_type.clone());
-            (SolverExpr::ArrayOp(*op, solver_item_type), solver_type)
+            let (solver_type, op_var) = array_op_type(graph, *op, solver_item_type.clone());
+            (
+                SolverExpr::ArrayOp(*op, solver_item_type, op_var),
+                solver_type,
+            )
         }
 
         &lifted::Expr::Ctor(custom, variant) => {
@@ -756,7 +769,7 @@ fn instantiate_expr(
 
             let params: Vec<_> = (0..typedef.num_params).map(|_| graph.new_var()).collect();
 
-            let solver_type = match &typedef.variants[variant.0] {
+            match &typedef.variants[variant.0] {
                 Some(content_type) => {
                     let op_closure_var = graph.new_var();
                     graph.require(
@@ -766,20 +779,26 @@ fn instantiate_expr(
 
                     let solver_content_type = instantiate_subst(&params, content_type);
 
-                    annot::Type::Func(
+                    let solver_type = annot::Type::Func(
                         Purity::Pure,
                         op_closure_var,
                         Box::new(solver_content_type),
                         Box::new(annot::Type::Custom(custom, params.clone())),
-                    )
+                    );
+
+                    let solver_expr = SolverExpr::Ctor(custom, params, variant, op_closure_var);
+
+                    (solver_expr, solver_type)
                 }
 
-                None => annot::Type::Custom(custom, params.clone()),
-            };
+                None => {
+                    let solver_type = annot::Type::Custom(custom, params.clone());
 
-            let solver_expr = SolverExpr::Ctor(custom, params, variant);
+                    let solver_expr = SolverExpr::NullaryCtor(custom, params, variant);
 
-            (solver_expr, solver_type)
+                    (solver_expr, solver_type)
+                }
+            }
         }
 
         &lifted::Expr::Global(global) => match &globals.annot_vals[global.0] {
@@ -1743,18 +1762,31 @@ fn extract_expr(
     expr: &SolverExpr,
 ) -> annot::Expr {
     match expr {
-        &SolverExpr::ArithOp(op) => annot::Expr::ArithOp(op),
-
-        SolverExpr::ArrayOp(op, item_type) => {
-            annot::Expr::ArrayOp(*op, extract_type(equiv_classes, class_solutions, item_type))
+        &SolverExpr::ArithOp(op, var) => {
+            annot::Expr::ArithOp(op, class_solutions[equiv_classes.class(var).0].clone())
         }
 
-        SolverExpr::Ctor(custom, vars, variant) => annot::Expr::Ctor(
+        SolverExpr::ArrayOp(op, item_type, var) => annot::Expr::ArrayOp(
+            *op,
+            extract_type(equiv_classes, class_solutions, item_type),
+            class_solutions[equiv_classes.class(*var).0].clone(),
+        ),
+
+        SolverExpr::NullaryCtor(custom, vars, variant) => annot::Expr::NullaryCtor(
             *custom,
             vars.iter()
                 .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
                 .collect(),
             *variant,
+        ),
+
+        SolverExpr::Ctor(custom, vars, variant, var) => annot::Expr::Ctor(
+            *custom,
+            vars.iter()
+                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
+                .collect(),
+            *variant,
+            class_solutions[equiv_classes.class(*var).0].clone(),
         ),
 
         SolverExpr::Global(global, vars) => annot::Expr::Global(

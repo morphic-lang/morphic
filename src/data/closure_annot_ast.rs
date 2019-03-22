@@ -59,9 +59,22 @@ pub enum Solution {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    ArithOp(Op),
-    ArrayOp(ArrayOp, Type<Solution>),
-    Ctor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
+    ArithOp(
+        Op,
+        Solution, // Representation of this function expression
+    ),
+    ArrayOp(
+        ArrayOp,
+        Type<Solution>,
+        Solution, // Representation of this function expression
+    ),
+    NullaryCtor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
+    Ctor(
+        mono::CustomTypeId,
+        Vec<Solution>,
+        res::VariantId,
+        Solution, // Representation of this function expressionn
+    ),
     Global(mono::CustomGlobalId, Vec<Solution>),
     Local(lifted::LocalId),
     Capture(lifted::CaptureId),
