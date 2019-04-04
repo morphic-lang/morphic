@@ -380,6 +380,7 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
         let def_resolved_data = mono::ValData {
             val_name: program.val_data[orig_idx].val_name.clone(),
             mono_with: inst_args,
+            is_wrapper: false,
         };
 
         val_defs_resolved.push(def_resolved);

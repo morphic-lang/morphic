@@ -81,6 +81,7 @@ pub struct ValDef {
 pub struct ValData {
     pub val_name: raw::ValName,
     pub mono_with: Vec<Type>,
+    pub is_wrapper: bool,
 }
 
 #[derive(Clone, Debug)]

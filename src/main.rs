@@ -13,6 +13,7 @@ mod lex;
 mod monomorphize;
 mod pretty_print;
 mod resolve;
+mod shield_functions;
 mod type_infer;
 
 use failure::Fail;
@@ -103,7 +104,9 @@ fn run(config: Config) -> Result<(), Error> {
 
     let mono = monomorphize::monomorphize(typed);
 
-    let lifted = lambda_lift::lambda_lift(mono);
+    let shielded = shield_functions::shield_functions(mono);
+
+    let lifted = lambda_lift::lambda_lift(shielded);
 
     println!("Lambda-lifted AST:\n{:#?}", lifted);
 
