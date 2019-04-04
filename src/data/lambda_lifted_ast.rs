@@ -1,7 +1,7 @@
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LamId(pub usize);
@@ -16,6 +16,7 @@ pub struct CaptureId(pub usize);
 pub enum Expr {
     ArithOp(Op),
     ArrayOp(ArrayOp, mono::Type),
+    IOOp(IOOp),
     Ctor(mono::CustomTypeId, res::VariantId),
     Global(mono::CustomGlobalId),
     Local(LocalId),
@@ -28,9 +29,9 @@ pub enum Expr {
 
     ArrayLit(mono::Type, Vec<Expr>),
     BoolLit(bool),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-    TextLit(String),
 }
 
 #[derive(Clone, Debug)]

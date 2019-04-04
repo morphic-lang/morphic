@@ -10,6 +10,7 @@ pub enum Token {
     UpperName(String),
     LowerName(String),
     FloatLit(f64),
+    ByteLit(u8),
     IntLit(i64),
     StringLit(String),
 
@@ -35,6 +36,11 @@ pub enum Token {
     BackSlash,
     Underscore,
 
+    EqualAmp,
+    LtAmp,
+    LteAmp,
+    GtAmp,
+    GteAmp,
     Add,
     Sub,
     Mul,
@@ -60,6 +66,7 @@ impl fmt::Display for Token {
             Token::UpperName(name) => write!(f, "{}", name),
             Token::LowerName(name) => write!(f, "{}", name),
             Token::FloatLit(val) => write!(f, "{}", val),
+            Token::ByteLit(val) => write!(f, "{}", val),
             Token::IntLit(val) => write!(f, "{}", val),
             Token::StringLit(text) => write!(f, "{:?}", text),
             Token::Type => write!(f, "type"),
@@ -81,6 +88,11 @@ impl fmt::Display for Token {
             Token::Arrow => write!(f, "->"),
             Token::BackSlash => write!(f, "\\"),
             Token::Underscore => write!(f, "_"),
+            Token::EqualAmp => write!(f, "=&"),
+            Token::LtAmp => write!(f, "<&"),
+            Token::LteAmp => write!(f, "<=&"),
+            Token::GtAmp => write!(f, ">&"),
+            Token::GteAmp => write!(f, ">=&"),
             Token::Add => write!(f, "+"),
             Token::Sub => write!(f, "-"),
             Token::Mul => write!(f, "*"),
@@ -193,6 +205,24 @@ fn consume_name(mut pos: usize, src: &str) -> Option<usize> {
             break;
         }
     }
+
+    Some(pos)
+}
+
+fn consume_byte(mut pos: usize, src: &str) -> Option<usize> {
+    if !char_at(src, pos)?.is_ascii_digit() {
+        return None;
+    }
+
+    while let Some(c) = char_at(src, pos) {
+        if c.is_ascii_digit() {
+            pos = next_pos(pos, src);
+        } else {
+            break;
+        }
+    }
+
+    pos = consume_exact(pos, src, "b")?;
 
     Some(pos)
 }
@@ -320,6 +350,17 @@ impl<'a> Iterator for Lexer<'a> {
             )));
         }
 
+        if let Some(byte_end) = consume_byte(self.pos, self.src) {
+            let byte_start = self.pos;
+            self.pos = byte_end;
+
+            return Some(Ok((
+                byte_start,
+                Token::ByteLit(self.src[byte_start..byte_end].parse().unwrap()),
+                byte_end,
+            )));
+        }
+
         if let Some(int_end) = consume_int(self.pos, self.src) {
             let int_start = self.pos;
             self.pos = int_end;
@@ -356,6 +397,12 @@ impl<'a> Iterator for Lexer<'a> {
                 ("->", Token::Arrow),
                 ("\\", Token::BackSlash),
                 ("_", Token::Underscore),
+                // Byte arithmetic
+                ("=&", Token::EqualAmp),
+                ("<&", Token::LteAmp),
+                ("<=&", Token::LtAmp),
+                (">&", Token::GtAmp),
+                (">=&", Token::GteAmp),
                 // Int arithmetic
                 ("+", Token::Add),
                 ("-", Token::Sub),

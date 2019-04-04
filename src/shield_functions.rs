@@ -10,6 +10,8 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
 
         mono::Expr::ArrayOp(_, _) => {}
 
+        mono::Expr::IOOp(_) => {}
+
         mono::Expr::Ctor(_, _) => {}
 
         mono::Expr::Global(other) => {
@@ -54,11 +56,11 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
 
         mono::Expr::BoolLit(_) => {}
 
+        mono::Expr::ByteLit(_) => {}
+
         mono::Expr::IntLit(_) => {}
 
         mono::Expr::FloatLit(_) => {}
-
-        mono::Expr::TextLit(_) => {}
     }
 }
 
@@ -96,6 +98,8 @@ fn rebind_references(
         mono::Expr::ArithOp(_) => {}
 
         mono::Expr::ArrayOp(_, _) => {}
+
+        mono::Expr::IOOp(_) => {}
 
         mono::Expr::Ctor(_, _) => {}
 
@@ -142,11 +146,11 @@ fn rebind_references(
 
         mono::Expr::BoolLit(_) => {}
 
+        mono::Expr::ByteLit(_) => {}
+
         mono::Expr::IntLit(_) => {}
 
         mono::Expr::FloatLit(_) => {}
-
-        mono::Expr::TextLit(_) => {}
     }
 }
 

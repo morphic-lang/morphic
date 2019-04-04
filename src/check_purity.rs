@@ -57,11 +57,11 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), ()> {
             Ok(())
         }
 
+        res::Expr::ByteLit(_) => Ok(()),
+
         res::Expr::IntLit(_) => Ok(()),
 
         res::Expr::FloatLit(_) => Ok(()),
-
-        res::Expr::TextLit(_) => Ok(()),
     }
 }
 

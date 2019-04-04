@@ -14,6 +14,7 @@ extern {
     "UpperName" => lex::Token::UpperName(<String>),
     "LowerName" => lex::Token::LowerName(<String>),
     "FloatLit" => lex::Token::FloatLit(<f64>),
+    "ByteLit" => lex::Token::ByteLit(<u8>),
     "IntLit" => lex::Token::IntLit(<i64>),
     "StringLit" => lex::Token::StringLit(<String>),
 
@@ -39,6 +40,11 @@ extern {
     "\\" => lex::Token::BackSlash,
     "_" => lex::Token::Underscore,
 
+    "=&" => lex::Token::EqualAmp,
+    "<&" => lex::Token::LtAmp,
+    "<=&" => lex::Token::LteAmp,
+    ">&" => lex::Token::GtAmp,
+    ">=&" => lex::Token::GteAmp,
     "+" => lex::Token::Add,
     "-" => lex::Token::Sub,
     "*" => lex::Token::Mul,
@@ -195,6 +201,8 @@ AtomicExpr: syntax::Expr = {
 
   <"IntLit"> => syntax::Expr::IntLit(<>),
 
+  <"ByteLit"> => syntax::Expr::ByteLit(<>),
+
   <"FloatLit"> => syntax::Expr::FloatLit(<>),
 
   <"StringLit"> => syntax::Expr::TextLit(<>),
@@ -236,6 +244,12 @@ ArithProdExpr: syntax::Expr = {
 
 ArithCompExpr: syntax::Expr = {
   <ArithProdExpr>,
+
+  <left: ArithProdExpr> "=&" <right: ArithProdExpr> => syntax::binop(syntax::Op::EqByte, left, right),
+  <left: ArithProdExpr> "<&" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtByte, left, right),
+  <left: ArithProdExpr> "<=&" <right: ArithProdExpr> => syntax::binop(syntax::Op::LteByte, left, right),
+  <left: ArithProdExpr> ">&" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtByte, right, left),
+  <left: ArithProdExpr> ">=&" <right: ArithProdExpr> => syntax::binop(syntax::Op::LteByte, right, left),
 
   <left: ArithProdExpr> "=" <right: ArithProdExpr> => syntax::binop(syntax::Op::EqInt, left, right),
   <left: ArithProdExpr> "<" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtInt, left, right),
@@ -298,9 +312,9 @@ Pattern: syntax::Pattern = {
 
   <"IntLit"> => syntax::Pattern::IntConst(<>),
 
-  <"FloatLit"> => syntax::Pattern::FloatConst(<>),
+  <"ByteLit"> => syntax::Pattern::ByteConst(<>),
 
-  <"StringLit"> => syntax::Pattern::TextConst(<>),
+  <"FloatLit"> => syntax::Pattern::FloatConst(<>),
 };
 
 Patterns: syntax::Pattern = {

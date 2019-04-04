@@ -82,6 +82,11 @@ fn resolve_expr(
             mono::Expr::ArrayOp(*op, resolve_type(type_insts, inst_args, &args[0]))
         }
 
+        typed::Expr::Global(res::GlobalId::IOOp(op), args) => {
+            debug_assert!(args.is_empty());
+            mono::Expr::IOOp(*op)
+        }
+
         typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, variant), args) => {
             debug_assert!(args.is_empty());
 
@@ -184,9 +189,9 @@ fn resolve_expr(
             mono::Expr::ArrayLit(type_resolved, item_resolved)
         }
 
+        &typed::Expr::ByteLit(val) => mono::Expr::ByteLit(val),
         &typed::Expr::IntLit(val) => mono::Expr::IntLit(val),
         &typed::Expr::FloatLit(val) => mono::Expr::FloatLit(val),
-        typed::Expr::TextLit(val) => mono::Expr::TextLit(val.clone()),
     }
 }
 
@@ -204,6 +209,11 @@ fn resolve_type(
             mono::Type::Bool
         }
 
+        res::Type::App(res::TypeId::Byte, args) => {
+            debug_assert!(args.is_empty());
+            mono::Type::Byte
+        }
+
         res::Type::App(res::TypeId::Int, args) => {
             debug_assert!(args.is_empty());
             mono::Type::Int
@@ -212,11 +222,6 @@ fn resolve_type(
         res::Type::App(res::TypeId::Float, args) => {
             debug_assert!(args.is_empty());
             mono::Type::Float
-        }
-
-        res::Type::App(res::TypeId::Text, args) => {
-            debug_assert!(args.is_empty());
-            mono::Type::Text
         }
 
         res::Type::App(res::TypeId::Array, args) => {
@@ -306,9 +311,9 @@ fn resolve_pattern(
 
         typed::Pattern::Ctor(_, _, _, _) => unreachable!(),
 
+        &typed::Pattern::ByteConst(val) => mono::Pattern::ByteConst(val),
         &typed::Pattern::IntConst(val) => mono::Pattern::IntConst(val),
         &typed::Pattern::FloatConst(val) => mono::Pattern::FloatConst(val),
-        typed::Pattern::TextConst(text) => mono::Pattern::TextConst(text.clone()),
     }
 }
 

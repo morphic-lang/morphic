@@ -5,15 +5,15 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 use crate::graph::{self, Graph};
 
 fn count_params(parameterized: &[Option<annot::TypeDef>], type_: &mono::Type) -> usize {
     match type_ {
         mono::Type::Bool => 0,
+        mono::Type::Byte => 0,
         mono::Type::Int => 0,
         mono::Type::Float => 0,
-        mono::Type::Text => 0,
         mono::Type::Array(item) => count_params(parameterized, item),
         mono::Type::Tuple(items) => items
             .iter()
@@ -50,9 +50,9 @@ fn parameterize(
 ) -> annot::Type<annot::RepParamId> {
     match type_ {
         mono::Type::Bool => annot::Type::Bool,
+        mono::Type::Byte => annot::Type::Byte,
         mono::Type::Int => annot::Type::Int,
         mono::Type::Float => annot::Type::Float,
-        mono::Type::Text => annot::Type::Text,
 
         mono::Type::Array(item) => annot::Type::Array(Box::new(parameterize(
             parameterized,
@@ -156,9 +156,9 @@ fn parameterize_typedef_scc(
 fn add_dependencies(type_: &mono::Type, deps: &mut BTreeSet<mono::CustomTypeId>) {
     match type_ {
         mono::Type::Bool => {}
+        mono::Type::Byte => {}
         mono::Type::Int => {}
         mono::Type::Float => {}
-        mono::Type::Text => {}
 
         mono::Type::Array(item) => {
             add_dependencies(item, deps);
@@ -229,6 +229,7 @@ enum SolverRequirement {
     ArithOp(Op),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>),
     ArrayReplace(annot::Type<SolverVarId>),
+    IOOp(IOOp),
     Ctor(mono::CustomTypeId, Vec<SolverVarId>, res::VariantId),
 }
 
@@ -236,6 +237,7 @@ enum SolverRequirement {
 enum SolverExpr {
     ArithOp(Op, SolverVarId),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>, SolverVarId),
+    IOOp(IOOp, SolverVarId),
     NullaryCtor(mono::CustomTypeId, Vec<SolverVarId>, res::VariantId),
     Ctor(
         mono::CustomTypeId,
@@ -273,9 +275,9 @@ enum SolverExpr {
         Vec<SolverExpr>,
     ),
     BoolLit(bool),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-    TextLit(String),
 }
 
 #[derive(Clone, Debug)]
@@ -290,9 +292,9 @@ enum SolverPattern {
         Option<Box<SolverPattern>>,
     ),
     BoolConst(bool),
+    ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
-    TextConst(String),
 }
 
 #[derive(Clone, Debug)]
@@ -349,9 +351,9 @@ fn instantiate_mono(
 ) -> annot::Type<SolverVarId> {
     match type_ {
         mono::Type::Bool => annot::Type::Bool,
+        mono::Type::Byte => annot::Type::Byte,
         mono::Type::Int => annot::Type::Int,
         mono::Type::Float => annot::Type::Float,
-        mono::Type::Text => annot::Type::Text,
 
         mono::Type::Array(item) => {
             annot::Type::Array(Box::new(instantiate_mono(typedefs, graph, item)))
@@ -388,9 +390,9 @@ fn equate_types(
 ) {
     match (type1, type2) {
         (annot::Type::Bool, annot::Type::Bool) => {}
+        (annot::Type::Byte, annot::Type::Byte) => {}
         (annot::Type::Int, annot::Type::Int) => {}
         (annot::Type::Float, annot::Type::Float) => {}
-        (annot::Type::Text, annot::Type::Text) => {}
 
         (annot::Type::Array(item1), annot::Type::Array(item2)) => {
             equate_types(graph, item1, item2);
@@ -462,9 +464,9 @@ fn instantiate_subst(
 ) -> annot::Type<SolverVarId> {
     match type_ {
         annot::Type::Bool => annot::Type::Bool,
+        annot::Type::Byte => annot::Type::Byte,
         annot::Type::Int => annot::Type::Int,
         annot::Type::Float => annot::Type::Float,
-        annot::Type::Text => annot::Type::Text,
 
         annot::Type::Array(item) => annot::Type::Array(Box::new(instantiate_subst(vars, item))),
 
@@ -546,13 +548,11 @@ fn instantiate_pattern(
 
         (&mono::Pattern::BoolConst(val), annot::Type::Bool) => SolverPattern::BoolConst(val),
 
+        (&mono::Pattern::ByteConst(val), annot::Type::Byte) => SolverPattern::ByteConst(val),
+
         (&mono::Pattern::IntConst(val), annot::Type::Int) => SolverPattern::IntConst(val),
 
         (&mono::Pattern::FloatConst(val), annot::Type::Float) => SolverPattern::FloatConst(val),
-
-        (mono::Pattern::TextConst(text), annot::Type::Text) => {
-            SolverPattern::TextConst(text.clone())
-        }
 
         (_, _) => unreachable!(),
     }
@@ -580,6 +580,18 @@ fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> (annot::Type<SolverVarI
                 annot::Type::Float,
             ])),
             Box::new(annot::Type::Int),
+        )
+    }
+
+    fn byte_comp(op_var: SolverVarId) -> annot::Type<SolverVarId> {
+        annot::Type::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(annot::Type::Tuple(vec![
+                annot::Type::Byte,
+                annot::Type::Byte,
+            ])),
+            Box::new(annot::Type::Bool),
         )
     }
 
@@ -620,6 +632,10 @@ fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> (annot::Type<SolverVarI
     }
 
     let op_type = match op {
+        Op::EqByte => byte_comp(op_var),
+        Op::LtByte => byte_comp(op_var),
+        Op::LteByte => byte_comp(op_var),
+
         Op::AddInt => int_binop(op_var),
         Op::SubInt => int_binop(op_var),
         Op::MulInt => int_binop(op_var),
@@ -713,6 +729,28 @@ fn array_op_type(
     (op_type, op_var)
 }
 
+fn io_op_type(graph: &mut ConstraintGraph, op: IOOp) -> (annot::Type<SolverVarId>, SolverVarId) {
+    let op_var = graph.new_var();
+    graph.require(op_var, SolverRequirement::IOOp(op));
+
+    let op_type = match op {
+        IOOp::Input => annot::Type::Func(
+            Purity::Impure,
+            op_var,
+            Box::new(annot::Type::Tuple(vec![])),
+            Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
+        ),
+        IOOp::Output => annot::Type::Func(
+            Purity::Impure,
+            op_var,
+            Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
+            Box::new(annot::Type::Tuple(vec![])),
+        ),
+    };
+
+    (op_type, op_var)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct GlobalContext<'a> {
     annot_vals: &'a [Option<annot::ValDef>], // Indexed by mono::CustomGlobalId
@@ -762,6 +800,11 @@ fn instantiate_expr(
                 SolverExpr::ArrayOp(*op, solver_item_type, op_var),
                 solver_type,
             )
+        }
+
+        &lifted::Expr::IOOp(op) => {
+            let (solver_type, op_var) = io_op_type(graph, op);
+            (SolverExpr::IOOp(op, op_var), solver_type)
         }
 
         &lifted::Expr::Ctor(custom, variant) => {
@@ -1010,11 +1053,11 @@ fn instantiate_expr(
 
         &lifted::Expr::BoolLit(val) => (SolverExpr::BoolLit(val), annot::Type::Bool),
 
+        &lifted::Expr::ByteLit(val) => (SolverExpr::ByteLit(val), annot::Type::Byte),
+
         &lifted::Expr::IntLit(val) => (SolverExpr::IntLit(val), annot::Type::Int),
 
         &lifted::Expr::FloatLit(val) => (SolverExpr::FloatLit(val), annot::Type::Float),
-
-        lifted::Expr::TextLit(text) => (SolverExpr::TextLit(text.clone()), annot::Type::Text),
     }
 }
 
@@ -1207,9 +1250,9 @@ fn add_mentioned_classes(
 ) {
     match type_ {
         annot::Type::Bool => {}
+        annot::Type::Byte => {}
         annot::Type::Int => {}
         annot::Type::Float => {}
-        annot::Type::Text => {}
 
         annot::Type::Array(item) => add_mentioned_classes(equiv_classes, item, mentioned),
 
@@ -1280,6 +1323,8 @@ fn add_req_mentioned_classes(
         SolverRequirement::ArrayOp(_, item_type) | SolverRequirement::ArrayReplace(item_type) => {
             add_mentioned_classes(equiv_classes, item_type, mentioned);
         }
+
+        SolverRequirement::IOOp(_) => {}
 
         SolverRequirement::Ctor(_, custom_params, _) => {
             mentioned.extend(custom_params.iter().map(|&var| equiv_classes.class(var)));
@@ -1370,9 +1415,9 @@ fn translate_type_for_template(
 ) -> annot::Type<annot::Solution> {
     match type_ {
         annot::Type::Bool => annot::Type::Bool,
+        annot::Type::Byte => annot::Type::Byte,
         annot::Type::Int => annot::Type::Int,
         annot::Type::Float => annot::Type::Float,
-        annot::Type::Text => annot::Type::Text,
 
         annot::Type::Array(item_type) => annot::Type::Array(Box::new(translate_type_for_template(
             equiv_classes,
@@ -1498,6 +1543,8 @@ fn translate_req_for_template(
                 item_type,
             ))
         }
+
+        SolverRequirement::IOOp(op) => annot::Requirement::IOOp(*op),
 
         SolverRequirement::Ctor(custom, vars, variant) => annot::Requirement::Ctor(
             *custom,
@@ -1682,9 +1729,9 @@ fn extract_type(
 ) -> annot::Type<annot::Solution> {
     match type_ {
         annot::Type::Bool => annot::Type::Bool,
+        annot::Type::Byte => annot::Type::Byte,
         annot::Type::Int => annot::Type::Int,
         annot::Type::Float => annot::Type::Float,
-        annot::Type::Text => annot::Type::Text,
 
         annot::Type::Array(item_type) => annot::Type::Array(Box::new(extract_type(
             equiv_classes,
@@ -1748,10 +1795,9 @@ fn extract_pattern(
         ),
 
         &SolverPattern::BoolConst(val) => annot::Pattern::BoolConst(val),
+        &SolverPattern::ByteConst(val) => annot::Pattern::ByteConst(val),
         &SolverPattern::IntConst(val) => annot::Pattern::IntConst(val),
         &SolverPattern::FloatConst(val) => annot::Pattern::FloatConst(val),
-
-        SolverPattern::TextConst(text) => annot::Pattern::TextConst(text.clone()),
     }
 }
 
@@ -1771,6 +1817,10 @@ fn extract_expr(
             extract_type(equiv_classes, class_solutions, item_type),
             class_solutions[equiv_classes.class(*var).0].clone(),
         ),
+
+        &SolverExpr::IOOp(op, var) => {
+            annot::Expr::IOOp(op, class_solutions[equiv_classes.class(var).0].clone())
+        }
 
         SolverExpr::NullaryCtor(custom, vars, variant) => annot::Expr::NullaryCtor(
             *custom,
@@ -1884,9 +1934,9 @@ fn extract_expr(
         ),
 
         &SolverExpr::BoolLit(val) => annot::Expr::BoolLit(val),
+        &SolverExpr::ByteLit(val) => annot::Expr::ByteLit(val),
         &SolverExpr::IntLit(val) => annot::Expr::IntLit(val),
         &SolverExpr::FloatLit(val) => annot::Expr::FloatLit(val),
-        SolverExpr::TextLit(text) => annot::Expr::TextLit(text.clone()),
     }
 }
 
@@ -1908,9 +1958,9 @@ fn extract_sig_type(
 ) -> annot::Type<annot::RepParamId> {
     match type_ {
         annot::Type::Bool => annot::Type::Bool,
+        annot::Type::Byte => annot::Type::Byte,
         annot::Type::Int => annot::Type::Int,
         annot::Type::Float => annot::Type::Float,
-        annot::Type::Text => annot::Type::Text,
 
         annot::Type::Array(item_type) => annot::Type::Array(Box::new(extract_sig_type(
             equiv_classes,
@@ -2038,6 +2088,8 @@ fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
 
         lifted::Expr::ArrayOp(_, _) => {}
 
+        lifted::Expr::IOOp(_) => {}
+
         lifted::Expr::Ctor(_, _) => {}
 
         &lifted::Expr::Global(dep) => {
@@ -2087,9 +2139,9 @@ fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
         }
 
         lifted::Expr::BoolLit(_) => {}
+        lifted::Expr::ByteLit(_) => {}
         lifted::Expr::IntLit(_) => {}
         lifted::Expr::FloatLit(_) => {}
-        lifted::Expr::TextLit(_) => {}
     }
 }
 

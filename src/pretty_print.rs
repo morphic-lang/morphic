@@ -95,6 +95,10 @@ impl lifted::CaptureId {
 impl Op {
     fn to_doc(&self) -> Doc<BoxDoc<()>> {
         match self {
+            Op::EqByte => Doc::text("=&"),
+            Op::LtByte => Doc::text("<&"),
+            Op::LteByte => Doc::text("<=&"),
+
             Op::AddInt => Doc::text("+"),
             Op::SubInt => Doc::text("-"),
             Op::MulInt => Doc::text("*"),
@@ -125,6 +129,15 @@ impl res::ArrayOp {
             res::ArrayOp::Len => Doc::text("len"),
             res::ArrayOp::Push => Doc::text("push"),
             res::ArrayOp::Pop => Doc::text("pop"),
+        }
+    }
+}
+
+impl res::IOOp {
+    fn to_doc(&self) -> Doc<BoxDoc<()>> {
+        match self {
+            res::IOOp::Input => Doc::text("input"),
+            res::IOOp::Output => Doc::text("output"),
         }
     }
 }
@@ -272,6 +285,7 @@ impl lifted::Expr {
         match self {
             lifted::Expr::ArithOp(op) => op.to_doc(),
             lifted::Expr::ArrayOp(arrayop, _) => arrayop.to_doc(),
+            lifted::Expr::IOOp(ioop) => ioop.to_doc(),
             lifted::Expr::Ctor(mono::CustomTypeId(typeid), res::VariantId(variantid)) => {
                 type_data[*typeid].variant_data[*variantid].to_doc()
             }
@@ -370,9 +384,9 @@ impl lifted::Expr {
                     Doc::text("False")
                 }
             }
+            lifted::Expr::ByteLit(b) => Doc::as_string(b),
             lifted::Expr::IntLit(n) => Doc::as_string(n),
             lifted::Expr::FloatLit(f) => Doc::as_string(f),
-            lifted::Expr::TextLit(s) => Doc::text(s),
         }
     }
 }
@@ -438,9 +452,9 @@ impl mono::Pattern {
                     (Doc::text("False"), NumBindings(0))
                 }
             }
+            mono::Pattern::ByteConst(s) => (Doc::as_string(s), NumBindings(0)),
             mono::Pattern::IntConst(n) => (Doc::as_string(n), NumBindings(0)),
             mono::Pattern::FloatConst(f) => (Doc::as_string(f), NumBindings(0)),
-            mono::Pattern::TextConst(s) => (Doc::as_string(s), NumBindings(0)),
         }
     }
 }
@@ -463,9 +477,9 @@ impl mono::Type {
     ) -> Doc<'a, BoxDoc<()>> {
         let doc = match self {
             mono::Type::Bool => Doc::text("Bool"),
+            mono::Type::Byte => Doc::text("Byte"),
             mono::Type::Int => Doc::text("Int"),
             mono::Type::Float => Doc::text("Float"),
-            mono::Type::Text => Doc::text("Text"),
             mono::Type::Array(type_) => {
                 Doc::text("Array").append(type_.to_doc(type_data, TypePrecedence::TypeApp))
             }
@@ -500,9 +514,9 @@ impl mono::Type {
 
         let should_parenthesize = match self {
             mono::Type::Bool => false,
+            mono::Type::Byte => false,
             mono::Type::Int => false,
             mono::Type::Float => false,
-            mono::Type::Text => false,
             mono::Type::Array(_) => precedence >= TypePrecedence::TypeApp,
             mono::Type::Tuple(_) => false,
             mono::Type::Func(_, _, _) => precedence >= TypePrecedence::FuncLeft,
