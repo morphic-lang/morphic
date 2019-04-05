@@ -1,9 +1,10 @@
 use crate::data::first_order_ast as ast;
 use crate::graph::{self, Graph};
 use im_rc::Vector;
-use std::collections::BTreeSet;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FieldId {
     Variant(ast::VariantId),
     Field(usize),
@@ -17,8 +18,8 @@ pub type FieldPath = Vector<FieldId>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AliasPair {
-    arg_field: FieldPath,
-    ret_field: FieldPath,
+    pub arg_field: FieldPath,
+    pub ret_field: FieldPath,
 }
 
 impl AliasPair {
@@ -37,7 +38,7 @@ impl AliasPair {
         new
     }
 
-    fn rm_context(&self, field: FieldId) -> AliasPair {
+    fn rm_context(&self, field: FieldId) -> Self {
         debug_assert!(self.arg_field[0] == field);
         let mut new = self.clone();
         new.arg_field.pop_front();
@@ -54,18 +55,33 @@ impl AliasPair {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UniqueInfo {
-    edges: Vector<AliasPair>,
+    pub edges: Vector<AliasPair>,
+    pub new_names: Vector<FieldPath>,
 }
 
 impl UniqueInfo {
     fn empty() -> UniqueInfo {
         UniqueInfo {
             edges: Vector::new(),
+            new_names: Vector::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RawUniqueInfo {
+    edges: Vector<AliasPair>,
+}
+
+impl RawUniqueInfo {
+    fn empty() -> RawUniqueInfo {
+        RawUniqueInfo {
+            edges: Vector::new(),
         }
     }
 
     fn add_ret_context(&self, field: FieldId) -> Self {
-        UniqueInfo {
+        RawUniqueInfo {
             edges: self
                 .edges
                 .iter()
@@ -77,7 +93,7 @@ impl UniqueInfo {
     // *Assuming* that every edge starts from the field `field`, remove the
     // `field.` prefix from every edge
     fn rm_context(&self, field: FieldId) -> Self {
-        UniqueInfo {
+        RawUniqueInfo {
             edges: self.edges.iter().map(|e| e.rm_context(field)).collect(),
         }
     }
@@ -85,7 +101,7 @@ impl UniqueInfo {
     // Filter edges for those starting with `field`, and remove `field` from those
     // edges in the result
     fn narrow_context(&self, field: FieldId) -> Self {
-        UniqueInfo {
+        RawUniqueInfo {
             edges: self
                 .edges
                 .iter()
@@ -96,7 +112,7 @@ impl UniqueInfo {
     }
 
     fn set_ret_path(&self, ret_field: FieldPath) -> Self {
-        UniqueInfo {
+        RawUniqueInfo {
             edges: self
                 .edges
                 .iter()
@@ -108,11 +124,11 @@ impl UniqueInfo {
         }
     }
 
-    fn append(&mut self, other: UniqueInfo) {
+    fn append(&mut self, other: RawUniqueInfo) {
         self.edges.append(other.edges.clone());
     }
 
-    fn union(&self, other: UniqueInfo) -> Self {
+    fn union(&self, other: RawUniqueInfo) -> Self {
         let mut new = self.clone();
         new.edges.append(other.edges);
         new
@@ -125,7 +141,7 @@ impl UniqueInfo {
     }
 
     fn filter_ret_path(&self, other: FieldPath) -> Self {
-        UniqueInfo {
+        RawUniqueInfo {
             edges: self
                 .edges
                 .clone()
@@ -135,8 +151,8 @@ impl UniqueInfo {
         }
     }
 
-    fn apply_to(&self, arg: &UniqueInfo) -> Self {
-        let mut new = UniqueInfo::empty();
+    fn apply_to(&self, arg: &RawUniqueInfo) -> Self {
+        let mut new = RawUniqueInfo::empty();
         for alias in self.edges.clone() {
             // wire together this alias with where the arg comes from
             new.append(
@@ -148,14 +164,14 @@ impl UniqueInfo {
     }
 }
 
-// A LocalId maps to its UniqueInfo in terms of the function argument
-type Locals = Vec<UniqueInfo>;
+// A LocalId maps to its RawUniqueInfo in terms of the function argument
+type Locals = Vec<RawUniqueInfo>;
 
 fn bind_pattern_locals(
     locals: &mut Locals,
-    func_infos: &[UniqueInfo],
+    func_infos: &[RawUniqueInfo],
     pattern: &ast::Pattern,
-    rhs: UniqueInfo,
+    rhs: RawUniqueInfo,
 ) {
     match pattern {
         ast::Pattern::Any(_) => {}
@@ -190,11 +206,11 @@ fn bind_pattern_locals(
 
 fn annot_pattern(
     locals: &mut Locals,
-    func_infos: &[UniqueInfo],
+    func_infos: &[RawUniqueInfo],
     pattern: &ast::Pattern,
     rhs: &ast::Expr,
     body: &ast::Expr,
-) -> UniqueInfo {
+) -> RawUniqueInfo {
     let initial_len = locals.len();
     let rhs_unique_info = annot_expression(locals, func_infos, rhs);
     bind_pattern_locals(locals, func_infos, pattern, rhs_unique_info);
@@ -206,11 +222,11 @@ fn annot_pattern(
 // Compute how `expr` aliases the arguments to the containing function
 fn annot_expression(
     locals: &mut Locals,
-    func_infos: &[UniqueInfo],
+    func_infos: &[RawUniqueInfo],
     expr: &ast::Expr,
-) -> UniqueInfo {
+) -> RawUniqueInfo {
     match expr {
-        ast::Expr::ArithOp(_) => UniqueInfo::empty(),
+        ast::Expr::ArithOp(_) => RawUniqueInfo::empty(),
         ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array, _, wrapper)) => {
             // The holearray, in the second entry of the returned tuple, aliases the array
             let mut aliases =
@@ -226,9 +242,9 @@ fn annot_expression(
             }
             aliases
         }
-        ast::Expr::ArrayOp(ast::ArrayOp::Len(..)) => UniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Push(..)) => UniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Pop(..)) => UniqueInfo::empty(),
+        ast::Expr::ArrayOp(ast::ArrayOp::Len(..)) => RawUniqueInfo::empty(),
+        ast::Expr::ArrayOp(ast::ArrayOp::Push(..)) => RawUniqueInfo::empty(),
+        ast::Expr::ArrayOp(ast::ArrayOp::Pop(..)) => RawUniqueInfo::empty(),
         ast::Expr::ArrayOp(ast::ArrayOp::Replace(_type, hole_array, item)) => {
             let arr_aliases = annot_expression(locals, func_infos, hole_array);
             let item_aliases = annot_expression(locals, func_infos, item);
@@ -236,13 +252,13 @@ fn annot_expression(
             arr_aliases.union(item_aliases.add_ret_context(FieldId::ArrayMembers))
         }
         ast::Expr::Ctor(_id, variant_id, args) => match args {
-            None => UniqueInfo::empty(),
+            None => RawUniqueInfo::empty(),
             Some(args) => annot_expression(locals, func_infos, args)
                 .add_ret_context(FieldId::Variant(*variant_id)),
         },
         ast::Expr::Local(ast::LocalId(id)) => locals[*id].clone(),
         ast::Expr::Tuple(elems) => {
-            let mut info = UniqueInfo::empty();
+            let mut info = RawUniqueInfo::empty();
             for i in 0..elems.len() {
                 info = info.union(
                     annot_expression(locals, func_infos, &elems[i])
@@ -256,7 +272,7 @@ fn annot_expression(
             func_infos[*func_id].apply_to(&arg_aliases)
         }
         ast::Expr::Match(matched_expr, cases, _type) => {
-            let mut result = UniqueInfo::empty();
+            let mut result = RawUniqueInfo::empty();
             for (pattern, body) in cases {
                 result.append(annot_pattern(
                     locals,
@@ -269,86 +285,205 @@ fn annot_expression(
             result
         }
         ast::Expr::Let(lhs, rhs, body) => annot_pattern(locals, func_infos, lhs, rhs, body),
-        ast::Expr::ArrayLit(..) => UniqueInfo::empty(),
-        ast::Expr::BoolLit(..) => UniqueInfo::empty(),
-        ast::Expr::IntLit(..) => UniqueInfo::empty(),
-        ast::Expr::FloatLit(..) => UniqueInfo::empty(),
-        ast::Expr::TextLit(..) => UniqueInfo::empty(),
+        ast::Expr::ArrayLit(..) => RawUniqueInfo::empty(),
+        ast::Expr::BoolLit(..) => RawUniqueInfo::empty(),
+        ast::Expr::IntLit(..) => RawUniqueInfo::empty(),
+        ast::Expr::FloatLit(..) => RawUniqueInfo::empty(),
+        ast::Expr::TextLit(..) => RawUniqueInfo::empty(),
     }
 }
 
 // Computes the fields in `type_` at which there is a name
-fn get_names_in(
-    type_defs: &[ast::TypeDef],
-    type_: &ast::Type,
-) -> Vec<FieldPath> {
+fn get_names_in(type_defs: &[ast::TypeDef], type_: &ast::Type) -> Vec<FieldPath> {
     let mut names = Vec::new();
-    add_names_from_type(type_defs, &mut names, type_, Vector::new());
+    add_names_from_type(
+        type_defs,
+        &mut names,
+        &mut BTreeSet::new(),
+        type_,
+        Vector::new(),
+    );
     return names;
 
     // Recursively appends paths to names in `type_` to `names`
     fn add_names_from_type(
         type_defs: &[ast::TypeDef],
         names: &mut Vec<FieldPath>,
+        typedefs_on_path: &mut BTreeSet<ast::CustomTypeId>,
         type_: &ast::Type,
         prefix: FieldPath,
     ) {
         match type_ {
             ast::Type::Bool | ast::Type::Int | ast::Type::Float => {}
-            ast::Type::Text => names.push(prefix),
+            ast::Type::Text => unimplemented!(),
             ast::Type::Array(item_type) | ast::Type::HoleArray(item_type) => {
                 // The array itself:
                 names.push(prefix.clone());
                 // The names in elements of the array:
                 let mut new_prefix = prefix.clone();
                 new_prefix.push_back(FieldId::ArrayMembers);
-                add_names_from_type(type_defs, names, item_type, new_prefix);
+                add_names_from_type(type_defs, names, typedefs_on_path, item_type, new_prefix);
             }
             ast::Type::Tuple(item_types) => {
                 for (i, item_type) in item_types.iter().enumerate() {
                     let mut new_prefix = prefix.clone();
                     new_prefix.push_back(FieldId::Field(i));
-                    add_names_from_type(type_defs, names, item_type, new_prefix);
+                    add_names_from_type(type_defs, names, typedefs_on_path, item_type, new_prefix);
                 }
             }
-            ast::Type::Custom(ast::CustomTypeId(id)) => {
-                for (i, variant) in type_defs[*id].variants.iter().enumerate() {
-                    if let Some(variant_type) = variant {
-                        let mut new_prefix = prefix.clone();
-                        new_prefix.push_back(FieldId::Variant(ast::VariantId(i)));
-                        add_names_from_type(type_defs, names, variant_type, new_prefix);
+            ast::Type::Custom(id) => {
+                if !typedefs_on_path.contains(id) {
+                    typedefs_on_path.insert(*id);
+                    for (i, variant) in type_defs[id.0].variants.iter().enumerate() {
+                        if let Some(variant_type) = variant {
+                            let mut variant_prefix = prefix.clone();
+                            variant_prefix.push_back(FieldId::Variant(ast::VariantId(i)));
+                            add_names_from_type(
+                                type_defs,
+                                names,
+                                typedefs_on_path,
+                                variant_type,
+                                variant_prefix,
+                            );
+                        }
                     }
+                    // Remove if we added it
+                    typedefs_on_path.remove(id);
                 }
             }
         }
     }
 }
 
+pub fn prune_field_path(
+    type_defs: &[ast::TypeDef],
+    type_: &ast::Type,
+    path: &FieldPath,
+) -> FieldPath {
+    prune_field_path_with(
+        move |type_id, variant_id| {
+            type_defs[type_id.0].variants[variant_id.0]
+                .as_ref()
+                .map(Cow::Borrowed)
+        },
+        type_,
+        path,
+    )
+}
+
+/// Simplify FieldPaths such that two paths accessing the same *name* in a
+/// recursive type have the same pruned path. E.g. once pruned,
+/// `list = list.cdr = list.cdr.cdr = ...` and `list.car = list.cdr.car = ...`.
+pub fn prune_field_path_with<
+    'a,
+    F: Fn(ast::CustomTypeId, ast::VariantId) -> Option<Cow<'a, ast::Type>>,
+>(
+    variant_for: F,
+    type_: &'a ast::Type,
+    path: &'a FieldPath,
+) -> FieldPath {
+    return prune_field_path_help(
+        variant_for,
+        type_,
+        Vector::Empty,
+        &mut BTreeMap::new(),
+        path.clone(),
+    );
+
+    // Keeps track, in `customs`, of the indices in `front` which entered custom types,
+    // so that paths involving recursive references can be pruned.
+    fn prune_field_path_help<'a, 'b, F>(
+        variant_for: F,
+        type_: &'b ast::Type,
+        mut front: FieldPath,
+        customs: &mut BTreeMap<ast::CustomTypeId, usize>,
+        mut path: FieldPath,
+    ) -> FieldPath
+    where
+        F: Fn(ast::CustomTypeId, ast::VariantId) -> Option<Cow<'a, ast::Type>>,
+    {
+        if path.is_empty() {
+            return front + path;
+        }
+        match (path[0], type_) {
+            (FieldId::Variant(variant_id), ast::Type::Custom(type_id)) => {
+                if let Some(idx) = customs.get(type_id) {
+                    front.split_off(*idx);
+                } else {
+                    customs.insert(*type_id, front.len());
+                }
+                front.push_back(FieldId::Variant(variant_id));
+                path.pop_front();
+                if let Some(variant_type) = variant_for(*type_id, variant_id) {
+                    prune_field_path_help(variant_for, variant_type.as_ref(), front, customs, path)
+                } else {
+                    debug_assert!(path.len() == 0);
+                    front
+                }
+            }
+            (FieldId::Field(field_idx), ast::Type::Tuple(item_types)) => {
+                front.push_back(FieldId::Field(field_idx));
+                path.pop_front();
+                prune_field_path_help(variant_for, &item_types[field_idx], front, customs, path)
+            }
+            (FieldId::ArrayMembers, ast::Type::Array(item_type))
+            | (FieldId::ArrayMembers, ast::Type::HoleArray(item_type)) => {
+                front.push_back(FieldId::ArrayMembers);
+                path.pop_front();
+                prune_field_path_help(variant_for, &item_type, front, customs, path)
+            }
+            (_, _) => unreachable!(),
+        }
+    }
+}
+
+// Does type-folding on the names in the unique info (see prune_field_path for more info)
+fn prune_unique_info(
+    type_defs: &[ast::TypeDef],
+    func: &ast::FuncDef,
+    ui: &RawUniqueInfo,
+) -> RawUniqueInfo {
+    let mut pruned_edges = Vector::new();
+    for edge in &ui.edges {
+        pruned_edges.push_back(AliasPair {
+            arg_field: prune_field_path(type_defs, &func.arg_type, &edge.arg_field),
+            ret_field: prune_field_path(type_defs, &func.ret_type, &edge.ret_field),
+        })
+    }
+    RawUniqueInfo {
+        edges: pruned_edges,
+    }
+}
+
 fn annot_func(
     type_defs: &[ast::TypeDef],
     func: &ast::FuncDef,
-    func_infos: &[UniqueInfo],
-) -> UniqueInfo {
+    func_infos: &[RawUniqueInfo],
+) -> RawUniqueInfo {
     let mut locals = Vec::new();
     // Compute the names in the arg
     let names = get_names_in(type_defs, &func.arg_type);
-    let arg_unique_info = UniqueInfo {
+    let arg_unique_info = RawUniqueInfo {
         edges: names
             .into_iter()
             .map(|fp| AliasPair::new(fp.clone(), fp))
             .collect(),
     };
     bind_pattern_locals(&mut locals, func_infos, &func.arg, arg_unique_info);
-    annot_expression(&mut locals, func_infos, &func.body)
+    prune_unique_info(
+        type_defs,
+        func,
+        &annot_expression(&mut locals, func_infos, &func.body),
+    )
 }
 
 fn annot_scc(
     type_defs: &[ast::TypeDef],
     func_defs: &[ast::FuncDef],
-    func_infos: &mut [UniqueInfo],
+    func_infos: &mut [RawUniqueInfo],
     scc: &[ast::CustomFuncId],
 ) {
-    // Update the UniqueInfos for the SCC until we do a pass in which none of them change
+    // Update the RawUniqueInfos for the SCC until we do a pass in which none of them change
     let mut scc_changed = true;
     while scc_changed {
         scc_changed = false;
@@ -365,9 +500,9 @@ fn annot_scc(
     }
 }
 
-// `add_func_deps` traverses the expression tree and the `CustomFuncId` of every function used
-// in it to `deps.
-pub fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
+// `add_func_deps` traverses the expression tree and adds the `CustomFuncId` of every function used
+// in it to `deps`.
+fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
     match expr {
         ast::Expr::ArithOp(ast::ArithOp::IntOp(_, left, right)) => {
             add_func_deps(deps, left);
@@ -434,8 +569,8 @@ pub fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
     }
 }
 
-pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
-    let dep_graph = Graph {
+pub fn func_dependency_graph(program: &ast::Program) -> Graph {
+    Graph {
         edges_out: program
             .funcs
             .iter()
@@ -447,13 +582,15 @@ pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
                     .collect()
             })
             .collect(),
-    };
+    }
+}
 
-    let mut unique_infos = (0..program.funcs.len())
-        .map(|_| UniqueInfo::empty())
+pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
+    let mut raw_unique_infos = (0..program.funcs.len())
+        .map(|_| RawUniqueInfo::empty())
         .collect::<Vec<_>>();
 
-    for scc in graph::strongly_connected(&dep_graph) {
+    for scc in graph::strongly_connected(&func_dependency_graph(program)) {
         let scc_ids = scc
             .iter()
             .map(|&graph::NodeId(id)| ast::CustomFuncId(id))
@@ -461,14 +598,28 @@ pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
         annot_scc(
             &program.custom_types,
             &program.funcs,
-            &mut unique_infos,
+            &mut raw_unique_infos,
             &scc_ids,
         );
+    }
+
+    // Identify names in the result that are not aliased to arguments
+    let mut unique_infos = Vec::with_capacity(program.funcs.len());
+    for (idx, rui) in raw_unique_infos.into_iter().enumerate() {
+        let new_names = get_names_in(&program.custom_types, &program.funcs[idx].ret_type)
+            .into_iter()
+            .filter(|n| !rui.edges.iter().any(|e| *n == e.ret_field))
+            .collect();
+        unique_infos.push(UniqueInfo {
+            edges: rui.edges,
+            new_names,
+        });
     }
 
     unique_infos
 }
 
+// TODO: make these tests ignore order where it is irrelevant (e.g. edge lists)
 #[cfg(test)]
 mod test {
     use super::*;
@@ -483,7 +634,7 @@ mod test {
         ));
         assert_eq!(
             annot_expression(&mut vec![], &[], &ex1),
-            UniqueInfo::empty()
+            RawUniqueInfo::empty()
         );
 
         let ex2 = ast::Expr::ArrayLit(
@@ -500,17 +651,17 @@ mod test {
         );
         assert_eq!(
             annot_expression(&mut vec![], &[], &ex2),
-            UniqueInfo::empty()
+            RawUniqueInfo::empty()
         );
     }
 
     #[test]
     pub fn test_with_basic_array_aliasing() {
         let mut locals = vec![
-            UniqueInfo {
+            RawUniqueInfo {
                 edges: vector![AliasPair::new(vector![FieldId::Field(0)], vector![])],
             },
-            UniqueInfo {
+            RawUniqueInfo {
                 edges: vector![
                     AliasPair::new(
                         vector![FieldId::Field(0), FieldId::ArrayMembers],
@@ -527,7 +678,7 @@ mod test {
         ]);
         assert_eq!(
             annot_expression(&mut locals, &[], &basic_aliasing),
-            UniqueInfo {
+            RawUniqueInfo {
                 edges: vector![
                     AliasPair {
                         arg_field: vector![FieldId::Field(0)],

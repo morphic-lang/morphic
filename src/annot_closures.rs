@@ -7,6 +7,7 @@ use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp};
 use crate::graph::{self, Graph};
+use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
 
 fn count_params(parameterized: &[Option<annot::TypeDef>], type_: &mono::Type) -> usize {
     match type_ {
@@ -218,9 +219,6 @@ fn parameterize_typedefs(typedefs: &[mono::TypeDef]) -> Vec<annot::TypeDef> {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct SolverVarId(usize);
-
 #[derive(Clone, Debug)]
 enum SolverRequirement {
     Lam(lifted::LamId, Vec<SolverVarId>),
@@ -303,48 +301,9 @@ struct SolverLamSig {
     ret: annot::Type<SolverVarId>,
 }
 
-#[derive(Clone, Debug)]
-struct VarConstraints {
-    equalities: BTreeSet<SolverVarId>,
-    requirements: Vec<SolverRequirement>,
-}
-
-#[derive(Clone, Debug)]
-struct ConstraintGraph {
-    // Indexed by SolverVarId
-    // Number of variables is implicit in the length of the vector
-    var_constraints: Vec<VarConstraints>,
-}
-
-impl ConstraintGraph {
-    fn new() -> Self {
-        ConstraintGraph {
-            var_constraints: Vec::new(),
-        }
-    }
-
-    fn new_var(&mut self) -> SolverVarId {
-        let id = SolverVarId(self.var_constraints.len());
-        self.var_constraints.push(VarConstraints {
-            equalities: BTreeSet::new(),
-            requirements: Vec::new(),
-        });
-        id
-    }
-
-    fn equate(&mut self, fst: SolverVarId, snd: SolverVarId) {
-        self.var_constraints[fst.0].equalities.insert(snd);
-        self.var_constraints[snd.0].equalities.insert(fst);
-    }
-
-    fn require(&mut self, var: SolverVarId, req: SolverRequirement) {
-        self.var_constraints[var.0].requirements.push(req);
-    }
-}
-
 fn instantiate_mono(
     typedefs: &[annot::TypeDef],
-    graph: &mut ConstraintGraph,
+    graph: &mut ConstraintGraph<SolverRequirement>,
     type_: &mono::Type,
 ) -> annot::Type<SolverVarId> {
     match type_ {
@@ -382,7 +341,7 @@ fn instantiate_mono(
 }
 
 fn equate_types(
-    graph: &mut ConstraintGraph,
+    graph: &mut ConstraintGraph<SolverRequirement>,
     type1: &annot::Type<SolverVarId>,
     type2: &annot::Type<SolverVarId>,
 ) {
@@ -558,7 +517,10 @@ fn instantiate_pattern(
     }
 }
 
-fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> (annot::Type<SolverVarId>, SolverVarId) {
+fn arith_op_type(
+    graph: &mut ConstraintGraph<SolverRequirement>,
+    op: Op,
+) -> (annot::Type<SolverVarId>, SolverVarId) {
     let op_var = graph.new_var();
     graph.require(op_var, SolverRequirement::ArithOp(op));
 
@@ -645,7 +607,7 @@ fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> (annot::Type<SolverVarI
 }
 
 fn array_op_type(
-    graph: &mut ConstraintGraph,
+    graph: &mut ConstraintGraph<SolverRequirement>,
     op: ArrayOp,
     solver_item_type: annot::Type<SolverVarId>,
 ) -> (annot::Type<SolverVarId>, SolverVarId) {
@@ -721,7 +683,10 @@ struct GlobalContext<'a> {
     curr_lams: &'a BTreeMap<lifted::LamId, SolverLamSig>,
 }
 
-fn instantiate_params(graph: &mut ConstraintGraph, params: &annot::Params) -> Vec<SolverVarId> {
+fn instantiate_params(
+    graph: &mut ConstraintGraph<SolverRequirement>,
+    params: &annot::Params,
+) -> Vec<SolverVarId> {
     let param_vars: Vec<_> = (0..params.num_params()).map(|_| graph.new_var()).collect();
 
     for (param_var, (req_template, req_params)) in param_vars.iter().zip(params.requirements.iter())
@@ -744,7 +709,7 @@ fn instantiate_params(graph: &mut ConstraintGraph, params: &annot::Params) -> Ve
 fn instantiate_expr(
     typedefs: &[annot::TypeDef],
     globals: GlobalContext,
-    graph: &mut ConstraintGraph,
+    graph: &mut ConstraintGraph<SolverRequirement>,
     captures: &[annot::Type<SolverVarId>],
     locals: &mut LocalContext,
     expr: &lifted::Expr,
@@ -1020,7 +985,7 @@ fn instantiate_expr(
 
 fn instantiate_lam_sig(
     typedefs: &[annot::TypeDef],
-    graph: &mut ConstraintGraph,
+    graph: &mut ConstraintGraph<SolverRequirement>,
     lam_def: &lifted::LamDef,
 ) -> SolverLamSig {
     let solver_captures = lam_def
@@ -1048,7 +1013,7 @@ struct SolverScc {
     solver_vals: BTreeMap<mono::CustomGlobalId, SolverExpr>,
     solver_lams: BTreeMap<lifted::LamId, (SolverPattern, SolverExpr)>,
 
-    constraints: ConstraintGraph,
+    constraints: ConstraintGraph<SolverRequirement>,
 }
 
 fn instantiate_scc(
@@ -1155,51 +1120,6 @@ fn instantiate_scc(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct EquivClass(usize);
-
-#[derive(Clone, Debug)]
-struct EquivClasses(Vec<EquivClass>); // Indexed by SolverVarId
-
-impl EquivClasses {
-    fn class(&self, var: SolverVarId) -> EquivClass {
-        self.0[var.0]
-    }
-}
-
-fn solve_equiv_classes(constraints: &ConstraintGraph) -> EquivClasses {
-    let equality_graph = graph::Undirected::from_directed_unchecked(Graph {
-        edges_out: constraints
-            .var_constraints
-            .iter()
-            .map(|var_constraints| {
-                var_constraints
-                    .equalities
-                    .iter()
-                    .map(|&SolverVarId(other)| graph::NodeId(other))
-                    .collect()
-            })
-            .collect(),
-    });
-
-    let components = graph::connected_components(&equality_graph);
-
-    let equiv_classes: Vec<_> = {
-        let mut equiv_classes = vec![None; constraints.var_constraints.len()];
-
-        for (equiv_class, solver_vars) in components.iter().enumerate() {
-            for &graph::NodeId(solver_var) in solver_vars {
-                debug_assert!(equiv_classes[solver_var].is_none());
-                equiv_classes[solver_var] = Some(EquivClass(equiv_class));
-            }
-        }
-
-        equiv_classes.into_iter().map(Option::unwrap).collect()
-    };
-
-    EquivClasses(equiv_classes)
-}
-
 fn add_mentioned_classes(
     equiv_classes: &EquivClasses,
     type_: &annot::Type<SolverVarId>,
@@ -1293,9 +1213,9 @@ struct RequirementDeps(Vec<BTreeSet<EquivClass>>); // Indexed by EquivClass
 fn requirement_deps(
     equiv_classes: &EquivClasses,
     params: &Params,
-    graph: &ConstraintGraph,
+    graph: &ConstraintGraph<SolverRequirement>,
 ) -> RequirementDeps {
-    let mut deps = vec![BTreeSet::new(); equiv_classes.0.len()];
+    let mut deps = vec![BTreeSet::new(); equiv_classes.count()];
 
     for (var_idx, var_constraints) in graph.var_constraints.iter().enumerate() {
         let class = equiv_classes.class(SolverVarId(var_idx));
@@ -1315,9 +1235,9 @@ struct ClassRequirements(Vec<Vec<SolverRequirement>>); // Outer Vec indexed by E
 
 fn consolidate_class_requirements(
     equiv_classes: &EquivClasses,
-    graph: ConstraintGraph,
+    graph: ConstraintGraph<SolverRequirement>,
 ) -> ClassRequirements {
-    let mut reqs = vec![Vec::new(); equiv_classes.0.len()];
+    let mut reqs = vec![Vec::new(); equiv_classes.count()];
 
     for (var_idx, var_constraints) in graph.var_constraints.into_iter().enumerate() {
         let class = equiv_classes.class(SolverVarId(var_idx));
@@ -1523,7 +1443,7 @@ fn solve_requirements(
     reqs: &ClassRequirements,
     templates: &mut Vec<annot::Template>,
 ) -> Solutions {
-    let mut class_solutions = vec![None; equiv_classes.0.len()];
+    let mut class_solutions = vec![None; equiv_classes.count()];
     let mut param_reqs = vec![None; params.0.len()];
 
     for (param_id, param_class) in params.0.iter().enumerate() {
@@ -1961,7 +1881,7 @@ fn solve_scc(
         scc_lams,
     );
 
-    let equiv_classes = solve_equiv_classes(&instantiated.constraints);
+    let equiv_classes = instantiated.constraints.find_equiv_classes();
 
     let params = find_params(&instantiated, &equiv_classes);
 

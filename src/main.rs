@@ -2,6 +2,7 @@
 
 mod annot_aliases;
 mod annot_closures;
+mod annot_reprs;
 mod check_exhaustive;
 mod check_main;
 mod check_purity;
@@ -14,6 +15,7 @@ mod monomorphize;
 mod pretty_print;
 mod resolve;
 mod type_infer;
+mod util;
 
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;

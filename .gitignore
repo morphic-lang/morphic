@@ -2,6 +2,6 @@
 **/*.rs.bk
 
 # Editor/system files
-.swp
+*.swp
 *~
 .DS_Store

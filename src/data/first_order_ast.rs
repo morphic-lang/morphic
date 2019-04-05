@@ -64,7 +64,7 @@ pub enum ArrayOp {
     Pop(
         Box<Type>, // Item type
         Box<Expr>, // Array
-    ), // Returns item
+    ), // Returns tuple (array, item)
     Replace(
         Box<Type>,
         Box<Expr>, // Hole array
