@@ -267,9 +267,9 @@ enum AnnotExpr {
     Let(AnnotPattern, Box<AnnotExpr>, Box<AnnotExpr>),
 
     ArrayLit(TypeVar, Vec<AnnotExpr>),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-    TextLit(String),
 }
 
 #[derive(Clone, Debug)]
@@ -284,9 +284,9 @@ enum AnnotPattern {
         Option<Box<AnnotPattern>>,
     ),
 
+    ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
-    TextConst(String),
 }
 
 // Sounds ominous...
@@ -294,16 +294,20 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
     use crate::data::resolved_ast::Type::*;
     use crate::data::resolved_ast::TypeId::*;
 
+    fn bool_() -> res::Type {
+        App(Bool, vec![])
+    }
+
+    fn byte() -> res::Type {
+        App(Byte, vec![])
+    }
+
     fn int() -> res::Type {
         App(Int, vec![])
     }
 
     fn float() -> res::Type {
         App(Float, vec![])
-    }
-
-    fn bool_() -> res::Type {
-        App(Bool, vec![])
     }
 
     fn array(arg: res::Type) -> res::Type {
@@ -314,12 +318,20 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         Func(Purity::Pure, Box::new(arg), Box::new(ret))
     }
 
+    fn impure_func(arg: res::Type, ret: res::Type) -> res::Type {
+        Func(Purity::Impure, Box::new(arg), Box::new(ret))
+    }
+
     fn pair(fst: res::Type, snd: res::Type) -> res::Type {
         Tuple(vec![fst, snd])
     }
 
     fn int_binop() -> res::Type {
         func(pair(int(), int()), int())
+    }
+
+    fn byte_comp() -> res::Type {
+        func(pair(byte(), byte()), bool_())
     }
 
     fn int_comp() -> res::Type {
@@ -346,6 +358,10 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         res::GlobalId::ArithOp(op) => {
             use crate::data::raw_ast::Op::*;
             let body = match op {
+                EqByte => byte_comp(),
+                LtByte => byte_comp(),
+                LteByte => byte_comp(),
+
                 AddInt => int_binop(),
                 SubInt => int_binop(),
                 MulInt => int_binop(),
@@ -385,6 +401,11 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
             };
             Cow::Owned(result)
         }
+
+        res::GlobalId::IOOp(op) => match op {
+            res::IOOp::Input => Cow::Owned(scheme(0, impure_func(Tuple(vec![]), array(byte())))),
+            res::IOOp::Output => Cow::Owned(scheme(0, impure_func(array(byte()), Tuple(vec![])))),
+        },
 
         res::GlobalId::Ctor(Custom(custom), variant) => {
             let typedef = &program.custom_types[custom.0];
@@ -519,6 +540,11 @@ fn infer_pat(
             Ok((ctor_annot, ctor_var))
         }
 
+        &res::Pattern::ByteConst(val) => Ok((
+            AnnotPattern::ByteConst(val),
+            ctx.new_var(Assign::App(res::TypeId::Byte, vec![])),
+        )),
+
         &res::Pattern::IntConst(val) => Ok((
             AnnotPattern::IntConst(val),
             ctx.new_var(Assign::App(res::TypeId::Int, vec![])),
@@ -527,11 +553,6 @@ fn infer_pat(
         &res::Pattern::FloatConst(val) => Ok((
             AnnotPattern::FloatConst(val),
             ctx.new_var(Assign::App(res::TypeId::Float, vec![])),
-        )),
-
-        res::Pattern::TextConst(text) => Ok((
-            AnnotPattern::TextConst(text.clone()),
-            ctx.new_var(Assign::App(res::TypeId::Text, vec![])),
         )),
     }
 }
@@ -643,6 +664,11 @@ fn infer_expr(
             Ok((array_annot, array_var))
         }
 
+        &res::Expr::ByteLit(val) => Ok((
+            AnnotExpr::ByteLit(val),
+            ctx.new_var(Assign::App(res::TypeId::Byte, vec![])),
+        )),
+
         &res::Expr::IntLit(val) => Ok((
             AnnotExpr::IntLit(val),
             ctx.new_var(Assign::App(res::TypeId::Int, vec![])),
@@ -651,11 +677,6 @@ fn infer_expr(
         &res::Expr::FloatLit(val) => Ok((
             AnnotExpr::FloatLit(val),
             ctx.new_var(Assign::App(res::TypeId::Float, vec![])),
-        )),
-
-        res::Expr::TextLit(text) => Ok((
-            AnnotExpr::TextLit(text.clone()),
-            ctx.new_var(Assign::App(res::TypeId::Text, vec![])),
         )),
     }
 }
@@ -688,9 +709,9 @@ fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> typed::Pattern {
             content.map(|content| Box::new(extract_pat_solution(ctx, *content))),
         ),
 
+        AnnotPattern::ByteConst(val) => typed::Pattern::ByteConst(val),
         AnnotPattern::IntConst(val) => typed::Pattern::IntConst(val),
         AnnotPattern::FloatConst(val) => typed::Pattern::FloatConst(val),
-        AnnotPattern::TextConst(text) => typed::Pattern::TextConst(text),
     }
 }
 
@@ -746,11 +767,11 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> typed::Expr {
                 .collect(),
         ),
 
+        AnnotExpr::ByteLit(val) => typed::Expr::ByteLit(val),
+
         AnnotExpr::IntLit(val) => typed::Expr::IntLit(val),
 
         AnnotExpr::FloatLit(val) => typed::Expr::FloatLit(val),
-
-        AnnotExpr::TextLit(text) => typed::Expr::TextLit(text),
     }
 }
 

@@ -2,7 +2,7 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RepParamId(pub usize);
@@ -16,9 +16,9 @@ pub struct TypeDef {
 #[derive(Clone, Debug)]
 pub enum Type<Rep> {
     Bool,
+    Byte,
     Int,
     Float,
-    Text,
     Array(Box<Type<Rep>>),
     Tuple(Vec<Type<Rep>>),
     Func(Purity, Rep, Box<Type<Rep>>, Box<Type<Rep>>),
@@ -48,6 +48,7 @@ pub enum Requirement {
     ArithOp(Op),
     ArrayOp(ArrayOp, Type<Solution>),
     ArrayReplace(Type<Solution>),
+    IOOp(IOOp),
     Ctor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
 }
 
@@ -68,6 +69,7 @@ pub enum Expr {
         Type<Solution>,
         Solution, // Representation of this function expression
     ),
+    IOOp(IOOp, Solution),
     NullaryCtor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
     Ctor(
         mono::CustomTypeId,
@@ -99,9 +101,9 @@ pub enum Expr {
         Vec<Expr>,
     ),
     BoolLit(bool),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-    TextLit(String),
 }
 
 #[derive(Clone, Debug)]
@@ -116,9 +118,9 @@ pub enum Pattern {
         Option<Box<Pattern>>,
     ),
     BoolConst(bool),
+    ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
-    TextConst(String),
 }
 
 #[derive(Clone, Debug)]

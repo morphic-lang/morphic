@@ -182,9 +182,9 @@ fn bind_pattern_locals(
             );
         }
         ast::Pattern::BoolConst(_) => {}
+        ast::Pattern::ByteConst(_) => {}
         ast::Pattern::IntConst(_) => {}
         ast::Pattern::FloatConst(_) => {}
-        ast::Pattern::TextConst(_) => {}
     }
 }
 
@@ -235,6 +235,7 @@ fn annot_expression(
             // the new array aliases what the hole-array did, and its members also alias what item aliases
             arr_aliases.union(item_aliases.add_ret_context(FieldId::ArrayMembers))
         }
+        ast::Expr::IOOp(_) => UniqueInfo::empty(),
         ast::Expr::Ctor(_id, variant_id, args) => match args {
             None => UniqueInfo::empty(),
             Some(args) => annot_expression(locals, func_infos, args)
@@ -271,9 +272,9 @@ fn annot_expression(
         ast::Expr::Let(lhs, rhs, body) => annot_pattern(locals, func_infos, lhs, rhs, body),
         ast::Expr::ArrayLit(..) => UniqueInfo::empty(),
         ast::Expr::BoolLit(..) => UniqueInfo::empty(),
+        ast::Expr::ByteLit(..) => UniqueInfo::empty(),
         ast::Expr::IntLit(..) => UniqueInfo::empty(),
         ast::Expr::FloatLit(..) => UniqueInfo::empty(),
-        ast::Expr::TextLit(..) => UniqueInfo::empty(),
     }
 }
 
@@ -288,8 +289,7 @@ fn add_names_from_type(
     // contains a field `x` that is an array, it has a name `.x` but if a value *is* an array, then
     // the name is `.`, represented as an empty Vector.
     match type_ {
-        ast::Type::Bool | ast::Type::Int | ast::Type::Float => {}
-        ast::Type::Text => names.push(prefix),
+        ast::Type::Bool | ast::Type::Byte | ast::Type::Int | ast::Type::Float => {}
         ast::Type::Array(item_type) | ast::Type::HoleArray(item_type) => {
             // The array itself:
             names.push(prefix.clone());
@@ -394,6 +394,7 @@ pub fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
             add_func_deps(deps, array_expr);
             add_func_deps(deps, item_expr);
         }
+        ast::Expr::IOOp(_) => {}
         ast::Expr::Ctor(_, _, None) => {}
         ast::Expr::Ctor(_, _, Some(expr)) => add_func_deps(deps, expr),
         ast::Expr::Local(_) => {}
@@ -422,9 +423,9 @@ pub fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
             }
         }
         ast::Expr::BoolLit(_) => {}
+        ast::Expr::ByteLit(_) => {}
         ast::Expr::IntLit(_) => {}
         ast::Expr::FloatLit(_) => {}
-        ast::Expr::TextLit(_) => {}
     }
 }
 

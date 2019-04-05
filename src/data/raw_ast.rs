@@ -41,6 +41,7 @@ pub enum Expr {
     Let(Pattern, Box<Expr>, Box<Expr>),
 
     ArrayLit(Vec<Expr>),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
     TextLit(String),
@@ -48,6 +49,10 @@ pub enum Expr {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Op {
+    EqByte,
+    LtByte,
+    LteByte,
+
     AddInt,
     SubInt,
     MulInt,
@@ -84,7 +89,7 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(CtorName, Option<Box<Pattern>>),
 
+    ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
-    TextConst(String),
 }

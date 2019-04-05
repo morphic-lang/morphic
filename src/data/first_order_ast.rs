@@ -9,9 +9,9 @@ pub struct CustomFuncId(pub usize);
 #[derive(Clone, Debug)]
 pub enum Type {
     Bool,
+    Byte,
     Int,
     Float,
-    Text,
     Array(Box<Type>),
     HoleArray(Box<Type>),
     Tuple(Vec<Type>),
@@ -24,6 +24,12 @@ pub struct VariantId(pub usize);
 #[derive(Clone, Debug)]
 pub struct TypeDef {
     pub variants: Vec<Option<Type>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum IOOp {
+    Input,
+    Output(Box<Expr>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,6 +85,7 @@ pub struct LocalId(pub usize);
 pub enum Expr {
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
+    IOOp(IOOp),
     Ctor(CustomTypeId, VariantId, Option<Box<Expr>>),
     Local(LocalId),
     Tuple(Vec<Expr>),
@@ -92,9 +99,9 @@ pub enum Expr {
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-    TextLit(String),
 }
 
 #[derive(Clone, Debug)]
@@ -104,9 +111,9 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(CustomTypeId, VariantId, Option<Box<Pattern>>),
     BoolConst(bool),
+    ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
-    TextConst(String),
 }
 
 #[derive(Clone, Debug)]
