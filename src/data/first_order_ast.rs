@@ -26,10 +26,10 @@ pub struct TypeDef {
     pub variants: Vec<Option<Type>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug)]
 pub enum IOOp {
     Input,
-    Output,
+    Output(Box<Expr>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -85,7 +85,7 @@ pub struct LocalId(pub usize);
 pub enum Expr {
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
-    IOOp(ArrayOp),
+    IOOp(IOOp),
     Ctor(CustomTypeId, VariantId, Option<Box<Expr>>),
     Local(LocalId),
     Tuple(Vec<Expr>),
