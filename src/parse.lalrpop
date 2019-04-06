@@ -20,6 +20,8 @@ extern {
 
     "type" => lex::Token::Type,
     "match" => lex::Token::Match,
+    "if" => lex::Token::If,
+    "else" => lex::Token::Else,
     "let" => lex::Token::Let,
     "in" => lex::Token::In,
     "proc" => lex::Token::Proc,
@@ -214,11 +216,19 @@ AtomicExpr: syntax::Expr = {
   <"StringLit"> => syntax::Expr::TextLit(<>),
 
   <MatchExpr>,
+
+  <IfExpr>,
 };
 
 MatchExpr: syntax::Expr = {
   "match" <expr: Expr> "{" <cases: CommaSep<(<Pattern> "->" <Expr>)>> "}" =>
     syntax::Expr::Match(Box::new(expr), cases),
+};
+
+IfExpr: syntax::Expr = {
+  "if" <expr: Expr> "{" <if_block: Expr> "}" "else" "{" <else_block: Expr> "}" =>
+    syntax::Expr::Match(Box::new(expr), vec![(syntax::Pattern::Ctor(syntax::CtorName("True".to_string()), None), if_block),
+                                             (syntax::Pattern::Ctor(syntax::CtorName("False".to_string()), None), else_block)]),
 };
 
 AppExpr: syntax::Expr = {
@@ -283,7 +293,7 @@ ArrayExpr: syntax::Expr = {
   syntax::Expr::App(Purity::Pure,
                     Box::new(syntax::Expr::Var(syntax::ValName("concat".to_string()))),
                     Box::new(syntax::Expr::Tuple(vec![left, right]))),
-}
+};
 
 BlockExpr: syntax::Expr = {
   <ArithCompExpr>,

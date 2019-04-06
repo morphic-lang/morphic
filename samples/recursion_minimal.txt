@@ -1,8 +1,5 @@
 fact(n: Int): Int =
-  match n <= 0 {
-    True -> 1,
-    False -> n * fact(n - 1),
-  }
+  if n <= 0 { 1 } else { n * fact(n - 1) }
 
 proc main(): () =
   let _ = fact(10) in

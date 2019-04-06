@@ -11,9 +11,10 @@ compose(f: a -> b, g: b -> c): (a -> c) =
   \x -> g(f(x))
 
 iterate(func: a -> a, n: Int, base: a -> a): (a -> a) =
-  match (n = 0) {
-    True -> base,
-    False -> compose(func, iterate(func, n - 1, base))
+  if n = 0 {
+    base
+  } else {
+    compose(func, iterate(func, n - 1, base))
   }
 
 incr(x: Int) : Int =

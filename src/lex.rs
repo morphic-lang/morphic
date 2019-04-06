@@ -16,6 +16,8 @@ pub enum Token {
 
     Type,
     Match,
+    If,
+    Else,
     Let,
     In,
     Proc,
@@ -76,7 +78,9 @@ impl fmt::Display for Token {
             Token::StringLit(text) => write!(f, "{:?}", text),
             Token::Type => write!(f, "type"),
             Token::Match => write!(f, "match"),
-            Token::Let => write!(f, "Let"),
+            Token::If => write!(f, "if"),
+            Token::Else => write!(f, "else"),
+            Token::Let => write!(f, "let"),
             Token::In => write!(f, "in"),
             Token::Proc => write!(f, "proc"),
             Token::Do => write!(f, "do"),
@@ -326,6 +330,8 @@ impl<'a> Iterator for Lexer<'a> {
             return match &self.src[name_start..name_end] {
                 "type" => Some(Ok((name_start, Token::Type, name_end))),
                 "match" => Some(Ok((name_start, Token::Match, name_end))),
+                "if" => Some(Ok((name_start, Token::If, name_end))),
+                "else" => Some(Ok((name_start, Token::Else, name_end))),
                 "let" => Some(Ok((name_start, Token::Let, name_end))),
                 "in" => Some(Ok((name_start, Token::In, name_end))),
                 "proc" => Some(Ok((name_start, Token::Proc, name_end))),
