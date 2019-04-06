@@ -95,6 +95,12 @@ impl lifted::CaptureId {
 impl Op {
     fn to_doc(&self) -> Doc<BoxDoc<()>> {
         match self {
+            Op::AddByte => Doc::text("+&"),
+            Op::SubByte => Doc::text("-&"),
+            Op::MulByte => Doc::text("*&"),
+            Op::DivByte => Doc::text("/&"),
+            Op::NegByte => Doc::text("-&"),
+
             Op::EqByte => Doc::text("=&"),
             Op::LtByte => Doc::text("<&"),
             Op::LteByte => Doc::text("<=&"),
@@ -129,6 +135,7 @@ impl res::ArrayOp {
             res::ArrayOp::Len => Doc::text("len"),
             res::ArrayOp::Push => Doc::text("push"),
             res::ArrayOp::Pop => Doc::text("pop"),
+            res::ArrayOp::Concat => Doc::text("concat"),
         }
     }
 }

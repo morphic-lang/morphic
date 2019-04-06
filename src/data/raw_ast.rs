@@ -49,6 +49,12 @@ pub enum Expr {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Op {
+    AddByte,
+    SubByte,
+    MulByte,
+    DivByte,
+    NegByte,
+
     EqByte,
     LtByte,
     LteByte,

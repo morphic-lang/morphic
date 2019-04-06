@@ -235,6 +235,7 @@ fn annot_expression(
             // the new array aliases what the hole-array did, and its members also alias what item aliases
             arr_aliases.union(item_aliases.add_ret_context(FieldId::ArrayMembers))
         }
+        ast::Expr::ArrayOp(ast::ArrayOp::Concat(..)) => UniqueInfo::empty(),
         ast::Expr::IOOp(_) => UniqueInfo::empty(),
         ast::Expr::Ctor(_id, variant_id, args) => match args {
             None => UniqueInfo::empty(),
@@ -363,11 +364,19 @@ fn annot_scc(
 // in it to `deps.
 pub fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
     match expr {
+        ast::Expr::ArithOp(ast::ArithOp::ByteOp(_, left, right)) => {
+            add_func_deps(deps, left);
+            add_func_deps(deps, right);
+        }
         ast::Expr::ArithOp(ast::ArithOp::IntOp(_, left, right)) => {
             add_func_deps(deps, left);
             add_func_deps(deps, right);
         }
         ast::Expr::ArithOp(ast::ArithOp::FloatOp(_, left, right)) => {
+            add_func_deps(deps, left);
+            add_func_deps(deps, right);
+        }
+        ast::Expr::ArithOp(ast::ArithOp::ByteCmp(_, left, right)) => {
             add_func_deps(deps, left);
             add_func_deps(deps, right);
         }
@@ -393,6 +402,10 @@ pub fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
         | ast::Expr::ArrayOp(ast::ArrayOp::Replace(_, array_expr, item_expr)) => {
             add_func_deps(deps, array_expr);
             add_func_deps(deps, item_expr);
+        }
+        ast::Expr::ArrayOp(ast::ArrayOp::Concat(_, left_array_expr, right_array_expr)) => {
+            add_func_deps(deps, left_array_expr);
+            add_func_deps(deps, right_array_expr);
         }
         ast::Expr::IOOp(_) => {}
         ast::Expr::Ctor(_, _, None) => {}

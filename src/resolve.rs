@@ -69,6 +69,10 @@ fn builtin_names() -> (
         res::GlobalId::ArrayOp(res::ArrayOp::Pop),
     );
     global_map.insert(
+        raw::ValName("concat".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Concat),
+    );
+    global_map.insert(
         raw::ValName("input".to_owned()),
         res::GlobalId::IOOp(res::IOOp::Input),
     );

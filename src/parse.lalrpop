@@ -40,6 +40,10 @@ extern {
     "\\" => lex::Token::BackSlash,
     "_" => lex::Token::Underscore,
 
+    "+&" => lex::Token::AddAmp,
+    "-&" => lex::Token::SubAmp,
+    "*&" => lex::Token::MulAmp,
+    "/&" => lex::Token::DivAmp,
     "=&" => lex::Token::EqualAmp,
     "<&" => lex::Token::LtAmp,
     "<=&" => lex::Token::LteAmp,
@@ -62,6 +66,8 @@ extern {
     "<=." => lex::Token::LteDot,
     ">." => lex::Token::GtDot,
     ">=." => lex::Token::GteDot,
+
+    "++" => lex::Token::PlusPlus,
   }
 }
 
@@ -225,6 +231,9 @@ AppExpr: syntax::Expr = {
 ArithSumExpr: syntax::Expr = {
   <AppExpr>,
 
+  <left: ArithSumExpr> "+&" <right: AppExpr> => syntax::binop(syntax::Op::AddByte, left, right),
+  <left: ArithSumExpr> "-&" <right: AppExpr> => syntax::binop(syntax::Op::SubByte, left, right),
+
   <left: ArithSumExpr> "+" <right: AppExpr> => syntax::binop(syntax::Op::AddInt, left, right),
   <left: ArithSumExpr> "-" <right: AppExpr> => syntax::binop(syntax::Op::SubInt, left, right),
 
@@ -234,6 +243,9 @@ ArithSumExpr: syntax::Expr = {
 
 ArithProdExpr: syntax::Expr = {
   <ArithSumExpr>,
+
+  <left: ArithProdExpr> "*&" <right: ArithSumExpr> => syntax::binop(syntax::Op::MulByte, left, right),
+  <left: ArithProdExpr> "/&" <right: ArithSumExpr> => syntax::binop(syntax::Op::SubByte, left, right),
 
   <left: ArithProdExpr> "*" <right: ArithSumExpr> => syntax::binop(syntax::Op::MulInt, left, right),
   <left: ArithProdExpr> "/" <right: ArithSumExpr> => syntax::binop(syntax::Op::SubInt, left, right),
@@ -263,6 +275,15 @@ ArithCompExpr: syntax::Expr = {
   <left: ArithProdExpr> ">." <right: ArithProdExpr> => syntax::binop(syntax::Op::LtFloat, right, left),
   <left: ArithProdExpr> ">=." <right: ArithProdExpr> => syntax::binop(syntax::Op::LteFloat, right, left),
 };
+
+ArrayExpr: syntax::Expr = {
+  <AtomicExpr>,
+
+  <left: ArrayExpr> "++" <right: AtomicExpr> =>
+  syntax::Expr::App(Purity::Pure,
+                    Box::new(syntax::Expr::Var(syntax::ValName("concat".to_string()))),
+                    Box::new(syntax::Expr::Tuple(vec![left, right]))),
+}
 
 BlockExpr: syntax::Expr = {
   <ArithCompExpr>,

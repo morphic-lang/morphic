@@ -44,6 +44,7 @@ pub enum ArrayOp {
     Len,
     Push,
     Pop,
+    Concat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

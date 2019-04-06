@@ -36,6 +36,10 @@ pub enum Token {
     BackSlash,
     Underscore,
 
+    AddAmp,
+    SubAmp,
+    MulAmp,
+    DivAmp,
     EqualAmp,
     LtAmp,
     LteAmp,
@@ -58,6 +62,7 @@ pub enum Token {
     LteDot,
     GtDot,
     GteDot,
+    PlusPlus,
 }
 
 impl fmt::Display for Token {
@@ -89,6 +94,10 @@ impl fmt::Display for Token {
             Token::BackSlash => write!(f, "\\"),
             Token::Underscore => write!(f, "_"),
             Token::EqualAmp => write!(f, "=&"),
+            Token::AddAmp => write!(f, "+&"),
+            Token::SubAmp => write!(f, "-&"),
+            Token::MulAmp => write!(f, "*&"),
+            Token::DivAmp => write!(f, "/&"),
             Token::LtAmp => write!(f, "<&"),
             Token::LteAmp => write!(f, "<=&"),
             Token::GtAmp => write!(f, ">&"),
@@ -110,6 +119,7 @@ impl fmt::Display for Token {
             Token::LteDot => write!(f, "<=."),
             Token::GtDot => write!(f, ">."),
             Token::GteDot => write!(f, ">=."),
+            Token::PlusPlus => write!(f, "++"),
         }
     }
 }
@@ -398,6 +408,10 @@ impl<'a> Iterator for Lexer<'a> {
                 ("\\", Token::BackSlash),
                 ("_", Token::Underscore),
                 // Byte arithmetic
+                ("+&", Token::AddAmp),
+                ("-&", Token::SubAmp),
+                ("*&", Token::MulAmp),
+                ("/&", Token::DivAmp),
                 ("=&", Token::EqualAmp),
                 ("<&", Token::LteAmp),
                 ("<=&", Token::LtAmp),
@@ -422,6 +436,8 @@ impl<'a> Iterator for Lexer<'a> {
                 ("<=.", Token::LtDot),
                 (">.", Token::GtDot),
                 (">=.", Token::GteDot),
+                // List operations
+                ("++", Token::PlusPlus),
             ],
         ) {
             let sym_start = self.pos;

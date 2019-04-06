@@ -42,8 +42,10 @@ pub enum BinOp {
 
 #[derive(Clone, Debug)]
 pub enum ArithOp {
+    ByteOp(BinOp, Box<Expr>, Box<Expr>),
     IntOp(BinOp, Box<Expr>, Box<Expr>),
     FloatOp(BinOp, Box<Expr>, Box<Expr>),
+    ByteCmp(std::cmp::Ordering, Box<Expr>, Box<Expr>),
     IntCmp(std::cmp::Ordering, Box<Expr>, Box<Expr>),
     FloatCmp(std::cmp::Ordering, Box<Expr>, Box<Expr>),
     NegateInt(Box<Expr>),
@@ -76,6 +78,11 @@ pub enum ArrayOp {
         Box<Expr>, // Hole array
         Box<Expr>, // Item
     ), // Returns new array
+    Concat(
+        Box<Type>,
+        Box<Expr>, // First Array
+        Box<Expr>, // Second Array
+    ), //Returns new array
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

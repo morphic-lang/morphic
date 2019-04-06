@@ -326,12 +326,16 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         Tuple(vec![fst, snd])
     }
 
-    fn int_binop() -> res::Type {
-        func(pair(int(), int()), int())
+    fn byte_binop() -> res::Type {
+        func(pair(byte(), byte()), byte())
     }
 
     fn byte_comp() -> res::Type {
         func(pair(byte(), byte()), bool_())
+    }
+
+    fn int_binop() -> res::Type {
+        func(pair(int(), int()), int())
     }
 
     fn int_comp() -> res::Type {
@@ -358,6 +362,12 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         res::GlobalId::ArithOp(op) => {
             use crate::data::raw_ast::Op::*;
             let body = match op {
+                AddByte => byte_binop(),
+                SubByte => byte_binop(),
+                MulByte => byte_binop(),
+                DivByte => byte_binop(),
+                NegByte => func(byte(), byte()),
+
                 EqByte => byte_comp(),
                 LtByte => byte_comp(),
                 LteByte => byte_comp(),
@@ -376,7 +386,7 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
                 SubFloat => float_binop(),
                 MulFloat => float_binop(),
                 DivFloat => float_binop(),
-                NegFloat => float_binop(),
+                NegFloat => func(float(), float()),
 
                 EqFloat => float_comp(),
                 LtFloat => float_comp(),
@@ -398,6 +408,10 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
                 Len => scheme(1, func(array(param(0)), int())),
                 Push => scheme(1, func(pair(array(param(0)), param(0)), array(param(0)))),
                 Pop => scheme(1, func(array(param(0)), pair(array(param(0)), param(0)))),
+                Concat => scheme(
+                    1,
+                    func(pair(array(param(0)), array(param(0))), array(param(0))),
+                ),
             };
             Cow::Owned(result)
         }

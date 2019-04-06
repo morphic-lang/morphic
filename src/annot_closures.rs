@@ -562,6 +562,18 @@ fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> (annot::Type<SolverVarI
     let op_var = graph.new_var();
     graph.require(op_var, SolverRequirement::ArithOp(op));
 
+    fn byte_binop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
+        annot::Type::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(annot::Type::Tuple(vec![
+                annot::Type::Byte,
+                annot::Type::Byte,
+            ])),
+            Box::new(annot::Type::Byte),
+        )
+    }
+
     fn int_binop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
         annot::Type::Func(
             Purity::Pure,
@@ -632,6 +644,12 @@ fn arith_op_type(graph: &mut ConstraintGraph, op: Op) -> (annot::Type<SolverVarI
     }
 
     let op_type = match op {
+        Op::AddByte => byte_binop(op_var),
+        Op::SubByte => byte_binop(op_var),
+        Op::MulByte => byte_binop(op_var),
+        Op::DivByte => byte_binop(op_var),
+        Op::NegByte => byte_comp(op_var),
+
         Op::EqByte => byte_comp(op_var),
         Op::LtByte => byte_comp(op_var),
         Op::LteByte => byte_comp(op_var),
@@ -723,6 +741,16 @@ fn array_op_type(
                 annot::Type::Array(Box::new(solver_item_type.clone())),
                 solver_item_type,
             ])),
+        ),
+
+        ArrayOp::Concat => annot::Type::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(annot::Type::Tuple(vec![
+                annot::Type::Array(Box::new(solver_item_type.clone())),
+                annot::Type::Array(Box::new(solver_item_type.clone())),
+            ])),
+            Box::new(annot::Type::Array(Box::new(solver_item_type))),
         ),
     };
 
