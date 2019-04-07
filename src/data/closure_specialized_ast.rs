@@ -57,7 +57,14 @@ pub enum Expr {
     Capture(lifted::CaptureId),
     Tuple(Vec<Expr>),
     Lam(LamId, FuncRep, Vec<Expr>),
-    App(Purity, FuncRep, Box<Expr>, Box<Expr>),
+    App(
+        Purity,
+        FuncRep,
+        Box<Expr>,
+        Box<Expr>,
+        Type, // Argument type
+        Type, // Return type
+    ),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
     Let(Pattern, Box<Expr>, Box<Expr>),
 

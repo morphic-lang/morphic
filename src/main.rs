@@ -10,6 +10,7 @@ mod data;
 mod graph;
 mod lambda_lift;
 mod lex;
+mod lower_closures;
 mod monomorphize;
 mod pretty_print;
 mod resolve;
@@ -122,6 +123,13 @@ fn run(config: Config) -> Result<(), Error> {
     println!("  # opaque reps: {}", special.opaque_reps.len());
     println!("  # globals: {}", special.vals.len());
     println!("  # lambdas: {}", special.lams.len());
+
+    let first_order = lower_closures::lower_closures(special);
+
+    println!("Built first-order AST");
+    println!("Statistics:");
+    println!("  # custom types: {}", first_order.custom_types.len());
+    println!("  # functions {}", first_order.funcs.len());
 
     Ok(())
 }

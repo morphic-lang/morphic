@@ -469,18 +469,24 @@ impl<'a> Context<'a> {
                 special::Expr::Lam(resolved_lam_id, resolved_rep, resolved_captures)
             }
 
-            annot::Expr::App(purity, func_rep, func, arg) => {
+            annot::Expr::App(purity, func_rep, func, arg, arg_type, ret_type) => {
                 let resolved_func_rep = self.resolve_solution(func_rep, params);
 
                 let resolved_func = self.resolve_expr(func, params);
 
                 let resolved_arg = self.resolve_expr(arg, params);
 
+                let resolved_arg_type = self.resolve_type(arg_type, params);
+
+                let resolved_ret_type = self.resolve_type(ret_type, params);
+
                 special::Expr::App(
                     *purity,
                     resolved_func_rep,
                     Box::new(resolved_func),
                     Box::new(resolved_arg),
+                    resolved_arg_type,
+                    resolved_ret_type,
                 )
             }
 

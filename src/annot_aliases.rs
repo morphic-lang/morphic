@@ -388,6 +388,7 @@ pub fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
             add_func_deps(deps, left);
             add_func_deps(deps, right);
         }
+        ast::Expr::ArithOp(ast::ArithOp::NegateByte(expr)) => add_func_deps(deps, expr),
         ast::Expr::ArithOp(ast::ArithOp::NegateInt(expr)) => add_func_deps(deps, expr),
         ast::Expr::ArithOp(ast::ArithOp::NegateFloat(expr)) => add_func_deps(deps, expr),
         ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array_expr, idx_expr, _)) => {

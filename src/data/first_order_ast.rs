@@ -40,14 +40,22 @@ pub enum BinOp {
     Div,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Comparison {
+    Less,
+    LessEqual,
+    Equal,
+}
+
 #[derive(Clone, Debug)]
 pub enum ArithOp {
     ByteOp(BinOp, Box<Expr>, Box<Expr>),
     IntOp(BinOp, Box<Expr>, Box<Expr>),
     FloatOp(BinOp, Box<Expr>, Box<Expr>),
-    ByteCmp(std::cmp::Ordering, Box<Expr>, Box<Expr>),
-    IntCmp(std::cmp::Ordering, Box<Expr>, Box<Expr>),
-    FloatCmp(std::cmp::Ordering, Box<Expr>, Box<Expr>),
+    ByteCmp(Comparison, Box<Expr>, Box<Expr>),
+    IntCmp(Comparison, Box<Expr>, Box<Expr>),
+    FloatCmp(Comparison, Box<Expr>, Box<Expr>),
+    NegateByte(Box<Expr>),
     NegateInt(Box<Expr>),
     NegateFloat(Box<Expr>),
 }
@@ -55,31 +63,31 @@ pub enum ArithOp {
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Item(
-        Box<Type>,                         // Item type
+        Type,                              // Item type
         Box<Expr>,                         // Array
         Box<Expr>,                         // Index
         Option<(CustomTypeId, VariantId)>, // Constructor to wrap returned HoleArray in
     ), // Returns tuple of (item, (potentially wrapped) hole array)
     Len(
-        Box<Type>, // Item type
+        Type,      // Item type
         Box<Expr>, // Array
     ), // Returns int
     Push(
-        Box<Type>, // Item type
+        Type,      // Item type
         Box<Expr>, // Array
         Box<Expr>, // Item
     ), // Returns new array
     Pop(
-        Box<Type>, // Item type
+        Type,      // Item type
         Box<Expr>, // Array
     ), // Returns item
     Replace(
-        Box<Type>,
+        Type,
         Box<Expr>, // Hole array
         Box<Expr>, // Item
     ), // Returns new array
     Concat(
-        Box<Type>,
+        Type,
         Box<Expr>, // First Array
         Box<Expr>, // Second Array
     ), //Returns new array

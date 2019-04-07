@@ -92,6 +92,8 @@ pub enum Expr {
         Solution, // Representation being called
         Box<Expr>,
         Box<Expr>,
+        Type<Solution>, // Argument type
+        Type<Solution>, // Return type
     ),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Type<Solution>),
     Let(Pattern, Box<Expr>, Box<Expr>),

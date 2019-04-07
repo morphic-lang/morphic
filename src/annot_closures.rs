@@ -262,6 +262,8 @@ enum SolverExpr {
         SolverVarId, // Representation being called
         Box<SolverExpr>,
         Box<SolverExpr>,
+        annot::Type<SolverVarId>, // Argument type
+        annot::Type<SolverVarId>, // Return type
     ),
     Match(
         Box<SolverExpr>,
@@ -693,7 +695,7 @@ fn array_op_type(
         ArrayOp::Item => {
             let ret_closure_var = graph.new_var();
             graph.require(
-                op_var,
+                ret_closure_var,
                 SolverRequirement::ArrayReplace(solver_item_type.clone()),
             );
 
@@ -998,7 +1000,9 @@ fn instantiate_expr(
                     *purity,
                     func_var,
                     Box::new(solver_func),
-                    Box::new(solver_arg),
+                    Box::new(solver_arg.clone()),
+                    *func_arg,
+                    (&*func_ret).clone(),
                 );
 
                 (solver_expr, *func_ret)
@@ -1921,11 +1925,13 @@ fn extract_expr(
                 .collect(),
         ),
 
-        SolverExpr::App(purity, func_rep_var, func, arg) => annot::Expr::App(
+        SolverExpr::App(purity, func_rep_var, func, arg, arg_type, ret_type) => annot::Expr::App(
             *purity,
             class_solutions[equiv_classes.class(*func_rep_var).0].clone(),
             Box::new(extract_expr(equiv_classes, params, class_solutions, func)),
             Box::new(extract_expr(equiv_classes, params, class_solutions, arg)),
+            extract_type(equiv_classes, class_solutions, arg_type),
+            extract_type(equiv_classes, class_solutions, ret_type),
         ),
 
         SolverExpr::Match(discrim, cases, result_type) => annot::Expr::Match(
