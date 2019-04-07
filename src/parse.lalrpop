@@ -226,6 +226,9 @@ MatchExpr: syntax::Expr = {
 };
 
 IfExpr: syntax::Expr = {
+  "if" <expr: Expr> "{" <if_block: Expr> "}" "else" <else_if_block: IfExpr> =>
+    syntax::Expr::Match(Box::new(expr), vec![(syntax::Pattern::Ctor(syntax::CtorName("True".to_string()), None), if_block),
+                                             (syntax::Pattern::Ctor(syntax::CtorName("False".to_string()), None), else_if_block)]),
   "if" <expr: Expr> "{" <if_block: Expr> "}" "else" "{" <else_block: Expr> "}" =>
     syntax::Expr::Match(Box::new(expr), vec![(syntax::Pattern::Ctor(syntax::CtorName("True".to_string()), None), if_block),
                                              (syntax::Pattern::Ctor(syntax::CtorName("False".to_string()), None), else_block)]),
@@ -287,16 +290,16 @@ ArithCompExpr: syntax::Expr = {
 };
 
 ArrayExpr: syntax::Expr = {
-  <AtomicExpr>,
+  <ArithCompExpr>,
 
-  <left: ArrayExpr> "++" <right: AtomicExpr> =>
+  <left: ArrayExpr> "++" <right: ArithCompExpr> =>
   syntax::Expr::App(Purity::Pure,
                     Box::new(syntax::Expr::Var(syntax::ValName("concat".to_string()))),
                     Box::new(syntax::Expr::Tuple(vec![left, right]))),
 };
 
 BlockExpr: syntax::Expr = {
-  <ArithCompExpr>,
+  <ArrayExpr>,
 
   <purity: OptProc> "\\" <param: Pattern> "->" <body: BlockExpr> =>
     syntax::Expr::Lam(purity, param, Box::new(body)),

@@ -1,0 +1,27 @@
+p_nat_to_string(i: Int): Array Byte =
+  let digit_to_string = \d ->
+    match d {
+        0 -> "0",
+        1 -> "1",
+        2 -> "2",
+        3 -> "3",
+        4 -> "4",
+        5 -> "5",
+        6 -> "6",
+        7 -> "7",
+        8 -> "8",
+        9 -> "9",
+        _ -> "",
+    }
+  in if i = 0 { "" }
+  else {
+    p_nat_to_string(i / 10) ++ digit_to_string(i - i / 10)
+  }
+
+int_to_string(i: Int): Array Byte =
+  if i = 0 { "0" }
+    else if i < 0 { "-" ++ p_nat_to_string(i) }
+    else { p_nat_to_string(i) }
+
+proc main(): () =
+  do output(int_to_string(4201))
