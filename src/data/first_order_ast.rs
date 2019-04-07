@@ -63,11 +63,10 @@ pub enum ArithOp {
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Item(
-        Type,                              // Item type
-        Box<Expr>,                         // Array
-        Box<Expr>,                         // Index
-        Option<(CustomTypeId, VariantId)>, // Constructor to wrap returned HoleArray in
-    ), // Returns tuple of (item, (potentially wrapped) hole array)
+        Type,      // Item type
+        Box<Expr>, // Array
+        Box<Expr>, // Index
+    ), // Returns tuple of (item, hole array)
     Len(
         Type,      // Item type
         Box<Expr>, // Array

@@ -211,7 +211,8 @@ fn annot_expression(
 ) -> UniqueInfo {
     match expr {
         ast::Expr::ArithOp(_) => UniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array, _, wrapper)) => {
+        ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array, _)) => {
+            /*
             // The holearray, in the second entry of the returned tuple, aliases the array
             let mut aliases =
                 annot_expression(locals, func_infos, array).add_ret_context(FieldId::Field(1));
@@ -225,6 +226,8 @@ fn annot_expression(
                 aliases.add_ret_context(FieldId::Variant(*variant_id));
             }
             aliases
+            */
+            unimplemented!()
         }
         ast::Expr::ArrayOp(ast::ArrayOp::Len(..)) => UniqueInfo::empty(),
         ast::Expr::ArrayOp(ast::ArrayOp::Push(..)) => UniqueInfo::empty(),
@@ -391,7 +394,7 @@ pub fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
         ast::Expr::ArithOp(ast::ArithOp::NegateByte(expr)) => add_func_deps(deps, expr),
         ast::Expr::ArithOp(ast::ArithOp::NegateInt(expr)) => add_func_deps(deps, expr),
         ast::Expr::ArithOp(ast::ArithOp::NegateFloat(expr)) => add_func_deps(deps, expr),
-        ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array_expr, idx_expr, _)) => {
+        ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array_expr, idx_expr)) => {
             add_func_deps(deps, array_expr);
             add_func_deps(deps, idx_expr);
         }

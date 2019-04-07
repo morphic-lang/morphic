@@ -465,12 +465,35 @@ impl<'a> Context<'a> {
                                                 )),
                                                 first_ord::Type::Int,
                                             ],
-                                            first_ord::Expr::ArrayOp(first_ord::ArrayOp::Item(
-                                                lowered_item_type,
-                                                Box::new(local(2)), // Array
-                                                Box::new(local(3)), // Index
-                                                Some((replacer_type, replacer_variant)),
-                                            )),
+                                            first_ord::Expr::Let(
+                                                first_ord::Pattern::Tuple(vec![
+                                                    // LocalId(4) is the returned item
+                                                    first_ord::Pattern::Var(
+                                                        lowered_item_type.clone(),
+                                                    ),
+                                                    // LocalId(5) is the hole array
+                                                    first_ord::Pattern::Var(
+                                                        first_ord::Type::HoleArray(Box::new(
+                                                            lowered_item_type.clone(),
+                                                        )),
+                                                    ),
+                                                ]),
+                                                Box::new(first_ord::Expr::ArrayOp(
+                                                    first_ord::ArrayOp::Item(
+                                                        lowered_item_type,
+                                                        Box::new(local(2)), // Array
+                                                        Box::new(local(3)), // Index
+                                                    ),
+                                                )),
+                                                Box::new(first_ord::Expr::Tuple(vec![
+                                                    local(4),
+                                                    first_ord::Expr::Ctor(
+                                                        replacer_type,
+                                                        replacer_variant,
+                                                        Some(Box::new(local(5))),
+                                                    ),
+                                                ])),
+                                            ),
                                         )
                                     }
 
