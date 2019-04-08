@@ -78,9 +78,8 @@ struct ProgramParts {
 
     globals: Vec<first_ord::FuncDef>, // Indexed by special::CustomGlobalId
     lam_bodies: Vec<first_ord::FuncDef>, // Indexed by special::LamId
+    main: first_ord::FuncDef,
     dispatch_funcs: Vec<first_ord::FuncDef>, // Indexed by DispatchFuncId
-
-    main: special::CustomGlobalId,
 }
 
 impl IdMapping {
@@ -112,7 +111,9 @@ impl IdMapping {
     }
 
     fn map_dispatch_func(&self, dispatch: DispatchFuncId) -> first_ord::CustomFuncId {
-        first_ord::CustomFuncId(self.num_orig_globals + self.num_orig_lams + dispatch.0)
+        first_ord::CustomFuncId(
+            self.num_orig_globals + self.num_orig_lams + 1 /* for main */ + dispatch.0,
+        )
     }
 
     fn assemble_program(&self, parts: ProgramParts) -> first_ord::Program {
@@ -125,15 +126,13 @@ impl IdMapping {
 
         let mut funcs = parts.globals;
         funcs.extend(parts.lam_bodies);
+        funcs.push(parts.main);
         funcs.extend(parts.dispatch_funcs);
-
-        // FIXME: Represent main as a function `proc () -> ()`, not a function `() -> (proc () -> ())`
-        let main = self.map_global(parts.main);
 
         first_ord::Program {
             custom_types,
             funcs,
-            main,
+            main: first_ord::CustomFuncId(self.num_orig_globals + self.num_orig_lams),
         }
     }
 }
@@ -851,6 +850,45 @@ impl<'a> Context<'a> {
             variants: lowered_variants,
         }
     }
+
+    fn lower_main(&mut self) -> first_ord::FuncDef {
+        let main_rep =
+            if let special::Type::Func(main_rep) = &self.program.vals[self.program.main.0].type_ {
+                main_rep
+            } else {
+                unreachable!()
+            };
+
+        let main_lowered = self.lower_closure(main_rep);
+
+        let main_dispatch = self.make_dispatch_func(
+            main_lowered,
+            Purity::Impure,
+            first_ord::Type::Tuple(vec![]),
+            first_ord::Type::Tuple(vec![]),
+        );
+
+        let main_wrapper_body = first_ord::Expr::Call(
+            Purity::Impure,
+            self.mapping.map_dispatch_func(main_dispatch),
+            Box::new(first_ord::Expr::Tuple(vec![
+                first_ord::Expr::Call(
+                    Purity::Pure,
+                    self.mapping.map_global(self.program.main),
+                    Box::new(first_ord::Expr::Tuple(vec![])),
+                ),
+                first_ord::Expr::Tuple(vec![]),
+            ])),
+        );
+
+        first_ord::FuncDef {
+            purity: Purity::Impure,
+            arg_type: first_ord::Type::Tuple(vec![]),
+            ret_type: first_ord::Type::Tuple(vec![]),
+            arg: first_ord::Pattern::Tuple(vec![]),
+            body: main_wrapper_body,
+        }
+    }
 }
 
 pub fn lower_closures(program: special::Program) -> first_ord::Program {
@@ -880,6 +918,8 @@ pub fn lower_closures(program: special::Program) -> first_ord::Program {
         .map(|lam_def| ctx.lower_lam_body(lam_def))
         .collect();
 
+    let lowered_main = ctx.lower_main();
+
     let parts = ProgramParts {
         custom_types: lowered_custom_types,
         lowered_closures: ctx
@@ -892,7 +932,7 @@ pub fn lower_closures(program: special::Program) -> first_ord::Program {
         lam_bodies: lowered_lam_bodies,
         dispatch_funcs: ctx.dispatch_funcs,
 
-        main: program.main,
+        main: lowered_main,
     };
 
     mapping.assemble_program(parts)
