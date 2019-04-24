@@ -41,15 +41,238 @@
 use crate::data::first_order_ast as in_ast;
 use crate::data::repr_annot_ast as out_ast;
 
+mod mid_ast {
+    use crate::annot_aliases;
+    pub use crate::data::first_order_ast::{self, BinOp, CustomFuncId, CustomTypeId, VariantId};
+    use crate::data::purity::Purity;
+    use crate::util::constraint_graph::SolverVarId;
+    use im_rc::{vector, Vector};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct RepParamId(pub usize);
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Type<ReprVar = RepParamId> {
+        Bool,
+        Int,
+        Float,
+        Text,
+        Array(Box<Type<ReprVar>>, ReprVar),
+        HoleArray(Box<Type<ReprVar>>, ReprVar),
+        Tuple(Vec<Type<ReprVar>>),
+        Custom(
+            CustomTypeId,
+            Vec<ReprVar>, // length must be `num_params` from the identified custom type
+        ),
+    }
+
+    impl<T> From<&Type<T>> for first_order_ast::Type {
+        fn from(t: &Type<T>) -> Self {
+            use first_order_ast::Type as FOType;
+            match t {
+                Type::Bool => FOType::Bool,
+                Type::Int => FOType::Int,
+                Type::Float => FOType::Float,
+                Type::Text => FOType::Text,
+                Type::Array(t, _) => FOType::Array(Box::new(From::from(&**t))),
+                Type::HoleArray(t, _) => FOType::HoleArray(Box::new(From::from(&**t))),
+                Type::Tuple(ts) => FOType::Tuple(ts.iter().map(From::from).collect()),
+                Type::Custom(id, _) => FOType::Custom(*id),
+            }
+        }
+    }
+
+    impl<T> From<Type<T>> for first_order_ast::Type {
+        fn from(t: Type<T>) -> Self {
+            (&t).into()
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum Constraint {
+        // FieldPaths are relative to the argument
+        SharedIfOutlivesCall(annot_aliases::FieldPath),
+        SharedIfAliased(annot_aliases::FieldPath, annot_aliases::FieldPath), // FIXME: NameVar
+        Shared,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct TypeDef<ReprVar = RepParamId> {
+        pub num_params: usize,
+        pub variants: Vec<Option<Type<ReprVar>>>,
+    }
+
+    // 0 is the function's argument. Every Expr in a Block has a LocalId.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct LocalId(pub usize);
+
+    // Terms do not have to be assigned to temps before being used.
+    // Thus they can have no operational side-effects.
+    #[derive(Clone, Debug)]
+    pub enum Term {
+        Access(
+            LocalId,
+            annot_aliases::FieldPath,         // actual accessed path
+            Option<annot_aliases::FieldPath>, // type-folded (pruned) path for alias analysis
+        ),
+        BoolLit(bool),
+        IntLit(i64),
+        FloatLit(f64),
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum ArithOp {
+        IntOp(BinOp, Term, Term),
+        FloatOp(BinOp, Term, Term),
+        IntCmp(std::cmp::Ordering, Term, Term),
+        FloatCmp(std::cmp::Ordering, Term, Term),
+        NegateInt(Term),
+        NegateFloat(Term),
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum ArrayOp {
+        // Construct(..) effectively contains an array type (i.e. Type::Array variant)
+        Construct(Box<Type<SolverVarId>>, SolverVarId, Vec<Term>),
+        Item(
+            Term,                              // Array
+            Term,                              // Index
+            Option<(CustomTypeId, VariantId)>, // Constructor to wrap returned HoleArray in
+        ), // Returns tuple of (item, (potentially wrapped) hole array)
+        Len(Term),
+        Push(
+            Term, // Array
+            Term, // Item
+        ), // Returns new array
+        Pop(Term), // Returns tuple of (array, item)
+        Replace(
+            Term, // Hole array
+            Term, // Item
+        ), // Returns new array
+    }
+
+    // Patterns which describe for the sake of branching, without binding variables
+    #[derive(Clone, Debug)]
+    pub enum Pattern {
+        Any,
+        Tuple(Vec<Pattern>),
+        Ctor(CustomTypeId, VariantId, Option<Box<Pattern>>),
+        BoolConst(bool),
+        IntConst(i64),
+        FloatConst(f64),
+        TextConst(String),
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum ReprParams<ReprVar> {
+        Determined(Vec<ReprVar>),
+        Pending, // for calls to the same SCC
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum Expr<ExprType> {
+        Term(Term),
+        ArithOp(ArithOp),
+        ArrayOp(ArrayOp),
+        Ctor(CustomTypeId, VariantId, Option<Term>),
+        Tuple(Vec<Term>),
+        Local(LocalId),
+        Call(Purity, CustomFuncId, Term, Option<ReprParams<SolverVarId>>),
+        Match(
+            LocalId,
+            Vec<(Pattern, Block<ExprType>)>,
+            Box<Type<SolverVarId>>,
+        ),
+    }
+
+    // ExprId does not index into any field of `Block`. ExprId indexes into
+    // maps created in annot_reprs::aliasing
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct ExprId(pub usize);
+    impl ExprId {
+        pub const ARG: ExprId = ExprId(0);
+        pub fn next(&self) -> ExprId {
+            ExprId(self.0 + 1)
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Block<ExprType> {
+        pub initial_idx: usize, // for LocalId, not ExprId
+        // `terms` and `types` are indexed by LocalId *offset by `initial_idx`
+        pub terms: Vec<Expr<ExprType>>,
+        pub types: Vec<ExprType>,
+        pub expr_ids: Vector<ExprId>, // indexed by LocalId
+    }
+
+    pub type TypedExpr = Expr<Type<SolverVarId>>;
+    pub type TypedBlock = Block<Type<SolverVarId>>;
+
+    // TODO: move out of data module?
+    impl<T> Block<T> {
+        pub fn function_body() -> Block<T> {
+            Block {
+                // LocalId(0) is arg, so first term index is 1
+                initial_idx: 1,
+                terms: vec![],
+                types: vec![],
+                expr_ids: vector![ExprId::ARG],
+            }
+        }
+
+        pub fn branch_from(block: &Block<T>) -> Block<T> {
+            Block {
+                initial_idx: block.initial_idx + block.terms.len(),
+                terms: vec![],
+                types: vec![],
+                expr_ids: block.expr_ids.clone(),
+            }
+        }
+
+        // Adds an expression to the block and returns a Term referring to that expression
+        pub fn add(&mut self, e: Expr<T>) -> Term {
+            Term::Access(self.add_local(e), vector![], None)
+        }
+
+        pub fn add_local(&mut self, e: Expr<T>) -> LocalId {
+            let idx = self.initial_idx + self.terms.len();
+            self.terms.push(e);
+            LocalId(idx)
+        }
+
+        pub fn expr_id_of(&self, l: LocalId) -> ExprId {
+            self.expr_ids[l.0]
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct FuncDef<ExprType> {
+        pub purity: Purity,
+        pub arg_type: Type<SolverVarId>,
+        pub ret_type: Type<SolverVarId>,
+        pub constraints: Vec<Vec<Constraint>>,
+        pub body: Block<ExprType>,
+    }
+
+    type TypedFuncDef = FuncDef<Type<SolverVarId>>;
+
+    #[derive(Clone, Debug)]
+    pub struct Program {
+        pub custom_types: Vec<TypeDef<SolverVarId>>,
+        pub funcs: Vec<FuncDef<()>>,
+        pub main: CustomFuncId,
+    }
+}
+
 mod parameterize {
     // TODO: the parameterization logic is nearly identical to that in annot_closures.rs.
     // Factor it out?
 
-    use super::{in_ast, out_ast};
+    use super::{in_ast, mid_ast};
     use crate::graph::{self, Graph};
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn count_params(parameterized: &[Option<out_ast::TypeDef>], type_: &in_ast::Type) -> usize {
+    fn count_params(parameterized: &[Option<mid_ast::TypeDef>], type_: &in_ast::Type) -> usize {
         match type_ {
             in_ast::Type::Bool | in_ast::Type::Int | in_ast::Type::Float | in_ast::Type::Text => 0,
             in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
@@ -72,34 +295,34 @@ mod parameterize {
     struct ReprVarIdGen(usize);
 
     impl ReprVarIdGen {
-        fn fresh(&mut self) -> out_ast::RepParamId {
-            let result = out_ast::RepParamId(self.0);
+        fn fresh(&mut self) -> mid_ast::RepParamId {
+            let result = mid_ast::RepParamId(self.0);
             self.0 += 1;
             result
         }
     }
 
     fn parameterize(
-        parameterized: &[Option<out_ast::TypeDef>],
+        parameterized: &[Option<mid_ast::TypeDef>],
         scc_num_params: usize,
         id_gen: &mut ReprVarIdGen,
         type_: &in_ast::Type,
-    ) -> out_ast::Type<out_ast::RepParamId> {
+    ) -> mid_ast::Type<mid_ast::RepParamId> {
         match type_ {
-            in_ast::Type::Bool => out_ast::Type::Bool,
-            in_ast::Type::Int => out_ast::Type::Int,
-            in_ast::Type::Float => out_ast::Type::Float,
-            in_ast::Type::Text => out_ast::Type::Text,
+            in_ast::Type::Bool => mid_ast::Type::Bool,
+            in_ast::Type::Int => mid_ast::Type::Int,
+            in_ast::Type::Float => mid_ast::Type::Float,
+            in_ast::Type::Text => mid_ast::Type::Text,
 
             in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
                 let repr_param = id_gen.fresh();
-                out_ast::Type::Array(
+                mid_ast::Type::Array(
                     Box::new(parameterize(parameterized, scc_num_params, id_gen, item)),
                     repr_param,
                 )
             }
 
-            in_ast::Type::Tuple(items) => out_ast::Type::Tuple(
+            in_ast::Type::Tuple(items) => mid_ast::Type::Tuple(
                 items
                     .iter()
                     .map(|item| parameterize(parameterized, scc_num_params, id_gen, item))
@@ -108,7 +331,7 @@ mod parameterize {
 
             in_ast::Type::Custom(other) => {
                 match &parameterized[other.0] {
-                    Some(typedef) => out_ast::Type::Custom(
+                    Some(typedef) => mid_ast::Type::Custom(
                         *other,
                         (0..typedef.num_params).map(|_| id_gen.fresh()).collect(),
                     ),
@@ -116,9 +339,9 @@ mod parameterize {
                     None => {
                         // This is a typedef in the same SCC, so we need to parameterize it by
                         // all the SCC parameters.
-                        out_ast::Type::Custom(
+                        mid_ast::Type::Custom(
                             *other,
-                            (0..scc_num_params).map(out_ast::RepParamId).collect(),
+                            (0..scc_num_params).map(mid_ast::RepParamId).collect(),
                         )
                     }
                 }
@@ -128,7 +351,7 @@ mod parameterize {
 
     fn parameterize_typedef_scc(
         typedefs: &[in_ast::TypeDef],
-        parameterized: &mut [Option<out_ast::TypeDef>],
+        parameterized: &mut [Option<mid_ast::TypeDef>],
         scc: &[in_ast::CustomTypeId],
     ) {
         let num_params = scc
@@ -165,7 +388,7 @@ mod parameterize {
 
                 (
                     type_id,
-                    out_ast::TypeDef {
+                    mid_ast::TypeDef {
                         num_params,
                         variants: parameterized_variants,
                     },
@@ -196,7 +419,7 @@ mod parameterize {
         }
     }
 
-    pub fn parameterize_typedefs(typedefs: &[in_ast::TypeDef]) -> Vec<out_ast::TypeDef> {
+    pub fn parameterize_typedefs(typedefs: &[in_ast::TypeDef]) -> Vec<mid_ast::TypeDef> {
         let dep_graph = Graph {
             edges_out: typedefs
                 .iter()
@@ -243,28 +466,28 @@ fn with_scope<T, R, F: for<'a> FnOnce(&'a mut Vec<T>) -> R>(vec: &mut Vec<T>, fu
 }
 
 mod flatten {
-    use super::{in_ast, out_ast, with_scope};
+    use super::{in_ast, mid_ast, with_scope};
     use crate::annot_aliases::{FieldId, FieldPath};
     use crate::util::constraint_graph::{ConstraintGraph, SolverVarId};
     use im_rc::vector;
 
     pub fn flatten_func(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
-        typedefs: &[out_ast::TypeDef],
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
+        typedefs: &[mid_ast::TypeDef],
         func: &in_ast::FuncDef,
-    ) -> out_ast::FuncDef<SolverVarId, ()> {
+    ) -> mid_ast::FuncDef<()> {
         let mut locals = Vec::new();
-        let mut body = out_ast::Block::function_body();
+        let mut body = mid_ast::Block::function_body();
         bind_pattern(
             graph,
             typedefs,
             &func.arg,
-            out_ast::LocalId(0),
+            mid_ast::LocalId(0),
             vector![],
             &mut locals,
         );
         flatten_expr_into(graph, typedefs, &func.body, &mut body, &mut locals);
-        out_ast::FuncDef {
+        mid_ast::FuncDef {
             purity: func.purity,
             arg_type: instantiate_type(graph, typedefs, &func.arg_type),
             ret_type: instantiate_type(graph, typedefs, &func.ret_type),
@@ -275,30 +498,30 @@ mod flatten {
 
     // Basic conversion, initializing unique solver vars for each array, holearray, or parameterized custom type
     pub fn instantiate_type(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
-        typedefs: &[out_ast::TypeDef], // indexed by CustomFuncId
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
+        typedefs: &[mid_ast::TypeDef], // indexed by CustomFuncId
         type_: &in_ast::Type,
-    ) -> out_ast::Type<SolverVarId> {
+    ) -> mid_ast::Type<SolverVarId> {
         match type_ {
-            in_ast::Type::Bool => out_ast::Type::Bool,
-            in_ast::Type::Int => out_ast::Type::Int,
-            in_ast::Type::Float => out_ast::Type::Float,
-            in_ast::Type::Text => out_ast::Type::Text,
-            in_ast::Type::Array(item_type) => out_ast::Type::Array(
+            in_ast::Type::Bool => mid_ast::Type::Bool,
+            in_ast::Type::Int => mid_ast::Type::Int,
+            in_ast::Type::Float => mid_ast::Type::Float,
+            in_ast::Type::Text => mid_ast::Type::Text,
+            in_ast::Type::Array(item_type) => mid_ast::Type::Array(
                 Box::new(instantiate_type(graph, typedefs, item_type)),
                 graph.new_var(),
             ),
-            in_ast::Type::HoleArray(item_type) => out_ast::Type::HoleArray(
+            in_ast::Type::HoleArray(item_type) => mid_ast::Type::HoleArray(
                 Box::new(instantiate_type(graph, typedefs, item_type)),
                 graph.new_var(),
             ),
-            in_ast::Type::Tuple(items) => out_ast::Type::Tuple(
+            in_ast::Type::Tuple(items) => mid_ast::Type::Tuple(
                 items
                     .iter()
                     .map(|t| instantiate_type(graph, typedefs, t))
                     .collect(),
             ),
-            in_ast::Type::Custom(id) => out_ast::Type::Custom(
+            in_ast::Type::Custom(id) => mid_ast::Type::Custom(
                 *id,
                 (0..typedefs[id.0].num_params)
                     .map(|_| graph.new_var())
@@ -308,78 +531,78 @@ mod flatten {
     }
 
     fn flatten_expr_into(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
-        typedefs: &[out_ast::TypeDef],
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
+        typedefs: &[mid_ast::TypeDef],
         expr: &in_ast::Expr,
         // Block to append terms *into* for intermediate expressions:
-        block: &mut out_ast::Block<SolverVarId, ()>,
+        block: &mut mid_ast::Block<()>,
         // Stack of terms indexed by ins_ast::LocalId, left in its original state after return:
-        locals: &mut Vec<out_ast::Term>,
-    ) -> out_ast::Term {
+        locals: &mut Vec<mid_ast::Term>,
+    ) -> mid_ast::Term {
         match expr {
             in_ast::Expr::ArithOp(in_arith_op) => {
                 let out_arith_op = match in_arith_op {
                     in_ast::ArithOp::IntOp(op, left, right) => {
                         let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
                         let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                        out_ast::ArithOp::IntOp(*op, lterm, rterm)
+                        mid_ast::ArithOp::IntOp(*op, lterm, rterm)
                     }
                     in_ast::ArithOp::FloatOp(op, left, right) => {
                         let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
                         let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                        out_ast::ArithOp::FloatOp(*op, lterm, rterm)
+                        mid_ast::ArithOp::FloatOp(*op, lterm, rterm)
                     }
                     in_ast::ArithOp::IntCmp(op, left, right) => {
                         let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
                         let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                        out_ast::ArithOp::IntCmp(*op, lterm, rterm)
+                        mid_ast::ArithOp::IntCmp(*op, lterm, rterm)
                     }
                     in_ast::ArithOp::FloatCmp(op, left, right) => {
                         let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
                         let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                        out_ast::ArithOp::FloatCmp(*op, lterm, rterm)
+                        mid_ast::ArithOp::FloatCmp(*op, lterm, rterm)
                     }
-                    in_ast::ArithOp::NegateInt(arg) => out_ast::ArithOp::NegateInt(
+                    in_ast::ArithOp::NegateInt(arg) => mid_ast::ArithOp::NegateInt(
                         flatten_expr_into(graph, typedefs, arg, block, locals),
                     ),
-                    in_ast::ArithOp::NegateFloat(arg) => out_ast::ArithOp::NegateFloat(
+                    in_ast::ArithOp::NegateFloat(arg) => mid_ast::ArithOp::NegateFloat(
                         flatten_expr_into(graph, typedefs, arg, block, locals),
                     ),
                 };
-                block.add(out_ast::Expr::ArithOp(out_arith_op))
+                block.add(mid_ast::Expr::ArithOp(out_arith_op))
             }
             in_ast::Expr::ArrayOp(in_array_op) => {
                 let out_array_op = match in_array_op {
-                    in_ast::ArrayOp::Item(item_type, array, index, ctr) => out_ast::ArrayOp::Item(
+                    in_ast::ArrayOp::Item(item_type, array, index, ctr) => mid_ast::ArrayOp::Item(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                         flatten_expr_into(graph, typedefs, index, block, locals),
                         *ctr,
                     ),
-                    in_ast::ArrayOp::Len(item_type, array) => out_ast::ArrayOp::Len(
+                    in_ast::ArrayOp::Len(item_type, array) => mid_ast::ArrayOp::Len(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                     ),
-                    in_ast::ArrayOp::Push(item_type, array, item) => out_ast::ArrayOp::Push(
+                    in_ast::ArrayOp::Push(item_type, array, item) => mid_ast::ArrayOp::Push(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                         flatten_expr_into(graph, typedefs, item, block, locals),
                     ),
-                    in_ast::ArrayOp::Pop(item_type, array) => out_ast::ArrayOp::Pop(
+                    in_ast::ArrayOp::Pop(item_type, array) => mid_ast::ArrayOp::Pop(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                     ),
                     in_ast::ArrayOp::Replace(item_type, hole_array, item) => {
-                        out_ast::ArrayOp::Replace(
+                        mid_ast::ArrayOp::Replace(
                             flatten_expr_into(graph, typedefs, hole_array, block, locals),
                             flatten_expr_into(graph, typedefs, item, block, locals),
                         )
                     }
                 };
-                block.add(out_ast::Expr::ArrayOp(out_array_op))
+                block.add(mid_ast::Expr::ArrayOp(out_array_op))
             }
             in_ast::Expr::Ctor(id, variant, Some(arg)) => {
                 let arg_term = flatten_expr_into(graph, typedefs, arg, block, locals);
-                block.add(out_ast::Expr::Ctor(*id, *variant, Some(arg_term)))
+                block.add(mid_ast::Expr::Ctor(*id, *variant, Some(arg_term)))
             }
             in_ast::Expr::Ctor(id, variant, None) => {
-                block.add(out_ast::Expr::Ctor(*id, *variant, None))
+                block.add(mid_ast::Expr::Ctor(*id, *variant, None))
             }
             in_ast::Expr::Local(in_ast::LocalId(id)) => locals[*id].clone(),
             in_ast::Expr::Tuple(exprs) => {
@@ -387,21 +610,21 @@ mod flatten {
                     .iter()
                     .map(|e| flatten_expr_into(graph, typedefs, e, block, locals))
                     .collect();
-                block.add(out_ast::Expr::Tuple(item_terms))
+                block.add(mid_ast::Expr::Tuple(item_terms))
             }
             in_ast::Expr::Call(purity, func, arg) => {
                 let arg_term = flatten_expr_into(graph, typedefs, arg, block, locals);
-                block.add(out_ast::Expr::Call(*purity, *func, arg_term, None))
+                block.add(mid_ast::Expr::Call(*purity, *func, arg_term, None))
             }
             in_ast::Expr::Match(matched_expr, patterns, type_) => {
                 // Add the matched term to the block immediately so we can refer to
                 // it as a LocalId (in case it's a literal)
                 let matched_term = flatten_expr_into(graph, typedefs, matched_expr, block, locals);
-                let matched_term_local = block.add_local(out_ast::Expr::Term(matched_term));
+                let matched_term_local = block.add_local(mid_ast::Expr::Term(matched_term));
 
                 let mut cases = vec![];
                 for (pat, rhs_expr) in patterns {
-                    let mut branch_block = out_ast::Block::branch_from(block);
+                    let mut branch_block = mid_ast::Block::branch_from(block);
                     let initial_locals = locals.len();
                     let out_pattern =
                         bind_pattern(graph, typedefs, pat, matched_term_local, vector![], locals);
@@ -410,7 +633,7 @@ mod flatten {
                     locals.truncate(initial_locals);
                 }
 
-                block.add(out_ast::Expr::Match(
+                block.add(mid_ast::Expr::Match(
                     matched_term_local,
                     cases,
                     Box::new(instantiate_type(graph, typedefs, type_)),
@@ -418,7 +641,7 @@ mod flatten {
             }
             in_ast::Expr::Let(pattern, rhs, body) => {
                 let rhs_term = flatten_expr_into(graph, typedefs, rhs, block, locals);
-                let rhs_term_local = block.add_local(out_ast::Expr::Term(rhs_term));
+                let rhs_term_local = block.add_local(mid_ast::Expr::Term(rhs_term));
 
                 with_scope(locals, |sub_locals| {
                     bind_pattern(
@@ -437,32 +660,32 @@ mod flatten {
                 for e in exprs {
                     elements.push(flatten_expr_into(graph, typedefs, e, block, locals));
                 }
-                block.add(out_ast::Expr::ArrayOp(out_ast::ArrayOp::Construct(
+                block.add(mid_ast::Expr::ArrayOp(mid_ast::ArrayOp::Construct(
                     Box::new(instantiate_type(graph, typedefs, item_type)),
                     graph.new_var(),
                     elements,
                 )))
             }
-            in_ast::Expr::BoolLit(constant) => out_ast::Term::BoolLit(*constant),
-            in_ast::Expr::IntLit(constant) => out_ast::Term::IntLit(*constant),
-            in_ast::Expr::FloatLit(constant) => out_ast::Term::FloatLit(*constant),
+            in_ast::Expr::BoolLit(constant) => mid_ast::Term::BoolLit(*constant),
+            in_ast::Expr::IntLit(constant) => mid_ast::Term::IntLit(*constant),
+            in_ast::Expr::FloatLit(constant) => mid_ast::Term::FloatLit(*constant),
             in_ast::Expr::TextLit(constant) => unreachable!(),
         }
     }
 
     fn bind_pattern(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
-        typedefs: &[out_ast::TypeDef],
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
+        typedefs: &[mid_ast::TypeDef],
         pattern: &in_ast::Pattern,
-        matched_local: out_ast::LocalId,
+        matched_local: mid_ast::LocalId,
         field_path: FieldPath,
-        locals: &mut Vec<out_ast::Term>,
-    ) -> out_ast::Pattern {
+        locals: &mut Vec<mid_ast::Term>,
+    ) -> mid_ast::Pattern {
         match pattern {
-            in_ast::Pattern::Any(_) => out_ast::Pattern::Any,
+            in_ast::Pattern::Any(_) => mid_ast::Pattern::Any,
             in_ast::Pattern::Var(_) => {
-                locals.push(out_ast::Term::Access(matched_local, field_path, None));
-                out_ast::Pattern::Any
+                locals.push(mid_ast::Term::Access(matched_local, field_path, None));
+                mid_ast::Pattern::Any
             }
             in_ast::Pattern::Tuple(patterns) => {
                 let mut field_patterns = Vec::new();
@@ -478,14 +701,14 @@ mod flatten {
                         locals,
                     ));
                 }
-                out_ast::Pattern::Tuple(field_patterns)
+                mid_ast::Pattern::Tuple(field_patterns)
             }
             in_ast::Pattern::Ctor(id, variant_id, None) => {
-                out_ast::Pattern::Ctor(*id, *variant_id, None)
+                mid_ast::Pattern::Ctor(*id, *variant_id, None)
             }
             in_ast::Pattern::Ctor(id, variant_id, Some(pattern)) => {
                 let new_field_path = field_path + vector![FieldId::Variant(*variant_id)];
-                out_ast::Pattern::Ctor(
+                mid_ast::Pattern::Ctor(
                     *id,
                     *variant_id,
                     Some(Box::new(bind_pattern(
@@ -498,9 +721,9 @@ mod flatten {
                     ))),
                 )
             }
-            in_ast::Pattern::BoolConst(c) => out_ast::Pattern::BoolConst(*c),
-            in_ast::Pattern::IntConst(c) => out_ast::Pattern::IntConst(*c),
-            in_ast::Pattern::FloatConst(c) => out_ast::Pattern::FloatConst(*c),
+            in_ast::Pattern::BoolConst(c) => mid_ast::Pattern::BoolConst(*c),
+            in_ast::Pattern::IntConst(c) => mid_ast::Pattern::IntConst(*c),
+            in_ast::Pattern::FloatConst(c) => mid_ast::Pattern::FloatConst(*c),
             in_ast::Pattern::TextConst(c) => unreachable!(),
         }
     }
@@ -508,32 +731,32 @@ mod flatten {
 
 // Constructs the typed AST and runs Hindley-Milner on representation variables
 mod unify {
-    use super::{in_ast, out_ast, with_scope};
+    use super::{in_ast, mid_ast, with_scope};
     use crate::annot_aliases::{FieldId, FieldPath, UniqueInfo};
     use crate::util::constraint_graph::{ConstraintGraph, SolverVarId};
     use im_rc::{vector, Vector};
-    pub use out_ast::ExprId;
+    pub use mid_ast::ExprId;
     use std::collections::BTreeMap;
 
     #[derive(Clone, Copy, Debug)]
     pub struct Context<'a> {
         pub first_order_typedefs: &'a [in_ast::TypeDef],
-        pub typedefs: &'a [out_ast::TypeDef],
+        pub typedefs: &'a [mid_ast::TypeDef],
         pub func_sigs: &'a [Option<Signature>],
-        pub scc_funcdefs: &'a BTreeMap<out_ast::CustomFuncId, out_ast::FuncDef<SolverVarId, ()>>,
+        pub scc_funcdefs: &'a BTreeMap<mid_ast::CustomFuncId, mid_ast::FuncDef<()>>,
         pub unique_infos: &'a [UniqueInfo],
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Signature {
         pub num_params: usize,
-        pub arg_type: out_ast::Type<out_ast::RepParamId>,
-        pub ret_type: out_ast::Type<out_ast::RepParamId>,
+        pub arg_type: mid_ast::Type<mid_ast::RepParamId>,
+        pub ret_type: mid_ast::Type<mid_ast::RepParamId>,
     }
 
     struct ExprIdGen {
         next: usize,                    // ExprId of the next local
-        local_expr_ids: Vector<ExprId>, // indexed by `out_ast::LocalId`
+        local_expr_ids: Vector<ExprId>, // indexed by `mid_ast::LocalId`
     }
     impl ExprIdGen {
         fn with_scope<R, F: FnOnce(&mut ExprIdGen) -> R>(&mut self, f: F) -> R {
@@ -559,10 +782,10 @@ mod unify {
     }
 
     pub fn unify_func(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
         context: Context,
-        func: &out_ast::FuncDef<SolverVarId, ()>,
-    ) -> out_ast::TypedBlock<SolverVarId> {
+        func: &mid_ast::FuncDef<()>,
+    ) -> mid_ast::TypedBlock {
         unify_block(
             graph,
             context,
@@ -576,12 +799,12 @@ mod unify {
     }
 
     fn unify_block(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
         context: Context,
-        locals: &mut Vec<out_ast::Type<SolverVarId>>, // indexed by `out_ast::LocalId`
+        locals: &mut Vec<mid_ast::Type<SolverVarId>>, // indexed by `mid_ast::LocalId`
         expr_id_gen: &mut ExprIdGen,
-        block: out_ast::Block<SolverVarId, ()>,
-    ) -> out_ast::TypedBlock<SolverVarId> {
+        block: mid_ast::Block<()>,
+    ) -> mid_ast::TypedBlock {
         assert_eq!(locals.len(), expr_id_gen.locals_len());
         assert_eq!(block.initial_idx, locals.len());
         assert_eq!(block.terms.len(), block.types.len());
@@ -598,7 +821,7 @@ mod unify {
                     // a match expression is *greater* than that of all expressions in its branches.
                     sub_expr_id_gen.bind_fresh();
                 }
-                out_ast::Block {
+                mid_ast::Block {
                     initial_idx: block.initial_idx,
                     terms: exprs,
                     types: sub_locals.split_off(block.initial_idx),
@@ -609,8 +832,8 @@ mod unify {
     }
 
     fn type_fold<T, E>(
-        typedefs: &[out_ast::TypeDef<T>], // indexed by LocalId
-        type_: &out_ast::Type<E>,
+        typedefs: &[mid_ast::TypeDef<T>], // indexed by LocalId
+        type_: &mid_ast::Type<E>,
         path: &FieldPath,
     ) -> FieldPath {
         use crate::annot_aliases;
@@ -627,54 +850,54 @@ mod unify {
     }
 
     fn unify_expr(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
         ctx: Context,
-        locals: &mut Vec<out_ast::Type<SolverVarId>>, // indexed by `out_ast::LocalId`
+        locals: &mut Vec<mid_ast::Type<SolverVarId>>, // indexed by `mid_ast::LocalId`
         expr_id_gen: &mut ExprIdGen,
-        expr: out_ast::Expr<SolverVarId, ()>,
-    ) -> (out_ast::TypedExpr<SolverVarId>, out_ast::Type<SolverVarId>) {
+        expr: mid_ast::Expr<()>,
+    ) -> (mid_ast::TypedExpr, mid_ast::Type<SolverVarId>) {
         match expr {
-            out_ast::Expr::Term(term) => {
+            mid_ast::Expr::Term(term) => {
                 let t = type_of_term(ctx.typedefs, locals, &term);
                 // Add the type-folded field path
                 let filled_term = match term {
-                    out_ast::Term::Access(local, path, None) => {
+                    mid_ast::Term::Access(local, path, None) => {
                         let type_folded_path = type_fold(ctx.typedefs, &t, &path);
-                        out_ast::Term::Access(local, path, Some(type_folded_path))
+                        mid_ast::Term::Access(local, path, Some(type_folded_path))
                     }
-                    out_ast::Term::Access(_, _, Some(_)) => {
+                    mid_ast::Term::Access(_, _, Some(_)) => {
                         // The typefolded path should not have yet been initialized
                         unreachable!()
                     }
-                    out_ast::Term::BoolLit(_)
-                    | out_ast::Term::IntLit(_)
-                    | out_ast::Term::FloatLit(_) => term,
+                    mid_ast::Term::BoolLit(_)
+                    | mid_ast::Term::IntLit(_)
+                    | mid_ast::Term::FloatLit(_) => term,
                 };
-                (out_ast::Expr::Term(filled_term), t)
+                (mid_ast::Expr::Term(filled_term), t)
             }
-            out_ast::Expr::Tuple(items) => {
-                let t = out_ast::Type::Tuple(
+            mid_ast::Expr::Tuple(items) => {
+                let t = mid_ast::Type::Tuple(
                     items
                         .iter()
                         .map(|item| type_of_term(ctx.typedefs, locals, item))
                         .collect(),
                 );
-                (out_ast::Expr::Tuple(items), t)
+                (mid_ast::Expr::Tuple(items), t)
             }
-            out_ast::Expr::ArithOp(arith_op) => {
+            mid_ast::Expr::ArithOp(arith_op) => {
                 let type_ = match arith_op {
-                    out_ast::ArithOp::IntOp(..) => out_ast::Type::Int,
-                    out_ast::ArithOp::NegateInt(..) => out_ast::Type::Int,
-                    out_ast::ArithOp::FloatOp(..) => out_ast::Type::Float,
-                    out_ast::ArithOp::NegateFloat(..) => out_ast::Type::Float,
-                    out_ast::ArithOp::IntCmp(..) => out_ast::Type::Bool,
-                    out_ast::ArithOp::FloatCmp(..) => out_ast::Type::Bool,
+                    mid_ast::ArithOp::IntOp(..) => mid_ast::Type::Int,
+                    mid_ast::ArithOp::NegateInt(..) => mid_ast::Type::Int,
+                    mid_ast::ArithOp::FloatOp(..) => mid_ast::Type::Float,
+                    mid_ast::ArithOp::NegateFloat(..) => mid_ast::Type::Float,
+                    mid_ast::ArithOp::IntCmp(..) => mid_ast::Type::Bool,
+                    mid_ast::ArithOp::FloatCmp(..) => mid_ast::Type::Bool,
                 };
-                (out_ast::Expr::ArithOp(arith_op), type_)
+                (mid_ast::Expr::ArithOp(arith_op), type_)
             }
-            out_ast::Expr::ArrayOp(array_op) => {
+            mid_ast::Expr::ArrayOp(array_op) => {
                 let type_ = match &array_op {
-                    out_ast::ArrayOp::Construct(item_type, repr_var, items) => {
+                    mid_ast::ArrayOp::Construct(item_type, repr_var, items) => {
                         for term in items {
                             equate_types(
                                 graph,
@@ -682,24 +905,24 @@ mod unify {
                                 item_type,
                             );
                         }
-                        out_ast::Type::Array(item_type.clone(), *repr_var)
+                        mid_ast::Type::Array(item_type.clone(), *repr_var)
                     }
-                    out_ast::ArrayOp::Item(array, _idx, wrapper) => {
+                    mid_ast::ArrayOp::Item(array, _idx, wrapper) => {
                         let array_type = type_of_term(ctx.typedefs, locals, array);
                         if let Some((_type_id, _variant_id)) = wrapper {
                             // TODO: remove this case after merging code
                             unimplemented!()
-                        } else if let out_ast::Type::Array(ref item_type, _) = array_type {
-                            out_ast::Type::Tuple(vec![*item_type.clone(), array_type])
+                        } else if let mid_ast::Type::Array(ref item_type, _) = array_type {
+                            mid_ast::Type::Tuple(vec![*item_type.clone(), array_type])
                         } else {
                             // Any other term is a type error
                             unreachable!();
                         }
                     }
-                    out_ast::ArrayOp::Len(_) => out_ast::Type::Int,
-                    out_ast::ArrayOp::Push(array_term, pushed_item_term) => {
+                    mid_ast::ArrayOp::Len(_) => mid_ast::Type::Int,
+                    mid_ast::ArrayOp::Push(array_term, pushed_item_term) => {
                         let array_type = type_of_term(ctx.typedefs, locals, array_term);
-                        if let out_ast::Type::Array(ref item_type, _) = array_type {
+                        if let mid_ast::Type::Array(ref item_type, _) = array_type {
                             let pushed_item_type =
                                 type_of_term(ctx.typedefs, locals, pushed_item_term);
                             equate_types(graph, item_type, &pushed_item_type);
@@ -709,19 +932,19 @@ mod unify {
                         }
                         array_type
                     }
-                    out_ast::ArrayOp::Pop(array_term) => {
+                    mid_ast::ArrayOp::Pop(array_term) => {
                         let array_type = type_of_term(ctx.typedefs, locals, array_term);
-                        if let out_ast::Type::Array(ref item_type, _) = array_type {
+                        if let mid_ast::Type::Array(ref item_type, _) = array_type {
                             let item_type = *item_type.clone();
-                            out_ast::Type::Tuple(vec![array_type, item_type])
+                            mid_ast::Type::Tuple(vec![array_type, item_type])
                         } else {
                             // Type error
                             unreachable!();
                         }
                     }
-                    out_ast::ArrayOp::Replace(hole_array_term, item_term) => {
+                    mid_ast::ArrayOp::Replace(hole_array_term, item_term) => {
                         let array_type = type_of_term(ctx.typedefs, locals, hole_array_term);
-                        if let out_ast::Type::HoleArray(ref item_type, _) = array_type {
+                        if let mid_ast::Type::HoleArray(ref item_type, _) = array_type {
                             let param_type = type_of_term(ctx.typedefs, locals, item_term);
                             equate_types(graph, &item_type, &param_type);
                         } else {
@@ -731,40 +954,40 @@ mod unify {
                         array_type
                     }
                 };
-                (out_ast::Expr::ArrayOp(array_op), type_)
+                (mid_ast::Expr::ArrayOp(array_op), type_)
             }
-            out_ast::Expr::Ctor(type_id, variant, None) => {
+            mid_ast::Expr::Ctor(type_id, variant, None) => {
                 let vars = (0..ctx.typedefs[type_id.0].num_params)
                     .map(|_| graph.new_var())
                     .collect();
                 (
-                    out_ast::Expr::Ctor(type_id, variant, None),
-                    out_ast::Type::Custom(type_id, vars),
+                    mid_ast::Expr::Ctor(type_id, variant, None),
+                    mid_ast::Type::Custom(type_id, vars),
                 )
             }
-            out_ast::Expr::Ctor(type_id, variant_id, Some(param)) => {
+            mid_ast::Expr::Ctor(type_id, variant_id, Some(param)) => {
                 let (vars, typedef) = instantiate(graph, &ctx.typedefs[type_id.0]);
                 if let Some(ref variant_type) = typedef.variants[variant_id.0] {
                     let param_type = type_of_term(ctx.typedefs, locals, &param);
                     equate_types(graph, variant_type, &param_type);
                     (
-                        out_ast::Expr::Ctor(type_id, variant_id, Some(param)),
-                        out_ast::Type::Custom(type_id, vars),
+                        mid_ast::Expr::Ctor(type_id, variant_id, Some(param)),
+                        mid_ast::Type::Custom(type_id, vars),
                     )
                 } else {
                     // Constructor doesn't take a param, but one was provided
                     unreachable!()
                 }
             }
-            out_ast::Expr::Local(local_id) => {
-                (out_ast::Expr::Local(local_id), locals[local_id.0].clone())
+            mid_ast::Expr::Local(local_id) => {
+                (mid_ast::Expr::Local(local_id), locals[local_id.0].clone())
             }
-            out_ast::Expr::Call(purity, func_id, arg_term, None) => {
+            mid_ast::Expr::Call(purity, func_id, arg_term, None) => {
                 let arg_type = type_of_term(ctx.typedefs, locals, &arg_term);
                 let (vars, result_type) = if let Some(funcdef) = ctx.scc_funcdefs.get(&func_id) {
                     // If its in the same SCC, just unify the types
                     equate_types(graph, &arg_type, &funcdef.arg_type);
-                    (out_ast::ReprParams::Pending, funcdef.ret_type.clone())
+                    (mid_ast::ReprParams::Pending, funcdef.ret_type.clone())
                 } else if let Some(signature) = &ctx.func_sigs[func_id.0] {
                     // Othwerise, it's already been processed, so instantiate params
                     unify_external_function_call(
@@ -778,12 +1001,12 @@ mod unify {
                     unreachable!()
                 };
                 (
-                    out_ast::Expr::Call(purity, func_id, arg_term, Some(vars)),
+                    mid_ast::Expr::Call(purity, func_id, arg_term, Some(vars)),
                     result_type,
                 )
             }
-            out_ast::Expr::Call(_, _, _, Some(_)) => unreachable!(),
-            out_ast::Expr::Match(matched_local, branches, result_type) => {
+            mid_ast::Expr::Call(_, _, _, Some(_)) => unreachable!(),
+            mid_ast::Expr::Match(matched_local, branches, result_type) => {
                 let mut typed_branches = Vec::new();
                 for (pat, branch) in branches {
                     let block = unify_block(graph, ctx, locals, expr_id_gen, branch);
@@ -791,7 +1014,7 @@ mod unify {
                     typed_branches.push((pat, block));
                 }
                 (
-                    out_ast::Expr::Match(matched_local, typed_branches, result_type.clone()),
+                    mid_ast::Expr::Match(matched_local, typed_branches, result_type.clone()),
                     *result_type,
                 )
             }
@@ -799,12 +1022,12 @@ mod unify {
     }
 
     fn unify_external_function_call(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
-        typedefs: &[out_ast::TypeDef],
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
+        typedefs: &[mid_ast::TypeDef],
         func_sig: &Signature,
         ui: UniqueInfo,
-        arg_type: &out_ast::Type<SolverVarId>,
-    ) -> (out_ast::ReprParams<SolverVarId>, out_ast::Type<SolverVarId>) {
+        arg_type: &mid_ast::Type<SolverVarId>,
+    ) -> (mid_ast::ReprParams<SolverVarId>, mid_ast::Type<SolverVarId>) {
         // Unify actual argument's type with parameter type
         let vars = (0..func_sig.num_params)
             .map(|_| graph.new_var())
@@ -820,15 +1043,15 @@ mod unify {
                 &lookup_type_field(typedefs, &ret_type, p.ret_field),
             );
         }
-        (out_ast::ReprParams::Determined(vars), ret_type)
+        (mid_ast::ReprParams::Determined(vars), ret_type)
     }
 
     pub fn substitute_vars(
-        typedefs: &[out_ast::TypeDef],
-        t: &out_ast::Type<out_ast::RepParamId>,
+        typedefs: &[mid_ast::TypeDef],
+        t: &mid_ast::Type<mid_ast::RepParamId>,
         vars: &[SolverVarId],
-    ) -> out_ast::Type<SolverVarId> {
-        use out_ast::Type as T;
+    ) -> mid_ast::Type<SolverVarId> {
+        use mid_ast::Type as T;
         match t {
             T::Bool => T::Bool,
             T::Int => T::Int,
@@ -852,49 +1075,49 @@ mod unify {
                 *id,
                 repr_args
                     .iter()
-                    .map(|&out_ast::RepParamId(rpid)| vars[rpid])
+                    .map(|&mid_ast::RepParamId(rpid)| vars[rpid])
                     .collect(),
             ),
         }
     }
 
     fn type_of_term(
-        typedefs: &[out_ast::TypeDef],
-        locals: &mut Vec<out_ast::Type<SolverVarId>>,
-        term: &out_ast::Term,
-    ) -> out_ast::Type<SolverVarId> {
+        typedefs: &[mid_ast::TypeDef],
+        locals: &mut Vec<mid_ast::Type<SolverVarId>>,
+        term: &mid_ast::Term,
+    ) -> mid_ast::Type<SolverVarId> {
         match term {
-            out_ast::Term::Access(out_ast::LocalId(id), field_path, _) => {
+            mid_ast::Term::Access(mid_ast::LocalId(id), field_path, _) => {
                 lookup_type_field(typedefs, &locals[*id], field_path.clone())
             }
-            out_ast::Term::BoolLit(_) => out_ast::Type::Bool,
-            out_ast::Term::IntLit(_) => out_ast::Type::Int,
-            out_ast::Term::FloatLit(_) => out_ast::Type::Float,
+            mid_ast::Term::BoolLit(_) => mid_ast::Type::Bool,
+            mid_ast::Term::IntLit(_) => mid_ast::Type::Int,
+            mid_ast::Term::FloatLit(_) => mid_ast::Type::Float,
         }
     }
 
     fn lookup_type_field(
-        typedefs: &[out_ast::TypeDef],
-        type_: &out_ast::Type<SolverVarId>,
+        typedefs: &[mid_ast::TypeDef],
+        type_: &mid_ast::Type<SolverVarId>,
         field_path: FieldPath,
-    ) -> out_ast::Type<SolverVarId> {
+    ) -> mid_ast::Type<SolverVarId> {
         if field_path.len() == 0 {
             type_.clone()
         } else {
             let (subscript, remaining_path) = (field_path[0], field_path.skip(1));
             match (type_, subscript) {
-                (out_ast::Type::Array(item_t, _repr_var), FieldId::ArrayMembers) => {
+                (mid_ast::Type::Array(item_t, _repr_var), FieldId::ArrayMembers) => {
                     lookup_type_field(typedefs, item_t, remaining_path)
                 }
-                (out_ast::Type::HoleArray(item_t, _repr_var), FieldId::ArrayMembers) => {
+                (mid_ast::Type::HoleArray(item_t, _repr_var), FieldId::ArrayMembers) => {
                     lookup_type_field(typedefs, item_t, remaining_path)
                 }
-                (out_ast::Type::Tuple(item_types), FieldId::Field(i)) => {
+                (mid_ast::Type::Tuple(item_types), FieldId::Field(i)) => {
                     lookup_type_field(typedefs, &item_types[i], remaining_path)
                 }
                 (
-                    out_ast::Type::Custom(out_ast::CustomTypeId(type_id), repr_var_params),
-                    FieldId::Variant(out_ast::VariantId(variant_id)),
+                    mid_ast::Type::Custom(mid_ast::CustomTypeId(type_id), repr_var_params),
+                    FieldId::Variant(mid_ast::VariantId(variant_id)),
                 ) => {
                     let instantiated =
                         instantiate_with(&typedefs[*type_id], repr_var_params.clone());
@@ -913,9 +1136,9 @@ mod unify {
     }
 
     fn instantiate(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
-        typedef: &out_ast::TypeDef,
-    ) -> (Vec<SolverVarId>, out_ast::TypeDef<SolverVarId>) {
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
+        typedef: &mid_ast::TypeDef,
+    ) -> (Vec<SolverVarId>, mid_ast::TypeDef<SolverVarId>) {
         let vars = (0..typedef.num_params)
             .map(|_| graph.new_var())
             .collect::<Vec<_>>();
@@ -926,7 +1149,7 @@ mod unify {
             .collect();
         (
             vars,
-            out_ast::TypeDef {
+            mid_ast::TypeDef {
                 num_params: typedef.num_params,
                 variants,
             },
@@ -934,10 +1157,10 @@ mod unify {
     }
 
     fn instantiate_with(
-        typedef: &out_ast::TypeDef,
+        typedef: &mid_ast::TypeDef,
         vars: Vec<SolverVarId>,
-    ) -> out_ast::TypeDef<SolverVarId> {
-        out_ast::TypeDef {
+    ) -> mid_ast::TypeDef<SolverVarId> {
+        mid_ast::TypeDef {
             num_params: typedef.num_params,
             variants: typedef
                 .variants
@@ -948,44 +1171,44 @@ mod unify {
     }
 
     fn substitute_params(
-        vars: &[SolverVarId], // indexed by out_ast::RepParamId
-        type_: &out_ast::Type<out_ast::RepParamId>,
-    ) -> out_ast::Type<SolverVarId> {
+        vars: &[SolverVarId], // indexed by mid_ast::RepParamId
+        type_: &mid_ast::Type<mid_ast::RepParamId>,
+    ) -> mid_ast::Type<SolverVarId> {
         match type_ {
-            out_ast::Type::Bool => out_ast::Type::Bool,
-            out_ast::Type::Int => out_ast::Type::Int,
-            out_ast::Type::Float => out_ast::Type::Float,
-            out_ast::Type::Text => out_ast::Type::Text,
+            mid_ast::Type::Bool => mid_ast::Type::Bool,
+            mid_ast::Type::Int => mid_ast::Type::Int,
+            mid_ast::Type::Float => mid_ast::Type::Float,
+            mid_ast::Type::Text => mid_ast::Type::Text,
 
-            out_ast::Type::Array(item, out_ast::RepParamId(id)) => {
-                out_ast::Type::Array(Box::new(substitute_params(vars, item)), vars[*id])
+            mid_ast::Type::Array(item, mid_ast::RepParamId(id)) => {
+                mid_ast::Type::Array(Box::new(substitute_params(vars, item)), vars[*id])
             }
-            out_ast::Type::HoleArray(item, out_ast::RepParamId(id)) => {
-                out_ast::Type::HoleArray(Box::new(substitute_params(vars, item)), vars[*id])
+            mid_ast::Type::HoleArray(item, mid_ast::RepParamId(id)) => {
+                mid_ast::Type::HoleArray(Box::new(substitute_params(vars, item)), vars[*id])
             }
 
-            out_ast::Type::Tuple(items) => out_ast::Type::Tuple(
+            mid_ast::Type::Tuple(items) => mid_ast::Type::Tuple(
                 items
                     .iter()
                     .map(|item| substitute_params(vars, item))
                     .collect(),
             ),
 
-            out_ast::Type::Custom(custom, args) => out_ast::Type::Custom(
+            mid_ast::Type::Custom(custom, args) => mid_ast::Type::Custom(
                 *custom,
                 args.iter()
-                    .map(|&out_ast::RepParamId(id)| vars[id])
+                    .map(|&mid_ast::RepParamId(id)| vars[id])
                     .collect(),
             ),
         }
     }
 
     fn equate_types(
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
-        type_a: &out_ast::Type<SolverVarId>,
-        type_b: &out_ast::Type<SolverVarId>,
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
+        type_a: &mid_ast::Type<SolverVarId>,
+        type_b: &mid_ast::Type<SolverVarId>,
     ) {
-        use out_ast::Type as T;
+        use mid_ast::Type as T;
         match (type_a, type_b) {
             (T::Bool, T::Bool) => {}
             (T::Int, T::Int) => {}
@@ -1019,7 +1242,7 @@ mod unify {
 
 mod aliasing {
     use super::constrain;
-    use super::out_ast;
+    use super::mid_ast;
     use super::unify::{self, ExprId};
     use crate::annot_aliases::{FieldId, FieldPath, UniqueInfo};
     use crate::util::constraint_graph::SolverVarId;
@@ -1180,10 +1403,10 @@ mod aliasing {
     }
 
     pub fn alias_track_func(
-        typedefs: &[out_ast::TypeDef<out_ast::RepParamId>], // indexed by CustomTypeId
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
         unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
-        block: out_ast::TypedBlock<SolverVarId>,
-        id: out_ast::CustomFuncId,
+        block: mid_ast::TypedBlock,
+        id: mid_ast::CustomFuncId,
     ) -> constrain::FuncInfo {
         // FIXME: initialize these with the first expr as the argument
         let mut accesses_cursor = LastAccessesCursor {
@@ -1214,17 +1437,17 @@ mod aliasing {
     }
     // Track aliases in block. Appends all exprs to name_adjacencies without truncating
     fn alias_track_block(
-        typedefs: &[out_ast::TypeDef<out_ast::RepParamId>], // indexed by CustomTypeId
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
         unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
         name_last_accesses: &mut LastAccessesCursor,
         name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
         name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,           // indexed by ExprId
-        block: &out_ast::TypedBlock<SolverVarId>,
+        block: &mid_ast::TypedBlock,
     ) {
         assert_eq!(name_last_accesses.len(), name_adjacencies.len());
         assert_eq!(name_last_accesses.len(), name_vars.len());
         for (i, (expr, type_)) in block.terms.iter().zip(&block.types).enumerate() {
-            let cur_local_id = out_ast::LocalId(block.initial_idx + i);
+            let cur_local_id = mid_ast::LocalId(block.initial_idx + i);
             let cur_expr_id = ExprId(name_adjacencies.len());
             assert_eq!(block.expr_id_of(cur_local_id), cur_expr_id);
             alias_track_expr(
@@ -1244,15 +1467,15 @@ mod aliasing {
     // Appends data for `expr` to `accesses` and `name_adjacencies`, and updates
     // each with accessing and aliasing information arising from `expr`.
     fn alias_track_expr(
-        typedefs: &[out_ast::TypeDef<out_ast::RepParamId>], // indexed by CustomTypeId
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
         unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
         accesses: &mut LastAccessesCursor,                  // indexed by ExprId
         name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
         name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>, // indexed by ExprId
         locals: &Vector<ExprId>,                            // indexed by LocalId
-        expr: &out_ast::TypedExpr<SolverVarId>,
+        expr: &mid_ast::TypedExpr,
         cur_expr_id: ExprId,                // id of `expr`
-        type_: &out_ast::Type<SolverVarId>, // type of `expr`
+        type_: &mid_ast::Type<SolverVarId>, // type of `expr`
     ) {
         // Initialize the node for cur_expr_id in accesses and name_adjacencies
         {
@@ -1276,35 +1499,35 @@ mod aliasing {
         }
 
         match expr {
-            out_ast::Expr::Term(term) => {
+            mid_ast::Expr::Term(term) => {
                 add_term_aliases(name_adjacencies, locals, &vector![], term, cur_expr_id);
                 update_term_accesses(accesses, locals, term);
             }
-            out_ast::Expr::ArithOp(arith_op) => match arith_op {
-                out_ast::ArithOp::IntOp(_, term1, term2)
-                | out_ast::ArithOp::FloatOp(_, term1, term2)
-                | out_ast::ArithOp::IntCmp(_, term1, term2)
-                | out_ast::ArithOp::FloatCmp(_, term1, term2) => {
+            mid_ast::Expr::ArithOp(arith_op) => match arith_op {
+                mid_ast::ArithOp::IntOp(_, term1, term2)
+                | mid_ast::ArithOp::FloatOp(_, term1, term2)
+                | mid_ast::ArithOp::IntCmp(_, term1, term2)
+                | mid_ast::ArithOp::FloatCmp(_, term1, term2) => {
                     update_term_accesses(accesses, locals, term1);
                     update_term_accesses(accesses, locals, term2);
                 }
-                out_ast::ArithOp::NegateInt(term) | out_ast::ArithOp::NegateFloat(term) => {
+                mid_ast::ArithOp::NegateInt(term) | mid_ast::ArithOp::NegateFloat(term) => {
                     update_term_accesses(accesses, locals, term);
                 }
             },
-            out_ast::Expr::ArrayOp(array_op) => match array_op {
-                out_ast::ArrayOp::Construct(_type, _var, item_terms) => {
+            mid_ast::Expr::ArrayOp(array_op) => match array_op {
+                mid_ast::ArrayOp::Construct(_type, _var, item_terms) => {
                     let path_prefix = vector![FieldId::ArrayMembers];
                     for term in item_terms {
                         add_term_aliases(name_adjacencies, locals, &path_prefix, term, cur_expr_id);
                         update_term_accesses(accesses, locals, term);
                     }
                 }
-                out_ast::ArrayOp::Item(array_term, idx_term, None) => {
+                mid_ast::ArrayOp::Item(array_term, idx_term, None) => {
                     update_term_accesses(accesses, locals, array_term);
                     update_term_accesses(accesses, locals, idx_term);
                     // The item (in first tuple position) aliases array_term's contents
-                    if let out_ast::Term::Access(local_id, _actual, Some(array_field)) = array_term
+                    if let mid_ast::Term::Access(local_id, _actual, Some(array_field)) = array_term
                     {
                         let mut array_elements = array_field.clone();
                         array_elements.push_back(FieldId::ArrayMembers);
@@ -1327,18 +1550,18 @@ mod aliasing {
                     );
                     // FIXME: the HoleArray's elements do not alias item, unless there is a self-loop
                 }
-                out_ast::ArrayOp::Item(_, _, Some(_)) => {
+                mid_ast::ArrayOp::Item(_, _, Some(_)) => {
                     // TOOD: merge to remove this case
                     unimplemented!()
                 }
-                out_ast::ArrayOp::Len(array_term) => {
+                mid_ast::ArrayOp::Len(array_term) => {
                     update_term_accesses(accesses, locals, array_term);
                 }
-                out_ast::ArrayOp::Push(array_term, item_term) => {
+                mid_ast::ArrayOp::Push(array_term, item_term) => {
                     update_term_accesses(accesses, locals, array_term);
                     update_term_accesses(accesses, locals, item_term);
                     // The result's members alias the original array's members
-                    if let out_ast::Term::Access(local_id, _, Some(array_path)) = array_term {
+                    if let mid_ast::Term::Access(local_id, _, Some(array_path)) = array_term {
                         let mut array_members_path = array_path.clone();
                         array_members_path.push_back(FieldId::ArrayMembers);
                         alias_fields(
@@ -1359,10 +1582,10 @@ mod aliasing {
                     );
                     // FIXME: the original array's elements do not alias item, unless they already did (ie. self-loop)
                 }
-                out_ast::ArrayOp::Pop(array_term) => {
+                mid_ast::ArrayOp::Pop(array_term) => {
                     update_term_accesses(accesses, locals, array_term);
                     // The result's members alias the members of array_term
-                    if let out_ast::Term::Access(local_id, _, Some(array_field_path)) = array_term {
+                    if let mid_ast::Term::Access(local_id, _, Some(array_field_path)) = array_term {
                         let mut members = array_field_path.clone();
                         members.push_back(FieldId::ArrayMembers);
                         alias_fields(
@@ -1374,11 +1597,11 @@ mod aliasing {
                         unreachable!();
                     }
                 }
-                out_ast::ArrayOp::Replace(hole_array_term, item_term) => {
+                mid_ast::ArrayOp::Replace(hole_array_term, item_term) => {
                     update_term_accesses(accesses, locals, hole_array_term);
                     update_term_accesses(accesses, locals, item_term);
                     // The result's members alias the members of hole_array_term
-                    if let out_ast::Term::Access(local_id, _, Some(array_field_path)) =
+                    if let mid_ast::Term::Access(local_id, _, Some(array_field_path)) =
                         hole_array_term
                     {
                         let mut members = array_field_path.clone();
@@ -1404,10 +1627,10 @@ mod aliasing {
                     // FIXME: the HoleArray's elements do not alias item, unless they already did (ie. self-loop)
                 }
             },
-            out_ast::Expr::Ctor(_type_id, _variant_id, None) => {
+            mid_ast::Expr::Ctor(_type_id, _variant_id, None) => {
                 // Nothing aliased or accessed
             }
-            out_ast::Expr::Ctor(type_id, variant_id, Some(arg_term)) => {
+            mid_ast::Expr::Ctor(type_id, variant_id, Some(arg_term)) => {
                 update_term_accesses(accesses, locals, arg_term);
                 add_term_aliases(
                     name_adjacencies,
@@ -1417,21 +1640,21 @@ mod aliasing {
                     cur_expr_id,
                 );
             }
-            out_ast::Expr::Tuple(item_terms) => {
+            mid_ast::Expr::Tuple(item_terms) => {
                 for (idx, item) in item_terms.iter().enumerate() {
                     update_term_accesses(accesses, locals, &item);
                     let prefix = vector![FieldId::Field(idx)];
                     add_term_aliases(name_adjacencies, locals, &prefix, &item, cur_expr_id);
                 }
             }
-            out_ast::Expr::Local(local_id) => {
+            mid_ast::Expr::Local(local_id) => {
                 alias_fields(
                     name_adjacencies,
                     (locals[local_id.0], &vector![]),
                     (cur_expr_id, &vector![]),
                 );
             }
-            out_ast::Expr::Call(_purity, func_id, arg_term, _) => {
+            mid_ast::Expr::Call(_purity, func_id, arg_term, _) => {
                 // FIXME: update_term_accesses will ignore arr[] if arr is accessed;
                 // we need to either black-box the function and assume all sub-paths in
                 // arg_term will be accessed, or emit that information from functions in
@@ -1447,7 +1670,7 @@ mod aliasing {
                     cur_expr_id,
                 );
             }
-            out_ast::Expr::Match(_matched, branches, _result_type) => {
+            mid_ast::Expr::Match(_matched, branches, _result_type) => {
                 let mut new_edges = BTreeMap::new();
                 for (branch_idx, (_pat, block)) in branches.iter().enumerate() {
                     accesses.in_branch_scope(cur_expr_id, branch_idx, |sub_accesses| {
@@ -1479,9 +1702,9 @@ mod aliasing {
     //
     // Returns the names in `type_` and the edges between those that are aliased.
     pub fn get_names_in(
-        type_defs: &[out_ast::TypeDef<out_ast::RepParamId>],
+        type_defs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         name_vars: &mut BTreeMap<FieldPath, SolverVarId>, // indexed by ExprId
-        type_: &out_ast::Type<SolverVarId>,
+        type_: &mid_ast::Type<SolverVarId>,
     ) -> (Vec<FieldPath>, Vec<(FieldPath, FieldPath)>) {
         use im_rc::Vector;
         let mut names = Vec::new();
@@ -1500,20 +1723,20 @@ mod aliasing {
 
         // Recursively appends paths to names in `type_` to `names`
         fn add_names_from_type(
-            type_defs: &[out_ast::TypeDef<out_ast::RepParamId>],
+            type_defs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
             name_vars: &mut BTreeMap<FieldPath, SolverVarId>, // indexed by ExprId
             names: &mut Vec<FieldPath>,
             edges: &mut Vec<(FieldPath, FieldPath)>,
             // `typedefs_on_path` maps types to the path at which they are found in the type
-            typedefs_on_path: &mut BTreeMap<out_ast::CustomTypeId, FieldPath>,
-            typedefs_on_path_twice: &mut BTreeSet<out_ast::CustomTypeId>,
-            type_: &out_ast::Type<SolverVarId>,
+            typedefs_on_path: &mut BTreeMap<mid_ast::CustomTypeId, FieldPath>,
+            typedefs_on_path_twice: &mut BTreeSet<mid_ast::CustomTypeId>,
+            type_: &mid_ast::Type<SolverVarId>,
             prefix: FieldPath,
         ) {
             match type_ {
-                out_ast::Type::Bool | out_ast::Type::Int | out_ast::Type::Float => {}
-                out_ast::Type::Text => unimplemented!(),
-                out_ast::Type::Array(item_type, var) | out_ast::Type::HoleArray(item_type, var) => {
+                mid_ast::Type::Bool | mid_ast::Type::Int | mid_ast::Type::Float => {}
+                mid_ast::Type::Text => unimplemented!(),
+                mid_ast::Type::Array(item_type, var) | mid_ast::Type::HoleArray(item_type, var) => {
                     // The array itself:
                     names.push(prefix.clone());
                     name_vars.insert(prefix.clone(), *var);
@@ -1531,7 +1754,7 @@ mod aliasing {
                         new_prefix,
                     );
                 }
-                out_ast::Type::Tuple(item_types) => {
+                mid_ast::Type::Tuple(item_types) => {
                     for (i, item_type) in item_types.iter().enumerate() {
                         let mut new_prefix = prefix.clone();
                         new_prefix.push_back(FieldId::Field(i));
@@ -1547,7 +1770,7 @@ mod aliasing {
                         );
                     }
                 }
-                out_ast::Type::Custom(id, vars) => {
+                mid_ast::Type::Custom(id, vars) => {
                     let naming_nonrecursively = !typedefs_on_path.contains_key(id);
                     let naming_second_layer =
                         typedefs_on_path.contains_key(id) && !typedefs_on_path_twice.contains(id);
@@ -1564,7 +1787,7 @@ mod aliasing {
                         for (i, variant) in type_defs[id.0].variants.iter().enumerate() {
                             if let Some(variant_type) = variant {
                                 let mut variant_prefix = prefix.clone();
-                                variant_prefix.push_back(FieldId::Variant(out_ast::VariantId(i)));
+                                variant_prefix.push_back(FieldId::Variant(mid_ast::VariantId(i)));
                                 add_names_from_type(
                                     type_defs,
                                     name_vars,
@@ -1594,11 +1817,11 @@ mod aliasing {
         name_last_accesses: &mut LastAccessesCursor,
         locals: &Vector<ExprId>, // indexed by LocalId
         ui: &UniqueInfo,
-        arg: &out_ast::Term,
+        arg: &mid_ast::Term,
         cur_expr_id: ExprId,
     ) {
         match arg {
-            out_ast::Term::Access(local_id, _, Some(field)) => {
+            mid_ast::Term::Access(local_id, _, Some(field)) => {
                 for alias in &ui.edges {
                     alias_fields(
                         name_adjacencies,
@@ -1610,10 +1833,10 @@ mod aliasing {
                     assert!(name_last_accesses.accesses[cur_expr_id.0].contains_key(&name));
                 }
             }
-            out_ast::Term::Access(_, _, None) => {
+            mid_ast::Term::Access(_, _, None) => {
                 unreachable!();
             }
-            out_ast::Term::BoolLit(_) | out_ast::Term::IntLit(_) | out_ast::Term::FloatLit(_) => {
+            mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {
                 // Literals have no aliasing
             }
         }
@@ -1622,11 +1845,11 @@ mod aliasing {
     fn update_term_accesses(
         accesses: &mut LastAccessesCursor, // indexed by ExprId
         locals: &Vector<ExprId>,           // indexed by LocalId
-        term: &out_ast::Term,
+        term: &mid_ast::Term,
     ) {
         let cur_expr_id = accesses.last_expr_id();
         match term {
-            out_ast::Term::Access(local_id, _, Some(pruned_field_path)) => {
+            mid_ast::Term::Access(local_id, _, Some(pruned_field_path)) => {
                 let referenced_expr = &mut accesses.accesses[locals[local_id.0].0];
                 // Update last-accessed of all names accessed in the field_path
                 for i in 0..pruned_field_path.len() {
@@ -1635,8 +1858,8 @@ mod aliasing {
                     }
                 }
             }
-            out_ast::Term::Access(_, _, None) => unreachable!(),
-            out_ast::Term::BoolLit(_) | out_ast::Term::IntLit(_) | out_ast::Term::FloatLit(_) => {}
+            mid_ast::Term::Access(_, _, None) => unreachable!(),
+            mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {}
         }
     }
 
@@ -1653,18 +1876,18 @@ mod aliasing {
         name_adjacencies: &mut [BTreeMap<FieldPath, BTreeSet<Name>>],
         locals: &Vector<ExprId>, // indexed by LocalId
         prefix: &FieldPath,
-        term: &out_ast::Term,
+        term: &mid_ast::Term,
         cur_expr_id: ExprId,
     ) {
         match term {
-            out_ast::Term::Access(referenced_local_id, _, Some(referenced_name_path)) => {
+            mid_ast::Term::Access(referenced_local_id, _, Some(referenced_name_path)) => {
                 alias_fields(
                     name_adjacencies,
                     (locals[referenced_local_id.0], referenced_name_path),
                     (cur_expr_id, prefix),
                 );
             }
-            out_ast::Term::BoolLit(_) | out_ast::Term::IntLit(_) | out_ast::Term::FloatLit(_) => {}
+            mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {}
             _ => unreachable!(),
         }
     }
@@ -1758,16 +1981,16 @@ mod aliasing {
 
 mod constrain {
     use super::aliasing;
-    use super::out_ast::{self, ExprId};
+    use super::mid_ast::{self, ExprId};
     use crate::annot_aliases::FieldPath;
     use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
     use im_rc::vector;
     use std::collections::{BTreeMap, BTreeSet};
 
     pub struct FuncInfo {
-        pub id: out_ast::CustomFuncId,
+        pub id: mid_ast::CustomFuncId,
         // arg (and its type) are first in the body, ret (and its type) are last
-        pub body: out_ast::TypedBlock<SolverVarId>,
+        pub body: mid_ast::TypedBlock,
         pub aliases: Vec<BTreeMap<FieldPath, BTreeSet<aliasing::Name>>>, // indexed by ExprId
         pub last_accesses: Vec<BTreeMap<FieldPath, aliasing::LastAccessTree>>, // indexed by ExprId
         pub name_vars: Vec<BTreeMap<FieldPath, SolverVarId>>,            // indexed by ExprId
@@ -1827,14 +2050,14 @@ mod constrain {
         pub constraint_sigs: &'a [Option<Signature>], // indexed by CustomFuncId
         pub equiv_classes: &'a EquivClasses,
         pub scc_sigs: &'a BTreeMap<
-            out_ast::CustomFuncId,
-            BTreeMap<EquivClass, BTreeSet<out_ast::Constraint>>,
+            mid_ast::CustomFuncId,
+            BTreeMap<EquivClass, BTreeSet<mid_ast::Constraint>>,
         >,
     }
 
     #[derive(Clone, Debug)]
     pub struct Signature {
-        params: Vec<BTreeSet<out_ast::Constraint>>, // indexed by RepParamId
+        params: Vec<BTreeSet<mid_ast::Constraint>>, // indexed by RepParamId
     }
 
     impl Signature {
@@ -1850,9 +2073,9 @@ mod constrain {
 
     pub fn constrain_func(
         ctx: Context,
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
         func: &FuncInfo,
-    ) -> BTreeMap<EquivClass, BTreeSet<out_ast::Constraint>> {
+    ) -> BTreeMap<EquivClass, BTreeSet<mid_ast::Constraint>> {
         let mut mutation_points = Vec::new();
         let _ = constrain_block(
             ctx,
@@ -1870,7 +2093,7 @@ mod constrain {
                 {
                     graph.require(
                         func.repr_var_for(&(ExprId::ARG, mutated_arg_path.clone())),
-                        out_ast::Constraint::SharedIfAliased(
+                        mid_ast::Constraint::SharedIfAliased(
                             arg_path.clone(),
                             mutated_arg_path.clone(),
                         ),
@@ -1896,10 +2119,10 @@ mod constrain {
     fn constrain_block(
         ctx: Context,
         func: &FuncInfo,
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
         arg_mutations: &mut Vec<(FieldPath, ExprId)>,
         initial_expr_id: ExprId,
-        block: &out_ast::TypedBlock<SolverVarId>,
+        block: &mid_ast::TypedBlock,
     ) -> ExprId {
         let mut next_expr_id = initial_expr_id;
         for (expr, type_) in block.terms.iter().zip(block.types.iter()) {
@@ -1922,20 +2145,20 @@ mod constrain {
     fn constrain_expr(
         ctx: Context,
         func: &FuncInfo,
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
         arg_mutations: &mut Vec<(FieldPath, ExprId)>,
-        block: &out_ast::TypedBlock<SolverVarId>,
+        block: &mid_ast::TypedBlock,
         expr_id: ExprId,
-        expr: &out_ast::TypedExpr<SolverVarId>,
-        type_: &out_ast::Type<SolverVarId>,
+        expr: &mid_ast::TypedExpr,
+        type_: &mid_ast::Type<SolverVarId>,
     ) -> ExprId {
         return match expr {
-            out_ast::Expr::ArrayOp(array_op) => {
+            mid_ast::Expr::ArrayOp(array_op) => {
                 match array_op {
-                    out_ast::ArrayOp::Construct(..) => {}
-                    out_ast::ArrayOp::Item(..) => {}
-                    out_ast::ArrayOp::Len(_) => {}
-                    out_ast::ArrayOp::Push(array_term, _item_term) => {
+                    mid_ast::ArrayOp::Construct(..) => {}
+                    mid_ast::ArrayOp::Item(..) => {}
+                    mid_ast::ArrayOp::Len(_) => {}
+                    mid_ast::ArrayOp::Push(array_term, _item_term) => {
                         handle_array_mutated(
                             func,
                             graph,
@@ -1946,7 +2169,7 @@ mod constrain {
                             array_term,
                         );
                     }
-                    out_ast::ArrayOp::Pop(array_term) => {
+                    mid_ast::ArrayOp::Pop(array_term) => {
                         handle_array_mutated(
                             func,
                             graph,
@@ -1957,7 +2180,7 @@ mod constrain {
                             array_term,
                         );
                     }
-                    out_ast::ArrayOp::Replace(hole_array_term, _item_term) => {
+                    mid_ast::ArrayOp::Replace(hole_array_term, _item_term) => {
                         handle_array_mutated(
                             func,
                             graph,
@@ -1972,11 +2195,11 @@ mod constrain {
                 expr_id.next()
             }
             // Call to a function outside the SCC
-            out_ast::Expr::Call(
+            mid_ast::Expr::Call(
                 _purity,
                 func_id,
                 arg,
-                Some(out_ast::ReprParams::Determined(repr_vars)),
+                Some(mid_ast::ReprParams::Determined(repr_vars)),
             ) => {
                 if let Some(arg_name) = get_accessed_name(block, arg) {
                     let sig = ctx.constraint_sigs[func_id.0].as_ref().unwrap();
@@ -1999,7 +2222,7 @@ mod constrain {
                 expr_id.next()
             }
             // Call to a function in the SCC
-            out_ast::Expr::Call(_purity, func_id, arg, Some(out_ast::ReprParams::Pending)) => {
+            mid_ast::Expr::Call(_purity, func_id, arg, Some(mid_ast::ReprParams::Pending)) => {
                 let callee_sig = ctx
                     .scc_sigs
                     .get(&func_id)
@@ -2024,8 +2247,8 @@ mod constrain {
                 }
                 expr_id.next()
             }
-            out_ast::Expr::Call(_, _, _, None) => unreachable!(),
-            out_ast::Expr::Match(_matched_local, branches, _result_type) => {
+            mid_ast::Expr::Call(_, _, _, None) => unreachable!(),
+            mid_ast::Expr::Match(_matched_local, branches, _result_type) => {
                 let mut next_expr_id = expr_id;
                 for (_pat, branch) in branches {
                     next_expr_id =
@@ -2033,20 +2256,20 @@ mod constrain {
                 }
                 next_expr_id
             }
-            out_ast::Expr::Term(_)
-            | out_ast::Expr::ArithOp(_)
-            | out_ast::Expr::Ctor(..)
-            | out_ast::Expr::Tuple(_)
-            | out_ast::Expr::Local(_) => expr_id.next(),
+            mid_ast::Expr::Term(_)
+            | mid_ast::Expr::ArithOp(_)
+            | mid_ast::Expr::Ctor(..)
+            | mid_ast::Expr::Tuple(_)
+            | mid_ast::Expr::Local(_) => expr_id.next(),
         };
 
         fn get_accessed_name(
-            block: &out_ast::TypedBlock<SolverVarId>,
-            term: &out_ast::Term,
-        ) -> Option<(out_ast::ExprId, FieldPath)> {
-            if let out_ast::Term::Access(local_id, _, Some(field)) = term {
+            block: &mid_ast::TypedBlock,
+            term: &mid_ast::Term,
+        ) -> Option<(mid_ast::ExprId, FieldPath)> {
+            if let mid_ast::Term::Access(local_id, _, Some(field)) = term {
                 Some((block.expr_id_of(*local_id), field.clone()))
-            } else if let out_ast::Term::Access(_, _, None) = term {
+            } else if let mid_ast::Term::Access(_, _, None) = term {
                 unreachable!()
             } else {
                 None
@@ -2055,17 +2278,17 @@ mod constrain {
 
         fn handle_array_mutated(
             func: &FuncInfo,
-            graph: &mut ConstraintGraph<out_ast::Constraint>,
+            graph: &mut ConstraintGraph<mid_ast::Constraint>,
             arg_mutations: &mut Vec<(FieldPath, ExprId)>,
-            block: &out_ast::TypedBlock<SolverVarId>,
+            block: &mid_ast::TypedBlock,
             expr_id: ExprId,
-            type_: &out_ast::Type<SolverVarId>,
-            array: &out_ast::Term,
+            type_: &mid_ast::Type<SolverVarId>,
+            array: &mid_ast::Term,
         ) {
             let original_array = get_accessed_name(block, array).expect("unexpected literal");
             let repr_var = match type_ {
-                out_ast::Type::Array(_, repr_var) => *repr_var,
-                out_ast::Type::HoleArray(_, repr_var) => *repr_var,
+                mid_ast::Type::Array(_, repr_var) => *repr_var,
+                mid_ast::Type::HoleArray(_, repr_var) => *repr_var,
                 _ => unreachable!(), // Type error
             };
             apply_constraint_from_call(
@@ -2073,7 +2296,7 @@ mod constrain {
                 graph,
                 arg_mutations,
                 repr_var,
-                &out_ast::Constraint::SharedIfOutlivesCall(vector![]),
+                &mid_ast::Constraint::SharedIfOutlivesCall(vector![]),
                 expr_id,
                 &original_array,
             );
@@ -2087,18 +2310,18 @@ mod constrain {
         // pushed to `arg_mutations` (for creating SharedIfAliased(...) constraints later).
         fn apply_constraint_from_call(
             func: &FuncInfo,
-            graph: &mut ConstraintGraph<out_ast::Constraint>,
+            graph: &mut ConstraintGraph<mid_ast::Constraint>,
             arg_mutations: &mut Vec<(FieldPath, ExprId)>,
             repr_var: SolverVarId,
-            constraint: &out_ast::Constraint,
+            constraint: &mid_ast::Constraint,
             expr_id: ExprId, // id of expression that made the call
             arg_name: &aliasing::Name,
         ) {
             match constraint {
-                out_ast::Constraint::Shared => {
-                    graph.require(repr_var, out_ast::Constraint::Shared);
+                mid_ast::Constraint::Shared => {
+                    graph.require(repr_var, mid_ast::Constraint::Shared);
                 }
-                out_ast::Constraint::SharedIfOutlivesCall(sub_arg_path) => {
+                mid_ast::Constraint::SharedIfOutlivesCall(sub_arg_path) => {
                     let constrained_name = {
                         let (arg_expr, arg_path) = arg_name;
                         (*arg_expr, arg_path + sub_arg_path)
@@ -2110,16 +2333,16 @@ mod constrain {
                         if let Some(outer_arg_path) = func.aliases_arg(&constrained_name) {
                             graph.require(
                                 repr_var,
-                                out_ast::Constraint::SharedIfOutlivesCall(outer_arg_path),
+                                mid_ast::Constraint::SharedIfOutlivesCall(outer_arg_path),
                             );
                         } else {
                             // Apply no constraint
                         }
                     } else {
-                        graph.require(repr_var, out_ast::Constraint::Shared);
+                        graph.require(repr_var, mid_ast::Constraint::Shared);
                     }
                 }
-                out_ast::Constraint::SharedIfAliased(sub_arg_path_a, sub_arg_path_b) => {
+                mid_ast::Constraint::SharedIfAliased(sub_arg_path_a, sub_arg_path_b) => {
                     let (name_a, name_b) = {
                         let (arg_expr, arg_path) = arg_name;
                         (
@@ -2128,7 +2351,7 @@ mod constrain {
                         )
                     };
                     if func.are_aliased(&name_a, &name_b) {
-                        graph.require(repr_var, out_ast::Constraint::Shared);
+                        graph.require(repr_var, mid_ast::Constraint::Shared);
                     } else if let (Some(outer_arg_path_a), Some(outer_arg_path_b)) =
                         (func.aliases_arg(&name_a), func.aliases_arg(&name_b))
                     {
@@ -2136,7 +2359,7 @@ mod constrain {
                         // aliased locally), pass the buck
                         graph.require(
                             repr_var,
-                            out_ast::Constraint::SharedIfAliased(
+                            mid_ast::Constraint::SharedIfAliased(
                                 outer_arg_path_a,
                                 outer_arg_path_b,
                             ),
@@ -2150,7 +2373,7 @@ mod constrain {
 
 mod integrate {
     use super::{aliasing, constrain, flatten, parameterize, unify};
-    use super::{in_ast, out_ast};
+    use super::{in_ast, mid_ast, out_ast};
     use crate::annot_aliases::{self, FieldPath, UniqueInfo};
     use crate::graph;
     use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
@@ -2160,9 +2383,9 @@ mod integrate {
     // in unify::*
     fn analyze_scc_func(
         context: unify::Context,
-        graph: &mut ConstraintGraph<out_ast::Constraint>,
-        func: &out_ast::FuncDef<SolverVarId, ()>,
-        id: out_ast::CustomFuncId,
+        graph: &mut ConstraintGraph<mid_ast::Constraint>,
+        func: &mid_ast::FuncDef<()>,
+        id: mid_ast::CustomFuncId,
     ) -> constrain::FuncInfo {
         let typed_body = unify::unify_func(graph, context, func);
         let func_info =
@@ -2175,10 +2398,10 @@ mod integrate {
 
     fn add_equiv_class_params(
         equiv_classes: &EquivClasses,
-        params: &mut BTreeMap<EquivClass, BTreeSet<out_ast::Constraint>>,
-        type_: &out_ast::Type<SolverVarId>,
+        params: &mut BTreeMap<EquivClass, BTreeSet<mid_ast::Constraint>>,
+        type_: &mid_ast::Type<SolverVarId>,
     ) {
-        use out_ast::Type as T;
+        use mid_ast::Type as T;
         match type_ {
             T::Bool | T::Int | T::Float | T::Text => {}
             T::Array(item_t, var) | T::HoleArray(item_t, var) => {
@@ -2198,10 +2421,7 @@ mod integrate {
         }
     }
 
-    pub fn annot_reprs(
-        program: &in_ast::Program,
-        unique_infos: &[UniqueInfo],
-    ) -> out_ast::Program<out_ast::RepParamId> {
+    pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> out_ast::Program {
         let typedefs = parameterize::parameterize_typedefs(&program.custom_types);
         let func_graph = annot_aliases::func_dependency_graph(program);
         let mut signatures = vec![None; program.funcs.len()];
