@@ -42,69 +42,22 @@ use crate::data::first_order_ast as in_ast;
 use crate::data::repr_annot_ast as out_ast;
 
 mod mid_ast {
+    pub use super::out_ast::{Constraint, ExprId, LocalId, Pattern, RepParamId, Type, TypeDef};
     use crate::annot_aliases;
     pub use crate::data::first_order_ast::{self, BinOp, CustomFuncId, CustomTypeId, VariantId};
     use crate::data::purity::Purity;
     use crate::util::constraint_graph::SolverVarId;
     use im_rc::{vector, Vector};
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct RepParamId(pub usize);
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Type<ReprVar = RepParamId> {
-        Bool,
-        Int,
-        Float,
-        Text,
-        Array(Box<Type<ReprVar>>, ReprVar),
-        HoleArray(Box<Type<ReprVar>>, ReprVar),
-        Tuple(Vec<Type<ReprVar>>),
-        Custom(
-            CustomTypeId,
-            Vec<ReprVar>, // length must be `num_params` from the identified custom type
-        ),
+    #[derive(Clone, Debug)]
+    pub enum ArithOp {
+        IntOp(BinOp, Term, Term),
+        FloatOp(BinOp, Term, Term),
+        IntCmp(std::cmp::Ordering, Term, Term),
+        FloatCmp(std::cmp::Ordering, Term, Term),
+        NegateInt(Term),
+        NegateFloat(Term),
     }
-
-    impl<T> From<&Type<T>> for first_order_ast::Type {
-        fn from(t: &Type<T>) -> Self {
-            use first_order_ast::Type as FOType;
-            match t {
-                Type::Bool => FOType::Bool,
-                Type::Int => FOType::Int,
-                Type::Float => FOType::Float,
-                Type::Text => FOType::Text,
-                Type::Array(t, _) => FOType::Array(Box::new(From::from(&**t))),
-                Type::HoleArray(t, _) => FOType::HoleArray(Box::new(From::from(&**t))),
-                Type::Tuple(ts) => FOType::Tuple(ts.iter().map(From::from).collect()),
-                Type::Custom(id, _) => FOType::Custom(*id),
-            }
-        }
-    }
-
-    impl<T> From<Type<T>> for first_order_ast::Type {
-        fn from(t: Type<T>) -> Self {
-            (&t).into()
-        }
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-    pub enum Constraint {
-        // FieldPaths are relative to the argument
-        SharedIfOutlivesCall(annot_aliases::FieldPath),
-        SharedIfAliased(annot_aliases::FieldPath, annot_aliases::FieldPath), // FIXME: NameVar
-        Shared,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct TypeDef<ReprVar = RepParamId> {
-        pub num_params: usize,
-        pub variants: Vec<Option<Type<ReprVar>>>,
-    }
-
-    // 0 is the function's argument. Every Expr in a Block has a LocalId.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct LocalId(pub usize);
 
     // Terms do not have to be assigned to temps before being used.
     // Thus they can have no operational side-effects.
@@ -118,16 +71,6 @@ mod mid_ast {
         BoolLit(bool),
         IntLit(i64),
         FloatLit(f64),
-    }
-
-    #[derive(Clone, Debug)]
-    pub enum ArithOp {
-        IntOp(BinOp, Term, Term),
-        FloatOp(BinOp, Term, Term),
-        IntCmp(std::cmp::Ordering, Term, Term),
-        FloatCmp(std::cmp::Ordering, Term, Term),
-        NegateInt(Term),
-        NegateFloat(Term),
     }
 
     #[derive(Clone, Debug)]
@@ -151,18 +94,6 @@ mod mid_ast {
         ), // Returns new array
     }
 
-    // Patterns which describe for the sake of branching, without binding variables
-    #[derive(Clone, Debug)]
-    pub enum Pattern {
-        Any,
-        Tuple(Vec<Pattern>),
-        Ctor(CustomTypeId, VariantId, Option<Box<Pattern>>),
-        BoolConst(bool),
-        IntConst(i64),
-        FloatConst(f64),
-        TextConst(String),
-    }
-
     #[derive(Clone, Debug)]
     pub enum ReprParams<ReprVar> {
         Determined(Vec<ReprVar>),
@@ -183,17 +114,6 @@ mod mid_ast {
             Vec<(Pattern, Block<ExprType>)>,
             Box<Type<SolverVarId>>,
         ),
-    }
-
-    // ExprId does not index into any field of `Block`. ExprId indexes into
-    // maps created in annot_reprs::aliasing
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct ExprId(pub usize);
-    impl ExprId {
-        pub const ARG: ExprId = ExprId(0);
-        pub fn next(&self) -> ExprId {
-            ExprId(self.0 + 1)
-        }
     }
 
     #[derive(Clone, Debug)]
@@ -255,24 +175,17 @@ mod mid_ast {
     }
 
     type TypedFuncDef = FuncDef<Type<SolverVarId>>;
-
-    #[derive(Clone, Debug)]
-    pub struct Program {
-        pub custom_types: Vec<TypeDef<SolverVarId>>,
-        pub funcs: Vec<FuncDef<()>>,
-        pub main: CustomFuncId,
-    }
 }
 
 mod parameterize {
-    // TODO: the parameterization logic is nearly identical to that in annot_closures.rs.
-    // Factor it out?
-
     use super::{in_ast, mid_ast};
     use crate::graph::{self, Graph};
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn count_params(parameterized: &[Option<mid_ast::TypeDef>], type_: &in_ast::Type) -> usize {
+    fn count_params(
+        parameterized: &[Option<mid_ast::TypeDef<mid_ast::RepParamId>>],
+        type_: &in_ast::Type,
+    ) -> usize {
         match type_ {
             in_ast::Type::Bool | in_ast::Type::Int | in_ast::Type::Float | in_ast::Type::Text => 0,
             in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
@@ -303,7 +216,7 @@ mod parameterize {
     }
 
     fn parameterize(
-        parameterized: &[Option<mid_ast::TypeDef>],
+        parameterized: &[Option<mid_ast::TypeDef<mid_ast::RepParamId>>],
         scc_num_params: usize,
         id_gen: &mut ReprVarIdGen,
         type_: &in_ast::Type,
@@ -351,7 +264,7 @@ mod parameterize {
 
     fn parameterize_typedef_scc(
         typedefs: &[in_ast::TypeDef],
-        parameterized: &mut [Option<mid_ast::TypeDef>],
+        parameterized: &mut [Option<mid_ast::TypeDef<mid_ast::RepParamId>>],
         scc: &[in_ast::CustomTypeId],
     ) {
         let num_params = scc
@@ -419,7 +332,9 @@ mod parameterize {
         }
     }
 
-    pub fn parameterize_typedefs(typedefs: &[in_ast::TypeDef]) -> Vec<mid_ast::TypeDef> {
+    pub fn parameterize_typedefs(
+        typedefs: &[in_ast::TypeDef],
+    ) -> Vec<mid_ast::TypeDef<mid_ast::RepParamId>> {
         let dep_graph = Graph {
             edges_out: typedefs
                 .iter()
@@ -473,7 +388,7 @@ mod flatten {
 
     pub fn flatten_func(
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
-        typedefs: &[mid_ast::TypeDef],
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         func: &in_ast::FuncDef,
     ) -> mid_ast::FuncDef<()> {
         let mut locals = Vec::new();
@@ -499,7 +414,7 @@ mod flatten {
     // Basic conversion, initializing unique solver vars for each array, holearray, or parameterized custom type
     pub fn instantiate_type(
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
-        typedefs: &[mid_ast::TypeDef], // indexed by CustomFuncId
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         type_: &in_ast::Type,
     ) -> mid_ast::Type<SolverVarId> {
         match type_ {
@@ -532,7 +447,7 @@ mod flatten {
 
     fn flatten_expr_into(
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
-        typedefs: &[mid_ast::TypeDef],
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         expr: &in_ast::Expr,
         // Block to append terms *into* for intermediate expressions:
         block: &mut mid_ast::Block<()>,
@@ -675,7 +590,7 @@ mod flatten {
 
     fn bind_pattern(
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
-        typedefs: &[mid_ast::TypeDef],
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         pattern: &in_ast::Pattern,
         matched_local: mid_ast::LocalId,
         field_path: FieldPath,
@@ -741,7 +656,7 @@ mod unify {
     #[derive(Clone, Copy, Debug)]
     pub struct Context<'a> {
         pub first_order_typedefs: &'a [in_ast::TypeDef],
-        pub typedefs: &'a [mid_ast::TypeDef],
+        pub typedefs: &'a [mid_ast::TypeDef<mid_ast::RepParamId>],
         pub func_sigs: &'a [Option<Signature>],
         pub scc_funcdefs: &'a BTreeMap<mid_ast::CustomFuncId, mid_ast::FuncDef<()>>,
         pub unique_infos: &'a [UniqueInfo],
@@ -1023,7 +938,7 @@ mod unify {
 
     fn unify_external_function_call(
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
-        typedefs: &[mid_ast::TypeDef],
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         func_sig: &Signature,
         ui: UniqueInfo,
         arg_type: &mid_ast::Type<SolverVarId>,
@@ -1047,7 +962,7 @@ mod unify {
     }
 
     pub fn substitute_vars(
-        typedefs: &[mid_ast::TypeDef],
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         t: &mid_ast::Type<mid_ast::RepParamId>,
         vars: &[SolverVarId],
     ) -> mid_ast::Type<SolverVarId> {
@@ -1082,7 +997,7 @@ mod unify {
     }
 
     fn type_of_term(
-        typedefs: &[mid_ast::TypeDef],
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         locals: &mut Vec<mid_ast::Type<SolverVarId>>,
         term: &mid_ast::Term,
     ) -> mid_ast::Type<SolverVarId> {
@@ -1097,7 +1012,7 @@ mod unify {
     }
 
     fn lookup_type_field(
-        typedefs: &[mid_ast::TypeDef],
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         type_: &mid_ast::Type<SolverVarId>,
         field_path: FieldPath,
     ) -> mid_ast::Type<SolverVarId> {
@@ -1137,7 +1052,7 @@ mod unify {
 
     fn instantiate(
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
-        typedef: &mid_ast::TypeDef,
+        typedef: &mid_ast::TypeDef<mid_ast::RepParamId>,
     ) -> (Vec<SolverVarId>, mid_ast::TypeDef<SolverVarId>) {
         let vars = (0..typedef.num_params)
             .map(|_| graph.new_var())
@@ -1157,7 +1072,7 @@ mod unify {
     }
 
     fn instantiate_with(
-        typedef: &mid_ast::TypeDef,
+        typedef: &mid_ast::TypeDef<mid_ast::RepParamId>,
         vars: Vec<SolverVarId>,
     ) -> mid_ast::TypeDef<SolverVarId> {
         mid_ast::TypeDef {
@@ -2061,6 +1976,14 @@ mod constrain {
     }
 
     impl Signature {
+        pub fn new(params: Vec<BTreeSet<mid_ast::Constraint>>) -> Self {
+            Signature { params }
+        }
+
+        pub fn to_params(self) -> Vec<BTreeSet<mid_ast::Constraint>> {
+            self.params
+        }
+
         fn is_empty(&self) -> bool {
             for constraints in &self.params {
                 if !constraints.is_empty() {
@@ -2371,16 +2294,309 @@ mod constrain {
     }
 }
 
+mod extract {
+    use super::{constrain, unify};
+    use super::{mid_ast, out_ast};
+    use crate::util::constraint_graph::{EquivClass, EquivClasses, SolverVarId};
+    use std::collections::{BTreeMap, BTreeSet};
+    pub struct SignatureGen<'a> {
+        equiv_classes: &'a EquivClasses,
+        params: Vec<EquivClass>, // indexed by out_ast::RepParamId
+        params_reverse: BTreeMap<EquivClass, out_ast::RepParamId>,
+    }
+    impl<'a> SignatureGen<'a> {
+        fn new(equiv_classes: &'a EquivClasses) -> Self {
+            SignatureGen {
+                equiv_classes,
+                params: Vec::new(),
+                params_reverse: BTreeMap::new(),
+            }
+        }
+
+        fn soln_for(&mut self, var: SolverVarId) -> out_ast::RepParamId {
+            let class = self.equiv_classes.class(var);
+            if let Some(rep_param) = self.params_reverse.get(&class) {
+                *rep_param
+            } else {
+                let rep_param = out_ast::RepParamId(self.params.len());
+                self.params.push(class);
+                self.params_reverse.insert(class, rep_param);
+                rep_param
+            }
+        }
+    }
+
+    pub struct SolutionExtractor<'a> {
+        equiv_classes: &'a EquivClasses,
+        class_constraints: Vec<BTreeSet<out_ast::Constraint>>, // indexed by EquivClass
+        solutions: Vec<Option<out_ast::Solution>>,             // indexed by EquivClass
+        params: Vec<EquivClass>,                               // indexed by out_ast::RepParamId
+    }
+    impl<'a> SolutionExtractor<'a> {
+        pub fn from_sig_gen(
+            siggen: &SignatureGen<'a>,
+            class_constraints: Vec<BTreeSet<out_ast::Constraint>>,
+        ) -> Self {
+            let mut solutions = vec![None; siggen.equiv_classes.count()];
+            for (equiv_class, rep_param) in &siggen.params_reverse {
+                solutions[equiv_class.0] = Some(out_ast::Solution::Var(*rep_param));
+            }
+            SolutionExtractor {
+                equiv_classes: siggen.equiv_classes,
+                class_constraints,
+                solutions,
+                params: siggen.params.clone(),
+            }
+        }
+        fn fresh_for(&mut self, class: EquivClass) -> out_ast::RepParamId {
+            let param = out_ast::RepParamId(self.params.len());
+            self.params.push(class);
+            param
+        }
+
+        fn soln_in_body_for(&mut self, var: SolverVarId) -> out_ast::Solution {
+            let class = self.equiv_classes.class(var);
+            if let Some(soln) = self.solutions[class.0] {
+                soln
+            } else {
+                let var_constraints = &self.class_constraints[class.0];
+                let soln = if var_constraints.is_empty() {
+                    out_ast::Solution::Unique
+                } else if var_constraints.contains(&out_ast::Constraint::Shared) {
+                    out_ast::Solution::Shared
+                } else {
+                    unreachable!() // Other constraints are only applied to equiv classes that appear in the arg or return
+                };
+                self.solutions[class.0] = Some(soln);
+                soln
+            }
+        }
+
+        pub fn drain_constraints(self) -> Vec<BTreeSet<out_ast::Constraint>> {
+            self.params
+                .iter()
+                .map(|class| self.class_constraints[class.0].clone()) // TODO: heinous clone of constraints
+                .collect()
+        }
+    }
+
+    pub fn gen_sigs<'a, 'b>(
+        equiv_classes: &'a EquivClasses,
+        funcs: &'b [constrain::FuncInfo],
+        signatures: &'b mut [Option<unify::Signature>],
+    ) -> SignatureGen<'a> {
+        let mut param_gen = SignatureGen::new(equiv_classes);
+        let mut type_sigs = Vec::new();
+        for func in funcs {
+            // Generate types in signature first so they have the first `RepParamId`s
+            type_sigs.push((
+                func.id,
+                gen_sig_type(&mut param_gen, &func.body.types[0]),
+                gen_sig_type(&mut param_gen, &func.body.types.last().unwrap()),
+            ));
+        }
+        for (id, arg_type, ret_type) in type_sigs {
+            assert!(signatures[id.0].is_none());
+            signatures[id.0] = Some(unify::Signature {
+                num_params: param_gen.params.len(),
+                arg_type,
+                ret_type,
+            });
+        }
+        param_gen
+    }
+
+    pub fn gen_block(
+        param_gen: &mut SolutionExtractor,
+        block: &mid_ast::TypedBlock,
+    ) -> out_ast::Block {
+        let mut out_block = out_ast::Block {
+            initial_idx: block.initial_idx,
+            exprs: Vec::new(),
+            types: Vec::new(),
+            expr_ids: block.expr_ids.clone(),
+        };
+        for (expr, type_) in block.terms.iter().zip(block.types.iter()) {
+            out_block.exprs.push(gen_expr(param_gen, expr));
+            out_block.types.push(gen_type(param_gen, type_));
+        }
+        out_block
+    }
+
+    fn gen_expr(param_gen: &mut SolutionExtractor, expr: &mid_ast::TypedExpr) -> out_ast::Expr {
+        return match expr {
+            mid_ast::Expr::Term(term) => out_ast::Expr::Term(gen_term(term)),
+            mid_ast::Expr::ArithOp(arith_op) => {
+                let a = match arith_op {
+                    mid_ast::ArithOp::IntOp(binop, left, right) => {
+                        out_ast::ArithOp::IntOp(*binop, gen_term(left), gen_term(right))
+                    }
+                    mid_ast::ArithOp::FloatOp(binop, left, right) => {
+                        out_ast::ArithOp::FloatOp(*binop, gen_term(left), gen_term(right))
+                    }
+                    mid_ast::ArithOp::IntCmp(cmp, left, right) => {
+                        out_ast::ArithOp::IntCmp(*cmp, gen_term(left), gen_term(right))
+                    }
+                    mid_ast::ArithOp::FloatCmp(cmp, left, right) => {
+                        out_ast::ArithOp::FloatCmp(*cmp, gen_term(left), gen_term(right))
+                    }
+                    mid_ast::ArithOp::NegateInt(term) => {
+                        out_ast::ArithOp::NegateInt(gen_term(term))
+                    }
+                    mid_ast::ArithOp::NegateFloat(term) => {
+                        out_ast::ArithOp::NegateFloat(gen_term(term))
+                    }
+                };
+                out_ast::Expr::ArithOp(a)
+            }
+            mid_ast::Expr::ArrayOp(array_op) => {
+                let a = match array_op {
+                    mid_ast::ArrayOp::Construct(item_type, repr_var, items) => {
+                        out_ast::ArrayOp::Construct(
+                            Box::new(gen_type(param_gen, item_type)),
+                            param_gen.soln_in_body_for(*repr_var),
+                            items.iter().map(gen_term).collect(),
+                        )
+                    }
+                    mid_ast::ArrayOp::Item(array, idx, _) => {
+                        out_ast::ArrayOp::Item(gen_term(array), gen_term(idx))
+                    }
+                    mid_ast::ArrayOp::Len(array) => out_ast::ArrayOp::Len(gen_term(array)),
+                    mid_ast::ArrayOp::Push(array, item) => {
+                        out_ast::ArrayOp::Push(gen_term(array), gen_term(item))
+                    }
+                    mid_ast::ArrayOp::Pop(array) => out_ast::ArrayOp::Pop(gen_term(array)),
+                    mid_ast::ArrayOp::Replace(hole_array, item) => {
+                        out_ast::ArrayOp::Replace(gen_term(hole_array), gen_term(item))
+                    }
+                };
+                out_ast::Expr::ArrayOp(a)
+            }
+            mid_ast::Expr::Ctor(type_id, variant_id, arg) => {
+                out_ast::Expr::Ctor(*type_id, *variant_id, arg.as_ref().map(gen_term))
+            }
+            mid_ast::Expr::Tuple(items) => {
+                out_ast::Expr::Tuple(items.iter().map(gen_term).collect())
+            }
+            mid_ast::Expr::Local(local_id) => out_ast::Expr::Local(*local_id),
+            mid_ast::Expr::Call(
+                purity,
+                func_id,
+                arg,
+                Some(mid_ast::ReprParams::Determined(repr_params)),
+            ) => out_ast::Expr::Call(
+                *purity,
+                *func_id,
+                gen_term(arg),
+                repr_params
+                    .iter()
+                    .map(|p| param_gen.soln_in_body_for(*p))
+                    .collect(),
+            ),
+            mid_ast::Expr::Call(purity, func_id, arg, Some(mid_ast::ReprParams::Pending)) => {
+                out_ast::Expr::Call(
+                    *purity,
+                    *func_id,
+                    gen_term(arg),
+                    (0..param_gen.params.len())
+                        .into_iter()
+                        .map(|rep_id| out_ast::Solution::Var(out_ast::RepParamId(rep_id)))
+                        .collect(),
+                )
+            }
+            mid_ast::Expr::Call(_, _, _, None) => unreachable!(),
+            mid_ast::Expr::Match(matched_local, branches, result_t) => out_ast::Expr::Match(
+                *matched_local,
+                branches
+                    .iter()
+                    .map(|(pat, branch)| (pat.clone(), gen_block(param_gen, branch)))
+                    .collect(),
+                Box::new(gen_type(param_gen, result_t)),
+            ),
+        };
+
+        fn gen_term(term: &mid_ast::Term) -> out_ast::Term {
+            match term {
+                mid_ast::Term::Access(expr, field, typefolded_field) => {
+                    out_ast::Term::Access(*expr, field.clone(), typefolded_field.clone().unwrap())
+                }
+                &mid_ast::Term::BoolLit(v) => out_ast::Term::BoolLit(v),
+                &mid_ast::Term::IntLit(v) => out_ast::Term::IntLit(v),
+                &mid_ast::Term::FloatLit(v) => out_ast::Term::FloatLit(v),
+            }
+        }
+    }
+
+    fn gen_type(
+        param_gen: &mut SolutionExtractor,
+        type_: &mid_ast::Type<SolverVarId>,
+    ) -> out_ast::Type {
+        use out_ast::Type as T;
+        match type_ {
+            T::Bool => T::Bool,
+            T::Int => T::Int,
+            T::Float => T::Float,
+            T::Text => T::Text,
+            T::Array(item_t, var) => T::Array(
+                Box::new(gen_type(param_gen, item_t)),
+                param_gen.soln_in_body_for(*var),
+            ),
+            T::HoleArray(item_t, var) => T::HoleArray(
+                Box::new(gen_type(param_gen, item_t)),
+                param_gen.soln_in_body_for(*var),
+            ),
+            T::Tuple(item_types) => {
+                T::Tuple(item_types.iter().map(|t| gen_type(param_gen, t)).collect())
+            }
+            T::Custom(type_id, vars) => T::Custom(
+                *type_id,
+                vars.iter()
+                    .map(|v| param_gen.soln_in_body_for(*v))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn gen_sig_type(
+        sig_gen: &mut SignatureGen,
+        type_: &mid_ast::Type<SolverVarId>,
+    ) -> out_ast::Type<out_ast::RepParamId> {
+        use out_ast::Type as T;
+        match type_ {
+            T::Bool => T::Bool,
+            T::Int => T::Int,
+            T::Float => T::Float,
+            T::Text => T::Text,
+            T::Array(item_t, var) => T::Array(
+                Box::new(gen_sig_type(sig_gen, item_t)),
+                sig_gen.soln_for(*var),
+            ),
+            T::HoleArray(item_t, var) => T::HoleArray(
+                Box::new(gen_sig_type(sig_gen, item_t)),
+                sig_gen.soln_for(*var),
+            ),
+            T::Tuple(item_types) => T::Tuple(
+                item_types
+                    .iter()
+                    .map(|t| gen_sig_type(sig_gen, t))
+                    .collect(),
+            ),
+            T::Custom(type_id, vars) => T::Custom(
+                *type_id,
+                vars.iter().map(|v| sig_gen.soln_for(*v)).collect(),
+            ),
+        }
+    }
+}
+
 mod integrate {
-    use super::{aliasing, constrain, flatten, parameterize, unify};
+    use super::{aliasing, constrain, extract, flatten, parameterize, unify};
     use super::{in_ast, mid_ast, out_ast};
-    use crate::annot_aliases::{self, FieldPath, UniqueInfo};
+    use crate::annot_aliases::{self, UniqueInfo};
     use crate::graph;
     use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
     use std::collections::{BTreeMap, BTreeSet};
 
-    // TODO (cleaniliness): change this to borrow func, and clone the inner values as needed
-    // in unify::*
     fn analyze_scc_func(
         context: unify::Context,
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
@@ -2424,23 +2640,21 @@ mod integrate {
     pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> out_ast::Program {
         let typedefs = parameterize::parameterize_typedefs(&program.custom_types);
         let func_graph = annot_aliases::func_dependency_graph(program);
+
         let mut signatures = vec![None; program.funcs.len()];
         let mut constraint_signatures = vec![None; program.funcs.len()];
-        // get funcdef SCCs; for each one, in topological order:
+        let mut out_func_bodies = vec![None; program.funcs.len()];
+
         for scc_nodes in graph::strongly_connected(&func_graph) {
             let scc_func_ids = scc_nodes
                 .iter()
                 .map(|&graph::NodeId(id)| in_ast::CustomFuncId(id));
-            let mut repr_var_graph = ConstraintGraph::new();
+            let mut graph = ConstraintGraph::new();
             let scc_funcs = scc_func_ids
                 .map(|func_id| {
                     (
                         func_id,
-                        flatten::flatten_func(
-                            &mut repr_var_graph,
-                            &typedefs,
-                            &program.funcs[func_id.0],
-                        ),
+                        flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id.0]),
                     )
                 })
                 .collect::<BTreeMap<_, _>>();
@@ -2451,7 +2665,7 @@ mod integrate {
                 scc_funcdefs: &scc_funcs,
                 unique_infos,
             };
-            let equiv_classes = repr_var_graph.find_equiv_classes();
+            let equiv_classes = graph.find_equiv_classes();
             // take union of equiv classes for each func in scc_funcs, these are params to each func in the SCC
             let mut scc_sigs = BTreeMap::new();
             {
@@ -2474,68 +2688,83 @@ mod integrate {
             }
             let scc_funcinfos = scc_funcs
                 .iter()
-                .map(|(id, func)| analyze_scc_func(context, &mut repr_var_graph, func, *id))
+                .map(|(id, func)| analyze_scc_func(context, &mut graph, func, *id))
                 .collect::<Vec<_>>();
             loop {
                 let mut new_scc_sigs = BTreeMap::new();
                 for func in &scc_funcinfos {
-                    // Now, as we traverse the function
-                    // When reaching a call to an external function,
-                    //   match the list of constraint sets in the signature with the SolverVarIds passed to it,
-                    //      and compute the constraints appropriately
-                    // When reaching a call to a function in the SCC,
-                    //   look at the tentative constraint list we've compute for that function, applied to the
-                    //      single set of repr vars representing the call's params and the names in the current call
-                    //   apply the constraints in the same manner as above
                     let sig = constrain::constrain_func(
                         constrain::Context {
                             constraint_sigs: &constraint_signatures,
                             equiv_classes: &equiv_classes,
                             scc_sigs: &scc_sigs,
                         },
-                        &mut repr_var_graph,
+                        &mut graph,
                         func,
                     );
                     new_scc_sigs.insert(func.id, sig);
-                    repr_var_graph.clear_requirements();
+                    graph.clear_requirements();
                 }
                 if new_scc_sigs == scc_sigs {
-                    // Compute constraints one more time to extract solutions for internal variables from graphs
-                    for func in &scc_funcinfos {
-                        // We should be at a fixed point
-                        assert_eq!(
-                            &new_scc_sigs[&func.id],
-                            &constrain::constrain_func(
-                                constrain::Context {
-                                    constraint_sigs: &constraint_signatures,
-                                    equiv_classes: &equiv_classes,
-                                    scc_sigs: &new_scc_sigs,
-                                },
-                                &mut repr_var_graph,
-                                func,
-                            )
-                        );
-                        assert!(constraint_signatures[func.id.0].is_none());
-                        // constraint_signatures[func.id.0] = Some(new_scc_sigs[&func.id]);
-                        // FIXME:
-                        // (1) Use repr_var_graph to make assignments to each variable in the current func
-                        // (2) add the signature to constraint_signatures (make RepParams and map equiv classes to them)
-                        // (3) generate `unify::Constraint`s (just instantiating `RepParamId`s)
-                    }
-                } else {
-                    scc_sigs = new_scc_sigs;
+                    break;
                 }
-                // [we already unified, so just] identify the constraints imposed on the SCC's repr params;
-                // Aggregate these constraints to a new sig map and compare with the old one, equiv_class_constraints
-                //      For perf, may have to do something smarter, like check for each added constraint
-                //      if it exists in the original sig, as we go. Or to not recompute the entire SCC on each
-                //      iteration, but only the potentially recursive stuff.
-                // If it differs, save sig to equiv_class_constraints, clear constraints on graph, and go again.
+                scc_sigs = new_scc_sigs;
             }
-            // With the final equiv_class_constraints and repr_var_graph,
-            // - add signatures
-            unimplemented!()
+            // Extract `unify::Signature`s for this SCC
+            let sig_gen = extract::gen_sigs(&equiv_classes, &scc_funcinfos, &mut signatures);
+
+            for func in &scc_funcinfos {
+                // Compute constraints one more time to extract solutions for internal variables,
+                // and assert that we are at a fixed point
+                assert_eq!(
+                    &scc_sigs[&func.id],
+                    &constrain::constrain_func(
+                        constrain::Context {
+                            constraint_sigs: &constraint_signatures,
+                            equiv_classes: &equiv_classes,
+                            scc_sigs: &scc_sigs,
+                        },
+                        &mut graph,
+                        func,
+                    )
+                );
+
+                // Extract constraints on each equivalence class
+                let mut class_constraints = (0..equiv_classes.count())
+                    .map(|_| BTreeSet::new())
+                    .collect::<Vec<_>>();
+                for (var_idx, graph_constraints) in graph.var_constraints.iter_mut().enumerate() {
+                    // Empty the constraint list in the graph to avoid clone (resetting
+                    // constraints is necessary for next iteration anyway)
+                    let mut var_constraints = Vec::new();
+                    std::mem::swap(&mut graph_constraints.requirements, &mut var_constraints);
+                    let equiv_class = equiv_classes.class(SolverVarId(var_idx));
+                    class_constraints[equiv_class.0].extend(var_constraints);
+                }
+
+                let mut extractor =
+                    extract::SolutionExtractor::from_sig_gen(&sig_gen, class_constraints);
+
+                out_func_bodies[func.id.0] = Some(extract::gen_block(&mut extractor, &func.body));
+
+                assert!(constraint_signatures[func.id.0].is_none());
+                constraint_signatures[func.id.0] =
+                    Some(constrain::Signature::new(extractor.drain_constraints()));
+            }
         }
-        unimplemented!()
+
+        let mut out_funcs = Vec::new();
+        for (constraint_sig, body) in constraint_signatures.into_iter().zip(out_func_bodies) {
+            out_funcs.push(out_ast::FuncDef {
+                repr_params: constraint_sig.unwrap().to_params(),
+                body: body.unwrap(),
+            })
+        }
+
+        out_ast::Program {
+            custom_types: typedefs,
+            funcs: out_funcs,
+            main: program.main,
+        }
     }
 }
