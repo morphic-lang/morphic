@@ -164,7 +164,7 @@ pub struct Block {
 
 #[derive(Clone, Debug)]
 pub struct FuncDef {
-    pub repr_params: Vec<BTreeSet<Constraint>>, // indexed by RepParamId
+    pub num_params: usize,
     pub body: Block,
 }
 

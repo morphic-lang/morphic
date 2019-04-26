@@ -1,43 +1,3 @@
-// Layout:
-// - parameterize typedefs
-//      add `num_params: usize` field to types
-// - sequentialize: unwrap each function into a BODY, i.e. a series of:
-//      %tmpN = f(...tmps and args...) -- where f can be user-defined or a primitive op
-//      %tmpN = match [tmp or arg] {
-//          case0:
-//              BODY...
-//          ...
-//      }
-//  .
-// On SCCs, in topological order, do:
-//  - intra-function alias analysis
-//      1. synthesize ALL repr variables (initialize constraint graph!)
-//      // synthesize variables as you go (on array constructors and functions returning arrays that don't alias their arguments)
-//      2. for each %tmpN = f(...),
-//          add edges to the function's graph based on the UniqueInfo
-//          add edges based on standard hindley-milner rules
-//      3. replace repr variables with unified versions
-//      4. label the final occurences of each repr variable (the final location at
-//        which each *may* be USED -- not the final thing aliasing them, but the final use of a
-//        term which aliases them)
-//  - Repeat the next step until the SCC stabilizes:
-//      do actual sharing constraint generation
-//          for each f(...),
-//              if it's shared_if_used_after_call and the named name IS NOT DEAD, mark as
-//                  shared
-//              if it's shared_if_used_after_call and the named name IS DEAD but aliases AN ARG, mark as
-//                  shared_if_used_after_call
-//              if it's shared_if_used_after_call and the named name IS DEAD and NOT AN ARG, DO NOTHING
-//              if it's shared_if foo aliases bar, and foo does alias bar, mark as
-//                  shared
-//              if it's shared_if foo aliases bar, and foo and bar are from the PARAM LIST, mark as
-//                  shared_if aliases bar
-//              if it's shared_if foo aliases bar, and foo does not alias bar and they're not both args, DO NOTHING
-//              if it's shared, mark as
-//                  shared
-//              MARK ALL unmarked non-arg variables as unique
-//              Return map of constraints on arg variables.
-
 use crate::data::first_order_ast as in_ast;
 use crate::data::repr_annot_ast as out_ast;
 
@@ -488,22 +448,22 @@ mod flatten {
             }
             in_ast::Expr::ArrayOp(in_array_op) => {
                 let out_array_op = match in_array_op {
-                    in_ast::ArrayOp::Item(item_type, array, index, ctr) => mid_ast::ArrayOp::Item(
+                    in_ast::ArrayOp::Item(_item_type, array, index, ctr) => mid_ast::ArrayOp::Item(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                         flatten_expr_into(graph, typedefs, index, block, locals),
                         *ctr,
                     ),
-                    in_ast::ArrayOp::Len(item_type, array) => mid_ast::ArrayOp::Len(
+                    in_ast::ArrayOp::Len(_item_type, array) => mid_ast::ArrayOp::Len(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                     ),
-                    in_ast::ArrayOp::Push(item_type, array, item) => mid_ast::ArrayOp::Push(
+                    in_ast::ArrayOp::Push(_item_type, array, item) => mid_ast::ArrayOp::Push(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                         flatten_expr_into(graph, typedefs, item, block, locals),
                     ),
-                    in_ast::ArrayOp::Pop(item_type, array) => mid_ast::ArrayOp::Pop(
+                    in_ast::ArrayOp::Pop(_item_type, array) => mid_ast::ArrayOp::Pop(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                     ),
-                    in_ast::ArrayOp::Replace(item_type, hole_array, item) => {
+                    in_ast::ArrayOp::Replace(_item_type, hole_array, item) => {
                         mid_ast::ArrayOp::Replace(
                             flatten_expr_into(graph, typedefs, hole_array, block, locals),
                             flatten_expr_into(graph, typedefs, item, block, locals),
@@ -584,7 +544,7 @@ mod flatten {
             in_ast::Expr::BoolLit(constant) => mid_ast::Term::BoolLit(*constant),
             in_ast::Expr::IntLit(constant) => mid_ast::Term::IntLit(*constant),
             in_ast::Expr::FloatLit(constant) => mid_ast::Term::FloatLit(*constant),
-            in_ast::Expr::TextLit(constant) => unreachable!(),
+            in_ast::Expr::TextLit(_) => unreachable!(),
         }
     }
 
@@ -639,7 +599,7 @@ mod flatten {
             in_ast::Pattern::BoolConst(c) => mid_ast::Pattern::BoolConst(*c),
             in_ast::Pattern::IntConst(c) => mid_ast::Pattern::IntConst(*c),
             in_ast::Pattern::FloatConst(c) => mid_ast::Pattern::FloatConst(*c),
-            in_ast::Pattern::TextConst(c) => unreachable!(),
+            in_ast::Pattern::TextConst(_) => unreachable!(),
         }
     }
 }
@@ -1339,7 +1299,7 @@ mod aliasing {
             &mut name_vars,
             &block,
         );
-        // FIXME: mark all names in return value as accessed then
+        // FIXME: consider aliasing to return type in same way as to arg type
         // FIXME: "unify" last accesses -- set each last access to max across all names it aliases
         constrain::FuncInfo {
             id: id,
@@ -1545,7 +1505,7 @@ mod aliasing {
             mid_ast::Expr::Ctor(_type_id, _variant_id, None) => {
                 // Nothing aliased or accessed
             }
-            mid_ast::Expr::Ctor(type_id, variant_id, Some(arg_term)) => {
+            mid_ast::Expr::Ctor(_type_id, variant_id, Some(arg_term)) => {
                 update_term_accesses(accesses, locals, arg_term);
                 add_term_aliases(
                     name_adjacencies,
@@ -1570,10 +1530,7 @@ mod aliasing {
                 );
             }
             mid_ast::Expr::Call(_purity, func_id, arg_term, _) => {
-                // FIXME: update_term_accesses will ignore arr[] if arr is accessed;
-                // we need to either black-box the function and assume all sub-paths in
-                // arg_term will be accessed, or emit that information from functions in
-                // UniqueInfos.
+                // FIXME: emit that information from functions in UniqueInfos.
                 update_term_accesses(accesses, locals, arg_term);
                 // Identify where parts of arg_term are aliased in the result
                 apply_unique_info(
@@ -1980,8 +1937,8 @@ mod constrain {
             Signature { params }
         }
 
-        pub fn to_params(self) -> Vec<BTreeSet<mid_ast::Constraint>> {
-            self.params
+        pub fn num_params(&self) -> usize {
+            self.params.len()
         }
 
         fn is_empty(&self) -> bool {
@@ -2756,7 +2713,7 @@ mod integrate {
         let mut out_funcs = Vec::new();
         for (constraint_sig, body) in constraint_signatures.into_iter().zip(out_func_bodies) {
             out_funcs.push(out_ast::FuncDef {
-                repr_params: constraint_sig.unwrap().to_params(),
+                num_params: constraint_sig.unwrap().num_params(),
                 body: body.unwrap(),
             })
         }
