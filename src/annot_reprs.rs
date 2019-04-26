@@ -971,6 +971,9 @@ mod unify {
         }
     }
 
+    // It is not allowed to lookup the type of a field which is an unparameterized variant;
+    // e.g. looking up the type of b.(True), getting the True variant of a boolean. Such
+    // a lookup never occurs.
     fn lookup_type_field(
         typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         type_: &mid_ast::Type<SolverVarId>,
@@ -999,10 +1002,8 @@ mod unify {
                     if let Some(variant_type) = &instantiated.variants[variant_id] {
                         lookup_type_field(typedefs, variant_type, remaining_path)
                     } else {
-                        // The Variant subscript is a bit tricky as a particular variant field is not
-                        // its own type. FIXME: this branch in general is unreachable, right?
-                        debug_assert_eq!(remaining_path.len(), 0);
-                        type_.clone()
+                        // The described variant is an unparameterized variant, like True or False.
+                        unreachable!()
                     }
                 }
                 _ => unreachable!(),
@@ -1238,10 +1239,19 @@ mod aliasing {
 
     struct LastAccessesCursor {
         accesses: Vec<BTreeMap<FieldPath, LastAccessTree>>,
+        // The following pairs are (ExprID of match statement, branch index)
         by_expr_id: Vec<Vec<(ExprId, usize)>>, // indexed by ExprId, describes which block that expr id is in
-        ctx: Vec<(ExprId, usize)>,             // usize is the branch idnex
+        ctx: Vec<(ExprId, usize)>,
     }
     impl LastAccessesCursor {
+        fn with_arg_type(arg_type: &mid_ast::Type<SolverVarId>) -> Self {
+            LastAccessesCursor {
+                accesses: vec![],
+                by_expr_id: vec![vec![]],
+                ctx: Vec::new(),
+            }
+        }
+
         fn in_branch_scope<F, R>(&mut self, match_expr_id: ExprId, branch_idx: usize, f: F) -> R
         where
             F: FnOnce(&mut LastAccessesCursor) -> R,
@@ -1264,10 +1274,6 @@ mod aliasing {
             self.by_expr_id.push(self.ctx.clone());
         }
 
-        fn new_access_at(&self, at: ExprId) -> LastAccessTree {
-            LastAccessTree::singleton(&self.ctx, at)
-        }
-
         fn len(&self) -> usize {
             self.accesses.len()
         }
@@ -1283,14 +1289,22 @@ mod aliasing {
         block: mid_ast::TypedBlock,
         id: mid_ast::CustomFuncId,
     ) -> constrain::FuncInfo {
-        // FIXME: initialize these with the first expr as the argument
+        let mut name_adjacencies = Vec::new();
+        let mut name_vars = Vec::new();
         let mut accesses_cursor = LastAccessesCursor {
             accesses: Vec::new(),
             by_expr_id: Vec::new(),
             ctx: Vec::new(),
         };
-        let mut name_adjacencies = Vec::new();
-        let mut name_vars = Vec::new();
+        // The function argument is expression zero
+        initialize_expr(
+            typedefs,
+            &mut accesses_cursor,
+            &mut name_adjacencies,
+            &mut name_vars,
+            ExprId::ARG,
+            &block.types[0],
+        );
         alias_track_block(
             typedefs,
             unique_infos,
@@ -1339,39 +1353,66 @@ mod aliasing {
         }
     }
 
+    // Initializes last-accesses (for each name, one access at the point of creation),
+    // aliasing-edges (for each name, no aliases), and repr vars for names of a new
+    // expression of type `type_`.
+    fn initialize_expr(
+        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
+        accesses: &mut LastAccessesCursor,
+        name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
+        name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,           // indexed by ExprId
+        cur_expr_id: ExprId,
+        type_: &mid_ast::Type<SolverVarId>,
+    ) {
+        // Initialize the node for cur_expr_id in accesses and name_adjacencies
+        let mut expr_name_vars = BTreeMap::new();
+        let (name_paths, internal_edges) = get_names_in(typedefs, &mut expr_name_vars, type_);
+        let mut expr_edges = BTreeMap::new();
+        let mut expr_accesses = BTreeMap::new();
+        for name in name_paths {
+            expr_edges.insert(name.clone(), BTreeSet::new());
+            expr_accesses.insert(
+                name.clone(),
+                LastAccessTree::singleton(&accesses.ctx, cur_expr_id),
+            );
+        }
+        // Add internal edges to account for one level of type-folding-unrolling:
+        for (a, b) in internal_edges {
+            expr_edges
+                .get_mut(&a)
+                .unwrap()
+                .insert((cur_expr_id, b.clone()));
+            expr_edges
+                .get_mut(&b)
+                .unwrap()
+                .insert((cur_expr_id, a.clone()));
+        }
+        name_adjacencies.push(expr_edges);
+        accesses.append_expr(expr_accesses);
+        name_vars.push(expr_name_vars);
+    }
+
     // Appends data for `expr` to `accesses` and `name_adjacencies`, and updates
     // each with accessing and aliasing information arising from `expr`.
     fn alias_track_expr(
         typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
         unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
-        accesses: &mut LastAccessesCursor,                  // indexed by ExprId
+        accesses: &mut LastAccessesCursor,
         name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
-        name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>, // indexed by ExprId
-        locals: &Vector<ExprId>,                            // indexed by LocalId
+        name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,           // indexed by ExprId
+        locals: &Vector<ExprId>,                                         // indexed by LocalId
         expr: &mid_ast::TypedExpr,
         cur_expr_id: ExprId,                // id of `expr`
         type_: &mid_ast::Type<SolverVarId>, // type of `expr`
     ) {
-        // Initialize the node for cur_expr_id in accesses and name_adjacencies
-        {
-            let mut name_vars_here = BTreeMap::new();
-            let (names, internal_edges) = get_names_in(typedefs, &mut name_vars_here, type_);
-            let mut edges = BTreeMap::new();
-            let mut initial_accesses = BTreeMap::new();
-            for name in names {
-                edges.insert(name.clone(), BTreeSet::new());
-                initial_accesses.insert(name.clone(), accesses.new_access_at(cur_expr_id));
-            }
-            // Add internal edges to account for one level of type-folding-unrolling:
-            let cur_expr_id = ExprId(name_adjacencies.len());
-            for (a, b) in internal_edges {
-                edges.get_mut(&a).unwrap().insert((cur_expr_id, b.clone()));
-                edges.get_mut(&b).unwrap().insert((cur_expr_id, a.clone()));
-            }
-            name_adjacencies.push(edges);
-            accesses.append_expr(initial_accesses);
-            name_vars.push(name_vars_here);
-        }
+        initialize_expr(
+            typedefs,
+            accesses,
+            name_adjacencies,
+            name_vars,
+            cur_expr_id,
+            type_,
+        );
 
         match expr {
             mid_ast::Expr::Term(term) => {
