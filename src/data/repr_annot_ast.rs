@@ -117,10 +117,16 @@ pub enum Solution {
     Var(RepParamId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SharingPlace {
+    Arg,
+    Ret,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Constraint {
     // FieldPaths are relative to the argument
-    SharedIfOutlivesCall(annot_aliases::FieldPath),
+    SharedIfOutlivesCall(SharingPlace, annot_aliases::FieldPath),
     SharedIfAliased(annot_aliases::FieldPath, annot_aliases::FieldPath),
     Shared,
 }

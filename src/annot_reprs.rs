@@ -1244,14 +1244,6 @@ mod aliasing {
         ctx: Vec<(ExprId, usize)>,
     }
     impl LastAccessesCursor {
-        fn with_arg_type(arg_type: &mid_ast::Type<SolverVarId>) -> Self {
-            LastAccessesCursor {
-                accesses: vec![],
-                by_expr_id: vec![vec![]],
-                ctx: Vec::new(),
-            }
-        }
-
         fn in_branch_scope<F, R>(&mut self, match_expr_id: ExprId, branch_idx: usize, f: F) -> R
         where
             F: FnOnce(&mut LastAccessesCursor) -> R,
@@ -1313,7 +1305,6 @@ mod aliasing {
             &mut name_vars,
             &block,
         );
-        // FIXME: consider aliasing to return type in same way as to arg type
         // FIXME: "unify" last accesses -- set each last access to max across all names it aliases
         constrain::FuncInfo {
             id: id,
@@ -1895,6 +1886,7 @@ mod aliasing {
 mod constrain {
     use super::aliasing;
     use super::mid_ast::{self, ExprId};
+    use super::out_ast::SharingPlace;
     use crate::annot_aliases::FieldPath;
     use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
     use im_rc::vector;
@@ -1924,37 +1916,53 @@ mod constrain {
                 .is_last_use(&self.paths_to_exprs[at.0], at)
         }
 
-        /// Checks whether the given names are aliased
-        fn are_aliased(
-            &self,
-            (name_expr_a, name_path_a): &aliasing::Name,
-            (name_expr_b, name_path_b): &aliasing::Name,
-        ) -> bool {
-            if let Some(aliases_a) = self.aliases[name_expr_a.0].get(name_path_a) {
-                for (other_expr, other_path) in aliases_a {
-                    if other_expr == name_expr_b && other_path == name_path_b {
-                        return true;
-                    }
-                }
-                false
-            } else {
-                panic!("name does not exist")
-            }
+        /// Returns all the names that may-alias the given name.
+        fn names_aliased_to(&self, (expr_id, path): &aliasing::Name) -> &BTreeSet<aliasing::Name> {
+            &self.aliases[expr_id.0][path]
         }
 
-        /// If the given name is aliased to a field in the function argument, `aliases_arg` returns
-        /// the path in the argument to which it is aliased. Otherwise, it returns None.
-        fn aliases_arg(&self, (name_expr, name_path): &aliasing::Name) -> Option<FieldPath> {
-            if let Some(aliases) = self.aliases[name_expr.0].get(name_path) {
-                for (other_expr, other_path) in aliases {
+        /// Returns the `ExprId` of the returned expression
+        fn ret_expr(&self) -> ExprId {
+            ExprId(self.aliases.len() - 1)
+        }
+
+        /// Checks whether the given names alias
+        fn may_alias(&self, name_a: &aliasing::Name, name_b: &aliasing::Name) -> bool {
+            self.names_aliased_to(name_a).contains(name_b)
+        }
+
+        /// If the given name is aliased to a field in the function argument or
+        /// return value, `may_alias_external` returns the path in the argument or
+        /// return val to which it is aliased. Otherwise, it returns None.
+        fn external_names_aliased_to<'a>(
+            &'a self,
+            name: &aliasing::Name,
+        ) -> impl Iterator<Item = (SharingPlace, &'a FieldPath)> {
+            self.names_aliased_to(name)
+                .iter()
+                .filter_map(move |(other_expr, other_path)| {
                     if *other_expr == ExprId::ARG {
-                        return Some(other_path.clone());
+                        Some((SharingPlace::Arg, other_path))
+                    } else if *other_expr == self.ret_expr() {
+                        Some((SharingPlace::Ret, other_path))
+                    } else {
+                        None
                     }
-                }
-                None
-            } else {
-                panic!("name does not exist")
-            }
+                })
+        }
+
+        /// If the given name is aliased to a field in the function argument or
+        /// return value, `may_alias_arg` returns the path in the argument to which
+        /// it is aliased. Otherwise, it returns None.
+        fn arg_names_aliased_to<'a>(
+            &'a self,
+            name: &aliasing::Name,
+        ) -> impl Iterator<Item = &'a FieldPath> {
+            self.external_names_aliased_to(name)
+                .filter_map(|(place, path)| match place {
+                    SharingPlace::Arg => Some(path),
+                    SharingPlace::Ret => None,
+                })
         }
     }
 
@@ -2134,6 +2142,7 @@ mod constrain {
                                 constraint,
                                 expr_id,
                                 &arg_name,
+                                &(expr_id, vector![]),
                             );
                         }
                     }
@@ -2160,6 +2169,7 @@ mod constrain {
                                 constraint,
                                 expr_id,
                                 &arg_name,
+                                &(expr_id, vector![]),
                             );
                         }
                     }
@@ -2217,9 +2227,10 @@ mod constrain {
                 graph,
                 arg_mutations,
                 repr_var,
-                &mid_ast::Constraint::SharedIfOutlivesCall(vector![]),
+                &mid_ast::Constraint::SharedIfOutlivesCall(SharingPlace::Arg, vector![]),
                 expr_id,
                 &original_array,
+                &(expr_id, vector![]),
             );
         }
 
@@ -2237,27 +2248,34 @@ mod constrain {
             constraint: &mid_ast::Constraint,
             expr_id: ExprId, // id of expression that made the call
             arg_name: &aliasing::Name,
+            ret_name: &aliasing::Name,
         ) {
             match constraint {
                 mid_ast::Constraint::Shared => {
                     graph.require(repr_var, mid_ast::Constraint::Shared);
                 }
-                mid_ast::Constraint::SharedIfOutlivesCall(sub_arg_path) => {
+                mid_ast::Constraint::SharedIfOutlivesCall(place, sub_place_path) => {
                     let constrained_name = {
-                        let (arg_expr, arg_path) = arg_name;
-                        (*arg_expr, arg_path + sub_arg_path)
+                        let (constrained_expr, path) = match place {
+                            SharingPlace::Arg => arg_name,
+                            SharingPlace::Ret => ret_name,
+                        };
+                        (*constrained_expr, path + sub_place_path)
                     };
-                    if let Some(outer_arg_path) = func.aliases_arg(&constrained_name) {
-                        arg_mutations.push((outer_arg_path, expr_id));
+                    for outer_arg_path in func.arg_names_aliased_to(&constrained_name) {
+                        arg_mutations.push((outer_arg_path.clone(), expr_id));
                     }
                     if func.is_last_use(&constrained_name, expr_id) {
-                        if let Some(outer_arg_path) = func.aliases_arg(&constrained_name) {
+                        for (outer_place, outer_place_path) in
+                            func.external_names_aliased_to(&constrained_name)
+                        {
                             graph.require(
                                 repr_var,
-                                mid_ast::Constraint::SharedIfOutlivesCall(outer_arg_path),
+                                mid_ast::Constraint::SharedIfOutlivesCall(
+                                    outer_place,
+                                    outer_place_path.clone(),
+                                ),
                             );
-                        } else {
-                            // Apply no constraint
                         }
                     } else {
                         graph.require(repr_var, mid_ast::Constraint::Shared);
@@ -2271,20 +2289,24 @@ mod constrain {
                             (*arg_expr, arg_path + sub_arg_path_b),
                         )
                     };
-                    if func.are_aliased(&name_a, &name_b) {
+                    if func.may_alias(&name_a, &name_b) {
                         graph.require(repr_var, mid_ast::Constraint::Shared);
-                    } else if let (Some(outer_arg_path_a), Some(outer_arg_path_b)) =
-                        (func.aliases_arg(&name_a), func.aliases_arg(&name_b))
-                    {
-                        // If both names are aliased to arguments (and not necessarily
-                        // aliased locally), pass the buck
-                        graph.require(
-                            repr_var,
-                            mid_ast::Constraint::SharedIfAliased(
-                                outer_arg_path_a,
-                                outer_arg_path_b,
-                            ),
-                        );
+                    } else {
+                        // FIXME: there will be duplicates, yes? Changing the graph to use sets
+                        // for requirements could be too costly
+                        for outer_arg_path_a in func.arg_names_aliased_to(&name_a) {
+                            for outer_arg_path_b in func.arg_names_aliased_to(&name_b) {
+                                // If both names are aliased to arguments (and not necessarily
+                                // aliased locally), pass the buck
+                                graph.require(
+                                    repr_var,
+                                    mid_ast::Constraint::SharedIfAliased(
+                                        outer_arg_path_a.clone(),
+                                        outer_arg_path_b.clone(),
+                                    ),
+                                );
+                            }
+                        }
                     }
                 }
             }
