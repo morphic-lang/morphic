@@ -1127,7 +1127,7 @@ mod aliasing {
 
     pub type Name = (ExprId, FieldPath);
 
-    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct LastAccessTree {
         expr_id: ExprId,
         rest: BTreeMap<
@@ -1168,6 +1168,48 @@ mod aliasing {
             }
         }
 
+        /// The set of `LastAccessTree`s form a lattice; `join` computes the join (the
+        /// least-upper-bound) of several points in the lattice, i.e. the `LastAccessTree`
+        /// describing something that was accessed at every position named in `trees`.
+        ///
+        /// `trees` is mangled in the process.
+        pub fn join(trees: &mut Vec<&LastAccessTree>) -> LastAccessTree {
+            assert!(trees.len() > 0);
+            let max_expr_id = trees.iter().map(|t| t.expr_id).max().unwrap();
+            let mut i = 0;
+            while i < trees.len() {
+                if trees[i].expr_id < max_expr_id {
+                    trees.swap_remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+            assert!(trees.len() > 0);
+            if trees[0].rest.is_empty() {
+                // The referenced ExprId is not a Match statement, so it is the final pointed to
+                // All members of `trees` should be equal.
+                trees[0].clone()
+            } else {
+                let mut result = LastAccessTree {
+                    expr_id: max_expr_id,
+                    rest: BTreeMap::new(),
+                };
+                let branches = trees
+                    .iter()
+                    .flat_map(|t| t.rest.keys())
+                    .collect::<BTreeSet<_>>();
+                for branch in branches {
+                    result.rest.insert(
+                        *branch,
+                        LastAccessTree::join(
+                            &mut trees.iter().filter_map(|t| t.rest.get(branch)).collect(),
+                        ),
+                    );
+                }
+                result
+            }
+        }
+
         fn consider_access(&mut self, ctx: &[(ExprId, usize)], final_expr_id: ExprId) {
             let mut tree_node = self;
             for (i, &(expr_id, branch)) in ctx.iter().enumerate() {
@@ -1192,14 +1234,14 @@ mod aliasing {
             }
         }
 
-        pub fn is_last_use(&self, mut ctx: &[(ExprId, usize)], final_expr_id: ExprId) -> bool {
+        pub fn is_used_after(&self, mut ctx: &[(ExprId, usize)], final_expr_id: ExprId) -> bool {
             let mut tree_node = self;
             while let Some((expr_id, branch)) = ctx.first() {
                 if *expr_id < tree_node.expr_id {
-                    return false;
+                    return true;
                 }
                 if *expr_id > tree_node.expr_id {
-                    panic!("expression used after its recorded last point of use")
+                    return false;
                 }
                 if let Some(rest) = tree_node.rest.get(branch) {
                     tree_node = rest;
@@ -1210,8 +1252,7 @@ mod aliasing {
                     unreachable!();
                 }
             }
-            assert!(tree_node.expr_id >= final_expr_id); // because there should be no use after the recorded last-use
-            tree_node.expr_id == final_expr_id
+            tree_node.expr_id > final_expr_id
         }
 
         // TODO: remove code repetition w/ above function
@@ -1278,7 +1319,7 @@ mod aliasing {
     pub fn alias_track_func(
         typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
         unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
-        block: mid_ast::TypedBlock,
+        body: mid_ast::TypedBlock,
         id: mid_ast::CustomFuncId,
     ) -> constrain::FuncInfo {
         let mut name_adjacencies = Vec::new();
@@ -1295,7 +1336,7 @@ mod aliasing {
             &mut name_adjacencies,
             &mut name_vars,
             ExprId::ARG,
-            &block.types[0],
+            &body.types[0],
         );
         alias_track_block(
             typedefs,
@@ -1303,17 +1344,16 @@ mod aliasing {
             &mut accesses_cursor,
             &mut name_adjacencies,
             &mut name_vars,
-            &block,
+            &body,
         );
-        // FIXME: "unify" last accesses -- set each last access to max across all names it aliases
-        constrain::FuncInfo {
-            id: id,
-            body: block,
-            last_accesses: accesses_cursor.accesses,
-            aliases: name_adjacencies,
-            name_vars: name_vars,
-            paths_to_exprs: accesses_cursor.by_expr_id,
-        }
+        constrain::FuncInfo::new(
+            id,
+            body,
+            name_adjacencies,
+            accesses_cursor.accesses,
+            name_vars,
+            accesses_cursor.by_expr_id,
+        )
     }
     // Track aliases in block. Appends all exprs to name_adjacencies without truncating
     fn alias_track_block(
@@ -1894,26 +1934,69 @@ mod constrain {
 
     pub struct FuncInfo {
         pub id: mid_ast::CustomFuncId,
-        // arg (and its type) are first in the body, ret (and its type) are last
+
+        // The arg and ret types are available in `body`
         pub body: mid_ast::TypedBlock,
-        pub aliases: Vec<BTreeMap<FieldPath, BTreeSet<aliasing::Name>>>, // indexed by ExprId
-        pub last_accesses: Vec<BTreeMap<FieldPath, aliasing::LastAccessTree>>, // indexed by ExprId
-        pub name_vars: Vec<BTreeMap<FieldPath, SolverVarId>>,            // indexed by ExprId
-        pub paths_to_exprs: Vec<Vec<(ExprId, usize)>>,                   // indexed by ExprId
+
+        // The following are indexed by `ExprId`
+        aliases: Vec<BTreeMap<FieldPath, BTreeSet<aliasing::Name>>>,
+        last_accesses: Vec<BTreeMap<FieldPath, aliasing::LastAccessTree>>,
+        name_vars: Vec<BTreeMap<FieldPath, SolverVarId>>,
+        paths_to_exprs: Vec<Vec<(ExprId, usize)>>,
     }
 
     impl FuncInfo {
+        pub fn new(
+            id: mid_ast::CustomFuncId,
+            body: mid_ast::TypedBlock,
+            aliases: Vec<BTreeMap<FieldPath, BTreeSet<aliasing::Name>>>,
+            last_accesses: Vec<BTreeMap<FieldPath, aliasing::LastAccessTree>>,
+            name_vars: Vec<BTreeMap<FieldPath, SolverVarId>>,
+            paths_to_exprs: Vec<Vec<(ExprId, usize)>>,
+        ) -> Self {
+            assert_eq!(aliases.len(), last_accesses.len());
+            assert_eq!(aliases.len(), name_vars.len());
+            assert_eq!(aliases.len(), paths_to_exprs.len());
+            FuncInfo {
+                id,
+                body,
+                last_accesses,
+                aliases,
+                name_vars,
+                paths_to_exprs,
+            }
+        }
+
         /// Returns the variable which describes the representation of the given name
         fn repr_var_for(&self, (expr_id, path): &aliasing::Name) -> SolverVarId {
             *self.name_vars[expr_id.0].get(path).unwrap()
         }
 
-        /// Determines whether `at` is the last use of the given name.
-        fn is_last_use(&self, (expr_id, path): &aliasing::Name, at: ExprId) -> bool {
-            self.last_accesses[expr_id.0]
-                .get(path)
-                .expect("got access to non-existent or non-recorded name")
-                .is_last_use(&self.paths_to_exprs[at.0], at)
+        /// Compute the `LastAccessTree` representing the last uses of `name` (the last
+        /// accesses to it or any name it aliases).
+        fn last_uses_of(&self, name: &aliasing::Name) -> aliasing::LastAccessTree {
+            // Collect the `LastAccessTree`s of the name and all names it aliases
+            let mut access_trees = self
+                .names_aliased_to(name)
+                .iter()
+                .map(|(expr, path)| &self.last_accesses[expr.0][path])
+                .collect::<Vec<_>>();
+            access_trees.push(&self.last_accesses[(name.0).0][&name.1]);
+            return aliasing::LastAccessTree::join(&mut access_trees);
+        }
+
+        fn last_uses_of_arg(&self) -> BTreeMap<FieldPath, aliasing::LastAccessTree> {
+            let arg_fields = self.last_accesses[0].keys().cloned();
+            arg_fields
+                .map(|path| (path.clone(), self.last_uses_of(&(ExprId::ARG, path))))
+                .collect()
+        }
+
+        /// Determines whether `name` is used (i.e. if `name` or any name that
+        /// aliases it may be accessed) after `at`.
+        fn is_name_used_after(&self, name: &aliasing::Name, at: ExprId) -> bool {
+            self.last_uses_of(name)
+                .is_used_after(&self.paths_to_exprs[at.0], at)
         }
 
         /// Returns all the names that may-alias the given name.
@@ -2015,7 +2098,7 @@ mod constrain {
             &func.body,
         );
 
-        for (arg_path, arg_path_last_access) in &func.last_accesses[0] {
+        for (arg_path, arg_path_last_access) in func.last_uses_of_arg() {
             for (mutated_arg_path, mutation_loc) in &mutation_points {
                 if arg_path_last_access
                     .is_after(&func.paths_to_exprs[mutation_loc.0], *mutation_loc)
@@ -2265,7 +2348,9 @@ mod constrain {
                     for outer_arg_path in func.arg_names_aliased_to(&constrained_name) {
                         arg_mutations.push((outer_arg_path.clone(), expr_id));
                     }
-                    if func.is_last_use(&constrained_name, expr_id) {
+                    if func.is_name_used_after(&constrained_name, expr_id) {
+                        graph.require(repr_var, mid_ast::Constraint::Shared);
+                    } else {
                         for (outer_place, outer_place_path) in
                             func.external_names_aliased_to(&constrained_name)
                         {
@@ -2277,8 +2362,6 @@ mod constrain {
                                 ),
                             );
                         }
-                    } else {
-                        graph.require(repr_var, mid_ast::Constraint::Shared);
                     }
                 }
                 mid_ast::Constraint::SharedIfAliased(sub_arg_path_a, sub_arg_path_b) => {
@@ -2626,9 +2709,6 @@ mod integrate {
         let typed_body = unify::unify_func(graph, context, func);
         let func_info =
             aliasing::alias_track_func(context.typedefs, context.unique_infos, typed_body, id);
-
-        assert_eq!(func_info.last_accesses.len(), func_info.aliases.len());
-        assert_eq!(func_info.aliases.len(), func_info.name_vars.len());
         func_info
     }
 
