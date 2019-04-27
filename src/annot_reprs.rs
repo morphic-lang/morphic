@@ -1447,7 +1447,7 @@ mod aliasing {
 
         match expr {
             mid_ast::Expr::Term(term) => {
-                add_term_aliases(name_adjacencies, locals, &vector![], term, cur_expr_id);
+                alias_field_to_term(name_adjacencies, locals, &(cur_expr_id, vector![]), term);
                 update_term_accesses(accesses, locals, term);
             }
             mid_ast::Expr::ArithOp(arith_op) => match arith_op {
@@ -1464,9 +1464,9 @@ mod aliasing {
             },
             mid_ast::Expr::ArrayOp(array_op) => match array_op {
                 mid_ast::ArrayOp::Construct(_type, _var, item_terms) => {
-                    let path_prefix = vector![FieldId::ArrayMembers];
+                    let items_name = (cur_expr_id, vector![FieldId::ArrayMembers]);
                     for term in item_terms {
-                        add_term_aliases(name_adjacencies, locals, &path_prefix, term, cur_expr_id);
+                        alias_field_to_term(name_adjacencies, locals, &items_name, term);
                         update_term_accesses(accesses, locals, term);
                     }
                 }
@@ -1488,12 +1488,11 @@ mod aliasing {
                         unreachable!()
                     }
                     // The HoleArray (in second tuple position) aliases array_term
-                    add_term_aliases(
+                    alias_field_to_term(
                         name_adjacencies,
                         locals,
-                        &vector![FieldId::Field(1)],
+                        &(cur_expr_id, vector![FieldId::Field(1)]),
                         array_term,
-                        cur_expr_id,
                     );
                     // FIXME: the HoleArray's elements do not alias item, unless there is a self-loop
                 }
@@ -1520,12 +1519,11 @@ mod aliasing {
                         unreachable!();
                     }
                     // The result's members alias item_term
-                    add_term_aliases(
+                    alias_field_to_term(
                         name_adjacencies,
                         locals,
-                        &vector![FieldId::ArrayMembers],
+                        &(cur_expr_id, vector![FieldId::ArrayMembers]),
                         item_term,
-                        cur_expr_id,
                     );
                     // FIXME: the original array's elements do not alias item, unless they already did (ie. self-loop)
                 }
@@ -1564,12 +1562,11 @@ mod aliasing {
                     }
 
                     // The result's members alias item_term
-                    add_term_aliases(
+                    alias_field_to_term(
                         name_adjacencies,
                         locals,
-                        &vector![FieldId::ArrayMembers],
+                        &(cur_expr_id, vector![FieldId::ArrayMembers]),
                         item_term,
-                        cur_expr_id,
                     );
                     // FIXME: the HoleArray's elements do not alias item, unless they already did (ie. self-loop)
                 }
@@ -1579,19 +1576,22 @@ mod aliasing {
             }
             mid_ast::Expr::Ctor(_type_id, variant_id, Some(arg_term)) => {
                 update_term_accesses(accesses, locals, arg_term);
-                add_term_aliases(
+                alias_field_to_term(
                     name_adjacencies,
                     locals,
-                    &vector![FieldId::Variant(*variant_id)],
+                    &(cur_expr_id, vector![FieldId::Variant(*variant_id)]),
                     &arg_term,
-                    cur_expr_id,
                 );
             }
             mid_ast::Expr::Tuple(item_terms) => {
                 for (idx, item) in item_terms.iter().enumerate() {
                     update_term_accesses(accesses, locals, &item);
-                    let prefix = vector![FieldId::Field(idx)];
-                    add_term_aliases(name_adjacencies, locals, &prefix, &item, cur_expr_id);
+                    alias_field_to_term(
+                        name_adjacencies,
+                        locals,
+                        &(cur_expr_id, vector![FieldId::Field(idx)]),
+                        &item,
+                    );
                 }
             }
             mid_ast::Expr::Local(local_id) => {
@@ -1815,20 +1815,18 @@ mod aliasing {
     ///
     /// Note that this assumes that all field which are names in a given expression
     /// have at least an empty set assigned in name_adjacencies.
-    fn add_term_aliases(
-        // TODO: reorder this heinous argument list
+    fn alias_field_to_term(
         name_adjacencies: &mut [BTreeMap<FieldPath, BTreeSet<Name>>],
         locals: &Vector<ExprId>, // indexed by LocalId
-        prefix: &FieldPath,
+        (cur_expr_id, prefix): &Name,
         term: &mid_ast::Term,
-        cur_expr_id: ExprId,
     ) {
         match term {
             mid_ast::Term::Access(referenced_local_id, _, Some(referenced_name_path)) => {
                 alias_fields(
                     name_adjacencies,
                     (locals[referenced_local_id.0], referenced_name_path),
-                    (cur_expr_id, prefix),
+                    (*cur_expr_id, prefix),
                 );
             }
             mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {}
