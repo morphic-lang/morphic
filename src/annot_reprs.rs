@@ -1429,9 +1429,9 @@ mod aliasing {
         typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
         unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
         accesses: &mut LastAccessesCursor,
-        name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
-        name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,           // indexed by ExprId
-        locals: &Vector<ExprId>,                                         // indexed by LocalId
+        name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>,
+        name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,
+        locals: &Vector<ExprId>, // indexed by LocalId
         expr: &mid_ast::TypedExpr,
         cur_expr_id: ExprId,                // id of `expr`
         type_: &mid_ast::Type<SolverVarId>, // type of `expr`
@@ -1465,110 +1465,145 @@ mod aliasing {
             mid_ast::Expr::ArrayOp(array_op) => match array_op {
                 mid_ast::ArrayOp::Construct(_type, _var, item_terms) => {
                     let items_name = (cur_expr_id, vector![FieldId::ArrayMembers]);
+                    let mut new_edges = Vec::new();
                     for term in item_terms {
-                        alias_field_to_term(name_adjacencies, locals, &items_name, term);
+                        new_edges.push(compute_edges_from_aliasing_to_term(
+                            name_adjacencies,
+                            locals,
+                            &items_name,
+                            term,
+                        ));
                         update_term_accesses(accesses, locals, term);
                     }
+                    add_computed_edges(name_adjacencies, new_edges);
                 }
                 mid_ast::ArrayOp::Item(array_term, idx_term, None) => {
                     update_term_accesses(accesses, locals, array_term);
                     update_term_accesses(accesses, locals, idx_term);
-                    // The item (in first tuple position) aliases array_term's contents
+
                     if let mid_ast::Term::Access(local_id, _actual, Some(array_field)) = array_term
                     {
-                        let mut array_elements = array_field.clone();
-                        array_elements.push_back(FieldId::ArrayMembers);
-                        alias_fields(
+                        let mut new_edges = Vec::new();
+
+                        let mut members_path = array_field.clone();
+                        members_path.push_back(FieldId::ArrayMembers);
+                        let original_array_members = (locals[local_id.0], &members_path);
+                        // The returned item (in first tuple position) aliases
+                        // array_term's members
+                        let returned_item = (cur_expr_id, &vector![FieldId::Field(0)]);
+                        new_edges.push(compute_edges_from_aliasing(
                             name_adjacencies,
-                            (locals[local_id.0], &array_elements),
-                            (cur_expr_id, &vector![FieldId::Field(0)]),
+                            original_array_members,
+                            returned_item,
+                            false,
+                        ));
+                        // The members of the HoleArray (in second tuple position) alias
+                        // array_term's members
+                        let new_array_members = (
+                            cur_expr_id,
+                            &vector![FieldId::Field(1), FieldId::ArrayMembers],
                         );
+                        new_edges.push(compute_edges_from_aliasing(
+                            name_adjacencies,
+                            original_array_members,
+                            new_array_members,
+                            true,
+                        ));
+
+                        new_edges.push(conditionally_alias(
+                            name_adjacencies,
+                            original_array_members,
+                            new_array_members,
+                            returned_item,
+                        ));
+
+                        add_computed_edges(name_adjacencies, new_edges);
                     } else {
                         // Any other Term is a compiler error
                         unreachable!()
                     }
-                    // The HoleArray (in second tuple position) aliases array_term
-                    alias_field_to_term(
-                        name_adjacencies,
-                        locals,
-                        &(cur_expr_id, vector![FieldId::Field(1)]),
-                        array_term,
-                    );
-                    // FIXME: the HoleArray's elements do not alias item, unless there is a self-loop
                 }
                 mid_ast::ArrayOp::Item(_, _, Some(_)) => {
                     // TOOD: merge to remove this case
                     unimplemented!()
                 }
+                mid_ast::ArrayOp::Pop(array_term) => {
+                    update_term_accesses(accesses, locals, array_term);
+
+                    if let mid_ast::Term::Access(local_id, _, Some(array_field_path)) = array_term {
+                        let mut new_edges = Vec::new();
+
+                        let mut members_path = array_field_path.clone();
+                        members_path.push_back(FieldId::ArrayMembers);
+                        let original_array_members = (locals[local_id.0], &members_path);
+
+                        // The members of the returned array (in first tuple position)
+                        // alias the members of array_term
+                        let new_array_members = (
+                            cur_expr_id,
+                            &vector![FieldId::Field(0), FieldId::ArrayMembers],
+                        );
+                        new_edges.push(compute_edges_from_aliasing(
+                            name_adjacencies,
+                            original_array_members,
+                            new_array_members,
+                            true,
+                        ));
+
+                        // The returned item (in the second tuple position) aliases the
+                        // members of array_term
+                        let returned_item = (cur_expr_id, &vector![FieldId::Field(1)]);
+                        new_edges.push(compute_edges_from_aliasing(
+                            name_adjacencies,
+                            original_array_members,
+                            returned_item,
+                            false,
+                        ));
+
+                        new_edges.push(conditionally_alias(
+                            name_adjacencies,
+                            original_array_members,
+                            new_array_members,
+                            returned_item,
+                        ));
+
+                        add_computed_edges(name_adjacencies, new_edges);
+                    } else {
+                        unreachable!();
+                    }
+                }
                 mid_ast::ArrayOp::Len(array_term) => {
                     update_term_accesses(accesses, locals, array_term);
                 }
-                mid_ast::ArrayOp::Push(array_term, item_term) => {
+                mid_ast::ArrayOp::Push(array_term, item_term)
+                | mid_ast::ArrayOp::Replace(array_term, item_term) => {
                     update_term_accesses(accesses, locals, array_term);
                     update_term_accesses(accesses, locals, item_term);
+
+                    let mut new_edges = Vec::new();
                     // The result's members alias the original array's members
                     if let mid_ast::Term::Access(local_id, _, Some(array_path)) = array_term {
                         let mut array_members_path = array_path.clone();
                         array_members_path.push_back(FieldId::ArrayMembers);
-                        alias_fields(
+                        new_edges.push(compute_edges_from_aliasing(
                             name_adjacencies,
                             (locals[local_id.0], &array_members_path),
                             (cur_expr_id, &vector![FieldId::ArrayMembers]),
-                        );
+                            true,
+                        ));
                     } else {
                         unreachable!();
                     }
                     // The result's members alias item_term
-                    alias_field_to_term(
+                    // When item_term was already aliased in the original array, that alias
+                    // is copied here, creating a self-loop in the new array's members
+                    new_edges.push(compute_edges_from_aliasing_to_term(
                         name_adjacencies,
                         locals,
                         &(cur_expr_id, vector![FieldId::ArrayMembers]),
                         item_term,
-                    );
-                    // FIXME: the original array's elements do not alias item, unless they already did (ie. self-loop)
-                }
-                mid_ast::ArrayOp::Pop(array_term) => {
-                    update_term_accesses(accesses, locals, array_term);
-                    // The result's members alias the members of array_term
-                    if let mid_ast::Term::Access(local_id, _, Some(array_field_path)) = array_term {
-                        let mut members = array_field_path.clone();
-                        members.push_back(FieldId::ArrayMembers);
-                        alias_fields(
-                            name_adjacencies,
-                            (locals[local_id.0], &members),
-                            (cur_expr_id, &vector![FieldId::ArrayMembers]),
-                        );
-                    } else {
-                        unreachable!();
-                    }
-                }
-                mid_ast::ArrayOp::Replace(hole_array_term, item_term) => {
-                    update_term_accesses(accesses, locals, hole_array_term);
-                    update_term_accesses(accesses, locals, item_term);
-                    // The result's members alias the members of hole_array_term
-                    if let mid_ast::Term::Access(local_id, _, Some(array_field_path)) =
-                        hole_array_term
-                    {
-                        let mut members = array_field_path.clone();
-                        members.push_back(FieldId::ArrayMembers);
-                        alias_fields(
-                            name_adjacencies,
-                            (locals[local_id.0], &members),
-                            (cur_expr_id, &vector![FieldId::ArrayMembers]),
-                        );
-                    } else {
-                        // Type error
-                        unreachable!();
-                    }
-
-                    // The result's members alias item_term
-                    alias_field_to_term(
-                        name_adjacencies,
-                        locals,
-                        &(cur_expr_id, vector![FieldId::ArrayMembers]),
-                        item_term,
-                    );
-                    // FIXME: the HoleArray's elements do not alias item, unless they already did (ie. self-loop)
+                    ));
+                    add_computed_edges(name_adjacencies, new_edges);
                 }
             },
             mid_ast::Expr::Ctor(_type_id, _variant_id, None) => {
@@ -1602,8 +1637,9 @@ mod aliasing {
                 );
             }
             mid_ast::Expr::Call(_purity, func_id, arg_term, _) => {
-                // FIXME: emit that information from functions in UniqueInfos.
+                // FIXME: emit access information of functions in UniqueInfos.
                 update_term_accesses(accesses, locals, arg_term);
+                // FIXME: aliasing between names in return value needs to be expressed
                 // Identify where parts of arg_term are aliased in the result
                 apply_unique_info(
                     name_adjacencies,
@@ -1615,7 +1651,7 @@ mod aliasing {
                 );
             }
             mid_ast::Expr::Match(_matched, branches, _result_type) => {
-                let mut new_edges = BTreeMap::new();
+                let mut new_edges = Vec::new();
                 for (branch_idx, (_pat, block)) in branches.iter().enumerate() {
                     accesses.in_branch_scope(cur_expr_id, branch_idx, |sub_accesses| {
                         alias_track_block(
@@ -1627,12 +1663,12 @@ mod aliasing {
                             block,
                         );
                         let branch_result = ExprId(name_adjacencies.len() - 1);
-                        compute_edges_from_aliasing(
+                        new_edges.push(compute_edges_from_aliasing(
                             name_adjacencies,
                             (branch_result, &vector![]),
                             (cur_expr_id, &vector![]),
-                            &mut new_edges,
-                        );
+                            true, // doesn't matter
+                        ));
                     });
                 }
                 add_computed_edges(name_adjacencies, new_edges);
@@ -1818,18 +1854,32 @@ mod aliasing {
     fn alias_field_to_term(
         name_adjacencies: &mut [BTreeMap<FieldPath, BTreeSet<Name>>],
         locals: &Vector<ExprId>, // indexed by LocalId
-        (cur_expr_id, prefix): &Name,
+        name: &Name,
         term: &mid_ast::Term,
     ) {
+        let new_edges = compute_edges_from_aliasing_to_term(name_adjacencies, locals, name, term);
+        add_computed_edges(name_adjacencies, vec![new_edges]);
+    }
+
+    #[must_use]
+    fn compute_edges_from_aliasing_to_term(
+        name_adjacencies: &mut [BTreeMap<FieldPath, BTreeSet<Name>>],
+        locals: &Vector<ExprId>, // indexed by LocalId
+        (cur_expr_id, prefix): &Name,
+        term: &mid_ast::Term,
+    ) -> BTreeMap<ExprId, BTreeMap<FieldPath, BTreeSet<Name>>> {
         match term {
             mid_ast::Term::Access(referenced_local_id, _, Some(referenced_name_path)) => {
-                alias_fields(
+                compute_edges_from_aliasing(
                     name_adjacencies,
                     (locals[referenced_local_id.0], referenced_name_path),
                     (*cur_expr_id, prefix),
-                );
+                    false,
+                )
             }
-            mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {}
+            mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {
+                BTreeMap::new()
+            }
             _ => unreachable!(),
         }
     }
@@ -1839,85 +1889,152 @@ mod aliasing {
         prior: (ExprId, &FieldPath),
         new: (ExprId, &FieldPath),
     ) {
-        let mut new_edges = BTreeMap::new();
-        compute_edges_from_aliasing(name_adjacencies, prior, new, &mut new_edges);
-        add_computed_edges(name_adjacencies, new_edges);
+        let new_edges = compute_edges_from_aliasing(name_adjacencies, prior, new, true);
+        add_computed_edges(name_adjacencies, vec![new_edges]);
     }
 
     fn add_computed_edges(
         name_adjacencies: &mut [BTreeMap<FieldPath, BTreeSet<Name>>],
-        edges_to_add: BTreeMap<ExprId, BTreeMap<FieldPath, BTreeSet<Name>>>,
+        edge_maps_to_add: Vec<BTreeMap<ExprId, BTreeMap<FieldPath, BTreeSet<Name>>>>,
     ) {
         // Dump new edges from added_edges into name_adjacencies
-        for (expr_id, edges_by_path) in edges_to_add.into_iter() {
-            for (field_path, mut adjacent_names) in edges_by_path.into_iter() {
-                name_adjacencies[expr_id.0]
-                    .get_mut(&field_path)
-                    .expect("found alias edge to name at uninitialized field path")
-                    .append(&mut adjacent_names);
+        for edges_to_add in edge_maps_to_add {
+            for (expr_id, edges_by_path) in edges_to_add.into_iter() {
+                for (field_path, mut adjacent_names) in edges_by_path.into_iter() {
+                    name_adjacencies[expr_id.0]
+                        .get_mut(&field_path)
+                        .expect("found alias edge to name at uninitialized field path")
+                        .append(&mut adjacent_names);
+                }
             }
         }
     }
 
-    // Compute the edges to add to the graph to alias the two expressions, and add
-    // those to `edges`.
-    // `compute_edges_from_aliasing` crucially does *not* consider aliasing relationships described
-    // in `edges` when adding transitive aliases. This enables calling
-    // `compute_edges_from_aliasing` repeatedly, between each branch result of a match and the
-    // match result, without creating erroneous edges between the branch results.
+    // Creates aliases between `item` and `new_array_members` conditionally,
+    // adding a given edge if the name in `item` aliases the corresponding name
+    // in `original_array_members`. Used when inserting an element into an array
+    // that already contains alias(es) into it.
+    fn conditionally_alias(
+        name_adjacencies: &[BTreeMap<FieldPath, BTreeSet<Name>>],
+        original_array_members: (ExprId, &FieldPath),
+        new_array_members: (ExprId, &FieldPath),
+        item: (ExprId, &FieldPath),
+    ) -> BTreeMap<ExprId, BTreeMap<FieldPath, BTreeSet<Name>>> {
+        let mut added_edges: BTreeMap<ExprId, BTreeMap<FieldPath, BTreeSet<Name>>> =
+            BTreeMap::new();
+
+        let item_paths = name_adjacencies[(item.0).0]
+            .iter()
+            .filter(|(ref_path, _)| &ref_path.take(item.1.len()) == item.1);
+        for (item_path, edges) in item_paths {
+            let path_in_item = item_path.skip(item.1.len());
+            let aliased_in_arr = edges.iter().any(|(expr, path)| {
+                *expr == original_array_members.0
+                    && &path.take(original_array_members.1.len()) == original_array_members.1
+                    && path.skip(original_array_members.1.len()) == path_in_item
+            });
+            if aliased_in_arr {
+                // If its aliased in the original array, alias it in the new array
+                added_edges
+                    .entry(item.0)
+                    .or_default()
+                    .entry(item_path.clone())
+                    .or_default()
+                    .insert((new_array_members.0, new_array_members.1 + &path_in_item));
+                added_edges
+                    .entry(new_array_members.0)
+                    .or_default()
+                    .entry(new_array_members.1 + &path_in_item)
+                    .or_default()
+                    .insert((item.0, item_path.clone()));
+            }
+        }
+
+        added_edges
+    }
+
+    // Computes the edges to add to the graph to alias the two expressions.
     fn compute_edges_from_aliasing(
         name_adjacencies: &[BTreeMap<FieldPath, BTreeSet<Name>>],
         prior: (ExprId, &FieldPath),
         new: (ExprId, &FieldPath),
-        edges: &mut BTreeMap<ExprId, BTreeMap<FieldPath, BTreeSet<Name>>>,
-    ) {
+        copy_toplevel_self_loops: bool,
+    ) -> BTreeMap<ExprId, BTreeMap<FieldPath, BTreeSet<Name>>> {
         let (prior_expr, prior_path) = prior;
         let (new_expr, new_path) = new;
 
-        for (ref_path, ref_edges) in name_adjacencies[prior_expr.0].iter() {
-            // Look at all sub-paths of the path being accessed
+        let mut added_edges: BTreeMap<ExprId, BTreeMap<FieldPath, BTreeSet<Name>>> =
+            BTreeMap::new();
+
+        // Look at all sub-paths of the path being accessed
+        let aliased_paths = name_adjacencies[prior_expr.0]
+            .iter()
+            .filter(|(ref_path, _)| ref_path.take(prior_path.len()) == *prior_path);
+        for (ref_path, original_ref_edges) in aliased_paths {
             // NOTE: there is some redundant work being done here. As name_adjacencies
             // includes names in recursive types one level deep, fields in recursive
             // types will be handled twice each by this loop. It should be harmless.
-            if ref_path.take(prior_path.len()) == *prior_path {
-                // ref_path is the full path into the referenced expression of some name
-                // that is being copied. sub_path is that path *relative* to the path at
-                // which `prior` and `new` are being aliased.
-                let sub_path = ref_path.skip(prior_path.len());
-                // Note: ref_path == prior_path + sub_path
 
-                // Mark here that the name aliases there, and everything aliased by there
-                let here_path = new_path + &sub_path;
-                let mut here_edges = ref_edges.clone();
-                here_edges.insert((prior_expr, ref_path.clone()));
-                edges
-                    .entry(new_expr)
-                    .or_insert_with(BTreeMap::new)
-                    .entry(here_path.clone())
-                    .or_insert_with(BTreeSet::new)
-                    .append(&mut here_edges);
-                drop(here_edges); // emptied by previous statement
-
-                // For every alias in ref_edges, mark that it is aliased
-                // here (to make the edges undirected/bidirectional)
-                for (other_expr, other_path) in ref_edges {
-                    edges
-                        .entry(*other_expr)
-                        .or_insert_with(BTreeMap::new)
-                        .entry(other_path.clone())
-                        .or_insert_with(BTreeSet::new)
-                        .insert((new_expr, here_path.clone()));
+            let ref_edges = {
+                // Consider both the edges present in the original aliasing graph, and those
+                // added in this call to `compute_edges_from_aliasing`.
+                let mut ref_edges = original_ref_edges.clone();
+                let edges_already_added =
+                    added_edges.get(&prior_expr).and_then(|e| e.get(&ref_path));
+                if let Some(e) = edges_already_added {
+                    for edge in e {
+                        ref_edges.insert(edge.clone());
+                    }
                 }
+                ref_edges
+            };
 
-                // Mark there that the name is aliased here
-                edges
-                    .entry(prior_expr)
-                    .or_insert_with(BTreeMap::new)
-                    .entry(ref_path.clone())
-                    .or_insert_with(BTreeSet::new)
-                    .insert((new_expr, new_path + ref_path));
+            // ref_path is the full path into the referenced expression of some name
+            // that is being copied. sub_path is that path *relative* to the path at
+            // which `prior` and `new` are being aliased.
+            let sub_path = ref_path.skip(prior_path.len());
+            // Note: ref_path == prior_path + sub_path
+            let here_path = new_path + &sub_path;
+
+            // Mark "here" that the name aliases everything aliased by "there"
+            let mut here_edges = ref_edges.clone();
+            if ref_edges.contains(&(prior_expr, ref_path.clone()))
+                && (!sub_path.is_empty() || copy_toplevel_self_loops)
+            {
+                // If "there" aliases "there" (i.e. if we find a self-loop), make a self-loop "here"
+                here_edges.insert((new_expr, here_path.clone()));
+            } else {
+                // Mark "here" that the name aliases "there"
+                here_edges.insert((prior_expr, ref_path.clone()));
             }
+            added_edges
+                .entry(new_expr)
+                .or_insert_with(BTreeMap::new)
+                .entry(here_path.clone())
+                .or_insert_with(BTreeSet::new)
+                .append(&mut here_edges);
+            drop(here_edges); // emptied by previous statement
+
+            // For every alias in ref_edges, mark that it is aliased
+            // here (to make the edges undirected/bidirectional)
+            for (other_expr, other_path) in ref_edges {
+                added_edges
+                    .entry(other_expr)
+                    .or_insert_with(BTreeMap::new)
+                    .entry(other_path.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert((new_expr, here_path.clone()));
+            }
+
+            // Mark there that the name is aliased here
+            added_edges
+                .entry(prior_expr)
+                .or_insert_with(BTreeMap::new)
+                .entry(ref_path.clone())
+                .or_insert_with(BTreeSet::new)
+                .insert((new_expr, new_path + ref_path));
         }
+        added_edges
     }
 }
 
