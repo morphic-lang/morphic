@@ -123,12 +123,33 @@ pub enum SharingPlace {
     Ret,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, PartialOrd, Ord)]
 pub enum Constraint {
     // FieldPaths are relative to the argument
     SharedIfOutlivesCall(SharingPlace, annot_aliases::FieldPath),
     SharedIfAliased(annot_aliases::FieldPath, annot_aliases::FieldPath),
     Shared,
+}
+
+impl PartialEq for Constraint {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Constraint::SharedIfOutlivesCall(place, path),
+                Constraint::SharedIfOutlivesCall(other_place, other_path),
+            ) => place == other_place && path == other_path,
+            (
+                Constraint::SharedIfAliased(path_a, path_b),
+                Constraint::SharedIfAliased(other_path_a, other_path_b),
+            ) => {
+                use std::cmp::{max, min};
+                min(path_a, path_b) == min(other_path_a, other_path_b)
+                    && max(path_a, path_b) == max(other_path_a, other_path_b)
+            }
+            (Constraint::Shared, Constraint::Shared) => true,
+            _ => false,
+        }
+    }
 }
 
 // ExprId does not index into any field of `Block`. ExprId indexes into

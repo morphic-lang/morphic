@@ -7,7 +7,7 @@ pub struct SolverVarId(pub usize);
 #[derive(Clone, Debug)]
 pub struct VarConstraints<Requirement> {
     pub equalities: BTreeSet<SolverVarId>,
-    pub requirements: Vec<Requirement>,
+    pub requirements: BTreeSet<Requirement>,
 }
 
 #[derive(Clone, Debug)]
@@ -17,7 +17,7 @@ pub struct ConstraintGraph<Requirement> {
     pub var_constraints: Vec<VarConstraints<Requirement>>,
 }
 
-impl<Requirement> ConstraintGraph<Requirement> {
+impl<Requirement: Ord> ConstraintGraph<Requirement> {
     pub fn new() -> Self {
         ConstraintGraph {
             var_constraints: Vec::new(),
@@ -28,7 +28,7 @@ impl<Requirement> ConstraintGraph<Requirement> {
         let id = SolverVarId(self.var_constraints.len());
         self.var_constraints.push(VarConstraints {
             equalities: BTreeSet::new(),
-            requirements: Vec::new(),
+            requirements: BTreeSet::new(),
         });
         id
     }
@@ -39,13 +39,11 @@ impl<Requirement> ConstraintGraph<Requirement> {
     }
 
     pub fn require(&mut self, var: SolverVarId, req: Requirement) {
-        self.var_constraints[var.0].requirements.push(req);
+        self.var_constraints[var.0].requirements.insert(req);
     }
 
     pub fn clear_requirements(&mut self) {
         for c in self.var_constraints.iter_mut() {
-            // Note: this does not deallocate the vector or reduce its capacity.
-            // The space will most likely be reused
             c.requirements.clear();
         }
     }

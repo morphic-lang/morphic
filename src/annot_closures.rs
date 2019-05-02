@@ -219,7 +219,7 @@ fn parameterize_typedefs(typedefs: &[mono::TypeDef]) -> Vec<annot::TypeDef> {
         .collect()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SolverRequirement {
     Lam(lifted::LamId, Vec<SolverVarId>),
     PendingLam(lifted::LamId),

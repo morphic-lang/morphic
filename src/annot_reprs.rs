@@ -2558,8 +2558,6 @@ mod constrain {
                     if func.may_alias(&name_a, &name_b) {
                         graph.require(repr_var, mid_ast::Constraint::Shared);
                     } else {
-                        // FIXME: there will be duplicates, yes? Changing the graph to use sets
-                        // for requirements could be too costly
                         for outer_arg_path_a in func.arg_names_aliased_to(&name_a) {
                             for outer_arg_path_b in func.arg_names_aliased_to(&name_b) {
                                 // If both names are aliased to arguments (and not necessarily
@@ -3005,7 +3003,7 @@ mod integrate {
                 for (var_idx, graph_constraints) in graph.var_constraints.iter_mut().enumerate() {
                     // Empty the constraint list in the graph to avoid clone (resetting
                     // constraints is necessary for next iteration anyway)
-                    let mut var_constraints = Vec::new();
+                    let mut var_constraints = BTreeSet::new();
                     std::mem::swap(&mut graph_constraints.requirements, &mut var_constraints);
                     let equiv_class = equiv_classes.class(SolverVarId(var_idx));
                     class_constraints[equiv_class.0].extend(var_constraints);

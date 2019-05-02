@@ -13,7 +13,7 @@ pub struct TypeDef {
     pub variants: Vec<Option<Type<RepParamId>>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type<Rep> {
     Bool,
     Int,
