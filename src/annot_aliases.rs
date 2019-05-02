@@ -56,32 +56,17 @@ impl AliasPair {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UniqueInfo {
     pub edges: Vector<AliasPair>,
-    pub new_names: Vector<FieldPath>,
 }
 
 impl UniqueInfo {
     fn empty() -> UniqueInfo {
         UniqueInfo {
             edges: Vector::new(),
-            new_names: Vector::new(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RawUniqueInfo {
-    edges: Vector<AliasPair>,
-}
-
-impl RawUniqueInfo {
-    fn empty() -> RawUniqueInfo {
-        RawUniqueInfo {
-            edges: Vector::new(),
         }
     }
 
     fn add_ret_context(&self, field: FieldId) -> Self {
-        RawUniqueInfo {
+        UniqueInfo {
             edges: self
                 .edges
                 .iter()
@@ -93,7 +78,7 @@ impl RawUniqueInfo {
     // *Assuming* that every edge starts from the field `field`, remove the
     // `field.` prefix from every edge
     fn rm_context(&self, field: FieldId) -> Self {
-        RawUniqueInfo {
+        UniqueInfo {
             edges: self.edges.iter().map(|e| e.rm_context(field)).collect(),
         }
     }
@@ -101,7 +86,7 @@ impl RawUniqueInfo {
     // Filter edges for those starting with `field`, and remove `field` from those
     // edges in the result
     fn narrow_context(&self, field: FieldId) -> Self {
-        RawUniqueInfo {
+        UniqueInfo {
             edges: self
                 .edges
                 .iter()
@@ -112,7 +97,7 @@ impl RawUniqueInfo {
     }
 
     fn set_ret_path(&self, ret_field: FieldPath) -> Self {
-        RawUniqueInfo {
+        UniqueInfo {
             edges: self
                 .edges
                 .iter()
@@ -124,11 +109,11 @@ impl RawUniqueInfo {
         }
     }
 
-    fn append(&mut self, other: RawUniqueInfo) {
+    fn append(&mut self, other: UniqueInfo) {
         self.edges.append(other.edges.clone());
     }
 
-    fn union(&self, other: RawUniqueInfo) -> Self {
+    fn union(&self, other: UniqueInfo) -> Self {
         let mut new = self.clone();
         new.edges.append(other.edges);
         new
@@ -141,7 +126,7 @@ impl RawUniqueInfo {
     }
 
     fn filter_ret_path(&self, other: FieldPath) -> Self {
-        RawUniqueInfo {
+        UniqueInfo {
             edges: self
                 .edges
                 .clone()
@@ -151,8 +136,8 @@ impl RawUniqueInfo {
         }
     }
 
-    fn apply_to(&self, arg: &RawUniqueInfo) -> Self {
-        let mut new = RawUniqueInfo::empty();
+    fn apply_to(&self, arg: &UniqueInfo) -> Self {
+        let mut new = UniqueInfo::empty();
         for alias in self.edges.clone() {
             // wire together this alias with where the arg comes from
             new.append(
@@ -164,14 +149,14 @@ impl RawUniqueInfo {
     }
 }
 
-// A LocalId maps to its RawUniqueInfo in terms of the function argument
-type Locals = Vec<RawUniqueInfo>;
+// A LocalId maps to its UniqueInfo in terms of the function argument
+type Locals = Vec<UniqueInfo>;
 
 fn bind_pattern_locals(
     locals: &mut Locals,
-    func_infos: &[RawUniqueInfo],
+    func_infos: &[UniqueInfo],
     pattern: &ast::Pattern,
-    rhs: RawUniqueInfo,
+    rhs: UniqueInfo,
 ) {
     match pattern {
         ast::Pattern::Any(_) => {}
@@ -206,11 +191,11 @@ fn bind_pattern_locals(
 
 fn annot_pattern(
     locals: &mut Locals,
-    func_infos: &[RawUniqueInfo],
+    func_infos: &[UniqueInfo],
     pattern: &ast::Pattern,
     rhs: &ast::Expr,
     body: &ast::Expr,
-) -> RawUniqueInfo {
+) -> UniqueInfo {
     let initial_len = locals.len();
     let rhs_unique_info = annot_expression(locals, func_infos, rhs);
     bind_pattern_locals(locals, func_infos, pattern, rhs_unique_info);
@@ -222,11 +207,11 @@ fn annot_pattern(
 // Compute how `expr` aliases the arguments to the containing function
 fn annot_expression(
     locals: &mut Locals,
-    func_infos: &[RawUniqueInfo],
+    func_infos: &[UniqueInfo],
     expr: &ast::Expr,
-) -> RawUniqueInfo {
+) -> UniqueInfo {
     match expr {
-        ast::Expr::ArithOp(_) => RawUniqueInfo::empty(),
+        ast::Expr::ArithOp(_) => UniqueInfo::empty(),
         ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array, _, wrapper)) => {
             // The holearray, in the second entry of the returned tuple, aliases the array
             let mut aliases =
@@ -242,9 +227,9 @@ fn annot_expression(
             }
             aliases
         }
-        ast::Expr::ArrayOp(ast::ArrayOp::Len(..)) => RawUniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Push(..)) => RawUniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Pop(..)) => RawUniqueInfo::empty(),
+        ast::Expr::ArrayOp(ast::ArrayOp::Len(..)) => UniqueInfo::empty(),
+        ast::Expr::ArrayOp(ast::ArrayOp::Push(..)) => UniqueInfo::empty(),
+        ast::Expr::ArrayOp(ast::ArrayOp::Pop(..)) => UniqueInfo::empty(),
         ast::Expr::ArrayOp(ast::ArrayOp::Replace(_type, hole_array, item)) => {
             let arr_aliases = annot_expression(locals, func_infos, hole_array);
             let item_aliases = annot_expression(locals, func_infos, item);
@@ -252,13 +237,13 @@ fn annot_expression(
             arr_aliases.union(item_aliases.add_ret_context(FieldId::ArrayMembers))
         }
         ast::Expr::Ctor(_id, variant_id, args) => match args {
-            None => RawUniqueInfo::empty(),
+            None => UniqueInfo::empty(),
             Some(args) => annot_expression(locals, func_infos, args)
                 .add_ret_context(FieldId::Variant(*variant_id)),
         },
         ast::Expr::Local(ast::LocalId(id)) => locals[*id].clone(),
         ast::Expr::Tuple(elems) => {
-            let mut info = RawUniqueInfo::empty();
+            let mut info = UniqueInfo::empty();
             for i in 0..elems.len() {
                 info = info.union(
                     annot_expression(locals, func_infos, &elems[i])
@@ -272,7 +257,7 @@ fn annot_expression(
             func_infos[*func_id].apply_to(&arg_aliases)
         }
         ast::Expr::Match(matched_expr, cases, _type) => {
-            let mut result = RawUniqueInfo::empty();
+            let mut result = UniqueInfo::empty();
             for (pattern, body) in cases {
                 result.append(annot_pattern(
                     locals,
@@ -285,11 +270,11 @@ fn annot_expression(
             result
         }
         ast::Expr::Let(lhs, rhs, body) => annot_pattern(locals, func_infos, lhs, rhs, body),
-        ast::Expr::ArrayLit(..) => RawUniqueInfo::empty(),
-        ast::Expr::BoolLit(..) => RawUniqueInfo::empty(),
-        ast::Expr::IntLit(..) => RawUniqueInfo::empty(),
-        ast::Expr::FloatLit(..) => RawUniqueInfo::empty(),
-        ast::Expr::TextLit(..) => RawUniqueInfo::empty(),
+        ast::Expr::ArrayLit(..) => UniqueInfo::empty(),
+        ast::Expr::BoolLit(..) => UniqueInfo::empty(),
+        ast::Expr::IntLit(..) => UniqueInfo::empty(),
+        ast::Expr::FloatLit(..) => UniqueInfo::empty(),
+        ast::Expr::TextLit(..) => UniqueInfo::empty(),
     }
 }
 
@@ -441,8 +426,8 @@ pub fn prune_field_path_with<
 fn prune_unique_info(
     type_defs: &[ast::TypeDef],
     func: &ast::FuncDef,
-    ui: &RawUniqueInfo,
-) -> RawUniqueInfo {
+    ui: &UniqueInfo,
+) -> UniqueInfo {
     let mut pruned_edges = Vector::new();
     for edge in &ui.edges {
         pruned_edges.push_back(AliasPair {
@@ -450,7 +435,7 @@ fn prune_unique_info(
             ret_field: prune_field_path(type_defs, &func.ret_type, &edge.ret_field),
         })
     }
-    RawUniqueInfo {
+    UniqueInfo {
         edges: pruned_edges,
     }
 }
@@ -458,32 +443,29 @@ fn prune_unique_info(
 fn annot_func(
     type_defs: &[ast::TypeDef],
     func: &ast::FuncDef,
-    func_infos: &[RawUniqueInfo],
-) -> RawUniqueInfo {
+    func_infos: &[UniqueInfo],
+) -> UniqueInfo {
     let mut locals = Vec::new();
     // Compute the names in the arg
     let names = get_names_in(type_defs, &func.arg_type);
-    let arg_unique_info = RawUniqueInfo {
+    let arg_unique_info = UniqueInfo {
         edges: names
             .into_iter()
             .map(|fp| AliasPair::new(fp.clone(), fp))
             .collect(),
     };
     bind_pattern_locals(&mut locals, func_infos, &func.arg, arg_unique_info);
-    prune_unique_info(
-        type_defs,
-        func,
-        &annot_expression(&mut locals, func_infos, &func.body),
-    )
+    let messy_unique_info = annot_expression(&mut locals, func_infos, &func.body);
+    prune_unique_info(type_defs, func, &messy_unique_info)
 }
 
 fn annot_scc(
     type_defs: &[ast::TypeDef],
     func_defs: &[ast::FuncDef],
-    func_infos: &mut [RawUniqueInfo],
+    func_infos: &mut [UniqueInfo],
     scc: &[ast::CustomFuncId],
 ) {
-    // Update the RawUniqueInfos for the SCC until we do a pass in which none of them change
+    // Update the UniqueInfos for the SCC until we do a pass in which none of them change
     let mut scc_changed = true;
     while scc_changed {
         scc_changed = false;
@@ -586,8 +568,8 @@ pub fn func_dependency_graph(program: &ast::Program) -> Graph {
 }
 
 pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
-    let mut raw_unique_infos = (0..program.funcs.len())
-        .map(|_| RawUniqueInfo::empty())
+    let mut unique_infos = (0..program.funcs.len())
+        .map(|_| UniqueInfo::empty())
         .collect::<Vec<_>>();
 
     for scc in graph::strongly_connected(&func_dependency_graph(program)) {
@@ -598,22 +580,9 @@ pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
         annot_scc(
             &program.custom_types,
             &program.funcs,
-            &mut raw_unique_infos,
+            &mut unique_infos,
             &scc_ids,
         );
-    }
-
-    // Identify names in the result that are not aliased to arguments
-    let mut unique_infos = Vec::with_capacity(program.funcs.len());
-    for (idx, rui) in raw_unique_infos.into_iter().enumerate() {
-        let new_names = get_names_in(&program.custom_types, &program.funcs[idx].ret_type)
-            .into_iter()
-            .filter(|n| !rui.edges.iter().any(|e| *n == e.ret_field))
-            .collect();
-        unique_infos.push(UniqueInfo {
-            edges: rui.edges,
-            new_names,
-        });
     }
 
     unique_infos
@@ -634,7 +603,7 @@ mod test {
         ));
         assert_eq!(
             annot_expression(&mut vec![], &[], &ex1),
-            RawUniqueInfo::empty()
+            UniqueInfo::empty()
         );
 
         let ex2 = ast::Expr::ArrayLit(
@@ -651,17 +620,17 @@ mod test {
         );
         assert_eq!(
             annot_expression(&mut vec![], &[], &ex2),
-            RawUniqueInfo::empty()
+            UniqueInfo::empty()
         );
     }
 
     #[test]
     pub fn test_with_basic_array_aliasing() {
         let mut locals = vec![
-            RawUniqueInfo {
+            UniqueInfo {
                 edges: vector![AliasPair::new(vector![FieldId::Field(0)], vector![])],
             },
-            RawUniqueInfo {
+            UniqueInfo {
                 edges: vector![
                     AliasPair::new(
                         vector![FieldId::Field(0), FieldId::ArrayMembers],
@@ -678,7 +647,7 @@ mod test {
         ]);
         assert_eq!(
             annot_expression(&mut locals, &[], &basic_aliasing),
-            RawUniqueInfo {
+            UniqueInfo {
                 edges: vector![
                     AliasPair {
                         arg_field: vector![FieldId::Field(0)],

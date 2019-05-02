@@ -1685,7 +1685,6 @@ mod aliasing {
                 // Identify where parts of arg_term are aliased in the result
                 apply_unique_info(
                     name_adjacencies,
-                    accesses,
                     locals,
                     &ctx.unique_infos[func_id.0],
                     arg_term,
@@ -1829,8 +1828,7 @@ mod aliasing {
 
     fn apply_unique_info(
         name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
-        name_last_accesses: &mut LastAccessesCursor,
-        locals: &Vector<ExprId>, // indexed by LocalId
+        locals: &Vector<ExprId>,                                         // indexed by LocalId
         ui: &UniqueInfo,
         arg: &mid_ast::Term,
         cur_expr_id: ExprId,
@@ -1843,9 +1841,6 @@ mod aliasing {
                         (locals[local_id.0], &(field + &alias.arg_field)),
                         (cur_expr_id, &alias.ret_field),
                     );
-                }
-                for name in &ui.new_names {
-                    assert!(name_last_accesses.accesses[cur_expr_id.0].contains_key(&name));
                 }
             }
             mid_ast::Term::Access(_, _, None) => {
