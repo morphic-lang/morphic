@@ -910,6 +910,7 @@ mod unify {
         let param_type = substitute_vars(typedefs, &func_sig.arg_type, &vars);
         equate_types(graph, &param_type, arg_type);
         let ret_type = substitute_vars(typedefs, &func_sig.ret_type, &vars);
+        // FIXME: just remove the following. The above handles what we need, UniqueInfos aren't needed here
         // Unify those pairs of names in the argument and return types that may alias
         for p in ui.edges {
             equate_types(
@@ -1316,12 +1317,31 @@ mod aliasing {
         }
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ReturnSignature {
+        edges: BTreeSet<(FieldPath, FieldPath)>, // aliased paths in return value
+    }
+    impl ReturnSignature {
+        pub fn new() -> Self {
+            ReturnSignature {
+                edges: BTreeSet::new(),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct Context<'a> {
+        pub typedefs: &'a [mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
+        pub unique_infos: &'a [UniqueInfo],                        // indexed by CustomFuncId
+        pub ret_alias_sigs: &'a [Option<ReturnSignature>],         // indexed by CustomFuncId
+        pub scc_ret_alias_sigs: &'a BTreeMap<mid_ast::CustomFuncId, ReturnSignature>,
+    }
+
     pub fn alias_track_func(
-        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
-        unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
-        body: mid_ast::TypedBlock,
+        ctx: Context,
+        body: &mid_ast::TypedBlock,
         id: mid_ast::CustomFuncId,
-    ) -> constrain::FuncInfo {
+    ) -> (ReturnSignature, constrain::FuncInfo) {
         let mut name_adjacencies = Vec::new();
         let mut name_vars = Vec::new();
         let mut accesses_cursor = LastAccessesCursor {
@@ -1331,7 +1351,7 @@ mod aliasing {
         };
         // The function argument is expression zero
         initialize_expr(
-            typedefs,
+            ctx.typedefs,
             &mut accesses_cursor,
             &mut name_adjacencies,
             &mut name_vars,
@@ -1339,26 +1359,52 @@ mod aliasing {
             &body.types[0],
         );
         alias_track_block(
-            typedefs,
-            unique_infos,
+            ctx,
             &mut accesses_cursor,
             &mut name_adjacencies,
             &mut name_vars,
             &body,
         );
-        constrain::FuncInfo::new(
-            id,
-            body,
-            name_adjacencies,
-            accesses_cursor.accesses,
-            name_vars,
-            accesses_cursor.by_expr_id,
+
+        let last_expr = ExprId(name_adjacencies.len() - 1);
+        let ret_val_aliases = name_adjacencies[last_expr.0]
+            .iter()
+            .flat_map(|(path, aliases)| {
+                aliases.iter().filter_map(move |(expr, other_path)| {
+                    if *expr == last_expr {
+                        // Order them to prevent duplicates
+                        Some(sorted_pair(path.clone(), other_path.clone()))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        (
+            ReturnSignature {
+                edges: ret_val_aliases,
+            },
+            constrain::FuncInfo::new(
+                id,
+                name_adjacencies,
+                accesses_cursor.accesses,
+                name_vars,
+                accesses_cursor.by_expr_id,
+            ),
         )
     }
+
+    fn sorted_pair<T: Ord>(a: T, b: T) -> (T, T) {
+        if a <= b {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    }
+
     // Track aliases in block. Appends all exprs to name_adjacencies without truncating
     fn alias_track_block(
-        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
-        unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
+        ctx: Context,
         name_last_accesses: &mut LastAccessesCursor,
         name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
         name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,           // indexed by ExprId
@@ -1371,8 +1417,7 @@ mod aliasing {
             let cur_expr_id = ExprId(name_adjacencies.len());
             assert_eq!(block.expr_id_of(cur_local_id), cur_expr_id);
             alias_track_expr(
-                typedefs,
-                unique_infos,
+                ctx,
                 name_last_accesses,
                 name_adjacencies,
                 name_vars,
@@ -1426,8 +1471,7 @@ mod aliasing {
     // Appends data for `expr` to `accesses` and `name_adjacencies`, and updates
     // each with accessing and aliasing information arising from `expr`.
     fn alias_track_expr(
-        typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
-        unique_infos: &[UniqueInfo],                        // indexed by CustomFuncId
+        ctx: Context,
         accesses: &mut LastAccessesCursor,
         name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>,
         name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,
@@ -1437,7 +1481,7 @@ mod aliasing {
         type_: &mid_ast::Type<SolverVarId>, // type of `expr`
     ) {
         initialize_expr(
-            typedefs,
+            ctx.typedefs,
             accesses,
             name_adjacencies,
             name_vars,
@@ -1639,13 +1683,28 @@ mod aliasing {
             mid_ast::Expr::Call(_purity, func_id, arg_term, _) => {
                 // FIXME: emit access information of functions in UniqueInfos.
                 update_term_accesses(accesses, locals, arg_term);
-                // FIXME: aliasing between names in return value needs to be expressed
+
+                // Before handling other aliasing, add aliases within return value
+                let ret_aliases = ctx.ret_alias_sigs[func_id.0]
+                    .as_ref()
+                    .unwrap_or(&ctx.scc_ret_alias_sigs[func_id]);
+                for (path_a, path_b) in ret_aliases.edges.iter() {
+                    name_adjacencies[cur_expr_id.0]
+                        .entry(path_a.clone())
+                        .or_default()
+                        .insert((cur_expr_id, path_b.clone()));
+                    name_adjacencies[cur_expr_id.0]
+                        .entry(path_b.clone())
+                        .or_default()
+                        .insert((cur_expr_id, path_a.clone()));
+                }
+
                 // Identify where parts of arg_term are aliased in the result
                 apply_unique_info(
                     name_adjacencies,
                     accesses,
                     locals,
-                    &unique_infos[func_id.0],
+                    &ctx.unique_infos[func_id.0],
                     arg_term,
                     cur_expr_id,
                 );
@@ -1654,14 +1713,7 @@ mod aliasing {
                 let mut new_edges = Vec::new();
                 for (branch_idx, (_pat, block)) in branches.iter().enumerate() {
                     accesses.in_branch_scope(cur_expr_id, branch_idx, |sub_accesses| {
-                        alias_track_block(
-                            typedefs,
-                            unique_infos,
-                            sub_accesses,
-                            name_adjacencies,
-                            name_vars,
-                            block,
-                        );
+                        alias_track_block(ctx, sub_accesses, name_adjacencies, name_vars, block);
                         let branch_result = ExprId(name_adjacencies.len() - 1);
                         new_edges.push(compute_edges_from_aliasing(
                             name_adjacencies,
@@ -2049,10 +2101,6 @@ mod constrain {
 
     pub struct FuncInfo {
         pub id: mid_ast::CustomFuncId,
-
-        // The arg and ret types are available in `body`
-        pub body: mid_ast::TypedBlock,
-
         // The following are indexed by `ExprId`
         aliases: Vec<BTreeMap<FieldPath, BTreeSet<aliasing::Name>>>,
         last_accesses: Vec<BTreeMap<FieldPath, aliasing::LastAccessTree>>,
@@ -2063,7 +2111,6 @@ mod constrain {
     impl FuncInfo {
         pub fn new(
             id: mid_ast::CustomFuncId,
-            body: mid_ast::TypedBlock,
             aliases: Vec<BTreeMap<FieldPath, BTreeSet<aliasing::Name>>>,
             last_accesses: Vec<BTreeMap<FieldPath, aliasing::LastAccessTree>>,
             name_vars: Vec<BTreeMap<FieldPath, SolverVarId>>,
@@ -2074,7 +2121,6 @@ mod constrain {
             assert_eq!(aliases.len(), paths_to_exprs.len());
             FuncInfo {
                 id,
-                body,
                 last_accesses,
                 aliases,
                 name_vars,
@@ -2202,16 +2248,10 @@ mod constrain {
         ctx: Context,
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
         func: &FuncInfo,
+        body: &mid_ast::TypedBlock,
     ) -> BTreeMap<EquivClass, BTreeSet<mid_ast::Constraint>> {
         let mut mutation_points = Vec::new();
-        let _ = constrain_block(
-            ctx,
-            func,
-            graph,
-            &mut mutation_points,
-            ExprId(1),
-            &func.body,
-        );
+        let _ = constrain_block(ctx, func, graph, &mut mutation_points, ExprId(1), &body);
 
         for (arg_path, arg_path_last_access) in func.last_uses_of_arg() {
             for (mutated_arg_path, mutation_loc) in &mutation_points {
@@ -2512,6 +2552,7 @@ mod constrain {
     }
 }
 
+/// Generates `out_ast::Block`s and `out_ast::Expr`s from `mid_ast` values and constraint solutions.
 mod extract {
     use super::{constrain, unify};
     use super::{mid_ast, out_ast};
@@ -2600,17 +2641,17 @@ mod extract {
 
     pub fn gen_sigs<'a, 'b>(
         equiv_classes: &'a EquivClasses,
-        funcs: &'b [constrain::FuncInfo],
+        funcs: &'b BTreeMap<out_ast::CustomFuncId, mid_ast::TypedBlock>,
         signatures: &'b mut [Option<unify::Signature>],
     ) -> SignatureGen<'a> {
         let mut param_gen = SignatureGen::new(equiv_classes);
         let mut type_sigs = Vec::new();
-        for func in funcs {
+        for (&id, body) in funcs {
             // Generate types in signature first so they have the first `RepParamId`s
             type_sigs.push((
-                func.id,
-                gen_sig_type(&mut param_gen, &func.body.types[0]),
-                gen_sig_type(&mut param_gen, &func.body.types.last().unwrap()),
+                id,
+                gen_sig_type(&mut param_gen, &body.types[0]),
+                gen_sig_type(&mut param_gen, &body.types.last().unwrap()),
             ));
         }
         for (id, arg_type, ret_type) in type_sigs {
@@ -2815,16 +2856,180 @@ mod integrate {
     use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn analyze_scc_func(
-        context: unify::Context,
-        graph: &mut ConstraintGraph<mid_ast::Constraint>,
-        func: &mid_ast::FuncDef<()>,
-        id: mid_ast::CustomFuncId,
-    ) -> constrain::FuncInfo {
-        let typed_body = unify::unify_func(graph, context, func);
-        let func_info =
-            aliasing::alias_track_func(context.typedefs, context.unique_infos, typed_body, id);
-        func_info
+    pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> out_ast::Program {
+        let typedefs = parameterize::parameterize_typedefs(&program.custom_types);
+        let func_graph = annot_aliases::func_dependency_graph(program);
+
+        let mut ret_alias_sigs = vec![None; program.funcs.len()];
+        let mut signatures = vec![None; program.funcs.len()];
+        let mut constraint_signatures = vec![None; program.funcs.len()];
+        let mut out_func_bodies = vec![None; program.funcs.len()];
+
+        for scc_nodes in graph::strongly_connected(&func_graph) {
+            let mut graph = ConstraintGraph::new();
+            let scc_funcs = scc_nodes
+                .iter()
+                .map(|&graph::NodeId(func_id)| {
+                    (
+                        out_ast::CustomFuncId(func_id),
+                        flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id]),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+
+            let func_bodies = {
+                let context = unify::Context {
+                    first_order_typedefs: &program.custom_types,
+                    typedefs: &typedefs,
+                    func_sigs: &signatures,
+                    scc_funcdefs: &scc_funcs,
+                    unique_infos,
+                };
+
+                scc_funcs
+                    .iter()
+                    .map(|(id, func)| (*id, unify::unify_func(&mut graph, context, func)))
+                    .collect::<BTreeMap<_, _>>()
+            };
+
+            // Determine aliasing graph for each function
+            let mut scc_ret_alias_sigs = initialize_ret_alias_sigs(scc_funcs.keys());
+            let mut scc_funcinfos = Vec::with_capacity(scc_funcs.len());
+            loop {
+                let mut new_scc_alias_sigs = initialize_ret_alias_sigs(scc_funcs.keys());
+                scc_funcinfos.clear();
+                for &func_id in scc_funcs.keys() {
+                    let context = aliasing::Context {
+                        typedefs: &typedefs,
+                        unique_infos,
+                        ret_alias_sigs: &ret_alias_sigs,
+                        scc_ret_alias_sigs: &new_scc_alias_sigs,
+                    };
+                    let (ret_sig, funcinfo) =
+                        aliasing::alias_track_func(context, &func_bodies[&func_id], func_id);
+                    new_scc_alias_sigs.insert(func_id, ret_sig);
+                    scc_funcinfos.push(funcinfo);
+                }
+                if scc_ret_alias_sigs == new_scc_alias_sigs {
+                    break;
+                } else {
+                    scc_ret_alias_sigs = new_scc_alias_sigs;
+                }
+            }
+            for (func_id, ret_alias_sig) in scc_ret_alias_sigs {
+                assert!(ret_alias_sigs[func_id.0].is_none());
+                ret_alias_sigs[func_id.0] = Some(ret_alias_sig);
+            }
+
+            // Determine representation params of functions and their constraints
+            let equiv_classes = graph.find_equiv_classes();
+            let mut scc_sigs = initialize_scc_sigs(&equiv_classes, &scc_funcs);
+            loop {
+                let mut new_scc_sigs = BTreeMap::new();
+                for func in &scc_funcinfos {
+                    let sig = constrain::constrain_func(
+                        constrain::Context {
+                            constraint_sigs: &constraint_signatures,
+                            equiv_classes: &equiv_classes,
+                            scc_sigs: &scc_sigs,
+                        },
+                        &mut graph,
+                        func,
+                        &func_bodies[&func.id],
+                    );
+                    new_scc_sigs.insert(func.id, sig);
+                    graph.clear_requirements();
+                }
+                if new_scc_sigs == scc_sigs {
+                    break;
+                }
+                scc_sigs = new_scc_sigs;
+            }
+
+            // Extract `unify::Signature`s for this SCC
+            let sig_gen = extract::gen_sigs(&equiv_classes, &func_bodies, &mut signatures);
+
+            for func in &scc_funcinfos {
+                // Compute constraints one more time to extract solutions for internal variables,
+                // and assert that we are at a fixed point
+                assert_eq!(
+                    &scc_sigs[&func.id],
+                    &constrain::constrain_func(
+                        constrain::Context {
+                            constraint_sigs: &constraint_signatures,
+                            equiv_classes: &equiv_classes,
+                            scc_sigs: &scc_sigs,
+                        },
+                        &mut graph,
+                        func,
+                        &func_bodies[&func.id],
+                    )
+                );
+
+                // Extract constraints on each equivalence class
+                let mut class_constraints = (0..equiv_classes.count())
+                    .map(|_| BTreeSet::new())
+                    .collect::<Vec<_>>();
+                for (var_idx, graph_constraints) in graph.var_constraints.iter_mut().enumerate() {
+                    // Empty the constraint list in the graph to avoid clone (resetting
+                    // constraints is necessary for next iteration anyway)
+                    let mut var_constraints = Vec::new();
+                    std::mem::swap(&mut graph_constraints.requirements, &mut var_constraints);
+                    let equiv_class = equiv_classes.class(SolverVarId(var_idx));
+                    class_constraints[equiv_class.0].extend(var_constraints);
+                }
+
+                let mut extractor =
+                    extract::SolutionExtractor::from_sig_gen(&sig_gen, class_constraints);
+
+                out_func_bodies[func.id.0] =
+                    Some(extract::gen_block(&mut extractor, &func_bodies[&func.id]));
+
+                assert!(constraint_signatures[func.id.0].is_none());
+                constraint_signatures[func.id.0] =
+                    Some(constrain::Signature::new(extractor.drain_constraints()));
+
+                graph.clear_requirements();
+            }
+        }
+
+        let mut out_funcs = Vec::new();
+        for (constraint_sig, body) in constraint_signatures.into_iter().zip(out_func_bodies) {
+            out_funcs.push(out_ast::FuncDef {
+                num_params: constraint_sig.unwrap().num_params(),
+                body: body.unwrap(),
+            })
+        }
+
+        out_ast::Program {
+            custom_types: typedefs,
+            funcs: out_funcs,
+            main: program.main,
+        }
+    }
+
+    fn initialize_ret_alias_sigs<'a>(
+        scc_func_ids: impl Iterator<Item = &'a out_ast::CustomFuncId>,
+    ) -> BTreeMap<out_ast::CustomFuncId, aliasing::ReturnSignature> {
+        scc_func_ids
+            .map(|&func_id| (func_id, aliasing::ReturnSignature::new()))
+            .collect()
+    }
+
+    fn initialize_scc_sigs(
+        equiv_classes: &EquivClasses,
+        scc_funcs: &BTreeMap<out_ast::CustomFuncId, mid_ast::FuncDef<()>>,
+    ) -> BTreeMap<out_ast::CustomFuncId, BTreeMap<EquivClass, BTreeSet<out_ast::Constraint>>> {
+        let mut scc_equiv_class_params = BTreeMap::new();
+        for func in scc_funcs.values() {
+            add_equiv_class_params(equiv_classes, &mut scc_equiv_class_params, &func.arg_type);
+            add_equiv_class_params(equiv_classes, &mut scc_equiv_class_params, &func.ret_type);
+        }
+        let mut scc_sigs = BTreeMap::new();
+        for func_id in scc_funcs.keys() {
+            scc_sigs.insert(*func_id, scc_equiv_class_params.clone());
+        }
+        scc_sigs
     }
 
     fn add_equiv_class_params(
@@ -2849,137 +3054,6 @@ mod integrate {
                     params.insert(equiv_classes.class(*v), BTreeSet::new());
                 }
             }
-        }
-    }
-
-    pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> out_ast::Program {
-        let typedefs = parameterize::parameterize_typedefs(&program.custom_types);
-        let func_graph = annot_aliases::func_dependency_graph(program);
-
-        let mut signatures = vec![None; program.funcs.len()];
-        let mut constraint_signatures = vec![None; program.funcs.len()];
-        let mut out_func_bodies = vec![None; program.funcs.len()];
-
-        for scc_nodes in graph::strongly_connected(&func_graph) {
-            let scc_func_ids = scc_nodes
-                .iter()
-                .map(|&graph::NodeId(id)| in_ast::CustomFuncId(id));
-            let mut graph = ConstraintGraph::new();
-            let scc_funcs = scc_func_ids
-                .map(|func_id| {
-                    (
-                        func_id,
-                        flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id.0]),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-            let context = unify::Context {
-                first_order_typedefs: &program.custom_types,
-                typedefs: &typedefs,
-                func_sigs: &signatures,
-                scc_funcdefs: &scc_funcs,
-                unique_infos,
-            };
-            let equiv_classes = graph.find_equiv_classes();
-            // take union of equiv classes for each func in scc_funcs, these are params to each func in the SCC
-            let mut scc_sigs = BTreeMap::new();
-            {
-                let mut scc_equiv_class_params = BTreeMap::new();
-                for func in scc_funcs.values() {
-                    add_equiv_class_params(
-                        &equiv_classes,
-                        &mut scc_equiv_class_params,
-                        &func.arg_type,
-                    );
-                    add_equiv_class_params(
-                        &equiv_classes,
-                        &mut scc_equiv_class_params,
-                        &func.ret_type,
-                    );
-                }
-                for func_id in scc_funcs.keys() {
-                    scc_sigs.insert(*func_id, scc_equiv_class_params.clone());
-                }
-            }
-            let scc_funcinfos = scc_funcs
-                .iter()
-                .map(|(id, func)| analyze_scc_func(context, &mut graph, func, *id))
-                .collect::<Vec<_>>();
-            loop {
-                let mut new_scc_sigs = BTreeMap::new();
-                for func in &scc_funcinfos {
-                    let sig = constrain::constrain_func(
-                        constrain::Context {
-                            constraint_sigs: &constraint_signatures,
-                            equiv_classes: &equiv_classes,
-                            scc_sigs: &scc_sigs,
-                        },
-                        &mut graph,
-                        func,
-                    );
-                    new_scc_sigs.insert(func.id, sig);
-                    graph.clear_requirements();
-                }
-                if new_scc_sigs == scc_sigs {
-                    break;
-                }
-                scc_sigs = new_scc_sigs;
-            }
-            // Extract `unify::Signature`s for this SCC
-            let sig_gen = extract::gen_sigs(&equiv_classes, &scc_funcinfos, &mut signatures);
-
-            for func in &scc_funcinfos {
-                // Compute constraints one more time to extract solutions for internal variables,
-                // and assert that we are at a fixed point
-                assert_eq!(
-                    &scc_sigs[&func.id],
-                    &constrain::constrain_func(
-                        constrain::Context {
-                            constraint_sigs: &constraint_signatures,
-                            equiv_classes: &equiv_classes,
-                            scc_sigs: &scc_sigs,
-                        },
-                        &mut graph,
-                        func,
-                    )
-                );
-
-                // Extract constraints on each equivalence class
-                let mut class_constraints = (0..equiv_classes.count())
-                    .map(|_| BTreeSet::new())
-                    .collect::<Vec<_>>();
-                for (var_idx, graph_constraints) in graph.var_constraints.iter_mut().enumerate() {
-                    // Empty the constraint list in the graph to avoid clone (resetting
-                    // constraints is necessary for next iteration anyway)
-                    let mut var_constraints = Vec::new();
-                    std::mem::swap(&mut graph_constraints.requirements, &mut var_constraints);
-                    let equiv_class = equiv_classes.class(SolverVarId(var_idx));
-                    class_constraints[equiv_class.0].extend(var_constraints);
-                }
-
-                let mut extractor =
-                    extract::SolutionExtractor::from_sig_gen(&sig_gen, class_constraints);
-
-                out_func_bodies[func.id.0] = Some(extract::gen_block(&mut extractor, &func.body));
-
-                assert!(constraint_signatures[func.id.0].is_none());
-                constraint_signatures[func.id.0] =
-                    Some(constrain::Signature::new(extractor.drain_constraints()));
-            }
-        }
-
-        let mut out_funcs = Vec::new();
-        for (constraint_sig, body) in constraint_signatures.into_iter().zip(out_func_bodies) {
-            out_funcs.push(out_ast::FuncDef {
-                num_params: constraint_sig.unwrap().num_params(),
-                body: body.unwrap(),
-            })
-        }
-
-        out_ast::Program {
-            custom_types: typedefs,
-            funcs: out_funcs,
-            main: program.main,
         }
     }
 }
