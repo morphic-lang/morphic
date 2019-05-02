@@ -4,9 +4,9 @@ use crate::data::raw_ast::{self as raw, Op};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TypeId {
     Bool,
+    Byte,
     Int,
     Float,
-    Text,
     Array,
     Custom(CustomTypeId),
 }
@@ -24,6 +24,7 @@ pub struct TypeParamId(pub usize);
 pub enum GlobalId {
     ArithOp(Op),
     ArrayOp(ArrayOp),
+    IOOp(IOOp),
     Ctor(TypeId, VariantId),
     Custom(CustomGlobalId),
 }
@@ -32,11 +33,18 @@ pub enum GlobalId {
 pub struct CustomGlobalId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IOOp {
+    Input,
+    Output,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ArrayOp {
     Item,
     Len,
     Push,
     Pop,
+    Concat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -104,9 +112,9 @@ pub enum Expr {
     Let(Pattern, Box<Expr>, Box<Expr>),
 
     ArrayLit(Vec<Expr>),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-    TextLit(String),
 }
 
 #[derive(Clone, Debug)]
@@ -115,7 +123,7 @@ pub enum Pattern {
     Var,
     Tuple(Vec<Pattern>),
     Ctor(TypeId, VariantId, Option<Box<Pattern>>),
+    ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
-    TextConst(String),
 }

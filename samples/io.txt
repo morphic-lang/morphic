@@ -1,0 +1,3 @@
+proc main (): () =
+  let text = do input()
+  in do output(text)

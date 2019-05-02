@@ -1,4 +1,5 @@
 pub mod closure_annot_ast;
+pub mod closure_specialized_ast;
 pub mod first_order_ast;
 pub mod lambda_lifted_ast;
 pub mod mono_ast;
@@ -7,4 +8,3 @@ pub mod raw_ast;
 pub mod resolved_ast;
 pub mod repr_annot_ast;
 pub mod typed_ast;
-pub mod closure_specialized_ast;

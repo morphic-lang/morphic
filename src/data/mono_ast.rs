@@ -1,7 +1,7 @@
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CustomTypeId(pub usize);
@@ -9,9 +9,9 @@ pub struct CustomTypeId(pub usize);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bool,
+    Byte,
     Int,
     Float,
-    Text,
     Array(Box<Type>),
     Tuple(Vec<Type>),
     Func(Purity, Box<Type>, Box<Type>),
@@ -37,6 +37,7 @@ pub struct CustomGlobalId(pub usize);
 pub enum Expr {
     ArithOp(Op),
     ArrayOp(ArrayOp, Type),
+    IOOp(IOOp),
     Ctor(CustomTypeId, res::VariantId),
     Global(CustomGlobalId),
     Local(res::LocalId),
@@ -54,9 +55,9 @@ pub enum Expr {
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-    TextLit(String),
 }
 
 #[derive(Clone, Debug)]
@@ -66,9 +67,9 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(CustomTypeId, res::VariantId, Option<Box<Pattern>>),
     BoolConst(bool),
+    ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
-    TextConst(String),
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +82,7 @@ pub struct ValDef {
 pub struct ValData {
     pub val_name: raw::ValName,
     pub mono_with: Vec<Type>,
+    pub is_wrapper: bool,
 }
 
 #[derive(Clone, Debug)]

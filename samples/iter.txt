@@ -19,9 +19,10 @@ forever(x: a): Iter a =
   Iter(\() -> Some(x, forever(x)))
 
 range(lo: Int, hi: Int): Iter Int =
-  match lo < hi {
-    True -> Iter(\() -> Some(lo, range(lo + 1, hi))),
-    False -> empty,
+  if lo < hi {
+    Iter(\() -> Some(lo, range(lo + 1, hi)))
+  } else {
+    empty
   }
 
 ints(lo: Int): Iter Int =
@@ -54,23 +55,25 @@ map(it: Iter a, f: a -> b): Iter b =
 filter(it: Iter a, f: a -> Bool): Iter a =
   Iter(\() ->
     match next(it) {
-      Some(x, xs) -> match f(x) {
-        True -> Some(x, filter(xs, f)),
-        False -> next(filter(xs, f)),
+      Some(x, xs) -> if f(x) {
+        Some(x, filter(xs, f))
+      } else {
+        next(filter(xs, f))
       },
       None -> None,
     }
   )
 
 take(it: Iter a, count: Int): Iter a =
-  match count > 0 {
-    True -> Iter(\() ->
+  if count > 0 {
+    Iter(\() ->
       match next(it) {
         Some(x, xs) -> Some(x, take(xs, count - 1)),
         None -> None,
       }
-    ),
-    False -> empty,
+    )
+  } else {
+    empty
   }
 
 zip(it1: Iter a, it2: Iter b): Iter (a, b) =

@@ -1,5 +1,7 @@
 use crate::annot_aliases;
-pub use crate::data::first_order_ast::{self, BinOp, CustomFuncId, CustomTypeId, VariantId};
+pub use crate::data::first_order_ast::{
+    self, BinOp, Comparison, CustomFuncId, CustomTypeId, VariantId,
+};
 use crate::data::purity::Purity;
 use im_rc::Vector;
 
@@ -7,8 +9,8 @@ use im_rc::Vector;
 pub enum Type<ReprVar = Solution> {
     Bool,
     Int,
+    Byte,
     Float,
-    Text,
     Array(Box<Type<ReprVar>>, ReprVar),
     HoleArray(Box<Type<ReprVar>>, ReprVar),
     Tuple(Vec<Type<ReprVar>>),
@@ -24,8 +26,8 @@ impl<T> From<&Type<T>> for first_order_ast::Type {
         match t {
             Type::Bool => FOType::Bool,
             Type::Int => FOType::Int,
+            Type::Byte => FOType::Byte,
             Type::Float => FOType::Float,
-            Type::Text => FOType::Text,
             Type::Array(t, _) => FOType::Array(Box::new(From::from(&**t))),
             Type::HoleArray(t, _) => FOType::HoleArray(Box::new(From::from(&**t))),
             Type::Tuple(ts) => FOType::Tuple(ts.iter().map(From::from).collect()),
@@ -61,16 +63,28 @@ pub enum Term {
     ),
     BoolLit(bool),
     IntLit(i64),
+    ByteLit(u8),
     FloatLit(f64),
+}
+
+#[derive(Clone, Debug)]
+pub enum IOOp {
+    // Input evaluates to an array of bytes
+    Input(Solution),
+    // Output takes an array of bytes
+    Output(Term),
 }
 
 #[derive(Clone, Debug)]
 pub enum ArithOp {
     IntOp(BinOp, Term, Term),
+    ByteOp(BinOp, Term, Term),
     FloatOp(BinOp, Term, Term),
-    IntCmp(std::cmp::Ordering, Term, Term),
-    FloatCmp(std::cmp::Ordering, Term, Term),
+    IntCmp(Comparison, Term, Term),
+    ByteCmp(Comparison, Term, Term),
+    FloatCmp(Comparison, Term, Term),
     NegateInt(Term),
+    NegateByte(Term),
     NegateFloat(Term),
 }
 
@@ -102,6 +116,7 @@ pub enum Pattern {
     Ctor(CustomTypeId, VariantId, Option<Box<Pattern>>),
     BoolConst(bool),
     IntConst(i64),
+    ByteConst(u8),
     FloatConst(f64),
     TextConst(String),
 }
@@ -167,6 +182,7 @@ pub enum Expr {
     Term(Term),
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
+    IOOp(IOOp),
     Ctor(CustomTypeId, VariantId, Option<Term>),
     Tuple(Vec<Term>),
     Local(LocalId),

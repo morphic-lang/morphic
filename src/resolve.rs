@@ -34,9 +34,9 @@ fn builtin_names() -> (
     let mut type_map = BTreeMap::new();
 
     type_map.insert(raw::TypeName("Bool".to_owned()), res::TypeId::Bool);
+    type_map.insert(raw::TypeName("Byte".to_owned()), res::TypeId::Byte);
     type_map.insert(raw::TypeName("Int".to_owned()), res::TypeId::Int);
     type_map.insert(raw::TypeName("Float".to_owned()), res::TypeId::Float);
-    type_map.insert(raw::TypeName("Text".to_owned()), res::TypeId::Text);
     type_map.insert(raw::TypeName("Array".to_owned()), res::TypeId::Array);
 
     let mut ctor_map = BTreeMap::new();
@@ -67,6 +67,18 @@ fn builtin_names() -> (
     global_map.insert(
         raw::ValName("pop".to_owned()),
         res::GlobalId::ArrayOp(res::ArrayOp::Pop),
+    );
+    global_map.insert(
+        raw::ValName("concat".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Concat),
+    );
+    global_map.insert(
+        raw::ValName("input".to_owned()),
+        res::GlobalId::IOOp(res::IOOp::Input),
+    );
+    global_map.insert(
+        raw::ValName("output".to_owned()),
+        res::GlobalId::IOOp(res::IOOp::Output),
     );
 
     (type_map, ctor_map, global_map)
@@ -300,11 +312,19 @@ fn resolve_expr(
                 .collect::<Result<_, _>>()?,
         )),
 
+        &raw::Expr::ByteLit(val) => Ok(res::Expr::ByteLit(val)),
+
         &raw::Expr::IntLit(val) => Ok(res::Expr::IntLit(val)),
 
         &raw::Expr::FloatLit(val) => Ok(res::Expr::FloatLit(val)),
 
-        raw::Expr::TextLit(text) => Ok(res::Expr::TextLit(text.clone())),
+        raw::Expr::TextLit(text) => Ok(res::Expr::ArrayLit(
+            text.clone()
+                .into_bytes()
+                .iter()
+                .map(|byte| res::Expr::ByteLit(*byte))
+                .collect(),
+        )),
     }
 }
 
@@ -342,11 +362,11 @@ fn resolve_pattern(
             }
         }
 
+        &raw::Pattern::ByteConst(val) => Ok(res::Pattern::ByteConst(val)),
+
         &raw::Pattern::IntConst(val) => Ok(res::Pattern::IntConst(val)),
 
         &raw::Pattern::FloatConst(val) => Ok(res::Pattern::FloatConst(val)),
-
-        raw::Pattern::TextConst(text) => Ok(res::Pattern::TextConst(text.clone())),
     }
 }
 

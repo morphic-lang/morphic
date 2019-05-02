@@ -10,11 +10,14 @@ pub enum Token {
     UpperName(String),
     LowerName(String),
     FloatLit(f64),
+    ByteLit(u8),
     IntLit(i64),
     StringLit(String),
 
     Type,
     Match,
+    If,
+    Else,
     Let,
     In,
     Proc,
@@ -35,6 +38,15 @@ pub enum Token {
     BackSlash,
     Underscore,
 
+    AddAmp,
+    SubAmp,
+    MulAmp,
+    DivAmp,
+    EqualAmp,
+    LtAmp,
+    LteAmp,
+    GtAmp,
+    GteAmp,
     Add,
     Sub,
     Mul,
@@ -52,6 +64,7 @@ pub enum Token {
     LteDot,
     GtDot,
     GteDot,
+    PlusPlus,
 }
 
 impl fmt::Display for Token {
@@ -60,11 +73,14 @@ impl fmt::Display for Token {
             Token::UpperName(name) => write!(f, "{}", name),
             Token::LowerName(name) => write!(f, "{}", name),
             Token::FloatLit(val) => write!(f, "{}", val),
+            Token::ByteLit(val) => write!(f, "{}", val),
             Token::IntLit(val) => write!(f, "{}", val),
             Token::StringLit(text) => write!(f, "{:?}", text),
             Token::Type => write!(f, "type"),
             Token::Match => write!(f, "match"),
-            Token::Let => write!(f, "Let"),
+            Token::If => write!(f, "if"),
+            Token::Else => write!(f, "else"),
+            Token::Let => write!(f, "let"),
             Token::In => write!(f, "in"),
             Token::Proc => write!(f, "proc"),
             Token::Do => write!(f, "do"),
@@ -81,6 +97,15 @@ impl fmt::Display for Token {
             Token::Arrow => write!(f, "->"),
             Token::BackSlash => write!(f, "\\"),
             Token::Underscore => write!(f, "_"),
+            Token::EqualAmp => write!(f, "=&"),
+            Token::AddAmp => write!(f, "+&"),
+            Token::SubAmp => write!(f, "-&"),
+            Token::MulAmp => write!(f, "*&"),
+            Token::DivAmp => write!(f, "/&"),
+            Token::LtAmp => write!(f, "<&"),
+            Token::LteAmp => write!(f, "<=&"),
+            Token::GtAmp => write!(f, ">&"),
+            Token::GteAmp => write!(f, ">=&"),
             Token::Add => write!(f, "+"),
             Token::Sub => write!(f, "-"),
             Token::Mul => write!(f, "*"),
@@ -98,6 +123,7 @@ impl fmt::Display for Token {
             Token::LteDot => write!(f, "<=."),
             Token::GtDot => write!(f, ">."),
             Token::GteDot => write!(f, ">=."),
+            Token::PlusPlus => write!(f, "++"),
         }
     }
 }
@@ -197,6 +223,24 @@ fn consume_name(mut pos: usize, src: &str) -> Option<usize> {
     Some(pos)
 }
 
+fn consume_byte(mut pos: usize, src: &str) -> Option<usize> {
+    if !char_at(src, pos)?.is_ascii_digit() {
+        return None;
+    }
+
+    while let Some(c) = char_at(src, pos) {
+        if c.is_ascii_digit() {
+            pos = next_pos(pos, src);
+        } else {
+            break;
+        }
+    }
+
+    pos = consume_exact(pos, src, "b")?;
+
+    Some(pos)
+}
+
 fn consume_int(mut pos: usize, src: &str) -> Option<usize> {
     if !char_at(src, pos)?.is_ascii_digit() {
         return None;
@@ -286,6 +330,8 @@ impl<'a> Iterator for Lexer<'a> {
             return match &self.src[name_start..name_end] {
                 "type" => Some(Ok((name_start, Token::Type, name_end))),
                 "match" => Some(Ok((name_start, Token::Match, name_end))),
+                "if" => Some(Ok((name_start, Token::If, name_end))),
+                "else" => Some(Ok((name_start, Token::Else, name_end))),
                 "let" => Some(Ok((name_start, Token::Let, name_end))),
                 "in" => Some(Ok((name_start, Token::In, name_end))),
                 "proc" => Some(Ok((name_start, Token::Proc, name_end))),
@@ -317,6 +363,17 @@ impl<'a> Iterator for Lexer<'a> {
                 float_start,
                 Token::FloatLit(self.src[float_start..float_end].parse().unwrap()),
                 float_end,
+            )));
+        }
+
+        if let Some(byte_end) = consume_byte(self.pos, self.src) {
+            let byte_start = self.pos;
+            self.pos = byte_end;
+
+            return Some(Ok((
+                byte_start,
+                Token::ByteLit(self.src[byte_start..byte_end].parse().unwrap()),
+                byte_end,
             )));
         }
 
@@ -356,6 +413,16 @@ impl<'a> Iterator for Lexer<'a> {
                 ("->", Token::Arrow),
                 ("\\", Token::BackSlash),
                 ("_", Token::Underscore),
+                // Byte arithmetic
+                ("+&", Token::AddAmp),
+                ("-&", Token::SubAmp),
+                ("*&", Token::MulAmp),
+                ("/&", Token::DivAmp),
+                ("=&", Token::EqualAmp),
+                ("<&", Token::LteAmp),
+                ("<=&", Token::LtAmp),
+                (">&", Token::GtAmp),
+                (">=&", Token::GteAmp),
                 // Int arithmetic
                 ("+", Token::Add),
                 ("-", Token::Sub),
@@ -375,6 +442,8 @@ impl<'a> Iterator for Lexer<'a> {
                 ("<=.", Token::LtDot),
                 (">.", Token::GtDot),
                 (">=.", Token::GteDot),
+                // List operations
+                ("++", Token::PlusPlus),
             ],
         ) {
             let sym_start = self.pos;

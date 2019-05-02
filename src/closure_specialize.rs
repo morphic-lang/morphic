@@ -154,6 +154,9 @@ impl<'a> Context<'a> {
                     .insert(special::FuncCase::ArrayReplace(resolved_item_type));
             }
 
+            annot::Requirement::IOOp(op) => {
+                target_cases.0.insert(special::FuncCase::IOOp(*op));
+            }
             annot::Requirement::Ctor(custom, type_params, variant) => {
                 let resolved_type_params = type_params
                     .iter()
@@ -242,9 +245,9 @@ impl<'a> Context<'a> {
     {
         match type_ {
             annot::Type::Bool => special::Type::Bool,
+            annot::Type::Byte => special::Type::Byte,
             annot::Type::Int => special::Type::Int,
             annot::Type::Float => special::Type::Float,
-            annot::Type::Text => special::Type::Text,
 
             annot::Type::Array(item_type) => {
                 special::Type::Array(Box::new(self.resolve_type_generic(item_type, resolve_rep)))
@@ -366,11 +369,11 @@ impl<'a> Context<'a> {
 
             &annot::Pattern::BoolConst(val) => special::Pattern::BoolConst(val),
 
+            &annot::Pattern::ByteConst(val) => special::Pattern::ByteConst(val),
+
             &annot::Pattern::IntConst(val) => special::Pattern::IntConst(val),
 
             &annot::Pattern::FloatConst(val) => special::Pattern::FloatConst(val),
-
-            annot::Pattern::TextConst(text) => special::Pattern::TextConst(text.clone()),
         }
     }
 
@@ -385,6 +388,10 @@ impl<'a> Context<'a> {
                 self.resolve_type(item_type, params),
                 self.resolve_solution(solution, params),
             ),
+
+            annot::Expr::IOOp(op, solution) => {
+                special::Expr::IOOp(*op, self.resolve_solution(solution, params))
+            }
 
             annot::Expr::NullaryCtor(custom, custom_params, variant) => {
                 let resolved_custom_params = custom_params
@@ -462,18 +469,24 @@ impl<'a> Context<'a> {
                 special::Expr::Lam(resolved_lam_id, resolved_rep, resolved_captures)
             }
 
-            annot::Expr::App(purity, func_rep, func, arg) => {
+            annot::Expr::App(purity, func_rep, func, arg, arg_type, ret_type) => {
                 let resolved_func_rep = self.resolve_solution(func_rep, params);
 
                 let resolved_func = self.resolve_expr(func, params);
 
                 let resolved_arg = self.resolve_expr(arg, params);
 
+                let resolved_arg_type = self.resolve_type(arg_type, params);
+
+                let resolved_ret_type = self.resolve_type(ret_type, params);
+
                 special::Expr::App(
                     *purity,
                     resolved_func_rep,
                     Box::new(resolved_func),
                     Box::new(resolved_arg),
+                    resolved_arg_type,
+                    resolved_ret_type,
                 )
             }
 
@@ -525,11 +538,11 @@ impl<'a> Context<'a> {
 
             &annot::Expr::BoolLit(val) => special::Expr::BoolLit(val),
 
+            &annot::Expr::ByteLit(val) => special::Expr::ByteLit(val),
+
             &annot::Expr::IntLit(val) => special::Expr::IntLit(val),
 
             &annot::Expr::FloatLit(val) => special::Expr::FloatLit(val),
-
-            annot::Expr::TextLit(text) => special::Expr::TextLit(text.clone()),
         }
     }
 

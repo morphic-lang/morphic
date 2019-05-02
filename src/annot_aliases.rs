@@ -183,9 +183,9 @@ fn bind_pattern_locals(
             );
         }
         ast::Pattern::BoolConst(_) => {}
+        ast::Pattern::ByteConst(_) => {}
         ast::Pattern::IntConst(_) => {}
         ast::Pattern::FloatConst(_) => {}
-        ast::Pattern::TextConst(_) => {}
     }
 }
 
@@ -212,7 +212,8 @@ fn annot_expression(
 ) -> UniqueInfo {
     match expr {
         ast::Expr::ArithOp(_) => UniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array, _, wrapper)) => {
+        ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array, _)) => {
+            /*
             // The holearray, in the second entry of the returned tuple, aliases the array
             let mut aliases =
                 annot_expression(locals, func_infos, array).add_ret_context(FieldId::Field(1));
@@ -226,6 +227,8 @@ fn annot_expression(
                 aliases.add_ret_context(FieldId::Variant(*variant_id));
             }
             aliases
+            */
+            unimplemented!()
         }
         ast::Expr::ArrayOp(ast::ArrayOp::Len(..)) => UniqueInfo::empty(),
         ast::Expr::ArrayOp(ast::ArrayOp::Push(..)) => UniqueInfo::empty(),
@@ -236,6 +239,8 @@ fn annot_expression(
             // the new array aliases what the hole-array did, and its members also alias what item aliases
             arr_aliases.union(item_aliases.add_ret_context(FieldId::ArrayMembers))
         }
+        ast::Expr::ArrayOp(ast::ArrayOp::Concat(..)) => UniqueInfo::empty(),
+        ast::Expr::IOOp(_) => UniqueInfo::empty(),
         ast::Expr::Ctor(_id, variant_id, args) => match args {
             None => UniqueInfo::empty(),
             Some(args) => annot_expression(locals, func_infos, args)
@@ -272,9 +277,9 @@ fn annot_expression(
         ast::Expr::Let(lhs, rhs, body) => annot_pattern(locals, func_infos, lhs, rhs, body),
         ast::Expr::ArrayLit(..) => UniqueInfo::empty(),
         ast::Expr::BoolLit(..) => UniqueInfo::empty(),
+        ast::Expr::ByteLit(..) => UniqueInfo::empty(),
         ast::Expr::IntLit(..) => UniqueInfo::empty(),
         ast::Expr::FloatLit(..) => UniqueInfo::empty(),
-        ast::Expr::TextLit(..) => UniqueInfo::empty(),
     }
 }
 
@@ -299,8 +304,7 @@ fn get_names_in(type_defs: &[ast::TypeDef], type_: &ast::Type) -> Vec<FieldPath>
         prefix: FieldPath,
     ) {
         match type_ {
-            ast::Type::Bool | ast::Type::Int | ast::Type::Float => {}
-            ast::Type::Text => unimplemented!(),
+            ast::Type::Bool | ast::Type::Byte | ast::Type::Int | ast::Type::Float => {}
             ast::Type::Array(item_type) | ast::Type::HoleArray(item_type) => {
                 // The array itself:
                 names.push(prefix.clone());
@@ -486,11 +490,19 @@ fn annot_scc(
 // in it to `deps`.
 fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
     match expr {
+        ast::Expr::ArithOp(ast::ArithOp::ByteOp(_, left, right)) => {
+            add_func_deps(deps, left);
+            add_func_deps(deps, right);
+        }
         ast::Expr::ArithOp(ast::ArithOp::IntOp(_, left, right)) => {
             add_func_deps(deps, left);
             add_func_deps(deps, right);
         }
         ast::Expr::ArithOp(ast::ArithOp::FloatOp(_, left, right)) => {
+            add_func_deps(deps, left);
+            add_func_deps(deps, right);
+        }
+        ast::Expr::ArithOp(ast::ArithOp::ByteCmp(_, left, right)) => {
             add_func_deps(deps, left);
             add_func_deps(deps, right);
         }
@@ -502,9 +514,10 @@ fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
             add_func_deps(deps, left);
             add_func_deps(deps, right);
         }
+        ast::Expr::ArithOp(ast::ArithOp::NegateByte(expr)) => add_func_deps(deps, expr),
         ast::Expr::ArithOp(ast::ArithOp::NegateInt(expr)) => add_func_deps(deps, expr),
         ast::Expr::ArithOp(ast::ArithOp::NegateFloat(expr)) => add_func_deps(deps, expr),
-        ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array_expr, idx_expr, _)) => {
+        ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array_expr, idx_expr)) => {
             add_func_deps(deps, array_expr);
             add_func_deps(deps, idx_expr);
         }
@@ -517,6 +530,11 @@ fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
             add_func_deps(deps, array_expr);
             add_func_deps(deps, item_expr);
         }
+        ast::Expr::ArrayOp(ast::ArrayOp::Concat(_, left_array_expr, right_array_expr)) => {
+            add_func_deps(deps, left_array_expr);
+            add_func_deps(deps, right_array_expr);
+        }
+        ast::Expr::IOOp(_) => {}
         ast::Expr::Ctor(_, _, None) => {}
         ast::Expr::Ctor(_, _, Some(expr)) => add_func_deps(deps, expr),
         ast::Expr::Local(_) => {}
@@ -545,9 +563,9 @@ fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
             }
         }
         ast::Expr::BoolLit(_) => {}
+        ast::Expr::ByteLit(_) => {}
         ast::Expr::IntLit(_) => {}
         ast::Expr::FloatLit(_) => {}
-        ast::Expr::TextLit(_) => {}
     }
 }
 

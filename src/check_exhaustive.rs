@@ -28,9 +28,9 @@ fn relevance(pat: &typed::Pattern) -> Relevance {
 
         typed::Pattern::Ctor(_, _, _, None) => Relevance::Relevant,
 
+        typed::Pattern::ByteConst(_) => Relevance::Irrelevant,
         typed::Pattern::IntConst(_) => Relevance::Irrelevant,
         typed::Pattern::FloatConst(_) => Relevance::Irrelevant,
-        typed::Pattern::TextConst(_) => Relevance::Irrelevant,
     }
 }
 
@@ -78,8 +78,8 @@ fn flatten_to(pat: &typed::Pattern, target: &mut Vec<Decision>) {
         }
 
         typed::Pattern::IntConst(_)
-        | typed::Pattern::FloatConst(_)
-        | typed::Pattern::TextConst(_) => panic!("Irrelevant patterns should have been skipped"),
+        | typed::Pattern::ByteConst(_)
+        | typed::Pattern::FloatConst(_) => panic!("Irrelevant patterns should have been skipped"),
     }
 }
 
@@ -427,11 +427,11 @@ fn check_expr(custom_types: &[res::TypeDef], expr: &typed::Expr) -> Result<(), (
             Ok(())
         }
 
+        typed::Expr::ByteLit(_) => Ok(()),
+
         typed::Expr::IntLit(_) => Ok(()),
 
         typed::Expr::FloatLit(_) => Ok(()),
-
-        typed::Expr::TextLit(_) => Ok(()),
     }
 }
 

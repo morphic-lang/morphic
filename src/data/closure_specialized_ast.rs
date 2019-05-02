@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CustomTypeId(pub usize);
@@ -19,9 +19,9 @@ pub struct FuncRep(pub BTreeSet<FuncCase>);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bool,
+    Byte,
     Int,
     Float,
-    Text,
     Array(Box<Type>),
     Tuple(Vec<Type>),
     Func(FuncRep),
@@ -41,6 +41,7 @@ pub enum FuncCase {
     ArithOp(Op),
     ArrayOp(ArrayOp, Type),
     ArrayReplace(Type),
+    IOOp(IOOp),
     Ctor(CustomTypeId, res::VariantId),
 }
 
@@ -48,6 +49,7 @@ pub enum FuncCase {
 pub enum Expr {
     ArithOp(Op, FuncRep),
     ArrayOp(ArrayOp, Type, FuncRep),
+    IOOp(IOOp, FuncRep),
     NullaryCtor(CustomTypeId, res::VariantId),
     Ctor(CustomTypeId, res::VariantId, FuncRep),
     Global(CustomGlobalId),
@@ -55,15 +57,22 @@ pub enum Expr {
     Capture(lifted::CaptureId),
     Tuple(Vec<Expr>),
     Lam(LamId, FuncRep, Vec<Expr>),
-    App(Purity, FuncRep, Box<Expr>, Box<Expr>),
+    App(
+        Purity,
+        FuncRep,
+        Box<Expr>,
+        Box<Expr>,
+        Type, // Argument type
+        Type, // Return type
+    ),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
     Let(Pattern, Box<Expr>, Box<Expr>),
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
+    ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-    TextLit(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -76,9 +85,9 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(CustomTypeId, res::VariantId, Option<Box<Pattern>>),
     BoolConst(bool),
+    ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
-    TextConst(String),
 }
 
 #[derive(Clone, Debug)]

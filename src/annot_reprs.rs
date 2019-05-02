@@ -2,7 +2,9 @@ use crate::data::first_order_ast as in_ast;
 use crate::data::repr_annot_ast as out_ast;
 
 mod mid_ast {
-    pub use super::out_ast::{Constraint, ExprId, LocalId, Pattern, RepParamId, Type, TypeDef};
+    pub use super::out_ast::{
+        Comparison, Constraint, ExprId, LocalId, Pattern, RepParamId, Type, TypeDef,
+    };
     use crate::annot_aliases;
     pub use crate::data::first_order_ast::{self, BinOp, CustomFuncId, CustomTypeId, VariantId};
     use crate::data::purity::Purity;
@@ -10,13 +12,24 @@ mod mid_ast {
     use im_rc::{vector, Vector};
 
     #[derive(Clone, Debug)]
+    pub enum IOOp {
+        // Input evaluates to an array of bytes
+        Input(SolverVarId),
+        // Output takes an array of bytes
+        Output(Term),
+    }
+
+    #[derive(Clone, Debug)]
     pub enum ArithOp {
         IntOp(BinOp, Term, Term),
         FloatOp(BinOp, Term, Term),
-        IntCmp(std::cmp::Ordering, Term, Term),
-        FloatCmp(std::cmp::Ordering, Term, Term),
+        ByteOp(BinOp, Term, Term),
+        IntCmp(Comparison, Term, Term),
+        FloatCmp(Comparison, Term, Term),
+        ByteCmp(Comparison, Term, Term),
         NegateInt(Term),
         NegateFloat(Term),
+        NegateByte(Term),
     }
 
     // Terms do not have to be assigned to temps before being used.
@@ -30,6 +43,7 @@ mod mid_ast {
         ),
         BoolLit(bool),
         IntLit(i64),
+        ByteLit(u8),
         FloatLit(f64),
     }
 
@@ -38,10 +52,9 @@ mod mid_ast {
         // Construct(..) effectively contains an array type (i.e. Type::Array variant)
         Construct(Box<Type<SolverVarId>>, SolverVarId, Vec<Term>),
         Item(
-            Term,                              // Array
-            Term,                              // Index
-            Option<(CustomTypeId, VariantId)>, // Constructor to wrap returned HoleArray in
-        ), // Returns tuple of (item, (potentially wrapped) hole array)
+            Term, // Array
+            Term, // Index
+        ), // Returns tuple of (item, hole array)
         Len(Term),
         Push(
             Term, // Array
@@ -65,6 +78,7 @@ mod mid_ast {
         Term(Term),
         ArithOp(ArithOp),
         ArrayOp(ArrayOp),
+        IOOp(IOOp),
         Ctor(CustomTypeId, VariantId, Option<Term>),
         Tuple(Vec<Term>),
         Local(LocalId),
@@ -147,7 +161,7 @@ mod parameterize {
         type_: &in_ast::Type,
     ) -> usize {
         match type_ {
-            in_ast::Type::Bool | in_ast::Type::Int | in_ast::Type::Float | in_ast::Type::Text => 0,
+            in_ast::Type::Bool | in_ast::Type::Int | in_ast::Type::Byte | in_ast::Type::Float => 0,
             in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
                 1 + count_params(parameterized, item)
             }
@@ -184,8 +198,8 @@ mod parameterize {
         match type_ {
             in_ast::Type::Bool => mid_ast::Type::Bool,
             in_ast::Type::Int => mid_ast::Type::Int,
+            in_ast::Type::Byte => mid_ast::Type::Byte,
             in_ast::Type::Float => mid_ast::Type::Float,
-            in_ast::Type::Text => mid_ast::Type::Text,
 
             in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
                 let repr_param = id_gen.fresh();
@@ -277,7 +291,7 @@ mod parameterize {
 
     fn add_dependencies(type_: &in_ast::Type, deps: &mut BTreeSet<in_ast::CustomTypeId>) {
         match type_ {
-            in_ast::Type::Bool | in_ast::Type::Int | in_ast::Type::Float | in_ast::Type::Text => {}
+            in_ast::Type::Bool | in_ast::Type::Int | in_ast::Type::Byte | in_ast::Type::Float => {}
             in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
                 add_dependencies(item, deps);
             }
@@ -380,8 +394,8 @@ mod flatten {
         match type_ {
             in_ast::Type::Bool => mid_ast::Type::Bool,
             in_ast::Type::Int => mid_ast::Type::Int,
+            in_ast::Type::Byte => mid_ast::Type::Byte,
             in_ast::Type::Float => mid_ast::Type::Float,
-            in_ast::Type::Text => mid_ast::Type::Text,
             in_ast::Type::Array(item_type) => mid_ast::Type::Array(
                 Box::new(instantiate_type(graph, typedefs, item_type)),
                 graph.new_var(),
@@ -427,6 +441,11 @@ mod flatten {
                         let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
                         mid_ast::ArithOp::FloatOp(*op, lterm, rterm)
                     }
+                    in_ast::ArithOp::ByteOp(op, left, right) => {
+                        let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
+                        let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
+                        mid_ast::ArithOp::ByteOp(*op, lterm, rterm)
+                    }
                     in_ast::ArithOp::IntCmp(op, left, right) => {
                         let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
                         let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
@@ -437,7 +456,15 @@ mod flatten {
                         let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
                         mid_ast::ArithOp::FloatCmp(*op, lterm, rterm)
                     }
+                    in_ast::ArithOp::ByteCmp(op, left, right) => {
+                        let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
+                        let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
+                        mid_ast::ArithOp::ByteCmp(*op, lterm, rterm)
+                    }
                     in_ast::ArithOp::NegateInt(arg) => mid_ast::ArithOp::NegateInt(
+                        flatten_expr_into(graph, typedefs, arg, block, locals),
+                    ),
+                    in_ast::ArithOp::NegateByte(arg) => mid_ast::ArithOp::NegateByte(
                         flatten_expr_into(graph, typedefs, arg, block, locals),
                     ),
                     in_ast::ArithOp::NegateFloat(arg) => mid_ast::ArithOp::NegateFloat(
@@ -446,12 +473,18 @@ mod flatten {
                 };
                 block.add(mid_ast::Expr::ArithOp(out_arith_op))
             }
+            in_ast::Expr::IOOp(in_ast::IOOp::Input) => {
+                block.add(mid_ast::Expr::IOOp(mid_ast::IOOp::Input(graph.new_var())))
+            }
+            in_ast::Expr::IOOp(in_ast::IOOp::Output(output_expr)) => {
+                let output_term = flatten_expr_into(graph, typedefs, output_expr, block, locals);
+                block.add(mid_ast::Expr::IOOp(mid_ast::IOOp::Output(output_term)))
+            }
             in_ast::Expr::ArrayOp(in_array_op) => {
                 let out_array_op = match in_array_op {
-                    in_ast::ArrayOp::Item(_item_type, array, index, ctr) => mid_ast::ArrayOp::Item(
+                    in_ast::ArrayOp::Item(_item_type, array, index) => mid_ast::ArrayOp::Item(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                         flatten_expr_into(graph, typedefs, index, block, locals),
-                        *ctr,
                     ),
                     in_ast::ArrayOp::Len(_item_type, array) => mid_ast::ArrayOp::Len(
                         flatten_expr_into(graph, typedefs, array, block, locals),
@@ -460,6 +493,10 @@ mod flatten {
                         flatten_expr_into(graph, typedefs, array, block, locals),
                         flatten_expr_into(graph, typedefs, item, block, locals),
                     ),
+                    in_ast::ArrayOp::Concat(..) => {
+                        // Concat will be removed
+                        unimplemented!()
+                    }
                     in_ast::ArrayOp::Pop(_item_type, array) => mid_ast::ArrayOp::Pop(
                         flatten_expr_into(graph, typedefs, array, block, locals),
                     ),
@@ -543,8 +580,8 @@ mod flatten {
             }
             in_ast::Expr::BoolLit(constant) => mid_ast::Term::BoolLit(*constant),
             in_ast::Expr::IntLit(constant) => mid_ast::Term::IntLit(*constant),
+            in_ast::Expr::ByteLit(constant) => mid_ast::Term::ByteLit(*constant),
             in_ast::Expr::FloatLit(constant) => mid_ast::Term::FloatLit(*constant),
-            in_ast::Expr::TextLit(_) => unreachable!(),
         }
     }
 
@@ -598,8 +635,8 @@ mod flatten {
             }
             in_ast::Pattern::BoolConst(c) => mid_ast::Pattern::BoolConst(*c),
             in_ast::Pattern::IntConst(c) => mid_ast::Pattern::IntConst(*c),
+            in_ast::Pattern::ByteConst(c) => mid_ast::Pattern::ByteConst(*c),
             in_ast::Pattern::FloatConst(c) => mid_ast::Pattern::FloatConst(*c),
-            in_ast::Pattern::TextConst(_) => unreachable!(),
         }
     }
 }
@@ -745,6 +782,7 @@ mod unify {
                     }
                     mid_ast::Term::BoolLit(_)
                     | mid_ast::Term::IntLit(_)
+                    | mid_ast::Term::ByteLit(_)
                     | mid_ast::Term::FloatLit(_) => term,
                 };
                 (mid_ast::Expr::Term(filled_term), t)
@@ -758,14 +796,28 @@ mod unify {
                 );
                 (mid_ast::Expr::Tuple(items), t)
             }
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Input(var)) => (
+                mid_ast::Expr::IOOp(mid_ast::IOOp::Input(var)),
+                mid_ast::Type::Array(Box::new(mid_ast::Type::Byte), var),
+            ),
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Output(output)) => (
+                mid_ast::Expr::IOOp(mid_ast::IOOp::Output(output)),
+                mid_ast::Type::Tuple(vec![]),
+            ),
             mid_ast::Expr::ArithOp(arith_op) => {
                 let type_ = match arith_op {
                     mid_ast::ArithOp::IntOp(..) => mid_ast::Type::Int,
                     mid_ast::ArithOp::NegateInt(..) => mid_ast::Type::Int,
+
+                    mid_ast::ArithOp::ByteOp(..) => mid_ast::Type::Byte,
+                    mid_ast::ArithOp::NegateByte(..) => mid_ast::Type::Byte,
+
                     mid_ast::ArithOp::FloatOp(..) => mid_ast::Type::Float,
                     mid_ast::ArithOp::NegateFloat(..) => mid_ast::Type::Float,
+
                     mid_ast::ArithOp::IntCmp(..) => mid_ast::Type::Bool,
                     mid_ast::ArithOp::FloatCmp(..) => mid_ast::Type::Bool,
+                    mid_ast::ArithOp::ByteCmp(..) => mid_ast::Type::Bool,
                 };
                 (mid_ast::Expr::ArithOp(arith_op), type_)
             }
@@ -781,12 +833,9 @@ mod unify {
                         }
                         mid_ast::Type::Array(item_type.clone(), *repr_var)
                     }
-                    mid_ast::ArrayOp::Item(array, _idx, wrapper) => {
+                    mid_ast::ArrayOp::Item(array, _idx) => {
                         let array_type = type_of_term(ctx.typedefs, locals, array);
-                        if let Some((_type_id, _variant_id)) = wrapper {
-                            // TODO: remove this case after merging code
-                            unimplemented!()
-                        } else if let mid_ast::Type::Array(ref item_type, _) = array_type {
+                        if let mid_ast::Type::Array(ref item_type, _) = array_type {
                             mid_ast::Type::Tuple(vec![*item_type.clone(), array_type])
                         } else {
                             // Any other term is a type error
@@ -914,8 +963,8 @@ mod unify {
         match t {
             T::Bool => T::Bool,
             T::Int => T::Int,
+            T::Byte => T::Byte,
             T::Float => T::Float,
-            T::Text => unimplemented!(),
             T::Array(item, var) => T::Array(
                 Box::new(substitute_vars(typedefs, &*item, vars)),
                 vars[var.0],
@@ -951,6 +1000,7 @@ mod unify {
             }
             mid_ast::Term::BoolLit(_) => mid_ast::Type::Bool,
             mid_ast::Term::IntLit(_) => mid_ast::Type::Int,
+            mid_ast::Term::ByteLit(_) => mid_ast::Type::Byte,
             mid_ast::Term::FloatLit(_) => mid_ast::Type::Float,
         }
     }
@@ -1037,8 +1087,8 @@ mod unify {
         match type_ {
             mid_ast::Type::Bool => mid_ast::Type::Bool,
             mid_ast::Type::Int => mid_ast::Type::Int,
+            mid_ast::Type::Byte => mid_ast::Type::Byte,
             mid_ast::Type::Float => mid_ast::Type::Float,
-            mid_ast::Type::Text => mid_ast::Type::Text,
 
             mid_ast::Type::Array(item, mid_ast::RepParamId(id)) => {
                 mid_ast::Type::Array(Box::new(substitute_params(vars, item)), vars[*id])
@@ -1073,7 +1123,6 @@ mod unify {
             (T::Bool, T::Bool) => {}
             (T::Int, T::Int) => {}
             (T::Float, T::Float) => {}
-            (T::Text, T::Text) => {}
             (T::Array(item_a, repr_var_a), T::Array(item_b, repr_var_b)) => {
                 graph.equate(*repr_var_a, *repr_var_b);
                 equate_types(graph, item_a, item_b);
@@ -1516,16 +1565,26 @@ mod aliasing {
             }
             mid_ast::Expr::ArithOp(arith_op) => match arith_op {
                 mid_ast::ArithOp::IntOp(_, term1, term2)
+                | mid_ast::ArithOp::ByteOp(_, term1, term2)
                 | mid_ast::ArithOp::FloatOp(_, term1, term2)
                 | mid_ast::ArithOp::IntCmp(_, term1, term2)
+                | mid_ast::ArithOp::ByteCmp(_, term1, term2)
                 | mid_ast::ArithOp::FloatCmp(_, term1, term2) => {
                     update_term_accesses(accesses, locals, term1);
                     update_term_accesses(accesses, locals, term2);
                 }
-                mid_ast::ArithOp::NegateInt(term) | mid_ast::ArithOp::NegateFloat(term) => {
+                mid_ast::ArithOp::NegateInt(term)
+                | mid_ast::ArithOp::NegateByte(term)
+                | mid_ast::ArithOp::NegateFloat(term) => {
                     update_term_accesses(accesses, locals, term);
                 }
             },
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Input(_var)) => {
+                // the array from input aliases nothing yet
+            }
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Output(output_term)) => {
+                update_term_accesses(accesses, locals, output_term);
+            }
             mid_ast::Expr::ArrayOp(array_op) => match array_op {
                 mid_ast::ArrayOp::Construct(_type, _var, item_terms) => {
                     let items_name = (cur_expr_id, vector![FieldId::ArrayMembers]);
@@ -1541,7 +1600,7 @@ mod aliasing {
                     }
                     add_computed_edges(name_adjacencies, new_edges);
                 }
-                mid_ast::ArrayOp::Item(array_term, idx_term, None) => {
+                mid_ast::ArrayOp::Item(array_term, idx_term) => {
                     update_term_accesses(accesses, locals, array_term);
                     update_term_accesses(accesses, locals, idx_term);
 
@@ -1586,10 +1645,6 @@ mod aliasing {
                         // Any other Term is a compiler error
                         unreachable!()
                     }
-                }
-                mid_ast::ArrayOp::Item(_, _, Some(_)) => {
-                    // TOOD: merge to remove this case
-                    unimplemented!()
                 }
                 mid_ast::ArrayOp::Pop(array_term) => {
                     update_term_accesses(accesses, locals, array_term);
@@ -1787,8 +1842,10 @@ mod aliasing {
             prefix: FieldPath,
         ) {
             match type_ {
-                mid_ast::Type::Bool | mid_ast::Type::Int | mid_ast::Type::Float => {}
-                mid_ast::Type::Text => unimplemented!(),
+                mid_ast::Type::Bool
+                | mid_ast::Type::Int
+                | mid_ast::Type::Byte
+                | mid_ast::Type::Float => {}
                 mid_ast::Type::Array(item_type, var) | mid_ast::Type::HoleArray(item_type, var) => {
                     // The array itself:
                     names.push(prefix.clone());
@@ -1885,7 +1942,10 @@ mod aliasing {
             mid_ast::Term::Access(_, _, None) => {
                 unreachable!();
             }
-            mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {
+            mid_ast::Term::BoolLit(_)
+            | mid_ast::Term::IntLit(_)
+            | mid_ast::Term::ByteLit(_)
+            | mid_ast::Term::FloatLit(_) => {
                 // Literals have no aliasing
             }
         }
@@ -1919,7 +1979,10 @@ mod aliasing {
                 }
             }
             mid_ast::Term::Access(_, _, None) => unreachable!(),
-            mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {}
+            mid_ast::Term::BoolLit(_)
+            | mid_ast::Term::IntLit(_)
+            | mid_ast::Term::ByteLit(_)
+            | mid_ast::Term::FloatLit(_) => {}
         }
     }
 
@@ -2348,6 +2411,8 @@ mod constrain {
         type_: &mid_ast::Type<SolverVarId>,
     ) -> ExprId {
         return match expr {
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Input(_))
+            | mid_ast::Expr::IOOp(mid_ast::IOOp::Output(_)) => expr_id.next(),
             mid_ast::Expr::ArrayOp(array_op) => {
                 match array_op {
                     mid_ast::ArrayOp::Construct(..) => {}
@@ -2716,11 +2781,17 @@ mod extract {
                     mid_ast::ArithOp::IntOp(binop, left, right) => {
                         out_ast::ArithOp::IntOp(*binop, gen_term(left), gen_term(right))
                     }
+                    mid_ast::ArithOp::ByteOp(binop, left, right) => {
+                        out_ast::ArithOp::ByteOp(*binop, gen_term(left), gen_term(right))
+                    }
                     mid_ast::ArithOp::FloatOp(binop, left, right) => {
                         out_ast::ArithOp::FloatOp(*binop, gen_term(left), gen_term(right))
                     }
                     mid_ast::ArithOp::IntCmp(cmp, left, right) => {
                         out_ast::ArithOp::IntCmp(*cmp, gen_term(left), gen_term(right))
+                    }
+                    mid_ast::ArithOp::ByteCmp(cmp, left, right) => {
+                        out_ast::ArithOp::ByteCmp(*cmp, gen_term(left), gen_term(right))
                     }
                     mid_ast::ArithOp::FloatCmp(cmp, left, right) => {
                         out_ast::ArithOp::FloatCmp(*cmp, gen_term(left), gen_term(right))
@@ -2728,11 +2799,20 @@ mod extract {
                     mid_ast::ArithOp::NegateInt(term) => {
                         out_ast::ArithOp::NegateInt(gen_term(term))
                     }
+                    mid_ast::ArithOp::NegateByte(term) => {
+                        out_ast::ArithOp::NegateByte(gen_term(term))
+                    }
                     mid_ast::ArithOp::NegateFloat(term) => {
                         out_ast::ArithOp::NegateFloat(gen_term(term))
                     }
                 };
                 out_ast::Expr::ArithOp(a)
+            }
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Input(repr_var)) => {
+                out_ast::Expr::IOOp(out_ast::IOOp::Input(param_gen.soln_in_body_for(*repr_var)))
+            }
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Output(term)) => {
+                out_ast::Expr::IOOp(out_ast::IOOp::Output(gen_term(term)))
             }
             mid_ast::Expr::ArrayOp(array_op) => {
                 let a = match array_op {
@@ -2743,7 +2823,7 @@ mod extract {
                             items.iter().map(gen_term).collect(),
                         )
                     }
-                    mid_ast::ArrayOp::Item(array, idx, _) => {
+                    mid_ast::ArrayOp::Item(array, idx) => {
                         out_ast::ArrayOp::Item(gen_term(array), gen_term(idx))
                     }
                     mid_ast::ArrayOp::Len(array) => out_ast::ArrayOp::Len(gen_term(array)),
@@ -2807,6 +2887,7 @@ mod extract {
                 }
                 &mid_ast::Term::BoolLit(v) => out_ast::Term::BoolLit(v),
                 &mid_ast::Term::IntLit(v) => out_ast::Term::IntLit(v),
+                &mid_ast::Term::ByteLit(v) => out_ast::Term::ByteLit(v),
                 &mid_ast::Term::FloatLit(v) => out_ast::Term::FloatLit(v),
             }
         }
@@ -2821,7 +2902,7 @@ mod extract {
             T::Bool => T::Bool,
             T::Int => T::Int,
             T::Float => T::Float,
-            T::Text => T::Text,
+            T::Byte => T::Byte,
             T::Array(item_t, var) => T::Array(
                 Box::new(gen_type(param_gen, item_t)),
                 param_gen.soln_in_body_for(*var),
@@ -2850,8 +2931,8 @@ mod extract {
         match type_ {
             T::Bool => T::Bool,
             T::Int => T::Int,
+            T::Byte => T::Byte,
             T::Float => T::Float,
-            T::Text => T::Text,
             T::Array(item_t, var) => T::Array(
                 Box::new(gen_sig_type(sig_gen, item_t)),
                 sig_gen.soln_for(*var),
@@ -3069,7 +3150,7 @@ mod integrate {
     ) {
         use mid_ast::Type as T;
         match type_ {
-            T::Bool | T::Int | T::Float | T::Text => {}
+            T::Bool | T::Int | T::Byte | T::Float => {}
             T::Array(item_t, var) | T::HoleArray(item_t, var) => {
                 params.insert(equiv_classes.class(*var), BTreeSet::new());
                 add_equiv_class_params(equiv_classes, params, item_t);
