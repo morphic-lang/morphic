@@ -607,7 +607,7 @@ mod flatten {
 // Constructs the typed AST and runs Hindley-Milner on representation variables
 mod unify {
     use super::{in_ast, mid_ast, with_scope};
-    use crate::annot_aliases::{FieldId, FieldPath, UniqueInfo};
+    use crate::annot_aliases::{FieldId, FieldPath};
     use crate::util::constraint_graph::{ConstraintGraph, SolverVarId};
     use im_rc::{vector, Vector};
     pub use mid_ast::ExprId;
@@ -619,7 +619,6 @@ mod unify {
         pub typedefs: &'a [mid_ast::TypeDef<mid_ast::RepParamId>],
         pub func_sigs: &'a [Option<Signature>],
         pub scc_funcdefs: &'a BTreeMap<mid_ast::CustomFuncId, mid_ast::FuncDef<()>>,
-        pub unique_infos: &'a [UniqueInfo],
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -865,13 +864,7 @@ mod unify {
                     (mid_ast::ReprParams::Pending, funcdef.ret_type.clone())
                 } else if let Some(signature) = &ctx.func_sigs[func_id.0] {
                     // Othwerise, it's already been processed, so instantiate params
-                    unify_external_function_call(
-                        graph,
-                        ctx.typedefs,
-                        signature,
-                        ctx.unique_infos[func_id.0].clone(),
-                        &arg_type,
-                    )
+                    unify_external_function_call(graph, ctx.typedefs, signature, &arg_type)
                 } else {
                     unreachable!()
                 };
@@ -900,7 +893,6 @@ mod unify {
         graph: &mut ConstraintGraph<mid_ast::Constraint>,
         typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
         func_sig: &Signature,
-        ui: UniqueInfo,
         arg_type: &mid_ast::Type<SolverVarId>,
     ) -> (mid_ast::ReprParams<SolverVarId>, mid_ast::Type<SolverVarId>) {
         // Unify actual argument's type with parameter type
@@ -910,15 +902,6 @@ mod unify {
         let param_type = substitute_vars(typedefs, &func_sig.arg_type, &vars);
         equate_types(graph, &param_type, arg_type);
         let ret_type = substitute_vars(typedefs, &func_sig.ret_type, &vars);
-        // FIXME: just remove the following. The above handles what we need, UniqueInfos aren't needed here
-        // Unify those pairs of names in the argument and return types that may alias
-        for p in ui.edges {
-            equate_types(
-                graph,
-                &lookup_type_field(typedefs, arg_type, p.arg_field),
-                &lookup_type_field(typedefs, &ret_type, p.ret_field),
-            );
-        }
         (mid_ast::ReprParams::Determined(vars), ret_type)
     }
 
@@ -2888,7 +2871,6 @@ mod integrate {
                     typedefs: &typedefs,
                     func_sigs: &type_sigs,
                     scc_funcdefs: &scc_funcs,
-                    unique_infos,
                 };
 
                 scc_funcs
