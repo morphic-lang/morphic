@@ -2860,9 +2860,14 @@ mod integrate {
         let typedefs = parameterize::parameterize_typedefs(&program.custom_types);
         let func_graph = annot_aliases::func_dependency_graph(program);
 
-        let mut ret_alias_sigs = vec![None; program.funcs.len()];
-        let mut signatures = vec![None; program.funcs.len()];
-        let mut constraint_signatures = vec![None; program.funcs.len()];
+        // Function information used by various passes:
+        let mut ret_alias_sigs: Vec<Option<aliasing::ReturnSignature>> =
+            vec![None; program.funcs.len()];
+        let mut type_sigs: Vec<Option<unify::Signature>> = vec![None; program.funcs.len()];
+        let mut constraint_sigs: Vec<Option<constrain::Signature>> =
+            vec![None; program.funcs.len()];
+
+        // Final function bodies for output
         let mut out_func_bodies = vec![None; program.funcs.len()];
 
         for scc_nodes in graph::strongly_connected(&func_graph) {
@@ -2881,7 +2886,7 @@ mod integrate {
                 let context = unify::Context {
                     first_order_typedefs: &program.custom_types,
                     typedefs: &typedefs,
-                    func_sigs: &signatures,
+                    func_sigs: &type_sigs,
                     scc_funcdefs: &scc_funcs,
                     unique_infos,
                 };
@@ -2923,15 +2928,16 @@ mod integrate {
 
             // Determine representation params of functions and their constraints
             let equiv_classes = graph.find_equiv_classes();
-            let mut scc_sigs = initialize_scc_sigs(&equiv_classes, &scc_funcs);
+            let mut scc_constraint_sigs =
+                initialize_constraint_scc_sigs(&equiv_classes, &scc_funcs);
             loop {
                 let mut new_scc_sigs = BTreeMap::new();
                 for func in &scc_funcinfos {
                     let sig = constrain::constrain_func(
                         constrain::Context {
-                            constraint_sigs: &constraint_signatures,
+                            constraint_sigs: &constraint_sigs,
                             equiv_classes: &equiv_classes,
-                            scc_sigs: &scc_sigs,
+                            scc_sigs: &scc_constraint_sigs,
                         },
                         &mut graph,
                         func,
@@ -2940,25 +2946,25 @@ mod integrate {
                     new_scc_sigs.insert(func.id, sig);
                     graph.clear_requirements();
                 }
-                if new_scc_sigs == scc_sigs {
+                if new_scc_sigs == scc_constraint_sigs {
                     break;
                 }
-                scc_sigs = new_scc_sigs;
+                scc_constraint_sigs = new_scc_sigs;
             }
 
             // Extract `unify::Signature`s for this SCC
-            let sig_gen = extract::gen_sigs(&equiv_classes, &func_bodies, &mut signatures);
+            let sig_gen = extract::gen_sigs(&equiv_classes, &func_bodies, &mut type_sigs);
 
             for func in &scc_funcinfos {
                 // Compute constraints one more time to extract solutions for internal variables,
                 // and assert that we are at a fixed point
                 assert_eq!(
-                    &scc_sigs[&func.id],
+                    &scc_constraint_sigs[&func.id],
                     &constrain::constrain_func(
                         constrain::Context {
-                            constraint_sigs: &constraint_signatures,
+                            constraint_sigs: &constraint_sigs,
                             equiv_classes: &equiv_classes,
-                            scc_sigs: &scc_sigs,
+                            scc_sigs: &scc_constraint_sigs,
                         },
                         &mut graph,
                         func,
@@ -2985,8 +2991,8 @@ mod integrate {
                 out_func_bodies[func.id.0] =
                     Some(extract::gen_block(&mut extractor, &func_bodies[&func.id]));
 
-                assert!(constraint_signatures[func.id.0].is_none());
-                constraint_signatures[func.id.0] =
+                assert!(constraint_sigs[func.id.0].is_none());
+                constraint_sigs[func.id.0] =
                     Some(constrain::Signature::new(extractor.drain_constraints()));
 
                 graph.clear_requirements();
@@ -2994,7 +3000,7 @@ mod integrate {
         }
 
         let mut out_funcs = Vec::new();
-        for (constraint_sig, body) in constraint_signatures.into_iter().zip(out_func_bodies) {
+        for (constraint_sig, body) in constraint_sigs.into_iter().zip(out_func_bodies) {
             out_funcs.push(out_ast::FuncDef {
                 num_params: constraint_sig.unwrap().num_params(),
                 body: body.unwrap(),
@@ -3016,7 +3022,7 @@ mod integrate {
             .collect()
     }
 
-    fn initialize_scc_sigs(
+    fn initialize_constraint_scc_sigs(
         equiv_classes: &EquivClasses,
         scc_funcs: &BTreeMap<out_ast::CustomFuncId, mid_ast::FuncDef<()>>,
     ) -> BTreeMap<out_ast::CustomFuncId, BTreeMap<EquivClass, BTreeSet<out_ast::Constraint>>> {
