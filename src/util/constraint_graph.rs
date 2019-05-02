@@ -46,7 +46,7 @@ impl<Requirement> ConstraintGraph<Requirement> {
         for c in self.var_constraints.iter_mut() {
             // Note: this does not deallocate the vector or reduce its capacity.
             // The space will most likely be reused
-            c.requirements.truncate(0);
+            c.requirements.clear();
         }
     }
 

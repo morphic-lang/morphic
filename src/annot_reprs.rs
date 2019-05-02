@@ -1152,6 +1152,16 @@ mod aliasing {
             }
         }
 
+        /// Returns whether the only access is at arg position.
+        fn is_arg(&self) -> bool {
+            if self.expr_id == ExprId::ARG {
+                assert!(self.rest.is_empty());
+                true
+            } else {
+                false
+            }
+        }
+
         /// The set of `LastAccessTree`s form a lattice; `join` computes the join (the
         /// least-upper-bound) of several points in the lattice, i.e. the `LastAccessTree`
         /// describing something that was accessed at every position named in `trees`.
@@ -1301,13 +1311,15 @@ mod aliasing {
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct ReturnSignature {
-        edges: BTreeSet<(FieldPath, FieldPath)>, // aliased paths in return value
+    pub struct Signature {
+        args_used: BTreeSet<FieldPath>, // fields in argument that are ever used
+        ret_aliases: BTreeSet<(FieldPath, FieldPath)>, // aliased paths in return value
     }
-    impl ReturnSignature {
+    impl Signature {
         pub fn new() -> Self {
-            ReturnSignature {
-                edges: BTreeSet::new(),
+            Signature {
+                args_used: BTreeSet::new(),
+                ret_aliases: BTreeSet::new(),
             }
         }
     }
@@ -1316,15 +1328,23 @@ mod aliasing {
     pub struct Context<'a> {
         pub typedefs: &'a [mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
         pub unique_infos: &'a [UniqueInfo],                        // indexed by CustomFuncId
-        pub ret_alias_sigs: &'a [Option<ReturnSignature>],         // indexed by CustomFuncId
-        pub scc_ret_alias_sigs: &'a BTreeMap<mid_ast::CustomFuncId, ReturnSignature>,
+        pub alias_sigs: &'a [Option<Signature>],                   // indexed by CustomFuncId
+        pub scc_alias_sigs: &'a BTreeMap<mid_ast::CustomFuncId, Signature>,
+    }
+
+    impl<'a> Context<'a> {
+        fn alias_sig_for(&self, func_id: mid_ast::CustomFuncId) -> &'a Signature {
+            self.alias_sigs[func_id.0]
+                .as_ref()
+                .unwrap_or(&self.scc_alias_sigs[&func_id])
+        }
     }
 
     pub fn alias_track_func(
         ctx: Context,
         body: &mid_ast::TypedBlock,
         id: mid_ast::CustomFuncId,
-    ) -> (ReturnSignature, constrain::FuncInfo) {
+    ) -> (Signature, constrain::FuncInfo) {
         let mut name_adjacencies = Vec::new();
         let mut name_vars = Vec::new();
         let mut accesses_cursor = LastAccessesCursor {
@@ -1349,12 +1369,18 @@ mod aliasing {
             &body,
         );
 
-        let last_expr = ExprId(name_adjacencies.len() - 1);
-        let ret_val_aliases = name_adjacencies[last_expr.0]
+        let retval_expr_id = ExprId(name_adjacencies.len() - 1);
+
+        // Returning something counts as accessing it
+        for field in name_adjacencies[retval_expr_id.0].keys() {
+            accesses_cursor.consider_access(&(retval_expr_id, field.clone()), retval_expr_id);
+        }
+
+        let retval_aliases = name_adjacencies[retval_expr_id.0]
             .iter()
             .flat_map(|(path, aliases)| {
                 aliases.iter().filter_map(move |(expr, other_path)| {
-                    if *expr == last_expr {
+                    if *expr == retval_expr_id {
                         // Order them to prevent duplicates
                         Some(sorted_pair(path.clone(), other_path.clone()))
                     } else {
@@ -1363,9 +1389,20 @@ mod aliasing {
                 })
             })
             .collect();
+
+        let args_used = {
+            let arg_accesses = &accesses_cursor.accesses[0];
+            arg_accesses
+                .keys()
+                .filter(|field| arg_accesses[field].is_arg())
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        };
+
         (
-            ReturnSignature {
-                edges: ret_val_aliases,
+            Signature {
+                args_used,
+                ret_aliases: retval_aliases,
             },
             constrain::FuncInfo::new(
                 id,
@@ -1664,14 +1701,16 @@ mod aliasing {
                 );
             }
             mid_ast::Expr::Call(_purity, func_id, arg_term, _) => {
-                // FIXME: emit access information of functions in UniqueInfos.
                 update_term_accesses(accesses, locals, arg_term);
 
+                let alias_sig = ctx.alias_sig_for(*func_id);
+
+                for sub_field in &alias_sig.args_used {
+                    update_term_field_accesses(accesses, locals, arg_term, sub_field);
+                }
+
                 // Before handling other aliasing, add aliases within return value
-                let ret_aliases = ctx.ret_alias_sigs[func_id.0]
-                    .as_ref()
-                    .unwrap_or(&ctx.scc_ret_alias_sigs[func_id]);
-                for (path_a, path_b) in ret_aliases.edges.iter() {
+                for (path_a, path_b) in alias_sig.ret_aliases.iter() {
                     name_adjacencies[cur_expr_id.0]
                         .entry(path_a.clone())
                         .or_default()
@@ -1853,17 +1892,28 @@ mod aliasing {
     }
 
     fn update_term_accesses(
-        accesses: &mut LastAccessesCursor, // indexed by ExprId
-        locals: &Vector<ExprId>,           // indexed by LocalId
+        accesses: &mut LastAccessesCursor,
+        locals: &Vector<ExprId>, // indexed by LocalId
         term: &mid_ast::Term,
+    ) {
+        update_term_field_accesses(accesses, locals, term, &vector![]);
+    }
+
+    // Record accesses arising from accessing the `sub_field` field of `term`.
+    fn update_term_field_accesses(
+        accesses: &mut LastAccessesCursor,
+        locals: &Vector<ExprId>, // indexed by LocalId
+        term: &mid_ast::Term,
+        sub_field: &FieldPath,
     ) {
         let cur_expr_id = accesses.last_expr_id();
         match term {
-            mid_ast::Term::Access(local_id, _, Some(pruned_field_path)) => {
+            mid_ast::Term::Access(local_id, _, Some(pruned_base_field_path)) => {
+                let field_path = pruned_base_field_path + sub_field;
                 let referenced_expr = &mut accesses.accesses[locals[local_id.0].0];
-                // Update last-accessed of all names accessed in the field_path
-                for i in 0..pruned_field_path.len() {
-                    if let Some(last_access) = referenced_expr.get_mut(&pruned_field_path.take(i)) {
+
+                for i in 0..field_path.len() {
+                    if let Some(last_access) = referenced_expr.get_mut(&field_path.take(i)) {
                         last_access.consider_access(&accesses.ctx, cur_expr_id);
                     }
                 }
@@ -2839,8 +2889,7 @@ mod integrate {
         let func_graph = annot_aliases::func_dependency_graph(program);
 
         // Function information used by various passes:
-        let mut ret_alias_sigs: Vec<Option<aliasing::ReturnSignature>> =
-            vec![None; program.funcs.len()];
+        let mut alias_sigs: Vec<Option<aliasing::Signature>> = vec![None; program.funcs.len()];
         let mut type_sigs: Vec<Option<unify::Signature>> = vec![None; program.funcs.len()];
         let mut constraint_sigs: Vec<Option<constrain::Signature>> =
             vec![None; program.funcs.len()];
@@ -2875,7 +2924,7 @@ mod integrate {
             };
 
             // Determine aliasing graph for each function
-            let mut scc_ret_alias_sigs = initialize_ret_alias_sigs(scc_funcs.keys());
+            let mut scc_alias_sigs = initialize_ret_alias_sigs(scc_funcs.keys());
             let mut scc_funcinfos = Vec::with_capacity(scc_funcs.len());
             loop {
                 let mut new_scc_alias_sigs = initialize_ret_alias_sigs(scc_funcs.keys());
@@ -2884,23 +2933,23 @@ mod integrate {
                     let context = aliasing::Context {
                         typedefs: &typedefs,
                         unique_infos,
-                        ret_alias_sigs: &ret_alias_sigs,
-                        scc_ret_alias_sigs: &new_scc_alias_sigs,
+                        alias_sigs: &alias_sigs,
+                        scc_alias_sigs: &new_scc_alias_sigs,
                     };
-                    let (ret_sig, funcinfo) =
+                    let (alias_sig, funcinfo) =
                         aliasing::alias_track_func(context, &func_bodies[&func_id], func_id);
-                    new_scc_alias_sigs.insert(func_id, ret_sig);
+                    new_scc_alias_sigs.insert(func_id, alias_sig);
                     scc_funcinfos.push(funcinfo);
                 }
-                if scc_ret_alias_sigs == new_scc_alias_sigs {
+                if scc_alias_sigs == new_scc_alias_sigs {
                     break;
                 } else {
-                    scc_ret_alias_sigs = new_scc_alias_sigs;
+                    scc_alias_sigs = new_scc_alias_sigs;
                 }
             }
-            for (func_id, ret_alias_sig) in scc_ret_alias_sigs {
-                assert!(ret_alias_sigs[func_id.0].is_none());
-                ret_alias_sigs[func_id.0] = Some(ret_alias_sig);
+            for (func_id, alias_sig) in scc_alias_sigs {
+                assert!(alias_sigs[func_id.0].is_none());
+                alias_sigs[func_id.0] = Some(alias_sig);
             }
 
             // Determine representation params of functions and their constraints
@@ -2993,9 +3042,9 @@ mod integrate {
 
     fn initialize_ret_alias_sigs<'a>(
         scc_func_ids: impl Iterator<Item = &'a out_ast::CustomFuncId>,
-    ) -> BTreeMap<out_ast::CustomFuncId, aliasing::ReturnSignature> {
+    ) -> BTreeMap<out_ast::CustomFuncId, aliasing::Signature> {
         scc_func_ids
-            .map(|&func_id| (func_id, aliasing::ReturnSignature::new()))
+            .map(|&func_id| (func_id, aliasing::Signature::new()))
             .collect()
     }
 
