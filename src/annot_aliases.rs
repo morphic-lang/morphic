@@ -38,6 +38,13 @@ impl AliasPair {
         new
     }
 
+    fn rm_ret_context(&self, field: FieldId) -> Self {
+        debug_assert!(self.arg_field[0] == field);
+        let mut new = self.clone();
+        new.ret_field.pop_front();
+        new
+    }
+
     fn rm_context(&self, field: FieldId) -> Self {
         debug_assert!(self.arg_field[0] == field);
         let mut new = self.clone();
@@ -85,15 +92,19 @@ impl UniqueInfo {
 
     // Filter edges for those starting with `field`, and remove `field` from those
     // edges in the result
-    fn narrow_context(&self, field: FieldId) -> Self {
+    fn narrow_ret_context(&self, field: FieldId) -> Self {
         UniqueInfo {
             edges: self
                 .edges
                 .iter()
-                .filter(|e| e.arg_field[0] == field)
-                .map(|e| e.rm_context(field))
+                .filter(|e| e.ret_field[0] == field)
+                .map(|e| e.rm_ret_context(field))
                 .collect(),
         }
+    }
+
+    fn one_field(&self, field: FieldId) -> Self {
+        self.narrow_ret_context(field).add_ret_context(field)
     }
 
     fn set_ret_path(&self, ret_field: FieldPath) -> Self {
@@ -113,10 +124,9 @@ impl UniqueInfo {
         self.edges.append(other.edges.clone());
     }
 
-    fn union(&self, other: UniqueInfo) -> Self {
-        let mut new = self.clone();
-        new.edges.append(other.edges);
-        new
+    fn union(mut a: Self, b: Self) -> Self {
+        a.edges.append(b.edges);
+        a
     }
 
     fn add(&self, addition: AliasPair) -> Self {
@@ -169,7 +179,7 @@ fn bind_pattern_locals(
                     locals,
                     func_infos,
                     &patterns[i],
-                    rhs.narrow_context(FieldId::Field(i)),
+                    rhs.narrow_ret_context(FieldId::Field(i)),
                 );
             }
         }
@@ -179,7 +189,7 @@ fn bind_pattern_locals(
                 locals,
                 func_infos,
                 &arg_pattern,
-                rhs.narrow_context(FieldId::Variant(*variant_id)),
+                rhs.narrow_ret_context(FieldId::Variant(*variant_id)),
             );
         }
         ast::Pattern::BoolConst(_) => {}
@@ -213,33 +223,49 @@ fn annot_expression(
     match expr {
         ast::Expr::ArithOp(_) => UniqueInfo::empty(),
         ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array, _)) => {
-            /*
-            // The holearray, in the second entry of the returned tuple, aliases the array
-            let mut aliases =
-                annot_expression(locals, func_infos, array).add_ret_context(FieldId::Field(1));
-            aliases.append(
-                // The item, in the first entry of the returned tuple, aliases the array contents
-                aliases
-                    .rm_context(FieldId::ArrayMembers)
+            let array_aliases = annot_expression(locals, func_infos, array);
+            UniqueInfo::union(
+                // The members of the array in the second entry of the returned tuple alias the
+                // members of the given array
+                array_aliases
+                    .one_field(FieldId::ArrayMembers)
+                    .add_ret_context(FieldId::Field(1)),
+                // The item in the first entry of the returned tuple, aliases the given array's contents
+                array_aliases
+                    .one_field(FieldId::ArrayMembers)
                     .add_ret_context(FieldId::Field(0)),
-            );
-            if let Some((_, variant_id)) = wrapper {
-                aliases.add_ret_context(FieldId::Variant(*variant_id));
-            }
-            aliases
-            */
-            unimplemented!()
+            )
+        }
+        ast::Expr::ArrayOp(ast::ArrayOp::Pop(_type, array)) => {
+            let array_aliases = annot_expression(locals, func_infos, array);
+            UniqueInfo::union(
+                // The members of the array in the first entry of the returned tuple alias the
+                // members of the given array
+                array_aliases
+                    .one_field(FieldId::ArrayMembers)
+                    .add_ret_context(FieldId::Field(0)),
+                // The item in the second entry of the returned tuple, aliases the given array's contents
+                array_aliases
+                    .one_field(FieldId::ArrayMembers)
+                    .add_ret_context(FieldId::Field(1)),
+            )
         }
         ast::Expr::ArrayOp(ast::ArrayOp::Len(..)) => UniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Push(..)) => UniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Pop(..)) => UniqueInfo::empty(),
-        ast::Expr::ArrayOp(ast::ArrayOp::Replace(_type, hole_array, item)) => {
-            let arr_aliases = annot_expression(locals, func_infos, hole_array);
+        ast::Expr::ArrayOp(ast::ArrayOp::Push(_type, array, item))
+        | ast::Expr::ArrayOp(ast::ArrayOp::Replace(_type, array, item)) => {
+            let arr_aliases = annot_expression(locals, func_infos, array);
             let item_aliases = annot_expression(locals, func_infos, item);
-            // the new array aliases what the hole-array did, and its members also alias what item aliases
-            arr_aliases.union(item_aliases.add_ret_context(FieldId::ArrayMembers))
+            UniqueInfo::union(
+                // the new array's members alias what the original array's members do
+                arr_aliases.one_field(FieldId::ArrayMembers),
+                // the new array's members alias what item aliases
+                item_aliases.add_ret_context(FieldId::ArrayMembers),
+            )
         }
-        ast::Expr::ArrayOp(ast::ArrayOp::Concat(..)) => UniqueInfo::empty(),
+        ast::Expr::ArrayOp(ast::ArrayOp::Concat(..)) => {
+            // TODO: remove Concat
+            unimplemented!()
+        }
         ast::Expr::IOOp(_) => UniqueInfo::empty(),
         ast::Expr::Ctor(_id, variant_id, args) => match args {
             None => UniqueInfo::empty(),
@@ -250,7 +276,8 @@ fn annot_expression(
         ast::Expr::Tuple(elems) => {
             let mut info = UniqueInfo::empty();
             for i in 0..elems.len() {
-                info = info.union(
+                info = UniqueInfo::union(
+                    info,
                     annot_expression(locals, func_infos, &elems[i])
                         .add_ret_context(FieldId::Field(i)),
                 );
