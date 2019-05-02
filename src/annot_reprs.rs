@@ -1,6 +1,8 @@
 use crate::data::first_order_ast as in_ast;
 use crate::data::repr_annot_ast as out_ast;
 
+pub use self::integrate::annot_reprs;
+
 mod mid_ast {
     pub use super::out_ast::{
         Comparison, Constraint, ExprId, LocalId, Pattern, RepParamId, Type, TypeDef,

@@ -133,5 +133,9 @@ fn run(config: Config) -> Result<(), Error> {
     println!("  # custom types: {}", first_order.custom_types.len());
     println!("  # functions {}", first_order.funcs.len());
 
+    let unique_infos = annot_aliases::annot_aliases(&first_order);
+
+    let _data_structure_annotated = annot_reprs::annot_reprs(&first_order, &unique_infos);
+
     Ok(())
 }

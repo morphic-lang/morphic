@@ -39,14 +39,14 @@ impl AliasPair {
     }
 
     fn rm_ret_context(&self, field: FieldId) -> Self {
-        debug_assert!(self.arg_field[0] == field);
+        assert_eq!(self.ret_field[0], field);
         let mut new = self.clone();
         new.ret_field.pop_front();
         new
     }
 
     fn rm_context(&self, field: FieldId) -> Self {
-        debug_assert!(self.arg_field[0] == field);
+        assert_eq!(self.arg_field[0], field);
         let mut new = self.clone();
         new.arg_field.pop_front();
         new
@@ -637,7 +637,98 @@ pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::data::first_order_ast as ast;
     use im_rc::vector;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn test_get_names_in() {
+        fn set<T: Ord>(v: Vec<T>) -> BTreeSet<T> {
+            use std::iter::FromIterator;
+            BTreeSet::from_iter(v.into_iter())
+        }
+        use std::borrow::Cow;
+        let empty_typedefs: &[_] = &[];
+        let with_single_recursive_type = &vec![ast::TypeDef {
+            variants: vec![
+                Some(ast::Type::Tuple(vec![
+                    ast::Type::Array(Box::new(ast::Type::Byte)),
+                    ast::Type::Custom(ast::CustomTypeId(0)),
+                ])),
+                Some(ast::Type::Byte),
+                Some(ast::Type::HoleArray(Box::new(ast::Type::Byte))),
+                None,
+            ],
+        }];
+        let mapping: Vec<(Cow<[ast::TypeDef]>, ast::Type, BTreeSet<FieldPath>)> = vec![
+            // Types without names:
+            (
+                empty_typedefs.into(),
+                ast::Type::Tuple(vec![ast::Type::Byte, ast::Type::Float]),
+                set(vec![]),
+            ),
+            (
+                vec![ast::TypeDef {
+                    variants: vec![Some(ast::Type::Byte), None],
+                }]
+                .into(),
+                ast::Type::Tuple(vec![ast::Type::Custom(ast::CustomTypeId(0))]),
+                set(vec![]),
+            ),
+            // Types with names, no typedefs:
+            (
+                empty_typedefs.into(),
+                ast::Type::Array(Box::new(ast::Type::Byte)),
+                set(vec![vector![]]),
+            ),
+            (
+                empty_typedefs.into(),
+                ast::Type::Array(Box::new(ast::Type::Array(Box::new(ast::Type::Int)))),
+                set(vec![vector![], vector![FieldId::ArrayMembers]]),
+            ),
+            // Recursive types:
+            (
+                empty_typedefs.into(),
+                ast::Type::Tuple(vec![
+                    ast::Type::Float,
+                    ast::Type::Array(Box::new(ast::Type::Tuple(vec![
+                        ast::Type::Array(Box::new(ast::Type::Bool)),
+                        ast::Type::Byte,
+                        ast::Type::HoleArray(Box::new(ast::Type::Bool)),
+                    ]))),
+                ]),
+                set(vec![
+                    vector![FieldId::Field(1)],
+                    vector![FieldId::Field(1), FieldId::ArrayMembers, FieldId::Field(0)],
+                    vector![FieldId::Field(1), FieldId::ArrayMembers, FieldId::Field(2)],
+                ]),
+            ),
+            (
+                with_single_recursive_type.into(),
+                ast::Type::Custom(ast::CustomTypeId(0)),
+                set(vec![
+                    vector![FieldId::Variant(ast::VariantId(0)), FieldId::Field(0)],
+                    vector![FieldId::Variant(ast::VariantId(2))],
+                ]),
+            ),
+            (
+                with_single_recursive_type.into(),
+                ast::Type::Array(Box::new(ast::Type::Custom(ast::CustomTypeId(0)))),
+                set(vec![
+                    vector![],
+                    vector![
+                        FieldId::ArrayMembers,
+                        FieldId::Variant(ast::VariantId(0)),
+                        FieldId::Field(0)
+                    ],
+                    vector![FieldId::ArrayMembers, FieldId::Variant(ast::VariantId(2))],
+                ]),
+            ),
+        ];
+        for (typedefs, type_, expected_names) in mapping {
+            assert_eq!(set(get_names_in(typedefs.as_ref(), &type_)), expected_names);
+        }
+    }
 
     #[test]
     pub fn test_without_aliasing() {
