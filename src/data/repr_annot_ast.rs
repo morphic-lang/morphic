@@ -2,7 +2,6 @@ use crate::annot_aliases;
 pub use crate::data::first_order_ast::{self, BinOp, CustomFuncId, CustomTypeId, VariantId};
 use crate::data::purity::Purity;
 use im_rc::Vector;
-use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type<ReprVar = Solution> {

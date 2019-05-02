@@ -2580,7 +2580,7 @@ mod constrain {
 
 /// Generates `out_ast::Block`s and `out_ast::Expr`s from `mid_ast` values and constraint solutions.
 mod extract {
-    use super::{constrain, unify};
+    use super::unify;
     use super::{mid_ast, out_ast};
     use crate::util::constraint_graph::{EquivClass, EquivClasses, SolverVarId};
     use std::collections::{BTreeMap, BTreeSet};
