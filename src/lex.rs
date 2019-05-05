@@ -64,7 +64,6 @@ pub enum Token {
     LteDot,
     GtDot,
     GteDot,
-    PlusPlus,
 }
 
 impl fmt::Display for Token {
@@ -123,7 +122,6 @@ impl fmt::Display for Token {
             Token::LteDot => write!(f, "<=."),
             Token::GtDot => write!(f, ">."),
             Token::GteDot => write!(f, ">=."),
-            Token::PlusPlus => write!(f, "++"),
         }
     }
 }
@@ -442,8 +440,6 @@ impl<'a> Iterator for Lexer<'a> {
                 ("<=.", Token::LtDot),
                 (">.", Token::GtDot),
                 (">=.", Token::GteDot),
-                // List operations
-                ("++", Token::PlusPlus),
             ],
         ) {
             let sym_start = self.pos;

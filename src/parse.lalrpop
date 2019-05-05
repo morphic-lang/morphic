@@ -68,8 +68,6 @@ extern {
     "<=." => lex::Token::LteDot,
     ">." => lex::Token::GtDot,
     ">=." => lex::Token::GteDot,
-
-    "++" => lex::Token::PlusPlus,
   }
 }
 
@@ -291,11 +289,6 @@ ArithCompExpr: syntax::Expr = {
 
 ArrayExpr: syntax::Expr = {
   <ArithCompExpr>,
-
-  <left: ArrayExpr> "++" <right: ArithCompExpr> =>
-  syntax::Expr::App(Purity::Pure,
-                    Box::new(syntax::Expr::Var(syntax::ValName("concat".to_string()))),
-                    Box::new(syntax::Expr::Tuple(vec![left, right]))),
 };
 
 BlockExpr: syntax::Expr = {

@@ -1,3 +1,17 @@
+get(arr: Array a, i: Int): a =
+  let (x, _) = item(arr, i) in
+  x
+
+concat_from(a: Array t, b: Array t, i: Int): Array t =
+  if len(b) >= i {
+    a
+  } else {
+    concat_from(push(a, get(b, i)), b, i + 1)
+  }
+
+concat(a: Array t, b: Array t): Array t =
+  concat_from(a, b, 0)
+
 p_nat_to_string(i: Int): Array Byte =
   let digit_to_string = \d ->
     match d {
@@ -15,12 +29,12 @@ p_nat_to_string(i: Int): Array Byte =
     }
   in if i = 0 { "" }
   else {
-    p_nat_to_string(i / 10) ++ digit_to_string(i - i / 10)
+    concat(p_nat_to_string(i / 10), digit_to_string(i - i / 10))
   }
 
 int_to_string(i: Int): Array Byte =
   if i = 0 { "0" }
-    else if i < 0 { "-" ++ p_nat_to_string(i) }
+    else if i < 0 { concat("-", p_nat_to_string(i)) }
     else { p_nat_to_string(i) }
 
 proc main(): () =

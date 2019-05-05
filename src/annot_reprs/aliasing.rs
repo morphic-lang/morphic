@@ -922,7 +922,7 @@ fn update_term_field_accesses(
                 }
             }
         }
-        mid_ast::Term::Access(_, _, None) => unreachable!(),
+        mid_ast::Term::Access(_, _, None) => panic!("internal error: found untypefolded term"),
         mid_ast::Term::BoolLit(_)
         | mid_ast::Term::IntLit(_)
         | mid_ast::Term::ByteLit(_)
@@ -964,10 +964,11 @@ fn compute_edges_from_aliasing_to_term(
                 false,
             )
         }
-        mid_ast::Term::BoolLit(_) | mid_ast::Term::IntLit(_) | mid_ast::Term::FloatLit(_) => {
-            BTreeMap::new()
-        }
-        _ => unreachable!(),
+        mid_ast::Term::Access(_, _, None) => panic!("internal error: found untypefolded term"),
+        mid_ast::Term::BoolLit(_)
+        | mid_ast::Term::IntLit(_)
+        | mid_ast::Term::ByteLit(_)
+        | mid_ast::Term::FloatLit(_) => BTreeMap::new(),
     }
 }
 
@@ -977,11 +978,6 @@ fn alias_fields(
     new: (ExprId, &FieldPath),
 ) {
     let new_edges = compute_edges_from_aliasing(name_adjacencies, prior, new, true);
-    println!("Aliasing {:?} and {:?}", &prior, &new);
-    println!(
-        "Fields initialized for prior: {:#?}",
-        name_adjacencies[(prior.0).0].keys()
-    );
     add_computed_edges(name_adjacencies, vec![new_edges]);
 }
 
