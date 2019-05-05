@@ -217,11 +217,13 @@ fn unify_expr(
                 }
                 A::Item(array, _idx) => {
                     let array_type = type_of_term(ctx.typedefs, locals, array);
-                    if let mid_ast::Type::Array(ref item_type, _) = array_type {
-                        mid_ast::Type::Tuple(vec![*item_type.clone(), array_type])
+                    if let mid_ast::Type::Array(ref item_type, v) = array_type {
+                        mid_ast::Type::Tuple(vec![
+                            *item_type.clone(),
+                            mid_ast::Type::HoleArray(item_type.clone(), v),
+                        ])
                     } else {
-                        // Any other term is a type error
-                        unreachable!();
+                        panic!("internal type error");
                     }
                 }
                 A::Len(_) => mid_ast::Type::Int,
@@ -230,11 +232,10 @@ fn unify_expr(
                     if let mid_ast::Type::Array(ref item_type, _) = array_type {
                         let pushed_item_type = type_of_term(ctx.typedefs, locals, pushed_item_term);
                         equate_types(graph, item_type, &pushed_item_type);
+                        array_type
                     } else {
-                        // Type error
-                        unreachable!();
+                        panic!("internal type error")
                     }
-                    array_type
                 }
                 A::Pop(array_term) => {
                     let array_type = type_of_term(ctx.typedefs, locals, array_term);
@@ -242,20 +243,21 @@ fn unify_expr(
                         let item_type = *item_type.clone();
                         mid_ast::Type::Tuple(vec![array_type, item_type])
                     } else {
-                        // Type error
-                        unreachable!();
+                        panic!("internal type error");
                     }
                 }
                 A::Replace(hole_array_term, item_term) => {
                     let array_type = type_of_term(ctx.typedefs, locals, hole_array_term);
-                    if let mid_ast::Type::HoleArray(ref item_type, _) = array_type {
+                    if let mid_ast::Type::HoleArray(ref item_type, var) = array_type {
                         let param_type = type_of_term(ctx.typedefs, locals, item_term);
                         equate_types(graph, &item_type, &param_type);
+                        mid_ast::Type::Array(item_type.clone(), var)
                     } else {
-                        // Type error
-                        unreachable!();
+                        panic!(
+                            "internal type error: expected HoleArray, got {:?}",
+                            &array_type
+                        )
                     }
-                    array_type
                 }
             };
             let typefolded = match array_op {
@@ -298,7 +300,6 @@ fn unify_expr(
             (mid_ast::Expr::Local(local_id), locals[local_id.0].clone())
         }
         mid_ast::Expr::Call(purity, func_id, arg_term, None) => {
-            let dup_FIXME = arg_term.clone();
             let arg_type = type_of_term(ctx.typedefs, locals, &arg_term);
             let arg_folded = typefold_term(ctx.typedefs, locals, &arg_term);
             let (vars, result_type) = if let Some(funcdef) = ctx.scc_funcdefs.get(&func_id) {
@@ -307,18 +308,7 @@ fn unify_expr(
                 (mid_ast::ReprParams::Pending, funcdef.ret_type.clone())
             } else if let Some(signature) = &ctx.func_sigs[func_id.0] {
                 // Othwerise, it's already been processed, so instantiate params
-                if let &mid_ast::Term::Access(mid_ast::LocalId(3), _, _) = &dup_FIXME {
-                    println!("Arg: {:?}", &dup_FIXME);
-                    println!("LocalId(3)'s type: {:?}", locals[3]);
-                }
-                unify_external_function_call(
-                    graph,
-                    ctx.typedefs,
-                    func_id,
-                    signature,
-                    &arg_type,
-                    mid_ast::Expr::Call(purity, func_id, dup_FIXME, None),
-                )
+                unify_external_function_call(graph, ctx.typedefs, func_id, signature, &arg_type)
             } else {
                 unreachable!()
             };
@@ -330,13 +320,7 @@ fn unify_expr(
         mid_ast::Expr::Call(_, _, _, Some(_)) => unreachable!(),
         mid_ast::Expr::Match(matched_local, branches, result_type) => {
             let mut typed_branches = Vec::new();
-            let expr_dup =
-                mid_ast::Expr::Match(matched_local, branches.clone(), result_type.clone()); // FIXME rm
             for (pat, branch) in branches {
-                if branch.terms.is_empty() {
-                    println!("EMPTY BLOCK IN MATCH BRANCH (for pat {:?})", pat);
-                    println!("=branches: {:#?}", expr_dup);
-                }
                 let block = unify_block(graph, ctx, locals, expr_id_gen, branch);
                 equate_types(graph, &result_type, &block.types[block.types.len() - 1]);
                 typed_branches.push((pat, block));
@@ -396,11 +380,7 @@ fn unify_external_function_call(
     func_id: mid_ast::CustomFuncId, // FIXME rm
     func_sig: &Signature,
     arg_type: &mid_ast::Type<SolverVarId>,
-    expr: mid_ast::Expr<()>,
 ) -> (mid_ast::ReprParams<SolverVarId>, mid_ast::Type<SolverVarId>) {
-    println!("UNIFYING CALL TO {:?}", func_id);
-    println!("=call: {:#?}", expr);
-    println!("=sig: {:#?}", func_sig);
     // Unify actual argument's type with parameter type
     let vars = (0..func_sig.num_params)
         .map(|_| graph.new_var())

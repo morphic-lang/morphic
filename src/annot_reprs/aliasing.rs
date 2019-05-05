@@ -405,26 +405,16 @@ fn initialize_expr(
     let mut expr_accesses = BTreeMap::new();
     for name in name_paths {
         expr_edges.insert(name.clone(), BTreeSet::new());
-        expr_accesses.insert(
-            name.clone(),
-            LastAccessTree::singleton(&accesses.ctx, cur_expr_id),
-        );
+        expr_accesses.insert(name, LastAccessTree::singleton(&accesses.ctx, cur_expr_id));
     }
     // Add internal edges to account for one level of type-folding-unrolling:
-    for (a, b) in internal_edges {
-        expr_edges
-            .get_mut(&a)
-            .unwrap()
-            .insert((cur_expr_id, b.clone()));
-        expr_edges
-            .get_mut(&b)
-            .unwrap()
-            .insert((cur_expr_id, a.clone()));
-    }
-    name_adjacencies.push(expr_edges);
     accesses.append_expr(expr_accesses);
     name_vars.push(expr_name_vars);
     expr_types.push(type_.clone());
+    name_adjacencies.push(expr_edges);
+    for (a, b) in internal_edges {
+        alias_fields(name_adjacencies, (cur_expr_id, &a), (cur_expr_id, &b));
+    }
 }
 
 fn typecheck_expr_aliasing(
@@ -1041,6 +1031,8 @@ fn conditionally_alias(
 }
 
 // Computes the edges to add to the graph to alias the two expressions.
+// TODO: does this work for typefolded names, given that `a` may alias `b` while `a` and `b`
+// do not have exactly the same name sub-trees?
 fn compute_edges_from_aliasing(
     name_adjacencies: &[BTreeMap<FieldPath, BTreeSet<Name>>],
     prior: (ExprId, &FieldPath),

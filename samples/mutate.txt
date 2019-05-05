@@ -1,0 +1,84 @@
+get(arr: Array a, i: Int): a =
+  let (x, _) = item(arr, i) in
+  x
+
+set(arr: Array a, i: Int, val: a): Array a =
+  let (_, hole) = item(arr, i) in
+  hole(val)
+
+id(x : a) : a =
+  x
+
+const_curry: a -> b -> a =
+  \x -> \y -> x
+
+const(x : a, y : b) : a =
+  x
+
+compose(f: a -> b, g: b -> c): (a -> c) =
+  \x -> g(f(x))
+
+iterate(func: a -> a, n: Int, base: a -> a): (a -> a) =
+  if n = 0 {
+    base
+  } else {
+    compose(func, iterate(func, n - 1, base))
+  }
+
+incr(x: Int) : Int =
+  x + 1
+
+favs : Array Int =
+  [1, 2, 3, 4, 5]
+
+favs_hole : (Int, Int -> Array Int) =
+  item([1, 2, 3], 0)
+
+
+map_from(arr: Array a, f: a -> a, idx: Int): Array a =
+  if idx = len(arr) {
+    arr
+  } else {
+    let (x, hole) = item(arr, idx) in
+    map_from(hole(f(x)), f, idx + 1)
+  }
+
+map(arr: Array a, f: a -> a): Array a =
+  map_from(arr, f, 0)
+
+reverse_from(arr: Array a, idx: Int): Array a =
+  if idx >= len(arr) / 2 {
+    arr
+  } else {
+    reverse_from(
+      swap(arr, idx, len(arr) - idx - 1),
+      idx + 1
+    )
+  }
+
+reverse(arr: Array a): Array a =
+  reverse_from(arr, 0)
+
+swap(arr: Array a, left_idx: Int, right_idx: Int): Array a =
+  let (left_el, left_hole) = item(arr, left_idx) in
+  let right_el = get(arr, right_idx) in
+  set(left_hole(right_el), right_idx, left_el)
+
+
+swap_using_item(arr: Array a, left_idx: Int, right_idx: Int): Array a =
+  let (left_el, left_hole) = item(arr, left_idx) in
+  let (right_el, _) = item(arr, right_idx) in
+  let (_, right_hole) = item(left_hole(right_el), right_idx) in
+  right_hole(left_el)
+
+proc main(): () =
+  let incr5 = iterate(incr, 5, id) in
+  let five = const(incr5(0), [1, 2, 3]) in
+  let five2 = const_curry(incr5(0))(id) in
+  let arr = favs in
+  let better = map(favs, \x -> x * x) in
+  let even_better = map(better, \x -> x * x + x) in
+  let now_backwards = reverse(better) in
+  ()
+
+

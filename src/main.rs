@@ -63,7 +63,7 @@ fn parse_args() -> Option<Config> {
     let mut args = args_os();
     args.next()?; // Consume program name
 
-    let src_path = args.next().unwrap_or("samples/iter2.txt".into()).into();
+    let src_path = args.next().unwrap_or("samples/mutate.txt".into()).into();
 
     if args.next().is_some() {
         return None;

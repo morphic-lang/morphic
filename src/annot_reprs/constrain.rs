@@ -49,17 +49,7 @@ impl FuncInfo {
         let mut access_trees = self
             .names_aliased_to(name)
             .iter()
-            .map(|(expr, path)| {
-                if !self.last_accesses[expr.0].contains_key(path) {
-                    println!("Accessing name NOT RECORDED in last_accesses!");
-                    println!("=name: ({:?}, {:?})", expr, path);
-                    println!(
-                        "=names in last_accesses[expr.0]: {:#?}",
-                        self.last_accesses[expr.0]
-                    );
-                }
-                &self.last_accesses[expr.0][path]
-            })
+            .map(|(expr, path)| &self.last_accesses[expr.0][path])
             .collect::<Vec<_>>();
         access_trees.push(&self.last_accesses[(name.0).0][&name.1]);
         return aliasing::LastAccessTree::join(&mut access_trees);

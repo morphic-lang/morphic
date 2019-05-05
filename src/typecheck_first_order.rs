@@ -106,7 +106,7 @@ fn typecheck_expr(
                 &hole_array_t
             );
             assert_eq!(&typecheck_expr(program, locals, &**item), item_type);
-            hole_array_t
+            T::Array(Box::new(item_type.clone()))
         }
         E::ArrayOp(ast::ArrayOp::Concat(..)) => {
             // TODO: remove
@@ -155,8 +155,8 @@ fn typecheck_expr(
             for (pattern, body) in branches {
                 with_scope(locals, |sub_locals| {
                     bind_pattern(program, pattern, sub_locals, &matched_type);
-                    assert_eq!(&typecheck_expr(program, sub_locals, body), result_type)
-                })
+                    assert_eq!(&typecheck_expr(program, sub_locals, body), result_type);
+                });
             }
             result_type.clone()
         }

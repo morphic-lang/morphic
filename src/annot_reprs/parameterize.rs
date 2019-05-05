@@ -157,9 +157,17 @@ fn parameterize(
         in_ast::Type::Byte => mid_ast::Type::Byte,
         in_ast::Type::Float => mid_ast::Type::Float,
 
-        in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
+        in_ast::Type::Array(item) => {
             let repr_param = id_gen.fresh();
             mid_ast::Type::Array(
+                Box::new(parameterize(parameterized, scc_num_params, id_gen, item)),
+                repr_param,
+            )
+        }
+
+        in_ast::Type::HoleArray(item) => {
+            let repr_param = id_gen.fresh();
+            mid_ast::Type::HoleArray(
                 Box::new(parameterize(parameterized, scc_num_params, id_gen, item)),
                 repr_param,
             )
