@@ -141,6 +141,10 @@ impl Signature {
         self.params.len()
     }
 
+    pub fn into_params(self) -> Vec<BTreeSet<mid_ast::Constraint>> {
+        self.params
+    }
+
     fn is_empty(&self) -> bool {
         for constraints in &self.params {
             if !constraints.is_empty() {

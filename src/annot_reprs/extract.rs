@@ -93,11 +93,6 @@ pub fn gen_sigs<'a, 'b>(
     for (&id, (arg_type, body)) in funcs {
         // Generate types in signature first so they have the first `RepParamId`s
         body.assert_valid();
-        if id.0 == 6 {
-            println!("GENERATING SIG FOR FUNCTION 6");
-            println!("body.terms[0]: {:#?}", &body.terms[0]);
-            println!("body.types[0]: {:#?}", &body.types[0]);
-        }
         type_sigs.push((
             id,
             gen_sig_type(&mut param_gen, arg_type),
@@ -130,13 +125,18 @@ fn gen_block(param_gen: &mut SolutionExtractor, block: &mid_ast::TypedBlock) -> 
         expr_ids: block.expr_ids.clone().unwrap(),
     };
     for (expr, type_) in block.terms.iter().zip(block.types.iter()) {
-        out_block.exprs.push(gen_expr(param_gen, expr));
-        out_block.types.push(gen_type(param_gen, type_));
+        let out_type = gen_type(param_gen, type_);
+        out_block.exprs.push(gen_expr(param_gen, expr, &out_type));
+        out_block.types.push(out_type);
     }
     out_block
 }
 
-fn gen_expr(param_gen: &mut SolutionExtractor, expr: &mid_ast::TypedExpr) -> out_ast::Expr {
+fn gen_expr(
+    param_gen: &mut SolutionExtractor,
+    expr: &mid_ast::TypedExpr,
+    type_: &out_ast::Type,
+) -> out_ast::Expr {
     return match expr {
         mid_ast::Expr::Term(term) => out_ast::Expr::Term(gen_term(term)),
         mid_ast::Expr::ArithOp(arith_op) => {
@@ -197,7 +197,13 @@ fn gen_expr(param_gen: &mut SolutionExtractor, expr: &mid_ast::TypedExpr) -> out
             out_ast::Expr::ArrayOp(a)
         }
         mid_ast::Expr::Ctor(type_id, variant_id, arg) => {
-            out_ast::Expr::Ctor(*type_id, *variant_id, arg.as_ref().map(gen_term))
+            let solns = if let mid_ast::Type::Custom(t_type_id, solns) = type_ {
+                assert_eq!(type_id, t_type_id);
+                solns.clone()
+            } else {
+                panic!("internal type error")
+            };
+            out_ast::Expr::Ctor(*type_id, solns, *variant_id, arg.as_ref().map(gen_term))
         }
         mid_ast::Expr::Tuple(items) => out_ast::Expr::Tuple(items.iter().map(gen_term).collect()),
         mid_ast::Expr::Local(local_id) => out_ast::Expr::Local(*local_id),

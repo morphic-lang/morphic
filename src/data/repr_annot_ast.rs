@@ -4,6 +4,8 @@ pub use crate::data::first_order_ast::{
 };
 use crate::data::purity::Purity;
 use im_rc::Vector;
+use std::collections::BTreeSet;
+use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type<ReprVar = Solution> {
@@ -118,7 +120,6 @@ pub enum Pattern {
     IntConst(i64),
     ByteConst(u8),
     FloatConst(f64),
-    TextConst(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -183,7 +184,12 @@ pub enum Expr {
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
     IOOp(IOOp),
-    Ctor(CustomTypeId, VariantId, Option<Term>),
+    Ctor(
+        CustomTypeId,
+        Vec<Solution>, // repr params for the custom type
+        VariantId,
+        Option<Term>, // constructor arg
+    ),
     Tuple(Vec<Term>),
     Local(LocalId),
     Call(
@@ -206,9 +212,11 @@ pub struct Block {
 
 #[derive(Clone, Debug)]
 pub struct FuncDef {
-    pub num_params: usize,
+    pub params: Vec<BTreeSet<Constraint>>,
     pub arg_type: Type,
     pub body: Block,
+    pub unique_info: Rc<annot_aliases::UniqueInfo>,
+    pub ret_aliasing: Rc<BTreeSet<(annot_aliases::FieldPath, annot_aliases::FieldPath)>>,
 }
 
 #[derive(Clone, Debug)]

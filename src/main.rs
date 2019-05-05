@@ -1,24 +1,43 @@
 #![allow(dead_code)]
 
-mod annot_aliases;
-mod annot_closures;
-mod annot_reprs;
-mod check_exhaustive;
-mod check_main;
-mod check_purity;
-mod closure_specialize;
 mod data;
 mod graph;
-mod lambda_lift;
-mod lex;
-mod lower_closures;
-mod monomorphize;
 mod pretty_print;
-mod resolve;
-mod shield_functions;
-mod type_infer;
-mod typecheck_first_order;
 mod util;
+
+mod lex;
+
+lalrpop_mod!(pub parse);
+
+mod resolve;
+
+mod check_purity;
+
+mod type_infer;
+
+mod check_exhaustive;
+
+mod check_main;
+
+mod monomorphize;
+
+mod shield_functions;
+
+mod lambda_lift;
+
+mod annot_closures;
+
+mod closure_specialize;
+
+mod lower_closures;
+
+mod typecheck_first_order;
+
+mod annot_aliases;
+
+mod annot_reprs;
+
+mod lower_reprs;
 
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;
@@ -27,8 +46,6 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::process::exit;
-
-lalrpop_mod!(pub parse);
 
 #[derive(Debug, Fail)]
 enum Error {
@@ -108,7 +125,7 @@ fn run(config: Config) -> Result<(), Error> {
     let shielded = shield_functions::shield_functions(mono);
 
     let lifted = lambda_lift::lambda_lift(shielded);
-    println!("Lambda-lifted AST:\n{:#?}", lifted);
+    // println!("Lambda-lifted AST:\n{:#?}", lifted);
 
     let annot = annot_closures::annot_closures(lifted);
     println!("Built closure-annotated AST");
@@ -151,7 +168,9 @@ fn run(config: Config) -> Result<(), Error> {
 
     let unique_infos = annot_aliases::annot_aliases(&first_order);
 
-    let _data_structure_annotated = annot_reprs::annot_reprs(&first_order, &unique_infos);
+    let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);
+
+    let _specialized = lower_reprs::lower_reprs(data_structure_annotated);
 
     Ok(())
 }

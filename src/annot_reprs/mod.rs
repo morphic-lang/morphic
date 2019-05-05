@@ -13,6 +13,8 @@
 /// 5. `mod extract` generates solutions for repr vars and emits the `out_ast`.
 use crate::data::first_order_ast as in_ast;
 use crate::data::repr_annot_ast as out_ast;
+use itertools::izip;
+use std::rc::Rc;
 
 mod mid_ast;
 
@@ -33,7 +35,7 @@ use crate::graph;
 use crate::util::constraint_graph::{ConstraintGraph, SolverVarId};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> out_ast::Program {
+pub fn annot_reprs(program: &in_ast::Program, unique_infos: Vec<UniqueInfo>) -> out_ast::Program {
     let typedefs = parameterize::parameterize_typedefs(&program.custom_types);
     let func_graph = annot_aliases::func_dependency_graph(program);
 
@@ -85,7 +87,7 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> ou
             for &func_id in scc_funcs.keys() {
                 let context = aliasing::Context {
                     typedefs: &typedefs,
-                    unique_infos,
+                    unique_infos: &unique_infos,
                     alias_sigs: &alias_sigs,
                     scc_alias_sigs: &new_scc_alias_sigs,
                 };
@@ -183,11 +185,17 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> ou
 
     let mut out_funcs = Vec::new();
     let out_func_bodies = out_func_bodies.into_iter().map(Option::unwrap);
-    for (constraint_sig, (arg_type, body)) in constraint_sigs.into_iter().zip(out_func_bodies) {
+    assert_eq!(constraint_sigs.len(), unique_infos.len());
+    assert_eq!(constraint_sigs.len(), out_func_bodies.len());
+    for (constraint_sig, unique_info, alias_sig, (arg_type, body)) in
+        izip!(constraint_sigs, unique_infos, alias_sigs, out_func_bodies)
+    {
         out_funcs.push(out_ast::FuncDef {
-            num_params: constraint_sig.unwrap().num_params(),
+            params: constraint_sig.unwrap().into_params(),
             arg_type: arg_type,
             body: body,
+            unique_info: Rc::new(unique_info),
+            ret_aliasing: Rc::new(alias_sig.unwrap().into_ret_aliases()),
         })
     }
 

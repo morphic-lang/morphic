@@ -123,7 +123,7 @@ impl<T> Expr<T> {
 pub struct Block<ExprType> {
     pub initial_idx: usize, // for LocalId, not ExprId
     // `terms` and `types` are indexed by LocalId *offset by `initial_idx`
-    pub terms: Vec<Expr<ExprType>>,
+    pub terms: Vec<Expr<ExprType>>, // TODO: rename to `exprs` (auto-refactor can't)
     pub types: Vec<ExprType>,
     pub expr_ids: Option<Vector<ExprId>>, // indexed by `LocalId` (includes all lexically available locals)
 }

@@ -105,17 +105,10 @@ fn unify_block(
         expr_id_gen.with_scope(|sub_expr_id_gen| {
             let mut exprs = Vec::new();
             for expr in block.terms {
-                // FIXME // Generating the new expr_id *after* calling unify_expr means that the ExprId of
-                // FIXME // a match expression is *greater* than that of all expressions in its branches.
                 let expr_id = sub_expr_id_gen.reserve_fresh();
                 let (expr, type_) = unify_expr(graph, context, sub_locals, sub_expr_id_gen, expr);
                 sub_expr_id_gen.bind_reserved(expr_id);
                 expr.assert_typefolded();
-                if sub_locals.len() == 3 {
-                    println!("ADDING THIRD LOCAL");
-                    println!("=expr: {:#?}", &expr);
-                    println!("=type: {:#?}", &type_);
-                }
                 exprs.push(expr);
                 sub_locals.push(type_);
             }

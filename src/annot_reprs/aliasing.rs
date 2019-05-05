@@ -219,6 +219,10 @@ impl Signature {
             ret_aliases: BTreeSet::new(),
         }
     }
+
+    pub fn into_ret_aliases(self) -> BTreeSet<(FieldPath, FieldPath)> {
+        self.ret_aliases
+    }
 }
 
 pub fn initialize_sigs_for_scc<'a>(
@@ -444,6 +448,11 @@ fn typecheck_expr_aliasing(
             let aliased_type = lookup_type_field(typedefs, aliased_expr_type, aliased_path.clone());
             assert_eq!(varless_type, aliased_type.into());
             assert!(accesses.accesses[aliased_expr.0].contains_key(&aliased_path));
+
+            // Bidirectional
+            assert!(
+                name_adjacencies[aliased_expr.0][aliased_path].contains(&(expr_id, path.clone()))
+            );
         }
     }
 }
@@ -968,6 +977,11 @@ fn alias_fields(
     new: (ExprId, &FieldPath),
 ) {
     let new_edges = compute_edges_from_aliasing(name_adjacencies, prior, new, true);
+    println!("Aliasing {:?} and {:?}", &prior, &new);
+    println!(
+        "Fields initialized for prior: {:#?}",
+        name_adjacencies[(prior.0).0].keys()
+    );
     add_computed_edges(name_adjacencies, vec![new_edges]);
 }
 
