@@ -225,7 +225,12 @@ pub fn initialize_sigs_for_scc<'a>(
     scc_func_ids: impl Iterator<Item = &'a mid_ast::CustomFuncId>,
 ) -> BTreeMap<mid_ast::CustomFuncId, Signature> {
     scc_func_ids
-        .map(|&func_id| (func_id, Signature::new()))
+        .map(|&func_id| {
+            if func_id.0 == 6 {
+                println!("initialize_sigs_for_scc: adding {:?} to scc", func_id);
+            }
+            (func_id, Signature::new())
+        })
         .collect()
 }
 
@@ -241,13 +246,14 @@ impl<'a> Context<'a> {
     fn alias_sig_for(&self, func_id: mid_ast::CustomFuncId) -> &'a Signature {
         self.alias_sigs[func_id.0]
             .as_ref()
-            .unwrap_or(&self.scc_alias_sigs[&func_id])
+            .or(self.scc_alias_sigs.get(&func_id))
+            .expect("internal error: aliasing info for func not found")
     }
 }
 
 pub fn alias_track_func(
     ctx: Context,
-    body: &mid_ast::TypedBlock,
+    (arg_type, body): &(mid_ast::Type<SolverVarId>, mid_ast::TypedBlock),
     id: mid_ast::CustomFuncId,
 ) -> (Signature, constrain::FuncInfo) {
     let mut name_adjacencies = Vec::new();
@@ -257,20 +263,23 @@ pub fn alias_track_func(
         by_expr_id: Vec::new(),
         ctx: Vec::new(),
     };
+    let mut expr_types = Vec::new();
     // The function argument is expression zero
     initialize_expr(
         ctx.typedefs,
         &mut accesses_cursor,
         &mut name_adjacencies,
         &mut name_vars,
+        &mut expr_types,
         ExprId::ARG,
-        &body.types[0],
+        arg_type,
     );
     alias_track_block(
         ctx,
         &mut accesses_cursor,
         &mut name_adjacencies,
         &mut name_vars,
+        &mut expr_types,
         &body,
     );
 
@@ -333,23 +342,46 @@ fn alias_track_block(
     name_last_accesses: &mut LastAccessesCursor,
     name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
     name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,           // indexed by ExprId
+    expr_types: &mut Vec<mid_ast::Type<SolverVarId>>,
     block: &mid_ast::TypedBlock,
 ) {
     assert_eq!(name_last_accesses.len(), name_adjacencies.len());
     assert_eq!(name_last_accesses.len(), name_vars.len());
+    assert_eq!(name_last_accesses.len(), expr_types.len());
+    block.assert_valid();
+    let mut ids = vec![];
     for (i, (expr, type_)) in block.terms.iter().zip(&block.types).enumerate() {
-        let cur_local_id = mid_ast::LocalId(block.initial_idx + i);
         let cur_expr_id = ExprId(name_adjacencies.len());
-        assert_eq!(block.expr_id_of(cur_local_id), cur_expr_id);
+        ids.push(cur_expr_id);
         alias_track_expr(
             ctx,
             name_last_accesses,
             name_adjacencies,
             name_vars,
-            &block.expr_ids,
+            expr_types,
+            block.expr_ids.as_ref().unwrap(),
             expr,
             cur_expr_id,
             &type_,
+        );
+        let cur_local_id = mid_ast::LocalId(block.initial_idx + i);
+        assert_eq!(block.expr_id_of(cur_local_id), cur_expr_id);
+    }
+    for (id, (expr, type_)) in ids.into_iter().zip(block.terms.iter().zip(&block.types)) {
+        let locals = block.expr_ids.as_ref().unwrap();
+        println!("CHECKING EXPR {:?}", id);
+        if locals.len() > 3 {
+            println!("Type of Local #3 is: {:?}", &expr_types[locals[3].0]);
+        }
+        println!("Type of expression is: {:?}", type_);
+        println!("Checking aliasing for expr: {:?}", expr);
+        typecheck_expr_aliasing(
+            ctx.typedefs,
+            name_last_accesses,
+            name_adjacencies,
+            expr_types,
+            id,
+            type_,
         );
     }
 }
@@ -362,6 +394,7 @@ fn initialize_expr(
     accesses: &mut LastAccessesCursor,
     name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
     name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,           // indexed by ExprId
+    expr_types: &mut Vec<mid_ast::Type<SolverVarId>>,                // indexed by ExprId
     cur_expr_id: ExprId,
     type_: &mid_ast::Type<SolverVarId>,
 ) {
@@ -391,6 +424,38 @@ fn initialize_expr(
     name_adjacencies.push(expr_edges);
     accesses.append_expr(expr_accesses);
     name_vars.push(expr_name_vars);
+    expr_types.push(type_.clone());
+}
+
+fn typecheck_expr_aliasing(
+    typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>], // indexed by CustomTypeId
+    accesses: &mut LastAccessesCursor,
+    name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>, // indexed by ExprId
+    expr_types: &mut Vec<mid_ast::Type<SolverVarId>>,                // indexed by ExprId
+    expr_id: ExprId,
+    type_: &mid_ast::Type<SolverVarId>,
+) {
+    use crate::data::first_order_ast;
+    use unify::lookup_type_field;
+    for (path, aliased_names) in &name_adjacencies[expr_id.0] {
+        assert!(accesses.accesses[expr_id.0].contains_key(path));
+        let varless_type: first_order_ast::Type =
+            lookup_type_field(typedefs, type_, path.clone()).into();
+        for (aliased_expr, aliased_path) in aliased_names {
+            let aliased_expr_type = &expr_types[aliased_expr.0];
+            println!(
+                "The given expr supposedly aliases field {:?} in {:?}",
+                aliased_path, aliased_expr
+            );
+            println!(
+                "Looking up field {:?} in type {:?}",
+                aliased_path, aliased_expr_type
+            );
+            let aliased_type = lookup_type_field(typedefs, aliased_expr_type, aliased_path.clone());
+            assert_eq!(varless_type, aliased_type.into());
+            assert!(accesses.accesses[aliased_expr.0].contains_key(&aliased_path));
+        }
+    }
 }
 
 // Appends data for `expr` to `accesses` and `name_adjacencies`, and updates
@@ -400,7 +465,8 @@ fn alias_track_expr(
     accesses: &mut LastAccessesCursor,
     name_adjacencies: &mut Vec<BTreeMap<FieldPath, BTreeSet<Name>>>,
     name_vars: &mut Vec<BTreeMap<FieldPath, SolverVarId>>,
-    locals: &Vector<ExprId>, // indexed by LocalId
+    expr_types: &mut Vec<mid_ast::Type<SolverVarId>>, // indexed by ExprId
+    locals: &Vector<ExprId>,                          // indexed by LocalId
     expr: &mid_ast::TypedExpr,
     cur_expr_id: ExprId,                // id of `expr`
     type_: &mid_ast::Type<SolverVarId>, // type of `expr`
@@ -410,9 +476,13 @@ fn alias_track_expr(
         accesses,
         name_adjacencies,
         name_vars,
+        expr_types,
         cur_expr_id,
         type_,
     );
+    if cur_expr_id.0 == 6 {
+        println!("Alias tracking {:?} of type {:?}", expr, type_);
+    }
 
     match expr {
         mid_ast::Expr::Term(term) => {
@@ -583,7 +653,11 @@ fn alias_track_expr(
         mid_ast::Expr::Ctor(_type_id, _variant_id, None) => {
             // Nothing aliased or accessed
         }
-        mid_ast::Expr::Ctor(_type_id, variant_id, Some(arg_term)) => {
+        mid_ast::Expr::Ctor(type_id, variant_id, Some(arg_term)) => {
+            println!(
+                "Handling aliasing for Ctor({:?}, {:?}, Some({:?})",
+                type_id, variant_id, arg_term
+            );
             update_term_accesses(accesses, locals, arg_term);
             alias_field_to_term(
                 name_adjacencies,
@@ -644,7 +718,14 @@ fn alias_track_expr(
             let mut new_edges = Vec::new();
             for (branch_idx, (_pat, block)) in branches.iter().enumerate() {
                 accesses.in_branch_scope(cur_expr_id, branch_idx, |sub_accesses| {
-                    alias_track_block(ctx, sub_accesses, name_adjacencies, name_vars, block);
+                    alias_track_block(
+                        ctx,
+                        sub_accesses,
+                        name_adjacencies,
+                        name_vars,
+                        expr_types,
+                        block,
+                    );
                     let branch_result = ExprId(name_adjacencies.len() - 1);
                     new_edges.push(compute_edges_from_aliasing(
                         name_adjacencies,
@@ -657,6 +738,15 @@ fn alias_track_expr(
             add_computed_edges(name_adjacencies, new_edges);
         }
     };
+
+    typecheck_expr_aliasing(
+        ctx.typedefs,
+        accesses,
+        name_adjacencies,
+        expr_types,
+        cur_expr_id,
+        type_,
+    );
 }
 
 // Computes the fields in `type_` at which there is a name. Differs from annot_aliases::get_names_in
@@ -965,7 +1055,9 @@ fn compute_edges_from_aliasing(
     // Look at all sub-paths of the path being accessed
     let aliased_paths = name_adjacencies[prior_expr.0]
         .iter()
-        .filter(|(ref_path, _)| ref_path.take(prior_path.len()) == *prior_path);
+        .filter(|(ref_path, _)| {
+            ref_path.len() >= prior_path.len() && ref_path.take(prior_path.len()) == *prior_path
+        });
     for (ref_path, original_ref_edges) in aliased_paths {
         // NOTE: there is some redundant work being done here. As name_adjacencies
         // includes names in recursive types one level deep, fields in recursive
@@ -990,6 +1082,9 @@ fn compute_edges_from_aliasing(
         let sub_path = ref_path.skip(prior_path.len());
         // Note: ref_path == prior_path + sub_path
         let here_path = new_path + &sub_path;
+        println!("ref_path = {:?}", &ref_path);
+        println!("here_path = {:?}", &here_path);
+        println!("sub_path = {:?}", &sub_path);
 
         // Mark "here" that the name aliases everything aliased by "there"
         let mut here_edges = ref_edges.clone();
@@ -1027,7 +1122,7 @@ fn compute_edges_from_aliasing(
             .or_insert_with(BTreeMap::new)
             .entry(ref_path.clone())
             .or_insert_with(BTreeSet::new)
-            .insert((new_expr, new_path + ref_path));
+            .insert((new_expr, here_path));
     }
     added_edges
 }

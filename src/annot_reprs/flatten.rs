@@ -7,10 +7,17 @@ use im_rc::vector;
 pub fn flatten_func(
     graph: &mut ConstraintGraph<mid_ast::Constraint>,
     typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
+    id: mid_ast::CustomFuncId,
     func: &in_ast::FuncDef,
 ) -> mid_ast::FuncDef<()> {
     let mut locals = Vec::new();
-    let mut body = mid_ast::Block::function_body();
+    let mut body = mid_ast::Block {
+        // LocalId(0) is arg, so first term index is 1
+        initial_idx: 1,
+        terms: vec![],
+        types: vec![],
+        expr_ids: None,
+    };
     bind_pattern(
         graph,
         typedefs,
@@ -19,12 +26,19 @@ pub fn flatten_func(
         vector![],
         &mut locals,
     );
-    flatten_expr_into(graph, typedefs, &func.body, &mut body, &mut locals);
+    let return_expr = mid_ast::Expr::Term(flatten_expr_into(
+        graph,
+        typedefs,
+        &func.body,
+        &mut body,
+        &mut locals,
+    ));
+    let _ = body.add(return_expr);
+    body.assert_valid();
     mid_ast::FuncDef {
         purity: func.purity,
         arg_type: instantiate_type(graph, typedefs, &func.arg_type),
         ret_type: instantiate_type(graph, typedefs, &func.ret_type),
-        constraints: Vec::new(), // none for now
         body,
     }
 }
@@ -63,6 +77,7 @@ pub fn instantiate_type(
     }
 }
 
+#[must_use]
 fn flatten_expr_into(
     graph: &mut ConstraintGraph<mid_ast::Constraint>,
     typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
@@ -160,7 +175,11 @@ fn flatten_expr_into(
         in_ast::Expr::Ctor(id, variant, None) => {
             block.add(mid_ast::Expr::Ctor(*id, *variant, None))
         }
-        in_ast::Expr::Local(in_ast::LocalId(id)) => locals[*id].clone(),
+        in_ast::Expr::Local(in_ast::LocalId(id)) => {
+            // TODO: consider rearchitecting, so that locals are declared
+            // at first use and referred back to rather than cloned here
+            locals[*id].clone()
+        }
         in_ast::Expr::Tuple(exprs) => {
             let item_terms = exprs
                 .iter()
@@ -180,13 +199,32 @@ fn flatten_expr_into(
 
             let mut cases = vec![];
             for (pat, rhs_expr) in patterns {
-                let mut branch_block = mid_ast::Block::branch_from(block);
-                let initial_locals = locals.len();
-                let out_pattern =
-                    bind_pattern(graph, typedefs, pat, matched_term_local, vector![], locals);
-                flatten_expr_into(graph, typedefs, rhs_expr, &mut branch_block, locals);
-                cases.push((out_pattern, branch_block));
-                locals.truncate(initial_locals);
+                let mut branch_block = mid_ast::Block {
+                    initial_idx: block.initial_idx + block.terms.len(),
+                    terms: vec![],
+                    types: vec![],
+                    expr_ids: None,
+                };
+                with_scope(locals, |sub_locals| {
+                    let out_pattern = bind_pattern(
+                        graph,
+                        typedefs,
+                        pat,
+                        matched_term_local,
+                        vector![],
+                        sub_locals,
+                    );
+                    let block_result = mid_ast::Expr::Term(flatten_expr_into(
+                        graph,
+                        typedefs,
+                        rhs_expr,
+                        &mut branch_block,
+                        sub_locals,
+                    ));
+                    let _ = branch_block.add(block_result);
+                    branch_block.assert_valid();
+                    cases.push((out_pattern, branch_block));
+                });
             }
 
             block.add(mid_ast::Expr::Match(

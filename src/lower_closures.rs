@@ -197,17 +197,12 @@ impl<'a> Context<'a> {
 
                 Some(first_ord::Type::Tuple(lowered_captures))
             }
-
             LeafFuncCase::ArithOp(_) => None,
-
             LeafFuncCase::ArrayOp(_, _) => None,
-
             LeafFuncCase::ArrayReplace(item_type) => Some(first_ord::Type::HoleArray(Box::new(
                 self.lower_type(item_type),
             ))),
-
             LeafFuncCase::IOOp(_) => None,
-
             LeafFuncCase::Ctor(_, _) => None,
         }
     }
@@ -263,23 +258,23 @@ impl<'a> Context<'a> {
 
         // Convenience functions to make programmatic AST generation a little less painful
 
-        fn local(idx: usize) -> first_ord::Expr {
+        const fn local(idx: usize) -> first_ord::Expr {
             first_ord::Expr::Local(first_ord::LocalId(idx))
-        }
-
-        fn with_args(types: Vec<first_ord::Type>, body: first_ord::Expr) -> first_ord::Expr {
-            first_ord::Expr::Let(
-                first_ord::Pattern::Tuple(types.into_iter().map(first_ord::Pattern::Var).collect()),
-                Box::new(local(0)),
-                Box::new(body),
-            )
         }
 
         let func_rep_type = first_ord::Type::Custom(self.mapping.map_closure_type(lowered_id));
 
-        let func_rep_local = local(0);
-        let arg_local = local(1);
-        let env_local = local(2); // For use in match branch bodies; may not exist in all branches
+        static func_rep_local: first_ord::Expr = local(0);
+        static arg_local: first_ord::Expr = local(1);
+        static env_local: first_ord::Expr = local(2); // For use in match branch bodies; may not exist in all branches
+
+        fn with_args(types: Vec<first_ord::Type>, body: first_ord::Expr) -> first_ord::Expr {
+            first_ord::Expr::Let(
+                first_ord::Pattern::Tuple(types.into_iter().map(first_ord::Pattern::Var).collect()),
+                Box::new(arg_local.clone()),
+                Box::new(body),
+            )
+        }
 
         let func = first_ord::FuncDef {
             purity,
@@ -292,7 +287,7 @@ impl<'a> Context<'a> {
                 first_ord::Pattern::Var(arg_type.clone()),
             ]),
             body: first_ord::Expr::Match(
-                Box::new(func_rep_local),
+                Box::new(func_rep_local.clone()),
                 lowered
                     .case_variants
                     .iter()
@@ -822,19 +817,21 @@ impl<'a> Context<'a> {
             &lam_def.body,
         );
 
+        let (captures_type, captures_pat) = (
+            first_ord::Type::Tuple(lowered_captures.clone()),
+            first_ord::Pattern::Tuple(
+                lowered_captures
+                    .into_iter()
+                    .map(first_ord::Pattern::Var)
+                    .collect(),
+            ),
+        );
+
         first_ord::FuncDef {
             purity: lam_def.purity,
-            arg_type: lowered_arg,
+            arg_type: first_ord::Type::Tuple(vec![captures_type, lowered_arg]),
             ret_type: lowered_ret,
-            arg: first_ord::Pattern::Tuple(vec![
-                first_ord::Pattern::Tuple(
-                    lowered_captures
-                        .into_iter()
-                        .map(first_ord::Pattern::Var)
-                        .collect(),
-                ),
-                lowered_arg_pat,
-            ]),
+            arg: first_ord::Pattern::Tuple(vec![captures_pat, lowered_arg_pat]),
             body: lowered_body,
         }
     }

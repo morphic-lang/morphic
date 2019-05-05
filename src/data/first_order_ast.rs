@@ -6,7 +6,7 @@ pub struct CustomTypeId(pub usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CustomFuncId(pub usize);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     Bool,
     Byte,
@@ -94,6 +94,9 @@ pub enum ArrayOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LocalId(pub usize);
+impl LocalId {
+    pub const ARG: Self = LocalId(0);
+}
 
 #[derive(Clone, Debug)]
 pub enum Expr {

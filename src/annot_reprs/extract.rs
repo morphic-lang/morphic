@@ -85,16 +85,22 @@ impl<'a> SolutionExtractor<'a> {
 
 pub fn gen_sigs<'a, 'b>(
     equiv_classes: &'a EquivClasses,
-    funcs: &'b BTreeMap<out_ast::CustomFuncId, mid_ast::TypedBlock>,
+    funcs: &'b BTreeMap<out_ast::CustomFuncId, (mid_ast::Type<SolverVarId>, mid_ast::TypedBlock)>,
     signatures: &'b mut [Option<unify::Signature>],
 ) -> SignatureGen<'a> {
     let mut param_gen = SignatureGen::new(equiv_classes);
     let mut type_sigs = Vec::new();
-    for (&id, body) in funcs {
+    for (&id, (arg_type, body)) in funcs {
         // Generate types in signature first so they have the first `RepParamId`s
+        body.assert_valid();
+        if id.0 == 6 {
+            println!("GENERATING SIG FOR FUNCTION 6");
+            println!("body.terms[0]: {:#?}", &body.terms[0]);
+            println!("body.types[0]: {:#?}", &body.types[0]);
+        }
         type_sigs.push((
             id,
-            gen_sig_type(&mut param_gen, &body.types[0]),
+            gen_sig_type(&mut param_gen, arg_type),
             gen_sig_type(&mut param_gen, &body.types.last().unwrap()),
         ));
     }
@@ -109,12 +115,19 @@ pub fn gen_sigs<'a, 'b>(
     param_gen
 }
 
-pub fn gen_block(param_gen: &mut SolutionExtractor, block: &mid_ast::TypedBlock) -> out_ast::Block {
+pub fn gen_func(
+    param_gen: &mut SolutionExtractor,
+    (arg_type, body): &(mid_ast::Type<SolverVarId>, mid_ast::TypedBlock),
+) -> (out_ast::Type, out_ast::Block) {
+    (gen_type(param_gen, arg_type), gen_block(param_gen, body))
+}
+
+fn gen_block(param_gen: &mut SolutionExtractor, block: &mid_ast::TypedBlock) -> out_ast::Block {
     let mut out_block = out_ast::Block {
         initial_idx: block.initial_idx,
         exprs: Vec::new(),
         types: Vec::new(),
-        expr_ids: block.expr_ids.clone(),
+        expr_ids: block.expr_ids.clone().unwrap(),
     };
     for (expr, type_) in block.terms.iter().zip(block.types.iter()) {
         out_block.exprs.push(gen_expr(param_gen, expr));

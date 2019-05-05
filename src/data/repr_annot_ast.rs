@@ -207,6 +207,7 @@ pub struct Block {
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub num_params: usize,
+    pub arg_type: Type,
     pub body: Block,
 }
 

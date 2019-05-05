@@ -85,6 +85,39 @@ pub enum Expr<ExprType> {
         Box<Type<SolverVarId>>,
     ),
 }
+pub type TypedExpr = Expr<Type<SolverVarId>>;
+impl<T> Expr<T> {
+    pub fn assert_typefolded(&self) {
+        match self {
+            Expr::Term(t) => atf(t),
+            Expr::IOOp(IOOp::Output(t)) => atf(t),
+            Expr::Ctor(_, _, Some(t)) => atf(t),
+            Expr::Tuple(ts) => {
+                for t in ts {
+                    atf(t);
+                }
+            }
+            Expr::Call(_, _, t, _) => atf(t),
+            Expr::Match(_, branches, _) => {
+                for (_, body) in branches {
+                    for expr in &body.terms {
+                        expr.assert_typefolded();
+                    }
+                }
+            }
+            Expr::Local(_)
+            | Expr::IOOp(IOOp::Input(_))
+            | Expr::ArithOp(_)
+            | Expr::ArrayOp(_)
+            | Expr::Ctor(_, _, None) => {}
+        }
+        fn atf(t: &Term) {
+            if let Term::Access(_, _, typefolded) = t {
+                assert!(typefolded.is_some());
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Block<ExprType> {
@@ -92,46 +125,38 @@ pub struct Block<ExprType> {
     // `terms` and `types` are indexed by LocalId *offset by `initial_idx`
     pub terms: Vec<Expr<ExprType>>,
     pub types: Vec<ExprType>,
-    pub expr_ids: Vector<ExprId>, // indexed by LocalId
+    pub expr_ids: Option<Vector<ExprId>>, // indexed by `LocalId` (includes all lexically available locals)
 }
-
-pub type TypedExpr = Expr<Type<SolverVarId>>;
 pub type TypedBlock = Block<Type<SolverVarId>>;
 
-// TODO: move out of data module?
-impl<T> Block<T> {
-    pub fn function_body() -> Block<T> {
-        Block {
-            // LocalId(0) is arg, so first term index is 1
-            initial_idx: 1,
-            terms: vec![],
-            types: vec![],
-            expr_ids: vector![ExprId::ARG],
+impl<T: std::fmt::Debug> Block<T> {
+    pub fn assert_valid(&self) {
+        assert_eq!(self.terms.len(), self.types.len());
+        assert!(self.terms.len() > 0); // empty blocks are invalid
+        if let Some(expr_ids) = self.expr_ids.as_ref() {
+            assert_eq!(expr_ids.len(), self.initial_idx + self.terms.len());
         }
     }
 
-    pub fn branch_from(block: &Block<T>) -> Block<T> {
-        Block {
-            initial_idx: block.initial_idx + block.terms.len(),
-            terms: vec![],
-            types: vec![],
-            expr_ids: block.expr_ids.clone(),
-        }
+    #[must_use]
+    pub fn expr_id_of(&self, l: LocalId) -> ExprId {
+        self.expr_ids.as_ref().unwrap()[l.0]
     }
+}
 
-    // Adds an expression to the block and returns a Term referring to that expression
-    pub fn add(&mut self, e: Expr<T>) -> Term {
+impl Block<()> {
+    /// Adds an expression to the block and returns a Term referring to that expression
+    #[must_use]
+    pub fn add(&mut self, e: Expr<()>) -> Term {
         Term::Access(self.add_local(e), vector![], None)
     }
 
-    pub fn add_local(&mut self, e: Expr<T>) -> LocalId {
+    #[must_use]
+    pub fn add_local(&mut self, e: Expr<()>) -> LocalId {
         let idx = self.initial_idx + self.terms.len();
         self.terms.push(e);
+        self.types.push(());
         LocalId(idx)
-    }
-
-    pub fn expr_id_of(&self, l: LocalId) -> ExprId {
-        self.expr_ids[l.0]
     }
 }
 
@@ -140,7 +165,6 @@ pub struct FuncDef<ExprType> {
     pub purity: Purity,
     pub arg_type: Type<SolverVarId>,
     pub ret_type: Type<SolverVarId>,
-    pub constraints: Vec<Vec<Constraint>>,
     pub body: Block<ExprType>,
 }
 

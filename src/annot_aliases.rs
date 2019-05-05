@@ -97,7 +97,7 @@ impl UniqueInfo {
             edges: self
                 .edges
                 .iter()
-                .filter(|e| e.ret_field[0] == field)
+                .filter(|e| !e.ret_field.is_empty() && e.ret_field[0] == field)
                 .map(|e| e.rm_ret_context(field))
                 .collect(),
         }
@@ -398,6 +398,7 @@ pub fn prune_field_path_with<
     type_: &'a ast::Type,
     path: &'a FieldPath,
 ) -> FieldPath {
+    println!("Pruning field path {:?} of type {:?}", path, type_);
     return prune_field_path_help(
         variant_for,
         type_,
@@ -448,7 +449,10 @@ pub fn prune_field_path_with<
                 path.pop_front();
                 prune_field_path_help(variant_for, &item_type, front, customs, path)
             }
-            (_, _) => unreachable!(),
+            (_, _) => panic!(
+                "internal error: field path {:?} mismatches type {:?} at first index",
+                path, type_
+            ),
         }
     }
 }

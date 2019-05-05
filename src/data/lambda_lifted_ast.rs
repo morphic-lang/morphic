@@ -8,6 +8,9 @@ pub struct LamId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LocalId(pub usize);
+impl LocalId {
+    pub const ARG: Self = LocalId(0);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CaptureId(pub usize);

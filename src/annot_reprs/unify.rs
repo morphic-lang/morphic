@@ -4,7 +4,7 @@ use crate::util::constraint_graph::{ConstraintGraph, SolverVarId};
 use crate::util::with_scope;
 use im_rc::{vector, Vector};
 pub use mid_ast::ExprId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Context<'a> {
@@ -21,15 +21,24 @@ pub struct Signature {
     pub ret_type: mid_ast::Type<mid_ast::RepParamId>,
 }
 
+#[derive(Clone, Debug)]
 struct ExprIdGen {
     next: usize,                    // ExprId of the next local
     local_expr_ids: Vector<ExprId>, // indexed by `mid_ast::LocalId`
+    reserved: BTreeSet<ExprId>,
 }
 impl ExprIdGen {
     fn with_scope<R, F: FnOnce(&mut ExprIdGen) -> R>(&mut self, f: F) -> R {
-        let initial_len = self.local_expr_ids.len();
+        let initial = self.clone();
         let result = f(self);
-        self.local_expr_ids.truncate(initial_len);
+
+        // Never go backwards:
+        assert!(self.locals_len() >= initial.locals_len());
+        assert!(self.next >= initial.next);
+        // `next` was never reset:
+        assert!(self.locals_len() == initial.locals_len() || self.next > initial.next);
+
+        self.local_expr_ids.truncate(initial.locals_len());
         result
     }
 
@@ -43,8 +52,21 @@ impl ExprIdGen {
 
     fn bind_fresh(&mut self) -> ExprId {
         let ret = ExprId(self.next);
+        self.local_expr_ids.push_back(ret);
         self.next += 1;
         ret
+    }
+
+    fn reserve_fresh(&mut self) -> ExprId {
+        let ret = ExprId(self.next);
+        self.reserved.insert(ret);
+        self.next += 1;
+        ret
+    }
+
+    fn bind_reserved(&mut self, reserved: ExprId) {
+        assert!(self.reserved.remove(&reserved));
+        self.local_expr_ids.push_back(reserved);
     }
 }
 
@@ -52,16 +74,20 @@ pub fn unify_func(
     graph: &mut ConstraintGraph<mid_ast::Constraint>,
     context: Context,
     func: &mid_ast::FuncDef<()>,
-) -> mid_ast::TypedBlock {
-    unify_block(
-        graph,
-        context,
-        &mut vec![func.arg_type.clone()],
-        &mut ExprIdGen {
-            next: 1,
-            local_expr_ids: vector![ExprId::ARG],
-        },
-        func.body.clone(),
+) -> (mid_ast::Type<SolverVarId>, mid_ast::TypedBlock) {
+    (
+        func.arg_type.clone(),
+        unify_block(
+            graph,
+            context,
+            &mut vec![func.arg_type.clone()],
+            &mut ExprIdGen {
+                next: 1,
+                local_expr_ids: vector![ExprId::ARG],
+                reserved: BTreeSet::new(),
+            },
+            func.body.clone(),
+        ),
     )
 }
 
@@ -74,31 +100,280 @@ fn unify_block(
 ) -> mid_ast::TypedBlock {
     assert_eq!(locals.len(), expr_id_gen.locals_len());
     assert_eq!(block.initial_idx, locals.len());
-    assert_eq!(block.terms.len(), block.types.len());
-    assert!(block.terms.len() > 0); // empty blocks are invalid
+    block.assert_valid();
     with_scope(locals, |sub_locals| {
         expr_id_gen.with_scope(|sub_expr_id_gen| {
             let mut exprs = Vec::new();
             for expr in block.terms {
+                // FIXME // Generating the new expr_id *after* calling unify_expr means that the ExprId of
+                // FIXME // a match expression is *greater* than that of all expressions in its branches.
+                let expr_id = sub_expr_id_gen.reserve_fresh();
                 let (expr, type_) = unify_expr(graph, context, sub_locals, sub_expr_id_gen, expr);
+                sub_expr_id_gen.bind_reserved(expr_id);
+                expr.assert_typefolded();
+                if sub_locals.len() == 3 {
+                    println!("ADDING THIRD LOCAL");
+                    println!("=expr: {:#?}", &expr);
+                    println!("=type: {:#?}", &type_);
+                }
                 exprs.push(expr);
                 sub_locals.push(type_);
-                // Generating the new expr_id *after* calling unify_expr means that the ExprId of
-                // a match expression is *greater* than that of all expressions in its branches.
-                sub_expr_id_gen.bind_fresh();
             }
             mid_ast::Block {
                 initial_idx: block.initial_idx,
                 terms: exprs,
                 types: sub_locals.split_off(block.initial_idx),
-                expr_ids: sub_expr_id_gen.get_local_mapping(),
+                expr_ids: Some(sub_expr_id_gen.get_local_mapping()),
             }
         })
     })
 }
 
+fn unify_expr(
+    graph: &mut ConstraintGraph<mid_ast::Constraint>,
+    ctx: Context,
+    locals: &mut Vec<mid_ast::Type<SolverVarId>>, // indexed by `mid_ast::LocalId`
+    expr_id_gen: &mut ExprIdGen,
+    expr: mid_ast::Expr<()>,
+) -> (mid_ast::TypedExpr, mid_ast::Type<SolverVarId>) {
+    let typefold = |t| typefold_term(ctx.typedefs, locals, t);
+    match expr {
+        mid_ast::Expr::Term(term) => {
+            let type_ = type_of_term(ctx.typedefs, locals, &term);
+            (
+                mid_ast::Expr::Term(typefold_term(ctx.typedefs, locals, &term)),
+                type_,
+            )
+        }
+        mid_ast::Expr::Tuple(items) => {
+            let types = mid_ast::Type::Tuple(
+                items
+                    .iter()
+                    .map(|item| type_of_term(ctx.typedefs, locals, item))
+                    .collect(),
+            );
+            (
+                mid_ast::Expr::Tuple(
+                    items
+                        .into_iter()
+                        .map(|item| typefold_term(ctx.typedefs, locals, &item))
+                        .collect(),
+                ),
+                types,
+            )
+        }
+        mid_ast::Expr::IOOp(mid_ast::IOOp::Input(var)) => (
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Input(var)),
+            mid_ast::Type::Array(Box::new(mid_ast::Type::Byte), var),
+        ),
+        mid_ast::Expr::IOOp(mid_ast::IOOp::Output(output)) => (
+            mid_ast::Expr::IOOp(mid_ast::IOOp::Output(typefold_term(
+                ctx.typedefs,
+                locals,
+                &output,
+            ))),
+            mid_ast::Type::Tuple(vec![]),
+        ),
+        mid_ast::Expr::ArithOp(arith_op) => {
+            use mid_ast::ArithOp as A;
+            let type_ = match arith_op {
+                A::IntOp(..) => mid_ast::Type::Int,
+                A::NegateInt(..) => mid_ast::Type::Int,
+
+                A::ByteOp(..) => mid_ast::Type::Byte,
+                A::NegateByte(..) => mid_ast::Type::Byte,
+
+                A::FloatOp(..) => mid_ast::Type::Float,
+                A::NegateFloat(..) => mid_ast::Type::Float,
+
+                A::IntCmp(..) => mid_ast::Type::Bool,
+                A::FloatCmp(..) => mid_ast::Type::Bool,
+                A::ByteCmp(..) => mid_ast::Type::Bool,
+            };
+            let typefolded = match arith_op {
+                A::IntOp(binop, a, b) => A::IntOp(binop, typefold(&a), typefold(&b)),
+                A::NegateInt(a) => A::NegateInt(typefold(&a)),
+
+                A::ByteOp(binop, a, b) => A::ByteOp(binop, typefold(&a), typefold(&b)),
+                A::NegateByte(a) => A::NegateByte(typefold(&a)),
+
+                A::FloatOp(binop, a, b) => A::FloatOp(binop, typefold(&a), typefold(&b)),
+                A::NegateFloat(a) => A::NegateFloat(typefold(&a)),
+
+                A::IntCmp(cmp, a, b) => A::IntCmp(cmp, typefold(&a), typefold(&b)),
+                A::FloatCmp(cmp, a, b) => A::FloatCmp(cmp, typefold(&a), typefold(&b)),
+                A::ByteCmp(cmp, a, b) => A::ByteCmp(cmp, typefold(&a), typefold(&b)),
+            };
+            (mid_ast::Expr::ArithOp(typefolded), type_)
+        }
+        mid_ast::Expr::ArrayOp(array_op) => {
+            use mid_ast::ArrayOp as A;
+            let type_ = match &array_op {
+                A::Construct(item_type, repr_var, items) => {
+                    for term in items {
+                        equate_types(graph, &type_of_term(ctx.typedefs, locals, term), item_type);
+                    }
+                    mid_ast::Type::Array(item_type.clone(), *repr_var)
+                }
+                A::Item(array, _idx) => {
+                    let array_type = type_of_term(ctx.typedefs, locals, array);
+                    if let mid_ast::Type::Array(ref item_type, _) = array_type {
+                        mid_ast::Type::Tuple(vec![*item_type.clone(), array_type])
+                    } else {
+                        // Any other term is a type error
+                        unreachable!();
+                    }
+                }
+                A::Len(_) => mid_ast::Type::Int,
+                A::Push(array_term, pushed_item_term) => {
+                    let array_type = type_of_term(ctx.typedefs, locals, array_term);
+                    if let mid_ast::Type::Array(ref item_type, _) = array_type {
+                        let pushed_item_type = type_of_term(ctx.typedefs, locals, pushed_item_term);
+                        equate_types(graph, item_type, &pushed_item_type);
+                    } else {
+                        // Type error
+                        unreachable!();
+                    }
+                    array_type
+                }
+                A::Pop(array_term) => {
+                    let array_type = type_of_term(ctx.typedefs, locals, array_term);
+                    if let mid_ast::Type::Array(ref item_type, _) = array_type {
+                        let item_type = *item_type.clone();
+                        mid_ast::Type::Tuple(vec![array_type, item_type])
+                    } else {
+                        // Type error
+                        unreachable!();
+                    }
+                }
+                A::Replace(hole_array_term, item_term) => {
+                    let array_type = type_of_term(ctx.typedefs, locals, hole_array_term);
+                    if let mid_ast::Type::HoleArray(ref item_type, _) = array_type {
+                        let param_type = type_of_term(ctx.typedefs, locals, item_term);
+                        equate_types(graph, &item_type, &param_type);
+                    } else {
+                        // Type error
+                        unreachable!();
+                    }
+                    array_type
+                }
+            };
+            let typefolded = match array_op {
+                A::Construct(t, v, items) => {
+                    A::Construct(t.clone(), v.clone(), items.iter().map(typefold).collect())
+                }
+                A::Item(array, idx) => A::Item(typefold(&array), typefold(&idx)),
+                A::Len(array) => A::Len(typefold(&array)),
+                A::Push(array, item) => A::Push(typefold(&array), typefold(&item)),
+                A::Pop(array) => A::Pop(typefold(&array)),
+                A::Replace(array, item) => A::Replace(typefold(&array), typefold(&item)),
+            };
+            (mid_ast::Expr::ArrayOp(typefolded), type_)
+        }
+        mid_ast::Expr::Ctor(type_id, variant, None) => {
+            let vars = (0..ctx.typedefs[type_id.0].num_params)
+                .map(|_| graph.new_var())
+                .collect();
+            (
+                mid_ast::Expr::Ctor(type_id, variant, None),
+                mid_ast::Type::Custom(type_id, vars),
+            )
+        }
+        mid_ast::Expr::Ctor(type_id, variant_id, Some(param)) => {
+            let (vars, typedef) = instantiate(graph, &ctx.typedefs[type_id.0]);
+            if let Some(ref variant_type) = typedef.variants[variant_id.0] {
+                let param_type = type_of_term(ctx.typedefs, locals, &param);
+                let param_folded = typefold_term(ctx.typedefs, locals, &param);
+                equate_types(graph, variant_type, &param_type);
+                (
+                    mid_ast::Expr::Ctor(type_id, variant_id, Some(param_folded)),
+                    mid_ast::Type::Custom(type_id, vars),
+                )
+            } else {
+                // Constructor doesn't take a param, but one was provided
+                unreachable!()
+            }
+        }
+        mid_ast::Expr::Local(local_id) => {
+            (mid_ast::Expr::Local(local_id), locals[local_id.0].clone())
+        }
+        mid_ast::Expr::Call(purity, func_id, arg_term, None) => {
+            let dup_FIXME = arg_term.clone();
+            let arg_type = type_of_term(ctx.typedefs, locals, &arg_term);
+            let arg_folded = typefold_term(ctx.typedefs, locals, &arg_term);
+            let (vars, result_type) = if let Some(funcdef) = ctx.scc_funcdefs.get(&func_id) {
+                // If its in the same SCC, just unify the types
+                equate_types(graph, &arg_type, &funcdef.arg_type);
+                (mid_ast::ReprParams::Pending, funcdef.ret_type.clone())
+            } else if let Some(signature) = &ctx.func_sigs[func_id.0] {
+                // Othwerise, it's already been processed, so instantiate params
+                if let &mid_ast::Term::Access(mid_ast::LocalId(3), _, _) = &dup_FIXME {
+                    println!("Arg: {:?}", &dup_FIXME);
+                    println!("LocalId(3)'s type: {:?}", locals[3]);
+                }
+                unify_external_function_call(
+                    graph,
+                    ctx.typedefs,
+                    func_id,
+                    signature,
+                    &arg_type,
+                    mid_ast::Expr::Call(purity, func_id, dup_FIXME, None),
+                )
+            } else {
+                unreachable!()
+            };
+            (
+                mid_ast::Expr::Call(purity, func_id, arg_folded, Some(vars)),
+                result_type,
+            )
+        }
+        mid_ast::Expr::Call(_, _, _, Some(_)) => unreachable!(),
+        mid_ast::Expr::Match(matched_local, branches, result_type) => {
+            let mut typed_branches = Vec::new();
+            let expr_dup =
+                mid_ast::Expr::Match(matched_local, branches.clone(), result_type.clone()); // FIXME rm
+            for (pat, branch) in branches {
+                if branch.terms.is_empty() {
+                    println!("EMPTY BLOCK IN MATCH BRANCH (for pat {:?})", pat);
+                    println!("=branches: {:#?}", expr_dup);
+                }
+                let block = unify_block(graph, ctx, locals, expr_id_gen, branch);
+                equate_types(graph, &result_type, &block.types[block.types.len() - 1]);
+                typed_branches.push((pat, block));
+            }
+            (
+                mid_ast::Expr::Match(matched_local, typed_branches, result_type.clone()),
+                *result_type,
+            )
+        }
+    }
+}
+
+/// Computes type-folded names for Access terms
+fn typefold_term<T>(
+    typedefs: &[mid_ast::TypeDef<T>],
+    locals: &[mid_ast::Type<SolverVarId>],
+    term: &mid_ast::Term,
+) -> mid_ast::Term {
+    println!("Typefolding term {:?}", term);
+    match term {
+        mid_ast::Term::Access(local, path, None) => {
+            let type_folded_path = type_fold(typedefs, &locals[local.0], &path);
+            mid_ast::Term::Access(*local, path.clone(), Some(type_folded_path))
+        }
+        mid_ast::Term::Access(_, _, Some(_)) => {
+            // The typefolded path should not have yet been initialized
+            unreachable!()
+        }
+        mid_ast::Term::BoolLit(v) => mid_ast::Term::BoolLit(*v),
+        mid_ast::Term::IntLit(v) => mid_ast::Term::IntLit(*v),
+        mid_ast::Term::ByteLit(v) => mid_ast::Term::ByteLit(*v),
+        mid_ast::Term::FloatLit(v) => mid_ast::Term::FloatLit(*v),
+    }
+}
+
 fn type_fold<T, E>(
-    typedefs: &[mid_ast::TypeDef<T>], // indexed by LocalId
+    typedefs: &[mid_ast::TypeDef<T>],
     type_: &mid_ast::Type<E>,
     path: &FieldPath,
 ) -> FieldPath {
@@ -115,185 +390,17 @@ fn type_fold<T, E>(
     )
 }
 
-fn unify_expr(
-    graph: &mut ConstraintGraph<mid_ast::Constraint>,
-    ctx: Context,
-    locals: &mut Vec<mid_ast::Type<SolverVarId>>, // indexed by `mid_ast::LocalId`
-    expr_id_gen: &mut ExprIdGen,
-    expr: mid_ast::Expr<()>,
-) -> (mid_ast::TypedExpr, mid_ast::Type<SolverVarId>) {
-    match expr {
-        mid_ast::Expr::Term(term) => {
-            let t = type_of_term(ctx.typedefs, locals, &term);
-            // Add the type-folded field path
-            let filled_term = match term {
-                mid_ast::Term::Access(local, path, None) => {
-                    let type_folded_path = type_fold(ctx.typedefs, &t, &path);
-                    mid_ast::Term::Access(local, path, Some(type_folded_path))
-                }
-                mid_ast::Term::Access(_, _, Some(_)) => {
-                    // The typefolded path should not have yet been initialized
-                    unreachable!()
-                }
-                mid_ast::Term::BoolLit(_)
-                | mid_ast::Term::IntLit(_)
-                | mid_ast::Term::ByteLit(_)
-                | mid_ast::Term::FloatLit(_) => term,
-            };
-            (mid_ast::Expr::Term(filled_term), t)
-        }
-        mid_ast::Expr::Tuple(items) => {
-            let t = mid_ast::Type::Tuple(
-                items
-                    .iter()
-                    .map(|item| type_of_term(ctx.typedefs, locals, item))
-                    .collect(),
-            );
-            (mid_ast::Expr::Tuple(items), t)
-        }
-        mid_ast::Expr::IOOp(mid_ast::IOOp::Input(var)) => (
-            mid_ast::Expr::IOOp(mid_ast::IOOp::Input(var)),
-            mid_ast::Type::Array(Box::new(mid_ast::Type::Byte), var),
-        ),
-        mid_ast::Expr::IOOp(mid_ast::IOOp::Output(output)) => (
-            mid_ast::Expr::IOOp(mid_ast::IOOp::Output(output)),
-            mid_ast::Type::Tuple(vec![]),
-        ),
-        mid_ast::Expr::ArithOp(arith_op) => {
-            let type_ = match arith_op {
-                mid_ast::ArithOp::IntOp(..) => mid_ast::Type::Int,
-                mid_ast::ArithOp::NegateInt(..) => mid_ast::Type::Int,
-
-                mid_ast::ArithOp::ByteOp(..) => mid_ast::Type::Byte,
-                mid_ast::ArithOp::NegateByte(..) => mid_ast::Type::Byte,
-
-                mid_ast::ArithOp::FloatOp(..) => mid_ast::Type::Float,
-                mid_ast::ArithOp::NegateFloat(..) => mid_ast::Type::Float,
-
-                mid_ast::ArithOp::IntCmp(..) => mid_ast::Type::Bool,
-                mid_ast::ArithOp::FloatCmp(..) => mid_ast::Type::Bool,
-                mid_ast::ArithOp::ByteCmp(..) => mid_ast::Type::Bool,
-            };
-            (mid_ast::Expr::ArithOp(arith_op), type_)
-        }
-        mid_ast::Expr::ArrayOp(array_op) => {
-            let type_ = match &array_op {
-                mid_ast::ArrayOp::Construct(item_type, repr_var, items) => {
-                    for term in items {
-                        equate_types(graph, &type_of_term(ctx.typedefs, locals, term), item_type);
-                    }
-                    mid_ast::Type::Array(item_type.clone(), *repr_var)
-                }
-                mid_ast::ArrayOp::Item(array, _idx) => {
-                    let array_type = type_of_term(ctx.typedefs, locals, array);
-                    if let mid_ast::Type::Array(ref item_type, _) = array_type {
-                        mid_ast::Type::Tuple(vec![*item_type.clone(), array_type])
-                    } else {
-                        // Any other term is a type error
-                        unreachable!();
-                    }
-                }
-                mid_ast::ArrayOp::Len(_) => mid_ast::Type::Int,
-                mid_ast::ArrayOp::Push(array_term, pushed_item_term) => {
-                    let array_type = type_of_term(ctx.typedefs, locals, array_term);
-                    if let mid_ast::Type::Array(ref item_type, _) = array_type {
-                        let pushed_item_type = type_of_term(ctx.typedefs, locals, pushed_item_term);
-                        equate_types(graph, item_type, &pushed_item_type);
-                    } else {
-                        // Type error
-                        unreachable!();
-                    }
-                    array_type
-                }
-                mid_ast::ArrayOp::Pop(array_term) => {
-                    let array_type = type_of_term(ctx.typedefs, locals, array_term);
-                    if let mid_ast::Type::Array(ref item_type, _) = array_type {
-                        let item_type = *item_type.clone();
-                        mid_ast::Type::Tuple(vec![array_type, item_type])
-                    } else {
-                        // Type error
-                        unreachable!();
-                    }
-                }
-                mid_ast::ArrayOp::Replace(hole_array_term, item_term) => {
-                    let array_type = type_of_term(ctx.typedefs, locals, hole_array_term);
-                    if let mid_ast::Type::HoleArray(ref item_type, _) = array_type {
-                        let param_type = type_of_term(ctx.typedefs, locals, item_term);
-                        equate_types(graph, &item_type, &param_type);
-                    } else {
-                        // Type error
-                        unreachable!();
-                    }
-                    array_type
-                }
-            };
-            (mid_ast::Expr::ArrayOp(array_op), type_)
-        }
-        mid_ast::Expr::Ctor(type_id, variant, None) => {
-            let vars = (0..ctx.typedefs[type_id.0].num_params)
-                .map(|_| graph.new_var())
-                .collect();
-            (
-                mid_ast::Expr::Ctor(type_id, variant, None),
-                mid_ast::Type::Custom(type_id, vars),
-            )
-        }
-        mid_ast::Expr::Ctor(type_id, variant_id, Some(param)) => {
-            let (vars, typedef) = instantiate(graph, &ctx.typedefs[type_id.0]);
-            if let Some(ref variant_type) = typedef.variants[variant_id.0] {
-                let param_type = type_of_term(ctx.typedefs, locals, &param);
-                equate_types(graph, variant_type, &param_type);
-                (
-                    mid_ast::Expr::Ctor(type_id, variant_id, Some(param)),
-                    mid_ast::Type::Custom(type_id, vars),
-                )
-            } else {
-                // Constructor doesn't take a param, but one was provided
-                unreachable!()
-            }
-        }
-        mid_ast::Expr::Local(local_id) => {
-            (mid_ast::Expr::Local(local_id), locals[local_id.0].clone())
-        }
-        mid_ast::Expr::Call(purity, func_id, arg_term, None) => {
-            let arg_type = type_of_term(ctx.typedefs, locals, &arg_term);
-            let (vars, result_type) = if let Some(funcdef) = ctx.scc_funcdefs.get(&func_id) {
-                // If its in the same SCC, just unify the types
-                equate_types(graph, &arg_type, &funcdef.arg_type);
-                (mid_ast::ReprParams::Pending, funcdef.ret_type.clone())
-            } else if let Some(signature) = &ctx.func_sigs[func_id.0] {
-                // Othwerise, it's already been processed, so instantiate params
-                unify_external_function_call(graph, ctx.typedefs, signature, &arg_type)
-            } else {
-                unreachable!()
-            };
-            (
-                mid_ast::Expr::Call(purity, func_id, arg_term, Some(vars)),
-                result_type,
-            )
-        }
-        mid_ast::Expr::Call(_, _, _, Some(_)) => unreachable!(),
-        mid_ast::Expr::Match(matched_local, branches, result_type) => {
-            let mut typed_branches = Vec::new();
-            for (pat, branch) in branches {
-                let block = unify_block(graph, ctx, locals, expr_id_gen, branch);
-                equate_types(graph, &result_type, &block.types[block.types.len() - 1]);
-                typed_branches.push((pat, block));
-            }
-            (
-                mid_ast::Expr::Match(matched_local, typed_branches, result_type.clone()),
-                *result_type,
-            )
-        }
-    }
-}
-
 fn unify_external_function_call(
     graph: &mut ConstraintGraph<mid_ast::Constraint>,
     typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
+    func_id: mid_ast::CustomFuncId, // FIXME rm
     func_sig: &Signature,
     arg_type: &mid_ast::Type<SolverVarId>,
+    expr: mid_ast::Expr<()>,
 ) -> (mid_ast::ReprParams<SolverVarId>, mid_ast::Type<SolverVarId>) {
+    println!("UNIFYING CALL TO {:?}", func_id);
+    println!("=call: {:#?}", expr);
+    println!("=sig: {:#?}", func_sig);
     // Unify actual argument's type with parameter type
     let vars = (0..func_sig.num_params)
         .map(|_| graph.new_var())
@@ -341,7 +448,7 @@ pub fn substitute_vars(
 
 fn type_of_term(
     typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
-    locals: &mut Vec<mid_ast::Type<SolverVarId>>,
+    locals: &[mid_ast::Type<SolverVarId>],
     term: &mid_ast::Term,
 ) -> mid_ast::Type<SolverVarId> {
     match term {
@@ -358,7 +465,7 @@ fn type_of_term(
 // It is not allowed to lookup the type of a field which is an unparameterized variant;
 // e.g. looking up the type of b.(True), getting the True variant of a boolean. Such
 // a lookup never occurs.
-fn lookup_type_field(
+pub fn lookup_type_field(
     typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
     type_: &mid_ast::Type<SolverVarId>,
     field_path: FieldPath,
@@ -389,7 +496,10 @@ fn lookup_type_field(
                     unreachable!()
                 }
             }
-            _ => unreachable!(),
+            _ => panic!(
+                "internal error: field {:?} does not exist in type {:?}",
+                &field_path, type_
+            ),
         }
     }
 }
@@ -472,6 +582,7 @@ fn equate_types(
         (T::Bool, T::Bool) => {}
         (T::Int, T::Int) => {}
         (T::Float, T::Float) => {}
+        (T::Byte, T::Byte) => {}
         (T::Array(item_a, repr_var_a), T::Array(item_b, repr_var_b)) => {
             graph.equate(*repr_var_a, *repr_var_b);
             equate_types(graph, item_a, item_b);
@@ -493,6 +604,6 @@ fn equate_types(
                 graph.equate(*a, *b);
             }
         }
-        (_, _) => debug_assert!(false, "mismatched types"),
+        (_, _) => panic!("mismatched types: {:?} and {:?}", type_a, type_b),
     }
 }

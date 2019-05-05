@@ -626,3 +626,34 @@ pub fn closure_specialize(program: annot::Program) -> special::Program {
         main: resolved_main_id,
     }
 }
+
+pub fn check_patterns(program: &special::Program) {
+    for (i, lam) in program.lams.iter().enumerate() {
+        check_pattern(special::LamId(i), &lam.arg_pat, &lam.arg);
+    }
+
+    fn check_pattern(i: special::LamId, pat: &special::Pattern, type_: &special::Type) {
+        use special::Pattern as P;
+        use special::Type as T;
+        match (pat, type_) {
+            (P::Any(_), _) => {}
+            (P::Var(_), _) => {}
+            (P::Tuple(items), T::Tuple(item_types)) => {
+                assert_eq!(items.len(), item_types.len());
+                for (p, t) in items.iter().zip(item_types) {
+                    check_pattern(i, p, t);
+                }
+            }
+            (P::Ctor(type_id, _, _), T::Custom(expected_type_id)) => {
+                assert_eq!(type_id, expected_type_id);
+            }
+            (P::BoolConst(_), T::Bool) => {}
+            (P::IntConst(_), T::Int) => {}
+            (P::ByteConst(_), T::Byte) => {}
+            (P::FloatConst(_), T::Float) => {}
+            _ => {
+                panic!("[{:?}] arg pattern didn't match argument type", i);
+            }
+        }
+    }
+}

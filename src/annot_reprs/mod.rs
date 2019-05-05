@@ -7,21 +7,26 @@
 /// The pipeline, wired together in `fn annot_reprs`, is as follows:
 ///
 /// 1. `mod flatten` and `mod parameterize` generate a `mid_ast` from the first order AST.
-/// 2. `mod unify` constructs the typed AST (with representation type-variables) and
-/// runs Hindley-Milner.
+/// 2. `mod unify` runs Hindley-Milner and annotates each expression with its type.
 /// 3. `mod aliasing` computes the internal aliasing graph for every function.
 /// 4. `mod constrain` computes sharing constraints on repr vars based on usage patterns.
 /// 5. `mod extract` generates solutions for repr vars and emits the `out_ast`.
 use crate::data::first_order_ast as in_ast;
 use crate::data::repr_annot_ast as out_ast;
 
-mod aliasing;
-mod constrain;
-mod extract;
-mod flatten;
 mod mid_ast;
+
+mod flatten;
+
 mod parameterize;
+
 mod unify;
+
+mod aliasing;
+
+mod constrain;
+
+mod extract;
 
 use crate::annot_aliases::{self, UniqueInfo};
 use crate::graph;
@@ -47,7 +52,12 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> ou
             .map(|&graph::NodeId(func_id)| {
                 (
                     out_ast::CustomFuncId(func_id),
-                    flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id]),
+                    flatten::flatten_func(
+                        &mut graph,
+                        &typedefs,
+                        mid_ast::CustomFuncId(func_id),
+                        &program.funcs[func_id],
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -92,6 +102,9 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> ou
         }
         for (func_id, alias_sig) in scc_alias_sigs {
             assert!(alias_sigs[func_id.0].is_none());
+            if func_id.0 == 6 {
+                println!("adding {:?} to alias_sigs", func_id);
+            }
             alias_sigs[func_id.0] = Some(alias_sig);
         }
 
@@ -110,7 +123,7 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> ou
                     },
                     &mut graph,
                     func,
-                    &func_bodies[&func.id],
+                    &func_bodies[&func.id].1,
                 );
                 new_scc_sigs.insert(func.id, sig);
                 graph.clear_requirements();
@@ -137,7 +150,7 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> ou
                     },
                     &mut graph,
                     func,
-                    &func_bodies[&func.id],
+                    &func_bodies[&func.id].1,
                 )
             );
 
@@ -158,7 +171,7 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> ou
                 extract::SolutionExtractor::from_sig_gen(&sig_gen, class_constraints);
 
             out_func_bodies[func.id.0] =
-                Some(extract::gen_block(&mut extractor, &func_bodies[&func.id]));
+                Some(extract::gen_func(&mut extractor, &func_bodies[&func.id]));
 
             assert!(constraint_sigs[func.id.0].is_none());
             constraint_sigs[func.id.0] =
@@ -169,10 +182,12 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: &[UniqueInfo]) -> ou
     }
 
     let mut out_funcs = Vec::new();
-    for (constraint_sig, body) in constraint_sigs.into_iter().zip(out_func_bodies) {
+    let out_func_bodies = out_func_bodies.into_iter().map(Option::unwrap);
+    for (constraint_sig, (arg_type, body)) in constraint_sigs.into_iter().zip(out_func_bodies) {
         out_funcs.push(out_ast::FuncDef {
             num_params: constraint_sig.unwrap().num_params(),
-            body: body.unwrap(),
+            arg_type: arg_type,
+            body: body,
         })
     }
 
