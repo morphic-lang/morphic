@@ -274,7 +274,9 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
         ast::Expr::ArrayOp(array_op) => match array_op {
             ast::ArrayOp::Construct(_item_t, ast::Repr::Shared, items) => {
                 // TODO: check type
-                println!("[constructing a flat array]");
+                if DEBUG {
+                    println!("[constructing a flat array]");
+                }
                 Value::PersistentArray(
                     items
                         .into_iter()
@@ -284,7 +286,9 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
             }
             ast::ArrayOp::Construct(_item_t, ast::Repr::Unique, items) => {
                 // TODO: check type
-                println!("[constructing a flat array]");
+                if DEBUG {
+                    println!("[constructing a flat array]");
+                }
                 Value::Array(Rc::new(RefCell::new(Some(
                     items
                         .into_iter()
@@ -296,19 +300,25 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
                 let array = interpret_term(env, array);
                 let idx = unwrap_int(interpret_term(env, index));
                 if let Some(pers) = try_persistent_array(&array) {
-                    println!("[accessing a persistent array]");
+                    if DEBUG {
+                        println!("[accessing a persistent array]");
+                    }
                     Value::Tuple(vec![
                         pers[idx as usize].clone(),
                         Value::PersistentHoleArray(idx, pers),
                     ])
                 } else {
-                    println!("[accessing a flat array]");
+                    if DEBUG {
+                        println!("[accessing a flat array]");
+                    }
                     let vec_cell = unwrap_array(array);
                     let vec_borrow = vec_cell.borrow();
                     let vec = vec_borrow
                         .as_ref()
                         .expect("item called on invalidated array!");
-                    println!("array is {:?}, idx is {:?}", &vec, idx);
+                    if DEBUG {
+                        println!("array is {:?}, idx is {:?}", &vec, idx);
+                    }
                     let item = { vec[idx as usize].clone() };
                     Value::Tuple(vec![item, Value::HoleArray(idx, vec_cell.clone())])
                 }
@@ -316,7 +326,9 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
             ast::ArrayOp::Len(array) => {
                 let array = interpret_term(env, array);
                 if let Some(pers) = try_persistent_array(&array) {
-                    println!("[getting length of a persistent array ({:?})]", pers.len());
+                    if DEBUG {
+                        println!("[getting length of a persistent array ({:?})]", pers.len());
+                    }
                     pers.len().into()
                 } else {
                     let vec_cell = unwrap_array(array);
@@ -324,7 +336,9 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
                     let vec = vec_borrow
                         .as_ref()
                         .expect("len called on invalidated array!");
-                    println!("[getting length of a flat array ({:?})]", vec.len());
+                    if DEBUG {
+                        println!("[getting length of a flat array ({:?})]", vec.len());
+                    }
                     vec.len().into()
                 }
             }
@@ -332,11 +346,15 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
                 let array = interpret_term(env, array);
                 let item = interpret_term(env, item);
                 if let Some(mut pers) = try_persistent_array(&array) {
-                    println!("[pushing to a persistent array]");
+                    if DEBUG {
+                        println!("[pushing to a persistent array]");
+                    }
                     pers.push_back(item);
                     Value::PersistentArray(pers)
                 } else {
-                    println!("[pushing to a flat array]");
+                    if DEBUG {
+                        println!("[pushing to a flat array]");
+                    }
                     let vec_cell = unwrap_array(array);
                     let mut vec = vec_cell
                         .replace(None)
@@ -348,13 +366,17 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
             ast::ArrayOp::Pop(array) => {
                 let array = interpret_term(env, array);
                 if let Some(mut pers) = try_persistent_array(&array) {
-                    println!("[popping from a persistent array]");
+                    if DEBUG {
+                        println!("[popping from a persistent array]");
+                    }
                     let item = pers
                         .pop_back()
                         .expect("Hopper program error: popped from empty array");
                     Value::Tuple(vec![Value::PersistentArray(pers), item])
                 } else {
-                    println!("[popping from a flat array]");
+                    if DEBUG {
+                        println!("[popping from a flat array]");
+                    }
                     let vec_cell = unwrap_array(array);
                     let mut vec = vec_cell
                         .replace(None)
@@ -369,11 +391,15 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
                 let array = interpret_term(env, hole_array);
                 let item = interpret_term(env, item);
                 if let Some((idx, mut pers)) = try_persistent_holearray(&array) {
-                    println!("[assigning to a persistent array]");
+                    if DEBUG {
+                        println!("[assigning to a persistent array]");
+                    }
                     pers[idx as usize] = item;
                     Value::PersistentArray(pers)
                 } else {
-                    println!("[assigning to a flat array]");
+                    if DEBUG {
+                        println!("[assigning to a flat array]");
+                    }
                     let (idx, vec_cell) = unwrap_holearray(array);
                     let mut vec = vec_cell
                         .replace(None)
@@ -409,7 +435,9 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
         ast::Expr::IOOp(ast::IOOp::Output(array)) => {
             let array = interpret_term(env, array);
             let bytes = if let Some(pers) = try_persistent_array(&array) {
-                println!("[outputting a persistent array]");
+                if DEBUG {
+                    println!("[outputting a persistent array]");
+                }
                 pers.into_iter().map(|val| unwrap_byte(val)).collect()
             } else {
                 let output_cell = unwrap_array(array);
