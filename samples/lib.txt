@@ -2,19 +2,17 @@ get(arr: Array a, i: Int): a =
   let (x, _) = item(arr, i) in
   x
 
-proc concat_from(a: Array t, b: Array t, i: Int): Array t =
+concat_from(a: Array t, b: Array t, i: Int): Array t =
   if i = len(b) {
     a
   } else {
-    let () = do output("concat_from'ing") in
-    do concat_from(push(a, get(b, i)), b, i + 1)
+    concat_from(push(a, get(b, i)), b, i + 1)
   }
 
-proc concat(a: Array t, b: Array t): Array t =
-  let () = do output("concating") in
-  do concat_from(a, b, 0)
+concat(a: Array t, b: Array t): Array t =
+  concat_from(a, b, 0)
 
-proc p_nat_to_string(i: Int): Array Byte =
+nat_to_string(i: Int): Array Byte =
   let digit_to_string = \d ->
     match d {
         0 -> "0",
@@ -29,18 +27,20 @@ proc p_nat_to_string(i: Int): Array Byte =
         9 -> "9",
         _ -> "",
     } in
-  let () = do output("p_nat_to_string'ing") in
   if i = 0 {
     ""
   } else {
-    do concat(do p_nat_to_string(i / 10), digit_to_string(i - i / 10 * 10))
+    concat(nat_to_string(i / 10), digit_to_string(i - i / 10 * 10))
   }
 
-proc int_to_string(i: Int): Array Byte =
-  let () = do output("int_to_string'ing") in
-  if i = 0 { let () = do output("its zero") in "0" }
-    else if i < 0 { let () = do output("its negative") in do concat("-", do p_nat_to_string(i)) }
-    else { let () = do output("its positive") in do p_nat_to_string(i) }
+int_to_string(i: Int): Array Byte =
+  if i = 0 {
+    "0"
+  } else if i < 0 {
+    concat("-", nat_to_string(0 - i))
+  } else {
+    nat_to_string(i)
+  }
 
 proc main(): () =
-  do output(do int_to_string(420))
+  do output(int_to_string(0 - 420))
