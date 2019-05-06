@@ -105,12 +105,14 @@ impl LastAccessTree {
         let mut tree_node = self;
         for (i, &(expr_id, branch)) in ctx.iter().enumerate() {
             if tree_node.expr_id == expr_id {
-                if let Some(tree_from_branch) = tree_node.rest.get_mut(&branch) {
-                    tree_node = tree_from_branch;
+                if tree_node.rest.contains_key(&branch) {
+                    tree_node = tree_node.rest.get_mut(&branch).unwrap();
                 } else {
-                    // The arguments provided to consider_access do not agree with self
-                    // on whether expr_id is a Match statement.
-                    unreachable!();
+                    tree_node.rest.insert(
+                        branch,
+                        LastAccessTree::singleton(&ctx[i + 1..], final_expr_id),
+                    );
+                    return;
                 }
             } else if tree_node.expr_id < expr_id {
                 *tree_node = LastAccessTree::singleton(&ctx[i..], final_expr_id);
@@ -371,14 +373,7 @@ fn alias_track_block(
         let cur_local_id = mid_ast::LocalId(block.initial_idx + i);
         assert_eq!(block.expr_id_of(cur_local_id), cur_expr_id);
     }
-    for (id, (expr, type_)) in ids.into_iter().zip(block.terms.iter().zip(&block.types)) {
-        let locals = block.expr_ids.as_ref().unwrap();
-        println!("CHECKING EXPR {:?}", id);
-        if locals.len() > 3 {
-            println!("Type of Local #3 is: {:?}", &expr_types[locals[3].0]);
-        }
-        println!("Type of expression is: {:?}", type_);
-        println!("Checking aliasing for expr: {:?}", expr);
+    for (id, type_) in ids.into_iter().zip(&block.types) {
         typecheck_expr_aliasing(
             ctx.typedefs,
             name_last_accesses,
@@ -479,9 +474,6 @@ fn alias_track_expr(
         cur_expr_id,
         type_,
     );
-    if cur_expr_id.0 == 6 {
-        println!("Alias tracking {:?} of type {:?}", expr, type_);
-    }
 
     match expr {
         mid_ast::Expr::Term(term) => {
@@ -616,6 +608,7 @@ fn alias_track_expr(
                 }
             }
             mid_ast::ArrayOp::Len(array_term) => {
+                println!("Len operation: {:?}", expr);
                 update_term_accesses(accesses, locals, array_term);
             }
             mid_ast::ArrayOp::Push(array_term, item_term)
@@ -916,7 +909,7 @@ fn update_term_field_accesses(
             let field_path = pruned_base_field_path + sub_field;
             let referenced_expr = &mut accesses.accesses[locals[local_id.0].0];
 
-            for i in 0..field_path.len() {
+            for i in 0..field_path.len() + 1 {
                 if let Some(last_access) = referenced_expr.get_mut(&field_path.take(i)) {
                     last_access.consider_access(&accesses.ctx, cur_expr_id);
                 }
@@ -1084,9 +1077,6 @@ fn compute_edges_from_aliasing(
         let sub_path = ref_path.skip(prior_path.len());
         // Note: ref_path == prior_path + sub_path
         let here_path = new_path + &sub_path;
-        println!("ref_path = {:?}", &ref_path);
-        println!("here_path = {:?}", &here_path);
-        println!("sub_path = {:?}", &sub_path);
 
         // Mark "here" that the name aliases everything aliased by "there"
         let mut here_edges = ref_edges.clone();

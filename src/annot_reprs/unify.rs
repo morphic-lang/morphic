@@ -332,7 +332,6 @@ fn typefold_term<T>(
     locals: &[mid_ast::Type<SolverVarId>],
     term: &mid_ast::Term,
 ) -> mid_ast::Term {
-    println!("Typefolding term {:?}", term);
     match term {
         mid_ast::Term::Access(local, path, None) => {
             let type_folded_path = type_fold(typedefs, &locals[local.0], &path);

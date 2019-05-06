@@ -410,7 +410,7 @@ fn constrain_expr(
         let repr_var = match type_ {
             mid_ast::Type::Array(_, repr_var) => *repr_var,
             mid_ast::Type::HoleArray(_, repr_var) => *repr_var,
-            _ => unreachable!(), // Type error
+            _ => panic!("internal type error"),
         };
         apply_constraint_from_call(
             func,

@@ -6,6 +6,8 @@ use itertools::izip;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+static DEBUG: bool = false;
+
 pub fn interpret(program: &ast::Program) {
     interpret_block(
         program,
@@ -152,7 +154,7 @@ fn interpret_block(program: &ast::Program, env: &mut Env, block: &ast::Block) ->
             let val = interpret_expr(program, sub_env, expr);
             sub_env.push(val);
         }
-        sub_env.pop().unwrap()
+        sub_env.pop().expect("env cannot be empty")
     })
 }
 
@@ -303,7 +305,9 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
                     println!("[accessing a flat array]");
                     let vec_cell = unwrap_array(array);
                     let vec_borrow = vec_cell.borrow();
-                    let vec = vec_borrow.as_ref().unwrap();
+                    let vec = vec_borrow
+                        .as_ref()
+                        .expect("item called on invalidated array!");
                     println!("array is {:?}, idx is {:?}", &vec, idx);
                     let item = { vec[idx as usize].clone() };
                     Value::Tuple(vec![item, Value::HoleArray(idx, vec_cell.clone())])
@@ -317,7 +321,9 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
                 } else {
                     let vec_cell = unwrap_array(array);
                     let vec_borrow = vec_cell.borrow();
-                    let vec = vec_borrow.as_ref().unwrap();
+                    let vec = vec_borrow
+                        .as_ref()
+                        .expect("len called on invalidated array!");
                     println!("[getting length of a flat array ({:?})]", vec.len());
                     vec.len().into()
                 }
@@ -430,10 +436,12 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
         }
         ast::Expr::Local(local_id) => env[local_id.0].clone(),
         ast::Expr::Call(purity, func_id, arg) => {
-            println!(
-                "Calling function {:?} ({:?}) with arg {:?}",
-                func_id, purity, arg
-            );
+            if DEBUG {
+                println!(
+                    "Calling function {:?} ({:?}) with arg {:?}",
+                    func_id, purity, arg
+                );
+            }
             let arg = interpret_term(env, arg);
             let mut callee_env = vec![arg];
             interpret_block(program, &mut callee_env, &program.funcs[func_id.0].body)
@@ -478,7 +486,8 @@ fn lookup_in_value(val: Value, path: FieldPath) -> Value {
         (Value::Tuple(els), FieldId::Field(i)) => els[i].clone(),
         (Value::Custom(_, real_variant, arg), FieldId::Variant(subscript_variant)) => {
             assert_eq!(real_variant, subscript_variant);
-            *arg.clone().unwrap()
+            *arg.clone()
+                .expect("pattern mismatched field path: variant is None")
         }
         (Value::Prim(v), field) => panic!(
             "Tried to lookup field {:?} in {:?} (whole rest of field path: {:?}",
@@ -496,7 +505,9 @@ fn pat_matches(pat: &ast::Pattern, value: &Value) -> bool {
     match pat {
         ast::Pattern::Any => true,
         ast::Pattern::Const(match_val) => {
-            println!("matching on {:?}, for value {:?}", match_val, value);
+            if DEBUG {
+                println!("matching on {:?}, for value {:?}", match_val, value);
+            }
             match value {
                 Value::Prim(val) => match_val == val,
                 _ => false,
