@@ -25,7 +25,7 @@ pub enum Primitive {
     Num(NumType),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PrimVal {
     Bool(bool),
     Int(i64),
@@ -101,7 +101,7 @@ pub enum ArrayOp {
     ), // Returns new array
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Pattern {
     Any,
     Tuple(Vec<Pattern>),

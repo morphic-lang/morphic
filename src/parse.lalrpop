@@ -239,52 +239,52 @@ AppExpr: syntax::Expr = {
     syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
 };
 
-ArithSumExpr: syntax::Expr = {
+ArithProdExpr: syntax::Expr = {
   <AppExpr>,
 
-  <left: ArithSumExpr> "+&" <right: AppExpr> => syntax::binop(syntax::Op::AddByte, left, right),
-  <left: ArithSumExpr> "-&" <right: AppExpr> => syntax::binop(syntax::Op::SubByte, left, right),
+  <left: ArithProdExpr> "*&" <right: AppExpr> => syntax::binop(syntax::Op::MulByte, left, right),
+  <left: ArithProdExpr> "/&" <right: AppExpr> => syntax::binop(syntax::Op::DivByte, left, right),
 
-  <left: ArithSumExpr> "+" <right: AppExpr> => syntax::binop(syntax::Op::AddInt, left, right),
-  <left: ArithSumExpr> "-" <right: AppExpr> => syntax::binop(syntax::Op::SubInt, left, right),
+  <left: ArithProdExpr> "*" <right: AppExpr> => syntax::binop(syntax::Op::MulInt, left, right),
+  <left: ArithProdExpr> "/" <right: AppExpr> => syntax::binop(syntax::Op::DivInt, left, right),
 
-  <left: ArithSumExpr> "+." <right: AppExpr> => syntax::binop(syntax::Op::AddFloat, left, right),
-  <left: ArithSumExpr> "-." <right: AppExpr> => syntax::binop(syntax::Op::SubFloat, left, right),
+  <left: ArithProdExpr> "*." <right: AppExpr> => syntax::binop(syntax::Op::MulFloat, left, right),
+  <left: ArithProdExpr> "/." <right: AppExpr> => syntax::binop(syntax::Op::DivFloat, left, right),
 };
 
-ArithProdExpr: syntax::Expr = {
-  <ArithSumExpr>,
+ArithSumExpr: syntax::Expr = {
+  <ArithProdExpr>,
 
-  <left: ArithProdExpr> "*&" <right: ArithSumExpr> => syntax::binop(syntax::Op::MulByte, left, right),
-  <left: ArithProdExpr> "/&" <right: ArithSumExpr> => syntax::binop(syntax::Op::SubByte, left, right),
+  <left: ArithSumExpr> "+&" <right: ArithProdExpr> => syntax::binop(syntax::Op::AddByte, left, right),
+  <left: ArithSumExpr> "-&" <right: ArithProdExpr> => syntax::binop(syntax::Op::SubByte, left, right),
 
-  <left: ArithProdExpr> "*" <right: ArithSumExpr> => syntax::binop(syntax::Op::MulInt, left, right),
-  <left: ArithProdExpr> "/" <right: ArithSumExpr> => syntax::binop(syntax::Op::SubInt, left, right),
+  <left: ArithSumExpr> "+" <right: ArithProdExpr> => syntax::binop(syntax::Op::AddInt, left, right),
+  <left: ArithSumExpr> "-" <right: ArithProdExpr> => syntax::binop(syntax::Op::SubInt, left, right),
 
-  <left: ArithProdExpr> "*." <right: ArithSumExpr> => syntax::binop(syntax::Op::MulFloat, left, right),
-  <left: ArithProdExpr> "/." <right: ArithSumExpr> => syntax::binop(syntax::Op::DivFloat, left, right),
+  <left: ArithSumExpr> "+." <right: ArithProdExpr> => syntax::binop(syntax::Op::AddFloat, left, right),
+  <left: ArithSumExpr> "-." <right: ArithProdExpr> => syntax::binop(syntax::Op::SubFloat, left, right),
 };
 
 ArithCompExpr: syntax::Expr = {
-  <ArithProdExpr>,
+  <ArithSumExpr>,
 
-  <left: ArithProdExpr> "=&" <right: ArithProdExpr> => syntax::binop(syntax::Op::EqByte, left, right),
-  <left: ArithProdExpr> "<&" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtByte, left, right),
-  <left: ArithProdExpr> "<=&" <right: ArithProdExpr> => syntax::binop(syntax::Op::LteByte, left, right),
-  <left: ArithProdExpr> ">&" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtByte, right, left),
-  <left: ArithProdExpr> ">=&" <right: ArithProdExpr> => syntax::binop(syntax::Op::LteByte, right, left),
+  <left: ArithSumExpr> "=&" <right: ArithSumExpr> => syntax::binop(syntax::Op::EqByte, left, right),
+  <left: ArithSumExpr> "<&" <right: ArithSumExpr> => syntax::binop(syntax::Op::LtByte, left, right),
+  <left: ArithSumExpr> "<=&" <right: ArithSumExpr> => syntax::binop(syntax::Op::LteByte, left, right),
+  <left: ArithSumExpr> ">&" <right: ArithSumExpr> => syntax::binop(syntax::Op::LtByte, right, left),
+  <left: ArithSumExpr> ">=&" <right: ArithSumExpr> => syntax::binop(syntax::Op::LteByte, right, left),
 
-  <left: ArithProdExpr> "=" <right: ArithProdExpr> => syntax::binop(syntax::Op::EqInt, left, right),
-  <left: ArithProdExpr> "<" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtInt, left, right),
-  <left: ArithProdExpr> "<=" <right: ArithProdExpr> => syntax::binop(syntax::Op::LteInt, left, right),
-  <left: ArithProdExpr> ">" <right: ArithProdExpr> => syntax::binop(syntax::Op::LtInt, right, left),
-  <left: ArithProdExpr> ">=" <right: ArithProdExpr> => syntax::binop(syntax::Op::LteInt, right, left),
+  <left: ArithSumExpr> "=" <right: ArithSumExpr> => syntax::binop(syntax::Op::EqInt, left, right),
+  <left: ArithSumExpr> "<" <right: ArithSumExpr> => syntax::binop(syntax::Op::LtInt, left, right),
+  <left: ArithSumExpr> "<=" <right: ArithSumExpr> => syntax::binop(syntax::Op::LteInt, left, right),
+  <left: ArithSumExpr> ">" <right: ArithSumExpr> => syntax::binop(syntax::Op::LtInt, right, left),
+  <left: ArithSumExpr> ">=" <right: ArithSumExpr> => syntax::binop(syntax::Op::LteInt, right, left),
 
-  <left: ArithProdExpr> "=." <right: ArithProdExpr> => syntax::binop(syntax::Op::EqFloat, left, right),
-  <left: ArithProdExpr> "<." <right: ArithProdExpr> => syntax::binop(syntax::Op::LtFloat, left, right),
-  <left: ArithProdExpr> "<=." <right: ArithProdExpr> => syntax::binop(syntax::Op::LteFloat, left, right),
-  <left: ArithProdExpr> ">." <right: ArithProdExpr> => syntax::binop(syntax::Op::LtFloat, right, left),
-  <left: ArithProdExpr> ">=." <right: ArithProdExpr> => syntax::binop(syntax::Op::LteFloat, right, left),
+  <left: ArithSumExpr> "=." <right: ArithSumExpr> => syntax::binop(syntax::Op::EqFloat, left, right),
+  <left: ArithSumExpr> "<." <right: ArithSumExpr> => syntax::binop(syntax::Op::LtFloat, left, right),
+  <left: ArithSumExpr> "<=." <right: ArithSumExpr> => syntax::binop(syntax::Op::LteFloat, left, right),
+  <left: ArithSumExpr> ">." <right: ArithSumExpr> => syntax::binop(syntax::Op::LtFloat, right, left),
+  <left: ArithSumExpr> ">=." <right: ArithSumExpr> => syntax::binop(syntax::Op::LteFloat, right, left),
 };
 
 ArrayExpr: syntax::Expr = {

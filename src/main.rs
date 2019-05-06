@@ -39,6 +39,8 @@ mod annot_reprs;
 
 mod lower_reprs;
 
+mod interpreter;
+
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;
 use std::env::args_os;
@@ -170,7 +172,15 @@ fn run(config: Config) -> Result<(), Error> {
 
     let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);
 
-    let _specialized = lower_reprs::lower_reprs(data_structure_annotated);
+    println!("Lowering closures");
+
+    let specialized = lower_reprs::lower_reprs(data_structure_annotated);
+
+    println!("==============================================================");
+    println!("============== Running program ===============================");
+    println!("==============================================================");
+
+    interpreter::interpret(&specialized);
 
     Ok(())
 }

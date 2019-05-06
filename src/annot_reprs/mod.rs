@@ -54,12 +54,7 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: Vec<UniqueInfo>) -> 
             .map(|&graph::NodeId(func_id)| {
                 (
                     out_ast::CustomFuncId(func_id),
-                    flatten::flatten_func(
-                        &mut graph,
-                        &typedefs,
-                        mid_ast::CustomFuncId(func_id),
-                        &program.funcs[func_id],
-                    ),
+                    flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id]),
                 )
             })
             .collect::<BTreeMap<_, _>>();

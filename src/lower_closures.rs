@@ -264,14 +264,14 @@ impl<'a> Context<'a> {
 
         let func_rep_type = first_ord::Type::Custom(self.mapping.map_closure_type(lowered_id));
 
-        static func_rep_local: first_ord::Expr = local(0);
-        static arg_local: first_ord::Expr = local(1);
-        static env_local: first_ord::Expr = local(2); // For use in match branch bodies; may not exist in all branches
+        static FUNC_REP_LOCAL: first_ord::Expr = local(0);
+        static ARG_LOCAL: first_ord::Expr = local(1);
+        static ENV_LOCAL: first_ord::Expr = local(2); // For use in match branch bodies; may not exist in all branches
 
         fn with_args(types: Vec<first_ord::Type>, body: first_ord::Expr) -> first_ord::Expr {
             first_ord::Expr::Let(
                 first_ord::Pattern::Tuple(types.into_iter().map(first_ord::Pattern::Var).collect()),
-                Box::new(arg_local.clone()),
+                Box::new(ARG_LOCAL.clone()),
                 Box::new(body),
             )
         }
@@ -287,7 +287,7 @@ impl<'a> Context<'a> {
                 first_ord::Pattern::Var(arg_type.clone()),
             ]),
             body: first_ord::Expr::Match(
-                Box::new(func_rep_local.clone()),
+                Box::new(FUNC_REP_LOCAL.clone()),
                 lowered
                     .case_variants
                     .iter()
@@ -307,8 +307,8 @@ impl<'a> Context<'a> {
                                     purity,
                                     lam_body_func,
                                     Box::new(first_ord::Expr::Tuple(vec![
-                                        env_local.clone(), // Environment
-                                        arg_local.clone(), // Argument
+                                        ENV_LOCAL.clone(), // Environment
+                                        ARG_LOCAL.clone(), // Argument
                                     ])),
                                 )
                             }
@@ -390,7 +390,7 @@ impl<'a> Context<'a> {
                                     Op::MulByte => byte_binop(first_ord::BinOp::Mul),
                                     Op::DivByte => byte_binop(first_ord::BinOp::Div),
                                     Op::NegByte => first_ord::Expr::ArithOp(
-                                        first_ord::ArithOp::NegateByte(Box::new(arg_local.clone())),
+                                        first_ord::ArithOp::NegateByte(Box::new(ARG_LOCAL.clone())),
                                     ),
 
                                     Op::EqByte => byte_cmp(first_ord::Comparison::Equal),
@@ -402,7 +402,7 @@ impl<'a> Context<'a> {
                                     Op::MulInt => int_binop(first_ord::BinOp::Mul),
                                     Op::DivInt => int_binop(first_ord::BinOp::Div),
                                     Op::NegInt => first_ord::Expr::ArithOp(
-                                        first_ord::ArithOp::NegateInt(Box::new(arg_local.clone())),
+                                        first_ord::ArithOp::NegateInt(Box::new(ARG_LOCAL.clone())),
                                     ),
 
                                     Op::EqInt => int_cmp(first_ord::Comparison::Equal),
@@ -494,7 +494,7 @@ impl<'a> Context<'a> {
                                     ArrayOp::Len => {
                                         first_ord::Expr::ArrayOp(first_ord::ArrayOp::Len(
                                             lowered_item_type,
-                                            Box::new(arg_local.clone()),
+                                            Box::new(ARG_LOCAL.clone()),
                                         ))
                                     }
 
@@ -517,7 +517,7 @@ impl<'a> Context<'a> {
                                     ArrayOp::Pop => {
                                         first_ord::Expr::ArrayOp(first_ord::ArrayOp::Pop(
                                             lowered_item_type,
-                                            Box::new(arg_local.clone()),
+                                            Box::new(ARG_LOCAL.clone()),
                                         ))
                                     }
 
@@ -546,8 +546,8 @@ impl<'a> Context<'a> {
 
                                 first_ord::Expr::ArrayOp(first_ord::ArrayOp::Replace(
                                     lowered_item_type,
-                                    Box::new(env_local.clone()), // Hole array (environment)
-                                    Box::new(arg_local.clone()), // Item (argument)
+                                    Box::new(ENV_LOCAL.clone()), // Hole array (environment)
+                                    Box::new(ARG_LOCAL.clone()), // Item (argument)
                                 ))
                             }
 
@@ -558,7 +558,7 @@ impl<'a> Context<'a> {
                                 match op {
                                     IOOp::Input => first_ord::Expr::IOOp(first_ord::IOOp::Input),
                                     IOOp::Output => first_ord::Expr::IOOp(first_ord::IOOp::Output(
-                                        Box::new(arg_local.clone()),
+                                        Box::new(ARG_LOCAL.clone()),
                                     )),
                                 }
                             }
@@ -571,7 +571,7 @@ impl<'a> Context<'a> {
                                     first_ord::VariantId(variant.0),
                                     // This constructor is necessarily non-nullary, because we are
                                     // calling it as a function
-                                    Some(Box::new(arg_local.clone())),
+                                    Some(Box::new(ARG_LOCAL.clone())),
                                 )
                             }
                         };

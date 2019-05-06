@@ -301,7 +301,7 @@ fn unify_expr(
                 (mid_ast::ReprParams::Pending, funcdef.ret_type.clone())
             } else if let Some(signature) = &ctx.func_sigs[func_id.0] {
                 // Othwerise, it's already been processed, so instantiate params
-                unify_external_function_call(graph, ctx.typedefs, func_id, signature, &arg_type)
+                unify_external_function_call(graph, ctx.typedefs, signature, &arg_type)
             } else {
                 unreachable!()
             };
@@ -370,7 +370,6 @@ fn type_fold<T, E>(
 fn unify_external_function_call(
     graph: &mut ConstraintGraph<mid_ast::Constraint>,
     typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
-    func_id: mid_ast::CustomFuncId, // FIXME rm
     func_sig: &Signature,
     arg_type: &mid_ast::Type<SolverVarId>,
 ) -> (mid_ast::ReprParams<SolverVarId>, mid_ast::Type<SolverVarId>) {

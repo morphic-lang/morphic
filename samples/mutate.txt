@@ -76,9 +76,9 @@ proc main(): () =
   let five = const(incr5(0), [1, 2, 3]) in
   let five2 = const_curry(incr5(0))(id) in
   let arr = favs in
-  let better = map(favs, \x -> x * x) in
-  let even_better = map(better, \x -> x * x + x) in
-  let now_backwards = reverse(better) in
+  let better = map(favs, \x -> x + 1) in
+  let even_better = map(better, \x -> x + 3) in
+  //let now_backwards = reverse(better) in
   ()
 
 

@@ -7,7 +7,6 @@ use im_rc::vector;
 pub fn flatten_func(
     graph: &mut ConstraintGraph<mid_ast::Constraint>,
     typedefs: &[mid_ast::TypeDef<mid_ast::RepParamId>],
-    id: mid_ast::CustomFuncId,
     func: &in_ast::FuncDef,
 ) -> mid_ast::FuncDef<()> {
     let mut locals = Vec::new();
