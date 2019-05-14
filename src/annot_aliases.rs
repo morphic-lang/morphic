@@ -507,7 +507,8 @@ fn annot_scc(
         for ast::CustomFuncId(id) in scc {
             let newval = annot_func(&type_defs, &func_defs[*id], func_infos);
 
-            if !scc_changed && newval != func_infos[*id] {
+            let oldval = &func_infos[*id];
+            if !scc_changed && newval.edges.iter().any(|edge| !oldval.edges.contains(edge)) {
                 // Guard on scc_changed to avoid unnecessary comparisons
                 scc_changed = true;
             }
