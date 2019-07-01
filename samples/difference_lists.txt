@@ -1,0 +1,103 @@
+////////////////////////////////////
+///// GET/SET LIB //////////////////
+////////////////////////////////////
+
+get(arr: Array a, i: Int): a =
+  let (x, _) = item(arr, i) in
+  x
+
+set(arr: Array a, i: Int, val: a): Array a =
+  let (_, hole) = item(arr, i) in
+  hole(val)
+
+////////////////////////////////////
+///// MAIN PROGRAM /////////////////
+////////////////////////////////////
+
+ints_to_diff(a: Int, b: Int, c: Int): Diff =
+  concat_diffs(
+    concat_diffs(
+      string_to_diff(int_to_string(a)),
+      string_to_diff(int_to_string(b)),
+    ),
+    string_to_diff(int_to_string(c)),
+  )
+
+proc main(): () =
+  let diff = ints_to_diff(1, 2, 3) in
+  let rendered = render_diff(diff) in
+  do output(rendered)
+
+////////////////////////////////////
+///// DIFFERENCE LIST LIB //////////
+////////////////////////////////////
+type Diff {
+    Diff(Array Byte -> Array Byte),
+}
+string_to_diff(string: Array Byte): Diff =
+    Diff(\prefix -> concat(prefix, string))
+
+concat_diffs(diff1: Diff, diff2: Diff): Diff = Diff(\prefix ->
+    let Diff(f1) = diff1 in
+    let Diff(f2) = diff2 in
+    f2(f1(prefix)))
+
+// One day
+// // Declare a custom infix operator
+// infixl (+++) = concat_diffs
+
+lazy(body: () -> Diff): Diff = Diff(\prefix ->
+    let Diff(f) = body() in
+    f(prefix) )
+render_diff(diff: Diff): Array Byte =
+  let Diff(f) = diff in
+  f("")
+
+////////////////////////////////////
+////////// CONCAT LIB //////////////
+////////////////////////////////////
+concat_from(a: Array t, b: Array t, i: Int): Array t =
+  if i = len(b) {
+    //push(a, get(b, 0))
+    // Hack to get "map exemption"
+    if len(a) = 0 {
+      []
+    } else {
+      set(a, 0, get(a, 0))
+    }
+  } else {
+    concat_from(push(a, get(b, i)), b, i + 1)
+  }
+
+concat(a: Array t, b: Array t): Array t =
+  concat_from(a, b, 0)
+
+nat_to_string(i: Int): Array Byte =
+  let digit_to_string = \d ->
+    match d {
+        0 -> "0",
+        1 -> "1",
+        2 -> "2",
+        3 -> "3",
+        4 -> "4",
+        5 -> "5",
+        6 -> "6",
+        7 -> "7",
+        8 -> "8",
+        9 -> "9",
+        _ -> "",
+    } in
+  if i = 0 {
+    ""
+  } else {
+    concat(nat_to_string(i / 10), digit_to_string(i - i / 10 * 10))
+  }
+
+int_to_string(i: Int): Array Byte =
+  if i = 0 {
+    "0"
+  } else if i < 0 {
+    concat("-", nat_to_string(0 - i))
+  } else {
+    nat_to_string(i)
+  }
