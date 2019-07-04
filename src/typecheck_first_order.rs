@@ -2,11 +2,7 @@ use crate::data::first_order_ast as ast;
 use crate::util::with_scope;
 
 pub fn typecheck(program: &ast::Program) {
-    for (i, func) in program.funcs.iter().enumerate() {
-        if i == 6 {
-            println!("FUNCTION 6 HERE:");
-            println!("{:#?}", func);
-        }
+    for func in &program.funcs {
         typecheck_func(&program, func);
     }
 }
@@ -136,14 +132,6 @@ fn typecheck_expr(
             T::Tuple(item_types)
         }
         E::Call(_purity, func_id, arg) => {
-            if func_id.0 == 6 {
-                // println!("Func ID: {} ({:?})", func_id.0, purity);
-                // println!("Arg: {:?}", arg);
-                // println!("Arg Pattern: {:?}", &program.funcs[func_id.0].arg);
-                // println!("Arg type: {:?}", &program.funcs[func_id.0].arg_type);
-                println!("CALLING FUNCTION 6:");
-                println!("=call: {:#?}", expr);
-            }
             assert_eq!(
                 program.funcs[func_id.0].arg_type,
                 typecheck_expr(program, locals, &**arg)
@@ -161,10 +149,6 @@ fn typecheck_expr(
             result_type.clone()
         }
         E::Let(lhs, rhs, body) => with_scope(locals, |sub_locals| {
-            println!("LET BINDING");
-            println!("lhs: {:#?}", lhs);
-            println!("rhs: {:#?}", rhs);
-            println!("body: {:#?}", body);
             let rhs_type = typecheck_expr(program, sub_locals, rhs);
             bind_pattern(program, lhs, sub_locals, &rhs_type);
             typecheck_expr(program, sub_locals, body)
@@ -194,12 +178,9 @@ fn bind_pattern(
         (P::Any(_), _) => {}
         (P::Var(t), expected_t) => {
             assert_eq!(t, expected_t);
-            println!("Binding LocalId({}) to type {:?}", locals.len(), expected_t);
             locals.push(t.clone())
         }
         (P::Tuple(pats), T::Tuple(item_types)) => {
-            println!("Pattern: {:?}", pattern);
-            println!("Type: {:?}", expected_type);
             assert_eq!(pats.len(), item_types.len());
             for (pat, expected_t) in pats.iter().zip(item_types) {
                 bind_pattern(program, pat, locals, expected_t);

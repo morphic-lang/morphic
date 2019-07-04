@@ -99,9 +99,6 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: Vec<UniqueInfo>) -> 
         }
         for (func_id, alias_sig) in scc_alias_sigs {
             assert!(alias_sigs[func_id.0].is_none());
-            if func_id.0 == 6 {
-                println!("adding {:?} to alias_sigs", func_id);
-            }
             alias_sigs[func_id.0] = Some(alias_sig);
         }
 

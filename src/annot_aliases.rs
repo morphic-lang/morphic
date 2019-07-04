@@ -398,7 +398,6 @@ pub fn prune_field_path_with<
     type_: &'a ast::Type,
     path: &'a FieldPath,
 ) -> FieldPath {
-    println!("Pruning field path {:?} of type {:?}", path, type_);
     return prune_field_path_help(
         variant_for,
         type_,

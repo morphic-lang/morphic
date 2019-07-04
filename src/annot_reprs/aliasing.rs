@@ -231,12 +231,7 @@ pub fn initialize_sigs_for_scc<'a>(
     scc_func_ids: impl Iterator<Item = &'a mid_ast::CustomFuncId>,
 ) -> BTreeMap<mid_ast::CustomFuncId, Signature> {
     scc_func_ids
-        .map(|&func_id| {
-            if func_id.0 == 6 {
-                println!("initialize_sigs_for_scc: adding {:?} to scc", func_id);
-            }
-            (func_id, Signature::new())
-        })
+        .map(|&func_id| (func_id, Signature::new()))
         .collect()
 }
 
@@ -432,14 +427,6 @@ fn typecheck_expr_aliasing(
             lookup_type_field(typedefs, type_, path.clone()).into();
         for (aliased_expr, aliased_path) in aliased_names {
             let aliased_expr_type = &expr_types[aliased_expr.0];
-            println!(
-                "The given expr supposedly aliases field {:?} in {:?}",
-                aliased_path, aliased_expr
-            );
-            println!(
-                "Looking up field {:?} in type {:?}",
-                aliased_path, aliased_expr_type
-            );
             let aliased_type = lookup_type_field(typedefs, aliased_expr_type, aliased_path.clone());
             assert_eq!(varless_type, aliased_type.into());
             assert!(accesses.accesses[aliased_expr.0].contains_key(&aliased_path));
@@ -608,7 +595,6 @@ fn alias_track_expr(
                 }
             }
             mid_ast::ArrayOp::Len(array_term) => {
-                println!("Len operation: {:?}", expr);
                 update_term_accesses(accesses, locals, array_term);
             }
             mid_ast::ArrayOp::Push(array_term, item_term)
@@ -645,11 +631,7 @@ fn alias_track_expr(
         mid_ast::Expr::Ctor(_type_id, _variant_id, None) => {
             // Nothing aliased or accessed
         }
-        mid_ast::Expr::Ctor(type_id, variant_id, Some(arg_term)) => {
-            println!(
-                "Handling aliasing for Ctor({:?}, {:?}, Some({:?})",
-                type_id, variant_id, arg_term
-            );
+        mid_ast::Expr::Ctor(_type_id, variant_id, Some(arg_term)) => {
             update_term_accesses(accesses, locals, arg_term);
             alias_field_to_term(
                 name_adjacencies,
