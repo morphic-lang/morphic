@@ -188,7 +188,7 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
                     .into())
             }
             ast::ArithOp::Cmp(ast::NumType::Int, ast::Comparison::LessEqual, left, right) => {
-                ((unwrap_int(interpret_term(env, left)) < unwrap_int(interpret_term(env, right)))
+                ((unwrap_int(interpret_term(env, left)) <= unwrap_int(interpret_term(env, right)))
                     .into())
             }
             ast::ArithOp::Negate(ast::NumType::Int, term) => {
@@ -228,7 +228,7 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
             }
             ast::ArithOp::Cmp(ast::NumType::Float, ast::Comparison::LessEqual, left, right) => {
                 ((unwrap_float(interpret_term(env, left))
-                    < unwrap_float(interpret_term(env, right)))
+                    <= unwrap_float(interpret_term(env, right)))
                 .into())
             }
             ast::ArithOp::Negate(ast::NumType::Float, term) => {
@@ -262,8 +262,9 @@ fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Va
                     .into())
             }
             ast::ArithOp::Cmp(ast::NumType::Byte, ast::Comparison::LessEqual, left, right) => {
-                ((unwrap_byte(interpret_term(env, left)) < unwrap_byte(interpret_term(env, right)))
-                    .into())
+                ((unwrap_byte(interpret_term(env, left))
+                    <= unwrap_byte(interpret_term(env, right)))
+                .into())
             }
             ast::ArithOp::Negate(ast::NumType::Byte, _term) => {
                 panic!("don't negate a byte u dummy")
