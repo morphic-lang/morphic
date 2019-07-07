@@ -1,5 +1,4 @@
 module Core = file "lib/core/core.txt"
-  with { }
   expose { module Array, module String }
 
 from Array expose { get, set }

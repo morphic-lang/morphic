@@ -188,9 +188,9 @@ ValDef: syntax::Item = {
 
 ModDef: syntax::Item = {
   "module" <name: ModName> "=" <spec: ModSpec>
-  "with" "{" <bindings: CommaSep<ModBinding>> "}"
+  <bindings: ("with" "{" <CommaSep<ModBinding>> "}")?>
   <expose: OptExposeSpec> =>
-    syntax::Item::ModDef(name, spec, bindings, expose),
+    syntax::Item::ModDef(name, spec, bindings.unwrap_or_default(), expose),
 };
 
 ModImport: syntax::Item = {

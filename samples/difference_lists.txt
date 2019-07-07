@@ -1,5 +1,4 @@
 module Core = file "lib/core/core.txt"
-  with { }
   expose { module String }
 
 module Diff = file "lib/diff_list.txt"

@@ -1,5 +1,4 @@
 module Core = file "lib/core/core.txt"
-  with { }
   expose { module Func, module String }
 
 from Func expose { iterate, const, id }
