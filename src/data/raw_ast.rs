@@ -47,7 +47,7 @@ pub enum ModSpec {
 pub enum ExposeItem {
     Val(ValName),
     Type(TypeName, Vec<CtorName>),
-    Mod(ModName),
+    Mod(ModName, Box<ExposeSpec>),
 }
 
 #[derive(Clone, Debug)]
@@ -129,11 +129,7 @@ pub fn binop(op: Op, left: Expr, right: Expr) -> Expr {
 }
 
 pub fn unop(op: Op, arg: Expr) -> Expr {
-    Expr::App(
-        Purity::Pure,
-        Box::new(Expr::Op(op)),
-        Box::new(arg),
-    )
+    Expr::App(Purity::Pure, Box::new(Expr::Op(op)), Box::new(arg))
 }
 
 #[derive(Clone, Debug)]

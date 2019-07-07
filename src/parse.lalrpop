@@ -254,8 +254,8 @@ ExposeItem: syntax::ExposeItem = {
   <name: TypeName> <ctors: ("{" <CommaSep<CtorName>> "}")?> =>
     syntax::ExposeItem::Type(name, ctors.unwrap_or_default()),
 
-  "module" <name: ModName> =>
-    syntax::ExposeItem::Mod(name),
+  "module" <name: ModName> <expose: OptExposeSpec> =>
+    syntax::ExposeItem::Mod(name, Box::new(expose)),
 };
 
 // Types

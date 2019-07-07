@@ -1,7 +1,8 @@
 module Core = file "lib/core/core.txt"
-  expose { module Array, module String }
-
-from Array expose { get, set }
+  expose {
+    module Array expose { get, set },
+    module String,
+  }
 
 favs : Array Int =
   [1, 2, 3, 4, 5]

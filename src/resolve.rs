@@ -483,11 +483,18 @@ fn resolve_exposures(
                         }
                     }
 
-                    raw::ExposeItem::Mod(name) => {
+                    raw::ExposeItem::Mod(name, sub_expose) => {
                         let resolved_sub_mod = resolve_sub_mod(global_mods, exposed_id, &name)?;
 
                         insert_unique(&mut local_mod_map.mods, name.clone(), resolved_sub_mod)
                             .map_err(|()| ErrorKind::DuplicateModName(name.0))?;
+
+                        resolve_exposures(
+                            global_mods,
+                            local_mod_map,
+                            resolved_sub_mod,
+                            *sub_expose,
+                        )?;
                     }
                 }
             }
