@@ -44,19 +44,11 @@ mod interpreter;
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;
 use std::env::args_os;
-use std::fs;
-use std::io;
 use std::path::PathBuf;
 use std::process::exit;
 
 #[derive(Debug, Fail)]
 enum Error {
-    #[fail(display = "Could not read source file: {}", _0)]
-    ReadFailed(#[cause] io::Error),
-
-    #[fail(display = "Could not parse source file: {}", _0)]
-    ParseFailed(#[cause] lalrpop_util::ParseError<usize, lex::Token, lex::Error>),
-
     #[fail(display = "{}", _0)]
     ResolveFailed(#[cause] resolve::Error),
 
@@ -109,14 +101,9 @@ fn main() {
 }
 
 fn run(config: Config) -> Result<(), Error> {
-    let src = fs::read_to_string(&config.src_path).map_err(Error::ReadFailed)?;
-
-    let raw = parse::ProgramParser::new()
-        .parse(lex::Lexer::new(&src))
-        .map_err(Error::ParseFailed)?;
+    let resolved = resolve::resolve_program(&config.src_path).map_err(Error::ResolveFailed)?;
 
     // Check obvious errors and infer types
-    let resolved = resolve::resolve(raw).map_err(Error::ResolveFailed)?;
     check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;
     let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
     check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;

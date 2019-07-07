@@ -12,6 +12,13 @@ pub struct TypeParam(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValName(pub String);
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModName(pub String);
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModPath(pub Vec<ModName>);
+
+// TODO: Rename 'Program' to 'Module'
 #[derive(Clone, Debug)]
 pub struct Program(pub Vec<Item>);
 
@@ -19,21 +26,54 @@ pub struct Program(pub Vec<Item>);
 pub enum Item {
     TypeDef(TypeName, Vec<TypeParam>, Vec<(CtorName, Option<Type>)>),
     ValDef(ValName, Type, Expr),
+    ModDef(ModName, ModSpec, Vec<ModBinding>, ExposeSpec),
+    ModImport(ModName, ExposeSpec),
+    ModExpose(ModPath, ExposeSpec),
+}
+
+#[derive(Clone, Debug)]
+pub struct ModBinding {
+    pub name: ModName,
+    pub binding: ModPath,
+}
+
+#[derive(Clone, Debug)]
+pub enum ModSpec {
+    File(Vec<String>),
+    Inline(Program),
+}
+
+#[derive(Clone, Debug)]
+pub enum ExposeItem {
+    Val(ValName),
+    Type(TypeName, Vec<CtorName>),
+    Mod(ModName),
+}
+
+#[derive(Clone, Debug)]
+pub enum ExposeSpec {
+    // TODO: Add support for glob imports
+    Specific(Vec<ExposeItem>),
 }
 
 #[derive(Clone, Debug)]
 pub enum Type {
     Var(TypeParam),
-    App(TypeName, Vec<Type>),
+    App(ModPath, TypeName, Vec<Type>),
     Tuple(Vec<Type>),
     Func(Purity, Box<Type>, Box<Type>),
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr {
+    // Qualified and unqualified names have sufficiently different resolution rules that it is
+    // useful to think of them as separate single syntactic constructs.  An unqualified name
+    // *cannot* be regarded as a qualified name with an empty mod path, because unqualified names
+    // are special in that they may refer to local variables as well as module-scoped values.
     Var(ValName),
+    QualName(ModPath, ValName),
     Op(Op),
-    Ctor(CtorName),
+    Ctor(ModPath, CtorName),
     Tuple(Vec<Expr>),
     Lam(Purity, Pattern, Box<Expr>),
     App(Purity, Box<Expr>, Box<Expr>),
@@ -93,7 +133,7 @@ pub enum Pattern {
     Any,
     Var(ValName),
     Tuple(Vec<Pattern>),
-    Ctor(CtorName, Option<Box<Pattern>>),
+    Ctor(ModPath, CtorName, Option<Box<Pattern>>),
 
     ByteConst(u8),
     IntConst(i64),

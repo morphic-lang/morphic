@@ -27,6 +27,12 @@ extern {
     "proc" => lex::Token::Proc,
     "do" => lex::Token::Do,
     "then" => lex::Token::Then,
+    "module" => lex::Token::Module,
+    "import" => lex::Token::Import,
+    "file" => lex::Token::File,
+    "from" => lex::Token::From,
+    "expose" => lex::Token::Expose,
+    "with" => lex::Token::With,
 
     "(" => lex::Token::LParen,
     ")" => lex::Token::RParen,
@@ -41,6 +47,7 @@ extern {
     "->" => lex::Token::Arrow,
     "\\" => lex::Token::BackSlash,
     "_" => lex::Token::Underscore,
+    "." => lex::Token::Dot,
 
     "+&" => lex::Token::AddAmp,
     "-&" => lex::Token::SubAmp,
@@ -86,20 +93,29 @@ CommaSep<T>: Vec<T> = {
 
 // Names and Strings
 
+#[inline]
 TypeName: syntax::TypeName = {
   <"UpperName"> => syntax::TypeName(<>),
 };
 
+#[inline]
 CtorName: syntax::CtorName = {
   <"UpperName"> => syntax::CtorName(<>),
 };
 
+#[inline]
 TypeParam: syntax::TypeParam = {
   <"LowerName"> => syntax::TypeParam(<>),
 };
 
+#[inline]
 ValName: syntax::ValName = {
   <"LowerName"> => syntax::ValName(<>),
+};
+
+#[inline]
+ModName: syntax::ModName = {
+  <"UpperName"> => syntax::ModName(<>),
 };
 
 #[inline]
@@ -117,7 +133,12 @@ pub Program: syntax::Program = {
 Item: syntax::Item = {
   <TypeDef>,
   <ValDef>,
+  <ModDef>,
+  <ModImport>,
+  <ModExpose>,
 };
+
+// Type Definitions
 
 TypeDef: syntax::Item = {
   "type" <name: TypeName> <params: TypeParam*>
@@ -128,6 +149,8 @@ TypeDef: syntax::Item = {
 TypeCase: (syntax::CtorName, Option<syntax::Type>) = {
   <name: CtorName> <content: ("(" <Types> ")")?> => (name, content),
 };
+
+// Value Definitions
 
 ValDef: syntax::Item = {
   <purity: OptProc>
@@ -161,17 +184,97 @@ ValDef: syntax::Item = {
   },
 };
 
+// Module Defintions
+
+ModDef: syntax::Item = {
+  "module" <name: ModName> "=" <spec: ModSpec>
+  "with" "{" <bindings: CommaSep<ModBinding>> "}"
+  <expose: OptExposeSpec> =>
+    syntax::Item::ModDef(name, spec, bindings, expose),
+};
+
+ModImport: syntax::Item = {
+  "import" <name: ModName> <expose: OptExposeSpec> =>
+    syntax::Item::ModImport(name, expose),
+};
+
+ModExpose: syntax::Item = {
+  "from" <path: ModPath> <expose: ExposeSpec> =>
+    syntax::Item::ModExpose(path, expose),
+};
+
+ModSpec: syntax::ModSpec = {
+  "file" <path: "StringLit"> =>
+    syntax::ModSpec::File(path.split('/').map(|s| s.to_owned()).collect()),
+
+  "{" <Program> "}" => syntax::ModSpec::Inline(<>),
+};
+
+ModBinding: syntax::ModBinding = {
+  <name: ModName> =>
+    syntax::ModBinding {
+      name: name.clone(),
+      binding: syntax::ModPath(vec![name]),
+    },
+
+  <name: ModName> "=" <binding: ModPath> =>
+    syntax::ModBinding { name, binding },
+};
+
+#[inline]
+ModPath: syntax::ModPath = {
+  <path: (<ModName> ".")*> <last: ModName> => {
+    let mut result = path;
+    result.push(last);
+    syntax::ModPath(result)
+  }
+};
+
+#[inline]
+QualPath: syntax::ModPath = {
+  <(<ModName> ".")*> =>
+    syntax::ModPath(<>),
+};
+
+ExposeSpec: syntax::ExposeSpec = {
+  // TODO: Add support for glob imports
+
+  "expose" "{" <CommaSep<ExposeItem>> "}" =>
+    syntax::ExposeSpec::Specific(<>),
+};
+
+OptExposeSpec: syntax::ExposeSpec = {
+  <spec: ExposeSpec?> =>
+    spec.unwrap_or_else(|| syntax::ExposeSpec::Specific(vec![])),
+};
+
+ExposeItem: syntax::ExposeItem = {
+  <name: ValName> => syntax::ExposeItem::Val(name),
+
+  <name: TypeName> <ctors: ("{" <CommaSep<CtorName>> "}")?> =>
+    syntax::ExposeItem::Type(name, ctors.unwrap_or_default()),
+
+  "module" <name: ModName> =>
+    syntax::ExposeItem::Mod(name),
+};
+
 // Types
+
+QualTypeName: (syntax::ModPath, syntax::TypeName) = {
+  <path: QualPath> <name: TypeName> =>
+    (path, name)
+};
 
 AtomicType: syntax::Type = {
   "(" <Types> ")",
   <TypeParam> => syntax::Type::Var(<>),
-  <TypeName> => syntax::Type::App(<>, Vec::new()),
+  <QualTypeName> => syntax::Type::App(<>.0, <>.1, Vec::new()),
 };
 
 AppType: syntax::Type = {
   <AtomicType>,
-  <name: TypeName> <args: AtomicType+> => syntax::Type::App(name, args),
+  <name: QualTypeName> <args: AtomicType+> =>
+    syntax::Type::App(name.0, name.1, args),
 };
 
 FuncType: syntax::Type = {
@@ -199,9 +302,15 @@ Types: syntax::Type = {
 AtomicExpr: syntax::Expr = {
   "(" <Exprs> ")",
 
-  <ValName> => syntax::Expr::Var(<>),
+  <path: QualPath> <name: ValName> => {
+    if path.0.is_empty() {
+      syntax::Expr::Var(name)
+    } else {
+      syntax::Expr::QualName(path, name)
+    }
+  },
 
-  <CtorName> => syntax::Expr::Ctor(<>),
+  <path: QualPath> <name: CtorName> => syntax::Expr::Ctor(path, name),
 
   "[" <CommaSep<Expr>> "]" => syntax::Expr::ArrayLit(<>),
 
@@ -225,11 +334,33 @@ MatchExpr: syntax::Expr = {
 
 IfExpr: syntax::Expr = {
   "if" <expr: Expr> "{" <if_block: Expr> "}" "else" <else_if_block: IfExpr> =>
-    syntax::Expr::Match(Box::new(expr), vec![(syntax::Pattern::Ctor(syntax::CtorName("True".to_string()), None), if_block),
-                                             (syntax::Pattern::Ctor(syntax::CtorName("False".to_string()), None), else_if_block)]),
+    syntax::Expr::Match(
+      Box::new(expr),
+      vec![
+        (
+          syntax::Pattern::Ctor(syntax::ModPath(vec![]), syntax::CtorName("True".to_string()), None),
+          if_block
+        ),
+        (
+          syntax::Pattern::Ctor(syntax::ModPath(vec![]), syntax::CtorName("False".to_string()), None),
+          else_if_block
+        )
+      ]
+    ),
   "if" <expr: Expr> "{" <if_block: Expr> "}" "else" "{" <else_block: Expr> "}" =>
-    syntax::Expr::Match(Box::new(expr), vec![(syntax::Pattern::Ctor(syntax::CtorName("True".to_string()), None), if_block),
-                                             (syntax::Pattern::Ctor(syntax::CtorName("False".to_string()), None), else_block)]),
+    syntax::Expr::Match(
+      Box::new(expr),
+      vec![
+        (
+          syntax::Pattern::Ctor(syntax::ModPath(vec![]), syntax::CtorName("True".to_string()), None),
+          if_block
+        ),
+        (
+          syntax::Pattern::Ctor(syntax::ModPath(vec![]), syntax::CtorName("False".to_string()), None),
+          else_block
+        )
+      ]
+    ),
 };
 
 AppExpr: syntax::Expr = {
@@ -333,9 +464,11 @@ Pattern: syntax::Pattern = {
 
   <ValName> => syntax::Pattern::Var(<>),
 
-  <CtorName> => syntax::Pattern::Ctor(<>, None),
+  <path: QualPath> <ctor: CtorName> =>
+    syntax::Pattern::Ctor(path, ctor, None),
 
-  <ctor: CtorName> "(" <args: Patterns> ")" => syntax::Pattern::Ctor(ctor, Some(Box::new(args))),
+  <path: QualPath> <ctor: CtorName> "(" <args: Patterns> ")" =>
+    syntax::Pattern::Ctor(path, ctor, Some(Box::new(args))),
 
   <"IntLit"> => syntax::Pattern::IntConst(<>),
 

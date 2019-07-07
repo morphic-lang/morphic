@@ -23,6 +23,12 @@ pub enum Token {
     Proc,
     Do,
     Then,
+    Module,
+    Import,
+    File,
+    From,
+    Expose,
+    With,
 
     LParen,
     RParen,
@@ -37,6 +43,7 @@ pub enum Token {
     Arrow,
     BackSlash,
     Underscore,
+    Dot,
 
     AddAmp,
     SubAmp,
@@ -84,6 +91,12 @@ impl fmt::Display for Token {
             Token::Proc => write!(f, "proc"),
             Token::Do => write!(f, "do"),
             Token::Then => write!(f, "then"),
+            Token::Module => write!(f, "module"),
+            Token::Import => write!(f, "import"),
+            Token::File => write!(f, "file"),
+            Token::From => write!(f, "from"),
+            Token::Expose => write!(f, "expose"),
+            Token::With => write!(f, "with"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
             Token::LSquare => write!(f, "["),
@@ -96,6 +109,7 @@ impl fmt::Display for Token {
             Token::Arrow => write!(f, "->"),
             Token::BackSlash => write!(f, "\\"),
             Token::Underscore => write!(f, "_"),
+            Token::Dot => write!(f, "."),
             Token::EqualAmp => write!(f, "=&"),
             Token::AddAmp => write!(f, "+&"),
             Token::SubAmp => write!(f, "-&"),
@@ -335,6 +349,12 @@ impl<'a> Iterator for Lexer<'a> {
                 "proc" => Some(Ok((name_start, Token::Proc, name_end))),
                 "do" => Some(Ok((name_start, Token::Do, name_end))),
                 "then" => Some(Ok((name_start, Token::Then, name_end))),
+                "module" => Some(Ok((name_start, Token::Module, name_end))),
+                "import" => Some(Ok((name_start, Token::Import, name_end))),
+                "file" => Some(Ok((name_start, Token::File, name_end))),
+                "from" => Some(Ok((name_start, Token::From, name_end))),
+                "expose" => Some(Ok((name_start, Token::Expose, name_end))),
+                "with" => Some(Ok((name_start, Token::With, name_end))),
                 name => {
                     if char_at(name, 0).unwrap().is_uppercase() {
                         Some(Ok((
@@ -411,6 +431,7 @@ impl<'a> Iterator for Lexer<'a> {
                 ("->", Token::Arrow),
                 ("\\", Token::BackSlash),
                 ("_", Token::Underscore),
+                (".", Token::Dot),
                 // Byte arithmetic
                 ("+&", Token::AddAmp),
                 ("-&", Token::SubAmp),

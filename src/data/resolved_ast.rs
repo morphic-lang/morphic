@@ -72,6 +72,7 @@ pub struct VariantData {
 
 #[derive(Clone, Debug)]
 pub struct TypeData {
+    // TODO: Include filename/module info
     pub type_name: raw::TypeName,
     pub variant_data: Vec<VariantData>,
 }
@@ -84,6 +85,7 @@ pub struct ValDef {
 
 #[derive(Clone, Debug)]
 pub struct ValData {
+    // TODO: Include filename/module info
     pub val_name: raw::ValName,
 }
 
