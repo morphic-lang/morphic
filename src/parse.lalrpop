@@ -327,6 +327,14 @@ AtomicExpr: syntax::Expr = {
   <IfExpr>,
 };
 
+PrefixExpr: syntax::Expr = {
+  <AtomicExpr>,
+
+  "-&" <PrefixExpr> => syntax::unop(syntax::Op::NegByte, <>),
+  "-" <PrefixExpr> => syntax::unop(syntax::Op::NegInt, <>),
+  "-." <PrefixExpr> => syntax::unop(syntax::Op::NegFloat, <>),
+};
+
 MatchExpr: syntax::Expr = {
   "match" <expr: Expr> "{" <cases: CommaSep<(<Pattern> "->" <Expr>)>> "}" =>
     syntax::Expr::Match(Box::new(expr), cases),
@@ -364,7 +372,7 @@ IfExpr: syntax::Expr = {
 };
 
 AppExpr: syntax::Expr = {
-  <AtomicExpr>,
+  <PrefixExpr>,
 
   <func: AppExpr> "(" <args: Exprs> ")" =>
     syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
