@@ -1,0 +1,23 @@
+get(arr: Array a, i: Int): a =
+  let (x, _) = item(arr, i) in
+  x
+
+set(arr: Array a, i: Int, val: a): Array a =
+  let (_, hole) = item(arr, i) in
+  hole(val)
+
+concat_from(a: Array t, b: Array t, i: Int): Array t =
+  if i = len(b) {
+    //push(a, get(b, 0))
+    // Hack to get "map exemption"
+    if len(a) = 0 {
+      []
+    } else {
+      set(a, 0, get(a, 0))
+    }
+  } else {
+    concat_from(push(a, get(b, i)), b, i + 1)
+  }
+
+concat(a: Array t, b: Array t): Array t =
+  concat_from(a, b, 0)

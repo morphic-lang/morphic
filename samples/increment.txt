@@ -1,27 +1,17 @@
-id(x : a) : a =
-  x
+module Core = file "lib/core/core.txt"
+  with { }
+  expose { module Func, module String }
 
-const_curry: a -> b -> a =
-  \x -> \y -> x
-
-const(x : a, y : b) : a =
-  x
-
-compose(f: a -> b, g: b -> c): (a -> c) =
-  \x -> g(f(x))
-
-iterate(func: a -> a, n: Int, base: a -> a): (a -> a) =
-  if n = 0 {
-    base
-  } else {
-    compose(func, iterate(func, n - 1, base))
-  }
+from Func expose { iterate, const, id }
 
 incr(x: Int) : Int =
   x + 1
 
 proc main(): () =
-  let incr5 = iterate(incr, 5, id) in
-  let five = const(incr5(0), [1, 2, 3]) in
-  let five2 = const_curry(incr5(0))(id) in
+  let incr5 = iterate(incr, 5) in
+  let five = const(incr5(0))([1, 2, 3]) in
+  let five2 = const(incr5(0))(id) in
+  do output("The following should both be 5:") then
+  do output(String.int_to_string(five)) then
+  do output(String.int_to_string(five2)) then
   ()

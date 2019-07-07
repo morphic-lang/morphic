@@ -1,133 +1,34 @@
-type Option a {
-  Some(a),
-  None,
-}
-
-type Iter a {
-  Iter(() -> Option (a, Iter a))
-}
-
-// Creating iterators:
-
-empty: Iter a =
-  Iter(\() -> None)
-
-once(x: a): Iter a =
-  Iter(\() -> Some(x, empty))
-
-forever(x: a): Iter a =
-  Iter(\() -> Some(x, forever(x)))
-
-range(lo: Int, hi: Int): Iter Int =
-  if lo < hi {
-    Iter(\() -> Some(lo, range(lo + 1, hi)))
-  } else {
-    empty
-  }
-
-ints(lo: Int): Iter Int =
-  Iter(\() -> Some(lo, ints(lo + 1)))
-
-items(arr: Array a): Iter a =
-  map(range(0, len(arr)), \idx ->
-    let (val, _) = item(arr, idx) in
-    val
-  )
-
-// Transforming iterators:
-
-chain(fst: Iter a, snd: Iter a): Iter a =
-  Iter(\() ->
-    match next(fst) {
-      Some(x, xs) -> Some(x, chain(xs, snd)),
-      None -> next(snd),
-    }
-  )
-
-map(it: Iter a, f: a -> b): Iter b =
-  Iter(\() ->
-    match next(it) {
-      Some(x, xs) -> Some(f(x), map(xs, f)),
-      None -> None,
-    }
-  )
-
-filter(it: Iter a, f: a -> Bool): Iter a =
-  Iter(\() ->
-    match next(it) {
-      Some(x, xs) -> if f(x) {
-        Some(x, filter(xs, f))
-      } else {
-        next(filter(xs, f))
-      },
-      None -> None,
-    }
-  )
-
-take(it: Iter a, count: Int): Iter a =
-  if count > 0 {
-    Iter(\() ->
-      match next(it) {
-        Some(x, xs) -> Some(x, take(xs, count - 1)),
-        None -> None,
-      }
-    )
-  } else {
-    empty
-  }
-
-zip(it1: Iter a, it2: Iter b): Iter (a, b) =
-  Iter(\() ->
-    match (next(it1), next(it2)) {
-      (Some(x, xs), Some(y, ys)) -> Some((x, y), zip(xs, ys)),
-      _ -> None,
-    }
-  )
-
-enumerate(it: Iter a): Iter (Int, a) =
-  zip(ints(0), it)
-
-// Consuming iterators:
-
-next(it: Iter a): Option (a, Iter a) =
-  let Iter(body) = it in body()
-
-foldl(it: Iter a, init: b, combine: (b, a) -> b): b =
-  match next(it) {
-    Some(x, xs) -> foldl(xs, combine(init, x), combine),
-    None -> init,
-  }
-
-foldr(it: Iter a, init: b, combine: (a, b) -> b): b =
-  match next(it) {
-    Some(x, xs) -> combine(x, foldr(xs, init, combine)),
-    None -> init,
-  }
-
-sum(it: Iter Int): Int =
-  foldl(it, 0, \(x, y) -> x + y)
+module Core = file "lib/core/core.txt"
+  with { }
+  expose { module Iter }
 
 proc main(): () =
   // it = 6
-  let it = sum(items([1, 2, 3])) in
+  let it = Iter.sum(Iter.items([1, 2, 3])) in
+
   let () = if it = 6 {
     do output("it worked")
   } else {
     do output("it didnt wtf")
   } in
+
   // it2 = ((5, 5), (5, 6), (5, 7), (5, 8), (5, 9), (5, 10))
-  let it2 = zip(take(forever(5), it), ints(5)) in
+  let it2 = Iter.zip(Iter.take(Iter.forever(5), it), Iter.ints(5)) in
+
   // it3 = (10, 11, 12, 13, 14, 15)
-  let it3 = map(it2, \(x, y) -> x + y) in
+  let it3 = Iter.map(it2, \(x, y) -> x + y) in
+
   // it4 = (13, 14, 15)
-  let it4 = filter(it3, \n -> n > 12) in
+  let it4 = Iter.filter(it3, \n -> n > 12) in
+
   // it5 = (13, 14, 15, 0)
-  let it5 = chain(it4, once(0)) in
+  let it5 = Iter.chain(it4, Iter.once(0)) in
+
   // it6 = 42
-  let it6 = foldr(it5, 0, \(x, y) -> x + y) in
-  let () = if it6 = 42 {
+  let it6 = Iter.foldr(it5, 0, \(x, y) -> x + y) in
+
+  if it6 = 42 {
     do output("it worked")
   } else {
     do output("it didnt wtf")
-  } in
-  ()
+  }

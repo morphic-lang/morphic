@@ -1,16 +1,4 @@
-get(arr: Array a, i: Int): a =
-  let (x, _) = item(arr, i) in
-  x
-
-concat_from(a: Array t, b: Array t, i: Int): Array t =
-  if i = len(b) {
-    a
-  } else {
-    concat_from(push(a, get(b, i)), b, i + 1)
-  }
-
-concat(a: Array t, b: Array t): Array t =
-  concat_from(a, b, 0)
+import Array
 
 nat_to_string(i: Int): Array Byte =
   let digit_to_string = \d ->
@@ -30,17 +18,14 @@ nat_to_string(i: Int): Array Byte =
   if i = 0 {
     ""
   } else {
-    concat(nat_to_string(i / 10), digit_to_string(i - i / 10 * 10))
+    Array.concat(nat_to_string(i / 10), digit_to_string(i - i / 10 * 10))
   }
 
 int_to_string(i: Int): Array Byte =
   if i = 0 {
     "0"
   } else if i < 0 {
-    concat("-", nat_to_string(0 - i))
+    Array.concat("-", nat_to_string(0 - i))
   } else {
     nat_to_string(i)
   }
-
-proc main(): () =
-  do output(int_to_string(0 - 420))

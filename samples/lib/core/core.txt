@@ -1,0 +1,14 @@
+module Option = file "option.txt"
+  with { }
+
+module Iter = file "iter.txt"
+  with { Option }
+
+module Array = file "array.txt"
+  with { }
+
+module String = file "string.txt"
+  with { Array }
+
+module Func = file "func.txt"
+  with { }

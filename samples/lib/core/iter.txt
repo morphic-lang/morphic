@@ -1,0 +1,105 @@
+import Option expose { Option { Some, None } }
+
+type Iter a {
+  Iter(() -> Option (a, Iter a))
+}
+
+// Creating iterators:
+
+empty: Iter a =
+  Iter(\() -> None)
+
+once(x: a): Iter a =
+  Iter(\() -> Some(x, empty))
+
+forever(x: a): Iter a =
+  Iter(\() -> Some(x, forever(x)))
+
+range(lo: Int, hi: Int): Iter Int =
+  if lo < hi {
+    Iter(\() -> Some(lo, range(lo + 1, hi)))
+  } else {
+    empty
+  }
+
+ints(lo: Int): Iter Int =
+  Iter(\() -> Some(lo, ints(lo + 1)))
+
+items(arr: Array a): Iter a =
+  map(range(0, len(arr)), \idx ->
+    let (val, _) = item(arr, idx) in
+    val
+  )
+
+// Transforming iterators:
+
+chain(fst: Iter a, snd: Iter a): Iter a =
+  Iter(\() ->
+    match next(fst) {
+      Some(x, xs) -> Some(x, chain(xs, snd)),
+      None -> next(snd),
+    }
+  )
+
+map(it: Iter a, f: a -> b): Iter b =
+  Iter(\() ->
+    match next(it) {
+      Some(x, xs) -> Some(f(x), map(xs, f)),
+      None -> None,
+    }
+  )
+
+filter(it: Iter a, f: a -> Bool): Iter a =
+  Iter(\() ->
+    match next(it) {
+      Some(x, xs) -> if f(x) {
+        Some(x, filter(xs, f))
+      } else {
+        next(filter(xs, f))
+      },
+      None -> None,
+    }
+  )
+
+take(it: Iter a, count: Int): Iter a =
+  if count > 0 {
+    Iter(\() ->
+      match next(it) {
+        Some(x, xs) -> Some(x, take(xs, count - 1)),
+        None -> None,
+      }
+    )
+  } else {
+    empty
+  }
+
+zip(it1: Iter a, it2: Iter b): Iter (a, b) =
+  Iter(\() ->
+    match (next(it1), next(it2)) {
+      (Some(x, xs), Some(y, ys)) -> Some((x, y), zip(xs, ys)),
+      _ -> None,
+    }
+  )
+
+enumerate(it: Iter a): Iter (Int, a) =
+  zip(ints(0), it)
+
+// Consuming iterators:
+
+next(it: Iter a): Option (a, Iter a) =
+  let Iter(body) = it in body()
+
+foldl(it: Iter a, init: b, combine: (b, a) -> b): b =
+  match next(it) {
+    Some(x, xs) -> foldl(xs, combine(init, x), combine),
+    None -> init,
+  }
+
+foldr(it: Iter a, init: b, combine: (a, b) -> b): b =
+  match next(it) {
+    Some(x, xs) -> combine(x, foldr(xs, init, combine)),
+    None -> init,
+  }
+
+sum(it: Iter Int): Int =
+  foldl(it, 0, \(x, y) -> x + y)

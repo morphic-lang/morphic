@@ -1,10 +1,8 @@
-get(arr: Array a, i: Int): a =
-  let (x, _) = item(arr, i) in
-  x
+module Core = file "lib/core/core.txt"
+  with { }
+  expose { module Array, module String }
 
-set(arr: Array a, i: Int, val: a): Array a =
-  let (_, hole) = item(arr, i) in
-  hole(val)
+from Array expose { get, set }
 
 favs : Array Int =
   [1, 2, 3, 4, 5]
@@ -37,12 +35,12 @@ proc for_each(arr: Array a, f: proc a -> b): () =
   do for_each_from(arr, f, 0)
 
 proc print_all(arr: Array Int): () =
-  do for_each(arr, proc \i -> do output(int_to_string(i)))
+  do for_each(arr, proc \i -> do output(String.int_to_string(i)))
 
 proc print_and(arr: Array Int): Array Int =
-  let _ = do output("vvvvvvv") in
-  let _ = do print_all(arr) in
-  let _ = do output("^^^^^^^") in
+  do output("vvvvvvv") then
+  do print_all(arr) then
+  do output("^^^^^^^") then
   arr
 
 reverse_from(arr: Array a, idx: Int): Array a =
@@ -76,68 +74,3 @@ proc main(): () =
   let even_better = do print_and(map(better, \x -> x * x)) in
   let now_backwards = do print_and(reverse(even_better)) in
   ()
-
-
-
-/////////////////////////////////////////////////////////////////////////
-// CONCAT LIB ///////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////
-
-concat_from(a: Array t, b: Array t, i: Int): Array t =
-  if i = len(b) {
-    a
-  } else {
-    concat_from(push(a, get(b, i)), b, i + 1)
-  }
-
-concat(a: Array t, b: Array t): Array t =
-  concat_from(a, b, 0)
-
-nat_to_string(i: Int): Array Byte =
-  let digit_to_string = \d ->
-    match d {
-        0 -> "0",
-        1 -> "1",
-        2 -> "2",
-        3 -> "3",
-        4 -> "4",
-        5 -> "5",
-        6 -> "6",
-        7 -> "7",
-        8 -> "8",
-        9 -> "9",
-        _ -> "",
-    } in
-  if i = 0 {
-    ""
-  } else {
-    concat(nat_to_string(i / 10), digit_to_string(i - i / 10 * 10))
-  }
-
-int_to_string(i: Int): Array Byte =
-  if i = 0 {
-    "0"
-  } else if i < 0 {
-    concat("-", nat_to_string(0 - i))
-  } else {
-    nat_to_string(i)
-  }
-
-
-
-/////////////////////////////////////////////////////////////////////////
-// FUNCTION LIB /////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////
-
-id(x : a) : a =
-  x
-
-const_curry: a -> b -> a =
-  \x -> \y -> x
-
-const(x : a, y : b) : a =
-  x
-
-compose(f: a -> b, g: b -> c): (a -> c) =
-  \x -> g(f(x))
-
