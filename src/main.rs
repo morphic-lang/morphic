@@ -41,9 +41,12 @@ mod lower_reprs;
 
 mod interpreter;
 
+mod test;
+
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;
 use std::env::args_os;
+use std::io;
 use std::path::PathBuf;
 use std::process::exit;
 
@@ -89,7 +92,7 @@ fn usage() -> String {
 
 fn main() {
     if let Some(config) = parse_args() {
-        let result = run(config);
+        let result = run(&mut io::stdin().lock(), &mut io::stdout().lock(), config);
         if let Err(err) = result {
             eprintln!("{}", err);
             eprintln!("{:?}", err);
@@ -100,7 +103,11 @@ fn main() {
     }
 }
 
-fn run(config: Config) -> Result<(), Error> {
+fn run<R: io::BufRead, W: io::Write>(
+    stdin: &mut R,
+    stdout: &mut W,
+    config: Config,
+) -> Result<(), Error> {
     let resolved = resolve::resolve_program(&config.src_path).map_err(Error::ResolveFailed)?;
 
     // Check obvious errors and infer types
@@ -167,7 +174,7 @@ fn run(config: Config) -> Result<(), Error> {
     println!("============== Running program ===============================");
     println!("==============================================================");
 
-    interpreter::interpret(&specialized);
+    interpreter::interpret(stdin, stdout, &specialized);
 
     Ok(())
 }

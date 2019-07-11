@@ -3,13 +3,17 @@ use crate::data::repr_specialized_ast as ast;
 use crate::util::with_scope;
 use im_rc::Vector;
 use itertools::izip;
+use stacker;
 use std::cell::RefCell;
+use std::io::{BufRead, Write};
 use std::rc::Rc;
 
 static DEBUG: bool = false;
 
-pub fn interpret(program: &ast::Program) {
+pub fn interpret<R: BufRead, W: Write>(stdin: &mut R, stdout: &mut W, program: &ast::Program) {
     interpret_block(
+        stdin,
+        stdout,
         program,
         &mut vec![Value::Tuple(Vec::new())],
         &program.funcs[program.main.0].body,
@@ -147,347 +151,392 @@ fn try_persistent_holearray(v: &Value) -> Option<(i64, Vector<Value>)> {
     }
 }
 
-fn interpret_block(program: &ast::Program, env: &mut Env, block: &ast::Block) -> Value {
+fn interpret_block<R: BufRead, W: Write>(
+    stdin: &mut R,
+    stdout: &mut W,
+    program: &ast::Program,
+    env: &mut Env,
+    block: &ast::Block,
+) -> Value {
     with_scope(env, |sub_env| {
         assert!(!block.exprs.is_empty());
         for expr in &block.exprs {
-            let val = interpret_expr(program, sub_env, expr);
+            let val = interpret_expr(stdin, stdout, program, sub_env, expr);
             sub_env.push(val);
         }
         sub_env.pop().expect("env cannot be empty")
     })
 }
 
-fn interpret_expr(program: &ast::Program, env: &mut Env, expr: &ast::Expr) -> Value {
-    match expr {
-        ast::Expr::Term(term) => interpret_term(env, &term),
-        ast::Expr::ArithOp(arith_op) => match arith_op {
-            // INTS
-            ast::ArithOp::Op(ast::NumType::Int, ast::BinOp::Add, left, right) => {
-                ((unwrap_int(interpret_term(env, left)) + unwrap_int(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Int, ast::BinOp::Sub, left, right) => {
-                ((unwrap_int(interpret_term(env, left)) - unwrap_int(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Int, ast::BinOp::Mul, left, right) => {
-                ((unwrap_int(interpret_term(env, left)) * unwrap_int(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Int, ast::BinOp::Div, left, right) => {
-                ((unwrap_int(interpret_term(env, left)) / unwrap_int(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Int, ast::Comparison::Equal, left, right) => {
-                ((unwrap_int(interpret_term(env, left)) == unwrap_int(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Int, ast::Comparison::Less, left, right) => {
-                ((unwrap_int(interpret_term(env, left)) < unwrap_int(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Int, ast::Comparison::LessEqual, left, right) => {
-                ((unwrap_int(interpret_term(env, left)) <= unwrap_int(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Negate(ast::NumType::Int, term) => {
-                ((-unwrap_int(interpret_term(env, term))).into())
-            }
+// This "red zone" value depends on the maximum stack space required by `interpret_expr`, which is
+// determined experimentally.  If you make a change to `interpret_expr and` `cargo test` starts
+// segfaulting, bump this value until it works.
+const STACK_RED_ZONE_BYTES: usize = 128 * 1024;
+const STACK_GROW_BYTES: usize = 1024 * 1024;
 
-            // FLOATS
-            ast::ArithOp::Op(ast::NumType::Float, ast::BinOp::Add, left, right) => {
-                ((unwrap_float(interpret_term(env, left))
-                    + unwrap_float(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Float, ast::BinOp::Sub, left, right) => {
-                ((unwrap_float(interpret_term(env, left))
-                    - unwrap_float(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Float, ast::BinOp::Mul, left, right) => {
-                ((unwrap_float(interpret_term(env, left))
-                    * unwrap_float(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Float, ast::BinOp::Div, left, right) => {
-                ((unwrap_float(interpret_term(env, left))
-                    / unwrap_float(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Float, ast::Comparison::Equal, left, right) => {
-                ((unwrap_float(interpret_term(env, left))
-                    == unwrap_float(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Float, ast::Comparison::Less, left, right) => {
-                ((unwrap_float(interpret_term(env, left))
-                    < unwrap_float(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Float, ast::Comparison::LessEqual, left, right) => {
-                ((unwrap_float(interpret_term(env, left))
-                    <= unwrap_float(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Negate(ast::NumType::Float, term) => {
-                ((-unwrap_float(interpret_term(env, term))).into())
-            }
-
-            // BYTES
-            ast::ArithOp::Op(ast::NumType::Byte, ast::BinOp::Add, left, right) => {
-                ((unwrap_byte(interpret_term(env, left)) + unwrap_byte(interpret_term(env, right)))
+fn interpret_expr<R: BufRead, W: Write>(
+    stdin: &mut R,
+    stdout: &mut W,
+    program: &ast::Program,
+    env: &mut Env,
+    expr: &ast::Expr,
+) -> Value {
+    stacker::maybe_grow(STACK_RED_ZONE_BYTES, STACK_GROW_BYTES, move || {
+        match expr {
+            ast::Expr::Term(term) => interpret_term(env, &term),
+            ast::Expr::ArithOp(arith_op) => match arith_op {
+                // INTS
+                ast::ArithOp::Op(ast::NumType::Int, ast::BinOp::Add, left, right) => {
+                    ((unwrap_int(interpret_term(env, left))
+                        + unwrap_int(interpret_term(env, right)))
                     .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Byte, ast::BinOp::Sub, left, right) => {
-                ((unwrap_byte(interpret_term(env, left)) - unwrap_byte(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Byte, ast::BinOp::Mul, left, right) => {
-                ((unwrap_byte(interpret_term(env, left)) * unwrap_byte(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Op(ast::NumType::Byte, ast::BinOp::Div, left, right) => {
-                ((unwrap_byte(interpret_term(env, left)) / unwrap_byte(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Byte, ast::Comparison::Equal, left, right) => {
-                ((unwrap_byte(interpret_term(env, left))
-                    == unwrap_byte(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Byte, ast::Comparison::Less, left, right) => {
-                ((unwrap_byte(interpret_term(env, left)) < unwrap_byte(interpret_term(env, right)))
-                    .into())
-            }
-            ast::ArithOp::Cmp(ast::NumType::Byte, ast::Comparison::LessEqual, left, right) => {
-                ((unwrap_byte(interpret_term(env, left))
-                    <= unwrap_byte(interpret_term(env, right)))
-                .into())
-            }
-            ast::ArithOp::Negate(ast::NumType::Byte, _term) => {
-                panic!("don't negate a byte u dummy")
-                // FIXME: use i8's, or disallow this.
-                // ((-unwrap_byte(interpret_term(env, term))).into())
-            }
-        },
-        ast::Expr::ArrayOp(array_op) => match array_op {
-            ast::ArrayOp::Construct(_item_t, ast::Repr::Shared, items) => {
-                // TODO: check type
-                if DEBUG {
-                    println!("[constructing a flat array]");
                 }
-                Value::PersistentArray(
-                    items
+                ast::ArithOp::Op(ast::NumType::Int, ast::BinOp::Sub, left, right) => {
+                    ((unwrap_int(interpret_term(env, left))
+                        - unwrap_int(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Op(ast::NumType::Int, ast::BinOp::Mul, left, right) => {
+                    ((unwrap_int(interpret_term(env, left))
+                        * unwrap_int(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Op(ast::NumType::Int, ast::BinOp::Div, left, right) => {
+                    ((unwrap_int(interpret_term(env, left))
+                        / unwrap_int(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Int, ast::Comparison::Equal, left, right) => {
+                    ((unwrap_int(interpret_term(env, left))
+                        == unwrap_int(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Int, ast::Comparison::Less, left, right) => {
+                    ((unwrap_int(interpret_term(env, left))
+                        < unwrap_int(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Int, ast::Comparison::LessEqual, left, right) => {
+                    ((unwrap_int(interpret_term(env, left))
+                        <= unwrap_int(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Negate(ast::NumType::Int, term) => {
+                    ((-unwrap_int(interpret_term(env, term))).into())
+                }
+
+                // FLOATS
+                ast::ArithOp::Op(ast::NumType::Float, ast::BinOp::Add, left, right) => {
+                    ((unwrap_float(interpret_term(env, left))
+                        + unwrap_float(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Op(ast::NumType::Float, ast::BinOp::Sub, left, right) => {
+                    ((unwrap_float(interpret_term(env, left))
+                        - unwrap_float(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Op(ast::NumType::Float, ast::BinOp::Mul, left, right) => {
+                    ((unwrap_float(interpret_term(env, left))
+                        * unwrap_float(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Op(ast::NumType::Float, ast::BinOp::Div, left, right) => {
+                    ((unwrap_float(interpret_term(env, left))
+                        / unwrap_float(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Float, ast::Comparison::Equal, left, right) => {
+                    ((unwrap_float(interpret_term(env, left))
+                        == unwrap_float(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Float, ast::Comparison::Less, left, right) => {
+                    ((unwrap_float(interpret_term(env, left))
+                        < unwrap_float(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Float, ast::Comparison::LessEqual, left, right) => {
+                    ((unwrap_float(interpret_term(env, left))
+                        <= unwrap_float(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Negate(ast::NumType::Float, term) => {
+                    ((-unwrap_float(interpret_term(env, term))).into())
+                }
+
+                // BYTES
+                ast::ArithOp::Op(ast::NumType::Byte, ast::BinOp::Add, left, right) => {
+                    ((unwrap_byte(interpret_term(env, left))
+                        + unwrap_byte(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Op(ast::NumType::Byte, ast::BinOp::Sub, left, right) => {
+                    ((unwrap_byte(interpret_term(env, left))
+                        - unwrap_byte(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Op(ast::NumType::Byte, ast::BinOp::Mul, left, right) => {
+                    ((unwrap_byte(interpret_term(env, left))
+                        * unwrap_byte(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Op(ast::NumType::Byte, ast::BinOp::Div, left, right) => {
+                    ((unwrap_byte(interpret_term(env, left))
+                        / unwrap_byte(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Byte, ast::Comparison::Equal, left, right) => {
+                    ((unwrap_byte(interpret_term(env, left))
+                        == unwrap_byte(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Byte, ast::Comparison::Less, left, right) => {
+                    ((unwrap_byte(interpret_term(env, left))
+                        < unwrap_byte(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Cmp(ast::NumType::Byte, ast::Comparison::LessEqual, left, right) => {
+                    ((unwrap_byte(interpret_term(env, left))
+                        <= unwrap_byte(interpret_term(env, right)))
+                    .into())
+                }
+                ast::ArithOp::Negate(ast::NumType::Byte, _term) => {
+                    panic!("don't negate a byte u dummy")
+                    // FIXME: use i8's, or disallow this.
+                    // ((-unwrap_byte(interpret_term(env, term))).into())
+                }
+            },
+            ast::Expr::ArrayOp(array_op) => match array_op {
+                ast::ArrayOp::Construct(_item_t, ast::Repr::Shared, items) => {
+                    // TODO: check type
+                    if DEBUG {
+                        println!("[constructing a flat array]");
+                    }
+                    Value::PersistentArray(
+                        items
+                            .into_iter()
+                            .map(|item| interpret_term(env, &item))
+                            .collect(),
+                    )
+                }
+                ast::ArrayOp::Construct(_item_t, ast::Repr::Unique, items) => {
+                    // TODO: check type
+                    if DEBUG {
+                        println!("[constructing a flat array]");
+                    }
+                    Value::Array(Rc::new(RefCell::new(Some(
+                        items
+                            .into_iter()
+                            .map(|item| interpret_term(env, &item))
+                            .collect(),
+                    ))))
+                }
+                ast::ArrayOp::Item(array, index) => {
+                    let array = interpret_term(env, array);
+                    let idx = unwrap_int(interpret_term(env, index));
+                    if let Some(pers) = try_persistent_array(&array) {
+                        if DEBUG {
+                            println!("[accessing a persistent array]");
+                        }
+                        Value::Tuple(vec![
+                            pers[idx as usize].clone(),
+                            Value::PersistentHoleArray(idx, pers),
+                        ])
+                    } else {
+                        if DEBUG {
+                            println!("[accessing a flat array]");
+                        }
+                        let vec_cell = unwrap_array(array);
+                        let vec_borrow = vec_cell.borrow();
+                        let vec = vec_borrow
+                            .as_ref()
+                            .expect("item called on invalidated array!");
+                        if DEBUG {
+                            println!("array is {:?}, idx is {:?}", &vec, idx);
+                        }
+                        let item = { vec[idx as usize].clone() };
+                        Value::Tuple(vec![item, Value::HoleArray(idx, vec_cell.clone())])
+                    }
+                }
+                ast::ArrayOp::Len(array) => {
+                    let array = interpret_term(env, array);
+                    if let Some(pers) = try_persistent_array(&array) {
+                        if DEBUG {
+                            println!("[getting length of a persistent array ({:?})]", pers.len());
+                        }
+                        pers.len().into()
+                    } else {
+                        let vec_cell = unwrap_array(array);
+                        let vec_borrow = vec_cell.borrow();
+                        let vec = vec_borrow
+                            .as_ref()
+                            .expect("len called on invalidated array!");
+                        if DEBUG {
+                            println!("[getting length of a flat array ({:?})]", vec.len());
+                        }
+                        vec.len().into()
+                    }
+                }
+                ast::ArrayOp::Push(array, item) => {
+                    let array = interpret_term(env, array);
+                    let item = interpret_term(env, item);
+                    if let Some(mut pers) = try_persistent_array(&array) {
+                        if DEBUG {
+                            println!("[pushing to a persistent array]");
+                        }
+                        pers.push_back(item);
+                        Value::PersistentArray(pers)
+                    } else {
+                        if DEBUG {
+                            println!("[pushing to a flat array]");
+                        }
+                        let vec_cell = unwrap_array(array);
+                        let mut vec = vec_cell
+                            .replace(None)
+                            .expect("pushing to invalidated array!");;
+                        vec.push(item);
+                        Value::Array(Rc::new(RefCell::new(Some(vec))))
+                    }
+                }
+                ast::ArrayOp::Pop(array) => {
+                    let array = interpret_term(env, array);
+                    if let Some(mut pers) = try_persistent_array(&array) {
+                        if DEBUG {
+                            println!("[popping from a persistent array]");
+                        }
+                        let item = pers
+                            .pop_back()
+                            .expect("Hopper program error: popped from empty array");
+                        Value::Tuple(vec![Value::PersistentArray(pers), item])
+                    } else {
+                        if DEBUG {
+                            println!("[popping from a flat array]");
+                        }
+                        let vec_cell = unwrap_array(array);
+                        let mut vec = vec_cell
+                            .replace(None)
+                            .expect("pushing to invalidated array!");;
+                        let item = vec
+                            .pop()
+                            .expect("Hopper program error: popped from empty array");
+                        Value::Tuple(vec![Value::Array(Rc::new(RefCell::new(Some(vec)))), item])
+                    }
+                }
+                ast::ArrayOp::Replace(hole_array, item) => {
+                    let array = interpret_term(env, hole_array);
+                    let item = interpret_term(env, item);
+                    if let Some((idx, mut pers)) = try_persistent_holearray(&array) {
+                        if DEBUG {
+                            println!("[assigning to a persistent array]");
+                        }
+                        pers[idx as usize] = item;
+                        Value::PersistentArray(pers)
+                    } else {
+                        if DEBUG {
+                            println!("[assigning to a flat array]");
+                        }
+                        let (idx, vec_cell) = unwrap_holearray(array);
+                        let mut vec = vec_cell
+                            .replace(None)
+                            .expect("pushing to invalidated array!");;
+                        vec[idx as usize] = item;
+                        Value::Array(Rc::new(RefCell::new(Some(vec))))
+                    }
+                }
+            },
+            ast::Expr::IOOp(ast::IOOp::Input(repr)) => {
+                let mut input = String::new();
+                stdin
+                    .read_line(&mut input)
+                    .ok()
+                    .expect("failed reading stdin");
+                match repr {
+                    ast::Repr::Shared => Value::PersistentArray(
+                        input
+                            .into_bytes()
+                            .into_iter()
+                            .map(|byte| Value::Prim(ast::PrimVal::Byte(byte)))
+                            .collect(),
+                    ),
+                    ast::Repr::Unique => Value::Array(Rc::new(RefCell::new(Some(
+                        input
+                            .into_bytes()
+                            .into_iter()
+                            .map(|byte| Value::Prim(ast::PrimVal::Byte(byte)))
+                            .collect(),
+                    )))),
+                }
+            }
+            ast::Expr::IOOp(ast::IOOp::Output(array)) => {
+                let array = interpret_term(env, array);
+                let bytes = if let Some(pers) = try_persistent_array(&array) {
+                    if DEBUG {
+                        println!("[outputting a persistent array]");
+                    }
+                    pers.into_iter().map(|val| unwrap_byte(val)).collect()
+                } else {
+                    let output_cell = unwrap_array(array);
+                    let output_borrow = output_cell.borrow();
+                    let output_arr = output_borrow
+                        .as_ref()
+                        .expect("outputting an invalidated array!");
+                    output_arr
                         .into_iter()
-                        .map(|item| interpret_term(env, &item))
-                        .collect(),
+                        .map(|val| unwrap_byte_ref(val))
+                        .collect()
+                };
+                writeln!(
+                    stdout,
+                    "{}",
+                    String::from_utf8(bytes).expect("UTF-8 output error"),
+                )
+                .expect("output failed");
+                Value::Tuple(Vec::new())
+            }
+            ast::Expr::Ctor(type_id, variant_id, Some(arg)) => Value::Custom(
+                *type_id,
+                *variant_id,
+                Some(Box::new(interpret_term(env, arg))),
+            ),
+            ast::Expr::Ctor(type_id, variant_id, None) => {
+                Value::Custom(*type_id, *variant_id, None)
+            }
+            ast::Expr::Tuple(items) => {
+                Value::Tuple(items.iter().map(|t| interpret_term(env, t)).collect())
+            }
+            ast::Expr::Local(local_id) => env[local_id.0].clone(),
+            ast::Expr::Call(purity, func_id, arg) => {
+                if DEBUG {
+                    println!(
+                        "Calling function {:?} ({:?}) with arg {:?}",
+                        func_id, purity, arg
+                    );
+                }
+                let arg = interpret_term(env, arg);
+                let mut callee_env = vec![arg];
+                interpret_block(
+                    stdin,
+                    stdout,
+                    program,
+                    &mut callee_env,
+                    &program.funcs[func_id.0].body,
                 )
             }
-            ast::ArrayOp::Construct(_item_t, ast::Repr::Unique, items) => {
-                // TODO: check type
-                if DEBUG {
-                    println!("[constructing a flat array]");
+            ast::Expr::Match(matched_local, branches, _result_t) => {
+                // TODO: check type result_t
+                let discriminant = &env[matched_local.0];
+                let mut result = None;
+                for (pat, branch) in branches {
+                    if pat_matches(pat, discriminant) {
+                        result = Some(interpret_block(stdin, stdout, program, env, branch));
+                        break;
+                    }
                 }
-                Value::Array(Rc::new(RefCell::new(Some(
-                    items
-                        .into_iter()
-                        .map(|item| interpret_term(env, &item))
-                        .collect(),
-                ))))
-            }
-            ast::ArrayOp::Item(array, index) => {
-                let array = interpret_term(env, array);
-                let idx = unwrap_int(interpret_term(env, index));
-                if let Some(pers) = try_persistent_array(&array) {
-                    if DEBUG {
-                        println!("[accessing a persistent array]");
-                    }
-                    Value::Tuple(vec![
-                        pers[idx as usize].clone(),
-                        Value::PersistentHoleArray(idx, pers),
-                    ])
-                } else {
-                    if DEBUG {
-                        println!("[accessing a flat array]");
-                    }
-                    let vec_cell = unwrap_array(array);
-                    let vec_borrow = vec_cell.borrow();
-                    let vec = vec_borrow
-                        .as_ref()
-                        .expect("item called on invalidated array!");
-                    if DEBUG {
-                        println!("array is {:?}, idx is {:?}", &vec, idx);
-                    }
-                    let item = { vec[idx as usize].clone() };
-                    Value::Tuple(vec![item, Value::HoleArray(idx, vec_cell.clone())])
-                }
-            }
-            ast::ArrayOp::Len(array) => {
-                let array = interpret_term(env, array);
-                if let Some(pers) = try_persistent_array(&array) {
-                    if DEBUG {
-                        println!("[getting length of a persistent array ({:?})]", pers.len());
-                    }
-                    pers.len().into()
-                } else {
-                    let vec_cell = unwrap_array(array);
-                    let vec_borrow = vec_cell.borrow();
-                    let vec = vec_borrow
-                        .as_ref()
-                        .expect("len called on invalidated array!");
-                    if DEBUG {
-                        println!("[getting length of a flat array ({:?})]", vec.len());
-                    }
-                    vec.len().into()
-                }
-            }
-            ast::ArrayOp::Push(array, item) => {
-                let array = interpret_term(env, array);
-                let item = interpret_term(env, item);
-                if let Some(mut pers) = try_persistent_array(&array) {
-                    if DEBUG {
-                        println!("[pushing to a persistent array]");
-                    }
-                    pers.push_back(item);
-                    Value::PersistentArray(pers)
-                } else {
-                    if DEBUG {
-                        println!("[pushing to a flat array]");
-                    }
-                    let vec_cell = unwrap_array(array);
-                    let mut vec = vec_cell
-                        .replace(None)
-                        .expect("pushing to invalidated array!");;
-                    vec.push(item);
-                    Value::Array(Rc::new(RefCell::new(Some(vec))))
-                }
-            }
-            ast::ArrayOp::Pop(array) => {
-                let array = interpret_term(env, array);
-                if let Some(mut pers) = try_persistent_array(&array) {
-                    if DEBUG {
-                        println!("[popping from a persistent array]");
-                    }
-                    let item = pers
-                        .pop_back()
-                        .expect("Hopper program error: popped from empty array");
-                    Value::Tuple(vec![Value::PersistentArray(pers), item])
-                } else {
-                    if DEBUG {
-                        println!("[popping from a flat array]");
-                    }
-                    let vec_cell = unwrap_array(array);
-                    let mut vec = vec_cell
-                        .replace(None)
-                        .expect("pushing to invalidated array!");;
-                    let item = vec
-                        .pop()
-                        .expect("Hopper program error: popped from empty array");
-                    Value::Tuple(vec![Value::Array(Rc::new(RefCell::new(Some(vec)))), item])
-                }
-            }
-            ast::ArrayOp::Replace(hole_array, item) => {
-                let array = interpret_term(env, hole_array);
-                let item = interpret_term(env, item);
-                if let Some((idx, mut pers)) = try_persistent_holearray(&array) {
-                    if DEBUG {
-                        println!("[assigning to a persistent array]");
-                    }
-                    pers[idx as usize] = item;
-                    Value::PersistentArray(pers)
-                } else {
-                    if DEBUG {
-                        println!("[assigning to a flat array]");
-                    }
-                    let (idx, vec_cell) = unwrap_holearray(array);
-                    let mut vec = vec_cell
-                        .replace(None)
-                        .expect("pushing to invalidated array!");;
-                    vec[idx as usize] = item;
-                    Value::Array(Rc::new(RefCell::new(Some(vec))))
-                }
-            }
-        },
-        ast::Expr::IOOp(ast::IOOp::Input(repr)) => {
-            let mut input = String::new();
-            std::io::stdin()
-                .read_line(&mut input)
-                .ok()
-                .expect("failed reading stdin");
-            match repr {
-                ast::Repr::Shared => Value::PersistentArray(
-                    input
-                        .into_bytes()
-                        .into_iter()
-                        .map(|byte| Value::Prim(ast::PrimVal::Byte(byte)))
-                        .collect(),
-                ),
-                ast::Repr::Unique => Value::Array(Rc::new(RefCell::new(Some(
-                    input
-                        .into_bytes()
-                        .into_iter()
-                        .map(|byte| Value::Prim(ast::PrimVal::Byte(byte)))
-                        .collect(),
-                )))),
+                result.expect("inexhaustive match")
             }
         }
-        ast::Expr::IOOp(ast::IOOp::Output(array)) => {
-            let array = interpret_term(env, array);
-            let bytes = if let Some(pers) = try_persistent_array(&array) {
-                if DEBUG {
-                    println!("[outputting a persistent array]");
-                }
-                pers.into_iter().map(|val| unwrap_byte(val)).collect()
-            } else {
-                let output_cell = unwrap_array(array);
-                let output_borrow = output_cell.borrow();
-                let output_arr = output_borrow
-                    .as_ref()
-                    .expect("outputting an invalidated array!");
-                output_arr
-                    .into_iter()
-                    .map(|val| unwrap_byte_ref(val))
-                    .collect()
-            };
-            println!("{}", String::from_utf8(bytes).expect("UTF-8 output error"),);
-            Value::Tuple(Vec::new())
-        }
-        ast::Expr::Ctor(type_id, variant_id, Some(arg)) => Value::Custom(
-            *type_id,
-            *variant_id,
-            Some(Box::new(interpret_term(env, arg))),
-        ),
-        ast::Expr::Ctor(type_id, variant_id, None) => Value::Custom(*type_id, *variant_id, None),
-        ast::Expr::Tuple(items) => {
-            Value::Tuple(items.iter().map(|t| interpret_term(env, t)).collect())
-        }
-        ast::Expr::Local(local_id) => env[local_id.0].clone(),
-        ast::Expr::Call(purity, func_id, arg) => {
-            if DEBUG {
-                println!(
-                    "Calling function {:?} ({:?}) with arg {:?}",
-                    func_id, purity, arg
-                );
-            }
-            let arg = interpret_term(env, arg);
-            let mut callee_env = vec![arg];
-            interpret_block(program, &mut callee_env, &program.funcs[func_id.0].body)
-        }
-        ast::Expr::Match(matched_local, branches, _result_t) => {
-            // TODO: check type result_t
-            let discriminant = &env[matched_local.0];
-            let mut result = None;
-            for (pat, branch) in branches {
-                if pat_matches(pat, discriminant) {
-                    result = Some(interpret_block(program, env, branch));
-                    break;
-                }
-            }
-            result.expect("inexhaustive match")
-        }
-    }
+    })
 }
 
 fn interpret_term(env: &Env, term: &ast::Term) -> Value {
