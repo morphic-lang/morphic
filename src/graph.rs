@@ -1,5 +1,4 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct NodeId(pub usize);
+id_type!(pub NodeId);
 
 #[derive(Clone, Debug)]
 pub struct Graph {

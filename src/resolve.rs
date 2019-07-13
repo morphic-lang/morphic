@@ -122,8 +122,7 @@ lazy_static! {
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ModId(pub usize);
+id_type!(ModId);
 
 #[derive(Clone, Debug)]
 struct ModMap {

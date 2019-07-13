@@ -3,8 +3,7 @@ use crate::data::raw_ast as raw;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomTypeId(pub usize);
+id_type!(pub CustomTypeId);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
@@ -30,8 +29,7 @@ pub struct TypeDef {
     pub variants: Vec<Option<Type>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomGlobalId(pub usize);
+id_type!(pub CustomGlobalId);
 
 #[derive(Clone, Debug)]
 pub enum Expr {

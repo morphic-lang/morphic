@@ -4,8 +4,7 @@ use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RepParamId(pub usize);
+id_type!(pub RepParamId);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
@@ -25,8 +24,7 @@ pub enum Type<Rep> {
     Custom(mono::CustomTypeId, Vec<Rep>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TemplateId(pub usize);
+id_type!(pub TemplateId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InCycle {

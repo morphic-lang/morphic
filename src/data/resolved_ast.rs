@@ -11,14 +11,11 @@ pub enum TypeId {
     Custom(CustomTypeId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomTypeId(pub usize);
+id_type!(pub CustomTypeId);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VariantId(pub usize);
+id_type!(pub VariantId);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TypeParamId(pub usize);
+id_type!(pub TypeParamId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GlobalId {
@@ -29,8 +26,7 @@ pub enum GlobalId {
     Custom(CustomGlobalId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomGlobalId(pub usize);
+id_type!(pub CustomGlobalId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IOOp {
@@ -47,8 +43,7 @@ pub enum ArrayOp {
     Concat,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LocalId(pub usize);
+id_type!(pub LocalId);
 
 #[derive(Clone, Debug)]
 pub struct Program {

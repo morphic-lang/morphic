@@ -6,11 +6,9 @@ use im_rc::Vector;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomFuncId(pub usize);
+id_type!(pub CustomFuncId);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomTypeId(pub usize);
+id_type!(pub CustomTypeId);
 
 #[derive(Clone, Copy, Debug)]
 pub enum NumType {

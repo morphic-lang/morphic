@@ -3,17 +3,15 @@ use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LamId(pub usize);
+id_type!(pub LamId);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LocalId(pub usize);
+id_type!(pub LocalId);
+
 impl LocalId {
     pub const ARG: Self = LocalId(0);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CaptureId(pub usize);
+id_type!(pub CaptureId);
 
 #[derive(Clone, Debug)]
 pub enum Expr {
@@ -57,6 +55,7 @@ pub struct LamDef {
 pub struct LamData {
     pub lifted_from: mono::CustomGlobalId,
 }
+
 #[derive(Clone)]
 pub struct Program {
     pub custom_types: Vec<mono::TypeDef>,

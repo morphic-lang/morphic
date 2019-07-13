@@ -1,8 +1,7 @@
 use crate::graph;
 use std::collections::BTreeSet;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SolverVarId(pub usize);
+id_type!(pub SolverVarId);
 
 #[derive(Clone, Debug)]
 pub struct VarConstraints<Requirement> {

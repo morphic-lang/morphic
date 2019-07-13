@@ -55,11 +55,9 @@ fn add_rep_leaves(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct LoweredClosureId(usize);
+id_type!(LoweredClosureId);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct DispatchFuncId(usize);
+id_type!(DispatchFuncId);
 
 // We factor out this 'mapping' structure because its associated methods rely heavily on error-prone
 // raw index manipulation, and we want to be able to able to reason about it independently of the

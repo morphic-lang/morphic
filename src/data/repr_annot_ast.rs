@@ -51,8 +51,7 @@ pub struct TypeDef<ReprVar = Solution> {
 }
 
 // 0 is the function's argument. Every Expr in a Block has a LocalId.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LocalId(pub usize);
+id_type!(pub LocalId);
 
 // Terms do not have to be assigned to temps before being used.
 // Thus they can have no operational side-effects.
@@ -122,8 +121,7 @@ pub enum Pattern {
     FloatConst(f64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RepParamId(pub usize);
+id_type!(pub RepParamId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Solution {
@@ -169,8 +167,8 @@ impl PartialEq for Constraint {
 
 // ExprId does not index into any field of `Block`. ExprId indexes into
 // maps created in annot_reprs::aliasing
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ExprId(pub usize);
+id_type!(pub ExprId);
+
 impl ExprId {
     pub const ARG: ExprId = ExprId(0);
     pub fn next(&self) -> ExprId {

@@ -5,8 +5,7 @@ use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomTypeId(pub usize);
+id_type!(pub CustomTypeId);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
@@ -28,11 +27,9 @@ pub enum Type {
     Custom(CustomTypeId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct OpaqueFuncRepId(pub usize);
+id_type!(pub OpaqueFuncRepId);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LamId(pub usize);
+id_type!(pub LamId);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FuncCase {
@@ -75,8 +72,7 @@ pub enum Expr {
     FloatLit(f64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomGlobalId(pub usize);
+id_type!(pub CustomGlobalId);
 
 #[derive(Clone, Debug)]
 pub enum Pattern {

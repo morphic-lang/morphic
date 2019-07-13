@@ -1,10 +1,8 @@
 use crate::data::purity::Purity;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomTypeId(pub usize);
+id_type!(pub CustomTypeId);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomFuncId(pub usize);
+id_type!(pub CustomFuncId);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
@@ -18,8 +16,7 @@ pub enum Type {
     Custom(CustomTypeId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VariantId(pub usize);
+id_type!(pub VariantId);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
@@ -92,8 +89,8 @@ pub enum ArrayOp {
     ), //Returns new array
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LocalId(pub usize);
+id_type!(pub LocalId);
+
 impl LocalId {
     pub const ARG: Self = LocalId(0);
 }

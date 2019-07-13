@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
+#[macro_use]
+mod util;
+
 mod data;
 mod graph;
 mod pretty_print;
-mod util;
 
 mod lex;
 
