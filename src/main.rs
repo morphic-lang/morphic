@@ -41,6 +41,7 @@ mod lower_reprs;
 
 mod interpreter;
 
+#[cfg(test)]
 mod test;
 
 use failure::Fail;
