@@ -1,12 +1,13 @@
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::id_vec::IdVec;
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub custom_types: Vec<res::TypeDef>,
-    pub custom_type_data: Vec<res::TypeData>,
-    pub vals: Vec<ValDef>,
-    pub val_data: Vec<res::ValData>,
+    pub custom_types: IdVec<res::CustomTypeId, res::TypeDef>,
+    pub custom_type_data: IdVec<res::CustomTypeId, res::TypeData>,
+    pub vals: IdVec<res::CustomGlobalId, ValDef>,
+    pub val_data: IdVec<res::CustomGlobalId, res::ValData>,
     pub main: res::CustomGlobalId,
 }
 

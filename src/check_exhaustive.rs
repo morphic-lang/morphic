@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
+use crate::util::id_vec::IdVec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Relevance {
@@ -324,7 +325,7 @@ impl DecisionTree {
         }
     }
 
-    fn is_exhaustive(&self, custom_types: &[res::TypeDef]) -> bool {
+    fn is_exhaustive(&self, custom_types: &IdVec<res::CustomTypeId, res::TypeDef>) -> bool {
         match self {
             DecisionTree::End => true,
 
@@ -350,15 +351,18 @@ impl DecisionTree {
     }
 }
 
-fn num_variants(custom_types: &[res::TypeDef], id: res::TypeId) -> usize {
+fn num_variants(custom_types: &IdVec<res::CustomTypeId, res::TypeDef>, id: res::TypeId) -> usize {
     match id {
         res::TypeId::Bool => 2,
-        res::TypeId::Custom(res::CustomTypeId(idx)) => custom_types[idx].variants.len(),
+        res::TypeId::Custom(custom_id) => custom_types[custom_id].variants.len(),
         _ => unreachable!(),
     }
 }
 
-fn check_expr(custom_types: &[res::TypeDef], expr: &typed::Expr) -> Result<(), ()> {
+fn check_expr(
+    custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
+    expr: &typed::Expr,
+) -> Result<(), ()> {
     match expr {
         typed::Expr::Global(_, _) => Ok(()),
 
@@ -440,9 +444,8 @@ fn check_expr(custom_types: &[res::TypeDef], expr: &typed::Expr) -> Result<(), (
 pub struct Error(res::CustomGlobalId);
 
 pub fn check_exhaustive(program: &typed::Program) -> Result<(), Error> {
-    for (idx, def) in program.vals.iter().enumerate() {
-        check_expr(&program.custom_types, &def.body)
-            .map_err(|()| Error(res::CustomGlobalId(idx)))?;
+    for (id, def) in &program.vals {
+        check_expr(&program.custom_types, &def.body).map_err(|()| Error(id))?;
     }
     Ok(())
 }

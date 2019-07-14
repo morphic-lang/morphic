@@ -371,19 +371,17 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
     let mut val_defs_resolved = Vec::new();
     let mut val_defs_resolved_data = Vec::new();
 
-    while let Some((mono::CustomGlobalId(new_idx), res::CustomGlobalId(orig_idx), inst_args)) =
-        val_insts.pop_pending()
-    {
+    while let Some((mono::CustomGlobalId(new_idx), orig_id, inst_args)) = val_insts.pop_pending() {
         // We enqueue pending val defs to resolve in the order in which their ids are generated, so
         // this should always hold.  This allows us to insert resolved val defs at the appropriate
         // index simply by pushing them onto the end of the vector.
         assert_eq!(new_idx, val_defs_resolved.len());
 
-        let def = &program.vals[orig_idx];
+        let def = &program.vals[orig_id];
 
         let def_resolved = resolve_val_def(&mut val_insts, &mut type_insts, &inst_args, def);
         let def_resolved_data = mono::ValData {
-            val_name: program.val_data[orig_idx].val_name.clone(),
+            val_name: program.val_data[orig_id].val_name.clone(),
             mono_with: inst_args,
             is_wrapper: false,
         };
@@ -395,22 +393,17 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
     let mut typedefs_resolved = Vec::new();
     let mut typedefs_resolved_data = Vec::new();
 
-    while let Some((mono::CustomTypeId(new_idx), res::CustomTypeId(orig_idx), inst_args)) =
-        type_insts.pop_pending()
-    {
+    while let Some((mono::CustomTypeId(new_idx), orig_id, inst_args)) = type_insts.pop_pending() {
         // Same as above
         assert_eq!(new_idx, typedefs_resolved.len());
 
-        let typedef = &program.custom_types[orig_idx];
+        let typedef = &program.custom_types[orig_id];
 
         let typedef_resolved = resolve_typedef(&mut type_insts, &inst_args, typedef);
         let typedef_resolved_data = mono::TypeData {
-            type_name: program.custom_type_data[orig_idx].type_name.clone(),
+            type_name: program.custom_type_data[orig_id].type_name.clone(),
             mono_with: inst_args,
-            variant_data: program.custom_type_data[orig_idx]
-                .variant_data
-                .items
-                .clone(),
+            variant_data: program.custom_type_data[orig_id].variant_data.items.clone(),
         };
 
         typedefs_resolved.push(typedef_resolved);

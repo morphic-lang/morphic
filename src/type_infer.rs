@@ -5,6 +5,7 @@ use std::mem::replace;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
+use crate::util::id_vec::IdVec;
 
 // TODO: Improve these error messages!
 #[derive(Clone, Debug, Fail)]
@@ -49,8 +50,7 @@ pub struct LocatedError {
     error: Error,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TypeVar(usize);
+id_type!(TypeVar);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Assign {
@@ -70,22 +70,20 @@ enum AssignState {
 
 #[derive(Clone, Debug)]
 struct Context {
-    vars: Vec<AssignState>,
+    vars: IdVec<TypeVar, AssignState>,
 }
 
 impl Context {
     fn new() -> Self {
-        Context { vars: Vec::new() }
+        Context { vars: IdVec::new() }
     }
 
     fn new_var(&mut self, assign: Assign) -> TypeVar {
-        let id = TypeVar(self.vars.len());
-        self.vars.push(AssignState::Available(assign));
-        id
+        self.vars.push(AssignState::Available(assign))
     }
 
     fn obtain(&mut self, var: TypeVar) -> Result<Assign, Error> {
-        let state = replace(&mut self.vars[var.0], AssignState::Recursing);
+        let state = replace(&mut self.vars[var], AssignState::Recursing);
         match state {
             AssignState::Available(assign) => Ok(assign),
             AssignState::Recursing => Err(Error::RecursiveType),
@@ -93,8 +91,8 @@ impl Context {
     }
 
     fn assign(&mut self, var: TypeVar, assign: Assign) {
-        debug_assert_eq!(self.vars[var.0], AssignState::Recursing);
-        self.vars[var.0] = AssignState::Available(assign);
+        debug_assert_eq!(self.vars[var], AssignState::Recursing);
+        self.vars[var] = AssignState::Available(assign);
     }
 
     fn follow(&mut self, var: TypeVar) -> Result<TypeVar, Error> {
@@ -188,7 +186,7 @@ impl Context {
     }
 
     fn extract(&self, var: TypeVar) -> res::Type {
-        let assign = match &self.vars[var.0] {
+        let assign = match &self.vars[var] {
             AssignState::Available(assign) => assign,
             AssignState::Recursing => unreachable!(),
         };
@@ -222,21 +220,22 @@ impl Context {
 
 #[derive(Clone, Debug)]
 struct Scope {
-    // Indexed by LocalId
-    locals: Vec<TypeVar>,
+    locals: IdVec<res::LocalId, TypeVar>,
 }
 
 impl Scope {
     fn new() -> Self {
-        Scope { locals: Vec::new() }
+        Scope {
+            locals: IdVec::new(),
+        }
     }
 
     fn add_local(&mut self, var: TypeVar) {
-        self.locals.push(var);
+        let _ = self.locals.push(var);
     }
 
     fn local(&self, id: res::LocalId) -> TypeVar {
-        self.locals[id.0]
+        self.locals[id]
     }
 
     fn with_subscope<F, R>(&mut self, body: F) -> R
@@ -442,9 +441,13 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
     }
 }
 
-fn instantiate_with(ctx: &mut Context, param_vars: &[TypeVar], body: &res::Type) -> TypeVar {
+fn instantiate_with(
+    ctx: &mut Context,
+    param_vars: &IdVec<res::TypeParamId, TypeVar>,
+    body: &res::Type,
+) -> TypeVar {
     match body {
-        res::Type::Var(param) => param_vars[param.0],
+        res::Type::Var(param) => param_vars[param],
 
         res::Type::App(id, args) => {
             let arg_vars = args
@@ -473,10 +476,15 @@ fn instantiate_with(ctx: &mut Context, param_vars: &[TypeVar], body: &res::Type)
     }
 }
 
-fn instantiate_scheme(ctx: &mut Context, scheme: &res::TypeScheme) -> (Vec<TypeVar>, TypeVar) {
-    let param_vars: Vec<_> = (0..scheme.num_params)
-        .map(|_| ctx.new_var(Assign::Unknown))
-        .collect();
+fn instantiate_scheme(
+    ctx: &mut Context,
+    scheme: &res::TypeScheme,
+) -> (IdVec<res::TypeParamId, TypeVar>, TypeVar) {
+    let param_vars = IdVec::from_items(
+        (0..scheme.num_params)
+            .map(|_| ctx.new_var(Assign::Unknown))
+            .collect(),
+    );
 
     let root = instantiate_with(ctx, &param_vars, &scheme.body);
 
@@ -528,9 +536,11 @@ fn infer_pat(
                 _ => unreachable!(),
             };
 
-            let param_vars: Vec<_> = (0..num_params)
-                .map(|_| ctx.new_var(Assign::Unknown))
-                .collect();
+            let param_vars = IdVec::from_items(
+                (0..num_params)
+                    .map(|_| ctx.new_var(Assign::Unknown))
+                    .collect(),
+            );
 
             let content_annot = match (expected_content, content) {
                 (Some(ref expected), Some(content)) => {
@@ -547,9 +557,10 @@ fn infer_pat(
                 (None, Some(_)) => return Err(Error::UnexpectedCtorArg(*id, *variant)),
             };
 
-            let ctor_annot = AnnotPattern::Ctor(*id, param_vars.clone(), *variant, content_annot);
+            let ctor_annot =
+                AnnotPattern::Ctor(*id, param_vars.items.clone(), *variant, content_annot);
 
-            let ctor_var = ctx.new_var(Assign::App(*id, param_vars));
+            let ctor_var = ctx.new_var(Assign::App(*id, param_vars.items));
 
             Ok((ctor_annot, ctor_var))
         }
@@ -581,7 +592,7 @@ fn infer_expr(
         &res::Expr::Global(id) => {
             let scheme = global_scheme(program, id);
             let (param_vars, var) = instantiate_scheme(ctx, &scheme);
-            Ok((AnnotExpr::Global(id, param_vars), var))
+            Ok((AnnotExpr::Global(id, param_vars.items), var))
         }
 
         &res::Expr::Local(id) => Ok((AnnotExpr::Local(id), scope.local(id))),
@@ -696,9 +707,11 @@ fn infer_expr(
 }
 
 fn instantiate_rigid(ctx: &mut Context, scheme: &res::TypeScheme) -> TypeVar {
-    let rigid_params: Vec<_> = (0..scheme.num_params)
-        .map(|idx| ctx.new_var(Assign::Param(res::TypeParamId(idx))))
-        .collect();
+    let rigid_params = IdVec::from_items(
+        (0..scheme.num_params)
+            .map(|idx| ctx.new_var(Assign::Param(res::TypeParamId(idx))))
+            .collect(),
+    );
 
     instantiate_with(ctx, &rigid_params, &scheme.body)
 }
@@ -808,22 +821,18 @@ fn infer_def(program: &res::Program, def: &res::ValDef) -> Result<typed::ValDef,
 }
 
 pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError> {
-    let vals_inferred = program
-        .vals
-        .iter()
-        .map(|(idx, def)| {
-            infer_def(&program, def).map_err(|error| LocatedError {
-                def: program.val_data[idx].val_name.0.clone(),
-                error,
-            })
+    let vals_inferred = program.vals.try_map(|id, def| {
+        infer_def(&program, def).map_err(|error| LocatedError {
+            def: program.val_data[id].val_name.0.clone(),
+            error,
         })
-        .collect::<Result<_, _>>()?;
+    })?;
 
     Ok(typed::Program {
-        custom_types: program.custom_types.items,
-        custom_type_data: program.custom_type_data.items,
+        custom_types: program.custom_types,
+        custom_type_data: program.custom_type_data,
         vals: vals_inferred,
-        val_data: program.val_data.items,
+        val_data: program.val_data,
         main: program.main,
     })
 }

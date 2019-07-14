@@ -9,7 +9,7 @@ use crate::data::typed_ast as typed;
 pub struct Error;
 
 pub fn check_main(program: &typed::Program) -> Result<(), Error> {
-    let main_scheme = &program.vals[program.main.0].scheme;
+    let main_scheme = &program.vals[program.main].scheme;
 
     let expected_scheme = res::TypeScheme {
         num_params: 0,
