@@ -345,7 +345,7 @@ fn resolve_typedef(
     let variants_resolved = typedef
         .variants
         .iter()
-        .map(|variant| {
+        .map(|(_id, variant)| {
             if let Some(variant) = variant {
                 Some(resolve_type(type_insts, inst_args, variant))
             } else {
@@ -407,7 +407,10 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
         let typedef_resolved_data = mono::TypeData {
             type_name: program.custom_type_data[orig_idx].type_name.clone(),
             mono_with: inst_args,
-            variant_data: program.custom_type_data[orig_idx].variant_data.clone(),
+            variant_data: program.custom_type_data[orig_idx]
+                .variant_data
+                .items
+                .clone(),
         };
 
         typedefs_resolved.push(typedef_resolved);

@@ -9,6 +9,7 @@ use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
 use crate::lex;
 use crate::parse;
+use crate::util::id_vec::IdVec;
 
 #[derive(Debug, Fail)]
 pub enum ErrorKind {
@@ -134,25 +135,25 @@ struct ModMap {
 
 #[derive(Clone, Debug)]
 pub struct GlobalContext {
-    mods: Vec<ModMap>,                // Indexed by ModId
-    types: Vec<Option<res::TypeDef>>, // Indexed by CustomTypeId
-    type_data: Vec<res::TypeData>,    // Indexed by CustomTypeId
-    vals: Vec<Option<res::ValDef>>,   // Indexed by CustomGlobalId
-    val_data: Vec<res::ValData>,      // Indexed by CustomGlobalId
+    mods: IdVec<ModId, ModMap>,
+    types: IdVec<res::CustomTypeId, Option<res::TypeDef>>,
+    type_data: IdVec<res::CustomTypeId, res::TypeData>,
+    vals: IdVec<res::CustomGlobalId, Option<res::ValDef>>,
+    val_data: IdVec<res::CustomGlobalId, res::ValData>,
 }
 
 pub fn resolve_program(file_path: &Path) -> Result<res::Program, Error> {
     let mut ctx = GlobalContext {
-        mods: Vec::new(),
-        types: Vec::new(),
-        type_data: Vec::new(),
-        vals: Vec::new(),
-        val_data: Vec::new(),
+        mods: IdVec::new(),
+        types: IdVec::new(),
+        type_data: IdVec::new(),
+        vals: IdVec::new(),
+        val_data: IdVec::new(),
     };
 
     let main_mod = resolve_mod_from_file(&mut ctx, BTreeMap::new(), file_path)?;
 
-    let main_proc = if let Some(&res::GlobalId::Custom(id)) = ctx.mods[main_mod.0]
+    let main_proc = if let Some(&res::GlobalId::Custom(id)) = ctx.mods[main_mod]
         .vals
         .get(&raw::ValName("main".to_owned()))
     {
@@ -162,9 +163,9 @@ pub fn resolve_program(file_path: &Path) -> Result<res::Program, Error> {
     };
 
     Ok(res::Program {
-        custom_types: ctx.types.into_iter().map(Option::unwrap).collect(),
+        custom_types: ctx.types.into_mapped(|_id, typedef| typedef.unwrap()),
         custom_type_data: ctx.type_data,
-        vals: ctx.vals.into_iter().map(Option::unwrap).collect(),
+        vals: ctx.vals.into_mapped(|_id, val_def| val_def.unwrap()),
         val_data: ctx.val_data,
         main: main_proc,
     })
@@ -194,17 +195,21 @@ fn resolve_mod(
         for item in content.0 {
             match item {
                 raw::Item::TypeDef(name, params, variants) => {
-                    let type_id = res::CustomTypeId(alloc_id(&mut ctx.types));
-                    ctx.type_data.push(res::TypeData {
-                        type_name: name.clone(),
-                        variant_data: variants
-                            .iter()
-                            .map(|(variant_name, _)| res::VariantData {
-                                variant_name: variant_name.clone(),
-                            })
-                            .collect(),
-                    });
-                    debug_assert_eq!(ctx.type_data.len(), ctx.types.len());
+                    let type_id = ctx.types.push(None);
+                    {
+                        let type_data_id = ctx.type_data.push(res::TypeData {
+                            type_name: name.clone(),
+                            variant_data: IdVec::from_items(
+                                variants
+                                    .iter()
+                                    .map(|(variant_name, _)| res::VariantData {
+                                        variant_name: variant_name.clone(),
+                                    })
+                                    .collect(),
+                            ),
+                        });
+                        debug_assert_eq!(type_id, type_data_id);
+                    }
 
                     insert_unique(
                         &mut mod_map.types,
@@ -228,11 +233,13 @@ fn resolve_mod(
                 }
 
                 raw::Item::ValDef(name, type_, body) => {
-                    let val_id = res::CustomGlobalId(alloc_id(&mut ctx.vals));
-                    ctx.val_data.push(res::ValData {
-                        val_name: name.clone(),
-                    });
-                    debug_assert_eq!(ctx.val_data.len(), ctx.vals.len());
+                    let val_id = ctx.vals.push(None);
+                    {
+                        let val_data_id = ctx.val_data.push(res::ValData {
+                            val_name: name.clone(),
+                        });
+                        debug_assert_eq!(val_id, val_data_id);
+                    }
 
                     insert_unique(
                         &mut mod_map.vals,
@@ -304,22 +311,24 @@ fn resolve_mod(
                 .map_err(locate(file_path))?;
         }
 
-        let resolved_variants = variants
-            .iter()
-            .map(|(_, variant_type)| match variant_type {
-                None => Ok(None),
-                Some(variant_type) => Ok(Some(resolve_type(
-                    &ctx.mods,
-                    &mod_map,
-                    &param_map,
-                    variant_type,
-                )?)),
-            })
-            .collect::<Result<_, _>>()
-            .map_err(locate(file_path))?;
+        let resolved_variants = IdVec::from_items(
+            variants
+                .iter()
+                .map(|(_, variant_type)| match variant_type {
+                    None => Ok(None),
+                    Some(variant_type) => Ok(Some(resolve_type(
+                        &ctx.mods,
+                        &mod_map,
+                        &param_map,
+                        variant_type,
+                    )?)),
+                })
+                .collect::<Result<_, _>>()
+                .map_err(locate(file_path))?,
+        );
 
-        debug_assert!(ctx.types[type_id.0].is_none());
-        ctx.types[type_id.0] = Some(res::TypeDef {
+        debug_assert!(ctx.types[type_id].is_none());
+        ctx.types[type_id] = Some(res::TypeDef {
             num_params: param_map.len(),
             variants: resolved_variants,
         });
@@ -331,8 +340,8 @@ fn resolve_mod(
         let res_body = resolve_expr(&ctx.mods, &mod_map, &mut BTreeMap::new(), &body)
             .map_err(locate(file_path))?;
 
-        debug_assert!(ctx.vals[val_id.0].is_none());
-        ctx.vals[val_id.0] = Some(res::ValDef {
+        debug_assert!(ctx.vals[val_id].is_none());
+        ctx.vals[val_id] = Some(res::ValDef {
             scheme: res_scheme,
             body: res_body,
         });
@@ -340,9 +349,7 @@ fn resolve_mod(
 
     // Finally register module
 
-    let self_mod_id = ModId(ctx.mods.len());
-    ctx.mods.push(mod_map);
-
+    let self_mod_id = ctx.mods.push(mod_map);
     Ok(self_mod_id)
 }
 
@@ -381,7 +388,7 @@ fn resolve_mod_from_file(
 }
 
 fn resolve_mod_path(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mods: &BTreeMap<raw::ModName, ModId>,
     path: &raw::ModPath,
 ) -> Result<ModId, ErrorKind> {
@@ -399,51 +406,51 @@ fn resolve_mod_path(
 }
 
 fn resolve_sub_mod(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     mod_id: ModId,
     sub_mod_name: &raw::ModName,
 ) -> Result<ModId, ErrorKind> {
-    Ok(*global_mods[mod_id.0]
+    Ok(*global_mods[mod_id]
         .mods
         .get(sub_mod_name)
         .ok_or_else(|| ErrorKind::ModNotFound(sub_mod_name.0.clone()))?)
 }
 
 fn resolve_mod_val(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     mod_id: ModId,
     val_name: &raw::ValName,
 ) -> Result<res::GlobalId, ErrorKind> {
-    Ok(*global_mods[mod_id.0]
+    Ok(*global_mods[mod_id]
         .vals
         .get(val_name)
         .ok_or_else(|| ErrorKind::VarNotFound(val_name.0.clone()))?)
 }
 
 fn resolve_mod_type(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     mod_id: ModId,
     type_name: &raw::TypeName,
 ) -> Result<res::TypeId, ErrorKind> {
-    Ok(*global_mods[mod_id.0]
+    Ok(*global_mods[mod_id]
         .types
         .get(type_name)
         .ok_or_else(|| ErrorKind::TypeNotFound(type_name.0.clone()))?)
 }
 
 fn resolve_mod_ctor(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     mod_id: ModId,
     ctor_name: &raw::CtorName,
 ) -> Result<(res::CustomTypeId, res::VariantId), ErrorKind> {
-    Ok(*global_mods[mod_id.0]
+    Ok(*global_mods[mod_id]
         .ctors
         .get(ctor_name)
         .ok_or_else(|| ErrorKind::CtorNotFound(ctor_name.0.clone()))?)
 }
 
 fn resolve_exposures(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &mut ModMap,
     exposed_id: ModId,
     spec: raw::ExposeSpec,
@@ -504,19 +511,19 @@ fn resolve_exposures(
 }
 
 fn resolve_mod_map<'a>(
-    global_mods: &'a [ModMap],
+    global_mods: &'a IdVec<ModId, ModMap>,
     local_mod_map: &'a ModMap,
     path: &raw::ModPath,
 ) -> Result<&'a ModMap, ErrorKind> {
     if path.0.is_empty() {
         Ok(local_mod_map)
     } else {
-        Ok(&global_mods[resolve_mod_path(global_mods, &local_mod_map.mods, path)?.0])
+        Ok(&global_mods[resolve_mod_path(global_mods, &local_mod_map.mods, path)?])
     }
 }
 
 fn resolve_type_with_builtins(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &ModMap,
     path: &raw::ModPath,
     name: &raw::TypeName,
@@ -536,7 +543,7 @@ fn resolve_type_with_builtins(
 }
 
 fn resolve_type(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &ModMap,
     param_map: &BTreeMap<raw::TypeParam, res::TypeParamId>,
     type_: &raw::Type,
@@ -577,7 +584,7 @@ fn resolve_type(
 }
 
 fn resolve_ctor_with_builtins(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &ModMap,
     path: &raw::ModPath,
     name: &raw::CtorName,
@@ -598,7 +605,7 @@ fn resolve_ctor_with_builtins(
 
 // Invariant: always leaves `local_map` exactly how it found it!
 fn resolve_expr(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &ModMap,
     local_map: &mut BTreeMap<raw::ValName, res::LocalId>,
     expr: &raw::Expr,
@@ -725,7 +732,7 @@ fn resolve_expr(
 }
 
 fn resolve_pattern(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &ModMap,
     pattern: &raw::Pattern,
     vars: &mut Vec<raw::ValName>,
@@ -772,7 +779,7 @@ fn resolve_pattern(
 }
 
 fn with_pattern<R, F>(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &ModMap,
     local_map: &mut BTreeMap<raw::ValName, res::LocalId>,
     pattern: &raw::Pattern,
@@ -828,7 +835,7 @@ fn find_scheme_params(scheme: &raw::Type, params: &mut BTreeMap<raw::TypeParam, 
 }
 
 fn resolve_scheme(
-    global_mods: &[ModMap],
+    global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &ModMap,
     scheme: &raw::Type,
 ) -> Result<res::TypeScheme, ErrorKind> {
@@ -841,12 +848,6 @@ fn resolve_scheme(
         num_params: scheme_params.len(),
         body: res_type,
     })
-}
-
-fn alloc_id<T>(items: &mut Vec<Option<T>>) -> usize {
-    let result = items.len();
-    items.push(None);
-    result
 }
 
 fn insert_unique<K: Ord, V>(map: &mut BTreeMap<K, V>, key: K, value: V) -> Result<(), ()> {

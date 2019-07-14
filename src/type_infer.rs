@@ -422,9 +422,9 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         },
 
         res::GlobalId::Ctor(Custom(custom), variant) => {
-            let typedef = &program.custom_types[custom.0];
+            let typedef = &program.custom_types[custom];
             let ret = App(Custom(custom), (0..typedef.num_params).map(param).collect());
-            if let Some(arg) = typedef.variants[variant.0].clone() {
+            if let Some(arg) = typedef.variants[variant].clone() {
                 Cow::Owned(scheme(typedef.num_params, func(arg, ret)))
             } else {
                 Cow::Owned(scheme(typedef.num_params, ret))
@@ -438,7 +438,7 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
 
         res::GlobalId::Ctor(_, _) => unreachable!(),
 
-        res::GlobalId::Custom(custom) => Cow::Borrowed(&program.vals[custom.0].scheme),
+        res::GlobalId::Custom(custom) => Cow::Borrowed(&program.vals[custom].scheme),
     }
 }
 
@@ -518,8 +518,8 @@ fn infer_pat(
         res::Pattern::Ctor(id, variant, content) => {
             let (num_params, expected_content) = match id {
                 res::TypeId::Custom(custom) => {
-                    let typedef = &program.custom_types[custom.0];
-                    let expected_content = typedef.variants[variant.0].clone();
+                    let typedef = &program.custom_types[custom];
+                    let expected_content = typedef.variants[variant].clone();
                     (typedef.num_params, expected_content)
                 }
 
@@ -811,7 +811,6 @@ pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError>
     let vals_inferred = program
         .vals
         .iter()
-        .enumerate()
         .map(|(idx, def)| {
             infer_def(&program, def).map_err(|error| LocatedError {
                 def: program.val_data[idx].val_name.0.clone(),
@@ -821,10 +820,10 @@ pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError>
         .collect::<Result<_, _>>()?;
 
     Ok(typed::Program {
-        custom_types: program.custom_types,
-        custom_type_data: program.custom_type_data,
+        custom_types: program.custom_types.items,
+        custom_type_data: program.custom_type_data.items,
         vals: vals_inferred,
-        val_data: program.val_data,
+        val_data: program.val_data.items,
         main: program.main,
     })
 }

@@ -66,8 +66,8 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), ()> {
 }
 
 pub fn check_purity(program: &res::Program) -> Result<(), Error> {
-    for (idx, def) in program.vals.iter().enumerate() {
-        check_expr(Purity::Pure, &def.body).map_err(|()| Error(res::CustomGlobalId(idx)))?;
+    for (id, def) in &program.vals {
+        check_expr(Purity::Pure, &def.body).map_err(|()| Error(id))?;
     }
     Ok(())
 }
