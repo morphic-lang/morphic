@@ -7,6 +7,8 @@ use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast as res;
+use crate::util::id_type::Id;
+use crate::util::id_vec::IdVec;
 
 impl fmt::Debug for lifted::Program {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -18,18 +20,17 @@ impl fmt::Debug for lifted::Program {
 
 impl lifted::Program {
     fn to_doc<'a>(&'a self) -> Doc<'a, BoxDoc<()>> {
-        let top_level_lams: BTreeSet<usize> = self
+        let top_level_lams: BTreeSet<lifted::LamId> = self
             .vals
             .iter()
-            .filter_map(|val| match val.body {
-                lifted::Expr::Lam(lifted::LamId(lamid), _) => Some(lamid),
+            .filter_map(|(_val_id, val)| match val.body {
+                lifted::Expr::Lam(lam_id, _) => Some(lam_id),
                 _ => None,
             })
             .collect();
         let custom_types = Doc::intersperse(
             self.custom_types
                 .iter()
-                .enumerate()
                 .map(|(i, x)| x.to_doc(i, &self.custom_type_data)),
             Doc::newline().append(Doc::newline()),
         );
@@ -37,7 +38,6 @@ impl lifted::Program {
         let lams = Doc::intersperse(
             self.lams
                 .iter()
-                .enumerate()
                 .filter(|(i, _)| !top_level_lams.contains(i))
                 .map(|(i, lam)| {
                     lam.to_doc(i, &self.custom_type_data, &self.val_data, &self.lam_data[i])
@@ -47,7 +47,6 @@ impl lifted::Program {
         let vals = Doc::intersperse(
             self.vals
                 .iter()
-                .enumerate()
                 .map(|(i, val)| val.to_doc(i, &self.custom_type_data, &self.val_data, &self.lams)),
             Doc::newline().append(Doc::newline()),
         );
@@ -68,15 +67,21 @@ impl res::VariantData {
 }
 
 impl lifted::LamData {
-    fn to_doc<'a>(&'a self, val_data: &'a Vec<mono::ValData>) -> Doc<'a, BoxDoc<()>> {
+    fn to_doc<'a>(
+        &'a self,
+        val_data: &'a IdVec<mono::CustomGlobalId, mono::ValData>,
+    ) -> Doc<'a, BoxDoc<()>> {
         Doc::text("// Generated from ")
-            .append(Doc::text(&val_data[self.lifted_from.0].val_name.0))
+            .append(Doc::text(&val_data[self.lifted_from].val_name.0))
             .append(Doc::newline())
     }
 }
 
 impl mono::ValData {
-    fn to_doc<'a>(&'a self, _: &'a Vec<mono::TypeData>) -> Doc<'a, BoxDoc<()>> {
+    fn to_doc<'a>(
+        &'a self,
+        _: &'a IdVec<mono::CustomTypeId, mono::TypeData>,
+    ) -> Doc<'a, BoxDoc<()>> {
         Doc::text(&self.val_name.0)
     }
 }
@@ -153,9 +158,9 @@ impl res::IOOp {
 impl lifted::LamDef {
     fn to_doc<'a>(
         &'a self,
-        id: usize,
-        type_data: &'a Vec<mono::TypeData>,
-        val_data: &'a Vec<mono::ValData>,
+        id: lifted::LamId,
+        type_data: &'a IdVec<mono::CustomTypeId, mono::TypeData>,
+        val_data: &'a IdVec<mono::CustomGlobalId, mono::ValData>,
         lam_data: &'a lifted::LamData,
     ) -> Doc<'a, BoxDoc<()>> {
         let (arg_doc, arg_local_count) = self.arg.to_doc(type_data, NumBindings(0));
@@ -166,12 +171,12 @@ impl lifted::LamDef {
                 Purity::Impure => Doc::text("proc "),
             })
             .append(Doc::text("λ"))
-            .append(Doc::as_string(id))
+            .append(Doc::as_string(id.to_index()))
             .append(Doc::text(": {"))
             .append(Doc::intersperse(
-                self.captures.iter().enumerate().map(|(i, x)| {
+                self.captures.iter().map(|(i, x)| {
                     Doc::text("#")
-                        .append(Doc::as_string(i))
+                        .append(Doc::as_string(i.to_index()))
                         .append(Doc::text(": ").append(x.to_doc_toplevel(type_data)))
                 }),
                 Doc::text(", "),
@@ -182,7 +187,7 @@ impl lifted::LamDef {
             .append(self.ret_type.to_doc(type_data, TypePrecedence::TopLevel))
             .append(Doc::newline())
             .append(Doc::text("λ"))
-            .append(Doc::as_string(id))
+            .append(Doc::as_string(id.to_index()))
             .append(Doc::text(" "))
             .append(arg_doc)
             .append(" =")
@@ -197,8 +202,8 @@ impl lifted::LamDef {
 impl mono::TypeDef {
     fn to_doc<'a>(
         &'a self,
-        type_index: usize,
-        type_data: &'a Vec<mono::TypeData>,
+        type_index: mono::CustomTypeId,
+        type_data: &'a IdVec<mono::CustomTypeId, mono::TypeData>,
     ) -> Doc<'a, BoxDoc<()>> {
         Doc::text(&type_data[type_index].type_name.0)
             .append(Doc::text(" "))
@@ -241,26 +246,26 @@ impl mono::TypeDef {
 impl lifted::ValDef {
     fn to_doc<'a>(
         &'a self,
-        index: usize,
-        type_data: &'a Vec<mono::TypeData>,
-        val_data: &'a Vec<mono::ValData>,
-        lam_data: &'a Vec<lifted::LamDef>,
+        index: mono::CustomGlobalId,
+        type_data: &'a IdVec<mono::CustomTypeId, mono::TypeData>,
+        val_data: &'a IdVec<mono::CustomGlobalId, mono::ValData>,
+        lam_data: &'a IdVec<lifted::LamId, lifted::LamDef>,
     ) -> Doc<'a, BoxDoc<()>> {
         Doc::text(&val_data[index].val_name.0)
             .append(Doc::text(" : "))
             .append(self.type_.to_doc_toplevel(type_data))
             .append(Doc::newline())
             .append(match self.body {
-                lifted::Expr::Lam(lifted::LamId(lamid), _) => {
+                lifted::Expr::Lam(lam_id, _) => {
                     let (arg_doc, arg_bindings) =
-                        lam_data[lamid].arg.to_doc(type_data, NumBindings(0));
+                        lam_data[lam_id].arg.to_doc(type_data, NumBindings(0));
                     Doc::text(&val_data[index].val_name.0)
                         .append(Doc::text(" "))
                         .append(arg_doc)
                         .append(Doc::text(" ="))
                         .append(
                             Doc::newline()
-                                .append(lam_data[lamid].body.to_doc(
+                                .append(lam_data[lam_id].body.to_doc(
                                     type_data,
                                     val_data,
                                     arg_bindings,
@@ -285,20 +290,18 @@ struct NumBindings(usize);
 impl lifted::Expr {
     fn to_doc<'a>(
         &'a self,
-        type_data: &'a Vec<mono::TypeData>,
-        val_data: &'a Vec<mono::ValData>,
+        type_data: &'a IdVec<mono::CustomTypeId, mono::TypeData>,
+        val_data: &'a IdVec<mono::CustomGlobalId, mono::ValData>,
         local_count: NumBindings,
     ) -> Doc<'a, BoxDoc<()>> {
         match self {
             lifted::Expr::ArithOp(op) => op.to_doc(),
             lifted::Expr::ArrayOp(arrayop, _) => arrayop.to_doc(),
             lifted::Expr::IOOp(ioop) => ioop.to_doc(),
-            lifted::Expr::Ctor(mono::CustomTypeId(typeid), variant_id) => {
-                type_data[*typeid].variant_data[variant_id].to_doc()
+            lifted::Expr::Ctor(type_id, variant_id) => {
+                type_data[*type_id].variant_data[variant_id].to_doc()
             }
-            lifted::Expr::Global(mono::CustomGlobalId(globalid)) => {
-                val_data[*globalid].to_doc(type_data)
-            }
+            lifted::Expr::Global(global_id) => val_data[*global_id].to_doc(type_data),
             lifted::Expr::Local(localid) => localid.to_doc(),
             lifted::Expr::Capture(captureid) => captureid.to_doc(),
             lifted::Expr::Tuple(tuple) => Doc::text("(").append(
@@ -316,7 +319,7 @@ impl lifted::Expr {
                 .append(Doc::intersperse(
                     exprs
                         .into_iter()
-                        .map(|x| x.to_doc(type_data, val_data, local_count)),
+                        .map(|(_, x)| x.to_doc(type_data, val_data, local_count)),
                     Doc::text(", "),
                 ))
                 .append(Doc::text("}")),
@@ -401,7 +404,7 @@ impl lifted::Expr {
 impl mono::Pattern {
     fn to_doc<'a>(
         &'a self,
-        type_data: &'a Vec<mono::TypeData>,
+        type_data: &'a IdVec<mono::CustomTypeId, mono::TypeData>,
         local_count: NumBindings,
     ) -> (Doc<'a, BoxDoc<()>>, NumBindings) {
         match self {
@@ -433,8 +436,8 @@ impl mono::Pattern {
                     )
                 }
             }
-            mono::Pattern::Ctor(mono::CustomTypeId(typeid), variant_id, pat) => {
-                let ctor_doc = type_data[*typeid].variant_data[variant_id].to_doc();
+            mono::Pattern::Ctor(type_id, variant_id, pat) => {
+                let ctor_doc = type_data[*type_id].variant_data[variant_id].to_doc();
                 match pat {
                     None => (ctor_doc, NumBindings(0)),
                     Some(p) => {
@@ -474,12 +477,15 @@ enum TypePrecedence {
 }
 
 impl mono::Type {
-    fn to_doc_toplevel<'a>(&'a self, type_data: &'a Vec<mono::TypeData>) -> Doc<'a, BoxDoc<()>> {
+    fn to_doc_toplevel<'a>(
+        &'a self,
+        type_data: &'a IdVec<mono::CustomTypeId, mono::TypeData>,
+    ) -> Doc<'a, BoxDoc<()>> {
         self.to_doc(type_data, TypePrecedence::TopLevel)
     }
     fn to_doc<'a>(
         &'a self,
-        type_data: &'a Vec<mono::TypeData>,
+        type_data: &'a IdVec<mono::CustomTypeId, mono::TypeData>,
         precedence: TypePrecedence,
     ) -> Doc<'a, BoxDoc<()>> {
         let doc = match self {
@@ -506,17 +512,15 @@ impl mono::Type {
             .append(domain.to_doc(type_data, TypePrecedence::FuncLeft))
             .append(" → ")
             .append(codomain.to_doc(type_data, TypePrecedence::TopLevel)),
-            mono::Type::Custom(mono::CustomTypeId(typeid)) => {
-                Doc::text(&type_data[*typeid].type_name.0)
-                    .append(Doc::text(" "))
-                    .append(Doc::intersperse(
-                        type_data[*typeid]
-                            .mono_with
-                            .iter()
-                            .map(|x| x.to_doc(type_data, TypePrecedence::TypeApp)),
-                        Doc::text(" "),
-                    ))
-            }
+            mono::Type::Custom(type_id) => Doc::text(&type_data[*type_id].type_name.0)
+                .append(Doc::text(" "))
+                .append(Doc::intersperse(
+                    type_data[*type_id]
+                        .mono_with
+                        .iter()
+                        .map(|x| x.to_doc(type_data, TypePrecedence::TypeApp)),
+                    Doc::text(" "),
+                )),
         };
 
         let should_parenthesize = match self {

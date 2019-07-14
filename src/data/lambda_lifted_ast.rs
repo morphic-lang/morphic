@@ -2,6 +2,7 @@ use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::util::id_vec::IdVec;
 
 id_type!(pub LamId);
 
@@ -23,7 +24,7 @@ pub enum Expr {
     Local(LocalId),
     Capture(CaptureId),
     Tuple(Vec<Expr>),
-    Lam(LamId, Vec<Expr>),
+    Lam(LamId, IdVec<CaptureId, Expr>),
     App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(mono::Pattern, Expr)>, mono::Type),
     Let(mono::Pattern, Box<Expr>, Box<Expr>),
@@ -44,7 +45,7 @@ pub struct ValDef {
 #[derive(Clone, Debug)]
 pub struct LamDef {
     pub purity: Purity,
-    pub captures: Vec<mono::Type>,
+    pub captures: IdVec<CaptureId, mono::Type>,
     pub arg_type: mono::Type,
     pub ret_type: mono::Type,
     pub arg: mono::Pattern,
@@ -58,11 +59,11 @@ pub struct LamData {
 
 #[derive(Clone)]
 pub struct Program {
-    pub custom_types: Vec<mono::TypeDef>,
-    pub custom_type_data: Vec<mono::TypeData>,
-    pub vals: Vec<ValDef>,
-    pub val_data: Vec<mono::ValData>,
-    pub lams: Vec<LamDef>,
-    pub lam_data: Vec<LamData>,
+    pub custom_types: IdVec<mono::CustomTypeId, mono::TypeDef>,
+    pub custom_type_data: IdVec<mono::CustomTypeId, mono::TypeData>,
+    pub vals: IdVec<mono::CustomGlobalId, ValDef>,
+    pub val_data: IdVec<mono::CustomGlobalId, mono::ValData>,
+    pub lams: IdVec<LamId, LamDef>,
+    pub lam_data: IdVec<LamId, LamData>,
     pub main: mono::CustomGlobalId,
 }

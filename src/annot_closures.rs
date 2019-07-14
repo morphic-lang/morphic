@@ -8,8 +8,12 @@ use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 use crate::graph::{self, Graph};
 use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
+use crate::util::id_vec::IdVec;
 
-fn count_params(parameterized: &[Option<annot::TypeDef>], type_: &mono::Type) -> usize {
+fn count_params(
+    parameterized: &IdVec<mono::CustomTypeId, Option<annot::TypeDef>>,
+    type_: &mono::Type,
+) -> usize {
     match type_ {
         mono::Type::Bool => 0,
         mono::Type::Byte => 0,
@@ -23,7 +27,7 @@ fn count_params(parameterized: &[Option<annot::TypeDef>], type_: &mono::Type) ->
         mono::Type::Func(_, arg, ret) => {
             1 + count_params(parameterized, arg) + count_params(parameterized, ret)
         }
-        mono::Type::Custom(other) => match &parameterized[other.0] {
+        mono::Type::Custom(other) => match &parameterized[other] {
             Some(typedef) => typedef.num_params,
             // This is a typedef in the same SCC; the reference to it here contributes no additional
             // parameters to the entire SCC.
@@ -44,7 +48,7 @@ impl ParamIdGen {
 }
 
 fn parameterize(
-    parameterized: &[Option<annot::TypeDef>],
+    parameterized: &IdVec<mono::CustomTypeId, Option<annot::TypeDef>>,
     scc_num_params: usize,
     id_gen: &mut ParamIdGen,
     type_: &mono::Type,
@@ -82,7 +86,7 @@ fn parameterize(
         }
 
         mono::Type::Custom(other) => {
-            match &parameterized[other.0] {
+            match &parameterized[other] {
                 Some(typedef) => annot::Type::Custom(
                     *other,
                     (0..typedef.num_params).map(|_| id_gen.fresh()).collect(),
@@ -102,14 +106,14 @@ fn parameterize(
 }
 
 fn parameterize_typedef_scc(
-    typedefs: &[mono::TypeDef],
-    parameterized: &mut [Option<annot::TypeDef>],
+    typedefs: &IdVec<mono::CustomTypeId, mono::TypeDef>,
+    parameterized: &mut IdVec<mono::CustomTypeId, Option<annot::TypeDef>>,
     scc: &[mono::CustomTypeId],
 ) {
     let num_params = scc
         .iter()
         .map(|type_id| {
-            typedefs[type_id.0]
+            typedefs[type_id]
                 .variants
                 .iter()
                 .map(|(_variant_id, variant)| match variant {
@@ -125,7 +129,7 @@ fn parameterize_typedef_scc(
     let to_populate: BTreeMap<mono::CustomTypeId, _> = scc
         .iter()
         .map(|&type_id| {
-            let typedef = &typedefs[type_id.0];
+            let typedef = &typedefs[type_id];
             let parameterized_variants = typedef
                 .variants
                 .iter()
@@ -136,7 +140,7 @@ fn parameterize_typedef_scc(
                 })
                 .collect();
 
-            debug_assert!(parameterized[type_id.0].is_none());
+            debug_assert!(parameterized[type_id].is_none());
 
             (
                 type_id,
@@ -149,8 +153,8 @@ fn parameterize_typedef_scc(
         .collect();
 
     for (type_id, typedef) in to_populate {
-        debug_assert!(parameterized[type_id.0].is_none());
-        parameterized[type_id.0] = Some(typedef);
+        debug_assert!(parameterized[type_id].is_none());
+        parameterized[type_id] = Some(typedef);
     }
 }
 
@@ -182,11 +186,13 @@ fn add_dependencies(type_: &mono::Type, deps: &mut BTreeSet<mono::CustomTypeId>)
     }
 }
 
-fn parameterize_typedefs(typedefs: &[mono::TypeDef]) -> Vec<annot::TypeDef> {
+fn parameterize_typedefs(
+    typedefs: &IdVec<mono::CustomTypeId, mono::TypeDef>,
+) -> IdVec<mono::CustomTypeId, annot::TypeDef> {
     let dep_graph = Graph {
         edges_out: typedefs
             .iter()
-            .map(|typedef| {
+            .map(|(_id, typedef)| {
                 let mut deps = BTreeSet::new();
                 for (_variant_id, variant) in &typedef.variants {
                     if let Some(content) = variant {
@@ -202,7 +208,7 @@ fn parameterize_typedefs(typedefs: &[mono::TypeDef]) -> Vec<annot::TypeDef> {
 
     let sccs = graph::strongly_connected(&dep_graph);
 
-    let mut parameterized = vec![None; typedefs.len()];
+    let mut parameterized = IdVec::from_items(vec![None; typedefs.len()]);
 
     for scc in sccs {
         let type_ids: Vec<_> = scc
@@ -213,10 +219,7 @@ fn parameterize_typedefs(typedefs: &[mono::TypeDef]) -> Vec<annot::TypeDef> {
         parameterize_typedef_scc(typedefs, &mut parameterized, &type_ids);
     }
 
-    parameterized
-        .into_iter()
-        .map(|typedef| typedef.unwrap())
-        .collect()
+    parameterized.into_mapped(|_id, typedef| typedef.unwrap())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -306,7 +309,7 @@ struct SolverLamSig {
 }
 
 fn instantiate_mono(
-    typedefs: &[annot::TypeDef],
+    typedefs: &IdVec<mono::CustomTypeId, annot::TypeDef>,
     graph: &mut ConstraintGraph<SolverRequirement>,
     type_: &mono::Type,
 ) -> annot::Type<SolverVarId> {
@@ -335,7 +338,7 @@ fn instantiate_mono(
         ),
 
         mono::Type::Custom(custom) => {
-            let vars = (0..typedefs[custom.0].num_params)
+            let vars = (0..typedefs[custom].num_params)
                 .map(|_| graph.new_var())
                 .collect();
 
@@ -453,7 +456,7 @@ fn instantiate_subst(
 }
 
 fn instantiate_pattern(
-    typedefs: &[annot::TypeDef],
+    typedefs: &IdVec<mono::CustomTypeId, annot::TypeDef>,
     locals: &mut LocalContext,
     rhs: &annot::Type<SolverVarId>,
     pat: &mono::Pattern,
@@ -488,7 +491,7 @@ fn instantiate_pattern(
         ) => {
             debug_assert_eq!(custom, rhs_custom);
 
-            let solver_content = match (content, &typedefs[custom.0].variants[variant.0]) {
+            let solver_content = match (content, &typedefs[custom].variants[variant.0]) {
                 (Some(content_pat), Some(content_type)) => {
                     let solver_content_type = instantiate_subst(rhs_args, content_type);
                     Some(Box::new(instantiate_pattern(
@@ -748,8 +751,8 @@ fn io_op_type(
 
 #[derive(Clone, Copy, Debug)]
 struct GlobalContext<'a> {
-    annot_vals: &'a [Option<annot::ValDef>], // Indexed by mono::CustomGlobalId
-    annot_lams: &'a [Option<annot::LamDef>], // Indexed by lifted::LamId
+    annot_vals: &'a IdVec<mono::CustomGlobalId, Option<annot::ValDef>>,
+    annot_lams: &'a IdVec<lifted::LamId, Option<annot::LamDef>>,
     curr_vals: &'a BTreeMap<mono::CustomGlobalId, annot::Type<SolverVarId>>,
     curr_lams: &'a BTreeMap<lifted::LamId, SolverLamSig>,
 }
@@ -778,7 +781,7 @@ fn instantiate_params(
 }
 
 fn instantiate_expr(
-    typedefs: &[annot::TypeDef],
+    typedefs: &IdVec<mono::CustomTypeId, annot::TypeDef>,
     globals: GlobalContext,
     graph: &mut ConstraintGraph<SolverRequirement>,
     captures: &[annot::Type<SolverVarId>],
@@ -806,7 +809,7 @@ fn instantiate_expr(
         }
 
         &lifted::Expr::Ctor(custom, variant) => {
-            let typedef = &typedefs[custom.0];
+            let typedef = &typedefs[custom];
 
             let params: Vec<_> = (0..typedef.num_params).map(|_| graph.new_var()).collect();
 
@@ -842,7 +845,7 @@ fn instantiate_expr(
             }
         }
 
-        &lifted::Expr::Global(global) => match &globals.annot_vals[global.0] {
+        &lifted::Expr::Global(global) => match &globals.annot_vals[global] {
             Some(global_def) => {
                 let scheme_params = instantiate_params(graph, &global_def.params);
 
@@ -885,14 +888,14 @@ fn instantiate_expr(
             let mut solver_captures = Vec::new();
             let mut solver_capture_types = Vec::new();
 
-            for capture in lam_captures {
+            for (_capture_id, capture) in lam_captures {
                 let (solver_capture, solver_type) =
                     instantiate_expr(typedefs, globals, graph, captures, locals, capture);
                 solver_captures.push(solver_capture);
                 solver_capture_types.push(solver_type);
             }
 
-            match &globals.annot_lams[lam.0] {
+            match &globals.annot_lams[lam] {
                 Some(lam_def) => {
                     let scheme_params = instantiate_params(graph, &lam_def.params);
 
@@ -1062,14 +1065,14 @@ fn instantiate_expr(
 }
 
 fn instantiate_lam_sig(
-    typedefs: &[annot::TypeDef],
+    typedefs: &IdVec<mono::CustomTypeId, annot::TypeDef>,
     graph: &mut ConstraintGraph<SolverRequirement>,
     lam_def: &lifted::LamDef,
 ) -> SolverLamSig {
     let solver_captures = lam_def
         .captures
         .iter()
-        .map(|capture| instantiate_mono(typedefs, graph, capture))
+        .map(|(_capture_id, capture)| instantiate_mono(typedefs, graph, capture))
         .collect();
 
     let solver_arg = instantiate_mono(typedefs, graph, &lam_def.arg_type);
@@ -1095,11 +1098,11 @@ struct SolverScc {
 }
 
 fn instantiate_scc(
-    typedefs: &[annot::TypeDef],
-    annot_vals: &[Option<annot::ValDef>],
-    annot_lams: &[Option<annot::LamDef>],
-    vals: &[lifted::ValDef],
-    lams: &[lifted::LamDef],
+    typedefs: &IdVec<mono::CustomTypeId, annot::TypeDef>,
+    annot_vals: &IdVec<mono::CustomGlobalId, Option<annot::ValDef>>,
+    annot_lams: &IdVec<lifted::LamId, Option<annot::LamDef>>,
+    vals: &IdVec<mono::CustomGlobalId, lifted::ValDef>,
+    lams: &IdVec<lifted::LamId, lifted::LamDef>,
     scc_vals: &[mono::CustomGlobalId],
     scc_lams: &[lifted::LamId],
 ) -> SolverScc {
@@ -1110,7 +1113,7 @@ fn instantiate_scc(
         .map(|&val_id| {
             (
                 val_id,
-                instantiate_mono(typedefs, &mut graph, &vals[val_id.0].type_),
+                instantiate_mono(typedefs, &mut graph, &vals[val_id].type_),
             )
         })
         .collect();
@@ -1120,7 +1123,7 @@ fn instantiate_scc(
         .map(|&lam_id| {
             (
                 lam_id,
-                instantiate_lam_sig(typedefs, &mut graph, &lams[lam_id.0]),
+                instantiate_lam_sig(typedefs, &mut graph, &lams[lam_id]),
             )
         })
         .collect();
@@ -1144,7 +1147,7 @@ fn instantiate_scc(
                 &mut graph,
                 &[],
                 &mut local_ctx,
-                &vals[val_id.0].body,
+                &vals[val_id].body,
             );
 
             debug_assert!(local_ctx.types.is_empty());
@@ -1159,7 +1162,7 @@ fn instantiate_scc(
         .iter()
         .map(|&lam_id| {
             let solver_sig = &global_ctx.curr_lams[&lam_id];
-            let lam_def = &lams[lam_id.0];
+            let lam_def = &lams[lam_id];
 
             let mut local_ctx = LocalContext::new();
 
@@ -1949,11 +1952,11 @@ fn extract_sig_type(
 }
 
 fn solve_scc(
-    typedefs: &[annot::TypeDef],
-    vals: &[lifted::ValDef],
-    lams: &[lifted::LamDef],
-    annot_vals: &mut [Option<annot::ValDef>],
-    annot_lams: &mut [Option<annot::LamDef>],
+    typedefs: &IdVec<mono::CustomTypeId, annot::TypeDef>,
+    vals: &IdVec<mono::CustomGlobalId, lifted::ValDef>,
+    lams: &IdVec<lifted::LamId, lifted::LamDef>,
+    annot_vals: &mut IdVec<mono::CustomGlobalId, Option<annot::ValDef>>,
+    annot_lams: &mut IdVec<lifted::LamId, Option<annot::LamDef>>,
     templates: &mut Vec<annot::Template>,
     scc_vals: &[mono::CustomGlobalId],
     scc_lams: &[lifted::LamId],
@@ -1996,8 +1999,8 @@ fn solve_scc(
             ),
         };
 
-        debug_assert!(annot_vals[val_id.0].is_none());
-        annot_vals[val_id.0] = Some(annot_val);
+        debug_assert!(annot_vals[val_id].is_none());
+        annot_vals[val_id] = Some(annot_val);
     }
 
     for lam_id in scc_lams {
@@ -2028,8 +2031,8 @@ fn solve_scc(
             ),
         };
 
-        debug_assert!(annot_lams[lam_id.0].is_none());
-        annot_lams[lam_id.0] = Some(annot_lam);
+        debug_assert!(annot_lams[lam_id].is_none());
+        annot_lams[lam_id] = Some(annot_lam);
     }
 }
 
@@ -2066,7 +2069,7 @@ fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
         lifted::Expr::Lam(dep, captures) => {
             deps.insert(Item::Lam(*dep));
 
-            for capture in captures {
+            for (_capture_id, capture) in captures {
                 add_expr_deps(deps, capture);
             }
         }
@@ -2124,13 +2127,13 @@ fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
         }
     }
 
-    let val_deps = program.vals.iter().map(|val_def| {
+    let val_deps = program.vals.iter().map(|(_val_def_id, val_def)| {
         let mut deps = BTreeSet::new();
         add_expr_deps(&mut deps, &val_def.body);
         deps
     });
 
-    let lam_deps = program.lams.iter().map(|lam_def| {
+    let lam_deps = program.lams.iter().map(|(_lam_def_id, lam_def)| {
         let mut deps = BTreeSet::new();
         add_expr_deps(&mut deps, &lam_def.body);
         deps
@@ -2171,8 +2174,8 @@ fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
 pub fn annot_closures(program: lifted::Program) -> annot::Program {
     let typedefs = parameterize_typedefs(&program.custom_types);
 
-    let mut annot_vals = vec![None; program.vals.len()];
-    let mut annot_lams = vec![None; program.lams.len()];
+    let mut annot_vals = IdVec::from_items(vec![None; program.vals.len()]);
+    let mut annot_lams = IdVec::from_items(vec![None; program.lams.len()]);
 
     let mut templates = Vec::new();
 
@@ -2192,10 +2195,10 @@ pub fn annot_closures(program: lifted::Program) -> annot::Program {
     }
 
     annot::Program {
-        custom_types: typedefs,
+        custom_types: typedefs.items,
         templates,
-        vals: annot_vals.into_iter().map(Option::unwrap).collect(),
-        lams: annot_lams.into_iter().map(Option::unwrap).collect(),
+        vals: annot_vals.into_mapped(|_id, val| val.unwrap()).items,
+        lams: annot_lams.into_mapped(|_id, lam| lam.unwrap()).items,
         main: program.main,
     }
 }

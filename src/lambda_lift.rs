@@ -4,6 +4,7 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::id_vec::IdVec;
 
 #[derive(Clone, Debug)]
 struct CaptureMap {
@@ -25,12 +26,14 @@ impl CaptureMap {
 
 #[derive(Clone, Debug)]
 struct TypeContext<'a> {
-    types: Vec<&'a mono::Type>,
+    types: IdVec<res::LocalId, &'a mono::Type>,
 }
 
 impl<'a> TypeContext<'a> {
     fn new() -> Self {
-        TypeContext { types: Vec::new() }
+        TypeContext {
+            types: IdVec::new(),
+        }
     }
 
     fn num_locals(&self) -> usize {
@@ -38,7 +41,7 @@ impl<'a> TypeContext<'a> {
     }
 
     fn add_local(&mut self, type_: &'a mono::Type) {
-        self.types.push(type_);
+        let _ = self.types.push(type_);
     }
 
     fn with_scope<R, F: for<'b> FnOnce(&'b mut TypeContext<'a>) -> R>(&mut self, body: F) -> R {
@@ -75,8 +78,8 @@ fn add_pattern<'a>(ctx: &mut TypeContext<'a>, pat: &'a mono::Pattern) {
 }
 
 fn lift_expr<'a>(
-    lambdas: &mut Vec<lifted::LamDef>,
-    lam_data: &mut Vec<lifted::LamData>,
+    lambdas: &mut IdVec<lifted::LamId, lifted::LamDef>,
+    lam_data: &mut IdVec<lifted::LamId, lifted::LamData>,
     ctx: &mut TypeContext<'a>,
     captures: &mut CaptureMap,
     expr: &'a mono::Expr,
@@ -114,7 +117,8 @@ fn lift_expr<'a>(
                 body,
                 lifted_from,
             );
-            let captures_translated = captured.iter().map(|id| captures.translate(*id)).collect();
+            let captures_translated =
+                captured.map(|_capture_id, &local_id| captures.translate(local_id));
             lifted::Expr::Lam(id, captures_translated)
         }
 
@@ -173,8 +177,8 @@ fn lift_expr<'a>(
 }
 
 fn lift_lam<'a>(
-    lambdas: &mut Vec<lifted::LamDef>,
-    lam_data: &mut Vec<lifted::LamData>,
+    lambdas: &mut IdVec<lifted::LamId, lifted::LamDef>,
+    lam_data: &mut IdVec<lifted::LamId, lifted::LamData>,
     ctx: &mut TypeContext<'a>,
     purity: Purity,
     arg_type: &'a mono::Type,
@@ -182,7 +186,7 @@ fn lift_lam<'a>(
     arg: &'a mono::Pattern,
     body: &'a mono::Expr,
     lifted_from: mono::CustomGlobalId,
-) -> (lifted::LamId, Vec<res::LocalId>) {
+) -> (lifted::LamId, IdVec<lifted::CaptureId, res::LocalId>) {
     let mut sub_captures = CaptureMap {
         locals_offset: ctx.num_locals(),
         captures: BTreeMap::new(),
@@ -200,20 +204,17 @@ fn lift_lam<'a>(
         )
     });
 
-    let mut captured_locals = vec![None; sub_captures.captures.len()];
-    let mut capture_types = vec![None; sub_captures.captures.len()];
+    let mut captured_locals = IdVec::from_items(vec![None; sub_captures.captures.len()]);
+    let mut capture_types = IdVec::from_items(vec![None; sub_captures.captures.len()]);
 
     for (outer_local, capture_id) in &sub_captures.captures {
-        captured_locals[capture_id.0] = Some(*outer_local);
-        capture_types[capture_id.0] = Some(ctx.types[outer_local.0].clone());
+        captured_locals[capture_id] = Some(*outer_local);
+        capture_types[capture_id] = Some(ctx.types[outer_local].clone());
     }
 
     let lam_def = lifted::LamDef {
         purity,
-        captures: capture_types
-            .into_iter()
-            .map(|type_| type_.unwrap())
-            .collect(),
+        captures: capture_types.into_mapped(|_capture_id, type_| type_.unwrap()),
         arg_type: arg_type.clone(),
         ret_type: ret_type.clone(),
         arg: arg.clone(),
@@ -224,22 +225,21 @@ fn lift_lam<'a>(
         lifted_from: lifted_from,
     };
 
-    let id = lifted::LamId(lambdas.len());
-    lambdas.push(lam_def);
-    lam_data.push(lam_datum);
+    let lam_id = lambdas.push(lam_def);
+    {
+        let lam_data_id = lam_data.push(lam_datum);
+        debug_assert_eq!(lam_id, lam_data_id);
+    }
 
     (
-        id,
-        captured_locals
-            .into_iter()
-            .map(|local| local.unwrap())
-            .collect(),
+        lam_id,
+        captured_locals.into_mapped(|_capture_id, local| local.unwrap()),
     )
 }
 
 fn lift_def(
-    lambdas: &mut Vec<lifted::LamDef>,
-    lam_data: &mut Vec<lifted::LamData>,
+    lambdas: &mut IdVec<lifted::LamId, lifted::LamDef>,
+    lam_data: &mut IdVec<lifted::LamId, lifted::LamData>,
     def: mono::ValDef,
     def_id: mono::CustomGlobalId,
 ) -> lifted::ValDef {
@@ -268,20 +268,18 @@ fn lift_def(
 }
 
 pub fn lambda_lift(program: mono::Program) -> lifted::Program {
-    let mut lambdas = Vec::new();
-    let mut lam_data = Vec::new();
+    let mut lambdas = IdVec::new();
+    let mut lam_data = IdVec::new();
 
     let defs_lifted = program
         .vals
-        .into_iter()
-        .map(|(id, def)| lift_def(&mut lambdas, &mut lam_data, def, id))
-        .collect();
+        .into_mapped(|id, def| lift_def(&mut lambdas, &mut lam_data, def, id));
 
     lifted::Program {
-        custom_types: program.custom_types.items,
-        custom_type_data: program.custom_type_data.items,
+        custom_types: program.custom_types,
+        custom_type_data: program.custom_type_data,
         vals: defs_lifted,
-        val_data: program.val_data.items,
+        val_data: program.val_data,
         lams: lambdas,
         lam_data: lam_data,
         main: program.main,
