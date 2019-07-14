@@ -112,7 +112,7 @@ fn parameterize_typedef_scc(
             typedefs[type_id.0]
                 .variants
                 .iter()
-                .map(|variant| match variant {
+                .map(|(_variant_id, variant)| match variant {
                     Some(content) => count_params(parameterized, content),
                     None => 0,
                 })
@@ -129,7 +129,7 @@ fn parameterize_typedef_scc(
             let parameterized_variants = typedef
                 .variants
                 .iter()
-                .map(|variant| {
+                .map(|(_variant_id, variant)| {
                     variant.as_ref().map(|content| {
                         parameterize(parameterized, num_params, &mut id_gen, content)
                     })
@@ -188,7 +188,7 @@ fn parameterize_typedefs(typedefs: &[mono::TypeDef]) -> Vec<annot::TypeDef> {
             .iter()
             .map(|typedef| {
                 let mut deps = BTreeSet::new();
-                for variant in &typedef.variants {
+                for (_variant_id, variant) in &typedef.variants {
                     if let Some(content) = variant {
                         add_dependencies(content, &mut deps);
                     }

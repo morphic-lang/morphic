@@ -19,7 +19,7 @@ pub struct ValDef {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Global(res::GlobalId, Vec<res::Type>),
+    Global(res::GlobalId, IdVec<res::TypeParamId, res::Type>),
     Local(res::LocalId),
     Tuple(Vec<Expr>),
     Lam(

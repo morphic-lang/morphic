@@ -251,7 +251,7 @@ impl Scope {
 
 #[derive(Clone, Debug)]
 enum AnnotExpr {
-    Global(res::GlobalId, Vec<TypeVar>),
+    Global(res::GlobalId, IdVec<res::TypeParamId, TypeVar>),
     Local(res::LocalId),
     Tuple(Vec<AnnotExpr>),
     Lam(
@@ -592,7 +592,7 @@ fn infer_expr(
         &res::Expr::Global(id) => {
             let scheme = global_scheme(program, id);
             let (param_vars, var) = instantiate_scheme(ctx, &scheme);
-            Ok((AnnotExpr::Global(id, param_vars.items), var))
+            Ok((AnnotExpr::Global(id, param_vars), var))
         }
 
         &res::Expr::Local(id) => Ok((AnnotExpr::Local(id), scope.local(id))),
@@ -745,7 +745,7 @@ fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> typed::Pattern {
 fn extract_solution(ctx: &Context, body: AnnotExpr) -> typed::Expr {
     match body {
         AnnotExpr::Global(id, vars) => {
-            typed::Expr::Global(id, vars.iter().map(|&var| ctx.extract(var)).collect())
+            typed::Expr::Global(id, vars.map(|_param_id, &var| ctx.extract(var)))
         }
 
         AnnotExpr::Local(id) => typed::Expr::Local(id),

@@ -4,19 +4,28 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::data::mono_ast as mono;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
+use crate::util::id_vec::IdVec;
 
 // TODO: Should we unify `ValInstances` and `TypeInstances` under a common abstraction?
 
 #[derive(Clone, Debug)]
 struct ValInstances {
-    ids: BTreeMap<(res::CustomGlobalId, Vec<mono::Type>), mono::CustomGlobalId>,
-    pending: VecDeque<(mono::CustomGlobalId, res::CustomGlobalId, Vec<mono::Type>)>,
+    ids: BTreeMap<(res::CustomGlobalId, IdVec<res::TypeParamId, mono::Type>), mono::CustomGlobalId>,
+    pending: VecDeque<(
+        mono::CustomGlobalId,
+        res::CustomGlobalId,
+        IdVec<res::TypeParamId, mono::Type>,
+    )>,
 }
 
 #[derive(Clone, Debug)]
 struct TypeInstances {
-    ids: BTreeMap<(res::CustomTypeId, Vec<mono::Type>), mono::CustomTypeId>,
-    pending: VecDeque<(mono::CustomTypeId, res::CustomTypeId, Vec<mono::Type>)>,
+    ids: BTreeMap<(res::CustomTypeId, IdVec<res::TypeParamId, mono::Type>), mono::CustomTypeId>,
+    pending: VecDeque<(
+        mono::CustomTypeId,
+        res::CustomTypeId,
+        IdVec<res::TypeParamId, mono::Type>,
+    )>,
 }
 
 impl ValInstances {
@@ -27,7 +36,11 @@ impl ValInstances {
         }
     }
 
-    fn resolve(&mut self, id: res::CustomGlobalId, args: Vec<mono::Type>) -> mono::CustomGlobalId {
+    fn resolve(
+        &mut self,
+        id: res::CustomGlobalId,
+        args: IdVec<res::TypeParamId, mono::Type>,
+    ) -> mono::CustomGlobalId {
         let new_id_if_needed = mono::CustomGlobalId(self.ids.len());
         let pending = &mut self.pending; // Appease the borrow checker
         *self.ids.entry((id, args.clone())).or_insert_with(|| {
@@ -38,7 +51,11 @@ impl ValInstances {
 
     fn pop_pending(
         &mut self,
-    ) -> Option<(mono::CustomGlobalId, res::CustomGlobalId, Vec<mono::Type>)> {
+    ) -> Option<(
+        mono::CustomGlobalId,
+        res::CustomGlobalId,
+        IdVec<res::TypeParamId, mono::Type>,
+    )> {
         self.pending.pop_front()
     }
 }
@@ -51,7 +68,11 @@ impl TypeInstances {
         }
     }
 
-    fn resolve(&mut self, id: res::CustomTypeId, args: Vec<mono::Type>) -> mono::CustomTypeId {
+    fn resolve(
+        &mut self,
+        id: res::CustomTypeId,
+        args: IdVec<res::TypeParamId, mono::Type>,
+    ) -> mono::CustomTypeId {
         let new_id_if_needed = mono::CustomTypeId(self.ids.len());
         let pending = &mut self.pending; // Appease the borrow checker
         *self.ids.entry((id, args.clone())).or_insert_with(|| {
@@ -60,7 +81,13 @@ impl TypeInstances {
         })
     }
 
-    fn pop_pending(&mut self) -> Option<(mono::CustomTypeId, res::CustomTypeId, Vec<mono::Type>)> {
+    fn pop_pending(
+        &mut self,
+    ) -> Option<(
+        mono::CustomTypeId,
+        res::CustomTypeId,
+        IdVec<res::TypeParamId, mono::Type>,
+    )> {
         self.pending.pop_front()
     }
 }
@@ -68,7 +95,7 @@ impl TypeInstances {
 fn resolve_expr(
     val_insts: &mut ValInstances,
     type_insts: &mut TypeInstances,
-    inst_args: &[mono::Type],
+    inst_args: &IdVec<res::TypeParamId, mono::Type>,
     expr: &typed::Expr,
 ) -> mono::Expr {
     match expr {
@@ -79,7 +106,10 @@ fn resolve_expr(
 
         typed::Expr::Global(res::GlobalId::ArrayOp(op), args) => {
             debug_assert_eq!(args.len(), 1);
-            mono::Expr::ArrayOp(*op, resolve_type(type_insts, inst_args, &args[0]))
+            mono::Expr::ArrayOp(
+                *op,
+                resolve_type(type_insts, inst_args, &args[res::TypeParamId(0)]),
+            )
         }
 
         typed::Expr::Global(res::GlobalId::IOOp(op), args) => {
@@ -100,10 +130,7 @@ fn resolve_expr(
         }
 
         typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Custom(id), variant), args) => {
-            let args_resolved = args
-                .iter()
-                .map(|arg| resolve_type(type_insts, inst_args, arg))
-                .collect();
+            let args_resolved = args.map(|_param_id, arg| resolve_type(type_insts, inst_args, arg));
 
             let new_id = type_insts.resolve(*id, args_resolved);
             mono::Expr::Ctor(new_id, *variant)
@@ -112,11 +139,7 @@ fn resolve_expr(
         typed::Expr::Global(res::GlobalId::Ctor(_, _), _) => unreachable!(),
 
         typed::Expr::Global(res::GlobalId::Custom(id), args) => {
-            let args_resolved = args
-                .iter()
-                .map(|arg| resolve_type(type_insts, inst_args, arg))
-                .collect();
-
+            let args_resolved = args.map(|_param_id, arg| resolve_type(type_insts, inst_args, arg));
             let new_id = val_insts.resolve(*id, args_resolved);
             mono::Expr::Global(new_id)
         }
@@ -197,12 +220,12 @@ fn resolve_expr(
 
 fn resolve_type(
     type_insts: &mut TypeInstances,
-    inst_args: &[mono::Type],
+    inst_args: &IdVec<res::TypeParamId, mono::Type>,
     type_: &res::Type,
 ) -> mono::Type {
     // TODO: Make sure that sane argument count invariants are actually enforced during typechecking.
     match type_ {
-        res::Type::Var(arg) => inst_args[arg.0].clone(),
+        res::Type::Var(arg) => inst_args[arg].clone(),
 
         res::Type::App(res::TypeId::Bool, args) => {
             debug_assert!(args.is_empty());
@@ -230,10 +253,11 @@ fn resolve_type(
         }
 
         res::Type::App(res::TypeId::Custom(id), args) => {
-            let args_resolved = args
-                .iter()
-                .map(|arg| resolve_type(type_insts, inst_args, arg))
-                .collect();
+            let args_resolved = IdVec::from_items(
+                args.iter()
+                    .map(|arg| resolve_type(type_insts, inst_args, arg))
+                    .collect(),
+            );
 
             let new_id = type_insts.resolve(*id, args_resolved);
 
@@ -259,7 +283,7 @@ fn resolve_type(
 
 fn resolve_pattern(
     type_insts: &mut TypeInstances,
-    inst_args: &[mono::Type],
+    inst_args: &IdVec<res::TypeParamId, mono::Type>,
     pat: &typed::Pattern,
 ) -> mono::Pattern {
     match pat {
@@ -293,10 +317,11 @@ fn resolve_pattern(
         }
 
         typed::Pattern::Ctor(res::TypeId::Custom(id), args, variant, content) => {
-            let args_resolved = args
-                .iter()
-                .map(|arg| resolve_type(type_insts, inst_args, arg))
-                .collect();
+            let args_resolved = IdVec::from_items(
+                args.iter()
+                    .map(|arg| resolve_type(type_insts, inst_args, arg))
+                    .collect(),
+            );
 
             let content_resolved = if let Some(content) = content {
                 Some(Box::new(resolve_pattern(type_insts, inst_args, content)))
@@ -320,7 +345,7 @@ fn resolve_pattern(
 fn resolve_val_def(
     val_insts: &mut ValInstances,
     type_insts: &mut TypeInstances,
-    inst_args: &[mono::Type],
+    inst_args: &IdVec<res::TypeParamId, mono::Type>,
     def: &typed::ValDef,
 ) -> mono::ValDef {
     debug_assert_eq!(inst_args.len(), def.scheme.num_params);
@@ -337,22 +362,18 @@ fn resolve_val_def(
 
 fn resolve_typedef(
     type_insts: &mut TypeInstances,
-    inst_args: &[mono::Type],
+    inst_args: &IdVec<res::TypeParamId, mono::Type>,
     typedef: &res::TypeDef,
 ) -> mono::TypeDef {
     debug_assert_eq!(inst_args.len(), typedef.num_params);
 
-    let variants_resolved = typedef
-        .variants
-        .iter()
-        .map(|(_id, variant)| {
-            if let Some(variant) = variant {
-                Some(resolve_type(type_insts, inst_args, variant))
-            } else {
-                None
-            }
-        })
-        .collect();
+    let variants_resolved = typedef.variants.map(|_id, variant| {
+        if let Some(variant) = variant {
+            Some(resolve_type(type_insts, inst_args, variant))
+        } else {
+            None
+        }
+    });
 
     mono::TypeDef {
         variants: variants_resolved,
@@ -366,17 +387,12 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
     let mut val_insts = ValInstances::new();
     let mut type_insts = TypeInstances::new();
 
-    let main_new_id = val_insts.resolve(program.main, vec![]);
+    let main_new_id = val_insts.resolve(program.main, IdVec::new());
 
-    let mut val_defs_resolved = Vec::new();
-    let mut val_defs_resolved_data = Vec::new();
+    let mut val_defs_resolved = IdVec::new();
+    let mut val_defs_resolved_data = IdVec::new();
 
-    while let Some((mono::CustomGlobalId(new_idx), orig_id, inst_args)) = val_insts.pop_pending() {
-        // We enqueue pending val defs to resolve in the order in which their ids are generated, so
-        // this should always hold.  This allows us to insert resolved val defs at the appropriate
-        // index simply by pushing them onto the end of the vector.
-        assert_eq!(new_idx, val_defs_resolved.len());
-
+    while let Some((new_id, orig_id, inst_args)) = val_insts.pop_pending() {
         let def = &program.vals[orig_id];
 
         let def_resolved = resolve_val_def(&mut val_insts, &mut type_insts, &inst_args, def);
@@ -386,28 +402,36 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
             is_wrapper: false,
         };
 
-        val_defs_resolved.push(def_resolved);
-        val_defs_resolved_data.push(def_resolved_data)
+        let pushed_val_id = val_defs_resolved.push(def_resolved);
+        let pushed_val_data_id = val_defs_resolved_data.push(def_resolved_data);
+
+        // We enqueue pending val defs to resolve in the order in which their ids are generated, so
+        // this should always hold.  This allows us to insert resolved val defs at the appropriate
+        // index simply by pushing them onto the end of the vector.
+        assert_eq!(new_id, pushed_val_id);
+        assert_eq!(new_id, pushed_val_data_id);
     }
 
-    let mut typedefs_resolved = Vec::new();
-    let mut typedefs_resolved_data = Vec::new();
+    let mut typedefs_resolved = IdVec::new();
+    let mut typedefs_resolved_data = IdVec::new();
 
-    while let Some((mono::CustomTypeId(new_idx), orig_id, inst_args)) = type_insts.pop_pending() {
-        // Same as above
-        assert_eq!(new_idx, typedefs_resolved.len());
-
+    while let Some((new_id, orig_id, inst_args)) = type_insts.pop_pending() {
         let typedef = &program.custom_types[orig_id];
 
         let typedef_resolved = resolve_typedef(&mut type_insts, &inst_args, typedef);
+
         let typedef_resolved_data = mono::TypeData {
             type_name: program.custom_type_data[orig_id].type_name.clone(),
-            mono_with: inst_args,
-            variant_data: program.custom_type_data[orig_id].variant_data.items.clone(),
+            mono_with: inst_args.items,
+            variant_data: program.custom_type_data[orig_id].variant_data.clone(),
         };
 
-        typedefs_resolved.push(typedef_resolved);
-        typedefs_resolved_data.push(typedef_resolved_data);
+        let pushed_type_id = typedefs_resolved.push(typedef_resolved);
+        let pushed_type_data_id = typedefs_resolved_data.push(typedef_resolved_data);
+
+        // These assertions are analogous to those in the val def case, described above
+        assert_eq!(new_id, pushed_type_id);
+        assert_eq!(new_id, pushed_type_data_id);
     }
 
     mono::Program {

@@ -1,11 +1,12 @@
+use pretty::{BoxDoc, Doc};
+use std::collections::BTreeSet;
+use std::fmt;
+
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast as res;
-use pretty::{BoxDoc, Doc};
-use std::collections::BTreeSet;
-use std::fmt;
 
 impl fmt::Debug for lifted::Program {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -211,26 +212,25 @@ impl mono::TypeDef {
             .append(Doc::text(" {"))
             .append(Doc::newline())
             .append(Doc::intersperse(
-                self.variants
-                    .iter()
-                    .enumerate()
-                    .map(|(var_index, variant)| {
-                        Doc::text("  ").append(
-                            Doc::text(
-                                &type_data[type_index].variant_data[var_index].variant_name.0,
-                            )
-                            .append(match variant {
-                                None => Doc::nil(),
-                                Some(type_) => match type_ {
-                                    mono::Type::Tuple(_) => type_.to_doc_toplevel(type_data),
-                                    _ => Doc::text("(")
-                                        .append(type_.to_doc_toplevel(type_data))
-                                        .append(Doc::text(")")),
-                                },
-                            })
-                            .append(Doc::text(",")),
+                self.variants.iter().map(|(variant_id, variant)| {
+                    Doc::text("  ").append(
+                        Doc::text(
+                            &type_data[type_index].variant_data[variant_id]
+                                .variant_name
+                                .0,
                         )
-                    }),
+                        .append(match variant {
+                            None => Doc::nil(),
+                            Some(type_) => match type_ {
+                                mono::Type::Tuple(_) => type_.to_doc_toplevel(type_data),
+                                _ => Doc::text("(")
+                                    .append(type_.to_doc_toplevel(type_data))
+                                    .append(Doc::text(")")),
+                            },
+                        })
+                        .append(Doc::text(",")),
+                    )
+                }),
                 Doc::newline(),
             ))
             .append(Doc::newline())
@@ -293,8 +293,8 @@ impl lifted::Expr {
             lifted::Expr::ArithOp(op) => op.to_doc(),
             lifted::Expr::ArrayOp(arrayop, _) => arrayop.to_doc(),
             lifted::Expr::IOOp(ioop) => ioop.to_doc(),
-            lifted::Expr::Ctor(mono::CustomTypeId(typeid), res::VariantId(variantid)) => {
-                type_data[*typeid].variant_data[*variantid].to_doc()
+            lifted::Expr::Ctor(mono::CustomTypeId(typeid), variant_id) => {
+                type_data[*typeid].variant_data[variant_id].to_doc()
             }
             lifted::Expr::Global(mono::CustomGlobalId(globalid)) => {
                 val_data[*globalid].to_doc(type_data)
@@ -433,8 +433,8 @@ impl mono::Pattern {
                     )
                 }
             }
-            mono::Pattern::Ctor(mono::CustomTypeId(typeid), res::VariantId(variantid), pat) => {
-                let ctor_doc = type_data[*typeid].variant_data[*variantid].to_doc();
+            mono::Pattern::Ctor(mono::CustomTypeId(typeid), variant_id, pat) => {
+                let ctor_doc = type_data[*typeid].variant_data[variant_id].to_doc();
                 match pat {
                     None => (ctor_doc, NumBindings(0)),
                     Some(p) => {

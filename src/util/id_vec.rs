@@ -116,6 +116,10 @@ impl<K: Id, V> IdVec<K, V> {
         self.items.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     #[must_use]
     pub fn push(&mut self, item: V) -> K {
         let id = K::from_index(self.len());

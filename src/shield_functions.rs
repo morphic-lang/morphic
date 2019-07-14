@@ -69,7 +69,7 @@ fn global_sccs(program: &mono::Program) -> Vec<Vec<mono::CustomGlobalId>> {
         edges_out: program
             .vals
             .iter()
-            .map(|def| {
+            .map(|(_def_id, def)| {
                 let mut deps = BTreeSet::new();
                 add_expr_deps(&def.body, &mut deps);
                 deps.into_iter()
@@ -159,11 +159,11 @@ pub fn shield_functions(mut program: mono::Program) -> mono::Program {
 
     for scc in global_sccs(&program) {
         for id in &scc {
-            rebind_references(&mapping, &mut program.vals[id.0].body);
+            rebind_references(&mapping, &mut program.vals[id].body);
         }
 
         for &id in &scc {
-            let val_def = &program.vals[id.0];
+            let val_def = &program.vals[id];
 
             if let mono::Type::Func(purity, arg, ret) = &val_def.type_ {
                 let wrapper_def = mono::ValDef {
@@ -183,14 +183,13 @@ pub fn shield_functions(mut program: mono::Program) -> mono::Program {
 
                 let wrapper_data = mono::ValData {
                     is_wrapper: true,
-                    ..program.val_data[id.0].clone()
+                    ..program.val_data[id].clone()
                 };
 
-                debug_assert_eq!(program.vals.len(), program.val_data.len());
+                let wrapper_id = program.vals.push(wrapper_def);
+                let wrapper_data_id = program.val_data.push(wrapper_data);
 
-                let wrapper_id = mono::CustomGlobalId(program.vals.len());
-                program.vals.push(wrapper_def);
-                program.val_data.push(wrapper_data);
+                debug_assert_eq!(wrapper_id, wrapper_data_id);
 
                 mapping.insert(id, wrapper_id);
             }

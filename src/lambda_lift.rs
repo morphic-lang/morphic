@@ -274,15 +274,14 @@ pub fn lambda_lift(program: mono::Program) -> lifted::Program {
     let defs_lifted = program
         .vals
         .into_iter()
-        .enumerate()
-        .map(|(i, def)| lift_def(&mut lambdas, &mut lam_data, def, mono::CustomGlobalId(i)))
+        .map(|(id, def)| lift_def(&mut lambdas, &mut lam_data, def, id))
         .collect();
 
     lifted::Program {
-        custom_types: program.custom_types,
-        custom_type_data: program.custom_type_data,
+        custom_types: program.custom_types.items,
+        custom_type_data: program.custom_type_data.items,
         vals: defs_lifted,
-        val_data: program.val_data,
+        val_data: program.val_data.items,
         lams: lambdas,
         lam_data: lam_data,
         main: program.main,

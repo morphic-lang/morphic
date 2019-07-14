@@ -2,6 +2,7 @@ use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::util::id_vec::IdVec;
 
 id_type!(pub CustomTypeId);
 
@@ -21,12 +22,12 @@ pub enum Type {
 pub struct TypeData {
     pub type_name: raw::TypeName,
     pub mono_with: Vec<Type>,
-    pub variant_data: Vec<res::VariantData>,
+    pub variant_data: IdVec<res::VariantId, res::VariantData>,
 }
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
-    pub variants: Vec<Option<Type>>,
+    pub variants: IdVec<res::VariantId, Option<Type>>,
 }
 
 id_type!(pub CustomGlobalId);
@@ -79,15 +80,15 @@ pub struct ValDef {
 #[derive(Clone, Debug)]
 pub struct ValData {
     pub val_name: raw::ValName,
-    pub mono_with: Vec<Type>,
+    pub mono_with: IdVec<res::TypeParamId, Type>,
     pub is_wrapper: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub custom_types: Vec<TypeDef>,
-    pub custom_type_data: Vec<TypeData>,
-    pub vals: Vec<ValDef>,
-    pub val_data: Vec<ValData>,
+    pub custom_types: IdVec<CustomTypeId, TypeDef>,
+    pub custom_type_data: IdVec<CustomTypeId, TypeData>,
+    pub vals: IdVec<CustomGlobalId, ValDef>,
+    pub val_data: IdVec<CustomGlobalId, ValData>,
     pub main: CustomGlobalId,
 }
