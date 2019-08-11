@@ -86,8 +86,7 @@ impl<Requirement: Ord> ConstraintGraph<Requirement> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct EquivClass(pub usize);
+id_type!(pub EquivClass);
 
 #[derive(Clone, Debug)]
 pub struct EquivClasses {

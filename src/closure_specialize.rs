@@ -59,7 +59,7 @@ impl<'a> Context<'a> {
             return existing.clone();
         }
 
-        let template = &self.orig.templates[request.head.0];
+        let template = &self.orig.templates[request.head];
 
         match template.in_cycle {
             annot::InCycle::NoCycle => {
@@ -109,7 +109,7 @@ impl<'a> Context<'a> {
             annot::Requirement::Lam(lam_id, lam_params) => {
                 let resolved_lam_params = lam_params
                     .iter()
-                    .map(|solution| self.resolve_solution(solution, params))
+                    .map(|(_, solution)| self.resolve_solution(solution, params))
                     .collect();
 
                 let resolved_lam = self.resolve_lam(Request {
@@ -123,7 +123,7 @@ impl<'a> Context<'a> {
             annot::Requirement::Template(template_id, template_params) => {
                 let resolved_template_params = template_params
                     .iter()
-                    .map(|solution| self.resolve_solution(solution, params))
+                    .map(|(_, solution)| self.resolve_solution(solution, params))
                     .collect();
 
                 let resolved_template = self.resolve_template(Request {
@@ -160,7 +160,7 @@ impl<'a> Context<'a> {
             annot::Requirement::Ctor(custom, type_params, variant) => {
                 let resolved_type_params = type_params
                     .iter()
-                    .map(|solution| self.resolve_solution(solution, params))
+                    .map(|(_, solution)| self.resolve_solution(solution, params))
                     .collect();
 
                 let resolved_custom = self.resolve_custom_type(Request {
@@ -188,7 +188,7 @@ impl<'a> Context<'a> {
                     head: *template_id,
                     params: template_params
                         .iter()
-                        .map(|param| params[param.0].clone())
+                        .map(|(_, param)| params[param.0].clone())
                         .collect(),
                 })
             }
@@ -203,14 +203,14 @@ impl<'a> Context<'a> {
         let lam_id = special::LamId(fresh_id(&mut self.lams));
         self.lam_instances.insert(request.clone(), lam_id);
 
-        let lam = &self.orig.lams[request.head.0];
+        let lam = &self.orig.lams[request.head];
 
         debug_assert_eq!(lam.params.num_params(), request.params.len());
 
         let resolved_captures = lam
             .captures
             .iter()
-            .map(|capture| self.resolve_sig_type(capture, &request.params))
+            .map(|(_, capture)| self.resolve_sig_type(capture, &request.params))
             .collect();
 
         let resolved_arg = self.resolve_sig_type(&lam.arg, &request.params);
@@ -267,7 +267,7 @@ impl<'a> Context<'a> {
             annot::Type::Custom(custom, custom_params) => {
                 let resolved_reps = custom_params
                     .iter()
-                    .map(|rep| resolve_rep(self, rep))
+                    .map(|(_, rep)| resolve_rep(self, rep))
                     .collect();
 
                 let resolved_custom = self.resolve_custom_type(Request {
@@ -309,14 +309,14 @@ impl<'a> Context<'a> {
         let custom_id = special::CustomTypeId(fresh_id(&mut self.custom_types));
         self.type_instances.insert(request.clone(), custom_id);
 
-        let typedef = &self.orig.custom_types[request.head.0];
+        let typedef = &self.orig.custom_types[request.head];
 
         debug_assert_eq!(typedef.num_params, request.params.len());
 
         let resolved_variants = typedef
             .variants
             .iter()
-            .map(|content| {
+            .map(|(_, content)| {
                 content
                     .as_ref()
                     .map(|content| self.resolve_sig_type(content, &request.params))
@@ -352,7 +352,7 @@ impl<'a> Context<'a> {
             annot::Pattern::Ctor(custom, custom_params, variant, content) => {
                 let resolved_custom_params = custom_params
                     .iter()
-                    .map(|solution| self.resolve_solution(solution, params))
+                    .map(|(_, solution)| self.resolve_solution(solution, params))
                     .collect();
 
                 let resolved_custom = self.resolve_custom_type(Request {
@@ -396,7 +396,7 @@ impl<'a> Context<'a> {
             annot::Expr::NullaryCtor(custom, custom_params, variant) => {
                 let resolved_custom_params = custom_params
                     .iter()
-                    .map(|solution| self.resolve_solution(solution, params))
+                    .map(|(_, solution)| self.resolve_solution(solution, params))
                     .collect();
 
                 let resolved_custom = self.resolve_custom_type(Request {
@@ -410,7 +410,7 @@ impl<'a> Context<'a> {
             annot::Expr::Ctor(custom, custom_params, variant, solution) => {
                 let resolved_custom_params = custom_params
                     .iter()
-                    .map(|solution| self.resolve_solution(solution, params))
+                    .map(|(_, solution)| self.resolve_solution(solution, params))
                     .collect();
 
                 let resolved_custom = self.resolve_custom_type(Request {
@@ -426,7 +426,7 @@ impl<'a> Context<'a> {
             annot::Expr::Global(val_id, val_params) => {
                 let resolved_val_params = val_params
                     .iter()
-                    .map(|solution| self.resolve_solution(solution, params))
+                    .map(|(_, solution)| self.resolve_solution(solution, params))
                     .collect();
 
                 let resolved_val_id = self.resolve_val(Request {
@@ -451,7 +451,7 @@ impl<'a> Context<'a> {
             annot::Expr::Lam(lam_id, lam_params, rep, captures) => {
                 let resolved_lam_params = lam_params
                     .iter()
-                    .map(|solution| self.resolve_solution(solution, params))
+                    .map(|(_, solution)| self.resolve_solution(solution, params))
                     .collect();
 
                 let resolved_lam_id = self.resolve_lam(Request {
@@ -463,7 +463,7 @@ impl<'a> Context<'a> {
 
                 let resolved_captures = captures
                     .iter()
-                    .map(|capture| self.resolve_expr(capture, params))
+                    .map(|(_, capture)| self.resolve_expr(capture, params))
                     .collect();
 
                 special::Expr::Lam(resolved_lam_id, resolved_rep, resolved_captures)
@@ -554,7 +554,7 @@ impl<'a> Context<'a> {
         let val_id = special::CustomGlobalId(fresh_id(&mut self.vals));
         self.val_instances.insert(request.clone(), val_id);
 
-        let val_def = &self.orig.vals[request.head.0];
+        let val_def = &self.orig.vals[request.head];
 
         debug_assert_eq!(val_def.params.num_params(), request.params.len());
 
@@ -576,7 +576,7 @@ impl<'a> Context<'a> {
 pub fn closure_specialize(program: annot::Program) -> special::Program {
     let mut ctx = Context::new(&program);
 
-    let main_def = &program.vals[program.main.0];
+    let main_def = &program.vals[program.main];
 
     // TODO: Using an opaque representation to monomorphize every representation parameter in main's
     // SCC is a hack to avoid doing proper analysis of the dependencies among these representation
@@ -596,13 +596,13 @@ pub fn closure_specialize(program: annot::Program) -> special::Program {
         })
         .collect();
 
-    for (opaque_id, (template_id, template_params)) in main_param_opaque_ids
+    for (opaque_id, (_, (template_id, template_params))) in main_param_opaque_ids
         .iter()
         .zip(main_def.params.requirements.iter())
     {
         let resolved_template_params = template_params
             .iter()
-            .map(|param| main_param_opaque_reps[param.0].clone())
+            .map(|(_, param)| main_param_opaque_reps[param.0].clone())
             .collect();
 
         let rep = ctx.resolve_template(Request {

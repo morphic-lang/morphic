@@ -3,13 +3,14 @@ use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::util::id_vec::IdVec;
 
 id_type!(pub RepParamId);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
     pub num_params: usize,
-    pub variants: Vec<Option<Type<RepParamId>>>,
+    pub variants: IdVec<res::VariantId, Option<Type<RepParamId>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,7 +22,7 @@ pub enum Type<Rep> {
     Array(Box<Type<Rep>>),
     Tuple(Vec<Type<Rep>>),
     Func(Purity, Rep, Box<Type<Rep>>, Box<Type<Rep>>),
-    Custom(mono::CustomTypeId, Vec<Rep>),
+    Custom(mono::CustomTypeId, IdVec<RepParamId, Rep>),
 }
 
 id_type!(pub TemplateId);
@@ -41,19 +42,23 @@ pub struct Template {
 
 #[derive(Clone, Debug)]
 pub enum Requirement {
-    Lam(lifted::LamId, Vec<Solution>),
-    Template(TemplateId, Vec<Solution>),
+    Lam(lifted::LamId, IdVec<RepParamId, Solution>),
+    Template(TemplateId, IdVec<RepParamId, Solution>),
     ArithOp(Op),
     ArrayOp(ArrayOp, Type<Solution>),
     ArrayReplace(Type<Solution>),
     IOOp(IOOp),
-    Ctor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
+    Ctor(
+        mono::CustomTypeId,
+        IdVec<RepParamId, Solution>,
+        res::VariantId,
+    ),
 }
 
 #[derive(Clone, Debug)]
 pub enum Solution {
     Param(RepParamId),
-    MinSolutionTo(TemplateId, Vec<RepParamId>),
+    MinSolutionTo(TemplateId, IdVec<RepParamId, RepParamId>),
 }
 
 #[derive(Clone, Debug)]
@@ -68,22 +73,26 @@ pub enum Expr {
         Solution, // Representation of this function expression
     ),
     IOOp(IOOp, Solution),
-    NullaryCtor(mono::CustomTypeId, Vec<Solution>, res::VariantId),
+    NullaryCtor(
+        mono::CustomTypeId,
+        IdVec<RepParamId, Solution>,
+        res::VariantId,
+    ),
     Ctor(
         mono::CustomTypeId,
-        Vec<Solution>,
+        IdVec<RepParamId, Solution>,
         res::VariantId,
         Solution, // Representation of this function expressionn
     ),
-    Global(mono::CustomGlobalId, Vec<Solution>),
+    Global(mono::CustomGlobalId, IdVec<RepParamId, Solution>),
     Local(lifted::LocalId),
     Capture(lifted::CaptureId),
     Tuple(Vec<Expr>),
     Lam(
         lifted::LamId,
-        Vec<Solution>, // Parameters on the lambda
-        Solution,      // Representation of the lambda expression
-        Vec<Expr>,     // Captures
+        IdVec<RepParamId, Solution>,    // Parameters on the lambda
+        Solution,                       // Representation of the lambda expression
+        IdVec<lifted::CaptureId, Expr>, // Captures
     ),
     App(
         Purity,
@@ -113,7 +122,7 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(
         mono::CustomTypeId,
-        Vec<Solution>,
+        IdVec<RepParamId, Solution>,
         res::VariantId,
         Option<Box<Pattern>>,
     ),
@@ -125,9 +134,8 @@ pub enum Pattern {
 
 #[derive(Clone, Debug)]
 pub struct Params {
-    // Indexed by RepParamId
     // Number of parameters is implicit in the length of this vector
-    pub requirements: Vec<(TemplateId, Vec<RepParamId>)>,
+    pub requirements: IdVec<RepParamId, (TemplateId, IdVec<RepParamId, RepParamId>)>,
 }
 
 impl Params {
@@ -147,7 +155,7 @@ pub struct ValDef {
 pub struct LamDef {
     pub purity: Purity,
     pub params: Params,
-    pub captures: Vec<Type<RepParamId>>,
+    pub captures: IdVec<lifted::CaptureId, Type<RepParamId>>,
     pub arg: Type<RepParamId>,
     pub ret: Type<RepParamId>,
     pub arg_pat: Pattern,
@@ -156,9 +164,9 @@ pub struct LamDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub custom_types: Vec<TypeDef>,
-    pub templates: Vec<Template>,
-    pub vals: Vec<ValDef>,
-    pub lams: Vec<LamDef>,
+    pub custom_types: IdVec<mono::CustomTypeId, TypeDef>,
+    pub templates: IdVec<TemplateId, Template>,
+    pub vals: IdVec<mono::CustomGlobalId, ValDef>,
+    pub lams: IdVec<lifted::LamId, LamDef>,
     pub main: mono::CustomGlobalId,
 }

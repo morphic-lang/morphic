@@ -89,7 +89,7 @@ fn parameterize(
             match &parameterized[other] {
                 Some(typedef) => annot::Type::Custom(
                     *other,
-                    (0..typedef.num_params).map(|_| id_gen.fresh()).collect(),
+                    IdVec::from_items((0..typedef.num_params).map(|_| id_gen.fresh()).collect()),
                 ),
 
                 None => {
@@ -97,7 +97,7 @@ fn parameterize(
                     // all the SCC parameters.
                     annot::Type::Custom(
                         *other,
-                        (0..scc_num_params).map(annot::RepParamId).collect(),
+                        IdVec::from_items((0..scc_num_params).map(annot::RepParamId).collect()),
                     )
                 }
             }
@@ -130,15 +130,11 @@ fn parameterize_typedef_scc(
         .iter()
         .map(|&type_id| {
             let typedef = &typedefs[type_id];
-            let parameterized_variants = typedef
-                .variants
-                .iter()
-                .map(|(_variant_id, variant)| {
-                    variant.as_ref().map(|content| {
-                        parameterize(parameterized, num_params, &mut id_gen, content)
-                    })
-                })
-                .collect();
+            let parameterized_variants = typedef.variants.map(|_variant_id, variant| {
+                variant
+                    .as_ref()
+                    .map(|content| parameterize(parameterized, num_params, &mut id_gen, content))
+            });
 
             debug_assert!(parameterized[type_id].is_none());
 
@@ -224,14 +220,18 @@ fn parameterize_typedefs(
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SolverRequirement {
-    Lam(lifted::LamId, Vec<SolverVarId>),
+    Lam(lifted::LamId, IdVec<annot::RepParamId, SolverVarId>),
     PendingLam(lifted::LamId),
-    Template(annot::TemplateId, Vec<SolverVarId>),
+    Template(annot::TemplateId, IdVec<annot::RepParamId, SolverVarId>),
     ArithOp(Op),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>),
     ArrayReplace(annot::Type<SolverVarId>),
     IOOp(IOOp),
-    Ctor(mono::CustomTypeId, Vec<SolverVarId>, res::VariantId),
+    Ctor(
+        mono::CustomTypeId,
+        IdVec<annot::RepParamId, SolverVarId>,
+        res::VariantId,
+    ),
 }
 
 #[derive(Clone, Debug)]
@@ -239,25 +239,33 @@ enum SolverExpr {
     ArithOp(Op, SolverVarId),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>, SolverVarId),
     IOOp(IOOp, SolverVarId),
-    NullaryCtor(mono::CustomTypeId, Vec<SolverVarId>, res::VariantId),
+    NullaryCtor(
+        mono::CustomTypeId,
+        IdVec<annot::RepParamId, SolverVarId>,
+        res::VariantId,
+    ),
     Ctor(
         mono::CustomTypeId,
-        Vec<SolverVarId>,
+        IdVec<annot::RepParamId, SolverVarId>,
         res::VariantId,
         SolverVarId,
     ),
-    Global(mono::CustomGlobalId, Vec<SolverVarId>),
+    Global(mono::CustomGlobalId, IdVec<annot::RepParamId, SolverVarId>),
     PendingGlobal(mono::CustomGlobalId), // A global belonging to the current SCC
     Local(lifted::LocalId),
     Capture(lifted::CaptureId),
     Tuple(Vec<SolverExpr>),
     Lam(
         lifted::LamId,
-        Vec<SolverVarId>, // Parameters on the lambda
-        SolverVarId,      // Representation of the lambda expression
-        Vec<SolverExpr>,  // Captures
+        IdVec<annot::RepParamId, SolverVarId>, // Parameters on the lambda
+        SolverVarId,                           // Representation of the lambda expression
+        IdVec<lifted::CaptureId, SolverExpr>,  // Captures
     ),
-    PendingLam(lifted::LamId, SolverVarId, Vec<SolverExpr>), // A lambda belonging to the current SCC
+    PendingLam(
+        lifted::LamId,
+        SolverVarId,
+        IdVec<lifted::CaptureId, SolverExpr>,
+    ), // A lambda belonging to the current SCC
     App(
         Purity,
         SolverVarId, // Representation being called
@@ -290,7 +298,7 @@ enum SolverPattern {
     Tuple(Vec<SolverPattern>),
     Ctor(
         mono::CustomTypeId,
-        Vec<SolverVarId>,
+        IdVec<annot::RepParamId, SolverVarId>,
         res::VariantId,
         Option<Box<SolverPattern>>,
     ),
@@ -303,7 +311,7 @@ enum SolverPattern {
 #[derive(Clone, Debug)]
 struct SolverLamSig {
     purity: Purity,
-    captures: Vec<annot::Type<SolverVarId>>,
+    captures: IdVec<lifted::CaptureId, annot::Type<SolverVarId>>,
     arg: annot::Type<SolverVarId>,
     ret: annot::Type<SolverVarId>,
 }
@@ -338,9 +346,11 @@ fn instantiate_mono(
         ),
 
         mono::Type::Custom(custom) => {
-            let vars = (0..typedefs[custom].num_params)
-                .map(|_| graph.new_var())
-                .collect();
+            let vars = IdVec::from_items(
+                (0..typedefs[custom].num_params)
+                    .map(|_| graph.new_var())
+                    .collect(),
+            );
 
             annot::Type::Custom(*custom, vars)
         }
@@ -384,9 +394,10 @@ fn equate_types(
 
         (annot::Type::Custom(custom1, args1), annot::Type::Custom(custom2, args2)) => {
             debug_assert_eq!(custom1, custom2);
-            debug_assert_eq!(args1.len(), args2.len());
 
-            for (arg1, arg2) in args1.iter().zip(args2.iter()) {
+            for (_, arg1, arg2) in args1.try_zip_exact(args2).expect(
+                "Arguments lists for the same type constructor should always have the same length",
+            ) {
                 graph.equate(*arg1, *arg2);
             }
         }
@@ -423,7 +434,7 @@ impl LocalContext {
 }
 
 fn instantiate_subst(
-    vars: &[SolverVarId],
+    vars: &IdVec<annot::RepParamId, SolverVarId>,
     type_: &annot::Type<annot::RepParamId>,
 ) -> annot::Type<SolverVarId> {
     match type_ {
@@ -441,17 +452,16 @@ fn instantiate_subst(
                 .collect(),
         ),
 
-        annot::Type::Func(purity, annot::RepParamId(id), arg, ret) => annot::Type::Func(
+        annot::Type::Func(purity, id, arg, ret) => annot::Type::Func(
             *purity,
-            vars[*id],
+            vars[id],
             Box::new(instantiate_subst(vars, arg)),
             Box::new(instantiate_subst(vars, ret)),
         ),
 
-        annot::Type::Custom(custom, args) => annot::Type::Custom(
-            *custom,
-            args.iter().map(|&annot::RepParamId(id)| vars[id]).collect(),
-        ),
+        annot::Type::Custom(custom, args) => {
+            annot::Type::Custom(*custom, args.map(|_, id| vars[id]))
+        }
     }
 }
 
@@ -491,7 +501,7 @@ fn instantiate_pattern(
         ) => {
             debug_assert_eq!(custom, rhs_custom);
 
-            let solver_content = match (content, &typedefs[custom].variants[variant.0]) {
+            let solver_content = match (content, &typedefs[custom].variants[variant]) {
                 (Some(content_pat), Some(content_type)) => {
                     let solver_content_type = instantiate_subst(rhs_args, content_type);
                     Some(Box::new(instantiate_pattern(
@@ -760,19 +770,18 @@ struct GlobalContext<'a> {
 fn instantiate_params(
     graph: &mut ConstraintGraph<SolverRequirement>,
     params: &annot::Params,
-) -> Vec<SolverVarId> {
-    let param_vars: Vec<_> = (0..params.num_params()).map(|_| graph.new_var()).collect();
+) -> IdVec<annot::RepParamId, SolverVarId> {
+    let param_vars = IdVec::from_items((0..params.num_params()).map(|_| graph.new_var()).collect());
 
-    for (param_var, (req_template, req_params)) in param_vars.iter().zip(params.requirements.iter())
+    for (_, param_var, (req_template, req_params)) in param_vars
+        .try_zip_exact(&params.requirements)
+        .expect("params.num_params() should equal params.requirements.len()")
     {
         graph.require(
             *param_var,
             SolverRequirement::Template(
                 *req_template,
-                req_params
-                    .iter()
-                    .map(|other_param| param_vars[other_param.0])
-                    .collect(),
+                req_params.map(|_, other_param| param_vars[other_param]),
             ),
         );
     }
@@ -784,7 +793,7 @@ fn instantiate_expr(
     typedefs: &IdVec<mono::CustomTypeId, annot::TypeDef>,
     globals: GlobalContext,
     graph: &mut ConstraintGraph<SolverRequirement>,
-    captures: &[annot::Type<SolverVarId>],
+    captures: &IdVec<lifted::CaptureId, annot::Type<SolverVarId>>,
     locals: &mut LocalContext,
     expr: &lifted::Expr,
 ) -> (SolverExpr, annot::Type<SolverVarId>) {
@@ -811,9 +820,10 @@ fn instantiate_expr(
         &lifted::Expr::Ctor(custom, variant) => {
             let typedef = &typedefs[custom];
 
-            let params: Vec<_> = (0..typedef.num_params).map(|_| graph.new_var()).collect();
+            let params =
+                IdVec::from_items((0..typedef.num_params).map(|_| graph.new_var()).collect());
 
-            match &typedef.variants[variant.0] {
+            match &typedef.variants[variant] {
                 Some(content_type) => {
                     let op_closure_var = graph.new_var();
                     graph.require(
@@ -863,7 +873,7 @@ fn instantiate_expr(
         &lifted::Expr::Local(local) => (SolverExpr::Local(local), locals.local_type(local)),
 
         &lifted::Expr::Capture(capture) => {
-            (SolverExpr::Capture(capture), captures[capture.0].clone())
+            (SolverExpr::Capture(capture), captures[capture].clone())
         }
 
         lifted::Expr::Tuple(items) => {
@@ -885,24 +895,35 @@ fn instantiate_expr(
         }
 
         lifted::Expr::Lam(lam, lam_captures) => {
-            let mut solver_captures = Vec::new();
-            let mut solver_capture_types = Vec::new();
+            let mut solver_captures = IdVec::new();
+            let mut solver_capture_types = IdVec::new();
 
-            for (_capture_id, capture) in lam_captures {
+            for (capture_id, capture) in lam_captures {
                 let (solver_capture, solver_type) =
                     instantiate_expr(typedefs, globals, graph, captures, locals, capture);
-                solver_captures.push(solver_capture);
-                solver_capture_types.push(solver_type);
+
+                {
+                    let pushed_id = solver_captures.push(solver_capture);
+                    debug_assert_eq!(pushed_id, capture_id);
+                }
+
+                {
+                    let pushed_id = solver_capture_types.push(solver_type);
+                    debug_assert_eq!(pushed_id, capture_id)
+                }
             }
 
             match &globals.annot_lams[lam] {
                 Some(lam_def) => {
                     let scheme_params = instantiate_params(graph, &lam_def.params);
 
-                    debug_assert_eq!(lam_def.captures.len(), lam_captures.len());
-
-                    for (expected, actual) in
-                        lam_def.captures.iter().zip(solver_capture_types.iter())
+                    for (_capture_id, expected, actual) in lam_def
+                        .captures
+                        .try_zip_exact(&solver_capture_types)
+                        .expect(
+                            "A lambda should always be instantiated with the same number of \
+                             captures",
+                        )
                     {
                         let solver_expected = instantiate_subst(&scheme_params, expected);
                         equate_types(graph, &solver_expected, actual);
@@ -932,8 +953,13 @@ fn instantiate_expr(
 
                     debug_assert_eq!(solver_sig.captures.len(), lam_captures.len());
 
-                    for (expected, actual) in
-                        solver_sig.captures.iter().zip(solver_capture_types.iter())
+                    for (_capture_id, expected, actual) in solver_sig
+                        .captures
+                        .try_zip_exact(&solver_capture_types)
+                        .expect(
+                            "A lambda should always be instantiated with the same number of \
+                             captures",
+                        )
                     {
                         equate_types(graph, expected, actual);
                     }
@@ -1071,9 +1097,7 @@ fn instantiate_lam_sig(
 ) -> SolverLamSig {
     let solver_captures = lam_def
         .captures
-        .iter()
-        .map(|(_capture_id, capture)| instantiate_mono(typedefs, graph, capture))
-        .collect();
+        .map(|_capture_id, capture| instantiate_mono(typedefs, graph, capture));
 
     let solver_arg = instantiate_mono(typedefs, graph, &lam_def.arg_type);
     let solver_ret = instantiate_mono(typedefs, graph, &lam_def.ret_type);
@@ -1145,7 +1169,7 @@ fn instantiate_scc(
                 typedefs,
                 global_ctx,
                 &mut graph,
-                &[],
+                &IdVec::new(),
                 &mut local_ctx,
                 &vals[val_id].body,
             );
@@ -1228,7 +1252,7 @@ fn add_mentioned_classes(
         }
 
         annot::Type::Custom(_, args) => {
-            for &var in args {
+            for (_, &var) in args {
                 mentioned.insert(equiv_classes.class(var));
             }
         }
@@ -1236,7 +1260,7 @@ fn add_mentioned_classes(
 }
 
 #[derive(Clone, Debug)]
-struct Params(Vec<EquivClass>); // Indexed by annot::RepParamId
+struct Params(IdVec<annot::RepParamId, EquivClass>);
 
 fn find_params(scc: &SolverScc, equiv_classes: &EquivClasses) -> Params {
     let mut mentioned = BTreeSet::new();
@@ -1246,7 +1270,7 @@ fn find_params(scc: &SolverScc, equiv_classes: &EquivClasses) -> Params {
     }
 
     for sig in scc.lam_sigs.values() {
-        for capture in &sig.captures {
+        for (_, capture) in &sig.captures {
             add_mentioned_classes(equiv_classes, capture, &mut mentioned);
         }
 
@@ -1254,7 +1278,11 @@ fn find_params(scc: &SolverScc, equiv_classes: &EquivClasses) -> Params {
         add_mentioned_classes(equiv_classes, &sig.ret, &mut mentioned);
     }
 
-    Params(mentioned.into_iter().collect())
+    // This is where we *define* the mapping between representation parameters and equivalence
+    // classes for this SCC.  We record our choice of mapping in the returned `Params` structure.
+    // The choice of mapping at this point is arbitrary, but after we commit to it we must be
+    // consistent going forward.
+    Params(IdVec::from_items(mentioned.into_iter().collect()))
 }
 
 fn add_req_mentioned_classes(
@@ -1265,15 +1293,19 @@ fn add_req_mentioned_classes(
 ) {
     match req {
         SolverRequirement::Lam(_, lam_params) => {
-            mentioned.extend(lam_params.iter().map(|&var| equiv_classes.class(var)));
+            mentioned.extend(lam_params.iter().map(|(_, &var)| equiv_classes.class(var)));
         }
 
         SolverRequirement::PendingLam(_) => {
-            mentioned.extend(params.0.iter().cloned());
+            mentioned.extend(params.0.iter().map(|(_, &var)| var));
         }
 
         SolverRequirement::Template(_, template_params) => {
-            mentioned.extend(template_params.iter().map(|&var| equiv_classes.class(var)));
+            mentioned.extend(
+                template_params
+                    .iter()
+                    .map(|(_, &var)| equiv_classes.class(var)),
+            );
         }
 
         SolverRequirement::ArithOp(_) => {}
@@ -1285,25 +1317,29 @@ fn add_req_mentioned_classes(
         SolverRequirement::IOOp(_) => {}
 
         SolverRequirement::Ctor(_, custom_params, _) => {
-            mentioned.extend(custom_params.iter().map(|&var| equiv_classes.class(var)));
+            mentioned.extend(
+                custom_params
+                    .iter()
+                    .map(|(_, &var)| equiv_classes.class(var)),
+            );
         }
     }
 }
 
 #[derive(Clone, Debug)]
-struct RequirementDeps(Vec<BTreeSet<EquivClass>>); // Indexed by EquivClass
+struct RequirementDeps(IdVec<EquivClass, BTreeSet<EquivClass>>);
 
 fn requirement_deps(
     equiv_classes: &EquivClasses,
     params: &Params,
     graph: &ConstraintGraph<SolverRequirement>,
 ) -> RequirementDeps {
-    let mut deps = vec![BTreeSet::new(); equiv_classes.count()];
+    let mut deps = IdVec::from_items(vec![BTreeSet::new(); equiv_classes.count()]);
 
     for (var_idx, var_constraints) in graph.var_constraints.iter().enumerate() {
         let class = equiv_classes.class(SolverVarId(var_idx));
 
-        let class_deps = &mut deps[class.0];
+        let class_deps = &mut deps[class];
 
         for req in &var_constraints.requirements {
             add_req_mentioned_classes(equiv_classes, params, req, class_deps);
@@ -1333,8 +1369,14 @@ fn consolidate_class_requirements(
 
 #[derive(Clone, Debug)]
 struct Solutions {
-    class_solutions: Vec<annot::Solution>, // Indexed by EquivClass
-    param_reqs: Vec<(annot::TemplateId, Vec<annot::RepParamId>)>, // Indexed by annot::RepParamId
+    class_solutions: IdVec<EquivClass, annot::Solution>,
+    param_reqs: IdVec<
+        annot::RepParamId,
+        (
+            annot::TemplateId,
+            IdVec<annot::RepParamId, annot::RepParamId>,
+        ),
+    >,
 }
 
 fn translate_solution_for_template(
@@ -1344,30 +1386,27 @@ fn translate_solution_for_template(
     match solution {
         annot::Solution::Param(param) => annot::Solution::Param(solver_to_template[param]),
 
-        annot::Solution::MinSolutionTo(id, args) => annot::Solution::MinSolutionTo(
-            *id,
-            args.iter().map(|arg| solver_to_template[arg]).collect(),
-        ),
+        annot::Solution::MinSolutionTo(id, args) => {
+            annot::Solution::MinSolutionTo(*id, args.map(|_, arg| solver_to_template[arg]))
+        }
     }
 }
 
 fn translate_var_for_template(
     equiv_classes: &EquivClasses,
-    class_solutions: &[Option<annot::Solution>],
+    class_solutions: &IdVec<EquivClass, Option<annot::Solution>>,
     solver_to_template: &BTreeMap<annot::RepParamId, annot::RepParamId>,
     var: SolverVarId,
 ) -> annot::Solution {
     translate_solution_for_template(
         solver_to_template,
-        class_solutions[equiv_classes.class(var).0]
-            .as_ref()
-            .unwrap(),
+        class_solutions[equiv_classes.class(var)].as_ref().unwrap(),
     )
 }
 
 fn translate_type_for_template(
     equiv_classes: &EquivClasses,
-    class_solutions: &[Option<annot::Solution>],
+    class_solutions: &IdVec<EquivClass, Option<annot::Solution>>,
     solver_to_template: &BTreeMap<annot::RepParamId, annot::RepParamId>,
     type_: &annot::Type<SolverVarId>,
 ) -> annot::Type<annot::Solution> {
@@ -1417,16 +1456,9 @@ fn translate_type_for_template(
 
         annot::Type::Custom(custom, vars) => annot::Type::Custom(
             *custom,
-            vars.iter()
-                .map(|&var| {
-                    translate_var_for_template(
-                        equiv_classes,
-                        class_solutions,
-                        solver_to_template,
-                        var,
-                    )
-                })
-                .collect(),
+            vars.map(|_, &var| {
+                translate_var_for_template(equiv_classes, class_solutions, solver_to_template, var)
+            }),
         ),
     }
 }
@@ -1434,51 +1466,33 @@ fn translate_type_for_template(
 fn translate_req_for_template(
     equiv_classes: &EquivClasses,
     params: &Params,
-    class_solutions: &[Option<annot::Solution>], // Indexed by EquivClass
+    class_solutions: &IdVec<EquivClass, Option<annot::Solution>>,
     solver_to_template: &BTreeMap<annot::RepParamId, annot::RepParamId>,
     req: &SolverRequirement,
 ) -> annot::Requirement {
     match req {
         SolverRequirement::Lam(lam_id, vars) => annot::Requirement::Lam(
             *lam_id,
-            vars.iter()
-                .map(|&var| {
-                    translate_var_for_template(
-                        equiv_classes,
-                        class_solutions,
-                        solver_to_template,
-                        var,
-                    )
-                })
-                .collect(),
+            vars.map(|_, &var| {
+                translate_var_for_template(equiv_classes, class_solutions, solver_to_template, var)
+            }),
         ),
 
         SolverRequirement::PendingLam(lam_id) => annot::Requirement::Lam(
             *lam_id,
-            params
-                .0
-                .iter()
-                .map(|&class| {
-                    translate_solution_for_template(
-                        solver_to_template,
-                        class_solutions[class.0].as_ref().unwrap(),
-                    )
-                })
-                .collect(),
+            params.0.map(|_, &class| {
+                translate_solution_for_template(
+                    solver_to_template,
+                    class_solutions[class].as_ref().unwrap(),
+                )
+            }),
         ),
 
         SolverRequirement::Template(template_id, vars) => annot::Requirement::Template(
             *template_id,
-            vars.iter()
-                .map(|&var| {
-                    translate_var_for_template(
-                        equiv_classes,
-                        class_solutions,
-                        solver_to_template,
-                        var,
-                    )
-                })
-                .collect(),
+            vars.map(|_, &var| {
+                translate_var_for_template(equiv_classes, class_solutions, solver_to_template, var)
+            }),
         ),
 
         SolverRequirement::ArithOp(op) => annot::Requirement::ArithOp(*op),
@@ -1506,16 +1520,9 @@ fn translate_req_for_template(
 
         SolverRequirement::Ctor(custom, vars, variant) => annot::Requirement::Ctor(
             *custom,
-            vars.iter()
-                .map(|&var| {
-                    translate_var_for_template(
-                        equiv_classes,
-                        class_solutions,
-                        solver_to_template,
-                        var,
-                    )
-                })
-                .collect(),
+            vars.map(|_, &var| {
+                translate_var_for_template(equiv_classes, class_solutions, solver_to_template, var)
+            }),
             *variant,
         ),
     }
@@ -1526,21 +1533,23 @@ fn solve_requirements(
     params: &Params,
     req_deps: &RequirementDeps,
     reqs: &ClassRequirements,
-    templates: &mut Vec<annot::Template>,
+    templates: &mut IdVec<annot::TemplateId, annot::Template>,
 ) -> Solutions {
-    let mut class_solutions = vec![None; equiv_classes.count()];
-    let mut param_reqs = vec![None; params.0.len()];
+    let mut class_solutions: IdVec<EquivClass, _> =
+        IdVec::from_items(vec![None; equiv_classes.count()]);
 
-    for (param_id, param_class) in params.0.iter().enumerate() {
-        debug_assert!(class_solutions[param_class.0].is_none());
-        class_solutions[param_class.0] = Some(annot::Solution::Param(annot::RepParamId(param_id)));
+    let mut param_reqs: IdVec<annot::RepParamId, _> = IdVec::from_items(vec![None; params.0.len()]);
+
+    for (param_id, param_class) in &params.0 {
+        debug_assert!(class_solutions[param_class].is_none());
+        class_solutions[param_class] = Some(annot::Solution::Param(param_id));
     }
 
     let dep_graph = Graph {
         edges_out: req_deps
             .0
             .iter()
-            .map(|class_deps| {
+            .map(|(_, class_deps)| {
                 class_deps
                     .iter()
                     .map(|&EquivClass(dep)| graph::NodeId(dep))
@@ -1556,7 +1565,7 @@ fn solve_requirements(
             // We have an SCC with a single node, but we still need to check if it has a self-loop.
             let graph::NodeId(singleton) = scc[0];
 
-            if req_deps.0[singleton].contains(&EquivClass(singleton)) {
+            if req_deps.0[EquivClass(singleton)].contains(&EquivClass(singleton)) {
                 annot::InCycle::Cycle
             } else {
                 annot::InCycle::NoCycle
@@ -1570,14 +1579,15 @@ fn solve_requirements(
         let mut params_mentioned = BTreeSet::new();
 
         for &graph::NodeId(class_idx) in &scc {
-            for dep in &req_deps.0[class_idx] {
-                match &class_solutions[dep.0] {
+            for dep in &req_deps.0[EquivClass(class_idx)] {
+                match &class_solutions[dep] {
                     &Some(annot::Solution::Param(param)) => {
                         params_mentioned.insert(param);
                     }
 
                     Some(annot::Solution::MinSolutionTo(_, dep_mentioned_params)) => {
-                        params_mentioned.extend(dep_mentioned_params.iter().cloned());
+                        params_mentioned
+                            .extend(dep_mentioned_params.iter().map(|(_, &param)| param));
                     }
 
                     None => {
@@ -1588,12 +1598,13 @@ fn solve_requirements(
         }
 
         // Fix an order
-        let params_mentioned: Vec<_> = params_mentioned.into_iter().collect();
+        let params_mentioned: IdVec<annot::RepParamId, _> =
+            IdVec::from_items(params_mentioned.into_iter().collect());
 
         // Forward-declare templates for all non-parameter classes
 
         for &graph::NodeId(class_idx) in &scc {
-            match &mut class_solutions[class_idx] {
+            match &mut class_solutions[EquivClass(class_idx)] {
                 Some(annot::Solution::Param(_param)) => {
                     // The template representing the requirements for this variable should go into
                     // param_reqs rather than class_solutions.  As such, we won't need to know it's
@@ -1603,10 +1614,8 @@ fn solve_requirements(
                 Some(annot::Solution::MinSolutionTo(_, _)) => unreachable!(),
 
                 solution @ None => {
-                    let template_id = annot::TemplateId(templates.len());
-
                     // Create a dummy template whose requirements we'll fill in during the next loop
-                    templates.push(annot::Template {
+                    let template_id = templates.push(annot::Template {
                         in_cycle: is_cycle,
                         num_params: params_mentioned.len(),
                         requirements: Vec::new(), // To be populated
@@ -1625,8 +1634,7 @@ fn solve_requirements(
 
         let solver_to_template: BTreeMap<annot::RepParamId, annot::RepParamId> = params_mentioned
             .iter()
-            .enumerate()
-            .map(|(internal_idx, &solver_param)| (solver_param, annot::RepParamId(internal_idx)))
+            .map(|(internal_idx, &solver_param)| (solver_param, internal_idx))
             .collect();
 
         // Fill in template and parameters with the appropriate requirements
@@ -1645,7 +1653,7 @@ fn solve_requirements(
                 })
                 .collect();
 
-            match &class_solutions[class_idx] {
+            match &class_solutions[EquivClass(class_idx)] {
                 Some(annot::Solution::Param(param)) => {
                     // Add parameter requirements
 
@@ -1655,18 +1663,17 @@ fn solve_requirements(
                         requirements: template_internal_requirements,
                     };
 
-                    let template_id = annot::TemplateId(templates.len());
-                    templates.push(param_req_template);
+                    let template_id = templates.push(param_req_template);
 
-                    debug_assert!(param_reqs[param.0].is_none());
-                    param_reqs[param.0] = Some((template_id, params_mentioned.clone()));
+                    debug_assert!(param_reqs[param].is_none());
+                    param_reqs[param] = Some((template_id, params_mentioned.clone()));
                 }
 
                 Some(annot::Solution::MinSolutionTo(template_id, template_params)) => {
                     debug_assert_eq!(template_params, &params_mentioned);
-                    debug_assert!(templates[template_id.0].requirements.is_empty());
+                    debug_assert!(templates[template_id].requirements.is_empty());
 
-                    templates[template_id.0].requirements = template_internal_requirements;
+                    templates[template_id].requirements = template_internal_requirements;
                 }
 
                 None => unreachable!(),
@@ -1675,14 +1682,14 @@ fn solve_requirements(
     }
 
     Solutions {
-        class_solutions: class_solutions.into_iter().map(Option::unwrap).collect(),
-        param_reqs: param_reqs.into_iter().map(Option::unwrap).collect(),
+        class_solutions: class_solutions.into_mapped(|_, solution| solution.unwrap()),
+        param_reqs: param_reqs.into_mapped(|_, req| req.unwrap()),
     }
 }
 
 fn extract_type(
     equiv_classes: &EquivClasses,
-    class_solutions: &[annot::Solution],
+    class_solutions: &IdVec<EquivClass, annot::Solution>,
     type_: &annot::Type<SolverVarId>,
 ) -> annot::Type<annot::Solution> {
     match type_ {
@@ -1706,23 +1713,21 @@ fn extract_type(
 
         annot::Type::Func(purity, var, arg, ret) => annot::Type::Func(
             *purity,
-            class_solutions[equiv_classes.class(*var).0].clone(),
+            class_solutions[equiv_classes.class(*var)].clone(),
             Box::new(extract_type(equiv_classes, class_solutions, arg)),
             Box::new(extract_type(equiv_classes, class_solutions, ret)),
         ),
 
         annot::Type::Custom(custom, vars) => annot::Type::Custom(
             *custom,
-            vars.iter()
-                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
-                .collect(),
+            vars.map(|_, &var| class_solutions[equiv_classes.class(var)].clone()),
         ),
     }
 }
 
 fn extract_pattern(
     equiv_classes: &EquivClasses,
-    class_solutions: &[annot::Solution],
+    class_solutions: &IdVec<EquivClass, annot::Solution>,
     pat: &SolverPattern,
 ) -> annot::Pattern {
     match pat {
@@ -1743,9 +1748,7 @@ fn extract_pattern(
 
         SolverPattern::Ctor(custom, vars, variant, content) => annot::Pattern::Ctor(
             *custom,
-            vars.iter()
-                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
-                .collect(),
+            vars.map(|_, &var| class_solutions[equiv_classes.class(var)].clone()),
             *variant,
             content
                 .as_ref()
@@ -1762,55 +1765,45 @@ fn extract_pattern(
 fn extract_expr(
     equiv_classes: &EquivClasses,
     params: &Params,
-    class_solutions: &[annot::Solution],
+    class_solutions: &IdVec<EquivClass, annot::Solution>,
     expr: &SolverExpr,
 ) -> annot::Expr {
     match expr {
         &SolverExpr::ArithOp(op, var) => {
-            annot::Expr::ArithOp(op, class_solutions[equiv_classes.class(var).0].clone())
+            annot::Expr::ArithOp(op, class_solutions[equiv_classes.class(var)].clone())
         }
 
         SolverExpr::ArrayOp(op, item_type, var) => annot::Expr::ArrayOp(
             *op,
             extract_type(equiv_classes, class_solutions, item_type),
-            class_solutions[equiv_classes.class(*var).0].clone(),
+            class_solutions[equiv_classes.class(*var)].clone(),
         ),
 
         &SolverExpr::IOOp(op, var) => {
-            annot::Expr::IOOp(op, class_solutions[equiv_classes.class(var).0].clone())
+            annot::Expr::IOOp(op, class_solutions[equiv_classes.class(var)].clone())
         }
 
         SolverExpr::NullaryCtor(custom, vars, variant) => annot::Expr::NullaryCtor(
             *custom,
-            vars.iter()
-                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
-                .collect(),
+            vars.map(|_, &var| class_solutions[equiv_classes.class(var)].clone()),
             *variant,
         ),
 
         SolverExpr::Ctor(custom, vars, variant, var) => annot::Expr::Ctor(
             *custom,
-            vars.iter()
-                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
-                .collect(),
+            vars.map(|_, &var| class_solutions[equiv_classes.class(var)].clone()),
             *variant,
-            class_solutions[equiv_classes.class(*var).0].clone(),
+            class_solutions[equiv_classes.class(*var)].clone(),
         ),
 
         SolverExpr::Global(global, vars) => annot::Expr::Global(
             *global,
-            vars.iter()
-                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
-                .collect(),
+            vars.map(|_, &var| class_solutions[equiv_classes.class(var)].clone()),
         ),
 
         SolverExpr::PendingGlobal(global) => annot::Expr::Global(
             *global,
-            params
-                .0
-                .iter()
-                .map(|param| class_solutions[param.0].clone())
-                .collect(),
+            params.0.map(|_, param| class_solutions[param].clone()),
         ),
 
         &SolverExpr::Local(local) => annot::Expr::Local(local),
@@ -1826,34 +1819,23 @@ fn extract_expr(
 
         SolverExpr::Lam(lam, rep_params, lam_rep_var, captures) => annot::Expr::Lam(
             *lam,
-            rep_params
-                .iter()
-                .map(|&var| class_solutions[equiv_classes.class(var).0].clone())
-                .collect(),
-            class_solutions[equiv_classes.class(*lam_rep_var).0].clone(),
+            rep_params.map(|_, &var| class_solutions[equiv_classes.class(var)].clone()),
+            class_solutions[equiv_classes.class(*lam_rep_var)].clone(),
             captures
-                .iter()
-                .map(|capture| extract_expr(equiv_classes, params, class_solutions, capture))
-                .collect(),
+                .map(|_, capture| extract_expr(equiv_classes, params, class_solutions, capture)),
         ),
 
         SolverExpr::PendingLam(lam, lam_rep_var, captures) => annot::Expr::Lam(
             *lam,
-            params
-                .0
-                .iter()
-                .map(|param| class_solutions[param.0].clone())
-                .collect(),
-            class_solutions[equiv_classes.class(*lam_rep_var).0].clone(),
+            params.0.map(|_, param| class_solutions[param].clone()),
+            class_solutions[equiv_classes.class(*lam_rep_var)].clone(),
             captures
-                .iter()
-                .map(|capture| extract_expr(equiv_classes, params, class_solutions, capture))
-                .collect(),
+                .map(|_, capture| extract_expr(equiv_classes, params, class_solutions, capture)),
         ),
 
         SolverExpr::App(purity, func_rep_var, func, arg, arg_type, ret_type) => annot::Expr::App(
             *purity,
-            class_solutions[equiv_classes.class(*func_rep_var).0].clone(),
+            class_solutions[equiv_classes.class(*func_rep_var)].clone(),
             Box::new(extract_expr(equiv_classes, params, class_solutions, func)),
             Box::new(extract_expr(equiv_classes, params, class_solutions, arg)),
             extract_type(equiv_classes, class_solutions, arg_type),
@@ -1902,10 +1884,10 @@ fn extract_expr(
 
 fn extract_param(
     equiv_classes: &EquivClasses,
-    class_solutions: &[annot::Solution],
+    class_solutions: &IdVec<EquivClass, annot::Solution>,
     var: SolverVarId,
 ) -> annot::RepParamId {
-    match &class_solutions[equiv_classes.class(var).0] {
+    match &class_solutions[equiv_classes.class(var)] {
         &annot::Solution::Param(param) => param,
         _ => unreachable!(),
     }
@@ -1913,7 +1895,7 @@ fn extract_param(
 
 fn extract_sig_type(
     equiv_classes: &EquivClasses,
-    class_solutions: &[annot::Solution],
+    class_solutions: &IdVec<EquivClass, annot::Solution>,
     type_: &annot::Type<SolverVarId>,
 ) -> annot::Type<annot::RepParamId> {
     match type_ {
@@ -1944,9 +1926,7 @@ fn extract_sig_type(
 
         annot::Type::Custom(custom, vars) => annot::Type::Custom(
             *custom,
-            vars.iter()
-                .map(|&var| extract_param(equiv_classes, class_solutions, var))
-                .collect(),
+            vars.map(|_, &var| extract_param(equiv_classes, class_solutions, var)),
         ),
     }
 }
@@ -1957,7 +1937,7 @@ fn solve_scc(
     lams: &IdVec<lifted::LamId, lifted::LamDef>,
     annot_vals: &mut IdVec<mono::CustomGlobalId, Option<annot::ValDef>>,
     annot_lams: &mut IdVec<lifted::LamId, Option<annot::LamDef>>,
-    templates: &mut Vec<annot::Template>,
+    templates: &mut IdVec<annot::TemplateId, annot::Template>,
     scc_vals: &[mono::CustomGlobalId],
     scc_lams: &[lifted::LamId],
 ) {
@@ -2013,13 +1993,9 @@ fn solve_scc(
             params: annot::Params {
                 requirements: solutions.param_reqs.clone(),
             },
-            captures: solver_sig
-                .captures
-                .iter()
-                .map(|capture_type| {
-                    extract_sig_type(&equiv_classes, &solutions.class_solutions, capture_type)
-                })
-                .collect(),
+            captures: solver_sig.captures.map(|_, capture_type| {
+                extract_sig_type(&equiv_classes, &solutions.class_solutions, capture_type)
+            }),
             arg: extract_sig_type(&equiv_classes, &solutions.class_solutions, &solver_sig.arg),
             ret: extract_sig_type(&equiv_classes, &solutions.class_solutions, &solver_sig.ret),
             arg_pat: extract_pattern(&equiv_classes, &solutions.class_solutions, solver_pat),
@@ -2177,7 +2153,7 @@ pub fn annot_closures(program: lifted::Program) -> annot::Program {
     let mut annot_vals = IdVec::from_items(vec![None; program.vals.len()]);
     let mut annot_lams = IdVec::from_items(vec![None; program.lams.len()]);
 
-    let mut templates = Vec::new();
+    let mut templates = IdVec::new();
 
     let sccs = item_sccs(&program);
 
@@ -2195,10 +2171,10 @@ pub fn annot_closures(program: lifted::Program) -> annot::Program {
     }
 
     annot::Program {
-        custom_types: typedefs.items,
+        custom_types: typedefs,
         templates,
-        vals: annot_vals.into_mapped(|_id, val| val.unwrap()).items,
-        lams: annot_lams.into_mapped(|_id, lam| lam.unwrap()).items,
+        vals: annot_vals.into_mapped(|_id, val| val.unwrap()),
+        lams: annot_lams.into_mapped(|_id, lam| lam.unwrap()),
         main: program.main,
     }
 }

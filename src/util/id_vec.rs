@@ -139,6 +139,23 @@ impl<K: Id, V> IdVec<K, V> {
         self.into_iter()
     }
 
+    pub fn try_zip_exact<'a, U>(
+        &'a self,
+        other: &'a IdVec<K, U>,
+    ) -> Option<impl Iterator<Item = (K, &'a V, &'a U)>> {
+        if self.items.len() == other.items.len() {
+            Some(
+                self.items
+                    .iter()
+                    .zip(other.items.iter())
+                    .enumerate()
+                    .map(|(idx, (v1, v2))| (K::from_index(idx), v1, v2)),
+            )
+        } else {
+            None
+        }
+    }
+
     pub fn into_mapped<W, F: FnMut(K, V) -> W>(self, mut f: F) -> IdVec<K, W> {
         let mapped_items = self.into_iter().map(|(idx, val)| f(idx, val)).collect();
         IdVec::from_items(mapped_items)
