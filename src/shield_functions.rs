@@ -66,28 +66,14 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
 
 fn global_sccs(program: &mono::Program) -> Vec<Vec<mono::CustomGlobalId>> {
     let dep_graph = Graph {
-        edges_out: program
-            .vals
-            .iter()
-            .map(|(_def_id, def)| {
-                let mut deps = BTreeSet::new();
-                add_expr_deps(&def.body, &mut deps);
-                deps.into_iter()
-                    .map(|mono::CustomGlobalId(id)| graph::NodeId(id))
-                    .collect()
-            })
-            .collect(),
+        edges_out: program.vals.map(|_def_id, def| {
+            let mut deps = BTreeSet::new();
+            add_expr_deps(&def.body, &mut deps);
+            deps.into_iter().collect()
+        }),
     };
 
-    let sccs = graph::strongly_connected(&dep_graph);
-
-    sccs.into_iter()
-        .map(|scc| {
-            scc.into_iter()
-                .map(|graph::NodeId(id)| mono::CustomGlobalId(id))
-                .collect()
-        })
-        .collect()
+    graph::strongly_connected(&dep_graph)
 }
 
 fn rebind_references(

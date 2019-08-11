@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as ast;
 use crate::graph::{self, Graph};
+use crate::util::id_vec::IdVec;
 use im_rc::Vector;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -600,19 +601,19 @@ fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
     }
 }
 
-pub fn func_dependency_graph(program: &ast::Program) -> Graph {
+pub fn func_dependency_graph(program: &ast::Program) -> Graph<ast::CustomFuncId> {
     Graph {
-        edges_out: program
-            .funcs
-            .iter()
-            .map(|funcdef| {
-                let mut deps = BTreeSet::new();
-                add_func_deps(&mut deps, &funcdef.body);
-                deps.iter()
-                    .map(|&ast::CustomFuncId(id)| graph::NodeId(id))
-                    .collect()
-            })
-            .collect(),
+        edges_out: IdVec::from_items(
+            program
+                .funcs
+                .iter()
+                .map(|funcdef| {
+                    let mut deps = BTreeSet::new();
+                    add_func_deps(&mut deps, &funcdef.body);
+                    deps.into_iter().collect()
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -622,15 +623,11 @@ pub fn annot_aliases(program: &ast::Program) -> Vec<UniqueInfo> {
         .collect::<Vec<_>>();
 
     for scc in graph::strongly_connected(&func_dependency_graph(program)) {
-        let scc_ids = scc
-            .iter()
-            .map(|&graph::NodeId(id)| ast::CustomFuncId(id))
-            .collect::<Vec<_>>();
         annot_scc(
             &program.custom_types,
             &program.funcs,
             &mut unique_infos,
-            &scc_ids,
+            &scc,
         );
     }
 

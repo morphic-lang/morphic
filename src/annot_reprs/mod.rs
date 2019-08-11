@@ -32,7 +32,7 @@ mod extract;
 
 use crate::annot_aliases::{self, UniqueInfo};
 use crate::graph;
-use crate::util::constraint_graph::{ConstraintGraph, SolverVarId};
+use crate::util::constraint_graph::ConstraintGraph;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn annot_reprs(program: &in_ast::Program, unique_infos: Vec<UniqueInfo>) -> out_ast::Program {
@@ -51,10 +51,10 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: Vec<UniqueInfo>) -> 
         let mut graph = ConstraintGraph::new();
         let scc_funcs = scc_nodes
             .iter()
-            .map(|&graph::NodeId(func_id)| {
+            .map(|&func_id| {
                 (
-                    out_ast::CustomFuncId(func_id),
-                    flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id]),
+                    func_id,
+                    flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id.0]),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -152,12 +152,12 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: Vec<UniqueInfo>) -> 
             let mut class_constraints = (0..equiv_classes.count())
                 .map(|_| BTreeSet::new())
                 .collect::<Vec<_>>();
-            for (var_idx, graph_constraints) in graph.var_constraints.iter_mut().enumerate() {
+            for (var_id, graph_constraints) in &mut graph.var_constraints {
                 // Empty the constraint list in the graph to avoid clone (resetting
                 // constraints is necessary for next iteration anyway)
                 let mut var_constraints = BTreeSet::new();
                 std::mem::swap(&mut graph_constraints.requirements, &mut var_constraints);
-                let equiv_class = equiv_classes.class(SolverVarId(var_idx));
+                let equiv_class = equiv_classes.class(var_id);
                 class_constraints[equiv_class.0].extend(var_constraints);
             }
 

@@ -1,26 +1,27 @@
 /// See `annot_reprs` mod comment for details.
 use super::{in_ast, mid_ast};
 use crate::graph::{self, Graph};
+use crate::util::id_vec::IdVec;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn parameterize_typedefs(
     typedefs: &[in_ast::TypeDef],
 ) -> Vec<mid_ast::TypeDef<mid_ast::RepParamId>> {
     let dep_graph = Graph {
-        edges_out: typedefs
-            .iter()
-            .map(|typedef| {
-                let mut deps = BTreeSet::new();
-                for variant in &typedef.variants {
-                    if let Some(content) = variant {
-                        add_dependencies(content, &mut deps);
+        edges_out: IdVec::from_items(
+            typedefs
+                .iter()
+                .map(|typedef| {
+                    let mut deps = BTreeSet::new();
+                    for variant in &typedef.variants {
+                        if let Some(content) = variant {
+                            add_dependencies(content, &mut deps);
+                        }
                     }
-                }
-                deps.iter()
-                    .map(|&in_ast::CustomTypeId(id)| graph::NodeId(id))
-                    .collect()
-            })
-            .collect(),
+                    deps.into_iter().collect()
+                })
+                .collect(),
+        ),
     };
 
     let sccs = graph::strongly_connected(&dep_graph);
@@ -28,12 +29,7 @@ pub fn parameterize_typedefs(
     let mut parameterized = vec![None; typedefs.len()];
 
     for scc in sccs {
-        let type_ids: Vec<_> = scc
-            .iter()
-            .map(|&graph::NodeId(id)| in_ast::CustomTypeId(id))
-            .collect();
-
-        parameterize_typedef_scc(typedefs, &mut parameterized, &type_ids);
+        parameterize_typedef_scc(typedefs, &mut parameterized, &scc);
     }
 
     parameterized

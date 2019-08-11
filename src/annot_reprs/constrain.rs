@@ -222,8 +222,8 @@ pub fn constrain_func(
     for equiv_class_param in ctx.scc_sigs[&func.id].keys() {
         func_sig.insert(*equiv_class_param, BTreeSet::new());
     }
-    for (var_idx, var_constraints) in graph.var_constraints.iter().enumerate() {
-        let equiv_class = ctx.equiv_classes.class(SolverVarId(var_idx));
+    for (var_id, var_constraints) in &graph.var_constraints {
+        let equiv_class = ctx.equiv_classes.class(var_id);
         if let Some(constraints) = func_sig.get_mut(&equiv_class) {
             constraints.extend(var_constraints.requirements.iter().cloned());
         }

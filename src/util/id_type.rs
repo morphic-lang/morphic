@@ -1,4 +1,4 @@
-pub trait Id {
+pub trait Id: Clone {
     fn from_index(idx: usize) -> Self;
     fn to_index(&self) -> usize;
 }

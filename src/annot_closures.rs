@@ -186,20 +186,15 @@ fn parameterize_typedefs(
     typedefs: &IdVec<mono::CustomTypeId, mono::TypeDef>,
 ) -> IdVec<mono::CustomTypeId, annot::TypeDef> {
     let dep_graph = Graph {
-        edges_out: typedefs
-            .iter()
-            .map(|(_id, typedef)| {
-                let mut deps = BTreeSet::new();
-                for (_variant_id, variant) in &typedef.variants {
-                    if let Some(content) = variant {
-                        add_dependencies(content, &mut deps);
-                    }
+        edges_out: typedefs.map(|_id, typedef| {
+            let mut deps = BTreeSet::new();
+            for (_variant_id, variant) in &typedef.variants {
+                if let Some(content) = variant {
+                    add_dependencies(content, &mut deps);
                 }
-                deps.iter()
-                    .map(|&mono::CustomTypeId(id)| graph::NodeId(id))
-                    .collect()
-            })
-            .collect(),
+            }
+            deps.into_iter().collect()
+        }),
     };
 
     let sccs = graph::strongly_connected(&dep_graph);
@@ -207,12 +202,7 @@ fn parameterize_typedefs(
     let mut parameterized = IdVec::from_items(vec![None; typedefs.len()]);
 
     for scc in sccs {
-        let type_ids: Vec<_> = scc
-            .iter()
-            .map(|&graph::NodeId(id)| mono::CustomTypeId(id))
-            .collect();
-
-        parameterize_typedef_scc(typedefs, &mut parameterized, &type_ids);
+        parameterize_typedef_scc(typedefs, &mut parameterized, &scc);
     }
 
     parameterized.into_mapped(|_id, typedef| typedef.unwrap())
@@ -1336,8 +1326,8 @@ fn requirement_deps(
 ) -> RequirementDeps {
     let mut deps = IdVec::from_items(vec![BTreeSet::new(); equiv_classes.count()]);
 
-    for (var_idx, var_constraints) in graph.var_constraints.iter().enumerate() {
-        let class = equiv_classes.class(SolverVarId(var_idx));
+    for (var_id, var_constraints) in &graph.var_constraints {
+        let class = equiv_classes.class(var_id);
 
         let class_deps = &mut deps[class];
 
@@ -1350,18 +1340,18 @@ fn requirement_deps(
 }
 
 #[derive(Clone, Debug)]
-struct ClassRequirements(Vec<Vec<SolverRequirement>>); // Outer Vec indexed by EquivClass
+struct ClassRequirements(IdVec<EquivClass, Vec<SolverRequirement>>);
 
 fn consolidate_class_requirements(
     equiv_classes: &EquivClasses,
     graph: ConstraintGraph<SolverRequirement>,
 ) -> ClassRequirements {
-    let mut reqs = vec![Vec::new(); equiv_classes.count()];
+    let mut reqs = IdVec::from_items(vec![Vec::new(); equiv_classes.count()]);
 
-    for (var_idx, var_constraints) in graph.var_constraints.into_iter().enumerate() {
-        let class = equiv_classes.class(SolverVarId(var_idx));
+    for (var_id, var_constraints) in graph.var_constraints.into_iter() {
+        let class = equiv_classes.class(var_id);
 
-        reqs[class.0].extend(var_constraints.requirements);
+        reqs[class].extend(var_constraints.requirements);
     }
 
     ClassRequirements(reqs)
@@ -1548,14 +1538,7 @@ fn solve_requirements(
     let dep_graph = Graph {
         edges_out: req_deps
             .0
-            .iter()
-            .map(|(_, class_deps)| {
-                class_deps
-                    .iter()
-                    .map(|&EquivClass(dep)| graph::NodeId(dep))
-                    .collect()
-            })
-            .collect(),
+            .map(|_, class_deps| class_deps.iter().cloned().collect()),
     };
 
     let class_sccs = graph::strongly_connected(&dep_graph);
@@ -1563,9 +1546,9 @@ fn solve_requirements(
     for scc in class_sccs {
         let is_cycle = if scc.len() == 1 {
             // We have an SCC with a single node, but we still need to check if it has a self-loop.
-            let graph::NodeId(singleton) = scc[0];
+            let singleton = scc[0];
 
-            if req_deps.0[EquivClass(singleton)].contains(&EquivClass(singleton)) {
+            if req_deps.0[singleton].contains(&singleton) {
                 annot::InCycle::Cycle
             } else {
                 annot::InCycle::NoCycle
@@ -1578,8 +1561,8 @@ fn solve_requirements(
 
         let mut params_mentioned = BTreeSet::new();
 
-        for &graph::NodeId(class_idx) in &scc {
-            for dep in &req_deps.0[EquivClass(class_idx)] {
+        for &class_id in &scc {
+            for dep in &req_deps.0[class_id] {
                 match &class_solutions[dep] {
                     &Some(annot::Solution::Param(param)) => {
                         params_mentioned.insert(param);
@@ -1603,8 +1586,8 @@ fn solve_requirements(
 
         // Forward-declare templates for all non-parameter classes
 
-        for &graph::NodeId(class_idx) in &scc {
-            match &mut class_solutions[EquivClass(class_idx)] {
+        for &class_id in &scc {
+            match &mut class_solutions[class_id] {
                 Some(annot::Solution::Param(_param)) => {
                     // The template representing the requirements for this variable should go into
                     // param_reqs rather than class_solutions.  As such, we won't need to know it's
@@ -1639,8 +1622,8 @@ fn solve_requirements(
 
         // Fill in template and parameters with the appropriate requirements
 
-        for &graph::NodeId(class_idx) in &scc {
-            let template_internal_requirements: Vec<_> = reqs.0[class_idx]
+        for &class_id in &scc {
+            let template_internal_requirements: Vec<_> = reqs.0[class_id]
                 .iter()
                 .map(|req| {
                     translate_req_for_template(
@@ -1653,7 +1636,7 @@ fn solve_requirements(
                 })
                 .collect();
 
-            match &class_solutions[EquivClass(class_idx)] {
+            match &class_solutions[class_id] {
                 Some(annot::Solution::Param(param)) => {
                     // Add parameter requirements
 
@@ -2088,14 +2071,16 @@ struct ItemScc {
 }
 
 fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
-    fn item_to_node(program: &lifted::Program, item: Item) -> graph::NodeId {
+    id_type!(ItemId);
+
+    fn item_to_id(program: &lifted::Program, item: Item) -> ItemId {
         match item {
-            Item::Val(mono::CustomGlobalId(id)) => graph::NodeId(id),
-            Item::Lam(lifted::LamId(id)) => graph::NodeId(program.vals.len() + id),
+            Item::Val(mono::CustomGlobalId(id)) => ItemId(id),
+            Item::Lam(lifted::LamId(id)) => ItemId(program.vals.len() + id),
         }
     }
 
-    fn node_to_item(program: &lifted::Program, node: graph::NodeId) -> Item {
+    fn id_to_item(program: &lifted::Program, node: ItemId) -> Item {
         if node.0 < program.vals.len() {
             Item::Val(mono::CustomGlobalId(node.0))
         } else {
@@ -2116,13 +2101,15 @@ fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
     });
 
     let dep_graph = Graph {
-        edges_out: (val_deps.chain(lam_deps))
-            .map(|deps| {
-                deps.into_iter()
-                    .map(|item| item_to_node(program, item))
-                    .collect()
-            })
-            .collect(),
+        edges_out: IdVec::from_items(
+            (val_deps.chain(lam_deps))
+                .map(|deps| {
+                    deps.into_iter()
+                        .map(|item| item_to_id(program, item))
+                        .collect()
+                })
+                .collect(),
+        ),
     };
 
     let sccs = graph::strongly_connected(&dep_graph);
@@ -2133,7 +2120,7 @@ fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
             let mut scc_lams = Vec::new();
 
             for node in scc {
-                match node_to_item(program, node) {
+                match id_to_item(program, node) {
                     Item::Val(val_id) => scc_vals.push(val_id),
                     Item::Lam(lam_id) => scc_lams.push(lam_id),
                 }
