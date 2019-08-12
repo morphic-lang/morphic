@@ -54,14 +54,14 @@ pub fn annot_reprs(program: &in_ast::Program, unique_infos: Vec<UniqueInfo>) -> 
             .map(|&func_id| {
                 (
                     func_id,
-                    flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id.0]),
+                    flatten::flatten_func(&mut graph, &typedefs, &program.funcs[func_id]),
                 )
             })
             .collect::<BTreeMap<_, _>>();
 
         let func_bodies = {
             let context = unify::Context {
-                first_order_typedefs: &program.custom_types,
+                first_order_typedefs: &program.custom_types.items,
                 typedefs: &typedefs,
                 func_sigs: &type_sigs,
                 scc_funcdefs: &scc_funcs,

@@ -1,4 +1,5 @@
 use crate::data::purity::Purity;
+use crate::util::id_vec::IdVec;
 
 id_type!(pub CustomTypeId);
 
@@ -20,7 +21,7 @@ id_type!(pub VariantId);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
-    pub variants: Vec<Option<Type>>,
+    pub variants: IdVec<VariantId, Option<Type>>,
 }
 
 #[derive(Clone, Debug)]
@@ -141,7 +142,7 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub custom_types: Vec<TypeDef>,
-    pub funcs: Vec<FuncDef>,
+    pub custom_types: IdVec<CustomTypeId, TypeDef>,
+    pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub main: CustomFuncId,
 }

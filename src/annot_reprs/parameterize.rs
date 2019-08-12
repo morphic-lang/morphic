@@ -5,23 +5,18 @@ use crate::util::id_vec::IdVec;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn parameterize_typedefs(
-    typedefs: &[in_ast::TypeDef],
+    typedefs: &IdVec<in_ast::CustomTypeId, in_ast::TypeDef>,
 ) -> Vec<mid_ast::TypeDef<mid_ast::RepParamId>> {
     let dep_graph = Graph {
-        edges_out: IdVec::from_items(
-            typedefs
-                .iter()
-                .map(|typedef| {
-                    let mut deps = BTreeSet::new();
-                    for variant in &typedef.variants {
-                        if let Some(content) = variant {
-                            add_dependencies(content, &mut deps);
-                        }
-                    }
-                    deps.into_iter().collect()
-                })
-                .collect(),
-        ),
+        edges_out: typedefs.map(|_, typedef| {
+            let mut deps = BTreeSet::new();
+            for (_, variant) in &typedef.variants {
+                if let Some(content) = variant {
+                    add_dependencies(content, &mut deps);
+                }
+            }
+            deps.into_iter().collect()
+        }),
     };
 
     let sccs = graph::strongly_connected(&dep_graph);
@@ -89,17 +84,17 @@ impl ReprVarIdGen {
 }
 
 fn parameterize_typedef_scc(
-    typedefs: &[in_ast::TypeDef],
+    typedefs: &IdVec<in_ast::CustomTypeId, in_ast::TypeDef>,
     parameterized: &mut [Option<mid_ast::TypeDef<mid_ast::RepParamId>>],
     scc: &[in_ast::CustomTypeId],
 ) {
     let num_params = scc
         .iter()
         .map(|type_id| {
-            typedefs[type_id.0]
+            typedefs[type_id]
                 .variants
                 .iter()
-                .map(|variant| match variant {
+                .map(|(_, variant)| match variant {
                     Some(content) => count_params(parameterized, content),
                     None => 0,
                 })
@@ -112,11 +107,11 @@ fn parameterize_typedef_scc(
     let to_populate: BTreeMap<in_ast::CustomTypeId, _> = scc
         .iter()
         .map(|&type_id| {
-            let typedef = &typedefs[type_id.0];
+            let typedef = &typedefs[type_id];
             let parameterized_variants = typedef
                 .variants
                 .iter()
-                .map(|variant| {
+                .map(|(_, variant)| {
                     variant.as_ref().map(|content| {
                         parameterize(parameterized, num_params, &mut id_gen, content)
                     })

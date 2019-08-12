@@ -312,7 +312,10 @@ fn annot_expression(
 }
 
 // Computes the fields in `type_` at which there is a name
-fn get_names_in(type_defs: &[ast::TypeDef], type_: &ast::Type) -> Vec<FieldPath> {
+fn get_names_in(
+    type_defs: &IdVec<ast::CustomTypeId, ast::TypeDef>,
+    type_: &ast::Type,
+) -> Vec<FieldPath> {
     let mut names = Vec::new();
     add_names_from_type(
         type_defs,
@@ -325,7 +328,7 @@ fn get_names_in(type_defs: &[ast::TypeDef], type_: &ast::Type) -> Vec<FieldPath>
 
     // Recursively appends paths to names in `type_` to `names`
     fn add_names_from_type(
-        type_defs: &[ast::TypeDef],
+        type_defs: &IdVec<ast::CustomTypeId, ast::TypeDef>,
         names: &mut Vec<FieldPath>,
         typedefs_on_path: &mut BTreeSet<ast::CustomTypeId>,
         type_: &ast::Type,
@@ -351,10 +354,10 @@ fn get_names_in(type_defs: &[ast::TypeDef], type_: &ast::Type) -> Vec<FieldPath>
             ast::Type::Custom(id) => {
                 if !typedefs_on_path.contains(id) {
                     typedefs_on_path.insert(*id);
-                    for (i, variant) in type_defs[id.0].variants.iter().enumerate() {
+                    for (variant_id, variant) in &type_defs[id].variants {
                         if let Some(variant_type) = variant {
                             let mut variant_prefix = prefix.clone();
-                            variant_prefix.push_back(FieldId::Variant(ast::VariantId(i)));
+                            variant_prefix.push_back(FieldId::Variant(variant_id));
                             add_names_from_type(
                                 type_defs,
                                 names,
@@ -373,13 +376,13 @@ fn get_names_in(type_defs: &[ast::TypeDef], type_: &ast::Type) -> Vec<FieldPath>
 }
 
 pub fn prune_field_path(
-    type_defs: &[ast::TypeDef],
+    type_defs: &IdVec<ast::CustomTypeId, ast::TypeDef>,
     type_: &ast::Type,
     path: &FieldPath,
 ) -> FieldPath {
     prune_field_path_with(
         move |type_id, variant_id| {
-            type_defs[type_id.0].variants[variant_id.0]
+            type_defs[type_id].variants[variant_id]
                 .as_ref()
                 .map(Cow::Borrowed)
         },
@@ -459,7 +462,7 @@ pub fn prune_field_path_with<
 
 // Does type-folding on the names in the unique info (see prune_field_path for more info)
 fn prune_unique_info(
-    type_defs: &[ast::TypeDef],
+    type_defs: &IdVec<ast::CustomTypeId, ast::TypeDef>,
     func: &ast::FuncDef,
     ui: &UniqueInfo,
 ) -> UniqueInfo {
@@ -476,7 +479,7 @@ fn prune_unique_info(
 }
 
 fn annot_func(
-    type_defs: &[ast::TypeDef],
+    type_defs: &IdVec<ast::CustomTypeId, ast::TypeDef>,
     func: &ast::FuncDef,
     func_infos: &[UniqueInfo],
 ) -> UniqueInfo {
@@ -495,8 +498,8 @@ fn annot_func(
 }
 
 fn annot_scc(
-    type_defs: &[ast::TypeDef],
-    func_defs: &[ast::FuncDef],
+    type_defs: &IdVec<ast::CustomTypeId, ast::TypeDef>,
+    func_defs: &IdVec<ast::CustomFuncId, ast::FuncDef>,
     func_infos: &mut [UniqueInfo],
     scc: &[ast::CustomFuncId],
 ) {
@@ -504,16 +507,16 @@ fn annot_scc(
     let mut scc_changed = true;
     while scc_changed {
         scc_changed = false;
-        for ast::CustomFuncId(id) in scc {
-            let newval = annot_func(&type_defs, &func_defs[*id], func_infos);
+        for id in scc {
+            let newval = annot_func(&type_defs, &func_defs[id], func_infos);
 
-            let oldval = &func_infos[*id];
+            let oldval = &func_infos[id.0];
             if !scc_changed && newval.edges.iter().any(|edge| !oldval.edges.contains(edge)) {
                 // Guard on scc_changed to avoid unnecessary comparisons
                 scc_changed = true;
             }
 
-            func_infos[*id] = newval;
+            func_infos[id.0] = newval;
         }
     }
 }
@@ -603,17 +606,11 @@ fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
 
 pub fn func_dependency_graph(program: &ast::Program) -> Graph<ast::CustomFuncId> {
     Graph {
-        edges_out: IdVec::from_items(
-            program
-                .funcs
-                .iter()
-                .map(|funcdef| {
-                    let mut deps = BTreeSet::new();
-                    add_func_deps(&mut deps, &funcdef.body);
-                    deps.into_iter().collect()
-                })
-                .collect(),
-        ),
+        edges_out: program.funcs.map(|_, funcdef| {
+            let mut deps = BTreeSet::new();
+            add_func_deps(&mut deps, &funcdef.body);
+            deps.into_iter().collect()
+        }),
     }
 }
 
@@ -648,10 +645,8 @@ mod test {
             use std::iter::FromIterator;
             BTreeSet::from_iter(v.into_iter())
         }
-        use std::borrow::Cow;
-        let empty_typedefs: &[_] = &[];
-        let with_single_recursive_type = &vec![ast::TypeDef {
-            variants: vec![
+        let with_single_recursive_type = IdVec::from_items(vec![ast::TypeDef {
+            variants: IdVec::from_items(vec![
                 Some(ast::Type::Tuple(vec![
                     ast::Type::Array(Box::new(ast::Type::Byte)),
                     ast::Type::Custom(ast::CustomTypeId(0)),
@@ -659,37 +654,40 @@ mod test {
                 Some(ast::Type::Byte),
                 Some(ast::Type::HoleArray(Box::new(ast::Type::Byte))),
                 None,
-            ],
-        }];
-        let mapping: Vec<(Cow<[ast::TypeDef]>, ast::Type, BTreeSet<FieldPath>)> = vec![
+            ]),
+        }]);
+        let mapping: Vec<(
+            IdVec<ast::CustomTypeId, ast::TypeDef>,
+            ast::Type,
+            BTreeSet<FieldPath>,
+        )> = vec![
             // Types without names:
             (
-                empty_typedefs.into(),
+                IdVec::new(),
                 ast::Type::Tuple(vec![ast::Type::Byte, ast::Type::Float]),
                 set(vec![]),
             ),
             (
-                vec![ast::TypeDef {
-                    variants: vec![Some(ast::Type::Byte), None],
-                }]
-                .into(),
+                IdVec::from_items(vec![ast::TypeDef {
+                    variants: IdVec::from_items(vec![Some(ast::Type::Byte), None]),
+                }]),
                 ast::Type::Tuple(vec![ast::Type::Custom(ast::CustomTypeId(0))]),
                 set(vec![]),
             ),
             // Types with names, no typedefs:
             (
-                empty_typedefs.into(),
+                IdVec::new(),
                 ast::Type::Array(Box::new(ast::Type::Byte)),
                 set(vec![vector![]]),
             ),
             (
-                empty_typedefs.into(),
+                IdVec::new(),
                 ast::Type::Array(Box::new(ast::Type::Array(Box::new(ast::Type::Int)))),
                 set(vec![vector![], vector![FieldId::ArrayMembers]]),
             ),
             // Recursive types:
             (
-                empty_typedefs.into(),
+                IdVec::new(),
                 ast::Type::Tuple(vec![
                     ast::Type::Float,
                     ast::Type::Array(Box::new(ast::Type::Tuple(vec![
@@ -705,7 +703,7 @@ mod test {
                 ]),
             ),
             (
-                with_single_recursive_type.into(),
+                with_single_recursive_type.clone(),
                 ast::Type::Custom(ast::CustomTypeId(0)),
                 set(vec![
                     vector![FieldId::Variant(ast::VariantId(0)), FieldId::Field(0)],
@@ -713,7 +711,7 @@ mod test {
                 ]),
             ),
             (
-                with_single_recursive_type.into(),
+                with_single_recursive_type.clone(),
                 ast::Type::Array(Box::new(ast::Type::Custom(ast::CustomTypeId(0)))),
                 set(vec![
                     vector![],
@@ -727,7 +725,7 @@ mod test {
             ),
         ];
         for (typedefs, type_, expected_names) in mapping {
-            assert_eq!(set(get_names_in(typedefs.as_ref(), &type_)), expected_names);
+            assert_eq!(set(get_names_in(&typedefs, &type_)), expected_names);
         }
     }
 

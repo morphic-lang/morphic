@@ -2,7 +2,7 @@ use crate::data::first_order_ast as ast;
 use crate::util::with_scope;
 
 pub fn typecheck(program: &ast::Program) {
-    for func in &program.funcs {
+    for (_, func) in &program.funcs {
         typecheck_func(&program, func);
     }
 }
@@ -118,7 +118,7 @@ fn typecheck_expr(
         }
         E::Ctor(type_id, variant_id, expr) => {
             assert_eq!(
-                program.custom_types[type_id.0].variants[variant_id.0],
+                program.custom_types[type_id].variants[variant_id],
                 expr.as_ref().map(|e| typecheck_expr(program, locals, &**e)),
             );
             T::Custom(*type_id)
@@ -133,10 +133,10 @@ fn typecheck_expr(
         }
         E::Call(_purity, func_id, arg) => {
             assert_eq!(
-                program.funcs[func_id.0].arg_type,
+                program.funcs[func_id].arg_type,
                 typecheck_expr(program, locals, &**arg)
             );
-            program.funcs[func_id.0].ret_type.clone()
+            program.funcs[func_id].ret_type.clone()
         }
         E::Match(matched, branches, result_type) => {
             let matched_type = typecheck_expr(program, locals, matched);
@@ -192,14 +192,14 @@ fn bind_pattern(
                 program,
                 arg_pat,
                 locals,
-                program.custom_types[type_id.0].variants[variant_id.0]
+                program.custom_types[type_id].variants[variant_id]
                     .as_ref()
                     .expect("pattern matched on params to nullary constructor"),
             );
         }
         (P::Ctor(type_id, variant_id, None), T::Custom(expected)) => {
             assert_eq!(type_id, expected);
-            assert!(program.custom_types[type_id.0].variants[variant_id.0].is_none());
+            assert!(program.custom_types[type_id].variants[variant_id].is_none());
         }
         (P::BoolConst(_), T::Bool)
         | (P::ByteConst(_), T::Byte)

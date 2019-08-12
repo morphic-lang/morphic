@@ -72,13 +72,13 @@ struct IdMapping {
 
 #[derive(Clone, Debug)]
 struct ProgramParts {
-    custom_types: Vec<first_ord::TypeDef>, // Indexed by special::CustomTypeId
-    lowered_closures: Vec<first_ord::TypeDef>, // Indexed by LoweredClosureId
+    custom_types: IdVec<special::CustomTypeId, first_ord::TypeDef>,
+    lowered_closures: IdVec<LoweredClosureId, first_ord::TypeDef>,
 
-    globals: Vec<first_ord::FuncDef>, // Indexed by special::CustomGlobalId
-    lam_bodies: Vec<first_ord::FuncDef>, // Indexed by special::LamId
+    globals: IdVec<special::CustomGlobalId, first_ord::FuncDef>,
+    lam_bodies: IdVec<special::LamId, first_ord::FuncDef>,
     main: first_ord::FuncDef,
-    dispatch_funcs: Vec<first_ord::FuncDef>, // Indexed by DispatchFuncId
+    dispatch_funcs: IdVec<DispatchFuncId, first_ord::FuncDef>,
 }
 
 impl IdMapping {
@@ -120,17 +120,17 @@ impl IdMapping {
         debug_assert_eq!(parts.globals.len(), self.num_orig_globals);
         debug_assert_eq!(parts.lam_bodies.len(), self.num_orig_lams);
 
-        let mut custom_types = parts.custom_types;
-        custom_types.extend(parts.lowered_closures);
+        let mut custom_types = parts.custom_types.items;
+        custom_types.extend(parts.lowered_closures.items);
 
-        let mut funcs = parts.globals;
-        funcs.extend(parts.lam_bodies);
+        let mut funcs = parts.globals.items;
+        funcs.extend(parts.lam_bodies.items);
         funcs.push(parts.main);
-        funcs.extend(parts.dispatch_funcs);
+        funcs.extend(parts.dispatch_funcs.items);
 
         first_ord::Program {
-            custom_types,
-            funcs,
+            custom_types: IdVec::from_items(custom_types),
+            funcs: IdVec::from_items(funcs),
             main: first_ord::CustomFuncId(self.num_orig_globals + self.num_orig_lams),
         }
     }
@@ -148,10 +148,10 @@ struct Context<'a> {
     program: &'a special::Program,
 
     lowered_ids: BTreeMap<BTreeSet<LeafFuncCase>, LoweredClosureId>,
-    lowered_closures: Vec<Option<LoweredClosure>>, // Indexed by LoweredClosureId
+    lowered_closures: IdVec<LoweredClosureId, Option<LoweredClosure>>,
 
     dispatch_ids: BTreeMap<LoweredClosureId, DispatchFuncId>,
-    dispatch_funcs: Vec<first_ord::FuncDef>,
+    dispatch_funcs: IdVec<DispatchFuncId, first_ord::FuncDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -177,10 +177,10 @@ impl<'a> Context<'a> {
             program,
 
             lowered_ids: BTreeMap::new(),
-            lowered_closures: Vec::new(),
+            lowered_closures: IdVec::new(),
 
             dispatch_ids: BTreeMap::new(),
-            dispatch_funcs: Vec::new(),
+            dispatch_funcs: IdVec::new(),
         }
     }
 
@@ -217,21 +217,26 @@ impl<'a> Context<'a> {
             return existing;
         }
 
-        let id = LoweredClosureId(self.lowered_closures.len());
-        self.lowered_closures.push(None);
+        let id = self.lowered_closures.push(None);
         self.lowered_ids.insert(cases.clone(), id);
 
-        let mut variants = Vec::new();
+        let mut variants = IdVec::new();
         let mut case_variants = BTreeMap::new();
 
         for (idx, case) in cases.into_iter().enumerate() {
-            variants.push(self.lower_env(&case));
-            case_variants.insert(case, first_ord::VariantId(idx));
+            let variant_id = first_ord::VariantId(idx);
+
+            {
+                let pushed_id = variants.push(self.lower_env(&case));
+                debug_assert_eq!(pushed_id, variant_id);
+            }
+
+            case_variants.insert(case, variant_id);
         }
 
-        debug_assert!(self.lowered_closures[id.0].is_none());
+        debug_assert!(self.lowered_closures[id].is_none());
 
-        self.lowered_closures[id.0] = Some(LoweredClosure {
+        self.lowered_closures[id] = Some(LoweredClosure {
             typedef: first_ord::TypeDef { variants },
             case_variants,
         });
@@ -250,7 +255,7 @@ impl<'a> Context<'a> {
             return existing;
         }
 
-        let lowered = self.lowered_closures[lowered_id.0]
+        let lowered = self.lowered_closures[lowered_id]
             .as_ref()
             .expect("Lowered closure definition should be completed by the time we query it")
             .clone();
@@ -292,7 +297,7 @@ impl<'a> Context<'a> {
                     .iter()
                     .map(|(case, variant)| {
                         // If this is Some(...), then LocalId(2) is the environment
-                        let env_pat = lowered.typedef.variants[variant.0]
+                        let env_pat = lowered.typedef.variants[variant]
                             .clone()
                             .map(first_ord::Pattern::Var);
 
@@ -588,15 +593,14 @@ impl<'a> Context<'a> {
             ),
         };
 
-        let func_id = DispatchFuncId(self.dispatch_funcs.len());
-        self.dispatch_funcs.push(func);
+        let func_id = self.dispatch_funcs.push(func);
         self.dispatch_ids.insert(lowered_id, func_id);
 
         func_id
     }
 
     fn case_variant(&self, lowered: LoweredClosureId, case: &LeafFuncCase) -> first_ord::VariantId {
-        self.lowered_closures[lowered.0]
+        self.lowered_closures[lowered]
             .as_ref()
             .expect("Lowered closure definition should be completed by the time we query it")
             .case_variants[case]
@@ -836,14 +840,19 @@ impl<'a> Context<'a> {
     }
 
     fn lower_custom_type(&mut self, typedef: &special::TypeDef) -> first_ord::TypeDef {
-        let lowered_variants = typedef
+        let lowered_variants: IdVec<res::VariantId, _> = typedef
             .variants
-            .iter()
-            .map(|(_, variant)| variant.as_ref().map(|content| self.lower_type(content)))
-            .collect();
+            .map(|_, variant| variant.as_ref().map(|content| self.lower_type(content)));
 
         first_ord::TypeDef {
-            variants: lowered_variants,
+            // Here we soft-transmute an IdVec indexed by res::VariantId to an IdVec indexed by
+            // first_ord::VariantId.  This is not a reasonable operation in general, but here it is
+            // perfectly fine, because we guarnatee that these indices coincide for first-order
+            // types derived from pre-existing sum types.  The only reason we distinguish between
+            // res::VariantId and first_ord::VariantId is that some sum types in the first-order AST
+            // are not derived from pre-existing sum types at all, but are instead
+            // internally-generated representations of defunctionalized closures.
+            variants: IdVec::<first_ord::VariantId, _>::from_items(lowered_variants.items),
         }
     }
 
@@ -898,21 +907,11 @@ pub fn lower_closures(program: special::Program) -> first_ord::Program {
 
     let lowered_custom_types = program
         .custom_types
-        .iter()
-        .map(|(_, typedef)| ctx.lower_custom_type(typedef))
-        .collect();
+        .map(|_, typedef| ctx.lower_custom_type(typedef));
 
-    let lowered_globals = program
-        .vals
-        .iter()
-        .map(|(_, val_def)| ctx.lower_global(val_def))
-        .collect();
+    let lowered_globals = program.vals.map(|_, val_def| ctx.lower_global(val_def));
 
-    let lowered_lam_bodies = program
-        .lams
-        .iter()
-        .map(|(_, lam_def)| ctx.lower_lam_body(lam_def))
-        .collect();
+    let lowered_lam_bodies = program.lams.map(|_, lam_def| ctx.lower_lam_body(lam_def));
 
     let lowered_main = ctx.lower_main();
 
@@ -920,10 +919,7 @@ pub fn lower_closures(program: special::Program) -> first_ord::Program {
         custom_types: lowered_custom_types,
         lowered_closures: ctx
             .lowered_closures
-            .into_iter()
-            .map(|closure| closure.unwrap().typedef)
-            .collect(),
-
+            .into_mapped(|_, closure| closure.unwrap().typedef),
         globals: lowered_globals,
         lam_bodies: lowered_lam_bodies,
         dispatch_funcs: ctx.dispatch_funcs,
