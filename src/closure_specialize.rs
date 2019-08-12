@@ -4,11 +4,12 @@ use crate::data::closure_annot_ast as annot;
 use crate::data::closure_specialized_ast as special;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+use crate::util::id_vec::IdVec;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Request<T> {
     head: T,
-    params: Vec<special::FuncRep>,
+    params: IdVec<annot::RepParamId, special::FuncRep>,
 }
 
 #[derive(Clone, Debug)]
@@ -20,16 +21,10 @@ struct Context<'a> {
     lam_instances: BTreeMap<Request<lifted::LamId>, special::LamId>,
     val_instances: BTreeMap<Request<mono::CustomGlobalId>, special::CustomGlobalId>,
 
-    custom_types: Vec<Option<special::TypeDef>>,
-    opaque_reps: Vec<Option<special::FuncRep>>,
-    vals: Vec<Option<special::ValDef>>,
-    lams: Vec<Option<special::LamDef>>,
-}
-
-fn fresh_id<T>(items: &mut Vec<Option<T>>) -> usize {
-    let result = items.len();
-    items.push(None);
-    result
+    custom_types: IdVec<special::CustomTypeId, Option<special::TypeDef>>,
+    opaque_reps: IdVec<special::OpaqueFuncRepId, Option<special::FuncRep>>,
+    vals: IdVec<special::CustomGlobalId, Option<special::ValDef>>,
+    lams: IdVec<special::LamId, Option<special::LamDef>>,
 }
 
 fn populate<T>(opt: &mut Option<T>, val: T) {
@@ -47,10 +42,10 @@ impl<'a> Context<'a> {
             lam_instances: BTreeMap::new(),
             val_instances: BTreeMap::new(),
 
-            custom_types: Vec::new(),
-            opaque_reps: Vec::new(),
-            vals: Vec::new(),
-            lams: Vec::new(),
+            custom_types: IdVec::new(),
+            opaque_reps: IdVec::new(),
+            vals: IdVec::new(),
+            lams: IdVec::new(),
         }
     }
 
@@ -75,7 +70,7 @@ impl<'a> Context<'a> {
             }
 
             annot::InCycle::Cycle => {
-                let opaque_id = special::OpaqueFuncRepId(fresh_id(&mut self.opaque_reps));
+                let opaque_id = self.opaque_reps.push(None);
 
                 let external_rep = {
                     let mut external_rep = special::FuncRep(BTreeSet::new());
@@ -92,7 +87,7 @@ impl<'a> Context<'a> {
                     self.resolve_requirement(requirement, &request.params, &mut internal_rep);
                 }
 
-                populate(&mut self.opaque_reps[opaque_id.0], internal_rep);
+                populate(&mut self.opaque_reps[opaque_id], internal_rep);
 
                 external_rep
             }
@@ -102,15 +97,13 @@ impl<'a> Context<'a> {
     fn resolve_requirement(
         &mut self,
         requirement: &annot::Requirement,
-        params: &[special::FuncRep],
+        params: &IdVec<annot::RepParamId, special::FuncRep>,
         target_cases: &mut special::FuncRep,
     ) {
         match requirement {
             annot::Requirement::Lam(lam_id, lam_params) => {
-                let resolved_lam_params = lam_params
-                    .iter()
-                    .map(|(_, solution)| self.resolve_solution(solution, params))
-                    .collect();
+                let resolved_lam_params =
+                    lam_params.map(|_, solution| self.resolve_solution(solution, params));
 
                 let resolved_lam = self.resolve_lam(Request {
                     head: *lam_id,
@@ -121,10 +114,8 @@ impl<'a> Context<'a> {
             }
 
             annot::Requirement::Template(template_id, template_params) => {
-                let resolved_template_params = template_params
-                    .iter()
-                    .map(|(_, solution)| self.resolve_solution(solution, params))
-                    .collect();
+                let resolved_template_params =
+                    template_params.map(|_, solution| self.resolve_solution(solution, params));
 
                 let resolved_template = self.resolve_template(Request {
                     head: *template_id,
@@ -158,10 +149,8 @@ impl<'a> Context<'a> {
                 target_cases.0.insert(special::FuncCase::IOOp(*op));
             }
             annot::Requirement::Ctor(custom, type_params, variant) => {
-                let resolved_type_params = type_params
-                    .iter()
-                    .map(|(_, solution)| self.resolve_solution(solution, params))
-                    .collect();
+                let resolved_type_params =
+                    type_params.map(|_, solution| self.resolve_solution(solution, params));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -178,18 +167,15 @@ impl<'a> Context<'a> {
     fn resolve_solution(
         &mut self,
         solution: &annot::Solution,
-        params: &[special::FuncRep],
+        params: &IdVec<annot::RepParamId, special::FuncRep>,
     ) -> special::FuncRep {
         match solution {
-            annot::Solution::Param(param) => params[param.0].clone(),
+            annot::Solution::Param(param) => params[param].clone(),
 
             annot::Solution::MinSolutionTo(template_id, template_params) => {
                 self.resolve_template(Request {
                     head: *template_id,
-                    params: template_params
-                        .iter()
-                        .map(|(_, param)| params[param.0].clone())
-                        .collect(),
+                    params: template_params.map(|_, param| params[param].clone()),
                 })
             }
         }
@@ -200,7 +186,7 @@ impl<'a> Context<'a> {
             return existing.clone();
         }
 
-        let lam_id = special::LamId(fresh_id(&mut self.lams));
+        let lam_id = self.lams.push(None);
         self.lam_instances.insert(request.clone(), lam_id);
 
         let lam = &self.orig.lams[request.head];
@@ -209,9 +195,7 @@ impl<'a> Context<'a> {
 
         let resolved_captures = lam
             .captures
-            .iter()
-            .map(|(_, capture)| self.resolve_sig_type(capture, &request.params))
-            .collect();
+            .map(|_, capture| self.resolve_sig_type(capture, &request.params));
 
         let resolved_arg = self.resolve_sig_type(&lam.arg, &request.params);
 
@@ -230,7 +214,7 @@ impl<'a> Context<'a> {
             body: resolved_body,
         };
 
-        populate(&mut self.lams[lam_id.0], resolved_lam);
+        populate(&mut self.lams[lam_id], resolved_lam);
 
         lam_id
     }
@@ -265,10 +249,7 @@ impl<'a> Context<'a> {
             }
 
             annot::Type::Custom(custom, custom_params) => {
-                let resolved_reps = custom_params
-                    .iter()
-                    .map(|(_, rep)| resolve_rep(self, rep))
-                    .collect();
+                let resolved_reps = custom_params.map(|_, rep| resolve_rep(self, rep));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -283,7 +264,7 @@ impl<'a> Context<'a> {
     fn resolve_type(
         &mut self,
         type_: &annot::Type<annot::Solution>,
-        params: &[special::FuncRep],
+        params: &IdVec<annot::RepParamId, special::FuncRep>,
     ) -> special::Type {
         self.resolve_type_generic(type_, &mut |ctx, solution| {
             ctx.resolve_solution(solution, params)
@@ -293,9 +274,9 @@ impl<'a> Context<'a> {
     fn resolve_sig_type(
         &mut self,
         type_: &annot::Type<annot::RepParamId>,
-        params: &[special::FuncRep],
+        params: &IdVec<annot::RepParamId, special::FuncRep>,
     ) -> special::Type {
-        self.resolve_type_generic(type_, &mut |_, param| params[param.0].clone())
+        self.resolve_type_generic(type_, &mut |_, param| params[param].clone())
     }
 
     fn resolve_custom_type(
@@ -306,28 +287,24 @@ impl<'a> Context<'a> {
             return existing;
         }
 
-        let custom_id = special::CustomTypeId(fresh_id(&mut self.custom_types));
+        let custom_id = self.custom_types.push(None);
         self.type_instances.insert(request.clone(), custom_id);
 
         let typedef = &self.orig.custom_types[request.head];
 
         debug_assert_eq!(typedef.num_params, request.params.len());
 
-        let resolved_variants = typedef
-            .variants
-            .iter()
-            .map(|(_, content)| {
-                content
-                    .as_ref()
-                    .map(|content| self.resolve_sig_type(content, &request.params))
-            })
-            .collect();
+        let resolved_variants = typedef.variants.map(|_, content| {
+            content
+                .as_ref()
+                .map(|content| self.resolve_sig_type(content, &request.params))
+        });
 
         let resolved_typedef = special::TypeDef {
             variants: resolved_variants,
         };
 
-        populate(&mut self.custom_types[custom_id.0], resolved_typedef);
+        populate(&mut self.custom_types[custom_id], resolved_typedef);
 
         custom_id
     }
@@ -335,7 +312,7 @@ impl<'a> Context<'a> {
     fn resolve_pattern(
         &mut self,
         pat: &annot::Pattern,
-        params: &[special::FuncRep],
+        params: &IdVec<annot::RepParamId, special::FuncRep>,
     ) -> special::Pattern {
         match pat {
             annot::Pattern::Any(type_) => special::Pattern::Any(self.resolve_type(type_, params)),
@@ -350,10 +327,8 @@ impl<'a> Context<'a> {
             ),
 
             annot::Pattern::Ctor(custom, custom_params, variant, content) => {
-                let resolved_custom_params = custom_params
-                    .iter()
-                    .map(|(_, solution)| self.resolve_solution(solution, params))
-                    .collect();
+                let resolved_custom_params =
+                    custom_params.map(|_, solution| self.resolve_solution(solution, params));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -377,7 +352,11 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn resolve_expr(&mut self, expr: &annot::Expr, params: &[special::FuncRep]) -> special::Expr {
+    fn resolve_expr(
+        &mut self,
+        expr: &annot::Expr,
+        params: &IdVec<annot::RepParamId, special::FuncRep>,
+    ) -> special::Expr {
         match expr {
             annot::Expr::ArithOp(op, solution) => {
                 special::Expr::ArithOp(*op, self.resolve_solution(solution, params))
@@ -394,10 +373,8 @@ impl<'a> Context<'a> {
             }
 
             annot::Expr::NullaryCtor(custom, custom_params, variant) => {
-                let resolved_custom_params = custom_params
-                    .iter()
-                    .map(|(_, solution)| self.resolve_solution(solution, params))
-                    .collect();
+                let resolved_custom_params =
+                    custom_params.map(|_, solution| self.resolve_solution(solution, params));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -408,10 +385,8 @@ impl<'a> Context<'a> {
             }
 
             annot::Expr::Ctor(custom, custom_params, variant, solution) => {
-                let resolved_custom_params = custom_params
-                    .iter()
-                    .map(|(_, solution)| self.resolve_solution(solution, params))
-                    .collect();
+                let resolved_custom_params =
+                    custom_params.map(|_, solution| self.resolve_solution(solution, params));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -424,10 +399,8 @@ impl<'a> Context<'a> {
             }
 
             annot::Expr::Global(val_id, val_params) => {
-                let resolved_val_params = val_params
-                    .iter()
-                    .map(|(_, solution)| self.resolve_solution(solution, params))
-                    .collect();
+                let resolved_val_params =
+                    val_params.map(|_, solution| self.resolve_solution(solution, params));
 
                 let resolved_val_id = self.resolve_val(Request {
                     head: *val_id,
@@ -449,10 +422,8 @@ impl<'a> Context<'a> {
             ),
 
             annot::Expr::Lam(lam_id, lam_params, rep, captures) => {
-                let resolved_lam_params = lam_params
-                    .iter()
-                    .map(|(_, solution)| self.resolve_solution(solution, params))
-                    .collect();
+                let resolved_lam_params =
+                    lam_params.map(|_, solution| self.resolve_solution(solution, params));
 
                 let resolved_lam_id = self.resolve_lam(Request {
                     head: *lam_id,
@@ -461,10 +432,8 @@ impl<'a> Context<'a> {
 
                 let resolved_rep = self.resolve_solution(rep, params);
 
-                let resolved_captures = captures
-                    .iter()
-                    .map(|(_, capture)| self.resolve_expr(capture, params))
-                    .collect();
+                let resolved_captures =
+                    captures.map(|_, capture| self.resolve_expr(capture, params));
 
                 special::Expr::Lam(resolved_lam_id, resolved_rep, resolved_captures)
             }
@@ -551,7 +520,7 @@ impl<'a> Context<'a> {
             return existing;
         }
 
-        let val_id = special::CustomGlobalId(fresh_id(&mut self.vals));
+        let val_id = self.vals.push(None);
         self.val_instances.insert(request.clone(), val_id);
 
         let val_def = &self.orig.vals[request.head];
@@ -567,7 +536,7 @@ impl<'a> Context<'a> {
             body: resolved_body,
         };
 
-        populate(&mut self.vals[val_id.0], resolved_val_def);
+        populate(&mut self.vals[val_id], resolved_val_def);
 
         val_id
     }
@@ -583,34 +552,31 @@ pub fn closure_specialize(program: annot::Program) -> special::Program {
     // variables.  There should be some way to do this dependency analysis during the prior closure
     // annotation pass.
 
-    let main_param_opaque_ids: Vec<_> = (0..main_def.params.num_params())
-        .map(|_| special::OpaqueFuncRepId(fresh_id(&mut ctx.opaque_reps)))
-        .collect();
+    let main_param_opaque_ids: IdVec<annot::RepParamId, _> = IdVec::from_items(
+        (0..main_def.params.num_params())
+            .map(|_| ctx.opaque_reps.push(None))
+            .collect(),
+    );
 
-    let main_param_opaque_reps: Vec<_> = main_param_opaque_ids
-        .iter()
-        .map(|&opaque_id| {
-            let mut param_rep = special::FuncRep(BTreeSet::new());
-            param_rep.0.insert(special::FuncCase::Opaque(opaque_id));
-            param_rep
-        })
-        .collect();
+    let main_param_opaque_reps = main_param_opaque_ids.map(|_, &opaque_id| {
+        let mut param_rep = special::FuncRep(BTreeSet::new());
+        param_rep.0.insert(special::FuncCase::Opaque(opaque_id));
+        param_rep
+    });
 
-    for (opaque_id, (_, (template_id, template_params))) in main_param_opaque_ids
-        .iter()
-        .zip(main_def.params.requirements.iter())
+    for (_, opaque_id, (template_id, template_params)) in main_param_opaque_ids
+        .try_zip_exact(&main_def.params.requirements)
+        .expect("main_def.params.num_params() should equal main_def_params.requirements.len()")
     {
-        let resolved_template_params = template_params
-            .iter()
-            .map(|(_, param)| main_param_opaque_reps[param.0].clone())
-            .collect();
+        let resolved_template_params =
+            template_params.map(|_, param| main_param_opaque_reps[param].clone());
 
         let rep = ctx.resolve_template(Request {
             head: *template_id,
             params: resolved_template_params,
         });
 
-        populate(&mut ctx.opaque_reps[opaque_id.0], rep);
+        populate(&mut ctx.opaque_reps[opaque_id], rep);
     }
 
     let resolved_main_id = ctx.resolve_val(Request {
@@ -619,17 +585,17 @@ pub fn closure_specialize(program: annot::Program) -> special::Program {
     });
 
     special::Program {
-        custom_types: ctx.custom_types.into_iter().map(Option::unwrap).collect(),
-        opaque_reps: ctx.opaque_reps.into_iter().map(Option::unwrap).collect(),
-        vals: ctx.vals.into_iter().map(Option::unwrap).collect(),
-        lams: ctx.lams.into_iter().map(Option::unwrap).collect(),
+        custom_types: ctx.custom_types.into_mapped(|_, typedef| typedef.unwrap()),
+        opaque_reps: ctx.opaque_reps.into_mapped(|_, rep| rep.unwrap()),
+        vals: ctx.vals.into_mapped(|_, val_def| val_def.unwrap()),
+        lams: ctx.lams.into_mapped(|_, lam_def| lam_def.unwrap()),
         main: resolved_main_id,
     }
 }
 
 pub fn check_patterns(program: &special::Program) {
-    for (i, lam) in program.lams.iter().enumerate() {
-        check_pattern(special::LamId(i), &lam.arg_pat, &lam.arg);
+    for (lam_id, lam) in &program.lams {
+        check_pattern(lam_id, &lam.arg_pat, &lam.arg);
     }
 
     fn check_pattern(i: special::LamId, pat: &special::Pattern, type_: &special::Type) {

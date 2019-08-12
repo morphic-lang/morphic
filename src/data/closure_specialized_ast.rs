@@ -4,12 +4,13 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::util::id_vec::IdVec;
 
 id_type!(pub CustomTypeId);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
-    pub variants: Vec<Option<Type>>,
+    pub variants: IdVec<res::VariantId, Option<Type>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -53,7 +54,7 @@ pub enum Expr {
     Local(lifted::LocalId),
     Capture(lifted::CaptureId),
     Tuple(Vec<Expr>),
-    Lam(LamId, FuncRep, Vec<Expr>),
+    Lam(LamId, FuncRep, IdVec<lifted::CaptureId, Expr>),
     App(
         Purity,
         FuncRep,
@@ -95,7 +96,7 @@ pub struct ValDef {
 #[derive(Clone, Debug)]
 pub struct LamDef {
     pub purity: Purity,
-    pub captures: Vec<Type>,
+    pub captures: IdVec<lifted::CaptureId, Type>,
     pub arg: Type,
     pub ret: Type,
     pub arg_pat: Pattern,
@@ -104,9 +105,9 @@ pub struct LamDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub custom_types: Vec<TypeDef>,
-    pub opaque_reps: Vec<FuncRep>, // Indexed by OpaqueFuncRepId
-    pub vals: Vec<ValDef>,         // Indexed by CustomGlobalId
-    pub lams: Vec<LamDef>,         // Indexed by LamId
+    pub custom_types: IdVec<CustomTypeId, TypeDef>,
+    pub opaque_reps: IdVec<OpaqueFuncRepId, FuncRep>,
+    pub vals: IdVec<CustomGlobalId, ValDef>,
+    pub lams: IdVec<LamId, LamDef>,
     pub main: CustomGlobalId,
 }

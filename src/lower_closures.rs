@@ -6,6 +6,7 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::util::id_vec::IdVec;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum LeafFuncCase {
@@ -18,7 +19,7 @@ enum LeafFuncCase {
 }
 
 fn add_rep_leaves(
-    opaque_reps: &[special::FuncRep],
+    opaque_reps: &IdVec<special::OpaqueFuncRepId, special::FuncRep>,
     rep: &special::FuncRep,
     leaves: &mut BTreeSet<LeafFuncCase>,
 ) {
@@ -29,7 +30,7 @@ fn add_rep_leaves(
             }
 
             &special::FuncCase::Opaque(opaque) => {
-                add_rep_leaves(opaque_reps, &opaque_reps[opaque.0], leaves);
+                add_rep_leaves(opaque_reps, &opaque_reps[opaque], leaves);
             }
 
             &special::FuncCase::ArithOp(op) => {
@@ -186,11 +187,11 @@ impl<'a> Context<'a> {
     fn lower_env(&mut self, case: &LeafFuncCase) -> Option<first_ord::Type> {
         match case {
             LeafFuncCase::Lam(lam) => {
-                let captures = &self.program.lams[lam.0].captures;
+                let captures = &self.program.lams[lam].captures;
 
                 let lowered_captures = captures
                     .iter()
-                    .map(|capture| self.lower_type(capture))
+                    .map(|(_, capture)| self.lower_type(capture))
                     .collect();
 
                 Some(first_ord::Type::Tuple(lowered_captures))
@@ -717,7 +718,7 @@ impl<'a> Context<'a> {
                     Some(Box::new(first_ord::Expr::Tuple(
                         captures
                             .iter()
-                            .map(|capture| self.lower_expr(local_mapping, capture))
+                            .map(|(_, capture)| self.lower_expr(local_mapping, capture))
                             .collect(),
                     ))),
                 )
@@ -799,7 +800,7 @@ impl<'a> Context<'a> {
         let lowered_captures: Vec<_> = lam_def
             .captures
             .iter()
-            .map(|capture| self.lower_type(capture))
+            .map(|(_, capture)| self.lower_type(capture))
             .collect();
 
         let lowered_arg = self.lower_type(&lam_def.arg);
@@ -838,7 +839,7 @@ impl<'a> Context<'a> {
         let lowered_variants = typedef
             .variants
             .iter()
-            .map(|variant| variant.as_ref().map(|content| self.lower_type(content)))
+            .map(|(_, variant)| variant.as_ref().map(|content| self.lower_type(content)))
             .collect();
 
         first_ord::TypeDef {
@@ -848,7 +849,7 @@ impl<'a> Context<'a> {
 
     fn lower_main(&mut self) -> first_ord::FuncDef {
         let main_rep =
-            if let special::Type::Func(main_rep) = &self.program.vals[self.program.main.0].type_ {
+            if let special::Type::Func(main_rep) = &self.program.vals[self.program.main].type_ {
                 main_rep
             } else {
                 unreachable!()
@@ -898,19 +899,19 @@ pub fn lower_closures(program: special::Program) -> first_ord::Program {
     let lowered_custom_types = program
         .custom_types
         .iter()
-        .map(|typedef| ctx.lower_custom_type(typedef))
+        .map(|(_, typedef)| ctx.lower_custom_type(typedef))
         .collect();
 
     let lowered_globals = program
         .vals
         .iter()
-        .map(|val_def| ctx.lower_global(val_def))
+        .map(|(_, val_def)| ctx.lower_global(val_def))
         .collect();
 
     let lowered_lam_bodies = program
         .lams
         .iter()
-        .map(|lam_def| ctx.lower_lam_body(lam_def))
+        .map(|(_, lam_def)| ctx.lower_lam_body(lam_def))
         .collect();
 
     let lowered_main = ctx.lower_main();
