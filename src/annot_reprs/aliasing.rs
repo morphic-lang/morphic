@@ -733,7 +733,6 @@ pub fn get_names_in(
     name_vars: &mut BTreeMap<FieldPath, SolverVarId>, // indexed by ExprId
     type_: &mid_ast::Type<SolverVarId>,
 ) -> (Vec<FieldPath>, Vec<(FieldPath, FieldPath)>) {
-    use im_rc::Vector;
     let mut names = Vec::new();
     let mut edges = Vec::new();
     add_names_from_type(
