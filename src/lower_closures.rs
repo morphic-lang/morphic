@@ -419,7 +419,7 @@ impl<'a> Context<'a> {
                                     Op::DivFloat => float_binop(first_ord::BinOp::Div),
                                     Op::NegFloat => {
                                         first_ord::Expr::ArithOp(first_ord::ArithOp::NegateFloat(
-                                            Box::new(first_ord::Expr::Local(first_ord::LocalId(0))),
+                                            Box::new(ARG_LOCAL.clone()),
                                         ))
                                     }
 

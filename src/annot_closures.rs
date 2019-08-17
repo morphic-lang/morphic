@@ -558,7 +558,7 @@ fn arith_op_type(
                 annot::Type::Float,
                 annot::Type::Float,
             ])),
-            Box::new(annot::Type::Int),
+            Box::new(annot::Type::Float),
         )
     }
 
@@ -587,8 +587,20 @@ fn arith_op_type(
         annot::Type::Func(
             Purity::Pure,
             op_var,
-            Box::new(annot::Type::Tuple(vec![annot::Type::Int, annot::Type::Int])),
-            Box::new(annot::Type::Float),
+            Box::new(annot::Type::Tuple(vec![
+                annot::Type::Float,
+                annot::Type::Float,
+            ])),
+            Box::new(annot::Type::Bool),
+        )
+    }
+
+    fn byte_unop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
+        annot::Type::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(annot::Type::Byte),
+            Box::new(annot::Type::Byte),
         )
     }
 
@@ -615,7 +627,7 @@ fn arith_op_type(
         Op::SubByte => byte_binop(op_var),
         Op::MulByte => byte_binop(op_var),
         Op::DivByte => byte_binop(op_var),
-        Op::NegByte => byte_comp(op_var),
+        Op::NegByte => byte_unop(op_var),
 
         Op::EqByte => byte_comp(op_var),
         Op::LtByte => byte_comp(op_var),

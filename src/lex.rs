@@ -388,9 +388,12 @@ impl<'a> Iterator for Lexer<'a> {
             let byte_start = self.pos;
             self.pos = byte_end;
 
+            debug_assert!(byte_start < byte_end);
+
             return Some(Ok((
                 byte_start,
-                Token::ByteLit(self.src[byte_start..byte_end].parse().unwrap()),
+                // `- 1` strips trailing 'b'
+                Token::ByteLit(self.src[byte_start..byte_end - 1].parse().unwrap()),
                 byte_end,
             )));
         }

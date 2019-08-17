@@ -1,0 +1,91 @@
+module Core = file "lib/core/core.txt"
+  expose {
+    module String expose { int_to_string },
+    module Bool expose { not },
+  }
+
+module Test = file "lib/test.txt"
+  with { Core }
+  expose { test }
+
+proc main(): () =
+  do test("Add bytes", 1b +& 1b =& 2b) then
+  do test("Add ints", 1 + 1 = 2) then
+  do test("Add floats", 1.0 +. 1.0 =. 2.0) then
+
+  do test("Sub bytes", 5b -& 2b =& 3b) then
+  do test("Sub ints", 5 - 2 = 3) then
+  do test("Sub floats", 5.0 -. 2.0 =. 3.0) then
+
+  do test("Mul bytes", 3b *& 4b =& 12b) then
+  do test("Mul ints", 3 * 4 = 12) then
+  do test("Mul floats", 3.0 *. 4.0 =. 12.0) then
+
+  do test("Div bytes exact", 12b /& 4b =& 3b) then
+  do test("Div bytes truncating", 5b /& 2b =& 2b) then
+  do test("Div ints exact", 12 / 4 = 3) then
+  do test("Div int truncating", 5 / 2 = 2) then
+  do test("Div floats integral", 12.0 /. 4.0 =. 3.0) then
+  do test("Div floats fractional", 5.0 /. 2.0 =. 2.5) then
+
+  // don't negate a byte u dummy
+  // do test("Neg byte", -&1b =& 0b -& 1b) then
+  do test("Neg int", -1 = 0 - 1) then
+  do test("Neg float", -.1.0 =. 0.0 -. 1.0) then
+
+  do test("Equate bytes equal", 1b =& 1b) then
+  do test("Equate bytes unequal", not(1b =& 2b)) then
+  do test("Equate ints equal", 1 = 1) then
+  do test("Equate ints unequal", not(1 = 2)) then
+  do test("Equate floats equal", 1.0 =. 1.0) then
+  do test("Equate floats unequal", not(1.0 =. 2.0)) then
+
+  do test("Less-than bytes less", 1b <& 2b) then
+  do test("Less-than bytes equal", not(2b <& 2b)) then
+  do test("Less-than bytes greater", not(3b <& 2b)) then
+
+  do test("Less-than ints less", 1 < 2) then
+  do test("Less-than ints equal", not(2 < 2)) then
+  do test("Less-than ints greater", not(3 < 2)) then
+
+  do test("Less-than floats less", 1.0 <. 2.0) then
+  do test("Less-than floats equal", not(2.0 <. 2.0)) then
+  do test("Less-than floats greater", not(3.0 <. 2.0)) then
+
+  do test("Less-equal bytes less", 1b <=& 2b) then
+  do test("Less-equal bytes equal", 2b <=& 2b) then
+  do test("Less-equal bytes greater", not(3b <=& 2b)) then
+
+  do test("Less-equal ints less", 1 <= 2) then
+  do test("Less-equal ints equal", 2 <= 2) then
+  do test("Less-equal ints greater", not(3 <= 2)) then
+
+  do test("Less-equal floats less", 1.0 <=. 2.0) then
+  do test("Less-equal floats equal", 2.0 <=. 2.0) then
+  do test("Less-equal floats greater", not(3.0 <=. 2.0)) then
+
+  do test("Greater-than bytes less", not(1b >& 2b)) then
+  do test("Greater-than bytes equal", not(2b >& 2b)) then
+  do test("Greater-than bytes greater", 3b >& 2b) then
+
+  do test("Greater-than ints less", not(1 > 2)) then
+  do test("Greater-than ints equal", not(2 > 2)) then
+  do test("Greater-than ints greater", 3 > 2) then
+
+  do test("Greater-than floats less", not(1.0 >. 2.0)) then
+  do test("Greater-than floats equal", not(2.0 >. 2.0)) then
+  do test("Greater-than floats greater", 3.0 >. 2.0) then
+
+  do test("Greater-equal bytes less", not(1b >=& 2b)) then
+  do test("Greater-equal bytes equal", 2b >=& 2b) then
+  do test("Greater-equal bytes greater", 3b >=& 2b) then
+
+  do test("Greater-equal ints less", not(1 >= 2)) then
+  do test("Greater-equal ints equal", 2 >= 2) then
+  do test("Greater-equal ints greater", 3 >= 2) then
+
+  do test("Greater-equal floats less", not(1.0 >=. 2.0)) then
+  do test("Greater-equal floats equal", 2.0 >=. 2.0) then
+  do test("Greater-equal floats greater", 3.0 >=. 2.0) then
+
+  do output("Completed all tests")

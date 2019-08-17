@@ -35,5 +35,10 @@ fn increment() {
     );
 }
 
+#[test]
+fn arith() {
+    run_sample("samples/arith.txt", "", "Completed all tests\n");
+}
+
 // TODO: Carefully review 'samples/mutate.txt' to determine by hand what the expected output should
 // be, then add a test for it.

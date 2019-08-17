@@ -1,0 +1,8 @@
+not(x: Bool): Bool =
+  if x { False } else { True }
+
+and(a: Bool, b: Bool): Bool =
+  if a { b } else { False }
+
+or(a: Bool, b: Bool): Bool =
+  if a { True } else { b }

@@ -404,6 +404,8 @@ ArithSumExpr: syntax::Expr = {
   <left: ArithSumExpr> "-." <right: ArithProdExpr> => syntax::binop(syntax::Op::SubFloat, left, right),
 };
 
+// TODO: Translating greater-than to less-than reverses the evaluation order of the operands.
+// If the operands have side effects, this can alter the program's semantics!
 ArithCompExpr: syntax::Expr = {
   <ArithSumExpr>,
 

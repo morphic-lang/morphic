@@ -1,0 +1,8 @@
+import Core expose { module Array expose { concat } }
+
+proc test(msg: Array Byte, cond: Bool): () =
+  if cond {
+    ()
+  } else {
+    do output(concat("Test failed: ", msg))
+  }
