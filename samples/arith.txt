@@ -1,8 +1,5 @@
 module Core = file "lib/core/core.txt"
-  expose {
-    module String expose { int_to_string },
-    module Bool expose { not },
-  }
+  expose { module Bool expose { not } }
 
 module Test = file "lib/test.txt"
   with { Core }
