@@ -335,7 +335,7 @@ fn get_names_in(
         prefix: FieldPath,
     ) {
         match type_ {
-            ast::Type::Bool | ast::Type::Byte | ast::Type::Int | ast::Type::Float => {}
+            ast::Type::Bool | ast::Type::Num(_) => {}
             ast::Type::Array(item_type) | ast::Type::HoleArray(item_type) => {
                 // The array itself:
                 names.push(prefix.clone());
@@ -525,33 +525,17 @@ fn annot_scc(
 // in it to `deps`.
 fn add_func_deps(deps: &mut BTreeSet<ast::CustomFuncId>, expr: &ast::Expr) {
     match expr {
-        ast::Expr::ArithOp(ast::ArithOp::ByteOp(_, left, right)) => {
+        ast::Expr::ArithOp(ast::ArithOp::Op(_num_type, _op, left, right)) => {
             add_func_deps(deps, left);
             add_func_deps(deps, right);
         }
-        ast::Expr::ArithOp(ast::ArithOp::IntOp(_, left, right)) => {
+        ast::Expr::ArithOp(ast::ArithOp::Cmp(_num_type, _cmp, left, right)) => {
             add_func_deps(deps, left);
             add_func_deps(deps, right);
         }
-        ast::Expr::ArithOp(ast::ArithOp::FloatOp(_, left, right)) => {
-            add_func_deps(deps, left);
-            add_func_deps(deps, right);
+        ast::Expr::ArithOp(ast::ArithOp::Negate(_num_type, expr)) => {
+            add_func_deps(deps, expr);
         }
-        ast::Expr::ArithOp(ast::ArithOp::ByteCmp(_, left, right)) => {
-            add_func_deps(deps, left);
-            add_func_deps(deps, right);
-        }
-        ast::Expr::ArithOp(ast::ArithOp::IntCmp(_, left, right)) => {
-            add_func_deps(deps, left);
-            add_func_deps(deps, right);
-        }
-        ast::Expr::ArithOp(ast::ArithOp::FloatCmp(_, left, right)) => {
-            add_func_deps(deps, left);
-            add_func_deps(deps, right);
-        }
-        ast::Expr::ArithOp(ast::ArithOp::NegateByte(expr)) => add_func_deps(deps, expr),
-        ast::Expr::ArithOp(ast::ArithOp::NegateInt(expr)) => add_func_deps(deps, expr),
-        ast::Expr::ArithOp(ast::ArithOp::NegateFloat(expr)) => add_func_deps(deps, expr),
         ast::Expr::ArrayOp(ast::ArrayOp::Item(_, array_expr, idx_expr)) => {
             add_func_deps(deps, array_expr);
             add_func_deps(deps, idx_expr);
@@ -648,11 +632,13 @@ mod test {
         let with_single_recursive_type = IdVec::from_items(vec![ast::TypeDef {
             variants: IdVec::from_items(vec![
                 Some(ast::Type::Tuple(vec![
-                    ast::Type::Array(Box::new(ast::Type::Byte)),
+                    ast::Type::Array(Box::new(ast::Type::Num(ast::NumType::Byte))),
                     ast::Type::Custom(ast::CustomTypeId(0)),
                 ])),
-                Some(ast::Type::Byte),
-                Some(ast::Type::HoleArray(Box::new(ast::Type::Byte))),
+                Some(ast::Type::Num(ast::NumType::Byte)),
+                Some(ast::Type::HoleArray(Box::new(ast::Type::Num(
+                    ast::NumType::Byte,
+                )))),
                 None,
             ]),
         }]);
@@ -664,12 +650,18 @@ mod test {
             // Types without names:
             (
                 IdVec::new(),
-                ast::Type::Tuple(vec![ast::Type::Byte, ast::Type::Float]),
+                ast::Type::Tuple(vec![
+                    ast::Type::Num(ast::NumType::Byte),
+                    ast::Type::Num(ast::NumType::Float),
+                ]),
                 set(vec![]),
             ),
             (
                 IdVec::from_items(vec![ast::TypeDef {
-                    variants: IdVec::from_items(vec![Some(ast::Type::Byte), None]),
+                    variants: IdVec::from_items(vec![
+                        Some(ast::Type::Num(ast::NumType::Byte)),
+                        None,
+                    ]),
                 }]),
                 ast::Type::Tuple(vec![ast::Type::Custom(ast::CustomTypeId(0))]),
                 set(vec![]),
@@ -677,22 +669,24 @@ mod test {
             // Types with names, no typedefs:
             (
                 IdVec::new(),
-                ast::Type::Array(Box::new(ast::Type::Byte)),
+                ast::Type::Array(Box::new(ast::Type::Num(ast::NumType::Byte))),
                 set(vec![vector![]]),
             ),
             (
                 IdVec::new(),
-                ast::Type::Array(Box::new(ast::Type::Array(Box::new(ast::Type::Int)))),
+                ast::Type::Array(Box::new(ast::Type::Array(Box::new(ast::Type::Num(
+                    ast::NumType::Int,
+                ))))),
                 set(vec![vector![], vector![FieldId::ArrayMembers]]),
             ),
             // Recursive types:
             (
                 IdVec::new(),
                 ast::Type::Tuple(vec![
-                    ast::Type::Float,
+                    ast::Type::Num(ast::NumType::Float),
                     ast::Type::Array(Box::new(ast::Type::Tuple(vec![
                         ast::Type::Array(Box::new(ast::Type::Bool)),
-                        ast::Type::Byte,
+                        ast::Type::Num(ast::NumType::Byte),
                         ast::Type::HoleArray(Box::new(ast::Type::Bool)),
                     ]))),
                 ]),
@@ -731,7 +725,8 @@ mod test {
 
     #[test]
     pub fn test_without_aliasing() {
-        let ex1 = ast::Expr::ArithOp(ast::ArithOp::IntOp(
+        let ex1 = ast::Expr::ArithOp(ast::ArithOp::Op(
+            ast::NumType::Int,
             ast::BinOp::Mul,
             Box::new(ast::Expr::Local(ast::LocalId(0))),
             Box::new(ast::Expr::Local(ast::LocalId(0))),
@@ -742,11 +737,13 @@ mod test {
         );
 
         let ex2 = ast::Expr::ArrayLit(
-            ast::Type::Array(Box::new(ast::Type::Int)),
-            vec![ast::Expr::ArithOp(ast::ArithOp::IntOp(
+            ast::Type::Array(Box::new(ast::Type::Num(ast::NumType::Int))),
+            vec![ast::Expr::ArithOp(ast::ArithOp::Op(
+                ast::NumType::Int,
                 ast::BinOp::Add,
                 Box::new(ast::Expr::IntLit(-10)),
-                Box::new(ast::Expr::ArithOp(ast::ArithOp::IntOp(
+                Box::new(ast::Expr::ArithOp(ast::ArithOp::Op(
+                    ast::NumType::Int,
                     ast::BinOp::Mul,
                     Box::new(ast::Expr::IntLit(12)),
                     Box::new(ast::Expr::IntLit(2)),

@@ -23,51 +23,27 @@ fn typecheck_expr(
 ) -> ast::Type {
     use ast::Expr as E;
     use ast::Type as T;
+
     match expr {
-        E::ArithOp(ast::ArithOp::IntOp(_, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Int);
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Int);
-            T::Int
+        E::ArithOp(ast::ArithOp::Op(num_type, _, v, w)) => {
+            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
+            assert_eq!(typecheck_expr(program, locals, &**w), T::Num(*num_type));
+            T::Num(*num_type)
         }
-        E::ArithOp(ast::ArithOp::FloatOp(_, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Float);
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Float);
-            T::Float
-        }
-        E::ArithOp(ast::ArithOp::ByteOp(_, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Byte);
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Byte);
-            T::Byte
-        }
-        E::ArithOp(ast::ArithOp::IntCmp(_, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Int);
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Int);
+        E::ArithOp(ast::ArithOp::Cmp(num_type, _, v, w)) => {
+            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
+            assert_eq!(typecheck_expr(program, locals, &**w), T::Num(*num_type));
             T::Bool
         }
-        E::ArithOp(ast::ArithOp::FloatCmp(_, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Float);
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Float);
-            T::Bool
-        }
-        E::ArithOp(ast::ArithOp::ByteCmp(_, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Byte);
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Byte);
-            T::Bool
-        }
-        E::ArithOp(ast::ArithOp::NegateInt(v)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Int);
-            T::Int
-        }
-        E::ArithOp(ast::ArithOp::NegateFloat(v)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Float);
-            T::Float
-        }
-        E::ArithOp(ast::ArithOp::NegateByte(v)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Byte);
-            T::Byte
+        E::ArithOp(ast::ArithOp::Negate(num_type, v)) => {
+            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
+            T::Num(*num_type)
         }
         E::ArrayOp(ast::ArrayOp::Item(item_type, array, index)) => {
-            assert_eq!(typecheck_expr(program, locals, &**index), T::Int);
+            assert_eq!(
+                typecheck_expr(program, locals, &**index),
+                T::Num(ast::NumType::Int)
+            );
             assert_eq!(
                 typecheck_expr(program, locals, &**array),
                 T::Array(Box::new(item_type.clone()))
@@ -82,7 +58,7 @@ fn typecheck_expr(
                 typecheck_expr(program, locals, &**array),
                 T::Array(Box::new(item_type.clone()))
             );
-            T::Int
+            T::Num(ast::NumType::Int)
         }
         E::ArrayOp(ast::ArrayOp::Push(item_type, array, item)) => {
             assert_eq!(&typecheck_expr(program, locals, &**item), item_type);
@@ -108,11 +84,11 @@ fn typecheck_expr(
             // TODO: remove
             unimplemented!()
         }
-        E::IOOp(ast::IOOp::Input) => T::Array(Box::new(T::Byte)),
+        E::IOOp(ast::IOOp::Input) => T::Array(Box::new(T::Num(ast::NumType::Byte))),
         E::IOOp(ast::IOOp::Output(output)) => {
             assert_eq!(
                 typecheck_expr(program, locals, &**output),
-                T::Array(Box::new(T::Byte))
+                T::Array(Box::new(T::Num(ast::NumType::Byte)))
             );
             T::Tuple(vec![])
         }
@@ -160,9 +136,9 @@ fn typecheck_expr(
             T::Array(Box::new(item_type.clone()))
         }
         E::BoolLit(_) => T::Bool,
-        E::ByteLit(_) => T::Byte,
-        E::IntLit(_) => T::Int,
-        E::FloatLit(_) => T::Float,
+        E::ByteLit(_) => T::Num(ast::NumType::Byte),
+        E::IntLit(_) => T::Num(ast::NumType::Int),
+        E::FloatLit(_) => T::Num(ast::NumType::Float),
     }
 }
 
@@ -202,9 +178,9 @@ fn bind_pattern(
             assert!(program.custom_types[type_id].variants[variant_id].is_none());
         }
         (P::BoolConst(_), T::Bool)
-        | (P::ByteConst(_), T::Byte)
-        | (P::IntConst(_), T::Int)
-        | (P::FloatConst(_), T::Float) => {}
+        | (P::ByteConst(_), T::Num(ast::NumType::Byte))
+        | (P::IntConst(_), T::Num(ast::NumType::Int))
+        | (P::FloatConst(_), T::Num(ast::NumType::Float)) => {}
         _ => {
             panic!("Pattern {:?} invalid for type {:?}", pattern, expected_type);
         }

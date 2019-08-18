@@ -1,5 +1,6 @@
 use super::{in_ast, mid_ast};
 use crate::annot_aliases::{FieldId, FieldPath};
+use crate::data::first_order_ast::NumType;
 use crate::util::constraint_graph::{ConstraintGraph, SolverVarId};
 use crate::util::with_scope;
 use im_rc::{vector, Vector};
@@ -157,7 +158,7 @@ fn unify_expr(
         }
         mid_ast::Expr::IOOp(mid_ast::IOOp::Input(var)) => (
             mid_ast::Expr::IOOp(mid_ast::IOOp::Input(var)),
-            mid_ast::Type::Array(Box::new(mid_ast::Type::Byte), var),
+            mid_ast::Type::Array(Box::new(mid_ast::Type::Num(NumType::Byte)), var),
         ),
         mid_ast::Expr::IOOp(mid_ast::IOOp::Output(output)) => (
             mid_ast::Expr::IOOp(mid_ast::IOOp::Output(typefold_term(
@@ -169,34 +170,25 @@ fn unify_expr(
         ),
         mid_ast::Expr::ArithOp(arith_op) => {
             use mid_ast::ArithOp as A;
-            let type_ = match arith_op {
-                A::IntOp(..) => mid_ast::Type::Int,
-                A::NegateInt(..) => mid_ast::Type::Int,
 
-                A::ByteOp(..) => mid_ast::Type::Byte,
-                A::NegateByte(..) => mid_ast::Type::Byte,
-
-                A::FloatOp(..) => mid_ast::Type::Float,
-                A::NegateFloat(..) => mid_ast::Type::Float,
-
-                A::IntCmp(..) => mid_ast::Type::Bool,
-                A::FloatCmp(..) => mid_ast::Type::Bool,
-                A::ByteCmp(..) => mid_ast::Type::Bool,
+            let type_ = match &arith_op {
+                A::Op(num_type, _op, _left, _right) => mid_ast::Type::Num(*num_type),
+                A::Cmp(_num_type, _cmp, _left, _right) => mid_ast::Type::Bool,
+                A::Negate(num_type, _expr) => mid_ast::Type::Num(*num_type),
             };
-            let typefolded = match arith_op {
-                A::IntOp(binop, a, b) => A::IntOp(binop, typefold(&a), typefold(&b)),
-                A::NegateInt(a) => A::NegateInt(typefold(&a)),
 
-                A::ByteOp(binop, a, b) => A::ByteOp(binop, typefold(&a), typefold(&b)),
-                A::NegateByte(a) => A::NegateByte(typefold(&a)),
+            let typefolded = match &arith_op {
+                A::Op(num_type, op, left, right) => {
+                    A::Op(*num_type, *op, typefold(left), typefold(right))
+                }
 
-                A::FloatOp(binop, a, b) => A::FloatOp(binop, typefold(&a), typefold(&b)),
-                A::NegateFloat(a) => A::NegateFloat(typefold(&a)),
+                A::Cmp(num_type, cmp, left, right) => {
+                    A::Cmp(*num_type, *cmp, typefold(left), typefold(right))
+                }
 
-                A::IntCmp(cmp, a, b) => A::IntCmp(cmp, typefold(&a), typefold(&b)),
-                A::FloatCmp(cmp, a, b) => A::FloatCmp(cmp, typefold(&a), typefold(&b)),
-                A::ByteCmp(cmp, a, b) => A::ByteCmp(cmp, typefold(&a), typefold(&b)),
+                A::Negate(num_type, expr) => A::Negate(*num_type, typefold(expr)),
             };
+
             (mid_ast::Expr::ArithOp(typefolded), type_)
         }
         mid_ast::Expr::ArrayOp(array_op) => {
@@ -219,7 +211,7 @@ fn unify_expr(
                         panic!("internal type error");
                     }
                 }
-                A::Len(_) => mid_ast::Type::Int,
+                A::Len(_) => mid_ast::Type::Num(NumType::Int),
                 A::Push(array_term, pushed_item_term) => {
                     let array_type = type_of_term(ctx.typedefs, locals, array_term);
                     if let mid_ast::Type::Array(ref item_type, _) = array_type {
@@ -390,9 +382,7 @@ pub fn substitute_vars(
     use mid_ast::Type as T;
     match t {
         T::Bool => T::Bool,
-        T::Int => T::Int,
-        T::Byte => T::Byte,
-        T::Float => T::Float,
+        T::Num(num_type) => T::Num(*num_type),
         T::Array(item, var) => T::Array(
             Box::new(substitute_vars(typedefs, &*item, vars)),
             vars[var.0],
@@ -427,9 +417,9 @@ fn type_of_term(
             lookup_type_field(typedefs, &locals[*id], field_path.clone())
         }
         mid_ast::Term::BoolLit(_) => mid_ast::Type::Bool,
-        mid_ast::Term::IntLit(_) => mid_ast::Type::Int,
-        mid_ast::Term::ByteLit(_) => mid_ast::Type::Byte,
-        mid_ast::Term::FloatLit(_) => mid_ast::Type::Float,
+        mid_ast::Term::IntLit(_) => mid_ast::Type::Num(NumType::Int),
+        mid_ast::Term::ByteLit(_) => mid_ast::Type::Num(NumType::Byte),
+        mid_ast::Term::FloatLit(_) => mid_ast::Type::Num(NumType::Float),
     }
 }
 
@@ -516,9 +506,7 @@ fn substitute_params(
 ) -> mid_ast::Type<SolverVarId> {
     match type_ {
         mid_ast::Type::Bool => mid_ast::Type::Bool,
-        mid_ast::Type::Int => mid_ast::Type::Int,
-        mid_ast::Type::Byte => mid_ast::Type::Byte,
-        mid_ast::Type::Float => mid_ast::Type::Float,
+        mid_ast::Type::Num(num_type) => mid_ast::Type::Num(*num_type),
 
         mid_ast::Type::Array(item, mid_ast::RepParamId(id)) => {
             mid_ast::Type::Array(Box::new(substitute_params(vars, item)), vars[*id])
@@ -551,9 +539,9 @@ fn equate_types(
     use mid_ast::Type as T;
     match (type_a, type_b) {
         (T::Bool, T::Bool) => {}
-        (T::Int, T::Int) => {}
-        (T::Float, T::Float) => {}
-        (T::Byte, T::Byte) => {}
+        (T::Num(num_a), T::Num(num_b)) => {
+            assert_eq!(num_a, num_b);
+        }
         (T::Array(item_a, repr_var_a), T::Array(item_b, repr_var_b)) => {
             graph.equate(*repr_var_a, *repr_var_b);
             equate_types(graph, item_a, item_b);

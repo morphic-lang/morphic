@@ -1,7 +1,7 @@
 use crate::annot_aliases::{FieldPath, UniqueInfo};
-pub use crate::data::first_order_ast::{self, BinOp, Comparison, VariantId};
+pub use crate::data::first_order_ast::{self, BinOp, Comparison, NumType, VariantId};
 use crate::data::purity::Purity;
-pub use crate::data::repr_annot_ast::{self, ExprId, LocalId, Term};
+pub use crate::data::repr_annot_ast::{self, ArithOp, ExprId, LocalId, Term};
 use im_rc::Vector;
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -9,13 +9,6 @@ use std::rc::Rc;
 id_type!(pub CustomFuncId);
 
 id_type!(pub CustomTypeId);
-
-#[derive(Clone, Copy, Debug)]
-pub enum NumType {
-    Int,
-    Byte,
-    Float,
-}
 
 #[derive(Clone, Copy, Debug)]
 pub enum Primitive {
@@ -55,29 +48,6 @@ pub struct TypeDef {
 pub enum IOOp {
     Input(Repr),
     Output(Term),
-}
-
-#[derive(Clone, Debug)]
-pub enum ArithOp {
-    Op(NumType, BinOp, Term, Term),
-    Cmp(NumType, Comparison, Term, Term),
-    Negate(NumType, Term),
-}
-impl From<crate::data::repr_annot_ast::ArithOp> for ArithOp {
-    fn from(arith_op: crate::data::repr_annot_ast::ArithOp) -> Self {
-        use crate::data::repr_annot_ast::ArithOp as A;
-        match arith_op {
-            A::IntOp(bin_op, left, right) => ArithOp::Op(NumType::Int, bin_op, left, right),
-            A::ByteOp(bin_op, left, right) => ArithOp::Op(NumType::Byte, bin_op, left, right),
-            A::FloatOp(bin_op, left, right) => ArithOp::Op(NumType::Float, bin_op, left, right),
-            A::IntCmp(cmp, left, right) => ArithOp::Cmp(NumType::Int, cmp, left, right),
-            A::ByteCmp(cmp, left, right) => ArithOp::Cmp(NumType::Byte, cmp, left, right),
-            A::FloatCmp(cmp, left, right) => ArithOp::Cmp(NumType::Float, cmp, left, right),
-            A::NegateInt(t) => ArithOp::Negate(NumType::Int, t),
-            A::NegateByte(t) => ArithOp::Negate(NumType::Byte, t),
-            A::NegateFloat(t) => ArithOp::Negate(NumType::Float, t),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]

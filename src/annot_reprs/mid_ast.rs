@@ -2,7 +2,9 @@ pub use super::out_ast::{
     Comparison, Constraint, ExprId, LocalId, Pattern, RepParamId, Type, TypeDef,
 };
 use crate::annot_aliases;
-pub use crate::data::first_order_ast::{self, BinOp, CustomFuncId, CustomTypeId, VariantId};
+pub use crate::data::first_order_ast::{
+    self, BinOp, CustomFuncId, CustomTypeId, NumType, VariantId,
+};
 use crate::data::purity::Purity;
 use crate::util::constraint_graph::SolverVarId;
 use im_rc::{vector, Vector};
@@ -17,15 +19,9 @@ pub enum IOOp {
 
 #[derive(Clone, Debug)]
 pub enum ArithOp {
-    IntOp(BinOp, Term, Term),
-    FloatOp(BinOp, Term, Term),
-    ByteOp(BinOp, Term, Term),
-    IntCmp(Comparison, Term, Term),
-    FloatCmp(Comparison, Term, Term),
-    ByteCmp(Comparison, Term, Term),
-    NegateInt(Term),
-    NegateFloat(Term),
-    NegateByte(Term),
+    Op(NumType, BinOp, Term, Term),
+    Cmp(NumType, Comparison, Term, Term),
+    Negate(NumType, Term),
 }
 
 // Terms do not have to be assigned to temps before being used.

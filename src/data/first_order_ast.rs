@@ -8,9 +8,7 @@ id_type!(pub CustomFuncId);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     Bool,
-    Byte,
-    Int,
-    Float,
+    Num(NumType),
     Array(Box<Type>),
     HoleArray(Box<Type>),
     Tuple(Vec<Type>),
@@ -30,6 +28,13 @@ pub enum IOOp {
     Output(Box<Expr>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NumType {
+    Byte,
+    Int,
+    Float,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BinOp {
     Add,
@@ -47,15 +52,9 @@ pub enum Comparison {
 
 #[derive(Clone, Debug)]
 pub enum ArithOp {
-    ByteOp(BinOp, Box<Expr>, Box<Expr>),
-    IntOp(BinOp, Box<Expr>, Box<Expr>),
-    FloatOp(BinOp, Box<Expr>, Box<Expr>),
-    ByteCmp(Comparison, Box<Expr>, Box<Expr>),
-    IntCmp(Comparison, Box<Expr>, Box<Expr>),
-    FloatCmp(Comparison, Box<Expr>, Box<Expr>),
-    NegateByte(Box<Expr>),
-    NegateInt(Box<Expr>),
-    NegateFloat(Box<Expr>),
+    Op(NumType, BinOp, Box<Expr>, Box<Expr>),
+    Cmp(NumType, Comparison, Box<Expr>, Box<Expr>),
+    Negate(NumType, Box<Expr>),
 }
 
 #[derive(Clone, Debug)]

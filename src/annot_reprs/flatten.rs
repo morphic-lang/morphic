@@ -50,9 +50,7 @@ pub fn instantiate_type(
 ) -> mid_ast::Type<SolverVarId> {
     match type_ {
         in_ast::Type::Bool => mid_ast::Type::Bool,
-        in_ast::Type::Int => mid_ast::Type::Int,
-        in_ast::Type::Byte => mid_ast::Type::Byte,
-        in_ast::Type::Float => mid_ast::Type::Float,
+        in_ast::Type::Num(num_type) => mid_ast::Type::Num(*num_type),
         in_ast::Type::Array(item_type) => mid_ast::Type::Array(
             Box::new(instantiate_type(graph, typedefs, item_type)),
             graph.new_var(),
@@ -89,43 +87,18 @@ fn flatten_expr_into(
     match expr {
         in_ast::Expr::ArithOp(in_arith_op) => {
             let out_arith_op = match in_arith_op {
-                in_ast::ArithOp::IntOp(op, left, right) => {
+                in_ast::ArithOp::Op(num_type, op, left, right) => {
                     let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
                     let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                    mid_ast::ArithOp::IntOp(*op, lterm, rterm)
+                    mid_ast::ArithOp::Op(*num_type, *op, lterm, rterm)
                 }
-                in_ast::ArithOp::FloatOp(op, left, right) => {
+                in_ast::ArithOp::Cmp(num_type, cmp, left, right) => {
                     let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
                     let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                    mid_ast::ArithOp::FloatOp(*op, lterm, rterm)
+                    mid_ast::ArithOp::Cmp(*num_type, *cmp, lterm, rterm)
                 }
-                in_ast::ArithOp::ByteOp(op, left, right) => {
-                    let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
-                    let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                    mid_ast::ArithOp::ByteOp(*op, lterm, rterm)
-                }
-                in_ast::ArithOp::IntCmp(op, left, right) => {
-                    let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
-                    let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                    mid_ast::ArithOp::IntCmp(*op, lterm, rterm)
-                }
-                in_ast::ArithOp::FloatCmp(op, left, right) => {
-                    let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
-                    let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                    mid_ast::ArithOp::FloatCmp(*op, lterm, rterm)
-                }
-                in_ast::ArithOp::ByteCmp(op, left, right) => {
-                    let lterm = flatten_expr_into(graph, typedefs, left, block, locals);
-                    let rterm = flatten_expr_into(graph, typedefs, right, block, locals);
-                    mid_ast::ArithOp::ByteCmp(*op, lterm, rterm)
-                }
-                in_ast::ArithOp::NegateInt(arg) => mid_ast::ArithOp::NegateInt(flatten_expr_into(
-                    graph, typedefs, arg, block, locals,
-                )),
-                in_ast::ArithOp::NegateByte(arg) => mid_ast::ArithOp::NegateByte(
-                    flatten_expr_into(graph, typedefs, arg, block, locals),
-                ),
-                in_ast::ArithOp::NegateFloat(arg) => mid_ast::ArithOp::NegateFloat(
+                in_ast::ArithOp::Negate(num_type, arg) => mid_ast::ArithOp::Negate(
+                    *num_type,
                     flatten_expr_into(graph, typedefs, arg, block, locals),
                 ),
             };

@@ -177,7 +177,7 @@ pub fn initialize_sigs_for_scc(
     ) {
         use mid_ast::Type as T;
         match type_ {
-            T::Bool | T::Int | T::Byte | T::Float => {}
+            T::Bool | T::Num(_) => {}
             T::Array(item_t, var) | T::HoleArray(item_t, var) => {
                 params.insert(equiv_classes.class(*var), BTreeSet::new());
                 add_equiv_class_params(equiv_classes, params, item_t);

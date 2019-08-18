@@ -1,6 +1,6 @@
 use crate::annot_aliases;
 pub use crate::data::first_order_ast::{
-    self, BinOp, Comparison, CustomFuncId, CustomTypeId, VariantId,
+    self, BinOp, Comparison, CustomFuncId, CustomTypeId, NumType, VariantId,
 };
 use crate::data::purity::Purity;
 use im_rc::Vector;
@@ -10,9 +10,7 @@ use std::rc::Rc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type<ReprVar = Solution> {
     Bool,
-    Int,
-    Byte,
-    Float,
+    Num(NumType),
     Array(Box<Type<ReprVar>>, ReprVar),
     HoleArray(Box<Type<ReprVar>>, ReprVar),
     Tuple(Vec<Type<ReprVar>>),
@@ -27,9 +25,7 @@ impl<T> From<&Type<T>> for first_order_ast::Type {
         use first_order_ast::Type as FOType;
         match t {
             Type::Bool => FOType::Bool,
-            Type::Int => FOType::Int,
-            Type::Byte => FOType::Byte,
-            Type::Float => FOType::Float,
+            Type::Num(num_type) => FOType::Num(*num_type),
             Type::Array(t, _) => FOType::Array(Box::new(From::from(&**t))),
             Type::HoleArray(t, _) => FOType::HoleArray(Box::new(From::from(&**t))),
             Type::Tuple(ts) => FOType::Tuple(ts.iter().map(From::from).collect()),
@@ -78,15 +74,9 @@ pub enum IOOp {
 
 #[derive(Clone, Debug)]
 pub enum ArithOp {
-    IntOp(BinOp, Term, Term),
-    ByteOp(BinOp, Term, Term),
-    FloatOp(BinOp, Term, Term),
-    IntCmp(Comparison, Term, Term),
-    ByteCmp(Comparison, Term, Term),
-    FloatCmp(Comparison, Term, Term),
-    NegateInt(Term),
-    NegateByte(Term),
-    NegateFloat(Term),
+    Op(NumType, BinOp, Term, Term),
+    Cmp(NumType, Comparison, Term, Term),
+    Negate(NumType, Term),
 }
 
 #[derive(Clone, Debug)]

@@ -265,9 +265,7 @@ fn lower_type(ctx: Context, state: &mut State, type_: &in_ast::Type) -> out_ast:
         use in_ast::Type as T;
         match type_ {
             T::Bool => out_ast::Type::Prim(out_ast::Primitive::Bool),
-            T::Int => out_ast::Type::Prim(out_ast::Primitive::Num(out_ast::NumType::Int)),
-            T::Byte => out_ast::Type::Prim(out_ast::Primitive::Num(out_ast::NumType::Byte)),
-            T::Float => out_ast::Type::Prim(out_ast::Primitive::Num(out_ast::NumType::Float)),
+            T::Num(num_type) => out_ast::Type::Prim(out_ast::Primitive::Num(*num_type)),
             T::Tuple(item_types) => out_ast::Type::Tuple(
                 item_types
                     .iter()

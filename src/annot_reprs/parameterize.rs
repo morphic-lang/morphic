@@ -35,7 +35,7 @@ pub fn parameterize_typedefs(
 
 fn add_dependencies(type_: &in_ast::Type, deps: &mut BTreeSet<in_ast::CustomTypeId>) {
     match type_ {
-        in_ast::Type::Bool | in_ast::Type::Int | in_ast::Type::Byte | in_ast::Type::Float => {}
+        in_ast::Type::Bool | in_ast::Type::Num(_) => {}
         in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
             add_dependencies(item, deps);
         }
@@ -55,7 +55,7 @@ fn count_params(
     type_: &in_ast::Type,
 ) -> usize {
     match type_ {
-        in_ast::Type::Bool | in_ast::Type::Int | in_ast::Type::Byte | in_ast::Type::Float => 0,
+        in_ast::Type::Bool | in_ast::Type::Num(_) => 0,
         in_ast::Type::Array(item) | in_ast::Type::HoleArray(item) => {
             1 + count_params(parameterized, item)
         }
@@ -144,9 +144,7 @@ fn parameterize(
 ) -> mid_ast::Type<mid_ast::RepParamId> {
     match type_ {
         in_ast::Type::Bool => mid_ast::Type::Bool,
-        in_ast::Type::Int => mid_ast::Type::Int,
-        in_ast::Type::Byte => mid_ast::Type::Byte,
-        in_ast::Type::Float => mid_ast::Type::Float,
+        &in_ast::Type::Num(num_type) => mid_ast::Type::Num(num_type),
 
         in_ast::Type::Array(item) => {
             let repr_param = id_gen.fresh();

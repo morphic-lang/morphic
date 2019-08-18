@@ -468,20 +468,12 @@ fn alias_track_expr(
             update_term_accesses(accesses, locals, term);
         }
         mid_ast::Expr::ArithOp(arith_op) => match arith_op {
-            mid_ast::ArithOp::IntOp(_, term1, term2)
-            | mid_ast::ArithOp::ByteOp(_, term1, term2)
-            | mid_ast::ArithOp::FloatOp(_, term1, term2)
-            | mid_ast::ArithOp::IntCmp(_, term1, term2)
-            | mid_ast::ArithOp::ByteCmp(_, term1, term2)
-            | mid_ast::ArithOp::FloatCmp(_, term1, term2) => {
+            mid_ast::ArithOp::Op(_, _, term1, term2)
+            | mid_ast::ArithOp::Cmp(_, _, term1, term2) => {
                 update_term_accesses(accesses, locals, term1);
                 update_term_accesses(accesses, locals, term2);
             }
-            mid_ast::ArithOp::NegateInt(term)
-            | mid_ast::ArithOp::NegateByte(term)
-            | mid_ast::ArithOp::NegateFloat(term) => {
-                update_term_accesses(accesses, locals, term);
-            }
+            mid_ast::ArithOp::Negate(_, term) => update_term_accesses(accesses, locals, term),
         },
         mid_ast::Expr::IOOp(mid_ast::IOOp::Input(_var)) => {
             // the array from input aliases nothing yet
@@ -760,10 +752,7 @@ pub fn get_names_in(
         prefix: FieldPath,
     ) {
         match type_ {
-            mid_ast::Type::Bool
-            | mid_ast::Type::Int
-            | mid_ast::Type::Byte
-            | mid_ast::Type::Float => {}
+            mid_ast::Type::Bool | mid_ast::Type::Num(_) => {}
             mid_ast::Type::Array(item_type, var) | mid_ast::Type::HoleArray(item_type, var) => {
                 // The array itself:
                 names.push(prefix.clone());

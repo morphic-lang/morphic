@@ -320,112 +320,81 @@ impl<'a> Context<'a> {
                             LeafFuncCase::ArithOp(op) => {
                                 debug_assert!(env_pat.is_none());
 
-                                use first_ord::Type::{Byte, Float, Int};
-
-                                fn byte_binop(binop: first_ord::BinOp) -> first_ord::Expr {
+                                fn binop(
+                                    num_type: first_ord::NumType,
+                                    op: first_ord::BinOp,
+                                ) -> first_ord::Expr {
                                     with_args(
-                                        vec![Byte, Byte],
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::ByteOp(
-                                            binop,
+                                        vec![
+                                            first_ord::Type::Num(num_type),
+                                            first_ord::Type::Num(num_type),
+                                        ],
+                                        first_ord::Expr::ArithOp(first_ord::ArithOp::Op(
+                                            num_type,
+                                            op,
                                             Box::new(local(2)),
                                             Box::new(local(3)),
                                         )),
                                     )
                                 }
 
-                                fn int_binop(binop: first_ord::BinOp) -> first_ord::Expr {
+                                fn cmp(
+                                    num_type: first_ord::NumType,
+                                    op: first_ord::Comparison,
+                                ) -> first_ord::Expr {
                                     with_args(
-                                        vec![Int, Int],
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::IntOp(
-                                            binop,
+                                        vec![
+                                            first_ord::Type::Num(num_type),
+                                            first_ord::Type::Num(num_type),
+                                        ],
+                                        first_ord::Expr::ArithOp(first_ord::ArithOp::Cmp(
+                                            num_type,
+                                            op,
                                             Box::new(local(2)),
                                             Box::new(local(3)),
                                         )),
                                     )
                                 }
 
-                                fn float_binop(binop: first_ord::BinOp) -> first_ord::Expr {
-                                    with_args(
-                                        vec![Float, Float],
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::FloatOp(
-                                            binop,
-                                            Box::new(local(2)),
-                                            Box::new(local(3)),
-                                        )),
-                                    )
+                                fn negate(num_type: first_ord::NumType) -> first_ord::Expr {
+                                    first_ord::Expr::ArithOp(first_ord::ArithOp::Negate(
+                                        num_type,
+                                        Box::new(ARG_LOCAL.clone()),
+                                    ))
                                 }
 
-                                fn byte_cmp(cmp: first_ord::Comparison) -> first_ord::Expr {
-                                    with_args(
-                                        vec![Byte, Byte],
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::ByteCmp(
-                                            cmp,
-                                            Box::new(local(2)),
-                                            Box::new(local(3)),
-                                        )),
-                                    )
-                                }
-
-                                fn int_cmp(cmp: first_ord::Comparison) -> first_ord::Expr {
-                                    with_args(
-                                        vec![Int, Int],
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::IntCmp(
-                                            cmp,
-                                            Box::new(local(2)),
-                                            Box::new(local(3)),
-                                        )),
-                                    )
-                                }
-
-                                fn float_cmp(cmp: first_ord::Comparison) -> first_ord::Expr {
-                                    with_args(
-                                        vec![Float, Float],
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::FloatCmp(
-                                            cmp,
-                                            Box::new(local(2)),
-                                            Box::new(local(3)),
-                                        )),
-                                    )
-                                }
+                                use first_ord::NumType::{Byte, Float, Int};
 
                                 match op {
-                                    Op::AddByte => byte_binop(first_ord::BinOp::Add),
-                                    Op::SubByte => byte_binop(first_ord::BinOp::Sub),
-                                    Op::MulByte => byte_binop(first_ord::BinOp::Mul),
-                                    Op::DivByte => byte_binop(first_ord::BinOp::Div),
-                                    Op::NegByte => first_ord::Expr::ArithOp(
-                                        first_ord::ArithOp::NegateByte(Box::new(ARG_LOCAL.clone())),
-                                    ),
+                                    Op::AddByte => binop(Byte, first_ord::BinOp::Add),
+                                    Op::SubByte => binop(Byte, first_ord::BinOp::Sub),
+                                    Op::MulByte => binop(Byte, first_ord::BinOp::Mul),
+                                    Op::DivByte => binop(Byte, first_ord::BinOp::Div),
+                                    Op::NegByte => negate(Byte),
 
-                                    Op::EqByte => byte_cmp(first_ord::Comparison::Equal),
-                                    Op::LtByte => byte_cmp(first_ord::Comparison::Less),
-                                    Op::LteByte => byte_cmp(first_ord::Comparison::LessEqual),
+                                    Op::EqByte => cmp(Byte, first_ord::Comparison::Equal),
+                                    Op::LtByte => cmp(Byte, first_ord::Comparison::Less),
+                                    Op::LteByte => cmp(Byte, first_ord::Comparison::LessEqual),
 
-                                    Op::AddInt => int_binop(first_ord::BinOp::Add),
-                                    Op::SubInt => int_binop(first_ord::BinOp::Sub),
-                                    Op::MulInt => int_binop(first_ord::BinOp::Mul),
-                                    Op::DivInt => int_binop(first_ord::BinOp::Div),
-                                    Op::NegInt => first_ord::Expr::ArithOp(
-                                        first_ord::ArithOp::NegateInt(Box::new(ARG_LOCAL.clone())),
-                                    ),
+                                    Op::AddInt => binop(Int, first_ord::BinOp::Add),
+                                    Op::SubInt => binop(Int, first_ord::BinOp::Sub),
+                                    Op::MulInt => binop(Int, first_ord::BinOp::Mul),
+                                    Op::DivInt => binop(Int, first_ord::BinOp::Div),
+                                    Op::NegInt => negate(Int),
 
-                                    Op::EqInt => int_cmp(first_ord::Comparison::Equal),
-                                    Op::LtInt => int_cmp(first_ord::Comparison::Less),
-                                    Op::LteInt => int_cmp(first_ord::Comparison::LessEqual),
+                                    Op::EqInt => cmp(Int, first_ord::Comparison::Equal),
+                                    Op::LtInt => cmp(Int, first_ord::Comparison::Less),
+                                    Op::LteInt => cmp(Int, first_ord::Comparison::LessEqual),
 
-                                    Op::AddFloat => float_binop(first_ord::BinOp::Add),
-                                    Op::SubFloat => float_binop(first_ord::BinOp::Sub),
-                                    Op::MulFloat => float_binop(first_ord::BinOp::Mul),
-                                    Op::DivFloat => float_binop(first_ord::BinOp::Div),
-                                    Op::NegFloat => {
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::NegateFloat(
-                                            Box::new(ARG_LOCAL.clone()),
-                                        ))
-                                    }
+                                    Op::AddFloat => binop(Float, first_ord::BinOp::Add),
+                                    Op::SubFloat => binop(Float, first_ord::BinOp::Sub),
+                                    Op::MulFloat => binop(Float, first_ord::BinOp::Mul),
+                                    Op::DivFloat => binop(Float, first_ord::BinOp::Div),
+                                    Op::NegFloat => negate(Float),
 
-                                    Op::EqFloat => float_cmp(first_ord::Comparison::Equal),
-                                    Op::LtFloat => float_cmp(first_ord::Comparison::Less),
-                                    Op::LteFloat => float_cmp(first_ord::Comparison::LessEqual),
+                                    Op::EqFloat => cmp(Float, first_ord::Comparison::Equal),
+                                    Op::LtFloat => cmp(Float, first_ord::Comparison::Less),
+                                    Op::LteFloat => cmp(Float, first_ord::Comparison::LessEqual),
                                 }
                             }
 
@@ -461,7 +430,7 @@ impl<'a> Context<'a> {
                                                 first_ord::Type::Array(Box::new(
                                                     lowered_item_type.clone(),
                                                 )),
-                                                first_ord::Type::Int,
+                                                first_ord::Type::Num(first_ord::NumType::Int),
                                             ],
                                             first_ord::Expr::Let(
                                                 first_ord::Pattern::Tuple(vec![
@@ -609,9 +578,9 @@ impl<'a> Context<'a> {
     fn lower_type(&mut self, type_: &special::Type) -> first_ord::Type {
         match type_ {
             special::Type::Bool => first_ord::Type::Bool,
-            special::Type::Byte => first_ord::Type::Byte,
-            special::Type::Int => first_ord::Type::Int,
-            special::Type::Float => first_ord::Type::Float,
+            special::Type::Byte => first_ord::Type::Num(first_ord::NumType::Byte),
+            special::Type::Int => first_ord::Type::Num(first_ord::NumType::Int),
+            special::Type::Float => first_ord::Type::Num(first_ord::NumType::Float),
 
             special::Type::Array(item_type) => {
                 first_ord::Type::Array(Box::new(self.lower_type(item_type)))

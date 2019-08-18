@@ -141,28 +141,14 @@ fn gen_expr(
         mid_ast::Expr::Term(term) => out_ast::Expr::Term(gen_term(term)),
         mid_ast::Expr::ArithOp(arith_op) => {
             let a = match arith_op {
-                mid_ast::ArithOp::IntOp(binop, left, right) => {
-                    out_ast::ArithOp::IntOp(*binop, gen_term(left), gen_term(right))
+                mid_ast::ArithOp::Op(num_type, op, left, right) => {
+                    out_ast::ArithOp::Op(*num_type, *op, gen_term(left), gen_term(right))
                 }
-                mid_ast::ArithOp::ByteOp(binop, left, right) => {
-                    out_ast::ArithOp::ByteOp(*binop, gen_term(left), gen_term(right))
+                mid_ast::ArithOp::Cmp(num_type, cmp, left, right) => {
+                    out_ast::ArithOp::Cmp(*num_type, *cmp, gen_term(left), gen_term(right))
                 }
-                mid_ast::ArithOp::FloatOp(binop, left, right) => {
-                    out_ast::ArithOp::FloatOp(*binop, gen_term(left), gen_term(right))
-                }
-                mid_ast::ArithOp::IntCmp(cmp, left, right) => {
-                    out_ast::ArithOp::IntCmp(*cmp, gen_term(left), gen_term(right))
-                }
-                mid_ast::ArithOp::ByteCmp(cmp, left, right) => {
-                    out_ast::ArithOp::ByteCmp(*cmp, gen_term(left), gen_term(right))
-                }
-                mid_ast::ArithOp::FloatCmp(cmp, left, right) => {
-                    out_ast::ArithOp::FloatCmp(*cmp, gen_term(left), gen_term(right))
-                }
-                mid_ast::ArithOp::NegateInt(term) => out_ast::ArithOp::NegateInt(gen_term(term)),
-                mid_ast::ArithOp::NegateByte(term) => out_ast::ArithOp::NegateByte(gen_term(term)),
-                mid_ast::ArithOp::NegateFloat(term) => {
-                    out_ast::ArithOp::NegateFloat(gen_term(term))
+                mid_ast::ArithOp::Negate(num_type, term) => {
+                    out_ast::ArithOp::Negate(*num_type, gen_term(term))
                 }
             };
             out_ast::Expr::ArithOp(a)
@@ -263,9 +249,7 @@ fn gen_type(
     use out_ast::Type as T;
     match type_ {
         T::Bool => T::Bool,
-        T::Int => T::Int,
-        T::Float => T::Float,
-        T::Byte => T::Byte,
+        T::Num(num_type) => T::Num(*num_type),
         T::Array(item_t, var) => T::Array(
             Box::new(gen_type(param_gen, item_t)),
             param_gen.soln_in_body_for(*var),
@@ -293,9 +277,7 @@ fn gen_sig_type(
     use out_ast::Type as T;
     match type_ {
         T::Bool => T::Bool,
-        T::Int => T::Int,
-        T::Byte => T::Byte,
-        T::Float => T::Float,
+        T::Num(num_type) => T::Num(*num_type),
         T::Array(item_t, var) => T::Array(
             Box::new(gen_sig_type(sig_gen, item_t)),
             sig_gen.soln_for(*var),
