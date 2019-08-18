@@ -86,7 +86,7 @@ pub enum ArrayOp {
     Item(
         Term, // Array
         Term, // Index
-    ), // Returns tuple of (item, (potentially wrapped) hole array)
+    ), // Returns tuple of (item, hole array)
     Len(Term),
     Push(
         Term, // Array
