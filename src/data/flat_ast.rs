@@ -58,9 +58,9 @@ pub enum Expr {
     Tuple(Vec<LocalId>),
     Call(Purity, first_ord::CustomFuncId, LocalId),
     Branch(LocalId, Vec<(Condition, Expr)>, first_ord::Type),
-    Let(
-        Box<Expr>, // rhs
-        Box<Expr>, // body
+    LetMany(
+        Vec<(first_ord::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        LocalId,                      // body
     ),
 
     UnwrapVariant(first_ord::CustomTypeId, first_ord::VariantId, LocalId),
@@ -88,7 +88,7 @@ pub enum Condition {
     FloatConst(f64),
 }
 
-const ARG_LOCAL: LocalId = LocalId(0);
+pub const ARG_LOCAL: LocalId = LocalId(0);
 
 #[derive(Clone, Debug)]
 pub struct FuncDef {

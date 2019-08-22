@@ -35,6 +35,8 @@ mod lower_closures;
 
 mod typecheck_first_order;
 
+mod flatten;
+
 mod annot_aliases;
 
 mod annot_reprs;
@@ -169,13 +171,15 @@ fn run<R: io::BufRead, W: io::Write>(
 
     let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);
 
-    println!("Lowering closures");
-
     let specialized = lower_reprs::lower_reprs(data_structure_annotated);
 
     println!("==============================================================");
     println!("============== Running program ===============================");
     println!("==============================================================");
+
+    let flat = flatten::flatten(first_order);
+
+    println!("Flat program: {:#?}", flat);
 
     interpreter::interpret(stdin, stdout, &specialized);
 
