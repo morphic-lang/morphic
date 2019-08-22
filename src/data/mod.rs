@@ -16,6 +16,8 @@ pub mod closure_specialized_ast;
 
 pub mod first_order_ast;
 
+pub mod flat_ast;
+
 pub mod repr_annot_ast;
 
 pub mod repr_specialized_ast;
