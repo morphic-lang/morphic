@@ -28,10 +28,10 @@ pub struct LocalName {
     pub path: FieldPath,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArgName(pub FieldPath);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RetName(pub FieldPath);
 
 /// Every name has a 'precision status' indicating whether alias analysis was able to precisely
@@ -59,14 +59,14 @@ pub struct RetName(pub FieldPath);
 ///
 /// Imprecision statuses are represented symbolically, as they may depend on contextual information
 /// from outside the current function.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Precision {
     // An unconditionally precise status is represented by an empty ImpreciseIfAny set.
     ImpreciseIfAny(BTreeSet<ImprecisionClause>),
     UnconditionallyImprecise,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImprecisionClause {
     ImpreciseIfAliased(NormPair<ArgName>),
     ImpreciseIfArgImprecise(ArgName),
@@ -159,7 +159,7 @@ pub enum Expr {
 /// Represents the aliasing edges incident on an abstract heap cell within the return value of a
 /// function, under the condition that none of the fields within the argument to the function alias
 /// each other.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReturnAliases {
     pub arg_edges: BTreeSet<ArgName>,
     pub ret_edges: BTreeSet<RetName>,

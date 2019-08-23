@@ -37,6 +37,8 @@ mod typecheck_first_order;
 
 mod flatten;
 
+mod annot_aliases_alt;
+
 mod annot_aliases;
 
 mod annot_reprs;
