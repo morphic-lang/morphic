@@ -1,11 +1,10 @@
-use im_rc::Vector;
-use std::collections::{BTreeMap, BTreeSet};
+use im_rc::{OrdMap, OrdSet, Vector};
 
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
-use crate::util::norm_pair::NormPair;
 use crate::util::id_vec::IdVec;
+use crate::util::norm_pair::NormPair;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Field {
@@ -22,7 +21,7 @@ pub enum Field {
 
 pub type FieldPath = Vector<Field>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LocalName {
     pub var: flat::LocalId,
     pub path: FieldPath,
@@ -62,11 +61,11 @@ pub struct RetName(pub FieldPath);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Precision {
     // An unconditionally precise status is represented by an empty ImpreciseIfAny set.
-    ImpreciseIfAny(BTreeSet<ImprecisionClause>),
+    ImpreciseIfAny(OrdSet<ImprecisionClause>),
     UnconditionallyImprecise,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImprecisionClause {
     ImpreciseIfAliased(NormPair<ArgName>),
     ImpreciseIfArgImprecise(ArgName),
@@ -76,7 +75,7 @@ pub enum ImprecisionClause {
 /// that none of the fields within the argument to the current function alias each other.
 #[derive(Clone, Debug)]
 pub struct LocalAliases {
-    pub edges: BTreeSet<LocalName>,
+    pub edges: OrdSet<LocalName>,
     pub precision: Precision,
 }
 
@@ -137,7 +136,7 @@ pub enum Expr {
         first_ord::CustomFuncId,
         // Aliases from argument fields (keys) to other names in scope (values) (which may
         // potentially also be fields of the argument)
-        BTreeMap<FieldPath, LocalAliases>,
+        OrdMap<FieldPath, LocalAliases>,
         flat::LocalId, // Argument
     ),
     Branch(flat::LocalId, Vec<(flat::Condition, Expr)>, first_ord::Type),
@@ -161,8 +160,8 @@ pub enum Expr {
 /// each other.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReturnAliases {
-    pub arg_edges: BTreeSet<ArgName>,
-    pub ret_edges: BTreeSet<RetName>,
+    pub arg_edges: OrdSet<ArgName>,
+    pub ret_edges: OrdSet<RetName>,
     pub precision: Precision,
 }
 
@@ -172,7 +171,7 @@ pub struct FuncDef {
     pub arg_type: first_ord::Type,
     pub ret_type: first_ord::Type,
     // Aliases from return value fields (keys) to argument and return value fields (values)
-    pub ret_field_aliases: BTreeMap<RetName, ReturnAliases>,
+    pub ret_field_aliases: OrdMap<RetName, ReturnAliases>,
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument.
     pub body: Expr,

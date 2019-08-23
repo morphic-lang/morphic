@@ -4,7 +4,7 @@ use crate::util::id_vec::IdVec;
 
 id_type!(pub LocalId);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ArithOp {
     Op(first_ord::NumType, first_ord::BinOp, LocalId, LocalId),
     Cmp(first_ord::NumType, first_ord::Comparison, LocalId, LocalId),

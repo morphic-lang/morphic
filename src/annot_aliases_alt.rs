@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use im_rc::{OrdMap, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_annot_ast as annot;
@@ -94,13 +94,77 @@ impl<'a> SignatureAssumptions<'a> {
     fn sig_of(
         &self,
         func: &first_ord::CustomFuncId,
-    ) -> Cow<'a, BTreeMap<annot::RetName, annot::ReturnAliases>> {
+    ) -> OrdMap<annot::RetName, annot::ReturnAliases> {
         if let Some(func_def) = &self.known_defs[func] {
-            Cow::Borrowed(&func_def.ret_field_aliases)
+            OrdMap::clone(&func_def.ret_field_aliases)
         } else if let Some(provisional_defs) = &self.provisional_defs {
-            Cow::Borrowed(&provisional_defs[func].ret_field_aliases)
+            OrdMap::clone(&provisional_defs[func].ret_field_aliases)
         } else {
-            Cow::Owned(BTreeMap::new())
+            OrdMap::new()
+        }
+    }
+}
+
+// Computes the fields in `type_` at which there is a name
+fn get_names_in(
+    type_defs: &IdVec<first_ord::CustomTypeId, first_ord::TypeDef>,
+    type_: &first_ord::Type,
+) -> Vec<annot::FieldPath> {
+    let mut names = Vec::new();
+    add_names_from_type(
+        type_defs,
+        &mut names,
+        &mut BTreeSet::new(),
+        type_,
+        Vector::new(),
+    );
+    return names;
+
+    // Recursively appends paths to names in `type_` to `names`
+    fn add_names_from_type(
+        type_defs: &IdVec<first_ord::CustomTypeId, first_ord::TypeDef>,
+        names: &mut Vec<annot::FieldPath>,
+        typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
+        type_: &first_ord::Type,
+        prefix: annot::FieldPath,
+    ) {
+        match type_ {
+            first_ord::Type::Bool | first_ord::Type::Num(_) => {}
+            first_ord::Type::Array(item_type) | first_ord::Type::HoleArray(item_type) => {
+                // The array itself:
+                names.push(prefix.clone());
+                // The names in elements of the array:
+                let mut new_prefix = prefix.clone();
+                new_prefix.push_back(annot::Field::ArrayMembers);
+                add_names_from_type(type_defs, names, typedefs_on_path, item_type, new_prefix);
+            }
+            first_ord::Type::Tuple(item_types) => {
+                for (i, item_type) in item_types.iter().enumerate() {
+                    let mut new_prefix = prefix.clone();
+                    new_prefix.push_back(annot::Field::Field(i));
+                    add_names_from_type(type_defs, names, typedefs_on_path, item_type, new_prefix);
+                }
+            }
+            first_ord::Type::Custom(id) => {
+                if !typedefs_on_path.contains(id) {
+                    typedefs_on_path.insert(*id);
+                    for (variant_id, variant) in &type_defs[id].variants {
+                        if let Some(variant_type) = variant {
+                            let mut variant_prefix = prefix.clone();
+                            variant_prefix.push_back(annot::Field::Variant(*id, variant_id));
+                            add_names_from_type(
+                                type_defs,
+                                names,
+                                typedefs_on_path,
+                                variant_type,
+                                variant_prefix,
+                            );
+                        }
+                    }
+                    // Remove if we added it
+                    typedefs_on_path.remove(id);
+                }
+            }
         }
     }
 }
@@ -162,5 +226,134 @@ fn annot_scc_fixed_point(
         }
 
         defs = iterated_defs;
+    }
+}
+
+// TODO: make these tests ignore order where it is irrelevant (e.g. edge lists)
+#[cfg(test)]
+mod test {
+    use super::*;
+    use im_rc::vector;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn test_get_names_in() {
+        fn set<T: Ord>(v: Vec<T>) -> BTreeSet<T> {
+            use std::iter::FromIterator;
+            BTreeSet::from_iter(v.into_iter())
+        }
+        let with_single_recursive_type = IdVec::from_items(vec![first_ord::TypeDef {
+            variants: IdVec::from_items(vec![
+                Some(first_ord::Type::Tuple(vec![
+                    first_ord::Type::Array(Box::new(first_ord::Type::Num(
+                        first_ord::NumType::Byte,
+                    ))),
+                    first_ord::Type::Custom(first_ord::CustomTypeId(0)),
+                ])),
+                Some(first_ord::Type::Num(first_ord::NumType::Byte)),
+                Some(first_ord::Type::HoleArray(Box::new(first_ord::Type::Num(
+                    first_ord::NumType::Byte,
+                )))),
+                None,
+            ]),
+        }]);
+        let mapping: Vec<(
+            IdVec<first_ord::CustomTypeId, first_ord::TypeDef>,
+            first_ord::Type,
+            BTreeSet<annot::FieldPath>,
+        )> = vec![
+            // Types without names:
+            (
+                IdVec::new(),
+                first_ord::Type::Tuple(vec![
+                    first_ord::Type::Num(first_ord::NumType::Byte),
+                    first_ord::Type::Num(first_ord::NumType::Float),
+                ]),
+                set(vec![]),
+            ),
+            (
+                IdVec::from_items(vec![first_ord::TypeDef {
+                    variants: IdVec::from_items(vec![
+                        Some(first_ord::Type::Num(first_ord::NumType::Byte)),
+                        None,
+                    ]),
+                }]),
+                first_ord::Type::Tuple(vec![first_ord::Type::Custom(first_ord::CustomTypeId(0))]),
+                set(vec![]),
+            ),
+            // Types with names, no typedefs:
+            (
+                IdVec::new(),
+                first_ord::Type::Array(Box::new(first_ord::Type::Num(first_ord::NumType::Byte))),
+                set(vec![vector![]]),
+            ),
+            (
+                IdVec::new(),
+                first_ord::Type::Array(Box::new(first_ord::Type::Array(Box::new(
+                    first_ord::Type::Num(first_ord::NumType::Int),
+                )))),
+                set(vec![vector![], vector![annot::Field::ArrayMembers]]),
+            ),
+            // Recursive types:
+            (
+                IdVec::new(),
+                first_ord::Type::Tuple(vec![
+                    first_ord::Type::Num(first_ord::NumType::Float),
+                    first_ord::Type::Array(Box::new(first_ord::Type::Tuple(vec![
+                        first_ord::Type::Array(Box::new(first_ord::Type::Bool)),
+                        first_ord::Type::Num(first_ord::NumType::Byte),
+                        first_ord::Type::HoleArray(Box::new(first_ord::Type::Bool)),
+                    ]))),
+                ]),
+                set(vec![
+                    vector![annot::Field::Field(1)],
+                    vector![
+                        annot::Field::Field(1),
+                        annot::Field::ArrayMembers,
+                        annot::Field::Field(0)
+                    ],
+                    vector![
+                        annot::Field::Field(1),
+                        annot::Field::ArrayMembers,
+                        annot::Field::Field(2)
+                    ],
+                ]),
+            ),
+            (
+                with_single_recursive_type.clone(),
+                first_ord::Type::Custom(first_ord::CustomTypeId(0)),
+                set(vec![
+                    vector![
+                        annot::Field::Variant(first_ord::CustomTypeId(0), first_ord::VariantId(0)),
+                        annot::Field::Field(0)
+                    ],
+                    vector![annot::Field::Variant(
+                        first_ord::CustomTypeId(0),
+                        first_ord::VariantId(2)
+                    )],
+                ]),
+            ),
+            (
+                with_single_recursive_type.clone(),
+                first_ord::Type::Array(Box::new(first_ord::Type::Custom(first_ord::CustomTypeId(
+                    0,
+                )))),
+                set(vec![
+                    vector![],
+                    vector![
+                        annot::Field::ArrayMembers,
+                        annot::Field::Variant(first_ord::CustomTypeId(0), first_ord::VariantId(0)),
+                        annot::Field::Field(0)
+                    ],
+                    vector![
+                        annot::Field::ArrayMembers,
+                        annot::Field::Variant(first_ord::CustomTypeId(0), first_ord::VariantId(2))
+                    ],
+                ]),
+            ),
+        ];
+        for (typedefs, type_, expected_names) in mapping {
+            assert_eq!(set(get_names_in(&typedefs, &type_)), expected_names);
+        }
     }
 }
