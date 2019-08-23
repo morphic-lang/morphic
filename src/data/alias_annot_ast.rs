@@ -22,12 +22,6 @@ pub enum Field {
 pub type FieldPath = Vector<Field>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LocalName {
-    pub var: flat::LocalId,
-    pub path: FieldPath,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArgName(pub FieldPath);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -75,7 +69,7 @@ pub enum ImprecisionClause {
 /// that none of the fields within the argument to the current function alias each other.
 #[derive(Clone, Debug)]
 pub struct LocalAliases {
-    pub edges: OrdSet<LocalName>,
+    pub edges: OrdSet<(flat::LocalId, FieldPath)>,
     pub precision: Precision,
 }
 

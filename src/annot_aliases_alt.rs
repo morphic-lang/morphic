@@ -1,4 +1,4 @@
-use im_rc::{OrdMap, Vector};
+use im_rc::{OrdMap, OrdSet, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_annot_ast as annot;
@@ -166,6 +166,132 @@ fn get_names_in(
                 }
             }
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LocalInfo {
+    type_: first_ord::Type,
+    aliases: OrdMap<annot::FieldPath, OrdSet<(flat::LocalId, annot::FieldPath)>>,
+    precisions: OrdMap<annot::FieldPath, annot::Precision>,
+}
+
+// Aliasing information for an unnamed value
+#[derive(Clone, Debug)]
+struct ValInfo {
+    aliases: OrdMap<annot::FieldPath, OrdSet<(flat::LocalId, annot::FieldPath)>>,
+
+    // Invariant: `rev_aliases` should store exactly the same information as `aliases`, only with
+    // the edges represented as references going the opposite direction.  This is useful for reverse
+    // lookups.
+    rev_aliases: OrdMap<flat::LocalId, OrdMap<annot::FieldPath, OrdSet<annot::FieldPath>>>,
+
+    // Invariant: edges in this graph should be symmetric (if there is an edge a -> b, there should
+    // also be an edge b -> a).
+    self_aliases: OrdMap<annot::FieldPath, OrdSet<annot::FieldPath>>,
+
+    precisions: OrdMap<annot::FieldPath, annot::Precision>,
+}
+
+impl ValInfo {
+    fn new_with_paths<Paths: Iterator<Item = annot::FieldPath>>(paths: Paths) -> Self {
+        let mut aliases = OrdMap::new();
+        let mut self_aliases = OrdMap::new();
+        let mut precisions = OrdMap::new();
+
+        for path in paths {
+            aliases.insert(path.clone(), OrdSet::new());
+            self_aliases.insert(path.clone(), OrdSet::new());
+            precisions.insert(path, annot::Precision::ImpreciseIfAny(OrdSet::new()));
+        }
+
+        ValInfo {
+            aliases,
+            rev_aliases: OrdMap::new(),
+            self_aliases,
+            precisions,
+        }
+    }
+
+    #[inline]
+    fn assert_path(&self, path: &annot::FieldPath) {
+        debug_assert!(self.aliases.contains_key(path));
+        debug_assert!(self.self_aliases.contains_key(path));
+        debug_assert!(self.precisions.contains_key(path));
+    }
+
+    fn add_local_edge(
+        &mut self,
+        self_path: annot::FieldPath,
+        local_name: (flat::LocalId, annot::FieldPath),
+    ) {
+        self.assert_path(&self_path);
+
+        self.aliases[&self_path].insert(local_name.clone());
+
+        self.rev_aliases
+            .entry(local_name.0)
+            .or_default()
+            .entry(local_name.1)
+            .or_default()
+            .insert(self_path);
+    }
+
+    fn add_self_edge(&mut self, path1: annot::FieldPath, path2: annot::FieldPath) {
+        self.assert_path(&path1);
+        self.assert_path(&path2);
+
+        if path1 != path2 {
+            self.self_aliases[&path1].insert(path2.clone());
+            self.self_aliases[&path2].insert(path1);
+        }
+    }
+}
+
+fn annot_expr(
+    orig: &flat::Program,
+    sigs: &SignatureAssumptions,
+    ctx: &OrdMap<flat::LocalId, LocalInfo>,
+    expr: &flat::Expr,
+) -> (annot::Expr, ValInfo) {
+    match expr {
+        flat::Expr::ArithOp(op) => (
+            annot::Expr::ArithOp(*op),
+            ValInfo::new_with_paths(std::iter::empty()),
+        ),
+
+        flat::Expr::ArrayOp(_) => unimplemented!(),
+
+        flat::Expr::IOOp(_) => unimplemented!(),
+
+        flat::Expr::Local(local_id) => {
+            let local_info = &ctx[local_id];
+
+            let paths = get_names_in(&orig.custom_types, &local_info.type_);
+
+            let mut val_info = ValInfo::new_with_paths(paths.iter().cloned());
+
+            for path in paths {
+                // Inherit precision flag
+                val_info.precisions[&path] = local_info.precisions[&path].clone();
+
+                // Wire up old and new names one-to-one
+                val_info.add_local_edge(path.clone(), (*local_id, path.clone()));
+
+                // Wire up transitive edges
+                for (other_id, other_path) in &local_info.aliases[&path] {
+                    val_info.add_local_edge(path.clone(), (*other_id, other_path.clone()));
+
+                    if other_id == local_id {
+                        val_info.add_self_edge(path.clone(), other_path.clone());
+                    }
+                }
+            }
+
+            (annot::Expr::Local(*local_id), val_info)
+        }
+
+        _ => unimplemented!(),
     }
 }
 
