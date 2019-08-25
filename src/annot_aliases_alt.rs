@@ -194,23 +194,26 @@ struct ValInfo {
 }
 
 impl ValInfo {
-    fn new_with_paths<Paths: Iterator<Item = annot::FieldPath>>(paths: Paths) -> Self {
-        let mut aliases = OrdMap::new();
-        let mut self_aliases = OrdMap::new();
-        let mut precisions = OrdMap::new();
-
-        for path in paths {
-            aliases.insert(path.clone(), OrdSet::new());
-            self_aliases.insert(path.clone(), OrdSet::new());
-            precisions.insert(path, annot::Precision::ImpreciseIfAny(OrdSet::new()));
-        }
-
+    fn new() -> Self {
         ValInfo {
-            aliases,
+            aliases: OrdMap::new(),
             rev_aliases: OrdMap::new(),
-            self_aliases,
-            precisions,
+            self_aliases: OrdMap::new(),
+            precisions: OrdMap::new(),
         }
+    }
+
+    fn create_path(&mut self, path: annot::FieldPath) {
+        debug_assert!(
+            !self.aliases.contains_key(&path),
+            "Alias analysis attempted to create a name that already exists.  While this is in and \
+             of itself harmless, it probably indicates a logic error."
+        );
+
+        self.aliases.insert(path.clone(), OrdSet::new());
+        self.self_aliases.insert(path.clone(), OrdSet::new());
+        self.precisions
+            .insert(path, annot::Precision::ImpreciseIfAny(OrdSet::new()));
     }
 
     #[inline]
@@ -227,6 +230,12 @@ impl ValInfo {
     ) {
         self.assert_path(&self_path);
 
+        debug_assert!(
+            !self.aliases[&self_path].contains(&local_name),
+            "Alias analysis attempted to create an edge that already exists.  While this is in and \
+            of itself harmless, it probably indicates a logic error."
+        );
+
         self.aliases[&self_path].insert(local_name.clone());
 
         self.rev_aliases
@@ -241,24 +250,31 @@ impl ValInfo {
         self.assert_path(&path1);
         self.assert_path(&path2);
 
-        if path1 != path2 {
-            self.self_aliases[&path1].insert(path2.clone());
-            self.self_aliases[&path2].insert(path1);
-        }
+        debug_assert_ne!(
+            &path1, &path2,
+            "The 'aliases' relation is reflexive by definition, so we should never need to \
+             explicitly connect a name to itself."
+        );
+
+        debug_assert!(
+            !self.self_aliases[&path1].contains(&path2),
+            "Alias analysis attempted to create a self-edge that already exists.  While this is in \
+             and of itself harmless, it probably indicates a logic error."
+        );
+
+        self.self_aliases[&path1].insert(path2.clone());
+        self.self_aliases[&path2].insert(path1);
     }
 }
 
 fn annot_expr(
     orig: &flat::Program,
-    sigs: &SignatureAssumptions,
+    _sigs: &SignatureAssumptions,
     ctx: &OrdMap<flat::LocalId, LocalInfo>,
     expr: &flat::Expr,
 ) -> (annot::Expr, ValInfo) {
     match expr {
-        flat::Expr::ArithOp(op) => (
-            annot::Expr::ArithOp(*op),
-            ValInfo::new_with_paths(std::iter::empty()),
-        ),
+        flat::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), ValInfo::new()),
 
         flat::Expr::ArrayOp(_) => unimplemented!(),
 
@@ -267,11 +283,11 @@ fn annot_expr(
         flat::Expr::Local(local_id) => {
             let local_info = &ctx[local_id];
 
-            let paths = get_names_in(&orig.custom_types, &local_info.type_);
+            let mut val_info = ValInfo::new();
 
-            let mut val_info = ValInfo::new_with_paths(paths.iter().cloned());
+            for path in get_names_in(&orig.custom_types, &local_info.type_) {
+                val_info.create_path(path.clone());
 
-            for path in paths {
                 // Inherit precision flag
                 val_info.precisions[&path] = local_info.precisions[&path].clone();
 
@@ -281,7 +297,10 @@ fn annot_expr(
                 // Wire up transitive edges
                 for (other_id, other_path) in &local_info.aliases[&path] {
                     val_info.add_local_edge(path.clone(), (*other_id, other_path.clone()));
+                }
 
+                // Wire up inherited self-edges
+                for (other_id, other_path) in &local_info.aliases[&path] {
                     if other_id == local_id {
                         val_info.add_self_edge(path.clone(), other_path.clone());
                     }
@@ -289,6 +308,69 @@ fn annot_expr(
             }
 
             (annot::Expr::Local(*local_id), val_info)
+        }
+
+        flat::Expr::Tuple(items) => {
+            let mut val_info = ValInfo::new();
+
+            for (idx, item) in items.iter().enumerate() {
+                let item_info = &ctx[item];
+
+                let item_paths = get_names_in(&orig.custom_types, &item_info.type_);
+
+                for item_path in item_paths {
+                    let mut tuple_path = item_path.clone();
+                    tuple_path.push_front(annot::Field::Field(idx));
+
+                    val_info.create_path(tuple_path.clone());
+
+                    // Inherit precision flag
+                    val_info.precisions[&tuple_path] = item_info.precisions[&item_path].clone();
+
+                    // Wire up transitive edges to other fields of the tuple currently under
+                    // construction.
+                    //
+                    // We are careful to do this before wiring up this path in the item and in the
+                    // tuple one-to-one, to avoid creating a redundant reflexive edge.
+
+                    // This next expression looks complicated, but it's really just getting
+                    // `val_info.rev_aliases[item][item_path]` if it exists, and an empty set
+                    // otherwise.
+                    let trans_self_aliases = val_info
+                        .rev_aliases
+                        .get(&item)
+                        .cloned() // These are persistent structures, so clones are cheap
+                        .unwrap_or_default()
+                        .get(&item_path)
+                        .cloned()
+                        .unwrap_or_default();
+                    for other_tuple_path in trans_self_aliases {
+                        val_info.add_self_edge(tuple_path.clone(), other_tuple_path);
+                    }
+
+                    // Wire up item and tuple names one-to-one
+                    val_info.add_local_edge(tuple_path.clone(), (*item, item_path.clone()));
+
+                    // Wire up transitive edges to locals
+                    for (other_id, other_path) in &item_info.aliases[&item_path] {
+                        val_info
+                            .add_local_edge(tuple_path.clone(), (*other_id, other_path.clone()));
+                    }
+
+                    // Wire up inherited self edges
+                    for (other_id, other_path) in &item_info.aliases[&item_path] {
+                        if other_id == item {
+                            // Inherited self edge
+                            let mut other_tuple_path = other_path.clone();
+                            other_tuple_path.push_front(annot::Field::Field(idx));
+
+                            val_info.add_self_edge(tuple_path.clone(), other_tuple_path);
+                        }
+                    }
+                }
+            }
+
+            (annot::Expr::Tuple(items.clone()), val_info)
         }
 
         _ => unimplemented!(),
