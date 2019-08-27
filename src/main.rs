@@ -35,6 +35,8 @@ mod lower_closures;
 
 mod typecheck_first_order;
 
+mod split_custom_types;
+
 mod flatten;
 
 mod annot_aliases_alt;
@@ -178,6 +180,8 @@ fn run<R: io::BufRead, W: io::Write>(
     println!("==============================================================");
     println!("============== Running program ===============================");
     println!("==============================================================");
+
+    let _split = split_custom_types::split_custom_types(&first_order);
 
     let flat = flatten::flatten(first_order);
 
