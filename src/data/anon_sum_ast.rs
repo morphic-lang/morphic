@@ -7,9 +7,9 @@
 // Note that even in the presence of anonymous sum types, custom types are still absolutely
 // necessary, because they provide the only mechanism for expressing recursive types.
 
+use crate::data::first_order_ast as first_ord;
 use crate::data::purity::Purity;
 use crate::util::id_vec::IdVec;
-use crate::data::first_order_ast as first_ord;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
@@ -32,7 +32,12 @@ pub enum IOOp {
 #[derive(Clone, Debug)]
 pub enum ArithOp {
     Op(first_ord::NumType, first_ord::BinOp, Box<Expr>, Box<Expr>),
-    Cmp(first_ord::NumType, first_ord::Comparison, Box<Expr>, Box<Expr>),
+    Cmp(
+        first_ord::NumType,
+        first_ord::Comparison,
+        Box<Expr>,
+        Box<Expr>,
+    ),
     Negate(first_ord::NumType, Box<Expr>),
 }
 
@@ -75,7 +80,11 @@ pub enum Expr {
     ),
 
     Tuple(Vec<Expr>),
-    WrapVariant(IdVec<first_ord::VariantId, Type>, first_ord::VariantId, Box<Expr>),
+    WrapVariant(
+        IdVec<first_ord::VariantId, Type>,
+        first_ord::VariantId,
+        Box<Expr>,
+    ),
     WrapCustom(first_ord::CustomTypeId, Box<Expr>),
 
     ArithOp(ArithOp),
@@ -94,7 +103,11 @@ pub enum Pattern {
     Any(Type),
     Var(Type),
     Tuple(Vec<Pattern>),
-    Variant(first_ord::VariantId, Box<Pattern>),
+    Variant(
+        IdVec<first_ord::VariantId, Type>,
+        first_ord::VariantId,
+        Box<Pattern>,
+    ),
     Custom(first_ord::CustomTypeId, Box<Pattern>),
     BoolConst(bool),
     ByteConst(u8),

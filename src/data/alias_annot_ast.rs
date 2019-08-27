@@ -1,5 +1,6 @@
 use im_rc::{OrdMap, OrdSet, Vector};
 
+use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
@@ -8,14 +9,9 @@ use crate::util::norm_pair::NormPair;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Field {
-    Variant(
-        // It is not strictly necessary to include the type id here, but it enables useful sanity
-        // checks and reduces the need to pass around contextual information in some places (TODO:
-        // Is this really true?)
-        first_ord::CustomTypeId,
-        first_ord::VariantId,
-    ),
     Field(usize),
+    Variant(first_ord::VariantId),
+    Custom(first_ord::CustomTypeId),
     ArrayMembers,
 }
 
@@ -116,15 +112,7 @@ pub enum IOOp {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    ArithOp(flat::ArithOp),
-    ArrayOp(ArrayOp),
-    Ctor(
-        first_ord::CustomTypeId,
-        first_ord::VariantId,
-        Option<flat::LocalId>,
-    ),
     Local(flat::LocalId),
-    Tuple(Vec<flat::LocalId>),
     Call(
         Purity,
         first_ord::CustomFuncId,
@@ -139,8 +127,20 @@ pub enum Expr {
         flat::LocalId,                // body
     ),
 
-    UnwrapVariant(first_ord::CustomTypeId, first_ord::VariantId, flat::LocalId),
+    Tuple(Vec<flat::LocalId>),
     TupleField(first_ord::LocalId, usize),
+    WrapVariant(
+        IdVec<first_ord::VariantId, anon::Type>,
+        first_ord::VariantId,
+        flat::LocalId,
+    ),
+    UnwrapVariant(first_ord::VariantId, flat::LocalId),
+    WrapCustom(first_ord::CustomTypeId, flat::LocalId),
+    UnwrapCustom(first_ord::CustomTypeId, flat::LocalId),
+
+    ArithOp(flat::ArithOp),
+    ArrayOp(ArrayOp),
+    IOOp(IOOp),
 
     ArrayLit(first_ord::Type, Vec<flat::LocalId>),
     BoolLit(bool),
@@ -173,7 +173,7 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub custom_types: IdVec<first_ord::CustomTypeId, first_ord::TypeDef>,
+    pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub main: first_ord::CustomFuncId,
 }

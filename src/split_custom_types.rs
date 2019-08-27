@@ -14,7 +14,7 @@ pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
         purity: func_def.purity,
         arg_type: trans_type(&func_def.arg_type),
         ret_type: trans_type(&func_def.ret_type),
-        arg: trans_pattern(&func_def.arg),
+        arg: trans_pattern(&program.custom_types, &func_def.arg),
         body: trans_expr(&program.custom_types, &func_def.body),
     });
 
@@ -152,13 +152,13 @@ fn trans_expr(
             Box::new(trans_expr(typedefs, discrim)),
             cases
                 .iter()
-                .map(|(pat, body)| (trans_pattern(pat), trans_expr(typedefs, body)))
+                .map(|(pat, body)| (trans_pattern(typedefs, pat), trans_expr(typedefs, body)))
                 .collect(),
             trans_type(result_type),
         ),
 
         first_ord::Expr::Let(lhs, rhs, body) => anon::Expr::Let(
-            trans_pattern(lhs),
+            trans_pattern(typedefs, lhs),
             Box::new(trans_expr(typedefs, rhs)),
             Box::new(trans_expr(typedefs, body)),
         ),
@@ -178,19 +178,26 @@ fn trans_expr(
     }
 }
 
-fn trans_pattern(pat: &first_ord::Pattern) -> anon::Pattern {
+fn trans_pattern(
+    typedefs: &IdVec<first_ord::CustomTypeId, first_ord::TypeDef>,
+    pat: &first_ord::Pattern,
+) -> anon::Pattern {
     match pat {
         first_ord::Pattern::Any(type_) => anon::Pattern::Any(trans_type(type_)),
         first_ord::Pattern::Var(type_) => anon::Pattern::Var(trans_type(type_)),
-        first_ord::Pattern::Tuple(items) => {
-            anon::Pattern::Tuple(items.iter().map(trans_pattern).collect())
-        }
+        first_ord::Pattern::Tuple(items) => anon::Pattern::Tuple(
+            items
+                .iter()
+                .map(|item| trans_pattern(typedefs, item))
+                .collect(),
+        ),
         first_ord::Pattern::Ctor(type_id, variant, content) => anon::Pattern::Custom(
             *type_id,
             Box::new(anon::Pattern::Variant(
+                trans_variants(&typedefs[type_id].variants),
                 *variant,
                 Box::new(match content {
-                    Some(content) => trans_pattern(content),
+                    Some(content) => trans_pattern(typedefs, content),
                     None => anon::Pattern::Tuple(Vec::new()),
                 }),
             )),
