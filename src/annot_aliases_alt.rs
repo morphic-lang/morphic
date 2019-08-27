@@ -265,6 +265,19 @@ impl ValInfo {
         self.self_aliases[&path1].insert(path2.clone());
         self.self_aliases[&path2].insert(path1);
     }
+
+    fn rev_aliases_of(
+        &self,
+        local_id: flat::LocalId,
+        local_path: &annot::FieldPath,
+    ) -> OrdSet<annot::FieldPath> {
+        if let Some(rev_aliases_for_local) = self.rev_aliases.get(&local_id) {
+            if let Some(rev_aliases_for_path) = rev_aliases_for_local.get(local_path) {
+                return rev_aliases_for_path.clone();
+            }
+        }
+        OrdSet::new()
+    }
 }
 
 fn annot_expr(
@@ -291,19 +304,20 @@ fn annot_expr(
                 // Inherit precision flag
                 val_info.precisions[&path] = local_info.precisions[&path].clone();
 
+                // Wire up transitive edges to self
+                //
+                // We are careful to do this before wiring up this path in the value and the local
+                // one-to-one, to avoid creating a redundant reflexive edge.
+                for other_self_path in val_info.rev_aliases_of(*local_id, &path) {
+                    val_info.add_self_edge(path.clone(), other_self_path);
+                }
+
                 // Wire up old and new names one-to-one
                 val_info.add_local_edge(path.clone(), (*local_id, path.clone()));
 
-                // Wire up transitive edges
+                // Wire up transitive edges to locals
                 for (other_id, other_path) in &local_info.aliases[&path] {
                     val_info.add_local_edge(path.clone(), (*other_id, other_path.clone()));
-                }
-
-                // Wire up inherited self-edges
-                for (other_id, other_path) in &local_info.aliases[&path] {
-                    if other_id == local_id {
-                        val_info.add_self_edge(path.clone(), other_path.clone());
-                    }
                 }
             }
 
@@ -332,19 +346,7 @@ fn annot_expr(
                     //
                     // We are careful to do this before wiring up this path in the item and in the
                     // tuple one-to-one, to avoid creating a redundant reflexive edge.
-
-                    // This next expression looks complicated, but it's really just getting
-                    // `val_info.rev_aliases[item][item_path]` if it exists, and an empty set
-                    // otherwise.
-                    let trans_self_aliases = val_info
-                        .rev_aliases
-                        .get(&item)
-                        .cloned() // These are persistent structures, so clones are cheap
-                        .unwrap_or_default()
-                        .get(&item_path)
-                        .cloned()
-                        .unwrap_or_default();
-                    for other_tuple_path in trans_self_aliases {
+                    for other_tuple_path in val_info.rev_aliases_of(*item, &item_path) {
                         val_info.add_self_edge(tuple_path.clone(), other_tuple_path);
                     }
 
@@ -355,17 +357,6 @@ fn annot_expr(
                     for (other_id, other_path) in &item_info.aliases[&item_path] {
                         val_info
                             .add_local_edge(tuple_path.clone(), (*other_id, other_path.clone()));
-                    }
-
-                    // Wire up inherited self edges
-                    for (other_id, other_path) in &item_info.aliases[&item_path] {
-                        if other_id == item {
-                            // Inherited self edge
-                            let mut other_tuple_path = other_path.clone();
-                            other_tuple_path.push_front(annot::Field::Field(idx));
-
-                            val_info.add_self_edge(tuple_path.clone(), other_tuple_path);
-                        }
                     }
                 }
             }
