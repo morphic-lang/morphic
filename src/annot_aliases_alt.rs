@@ -381,6 +381,36 @@ fn annot_expr(
             (annot::Expr::TupleField(*tuple, *idx), val_info)
         }
 
+        flat::Expr::WrapVariant(variant_types, variant, content) => {
+            let mut val_info = ValInfo::new();
+
+            // Create non-aliased names for variants other than the one under construction
+            for (this_variant, this_type) in variant_types {
+                if this_variant != *variant {
+                    for this_type_path in get_names_in(&orig.custom_types, this_type) {
+                        let mut prefixed_path = this_type_path;
+                        prefixed_path.push_front(annot::Field::Variant(this_variant));
+
+                        val_info.create_path(prefixed_path);
+                    }
+                }
+            }
+
+            // Create aliased names for the variant under construction
+            let content_info = &ctx[content];
+            for content_path in get_names_in(&orig.custom_types, &variant_types[variant]) {
+                let mut prefixed_path = content_path.clone();
+                prefixed_path.push_front(annot::Field::Variant(*variant));
+
+                val_info.copy_aliases_from(&prefixed_path, &content_path, *content, content_info);
+            }
+
+            (
+                annot::Expr::WrapVariant(variant_types.clone(), *variant, *content),
+                val_info,
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
