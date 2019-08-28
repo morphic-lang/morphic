@@ -288,6 +288,35 @@ impl ValInfo {
         }
         OrdSet::new()
     }
+
+    fn copy_aliases_from(
+        &mut self,
+        self_path: &annot::FieldPath,
+        local_path: &annot::FieldPath,
+        local_id: flat::LocalId,
+        local_info: &LocalInfo,
+    ) {
+        self.create_path(self_path.clone());
+
+        // Inherit precision flag
+        self.precisions[self_path] = local_info.precisions[local_path].clone();
+
+        // Wire up transitive edges to self
+        //
+        // We are careful to do this before wiring up this path in the value and the local
+        // one-to-one, to avoid creating a redundant reflexive edge.
+        for other_self_path in self.rev_aliases_of(local_id, local_path) {
+            self.add_self_edge(self_path.clone(), other_self_path);
+        }
+
+        // Wire up self and local name one-to-one
+        self.add_local_edge(self_path.clone(), (local_id, local_path.clone()));
+
+        // Wire up transitive edges to locals
+        for (other_id, other_path) in &local_info.aliases[local_path] {
+            self.add_local_edge(self_path.clone(), (*other_id, other_path.clone()));
+        }
+    }
 }
 
 fn annot_expr(
@@ -307,28 +336,8 @@ fn annot_expr(
             let local_info = &ctx[local_id];
 
             let mut val_info = ValInfo::new();
-
             for path in get_names_in(&orig.custom_types, &local_info.type_) {
-                val_info.create_path(path.clone());
-
-                // Inherit precision flag
-                val_info.precisions[&path] = local_info.precisions[&path].clone();
-
-                // Wire up transitive edges to self
-                //
-                // We are careful to do this before wiring up this path in the value and the local
-                // one-to-one, to avoid creating a redundant reflexive edge.
-                for other_self_path in val_info.rev_aliases_of(*local_id, &path) {
-                    val_info.add_self_edge(path.clone(), other_self_path);
-                }
-
-                // Wire up old and new names one-to-one
-                val_info.add_local_edge(path.clone(), (*local_id, path.clone()));
-
-                // Wire up transitive edges to locals
-                for (other_id, other_path) in &local_info.aliases[&path] {
-                    val_info.add_local_edge(path.clone(), (*other_id, other_path.clone()));
-                }
+                val_info.copy_aliases_from(&path, &path, *local_id, local_info);
             }
 
             (annot::Expr::Local(*local_id), val_info)
@@ -344,28 +353,7 @@ fn annot_expr(
                     let mut tuple_path = item_path.clone();
                     tuple_path.push_front(annot::Field::Field(idx));
 
-                    val_info.create_path(tuple_path.clone());
-
-                    // Inherit precision flag
-                    val_info.precisions[&tuple_path] = item_info.precisions[&item_path].clone();
-
-                    // Wire up transitive edges to other fields of the tuple currently under
-                    // construction.
-                    //
-                    // We are careful to do this before wiring up this path in the item and in the
-                    // tuple one-to-one, to avoid creating a redundant reflexive edge.
-                    for other_tuple_path in val_info.rev_aliases_of(*item, &item_path) {
-                        val_info.add_self_edge(tuple_path.clone(), other_tuple_path);
-                    }
-
-                    // Wire up item and tuple names one-to-one
-                    val_info.add_local_edge(tuple_path.clone(), (*item, item_path.clone()));
-
-                    // Wire up transitive edges to locals
-                    for (other_id, other_path) in &item_info.aliases[&item_path] {
-                        val_info
-                            .add_local_edge(tuple_path.clone(), (*other_id, other_path.clone()));
-                    }
+                    val_info.copy_aliases_from(&tuple_path, &item_path, *item, item_info);
                 }
             }
 
@@ -384,29 +372,10 @@ fn annot_expr(
             let mut val_info = ValInfo::new();
 
             for item_path in get_names_in(&orig.custom_types, item_type) {
-                val_info.create_path(item_path.clone());
-
                 let mut tuple_path = item_path.clone();
                 tuple_path.push_front(annot::Field::Field(*idx));
 
-                // Inherit precision flag
-                val_info.precisions[&item_path] = tuple_info.precisions[&tuple_path].clone();
-
-                // Wire up transitive edges to self
-                //
-                // We are careful to do this before wiring up this path in the item and in the tuple
-                // one-to-one, to avoid creating a redundant reflexive edge.
-                for other_self_path in val_info.rev_aliases_of(*tuple, &tuple_path) {
-                    val_info.add_self_edge(item_path.clone(), other_self_path);
-                }
-
-                // Wire up tuple and item names one-to-one
-                val_info.add_local_edge(item_path.clone(), (*tuple, tuple_path.clone()));
-
-                // Wire up transitive edges to locals
-                for (other_id, other_path) in &tuple_info.aliases[&tuple_path] {
-                    val_info.add_local_edge(item_path.clone(), (*other_id, other_path.clone()));
-                }
+                val_info.copy_aliases_from(&item_path, &tuple_path, *tuple, &tuple_info);
             }
 
             (annot::Expr::TupleField(*tuple, *idx), val_info)
