@@ -411,6 +411,27 @@ fn annot_expr(
             )
         }
 
+        flat::Expr::UnwrapVariant(variant, sum) => {
+            let sum_info = &ctx[sum];
+
+            let content_type = if let anon::Type::Variants(variant_types) = &sum_info.type_ {
+                &variant_types[variant]
+            } else {
+                unreachable!()
+            };
+
+            let mut val_info = ValInfo::new();
+
+            for content_path in get_names_in(&orig.custom_types, content_type) {
+                let mut prefixed_path = content_path.clone();
+                prefixed_path.push_front(annot::Field::Variant(*variant));
+
+                val_info.copy_aliases_from(&content_path, &prefixed_path, *sum, sum_info);
+            }
+
+            (annot::Expr::UnwrapVariant(*variant, *sum), val_info)
+        }
+
         _ => unimplemented!(),
     }
 }
