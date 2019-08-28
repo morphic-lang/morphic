@@ -340,9 +340,7 @@ fn annot_expr(
             for (idx, item) in items.iter().enumerate() {
                 let item_info = &ctx[item];
 
-                let item_paths = get_names_in(&orig.custom_types, &item_info.type_);
-
-                for item_path in item_paths {
+                for item_path in get_names_in(&orig.custom_types, &item_info.type_) {
                     let mut tuple_path = item_path.clone();
                     tuple_path.push_front(annot::Field::Field(idx));
 
@@ -372,6 +370,46 @@ fn annot_expr(
             }
 
             (annot::Expr::Tuple(items.clone()), val_info)
+        }
+
+        flat::Expr::TupleField(tuple, idx) => {
+            let tuple_info = &ctx[tuple];
+
+            let item_type = if let anon::Type::Tuple(item_types) = &tuple_info.type_ {
+                &item_types[*idx]
+            } else {
+                unreachable!()
+            };
+
+            let mut val_info = ValInfo::new();
+
+            for item_path in get_names_in(&orig.custom_types, item_type) {
+                val_info.create_path(item_path.clone());
+
+                let mut tuple_path = item_path.clone();
+                tuple_path.push_front(annot::Field::Field(*idx));
+
+                // Inherit precision flag
+                val_info.precisions[&item_path] = tuple_info.precisions[&tuple_path].clone();
+
+                // Wire up transitive edges to self
+                //
+                // We are careful to do this before wiring up this path in the item and in the tuple
+                // one-to-one, to avoid creating a redundant reflexive edge.
+                for other_self_path in val_info.rev_aliases_of(*tuple, &tuple_path) {
+                    val_info.add_self_edge(item_path.clone(), other_self_path);
+                }
+
+                // Wire up tuple and item names one-to-one
+                val_info.add_local_edge(item_path.clone(), (*tuple, tuple_path.clone()));
+
+                // Wire up transitive edges to locals
+                for (other_id, other_path) in &tuple_info.aliases[&tuple_path] {
+                    val_info.add_local_edge(item_path.clone(), (*other_id, other_path.clone()));
+                }
+            }
+
+            (annot::Expr::TupleField(*tuple, *idx), val_info)
         }
 
         _ => unimplemented!(),

@@ -128,7 +128,7 @@ pub enum Expr {
     ),
 
     Tuple(Vec<flat::LocalId>),
-    TupleField(first_ord::LocalId, usize),
+    TupleField(flat::LocalId, usize),
     WrapVariant(
         IdVec<first_ord::VariantId, anon::Type>,
         first_ord::VariantId,
