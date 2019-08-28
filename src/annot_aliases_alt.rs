@@ -179,6 +179,106 @@ fn get_names_in(
     }
 }
 
+fn get_occurrences_of(
+    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    target: first_ord::CustomTypeId,
+    type_: &anon::Type,
+) -> Vec<annot::FieldPath> {
+    let mut occurs = Vec::new();
+    add_occus_from_type(
+        type_defs,
+        target,
+        &mut occurs,
+        &mut BTreeSet::new(),
+        type_,
+        &Vector::new(),
+    );
+    return occurs;
+
+    fn add_occus_from_type(
+        type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+        target: first_ord::CustomTypeId,
+        occurs: &mut Vec<annot::FieldPath>,
+        typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
+        type_: &anon::Type,
+        prefix: &annot::FieldPath,
+    ) {
+        match type_ {
+            anon::Type::Bool | anon::Type::Num(_) => {}
+
+            anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => {
+                let mut new_prefix = prefix.clone();
+                new_prefix.push_back(annot::Field::ArrayMembers);
+                add_occus_from_type(
+                    type_defs,
+                    target,
+                    occurs,
+                    typedefs_on_path,
+                    item_type,
+                    &new_prefix,
+                );
+            }
+
+            anon::Type::Tuple(item_types) => {
+                for (i, item_type) in item_types.iter().enumerate() {
+                    let mut new_prefix = prefix.clone();
+                    new_prefix.push_back(annot::Field::Field(i));
+                    add_occus_from_type(
+                        type_defs,
+                        target,
+                        occurs,
+                        typedefs_on_path,
+                        item_type,
+                        &new_prefix,
+                    );
+                }
+            }
+
+            anon::Type::Variants(variant_types) => {
+                for (variant, variant_type) in variant_types {
+                    let mut new_prefix = prefix.clone();
+                    new_prefix.push_back(annot::Field::Variant(variant));
+                    add_occus_from_type(
+                        type_defs,
+                        target,
+                        occurs,
+                        typedefs_on_path,
+                        variant_type,
+                        &new_prefix,
+                    );
+                }
+            }
+
+            anon::Type::Custom(id) => {
+                if !typedefs_on_path.contains(id) {
+                    if *id == target {
+                        // Add the occurrence itself
+                        let mut occurrence = prefix.clone();
+                        occurrence.push_back(annot::Field::Custom(target));
+                        occurs.push(occurrence);
+                    // Due to type folding, there can't be any recursive occurrences, so we
+                    // don't need to recurse into the content type.
+                    } else {
+                        typedefs_on_path.insert(*id);
+                        let mut new_prefix = prefix.clone();
+                        new_prefix.push_back(annot::Field::Custom(*id));
+                        add_occus_from_type(
+                            type_defs,
+                            target,
+                            occurs,
+                            typedefs_on_path,
+                            &type_defs[id],
+                            &new_prefix,
+                        );
+                        // Remove if we added it
+                        typedefs_on_path.remove(id);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct LocalInfo {
     type_: anon::Type,
