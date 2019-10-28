@@ -1,4 +1,4 @@
-use im_rc::{OrdMap, OrdSet, Vector};
+use im_rc::{OrdMap, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_annot_ast as annot;
@@ -6,7 +6,9 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::graph::{self, Graph};
+use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
+use crate::util::norm_pair::NormPair;
 
 fn annot_aliases(program: flat::Program) -> annot::Program {
     let mut annotated = IdVec::from_items((0..program.funcs.len()).map(|_| None).collect());
@@ -92,16 +94,13 @@ struct SignatureAssumptions<'a> {
 }
 
 impl<'a> SignatureAssumptions<'a> {
-    fn sig_of(
-        &self,
-        func: &first_ord::CustomFuncId,
-    ) -> OrdMap<annot::RetName, annot::ReturnAliases> {
+    fn sig_of(&self, func: &first_ord::CustomFuncId) -> Option<&'a annot::AliasSig> {
         if let Some(func_def) = &self.known_defs[func] {
-            OrdMap::clone(&func_def.ret_field_aliases)
+            Some(&func_def.alias_sig)
         } else if let Some(provisional_defs) = &self.provisional_defs {
-            OrdMap::clone(&provisional_defs[func].ret_field_aliases)
+            Some(&provisional_defs[func].alias_sig)
         } else {
-            OrdMap::new()
+            None
         }
     }
 }
@@ -282,258 +281,227 @@ fn get_occurrences_of(
 #[derive(Clone, Debug)]
 struct LocalInfo {
     type_: anon::Type,
-    aliases: OrdMap<annot::FieldPath, OrdSet<(flat::LocalId, annot::FieldPath)>>,
-    precisions: OrdMap<annot::FieldPath, annot::Precision>,
+    aliases: OrdMap<annot::FieldPath, annot::LocalAliases>,
+    folded_aliases: OrdMap<annot::FieldPath, annot::FoldedAliases>,
 }
 
-// Aliasing information for an unnamed value
-#[derive(Clone, Debug)]
-struct ValInfo {
-    aliases: OrdMap<annot::FieldPath, OrdSet<(flat::LocalId, annot::FieldPath)>>,
+mod val_info {
+    use super::*;
 
-    // Invariant: `rev_aliases` should store exactly the same information as `aliases`, only with
-    // the edges represented as references going the opposite direction.  This is useful for reverse
-    // lookups.
-    rev_aliases: OrdMap<flat::LocalId, OrdMap<annot::FieldPath, OrdSet<annot::FieldPath>>>,
+    // Aliasing information for an unnamed value
+    #[derive(Clone, Debug)]
+    pub struct ValInfo {
+        //
+        // Essential data
+        //
+        local_aliases: OrdMap<annot::FieldPath, annot::LocalAliases>,
+        self_aliases: OrdMap<NormPair<annot::FieldPath>, Disj<annot::AliasCondition>>,
+        folded_aliases: OrdMap<annot::FieldPath, annot::FoldedAliases>,
 
-    // Invariant: edges in this graph should be symmetric (if there is an edge a -> b, there should
-    // also be an edge b -> a).
-    self_aliases: OrdMap<annot::FieldPath, OrdSet<annot::FieldPath>>,
+        //
+        // Redundant cached data
+        //
 
-    precisions: OrdMap<annot::FieldPath, annot::Precision>,
-}
-
-impl ValInfo {
-    fn new() -> Self {
-        ValInfo {
-            aliases: OrdMap::new(),
-            rev_aliases: OrdMap::new(),
-            self_aliases: OrdMap::new(),
-            precisions: OrdMap::new(),
-        }
+        // Invariant: `rev_aliases` should store exactly the same information as `local_aliases`, only
+        // with the edges represented as references going the opposite direction.  This is useful for
+        // reverse lookups.
+        rev_aliases: OrdMap<
+            (flat::LocalId, annot::FieldPath),
+            OrdMap<annot::FieldPath, Disj<annot::AliasCondition>>,
+        >,
     }
 
-    fn create_path(&mut self, path: annot::FieldPath) {
-        debug_assert!(
-            !self.aliases.contains_key(&path),
-            "Alias analysis attempted to create a name that already exists.  While this is in and \
-             of itself harmless, it probably indicates a logic error."
-        );
+    impl ValInfo {
+        pub fn new() -> Self {
+            ValInfo {
+                local_aliases: OrdMap::new(),
+                folded_aliases: OrdMap::new(),
+                self_aliases: OrdMap::new(),
 
-        self.aliases.insert(path.clone(), OrdSet::new());
-        self.self_aliases.insert(path.clone(), OrdSet::new());
-        self.precisions
-            .insert(path, annot::Precision::ImpreciseIfAny(OrdSet::new()));
-    }
-
-    #[inline]
-    fn assert_path(&self, path: &annot::FieldPath) {
-        debug_assert!(self.aliases.contains_key(path));
-        debug_assert!(self.self_aliases.contains_key(path));
-        debug_assert!(self.precisions.contains_key(path));
-    }
-
-    fn add_local_edge(
-        &mut self,
-        self_path: annot::FieldPath,
-        local_name: (flat::LocalId, annot::FieldPath),
-    ) {
-        self.assert_path(&self_path);
-
-        debug_assert!(
-            !self.aliases[&self_path].contains(&local_name),
-            "Alias analysis attempted to create an edge that already exists.  While this is in and \
-            of itself harmless, it probably indicates a logic error."
-        );
-
-        self.aliases[&self_path].insert(local_name.clone());
-
-        self.rev_aliases
-            .entry(local_name.0)
-            .or_default()
-            .entry(local_name.1)
-            .or_default()
-            .insert(self_path);
-    }
-
-    fn add_self_edge(&mut self, path1: annot::FieldPath, path2: annot::FieldPath) {
-        self.assert_path(&path1);
-        self.assert_path(&path2);
-
-        debug_assert_ne!(
-            &path1, &path2,
-            "The 'aliases' relation is reflexive by definition, so we should never need to \
-             explicitly connect a name to itself."
-        );
-
-        debug_assert!(
-            !self.self_aliases[&path1].contains(&path2),
-            "Alias analysis attempted to create a self-edge that already exists.  While this is in \
-             and of itself harmless, it probably indicates a logic error."
-        );
-
-        self.self_aliases[&path1].insert(path2.clone());
-        self.self_aliases[&path2].insert(path1);
-    }
-
-    fn rev_aliases_of(
-        &self,
-        local_id: flat::LocalId,
-        local_path: &annot::FieldPath,
-    ) -> OrdSet<annot::FieldPath> {
-        if let Some(rev_aliases_for_local) = self.rev_aliases.get(&local_id) {
-            if let Some(rev_aliases_for_path) = rev_aliases_for_local.get(local_path) {
-                return rev_aliases_for_path.clone();
+                rev_aliases: OrdMap::new(),
             }
         }
-        OrdSet::new()
+
+        pub fn local_aliases(&self) -> &OrdMap<annot::FieldPath, annot::LocalAliases> {
+            &self.local_aliases
+        }
+
+        pub fn self_aliases(
+            &self,
+        ) -> &OrdMap<NormPair<annot::FieldPath>, Disj<annot::AliasCondition>> {
+            &self.self_aliases
+        }
+
+        pub fn folded_aliases(&self) -> &OrdMap<annot::FieldPath, annot::FoldedAliases> {
+            &self.folded_aliases
+        }
+
+        pub fn create_path(&mut self, path: annot::FieldPath) {
+            debug_assert!(
+                !self.local_aliases.contains_key(&path),
+                "Alias analysis attempted to create a name that already exists.  While this is in \
+                 and of itself harmless, it probably indicates a logic error."
+            );
+
+            self.local_aliases.insert(
+                path.clone(),
+                annot::LocalAliases {
+                    aliases: OrdMap::new(),
+                },
+            );
+        }
+
+        #[inline]
+        fn assert_path(&self, path: &annot::FieldPath) {
+            debug_assert!(self.local_aliases.contains_key(path));
+        }
+
+        pub fn add_edge_to_local(
+            &mut self,
+            self_path: annot::FieldPath,
+            local_name: (flat::LocalId, annot::FieldPath),
+            cond: Disj<annot::AliasCondition>,
+        ) {
+            self.assert_path(&self_path);
+
+            self.local_aliases[&self_path]
+                .aliases
+                .entry(local_name.clone())
+                .or_default()
+                .or_mut(cond.clone());
+
+            self.rev_aliases
+                .entry(local_name)
+                .or_default()
+                .entry(self_path)
+                .or_default()
+                .or_mut(cond);
+        }
+
+        pub fn rev_aliases_of(
+            &self,
+            local_name: &(flat::LocalId, annot::FieldPath),
+        ) -> OrdMap<annot::FieldPath, Disj<annot::AliasCondition>> {
+            self.rev_aliases
+                .get(local_name)
+                .cloned()
+                .unwrap_or_else(|| OrdMap::new())
+        }
+
+        pub fn add_self_edge(
+            &mut self,
+            path1: annot::FieldPath,
+            path2: annot::FieldPath,
+            cond: Disj<annot::AliasCondition>,
+        ) {
+            // There is no immediate, material reason why we cannot add a self-edge if the
+            // corresponding path in `local_aliases` has not yet bene created.  However, for the
+            // sake of our sanity we require that all paths be created before edges of any kind may
+            // be added between them, and co-opt the key set of `local_aliases` as a convenenient
+            // way of tracking path creation.
+            self.assert_path(&path1);
+            self.assert_path(&path2);
+
+            debug_assert_ne!(
+                path1, path2,
+                "Alias analysis attempted to create a reflexive edge.  Reflexive edges implicitly \
+                 exist on all nodes in the aliasing graph, so we should never need to explicitly \
+                 represent them."
+            );
+
+            self.self_aliases
+                .entry(NormPair::new(path1, path2))
+                .or_default()
+                .or_mut(cond);
+        }
+
+        pub fn create_folded_aliases(
+            &mut self,
+            fold_point: annot::FieldPath,
+            folded_aliases: annot::FoldedAliases,
+        ) {
+            debug_assert!(
+                !self.folded_aliases.contains_key(&fold_point),
+                "Alias analysis attempted to create a fold point that already exists.  While is \
+                 is in and of itself harmless, it probably indicates a logic error."
+            );
+
+            self.folded_aliases.insert(fold_point, folded_aliases);
+        }
+
+        //     fn copy_aliases_from(
+        //         &mut self,
+        //         self_path: &annot::FieldPath,
+        //         local_path: &annot::FieldPath,
+        //         local_id: flat::LocalId,
+        //         local_info: &LocalInfo,
+        //     ) {
+        //         self.create_path(self_path.clone());
+
+        //         // Inherit precision flag
+        //         self.precisions[self_path] = local_info.precisions[local_path].clone();
+
+        //         // Wire up transitive edges to self
+        //         //
+        //         // We are careful to do this before wiring up this path in the value and the local
+        //         // one-to-one, to avoid creating a redundant reflexive edge.
+        //         for other_self_path in self.rev_aliases_of(local_id, local_path) {
+        //             self.add_self_edge(self_path.clone(), other_self_path);
+        //         }
+
+        //         // Wire up self and local name one-to-one
+        //         self.add_local_edge(self_path.clone(), (local_id, local_path.clone()));
+
+        //         // Wire up transitive edges to locals
+        //         for (other_id, other_path) in &local_info.aliases[local_path] {
+        //             self.add_local_edge(self_path.clone(), (*other_id, other_path.clone()));
+        //         }
+        //     }
+        // }
+    }
+}
+
+use val_info::ValInfo;
+
+// Note: This does not copy folded aliases!
+fn copy_aliases(
+    dest: &mut ValInfo,
+    dest_path: &annot::FieldPath,
+    src: &LocalInfo,
+    src_id: flat::LocalId,
+    src_path: &annot::FieldPath,
+) {
+    dest.create_path(dest_path.clone());
+
+    // Wire up transitive edges to other paths in dest
+    //
+    // We are careful to do this before wiring up the path in the dest directly to the
+    // corresponding path in the src, as doing so would create a reflexive edge.
+    for (other_dest_path, cond) in dest.rev_aliases_of(&(src_id, src_path.clone())) {
+        dest.add_self_edge(dest_path.clone(), other_dest_path, cond);
     }
 
-    fn copy_aliases_from(
-        &mut self,
-        self_path: &annot::FieldPath,
-        local_path: &annot::FieldPath,
-        local_id: flat::LocalId,
-        local_info: &LocalInfo,
-    ) {
-        self.create_path(self_path.clone());
+    // Wire up dest path directly to src path
+    dest.add_edge_to_local(dest_path.clone(), (src_id, src_path.clone()), Disj::True);
 
-        // Inherit precision flag
-        self.precisions[self_path] = local_info.precisions[local_path].clone();
-
-        // Wire up transitive edges to self
-        //
-        // We are careful to do this before wiring up this path in the value and the local
-        // one-to-one, to avoid creating a redundant reflexive edge.
-        for other_self_path in self.rev_aliases_of(local_id, local_path) {
-            self.add_self_edge(self_path.clone(), other_self_path);
-        }
-
-        // Wire up self and local name one-to-one
-        self.add_local_edge(self_path.clone(), (local_id, local_path.clone()));
-
-        // Wire up transitive edges to locals
-        for (other_id, other_path) in &local_info.aliases[local_path] {
-            self.add_local_edge(self_path.clone(), (*other_id, other_path.clone()));
-        }
+    // Wire up transitive edges to locals (potentially including both the current src and other
+    // locals)
+    for ((other_id, other_path), cond) in &src.aliases[src_path].aliases {
+        dest.add_edge_to_local(
+            dest_path.clone(),
+            (*other_id, other_path.clone()),
+            cond.clone(),
+        );
     }
 }
 
 fn annot_expr(
-    orig: &flat::Program,
+    _orig: &flat::Program,
     _sigs: &SignatureAssumptions,
-    ctx: &OrdMap<flat::LocalId, LocalInfo>,
-    expr: &flat::Expr,
+    _ctx: &OrdMap<flat::LocalId, LocalInfo>,
+    _expr: &flat::Expr,
 ) -> (annot::Expr, ValInfo) {
-    match expr {
-        flat::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), ValInfo::new()),
-
-        flat::Expr::ArrayOp(_) => unimplemented!(),
-
-        flat::Expr::IOOp(_) => unimplemented!(),
-
-        flat::Expr::Local(local_id) => {
-            let local_info = &ctx[local_id];
-
-            let mut val_info = ValInfo::new();
-            for path in get_names_in(&orig.custom_types, &local_info.type_) {
-                val_info.copy_aliases_from(&path, &path, *local_id, local_info);
-            }
-
-            (annot::Expr::Local(*local_id), val_info)
-        }
-
-        flat::Expr::Tuple(items) => {
-            let mut val_info = ValInfo::new();
-
-            for (idx, item) in items.iter().enumerate() {
-                let item_info = &ctx[item];
-
-                for item_path in get_names_in(&orig.custom_types, &item_info.type_) {
-                    let mut tuple_path = item_path.clone();
-                    tuple_path.push_front(annot::Field::Field(idx));
-
-                    val_info.copy_aliases_from(&tuple_path, &item_path, *item, item_info);
-                }
-            }
-
-            (annot::Expr::Tuple(items.clone()), val_info)
-        }
-
-        flat::Expr::TupleField(tuple, idx) => {
-            let tuple_info = &ctx[tuple];
-
-            let item_type = if let anon::Type::Tuple(item_types) = &tuple_info.type_ {
-                &item_types[*idx]
-            } else {
-                unreachable!()
-            };
-
-            let mut val_info = ValInfo::new();
-
-            for item_path in get_names_in(&orig.custom_types, item_type) {
-                let mut tuple_path = item_path.clone();
-                tuple_path.push_front(annot::Field::Field(*idx));
-
-                val_info.copy_aliases_from(&item_path, &tuple_path, *tuple, &tuple_info);
-            }
-
-            (annot::Expr::TupleField(*tuple, *idx), val_info)
-        }
-
-        flat::Expr::WrapVariant(variant_types, variant, content) => {
-            let mut val_info = ValInfo::new();
-
-            // Create non-aliased names for variants other than the one under construction
-            for (this_variant, this_type) in variant_types {
-                if this_variant != *variant {
-                    for this_type_path in get_names_in(&orig.custom_types, this_type) {
-                        let mut prefixed_path = this_type_path;
-                        prefixed_path.push_front(annot::Field::Variant(this_variant));
-
-                        val_info.create_path(prefixed_path);
-                    }
-                }
-            }
-
-            // Create aliased names for the variant under construction
-            let content_info = &ctx[content];
-            for content_path in get_names_in(&orig.custom_types, &variant_types[variant]) {
-                let mut prefixed_path = content_path.clone();
-                prefixed_path.push_front(annot::Field::Variant(*variant));
-
-                val_info.copy_aliases_from(&prefixed_path, &content_path, *content, content_info);
-            }
-
-            (
-                annot::Expr::WrapVariant(variant_types.clone(), *variant, *content),
-                val_info,
-            )
-        }
-
-        flat::Expr::UnwrapVariant(variant, sum) => {
-            let sum_info = &ctx[sum];
-
-            let content_type = if let anon::Type::Variants(variant_types) = &sum_info.type_ {
-                &variant_types[variant]
-            } else {
-                unreachable!()
-            };
-
-            let mut val_info = ValInfo::new();
-
-            for content_path in get_names_in(&orig.custom_types, content_type) {
-                let mut prefixed_path = content_path.clone();
-                prefixed_path.push_front(annot::Field::Variant(*variant));
-
-                val_info.copy_aliases_from(&content_path, &prefixed_path, *sum, sum_info);
-            }
-
-            (annot::Expr::UnwrapVariant(*variant, *sum), val_info)
-        }
-
-        _ => unimplemented!(),
-    }
+    unimplemented!()
 }
 
 #[allow(unused_variables)]
@@ -587,7 +555,7 @@ fn annot_scc_fixed_point(
 
         if scc
             .iter()
-            .all(|func| iterated_defs[func].ret_field_aliases == defs[func].ret_field_aliases)
+            .all(|func| iterated_defs[func].alias_sig == defs[func].alias_sig)
         {
             return iterated_defs;
         }

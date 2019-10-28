@@ -7,6 +7,8 @@ pub mod constraint_graph;
 
 pub mod norm_pair;
 
+pub mod disjunction;
+
 pub fn with_scope<T, R, F: for<'a> FnOnce(&'a mut Vec<T>) -> R>(vec: &mut Vec<T>, func: F) -> R {
     let old_len = vec.len();
     let result = func(vec);
