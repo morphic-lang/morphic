@@ -428,36 +428,6 @@ mod val_info {
 
             self.folded_aliases.insert(fold_point, folded_aliases);
         }
-
-        //     fn copy_aliases_from(
-        //         &mut self,
-        //         self_path: &annot::FieldPath,
-        //         local_path: &annot::FieldPath,
-        //         local_id: flat::LocalId,
-        //         local_info: &LocalInfo,
-        //     ) {
-        //         self.create_path(self_path.clone());
-
-        //         // Inherit precision flag
-        //         self.precisions[self_path] = local_info.precisions[local_path].clone();
-
-        //         // Wire up transitive edges to self
-        //         //
-        //         // We are careful to do this before wiring up this path in the value and the local
-        //         // one-to-one, to avoid creating a redundant reflexive edge.
-        //         for other_self_path in self.rev_aliases_of(local_id, local_path) {
-        //             self.add_self_edge(self_path.clone(), other_self_path);
-        //         }
-
-        //         // Wire up self and local name one-to-one
-        //         self.add_local_edge(self_path.clone(), (local_id, local_path.clone()));
-
-        //         // Wire up transitive edges to locals
-        //         for (other_id, other_path) in &local_info.aliases[local_path] {
-        //             self.add_local_edge(self_path.clone(), (*other_id, other_path.clone()));
-        //         }
-        //     }
-        // }
     }
 }
 
