@@ -184,7 +184,7 @@ fn get_occurrences_of(
     type_: &anon::Type,
 ) -> Vec<annot::FieldPath> {
     let mut occurs = Vec::new();
-    add_occus_from_type(
+    add_occurs_from_type(
         type_defs,
         target,
         &mut occurs,
@@ -194,7 +194,7 @@ fn get_occurrences_of(
     );
     return occurs;
 
-    fn add_occus_from_type(
+    fn add_occurs_from_type(
         type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
         target: first_ord::CustomTypeId,
         occurs: &mut Vec<annot::FieldPath>,
@@ -208,7 +208,7 @@ fn get_occurrences_of(
             anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => {
                 let mut new_prefix = prefix.clone();
                 new_prefix.push_back(annot::Field::ArrayMembers);
-                add_occus_from_type(
+                add_occurs_from_type(
                     type_defs,
                     target,
                     occurs,
@@ -222,7 +222,7 @@ fn get_occurrences_of(
                 for (i, item_type) in item_types.iter().enumerate() {
                     let mut new_prefix = prefix.clone();
                     new_prefix.push_back(annot::Field::Field(i));
-                    add_occus_from_type(
+                    add_occurs_from_type(
                         type_defs,
                         target,
                         occurs,
@@ -237,7 +237,7 @@ fn get_occurrences_of(
                 for (variant, variant_type) in variant_types {
                     let mut new_prefix = prefix.clone();
                     new_prefix.push_back(annot::Field::Variant(variant));
-                    add_occus_from_type(
+                    add_occurs_from_type(
                         type_defs,
                         target,
                         occurs,
@@ -261,7 +261,7 @@ fn get_occurrences_of(
                         typedefs_on_path.insert(*id);
                         let mut new_prefix = prefix.clone();
                         new_prefix.push_back(annot::Field::Custom(*id));
-                        add_occus_from_type(
+                        add_occurs_from_type(
                             type_defs,
                             target,
                             occurs,
