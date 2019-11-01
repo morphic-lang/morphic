@@ -583,12 +583,33 @@ fn copy_aliases(
 }
 
 fn annot_expr(
-    _orig: &flat::Program,
+    orig: &flat::Program,
     _sigs: &SignatureAssumptions,
-    _ctx: &OrdMap<flat::LocalId, LocalInfo>,
-    _expr: &flat::Expr,
+    ctx: &OrdMap<flat::LocalId, LocalInfo>,
+    expr: &flat::Expr,
 ) -> (annot::Expr, ValInfo) {
-    unimplemented!()
+    match expr {
+        flat::Expr::Local(local) => {
+            let mut expr_info = ValInfo::new();
+
+            let local_info = &ctx[local];
+            for path in get_names_in(&orig.custom_types, &local_info.type_) {
+                expr_info.create_path(path.clone());
+                copy_aliases(&mut expr_info, &path, &local_info, *local, &path);
+            }
+
+            for (fold_point, _) in get_fold_points_in(&orig.custom_types, &local_info.type_) {
+                expr_info.create_folded_aliases(
+                    fold_point.clone(),
+                    local_info.folded_aliases[&fold_point].clone(),
+                );
+            }
+
+            (annot::Expr::Local(*local), expr_info)
+        }
+
+        _ => unimplemented!(),
+    }
 }
 
 #[allow(unused_variables)]
