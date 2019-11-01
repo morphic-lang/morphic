@@ -178,6 +178,110 @@ fn get_names_in(
     }
 }
 
+// TODO: We currently introduce fold points even when their associated set of sub-paths is empty.
+// For example, for the type `Array Int` we generate a fold point at the path `[ArrayMembers]`, even
+// though `Int` contains no heap-cell names of its own.
+//
+// This is fine from a correctness standpoint, but it incurs a performance cost, and may be
+// confusing during debugging.
+fn get_fold_points_in<'a>(
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &'a anon::Type,
+) -> Vec<(annot::FieldPath, &'a anon::Type)> {
+    let mut points = Vec::new();
+    add_points_from_type(
+        type_defs,
+        &mut points,
+        &mut BTreeMap::new(),
+        type_,
+        Vector::new(),
+    );
+    return points;
+
+    enum FoldingStatus {
+        MightAppearRecursively,
+        AppearedRecursively,
+    }
+
+    fn add_points_from_type<'a>(
+        type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+        points: &mut Vec<(annot::FieldPath, &'a anon::Type)>,
+        typedefs_on_path: &mut BTreeMap<first_ord::CustomTypeId, FoldingStatus>,
+        type_: &'a anon::Type,
+        prefix: annot::FieldPath,
+    ) {
+        match type_ {
+            anon::Type::Bool | anon::Type::Num(_) => {}
+            anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => {
+                let mut new_prefix = prefix.clone();
+                new_prefix.push_back(annot::Field::ArrayMembers);
+
+                // The array's elements are a fold point
+                points.push((new_prefix.clone(), item_type));
+
+                add_points_from_type(type_defs, points, typedefs_on_path, item_type, new_prefix);
+            }
+            anon::Type::Tuple(item_types) => {
+                for (i, item_type) in item_types.iter().enumerate() {
+                    let mut new_prefix = prefix.clone();
+                    new_prefix.push_back(annot::Field::Field(i));
+                    add_points_from_type(
+                        type_defs,
+                        points,
+                        typedefs_on_path,
+                        item_type,
+                        new_prefix,
+                    );
+                }
+            }
+            anon::Type::Variants(variant_types) => {
+                for (variant, variant_type) in variant_types {
+                    let mut new_prefix = prefix.clone();
+                    new_prefix.push_back(annot::Field::Variant(variant));
+                    add_points_from_type(
+                        type_defs,
+                        points,
+                        typedefs_on_path,
+                        variant_type,
+                        new_prefix,
+                    );
+                }
+            }
+            anon::Type::Custom(id) => {
+                if typedefs_on_path.contains_key(id) {
+                    typedefs_on_path.insert(*id, FoldingStatus::AppearedRecursively);
+                } else {
+                    typedefs_on_path.insert(*id, FoldingStatus::MightAppearRecursively);
+
+                    let mut new_prefix = prefix.clone();
+                    new_prefix.push_back(annot::Field::Custom(*id));
+                    add_points_from_type(
+                        type_defs,
+                        points,
+                        typedefs_on_path,
+                        &type_defs[id],
+                        new_prefix.clone(),
+                    );
+
+                    // Remove if we added it
+                    let final_status = typedefs_on_path.remove(id);
+
+                    match final_status {
+                        Some(FoldingStatus::MightAppearRecursively) => {
+                            // Didn't actually appear recursively, so this is not a fold point
+                        }
+                        Some(FoldingStatus::AppearedRecursively) => {
+                            // This is a fold point
+                            points.push((new_prefix, &type_defs[id]));
+                        }
+                        None => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn get_occurrences_of(
     type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     target: first_ord::CustomTypeId,
