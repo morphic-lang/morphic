@@ -22,6 +22,13 @@ impl<T: Ord + Clone> Disj<T> {
     pub fn or_mut(&mut self, other: Self) {
         *self = self.clone().or(other);
     }
+
+    pub fn is_const_false(&self) -> bool {
+        match self {
+            Disj::True => false,
+            Disj::Any(conds) => conds.is_empty(),
+        }
+    }
 }
 
 impl<T: Ord + Clone> Default for Disj<T> {

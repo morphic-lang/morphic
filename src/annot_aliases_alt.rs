@@ -468,6 +468,10 @@ mod val_info {
         ) {
             self.assert_path(&self_path);
 
+            if cond.is_const_false() {
+                return;
+            }
+
             self.local_aliases[&self_path]
                 .aliases
                 .entry(local_name.clone())
@@ -505,6 +509,10 @@ mod val_info {
             // way of tracking path creation.
             self.assert_path(&path1);
             self.assert_path(&path2);
+
+            if cond.is_const_false() {
+                return;
+            }
 
             debug_assert_ne!(
                 path1, path2,
@@ -582,9 +590,54 @@ fn copy_aliases(
     }
 }
 
+fn translate_callee_cond(
+    arg_id: flat::LocalId,
+    arg_info: &LocalInfo,
+    callee_cond: &annot::AliasCondition,
+) -> Disj<annot::AliasCondition> {
+    match callee_cond {
+        annot::AliasCondition::AliasInArg(arg_pair) => {
+            let annot::ArgName(arg_pair_fst) = arg_pair.fst();
+            let annot::ArgName(arg_pair_snd) = arg_pair.snd();
+
+            arg_info.aliases[arg_pair_fst]
+                .aliases
+                .get(&(arg_id, arg_pair_snd.clone()))
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        annot::AliasCondition::FoldedAliasInArg(annot::ArgName(fold_point), sub_path_pair) => {
+            arg_info.folded_aliases[fold_point]
+                .inter_elem_aliases
+                .get(sub_path_pair)
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+}
+
+fn translate_callee_cond_disj(
+    arg_id: flat::LocalId,
+    arg_info: &LocalInfo,
+    callee_cond_disj: &Disj<annot::AliasCondition>,
+) -> Disj<annot::AliasCondition> {
+    match callee_cond_disj {
+        Disj::True => Disj::True,
+
+        Disj::Any(callee_conds) => {
+            let mut caller_cond_disj = Disj::new();
+            for callee_cond in callee_conds {
+                caller_cond_disj.or_mut(translate_callee_cond(arg_id, arg_info, callee_cond));
+            }
+            caller_cond_disj
+        }
+    }
+}
+
 fn annot_expr(
     orig: &flat::Program,
-    _sigs: &SignatureAssumptions,
+    sigs: &SignatureAssumptions,
     ctx: &OrdMap<flat::LocalId, LocalInfo>,
     expr: &flat::Expr,
 ) -> (annot::Expr, ValInfo) {
@@ -606,6 +659,143 @@ fn annot_expr(
             }
 
             (annot::Expr::Local(*local), expr_info)
+        }
+
+        flat::Expr::Call(purity, func, arg) => {
+            let arg_info = &ctx[arg];
+
+            let annot_expr = annot::Expr::Call(
+                *purity,
+                *func,
+                arg_info.aliases.clone(),
+                arg_info.folded_aliases.clone(),
+                *arg,
+            );
+
+            let ret_type = &orig.funcs[func].ret_type;
+
+            let expr_info = match sigs.sig_of(func) {
+                None => {
+                    // On the first iteration of fixed point analysis, we assume all recursive calls
+                    // return un-aliased return values.
+
+                    let mut empty_info = ValInfo::new();
+
+                    for ret_path in get_names_in(&orig.custom_types, ret_type) {
+                        empty_info.create_path(ret_path);
+                    }
+
+                    for (ret_fold_point, _) in get_fold_points_in(&orig.custom_types, ret_type) {
+                        empty_info.create_folded_aliases(
+                            ret_fold_point,
+                            annot::FoldedAliases {
+                                inter_elem_aliases: OrdMap::new(),
+                            },
+                        );
+                    }
+
+                    empty_info
+                }
+
+                Some(sig) => {
+                    let mut expr_info = ValInfo::new();
+
+                    // Create paths and wire up edges to locals
+                    for ret_path in get_names_in(&orig.custom_types, ret_type) {
+                        expr_info.create_path(ret_path.clone());
+
+                        for (annot::ArgName(arg_path), cond) in
+                            &sig.ret_arg_aliases[&annot::RetName(ret_path.clone())]
+                        {
+                            match cond {
+                                Disj::True => {
+                                    // Wire up directly
+                                    expr_info.add_edge_to_local(
+                                        ret_path.clone(),
+                                        (*arg, arg_path.clone()),
+                                        Disj::True,
+                                    );
+
+                                    // Wire up transitive edges to locals not known to the callee
+                                    for ((other_id, other_path), other_cond) in
+                                        &arg_info.aliases[arg_path].aliases
+                                    {
+                                        // Self-edges within the argument are accounted for by alias
+                                        // analysis in the callee.  The only edges that the caller
+                                        // needs to account for are those to other locals in the
+                                        // caller's scope.
+                                        if other_id != arg {
+                                            expr_info.add_edge_to_local(
+                                                ret_path.clone(),
+                                                (*other_id, other_path.clone()),
+                                                other_cond.clone(),
+                                            );
+                                        }
+                                    }
+                                }
+
+                                Disj::Any(callee_conds) => {
+                                    let mut caller_conds = Disj::new();
+                                    for callee_cond in callee_conds {
+                                        caller_conds.or_mut(translate_callee_cond(
+                                            *arg,
+                                            arg_info,
+                                            callee_cond,
+                                        ));
+                                    }
+
+                                    expr_info.add_edge_to_local(
+                                        ret_path.clone(),
+                                        (*arg, arg_path.clone()),
+                                        caller_conds,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Create fold points and populate their associated folded aliases
+                    for (ret_fold_point, _) in get_fold_points_in(&orig.custom_types, ret_type) {
+                        let caller_inter_elem_aliases = sig.ret_folded_aliases
+                            [&annot::RetName(ret_fold_point.clone())]
+                            .inter_elem_aliases
+                            .iter()
+                            .map(|(sub_path_pair, callee_cond)| {
+                                (
+                                    sub_path_pair.clone(),
+                                    translate_callee_cond_disj(*arg, arg_info, callee_cond),
+                                )
+                            })
+                            .filter(|(_, caller_cond)| !caller_cond.is_const_false())
+                            .collect();
+
+                        let caller_folded_aliases = annot::FoldedAliases {
+                            inter_elem_aliases: caller_inter_elem_aliases,
+                        };
+
+                        expr_info.create_folded_aliases(ret_fold_point, caller_folded_aliases);
+                    }
+
+                    // Wire up self-edges of return value
+                    for (ret_ret_pair, callee_cond) in &sig.ret_ret_aliases {
+                        let caller_cond = translate_callee_cond_disj(*arg, arg_info, callee_cond);
+
+                        let annot::RetName(ret_pair_fst) = ret_ret_pair.fst();
+                        let annot::RetName(ret_pair_snd) = ret_ret_pair.snd();
+
+                        expr_info.add_self_edge(
+                            ret_pair_fst.clone(),
+                            ret_pair_snd.clone(),
+                            caller_cond,
+                        );
+                    }
+
+                    // Done (!)
+                    expr_info
+                }
+            };
+
+            (annot_expr, expr_info)
         }
 
         _ => unimplemented!(),
