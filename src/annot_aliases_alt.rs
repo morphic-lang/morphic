@@ -532,6 +532,19 @@ mod val_info {
 
             self.folded_aliases.insert(fold_point, folded_aliases);
         }
+
+        pub fn add_folded_alias(
+            &mut self,
+            fold_point: &annot::FieldPath,
+            pair: NormPair<annot::SubPath>,
+            cond: Disj<annot::AliasCondition>,
+        ) {
+            self.folded_aliases[fold_point]
+                .inter_elem_aliases
+                .entry(pair)
+                .or_default()
+                .or_mut(cond);
+        }
     }
 }
 
