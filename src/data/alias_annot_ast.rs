@@ -49,29 +49,29 @@ pub struct LocalAliases {
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Item(
-        first_ord::Type, // Item type
+        anon::Type, // Item type
         LocalAliases,    // Array aliases
         flat::LocalId,   // Array
         flat::LocalId,   // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        first_ord::Type, // Item type
+        anon::Type, // Item type
         LocalAliases,    // Array aliases
         flat::LocalId,   // Array
     ),
     Push(
-        first_ord::Type, // Item type
+        anon::Type, // Item type
         LocalAliases,    // Array aliases
         flat::LocalId,   // Array
         flat::LocalId,   // Item
     ), // Returns new array
     Pop(
-        first_ord::Type, // Item type
+        anon::Type, // Item type
         LocalAliases,    // Array aliases
         flat::LocalId,   // Array
     ), // Returns tuple (array, item)
     Replace(
-        first_ord::Type, // Item type
+        anon::Type, // Item type
         LocalAliases,    // Hole array aliases
         flat::LocalId,   // Hole array
         flat::LocalId,   // Item
@@ -100,9 +100,9 @@ pub enum Expr {
         OrdMap<FieldPath, FoldedAliases>,
         flat::LocalId, // Argument
     ),
-    Branch(flat::LocalId, Vec<(flat::Condition, Expr)>, first_ord::Type),
+    Branch(flat::LocalId, Vec<(flat::Condition, Expr)>, anon::Type),
     LetMany(
-        Vec<(first_ord::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
         flat::LocalId,                // body
     ),
 
@@ -121,7 +121,7 @@ pub enum Expr {
     ArrayOp(ArrayOp),
     IOOp(IOOp),
 
-    ArrayLit(first_ord::Type, Vec<flat::LocalId>),
+    ArrayLit(anon::Type, Vec<flat::LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -141,8 +141,8 @@ pub struct AliasSig {
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub purity: Purity,
-    pub arg_type: first_ord::Type,
-    pub ret_type: first_ord::Type,
+    pub arg_type: anon::Type,
+    pub ret_type: anon::Type,
     pub alias_sig: AliasSig,
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument.

@@ -558,6 +558,28 @@ mod val_info {
 
 use val_info::ValInfo;
 
+fn empty_info(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &anon::Type,
+) -> ValInfo {
+    let mut result = ValInfo::new();
+
+    for path in get_names_in(typedefs, type_) {
+        result.create_path(path);
+    }
+
+    for (fold_point, _) in get_fold_points_in(typedefs, type_) {
+        result.create_folded_aliases(
+            fold_point,
+            annot::FoldedAliases {
+                inter_elem_aliases: OrdMap::new(),
+            },
+        );
+    }
+
+    result
+}
+
 // Note: This does not copy folded aliases!
 fn copy_aliases(
     dest: &mut ValInfo,
@@ -587,6 +609,28 @@ fn copy_aliases(
             (*other_id, other_path.clone()),
             cond.clone(),
         );
+    }
+}
+
+fn union_mut(dest: &mut ValInfo, src: &ValInfo) {
+    // We assume that 'dest' and 'src' both have the right "shape", which is to say that they are
+    // both already initialized with the full set of names and fold points for the type of value
+    // they represent.
+
+    for (path, aliases) in src.local_aliases() {
+        for (local_name, cond) in &aliases.aliases {
+            dest.add_edge_to_local(path.clone(), local_name.clone(), cond.clone());
+        }
+    }
+
+    for (pair, cond) in src.self_aliases() {
+        dest.add_self_edge(pair.fst().clone(), pair.snd().clone(), cond.clone());
+    }
+
+    for (fold_point, aliases) in src.folded_aliases() {
+        for (pair, cond) in &aliases.inter_elem_aliases {
+            dest.add_folded_alias(fold_point, pair.clone(), cond.clone());
+        }
     }
 }
 
@@ -678,23 +722,7 @@ fn annot_expr(
                 None => {
                     // On the first iteration of fixed point analysis, we assume all recursive calls
                     // return un-aliased return values.
-
-                    let mut empty_info = ValInfo::new();
-
-                    for ret_path in get_names_in(&orig.custom_types, ret_type) {
-                        empty_info.create_path(ret_path);
-                    }
-
-                    for (ret_fold_point, _) in get_fold_points_in(&orig.custom_types, ret_type) {
-                        empty_info.create_folded_aliases(
-                            ret_fold_point,
-                            annot::FoldedAliases {
-                                inter_elem_aliases: OrdMap::new(),
-                            },
-                        );
-                    }
-
-                    empty_info
+                    empty_info(&orig.custom_types, ret_type)
                 }
 
                 Some(sig) => {
@@ -796,6 +824,21 @@ fn annot_expr(
             };
 
             (annot_expr, expr_info)
+        }
+
+        flat::Expr::Branch(discrim, cases, result_type) => {
+            let mut annot_cases = Vec::with_capacity(cases.len());
+            let mut expr_info = empty_info(&orig.custom_types, result_type);
+
+            for (cond, body) in cases {
+                let (annot_body, body_info) = annot_expr(orig, sigs, ctx, body);
+                annot_cases.push((cond.clone(), annot_body));
+                union_mut(&mut expr_info, &body_info);
+            }
+
+            let annot_branch = annot::Expr::Branch(*discrim, annot_cases, result_type.clone());
+
+            (annot_branch, expr_info)
         }
 
         _ => unimplemented!(),
