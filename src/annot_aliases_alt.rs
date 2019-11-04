@@ -440,6 +440,15 @@ mod val_info {
             &self.folded_aliases
         }
 
+        pub fn rev_aliases(
+            &self,
+        ) -> &OrdMap<
+            (flat::LocalId, annot::FieldPath),
+            OrdMap<annot::FieldPath, Disj<annot::AliasCondition>>,
+        > {
+            &self.rev_aliases
+        }
+
         pub fn create_path(&mut self, path: annot::FieldPath) {
             debug_assert!(
                 !self.local_aliases.contains_key(&path),
@@ -525,6 +534,13 @@ mod val_info {
                 .entry(NormPair::new(path1, path2))
                 .or_default()
                 .or_mut(cond);
+        }
+
+        pub fn set_all_folded_aliases(
+            &mut self,
+            folded_aliases: OrdMap<annot::FieldPath, annot::FoldedAliases>,
+        ) {
+            self.folded_aliases = folded_aliases
         }
 
         pub fn create_folded_aliases(
@@ -839,6 +855,88 @@ fn annot_expr(
             let annot_branch = annot::Expr::Branch(*discrim, annot_cases, result_type.clone());
 
             (annot_branch, expr_info)
+        }
+
+        flat::Expr::LetMany(bindings, final_local) => {
+            let mut new_bindings = Vec::with_capacity(bindings.len());
+            let mut new_ctx = ctx.clone();
+
+            for (type_, rhs) in bindings {
+                let (annot_rhs, rhs_info) = annot_expr(orig, sigs, &new_ctx, rhs);
+
+                let lhs = flat::LocalId(new_ctx.len());
+                debug_assert!(!new_ctx.contains_key(&lhs));
+
+                // Wire up aliases from this local to others and to itself
+                let mut lhs_aliases = rhs_info.local_aliases().clone();
+                for (pair, cond) in rhs_info.self_aliases() {
+                    let prev_fst_snd = lhs_aliases[pair.fst()]
+                        .aliases
+                        .insert((lhs, pair.snd().clone()), cond.clone());
+
+                    let prev_snd_fst = lhs_aliases[pair.snd()]
+                        .aliases
+                        .insert((lhs, pair.fst().clone()), cond.clone());
+
+                    debug_assert!(prev_fst_snd.is_none());
+                    debug_assert!(prev_snd_fst.is_none());
+                }
+
+                // Wire up "reverse" aliases from other locals to this one
+                for ((other_local, other_path), lhs_aliases) in rhs_info.rev_aliases() {
+                    for (lhs_path, cond) in lhs_aliases {
+                        let prev = new_ctx[other_local].aliases[other_path]
+                            .aliases
+                            .insert((lhs, lhs_path.clone()), cond.clone());
+
+                        debug_assert!(prev.is_none());
+                    }
+                }
+
+                let lhs_info = LocalInfo {
+                    type_: type_.clone(),
+                    aliases: lhs_aliases,
+                    folded_aliases: rhs_info.folded_aliases().clone(),
+                };
+
+                new_ctx.insert(lhs, lhs_info);
+
+                new_bindings.push((type_.clone(), annot_rhs));
+            }
+
+            let final_local_info = &new_ctx[final_local];
+            let mut final_val_info = ValInfo::new();
+
+            for (path, _) in &final_local_info.aliases {
+                final_val_info.create_path(path.clone());
+            }
+
+            for (path, aliases) in &final_local_info.aliases {
+                for ((other_local, other_path), cond) in &aliases.aliases {
+                    if other_local.0 < ctx.len() {
+                        final_val_info.add_edge_to_local(
+                            path.clone(),
+                            (*other_local, other_path.clone()),
+                            cond.clone(),
+                        );
+                    }
+
+                    if other_local == final_local {
+                        final_val_info.add_self_edge(
+                            path.clone(),
+                            other_path.clone(),
+                            cond.clone(),
+                        );
+                    }
+                }
+            }
+
+            final_val_info.set_all_folded_aliases(final_local_info.folded_aliases.clone());
+
+            (
+                annot::Expr::LetMany(new_bindings, *final_local),
+                final_val_info,
+            )
         }
 
         _ => unimplemented!(),
