@@ -1064,6 +1064,44 @@ fn annot_expr(
             )
         }
 
+        flat::Expr::UnwrapVariant(variant_id, variant) => {
+            let variant_info = &ctx[variant];
+
+            let content_type = if let anon::Type::Variants(variant_types) = &variant_info.type_ {
+                &variant_types[variant_id]
+            } else {
+                unreachable!()
+            };
+
+            let mut expr_info = ValInfo::new();
+
+            for path_in_content in get_names_in(&orig.custom_types, content_type) {
+                let mut path_in_variant = path_in_content.clone();
+                path_in_variant.push_front(annot::Field::Variant(*variant_id));
+
+                expr_info.create_path(path_in_content.clone());
+                copy_aliases(
+                    &mut expr_info,
+                    &path_in_content,
+                    variant_info,
+                    *variant,
+                    &path_in_variant,
+                );
+            }
+
+            for (fold_point_in_content, _) in get_fold_points_in(&orig.custom_types, content_type) {
+                let mut fold_point_in_variant = fold_point_in_content.clone();
+                fold_point_in_variant.push_front(annot::Field::Variant(*variant_id));
+
+                expr_info.create_folded_aliases(
+                    fold_point_in_content,
+                    variant_info.folded_aliases[&fold_point_in_variant].clone(),
+                );
+            }
+
+            (annot::Expr::UnwrapVariant(*variant_id, *variant), expr_info)
+        }
+
         _ => unimplemented!(),
     }
 }
