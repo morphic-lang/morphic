@@ -543,6 +543,14 @@ mod val_info {
             self.folded_aliases = folded_aliases
         }
 
+        pub fn set_folded_aliases(
+            &mut self,
+            fold_point: annot::FieldPath,
+            folded_aliases: annot::FoldedAliases,
+        ) {
+            self.folded_aliases.insert(fold_point, folded_aliases);
+        }
+
         pub fn create_folded_aliases(
             &mut self,
             fold_point: annot::FieldPath,
@@ -1013,6 +1021,47 @@ fn annot_expr(
             }
 
             (annot::Expr::TupleField(*tuple, *field_idx), expr_info)
+        }
+
+        flat::Expr::WrapVariant(variant_types, variant, content) => {
+            let mut expr_info = empty_info(
+                &orig.custom_types,
+                &anon::Type::Variants(variant_types.clone()),
+            );
+
+            let content_info = &ctx[content];
+
+            debug_assert_eq!(&content_info.type_, &variant_types[variant]);
+
+            for path_in_content in get_names_in(&orig.custom_types, &content_info.type_) {
+                let mut path_in_variant = path_in_content.clone();
+                path_in_variant.push_front(annot::Field::Variant(*variant));
+
+                copy_aliases(
+                    &mut expr_info,
+                    &path_in_variant,
+                    &content_info,
+                    *content,
+                    &path_in_content,
+                );
+            }
+
+            for (fold_point_in_content, _) in
+                get_fold_points_in(&orig.custom_types, &content_info.type_)
+            {
+                let mut fold_point_in_variant = fold_point_in_content.clone();
+                fold_point_in_variant.push_front(annot::Field::Variant(*variant));
+
+                expr_info.set_folded_aliases(
+                    fold_point_in_variant,
+                    content_info.folded_aliases[&fold_point_in_content].clone(),
+                );
+            }
+
+            (
+                annot::Expr::WrapVariant(variant_types.clone(), *variant, *content),
+                expr_info,
+            )
         }
 
         _ => unimplemented!(),
