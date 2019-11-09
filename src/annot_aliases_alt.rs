@@ -939,6 +939,44 @@ fn annot_expr(
             )
         }
 
+        flat::Expr::Tuple(items) => {
+            let mut expr_info = ValInfo::new();
+
+            for (i, item) in items.iter().enumerate() {
+                let item_info = &ctx[item];
+
+                for path_in_item in get_names_in(&orig.custom_types, &item_info.type_) {
+                    let mut path_in_tuple = path_in_item.clone();
+                    path_in_tuple.push_front(annot::Field::Field(i));
+
+                    expr_info.create_path(path_in_tuple.clone());
+                    // copy_aliases handles the creation of both aliases to locals and self-aliases
+                    // within the tuple under construction.
+                    copy_aliases(
+                        &mut expr_info,
+                        &path_in_tuple,
+                        &item_info,
+                        *item,
+                        &path_in_item,
+                    );
+                }
+
+                for (fold_point_in_item, _) in
+                    get_fold_points_in(&orig.custom_types, &item_info.type_)
+                {
+                    let mut fold_point_in_tuple = fold_point_in_item.clone();
+                    fold_point_in_tuple.push_front(annot::Field::Field(i));
+
+                    expr_info.create_folded_aliases(
+                        fold_point_in_tuple,
+                        item_info.folded_aliases[&fold_point_in_item].clone(),
+                    );
+                }
+            }
+
+            (annot::Expr::Tuple(items.clone()), expr_info)
+        }
+
         _ => unimplemented!(),
     }
 }
