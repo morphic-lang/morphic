@@ -955,7 +955,7 @@ fn annot_expr(
                     copy_aliases(
                         &mut expr_info,
                         &path_in_tuple,
-                        &item_info,
+                        item_info,
                         *item,
                         &path_in_item,
                     );
@@ -975,6 +975,44 @@ fn annot_expr(
             }
 
             (annot::Expr::Tuple(items.clone()), expr_info)
+        }
+
+        flat::Expr::TupleField(tuple, field_idx) => {
+            let tuple_info = &ctx[tuple];
+
+            let item_type = if let anon::Type::Tuple(item_types) = &tuple_info.type_ {
+                &item_types[*field_idx]
+            } else {
+                unreachable!()
+            };
+
+            let mut expr_info = ValInfo::new();
+
+            for path_in_item in get_names_in(&orig.custom_types, item_type) {
+                let mut path_in_tuple = path_in_item.clone();
+                path_in_tuple.push_front(annot::Field::Field(*field_idx));
+
+                expr_info.create_path(path_in_item.clone());
+                copy_aliases(
+                    &mut expr_info,
+                    &path_in_item,
+                    tuple_info,
+                    *tuple,
+                    &path_in_tuple,
+                );
+            }
+
+            for (fold_point_in_item, _) in get_fold_points_in(&orig.custom_types, item_type) {
+                let mut fold_point_in_tuple = fold_point_in_item.clone();
+                fold_point_in_tuple.push_front(annot::Field::Field(*field_idx));
+
+                expr_info.create_folded_aliases(
+                    fold_point_in_item,
+                    tuple_info.folded_aliases[&fold_point_in_tuple].clone(),
+                );
+            }
+
+            (annot::Expr::TupleField(*tuple, *field_idx), expr_info)
         }
 
         _ => unimplemented!(),
