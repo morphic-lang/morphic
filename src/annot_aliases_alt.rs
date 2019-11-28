@@ -282,18 +282,18 @@ fn get_fold_points_in<'a>(
     }
 }
 
-fn get_occurrences_of(
+fn get_content_folded_occurrences(
     type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     target: first_ord::CustomTypeId,
-    type_: &anon::Type,
 ) -> Vec<annot::FieldPath> {
-    let mut occurs = Vec::new();
+    // We always have a 'root' occurrence
+    let mut occurs = vec![Vector::new()];
     add_occurs_from_type(
         type_defs,
         target,
         &mut occurs,
         &mut BTreeSet::new(),
-        type_,
+        &type_defs[target],
         &Vector::new(),
     );
     return occurs;
@@ -1189,6 +1189,89 @@ fn annot_expr(
             }
 
             (annot::Expr::WrapCustom(*custom_id, *content), expr_info)
+        }
+
+        flat::Expr::UnwrapCustom(custom_id, wrapped) => {
+            let mut expr_info = empty_info(&orig.custom_types, &orig.custom_types[custom_id]);
+
+            let occurs = get_content_folded_occurrences(&orig.custom_types, *custom_id);
+
+            let wrapped_info = &ctx[wrapped];
+
+            for wrapped_path in get_names_in(&orig.custom_types, &anon::Type::Custom(*custom_id)) {
+                debug_assert_eq!(&wrapped_path[0], &annot::Field::Custom(*custom_id));
+                let content_subpath = wrapped_path.clone().skip(1);
+
+                for occur in &occurs {
+                    let mut content_path = occur.clone();
+                    content_path.append(content_subpath.clone());
+
+                    // Wire up directly
+                    expr_info.add_edge_to_local(
+                        content_path.clone(),
+                        (*wrapped, wrapped_path.clone()),
+                        Disj::True,
+                    );
+
+                    for ((other, other_path), cond) in &wrapped_info.aliases[&wrapped_path].aliases
+                    {
+                        if other == wrapped {
+                            debug_assert_eq!(&other_path[0], &annot::Field::Custom(*custom_id));
+                            let other_content_subpath = other_path.clone().skip(1);
+
+                            let mut other_content_path = occur.clone();
+                            other_content_path.append(other_content_subpath.clone());
+
+                            expr_info.add_self_edge(
+                                content_path.clone(),
+                                other_content_path,
+                                cond.clone(),
+                            );
+                        } else {
+                            expr_info.add_edge_to_local(
+                                content_path.clone(),
+                                (*other, other_path.clone()),
+                                cond.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Unfurl folded edges
+            for (pair, cond) in &wrapped_info.folded_aliases
+                [&vector![annot::Field::Custom(*custom_id)]]
+                .inter_elem_aliases
+            {
+                for (i, occur1) in occurs.iter().enumerate() {
+                    for occur2 in &occurs[..i] {
+                        let mut content_path1 = occur1.clone();
+                        content_path1.append(pair.fst().0.clone());
+
+                        let mut content_path2 = occur2.clone();
+                        content_path2.append(pair.snd().0.clone());
+
+                        expr_info.add_self_edge(content_path1, content_path2, cond.clone());
+                    }
+                }
+            }
+
+            // Copy all internal fold points
+            for (content_path, _) in
+                get_fold_points_in(&orig.custom_types, &orig.custom_types[custom_id])
+            {
+                let (_, wrapped_subpath) = split_at_fold(*custom_id, content_path.clone());
+
+                let mut wrapped_path = wrapped_subpath.0;
+                wrapped_path.push_front(annot::Field::Custom(*custom_id));
+
+                expr_info.set_folded_aliases(
+                    content_path,
+                    wrapped_info.folded_aliases[&wrapped_path].clone(),
+                );
+            }
+
+            (annot::Expr::UnwrapCustom(*custom_id, *wrapped), expr_info)
         }
 
         _ => unimplemented!(),
