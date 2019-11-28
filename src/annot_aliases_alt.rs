@@ -1,4 +1,4 @@
-use im_rc::{OrdMap, Vector};
+use im_rc::{vector, OrdMap, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_annot_ast as annot;
@@ -379,6 +379,19 @@ fn get_occurrences_of(
                 }
             }
         }
+    }
+}
+
+fn split_at_fold(
+    to_fold: first_ord::CustomTypeId,
+    path: annot::FieldPath,
+) -> (annot::FieldPath, annot::SubPath) {
+    match path.index_of(&annot::Field::Custom(to_fold)) {
+        Some(split_point) => {
+            let (fold_point, sub_path) = path.split_at(split_point + 1);
+            (fold_point, annot::SubPath(sub_path))
+        }
+        None => (Vector::new(), annot::SubPath(path)),
     }
 }
 
@@ -1100,6 +1113,82 @@ fn annot_expr(
             }
 
             (annot::Expr::UnwrapVariant(*variant_id, *variant), expr_info)
+        }
+
+        flat::Expr::WrapCustom(custom_id, content) => {
+            let mut expr_info = empty_info(&orig.custom_types, &anon::Type::Custom(*custom_id));
+
+            let content_info = &ctx[content];
+
+            debug_assert_eq!(&content_info.type_, &orig.custom_types[custom_id]);
+
+            for content_path in get_names_in(&orig.custom_types, &orig.custom_types[custom_id]) {
+                let (fold_point, normalized) = split_at_fold(*custom_id, content_path.clone());
+
+                let mut wrapped_path = normalized.0.clone();
+                wrapped_path.push_front(annot::Field::Custom(*custom_id));
+
+                // Wire up directly
+                expr_info.add_edge_to_local(
+                    wrapped_path.clone(),
+                    (*content, content_path.clone()),
+                    Disj::True,
+                );
+
+                for ((other, other_path), cond) in &content_info.aliases[&content_path].aliases {
+                    if other == content {
+                        // Wire up transitive self edges (tricky)
+                        let (other_fold_point, other_normalized) =
+                            split_at_fold(*custom_id, other_path.clone());
+
+                        if other_fold_point == fold_point {
+                            let mut other_wrapped = other_normalized.0;
+                            other_wrapped.push_back(annot::Field::Custom(*custom_id));
+
+                            expr_info.add_self_edge(
+                                wrapped_path.clone(),
+                                other_wrapped,
+                                cond.clone(),
+                            );
+                        } else {
+                            // TODO: Are we absolutely certain that adding a cross-edge is *all* we
+                            // need to do in this case?  Is it ever necessary to also add a normal
+                            // edge here?
+
+                            // "Cross-edge" between folded copies
+                            expr_info.add_folded_alias(
+                                &vector![annot::Field::Custom(*custom_id)],
+                                NormPair::new(normalized.clone(), other_normalized.clone()),
+                                cond.clone(),
+                            );
+                        }
+                    } else {
+                        // Wire up transitive external edges
+                        expr_info.add_edge_to_local(
+                            wrapped_path.clone(),
+                            (*other, other_path.clone()),
+                            cond.clone(),
+                        );
+                    }
+                }
+            }
+
+            for (content_fold_point, _) in
+                get_fold_points_in(&orig.custom_types, &orig.custom_types[custom_id])
+            {
+                let (_, normalized) = split_at_fold(*custom_id, content_fold_point.clone());
+
+                let mut wrapped_path = normalized.0.clone();
+                wrapped_path.push_front(annot::Field::Custom(*custom_id));
+
+                for (pair, cond) in
+                    &content_info.folded_aliases[&content_fold_point].inter_elem_aliases
+                {
+                    expr_info.add_folded_alias(&wrapped_path, pair.clone(), cond.clone());
+                }
+            }
+
+            (annot::Expr::WrapCustom(*custom_id, *content), expr_info)
         }
 
         _ => unimplemented!(),
