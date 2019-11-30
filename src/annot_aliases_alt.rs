@@ -1162,14 +1162,14 @@ fn annot_expr(
                                 cond.clone(),
                             );
                         }
-                    } else {
-                        // Wire up transitive external edges
-                        expr_info.add_edge_to_local(
-                            wrapped_path.clone(),
-                            (*other, other_path.clone()),
-                            cond.clone(),
-                        );
                     }
+
+                    // Wire up transitive external edges
+                    expr_info.add_edge_to_local(
+                        wrapped_path.clone(),
+                        (*other, other_path.clone()),
+                        cond.clone(),
+                    );
                 }
             }
 
@@ -1227,13 +1227,13 @@ fn annot_expr(
                                 other_content_path,
                                 cond.clone(),
                             );
-                        } else {
-                            expr_info.add_edge_to_local(
-                                content_path.clone(),
-                                (*other, other_path.clone()),
-                                cond.clone(),
-                            );
                         }
+
+                        expr_info.add_edge_to_local(
+                            content_path.clone(),
+                            (*other, other_path.clone()),
+                            cond.clone(),
+                        );
                     }
                 }
             }
@@ -1272,6 +1272,151 @@ fn annot_expr(
             }
 
             (annot::Expr::UnwrapCustom(*custom_id, *wrapped), expr_info)
+        }
+
+        flat::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), ValInfo::new()),
+
+        flat::Expr::ArrayOp(flat::ArrayOp::Item(item_type, array, index)) => {
+            let mut expr_info = ValInfo::new();
+
+            let array_info = &ctx[array];
+
+            debug_assert_eq!(
+                &anon::Type::Array(Box::new(item_type.clone())),
+                &array_info.type_
+            );
+
+            debug_assert_eq!(
+                get_names_in(
+                    &orig.custom_types,
+                    &anon::Type::Array(Box::new(item_type.clone()))
+                ),
+                get_names_in(
+                    &orig.custom_types,
+                    &anon::Type::HoleArray(Box::new(item_type.clone()))
+                )
+            );
+
+            // Populate hole array info
+            {
+                for array_path in get_names_in(&orig.custom_types, &array_info.type_) {
+                    // Second return value is the hole array
+                    let mut ret_path = array_path.clone();
+                    ret_path.push_front(annot::Field::Field(1));
+
+                    copy_aliases(&mut expr_info, &ret_path, array_info, *array, &array_path);
+                }
+
+                for (array_fold_point, _) in
+                    get_fold_points_in(&orig.custom_types, &array_info.type_)
+                {
+                    let mut ret_fold_point = array_fold_point.clone();
+                    ret_fold_point.push_front(annot::Field::Field(1));
+                    expr_info.create_folded_aliases(
+                        ret_fold_point,
+                        array_info.folded_aliases[&array_fold_point].clone(),
+                    );
+                }
+            }
+
+            // Populate item info
+            {
+                let item_paths = get_names_in(&orig.custom_types, item_type);
+
+                for item_path in &item_paths {
+                    // First return value is the item
+                    let mut ret_path = item_path.clone();
+                    ret_path.push_front(annot::Field::Field(0));
+
+                    expr_info.create_path(ret_path);
+                }
+
+                for item_path in item_paths {
+                    let mut ret_path = item_path.clone();
+                    ret_path.push_front(annot::Field::Field(0));
+
+                    let mut array_path = item_path.clone();
+                    array_path.push_front(annot::Field::ArrayMembers);
+
+                    // We can't use 'copy_aliases' here because we want to avoid creating edges
+                    // between the returned item and returned hole array unless a corresponding edge
+                    // exists in the folded aliases of the original array.
+
+                    // Wire up directly
+                    expr_info.add_edge_to_local(
+                        ret_path.clone(),
+                        (*array, array_path.clone()),
+                        Disj::True,
+                    );
+
+                    // Wire up transitive edges
+                    for ((other, other_path), cond) in &array_info.aliases[&array_path].aliases {
+                        if other == array {
+                            // It should not be possible for an array to (transitively) contain
+                            // itself, so we can assume that any self-edge within the array is a
+                            // self edge within its members.
+                            debug_assert_eq!(other_path[0], annot::Field::ArrayMembers);
+
+                            let other_item_path = other_path.skip(1);
+
+                            let mut other_item_ret_path = other_item_path;
+                            other_item_ret_path.push_front(annot::Field::Field(0));
+
+                            expr_info.add_self_edge(
+                                ret_path.clone(),
+                                other_item_ret_path,
+                                cond.clone(),
+                            );
+                        }
+
+                        expr_info.add_edge_to_local(
+                            ret_path.clone(),
+                            (*other, other_path.clone()),
+                            cond.clone(),
+                        );
+                    }
+                }
+
+                // Unfurl folded edges
+                for (pair, cond) in &array_info.folded_aliases[&vector![annot::Field::ArrayMembers]]
+                    .inter_elem_aliases
+                {
+                    let mut ret_item_path = pair.fst().0.clone();
+                    ret_item_path.push_front(annot::Field::Field(0));
+
+                    let mut ret_array_path = pair.snd().0.clone();
+                    ret_array_path.push_front(annot::Field::ArrayMembers);
+                    ret_array_path.push_front(annot::Field::Field(1));
+
+                    expr_info.add_self_edge(ret_item_path, ret_array_path, cond.clone());
+                }
+
+                // Copy folded aliases
+                for (item_fold_point, _) in get_fold_points_in(&orig.custom_types, item_type) {
+                    let mut ret_item_fold_point = item_fold_point.clone();
+                    ret_item_fold_point.push_back(annot::Field::Field(0));
+
+                    let mut array_fold_point = item_fold_point.clone();
+                    array_fold_point.push_front(annot::Field::ArrayMembers);
+
+                    expr_info.create_folded_aliases(
+                        ret_item_fold_point,
+                        array_info.folded_aliases[&array_fold_point].clone(),
+                    );
+                }
+            }
+
+            let array_aliases = array_info.aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Item(
+                    item_type.clone(),
+                    array_aliases,
+                    *array,
+                    *index,
+                )),
+                expr_info,
+            )
         }
 
         _ => unimplemented!(),
