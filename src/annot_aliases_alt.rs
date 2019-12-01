@@ -571,7 +571,7 @@ mod val_info {
         ) {
             debug_assert!(
                 !self.folded_aliases.contains_key(&fold_point),
-                "Alias analysis attempted to create a fold point that already exists.  While is \
+                "Alias analysis attempted to create a fold point that already exists.  While this \
                  is in and of itself harmless, it probably indicates a logic error."
             );
 
@@ -828,6 +828,115 @@ fn array_extraction_aliases(
                 ret_item_fold_point,
                 array_info.folded_aliases[&array_fold_point].clone(),
             );
+        }
+    }
+
+    expr_info
+}
+
+fn array_insertion_aliases(
+    orig: &flat::Program,
+    ctx: &OrdMap<flat::LocalId, LocalInfo>,
+    item_type: &anon::Type,
+    array: flat::LocalId,
+    item: flat::LocalId,
+) -> ValInfo {
+    let mut expr_info = ValInfo::new();
+
+    let array_info = &ctx[&array];
+    let item_info = &ctx[&item];
+
+    debug_assert_eq!(&item_info.type_, item_type);
+
+    // The "array" into which we are inserting may be either an actual `Type::Array` or a
+    // `Type::HoleArray`.  In either case, we expect its names to be the same as those of an array.
+
+    debug_assert_eq!(
+        get_names_in(&orig.custom_types, &array_info.type_),
+        get_names_in(
+            &orig.custom_types,
+            &anon::Type::Array(Box::new(item_type.clone()))
+        )
+    );
+
+    // Wire up aliases contributed by array
+    {
+        for array_path in get_names_in(&orig.custom_types, &array_info.type_) {
+            copy_aliases(&mut expr_info, &array_path, array_info, array, &array_path);
+        }
+
+        for (array_fold_point, _) in get_fold_points_in(&orig.custom_types, &array_info.type_) {
+            expr_info.create_folded_aliases(
+                array_fold_point.clone(),
+                array_info.folded_aliases[&array_fold_point].clone(),
+            );
+        }
+    }
+
+    // Wire up aliases contributed by item
+    {
+        for item_path in get_names_in(&orig.custom_types, item_type) {
+            let mut ret_array_path = item_path.clone();
+            ret_array_path.push_front(annot::Field::ArrayMembers);
+
+            // The name `ret_array_path` should already exist in `expr_info`, because we should have
+            // created it when we wire up the aliases contributed by the array.
+
+            // Wire up directly
+            expr_info.add_edge_to_local(
+                ret_array_path.clone(),
+                (item, item_path.clone()),
+                Disj::True,
+            );
+
+            // Wire up transitive edges
+            for ((other, other_path), cond) in &item_info.aliases[&item_path].aliases {
+                if *other == item {
+                    let mut other_ret_array_path = other_path.clone();
+                    other_ret_array_path.push_front(annot::Field::ArrayMembers);
+
+                    expr_info.add_self_edge(
+                        ret_array_path.clone(),
+                        other_ret_array_path,
+                        cond.clone(),
+                    );
+                }
+
+                if *other == array {
+                    // It should not be possible for an array to (transitively) contain itself, so
+                    // we can assume that any edge between the array and the item is an edge between
+                    // the *members* of the array and the item.
+                    debug_assert_eq!(other_path[0], annot::Field::ArrayMembers);
+
+                    let other_subpath = annot::SubPath(other_path.skip(1));
+
+                    // TODO: Are we absolutely certain that adding a cross-edge is *all* we need to
+                    // do in this case?  Is it ever necessary to also add a normal edge here?
+
+                    // "Cross-edge" between folded copies
+                    expr_info.add_folded_alias(
+                        &vector![annot::Field::ArrayMembers],
+                        NormPair::new(annot::SubPath(item_path.clone()), other_subpath),
+                        cond.clone(),
+                    );
+                }
+
+                expr_info.add_edge_to_local(
+                    ret_array_path.clone(),
+                    (*other, other_path.clone()),
+                    cond.clone(),
+                );
+            }
+
+            // Copy folded aliases
+            for (item_fold_point, _) in get_fold_points_in(&orig.custom_types, item_type) {
+                let mut ret_array_fold_point = item_fold_point.clone();
+                ret_array_fold_point.push_front(annot::Field::ArrayMembers);
+
+                for (pair, cond) in &item_info.folded_aliases[&item_fold_point].inter_elem_aliases {
+                    expr_info.add_folded_alias(&ret_array_fold_point, pair.clone(), cond.clone());
+                }
+            }
         }
     }
 
@@ -1449,6 +1558,38 @@ fn annot_expr(
                     item_type.clone(),
                     array_aliases,
                     *array,
+                )),
+                expr_info,
+            )
+        }
+
+        flat::Expr::ArrayOp(flat::ArrayOp::Replace(item_type, hole_array, item)) => {
+            let expr_info = array_insertion_aliases(orig, ctx, item_type, *hole_array, *item);
+
+            let hole_array_aliases = ctx[hole_array].aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Replace(
+                    item_type.clone(),
+                    hole_array_aliases,
+                    *hole_array,
+                    *item,
+                )),
+                expr_info,
+            )
+        }
+
+        flat::Expr::ArrayOp(flat::ArrayOp::Push(item_type, array, item)) => {
+            let expr_info = array_insertion_aliases(orig, ctx, item_type, *array, *item);
+
+            let array_aliases = ctx[array].aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Push(
+                    item_type.clone(),
+                    array_aliases,
+                    *array,
+                    *item,
                 )),
                 expr_info,
             )
