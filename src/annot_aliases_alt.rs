@@ -1,4 +1,4 @@
-use im_rc::{vector, OrdMap, Vector};
+use im_rc::{vector, OrdMap, OrdSet, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_annot_ast as annot;
@@ -106,10 +106,10 @@ impl<'a> SignatureAssumptions<'a> {
 }
 
 // Computes the fields in `type_` at which there is a name
-fn get_names_in(
-    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-    type_: &anon::Type,
-) -> Vec<annot::FieldPath> {
+fn get_names_in<'a>(
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &'a anon::Type,
+) -> Vec<(annot::FieldPath, &'a anon::Type)> {
     let mut names = Vec::new();
     add_names_from_type(
         type_defs,
@@ -121,18 +121,18 @@ fn get_names_in(
     return names;
 
     // Recursively appends paths to names in `type_` to `names`
-    fn add_names_from_type(
-        type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-        names: &mut Vec<annot::FieldPath>,
+    fn add_names_from_type<'a>(
+        type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+        names: &mut Vec<(annot::FieldPath, &'a anon::Type)>,
         typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
-        type_: &anon::Type,
+        type_: &'a anon::Type,
         prefix: annot::FieldPath,
     ) {
         match type_ {
             anon::Type::Bool | anon::Type::Num(_) => {}
             anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => {
                 // The array itself:
-                names.push(prefix.clone());
+                names.push((prefix.clone(), type_));
                 // The names in elements of the array:
                 let mut new_prefix = prefix.clone();
                 new_prefix.push_back(annot::Field::ArrayMembers);
@@ -601,7 +601,7 @@ fn empty_info(
 ) -> ValInfo {
     let mut result = ValInfo::new();
 
-    for path in get_names_in(typedefs, type_) {
+    for (path, _) in get_names_in(typedefs, type_) {
         result.create_path(path);
     }
 
@@ -735,7 +735,7 @@ fn array_extraction_aliases(
 
     // Populate new array info
     {
-        for array_path in get_names_in(&orig.custom_types, &array_info.type_) {
+        for (array_path, _) in get_names_in(&orig.custom_types, &array_info.type_) {
             let mut ret_path = array_path.clone();
             ret_path.push_front(ret_array_field);
 
@@ -757,14 +757,14 @@ fn array_extraction_aliases(
     {
         let item_paths = get_names_in(&orig.custom_types, item_type);
 
-        for item_path in &item_paths {
+        for (item_path, _) in &item_paths {
             let mut ret_path = item_path.clone();
             ret_path.push_front(ret_item_field);
 
             expr_info.create_path(ret_path);
         }
 
-        for item_path in item_paths {
+        for (item_path, _) in item_paths {
             let mut ret_path = item_path.clone();
             ret_path.push_front(ret_item_field);
 
@@ -861,7 +861,7 @@ fn array_insertion_aliases(
 
     // Wire up aliases contributed by array
     {
-        for array_path in get_names_in(&orig.custom_types, &array_info.type_) {
+        for (array_path, _) in get_names_in(&orig.custom_types, &array_info.type_) {
             copy_aliases(&mut expr_info, &array_path, array_info, array, &array_path);
         }
 
@@ -875,7 +875,7 @@ fn array_insertion_aliases(
 
     // Wire up aliases contributed by item
     {
-        for item_path in get_names_in(&orig.custom_types, item_type) {
+        for (item_path, _) in get_names_in(&orig.custom_types, item_type) {
             let mut ret_array_path = item_path.clone();
             ret_array_path.push_front(annot::Field::ArrayMembers);
 
@@ -954,7 +954,7 @@ fn annot_expr(
             let mut expr_info = ValInfo::new();
 
             let local_info = &ctx[local];
-            for path in get_names_in(&orig.custom_types, &local_info.type_) {
+            for (path, _) in get_names_in(&orig.custom_types, &local_info.type_) {
                 expr_info.create_path(path.clone());
                 copy_aliases(&mut expr_info, &path, &local_info, *local, &path);
             }
@@ -993,7 +993,7 @@ fn annot_expr(
                     let mut expr_info = ValInfo::new();
 
                     // Create paths and wire up edges to locals
-                    for ret_path in get_names_in(&orig.custom_types, ret_type) {
+                    for (ret_path, _) in get_names_in(&orig.custom_types, ret_type) {
                         expr_info.create_path(ret_path.clone());
 
                         for (annot::ArgName(arg_path), cond) in
@@ -1193,7 +1193,7 @@ fn annot_expr(
             for (i, item) in items.iter().enumerate() {
                 let item_info = &ctx[item];
 
-                for path_in_item in get_names_in(&orig.custom_types, &item_info.type_) {
+                for (path_in_item, _) in get_names_in(&orig.custom_types, &item_info.type_) {
                     let mut path_in_tuple = path_in_item.clone();
                     path_in_tuple.push_front(annot::Field::Field(i));
 
@@ -1236,7 +1236,7 @@ fn annot_expr(
 
             let mut expr_info = ValInfo::new();
 
-            for path_in_item in get_names_in(&orig.custom_types, item_type) {
+            for (path_in_item, _) in get_names_in(&orig.custom_types, item_type) {
                 let mut path_in_tuple = path_in_item.clone();
                 path_in_tuple.push_front(annot::Field::Field(*field_idx));
 
@@ -1273,7 +1273,7 @@ fn annot_expr(
 
             debug_assert_eq!(&content_info.type_, &variant_types[variant]);
 
-            for path_in_content in get_names_in(&orig.custom_types, &content_info.type_) {
+            for (path_in_content, _) in get_names_in(&orig.custom_types, &content_info.type_) {
                 let mut path_in_variant = path_in_content.clone();
                 path_in_variant.push_front(annot::Field::Variant(*variant));
 
@@ -1315,7 +1315,7 @@ fn annot_expr(
 
             let mut expr_info = ValInfo::new();
 
-            for path_in_content in get_names_in(&orig.custom_types, content_type) {
+            for (path_in_content, _) in get_names_in(&orig.custom_types, content_type) {
                 let mut path_in_variant = path_in_content.clone();
                 path_in_variant.push_front(annot::Field::Variant(*variant_id));
 
@@ -1349,7 +1349,8 @@ fn annot_expr(
 
             debug_assert_eq!(&content_info.type_, &orig.custom_types[custom_id]);
 
-            for content_path in get_names_in(&orig.custom_types, &orig.custom_types[custom_id]) {
+            for (content_path, _) in get_names_in(&orig.custom_types, &orig.custom_types[custom_id])
+            {
                 let (fold_point, normalized) = split_at_fold(*custom_id, content_path.clone());
 
                 let mut wrapped_path = normalized.0.clone();
@@ -1425,7 +1426,9 @@ fn annot_expr(
 
             let wrapped_info = &ctx[wrapped];
 
-            for wrapped_path in get_names_in(&orig.custom_types, &anon::Type::Custom(*custom_id)) {
+            for (wrapped_path, _) in
+                get_names_in(&orig.custom_types, &anon::Type::Custom(*custom_id))
+            {
                 debug_assert_eq!(&wrapped_path[0], &annot::Field::Custom(*custom_id));
                 let content_subpath = wrapped_path.clone().skip(1);
 
@@ -1639,7 +1642,7 @@ fn annot_expr(
             for item in items {
                 let item_info = &ctx[item];
 
-                for item_path in &item_paths {
+                for (item_path, _) in &item_paths {
                     let mut ret_array_path = item_path.clone();
                     ret_array_path.push_front(annot::Field::ArrayMembers);
 
@@ -1713,13 +1716,158 @@ fn annot_expr(
     }
 }
 
+fn get_aliasable_name_groups_in(
+    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &anon::Type,
+) -> Vec<Vec<annot::FieldPath>> {
+    let mut paths_by_type = BTreeMap::<&anon::Type, Vec<annot::FieldPath>>::new();
+
+    for (path, type_) in get_names_in(type_defs, type_) {
+        let item_type = match type_ {
+            anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => item_type,
+            _ => unreachable!(),
+        };
+
+        paths_by_type.entry(item_type).or_default().push(path);
+    }
+
+    paths_by_type
+        .into_iter()
+        .map(|(_item_type, paths)| paths)
+        .collect()
+}
+
 #[allow(unused_variables)]
 fn annot_func(
     orig: &flat::Program,
     sigs: &SignatureAssumptions,
     func_def: &flat::FuncDef,
 ) -> annot::FuncDef {
-    unimplemented!()
+    let mut arg_aliases = OrdMap::new();
+    for paths in get_aliasable_name_groups_in(&orig.custom_types, &func_def.arg_type) {
+        for path1 in &paths {
+            let path1_aliases = paths
+                .iter()
+                .filter(|path2| path2 != &path1)
+                .map(|path2| {
+                    (
+                        (flat::ARG_LOCAL, path2.clone()),
+                        Disj::Any(OrdSet::unit(annot::AliasCondition::AliasInArg(
+                            NormPair::new(
+                                annot::ArgName(path1.clone()),
+                                annot::ArgName(path2.clone()),
+                            ),
+                        ))),
+                    )
+                })
+                .collect();
+
+            arg_aliases.insert(
+                path1.clone(),
+                annot::LocalAliases {
+                    aliases: path1_aliases,
+                },
+            );
+        }
+    }
+
+    let arg_folded_aliases = get_fold_points_in(&orig.custom_types, &func_def.arg_type)
+        .into_iter()
+        .map(|(fold_point, folded_type)| {
+            let mut folded_aliases = OrdMap::new();
+            for paths in get_aliasable_name_groups_in(&orig.custom_types, folded_type) {
+                for (i, path1) in paths.iter().enumerate() {
+                    // Folded edges are symmetric, so we only need to insert each edge in one
+                    // direction.  This means it's enough to wire each sub-path up to all the
+                    // sub-paths appearing after it in the list (including itself).
+                    for path2 in &paths[i..] {
+                        let pair = NormPair::new(
+                            annot::SubPath(path1.clone()),
+                            annot::SubPath(path2.clone()),
+                        );
+
+                        folded_aliases.insert(
+                            pair.clone(),
+                            Disj::Any(OrdSet::unit(annot::AliasCondition::FoldedAliasInArg(
+                                annot::ArgName(fold_point.clone()),
+                                pair,
+                            ))),
+                        );
+                    }
+                }
+            }
+
+            (
+                fold_point,
+                annot::FoldedAliases {
+                    inter_elem_aliases: folded_aliases,
+                },
+            )
+        })
+        .collect();
+
+    let arg_info = LocalInfo {
+        type_: func_def.arg_type.clone(),
+        aliases: arg_aliases,
+        folded_aliases: arg_folded_aliases,
+    };
+
+    let init_ctx = OrdMap::unit(flat::ARG_LOCAL, arg_info);
+
+    let (annot_body, ret_info) = annot_expr(orig, sigs, &init_ctx, &func_def.body);
+
+    let ret_arg_aliases = ret_info
+        .local_aliases()
+        .iter()
+        .map(|(ret_path, annot::LocalAliases { aliases })| {
+            (
+                annot::RetName(ret_path.clone()),
+                aliases
+                    .iter()
+                    .map(|((local_id, local_path), cond)| {
+                        debug_assert_eq!(local_id, &flat::ARG_LOCAL);
+                        (annot::ArgName(local_path.clone()), cond.clone())
+                    })
+                    .collect::<OrdMap<_, _>>(),
+            )
+        })
+        .collect();
+
+    let ret_ret_aliases = ret_info
+        .self_aliases()
+        .iter()
+        .map(|(pair, cond)| {
+            (
+                NormPair::new(
+                    annot::RetName(pair.fst().clone()),
+                    annot::RetName(pair.snd().clone()),
+                ),
+                cond.clone(),
+            )
+        })
+        .collect();
+
+    let ret_folded_aliases = ret_info
+        .folded_aliases()
+        .iter()
+        .map(|(fold_point, folded_aliases)| {
+            (annot::RetName(fold_point.clone()), folded_aliases.clone())
+        })
+        .collect();
+
+    let alias_sig = annot::AliasSig {
+        ret_arg_aliases,
+        ret_ret_aliases,
+        ret_folded_aliases,
+    };
+
+    annot::FuncDef {
+        purity: func_def.purity,
+        arg_type: func_def.arg_type.clone(),
+        ret_type: func_def.ret_type.clone(),
+        alias_sig,
+        body: annot_body,
+    }
 }
 
 fn annot_scc_fixed_point(
@@ -1782,9 +1930,9 @@ mod test {
 
     #[test]
     fn test_get_names_in() {
-        fn set<T: Ord>(v: Vec<T>) -> BTreeSet<T> {
+        fn set<T: Ord>(v: impl IntoIterator<Item = T>) -> BTreeSet<T> {
             use std::iter::FromIterator;
-            BTreeSet::from_iter(v.into_iter())
+            BTreeSet::from_iter(v)
         }
         let with_single_recursive_type =
             IdVec::from_items(vec![anon::Type::Variants(IdVec::from_items(vec![
@@ -1891,7 +2039,12 @@ mod test {
             ),
         ];
         for (typedefs, type_, expected_names) in mapping {
-            assert_eq!(set(get_names_in(&typedefs, &type_)), expected_names);
+            assert_eq!(
+                set(get_names_in(&typedefs, &type_)
+                    .into_iter()
+                    .map(|(name, _type)| name)),
+                expected_names
+            );
         }
     }
 }

@@ -28,7 +28,7 @@ pub enum IOOp {
     Output(Box<Expr>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NumType {
     Byte,
     Int,

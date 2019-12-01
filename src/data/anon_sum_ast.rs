@@ -11,7 +11,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::purity::Purity;
 use crate::util::id_vec::IdVec;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bool,
     Num(first_ord::NumType),
