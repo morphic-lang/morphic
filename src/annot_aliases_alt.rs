@@ -1595,6 +1595,19 @@ fn annot_expr(
             )
         }
 
+        flat::Expr::ArrayOp(flat::ArrayOp::Len(item_type, array)) => {
+            let array_aliases = ctx[array].aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Len(
+                    item_type.clone(),
+                    array_aliases,
+                    *array,
+                )),
+                ValInfo::new(),
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
