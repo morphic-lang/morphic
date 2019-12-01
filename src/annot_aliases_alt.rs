@@ -1625,6 +1625,87 @@ fn annot_expr(
             )
         }
 
+        flat::Expr::ArrayLit(item_type, items) => {
+            let mut expr_info = empty_info(
+                &orig.custom_types,
+                &anon::Type::Array(Box::new(item_type.clone())),
+            );
+
+            let item_ids = items.iter().cloned().collect::<BTreeSet<flat::LocalId>>();
+
+            let item_paths = get_names_in(&orig.custom_types, item_type);
+            let item_fold_points = get_fold_points_in(&orig.custom_types, item_type);
+
+            for item in items {
+                let item_info = &ctx[item];
+
+                for item_path in &item_paths {
+                    let mut ret_array_path = item_path.clone();
+                    ret_array_path.push_front(annot::Field::ArrayMembers);
+
+                    // Wire up directly
+                    expr_info.add_edge_to_local(
+                        ret_array_path.clone(),
+                        (*item, item_path.clone()),
+                        Disj::True,
+                    );
+
+                    // Wire up transitive edges
+                    for ((other, other_path), cond) in &item_info.aliases[item_path].aliases {
+                        if other == item {
+                            let mut other_ret_array_path = other_path.clone();
+                            other_ret_array_path.push_front(annot::Field::ArrayMembers);
+
+                            expr_info.add_self_edge(
+                                ret_array_path.clone(),
+                                other_ret_array_path,
+                                cond.clone(),
+                            );
+                        } else if item_ids.contains(other) {
+                            // TODO: Are we absolutely certain that adding a cross-edge is *all* we
+                            // need to do in this case?  Is it ever necessary to also add a normal
+                            // edge here?
+
+                            expr_info.add_folded_alias(
+                                &vector![annot::Field::ArrayMembers],
+                                NormPair::new(
+                                    annot::SubPath(item_path.clone()),
+                                    annot::SubPath(other_path.clone()),
+                                ),
+                                cond.clone(),
+                            );
+                        }
+
+                        expr_info.add_edge_to_local(
+                            ret_array_path.clone(),
+                            (*other, other_path.clone()),
+                            cond.clone(),
+                        );
+                    }
+                }
+
+                for (item_fold_point, _) in &item_fold_points {
+                    let mut ret_array_fold_point = item_fold_point.clone();
+                    ret_array_fold_point.push_front(annot::Field::ArrayMembers);
+
+                    for (pair, cond) in
+                        &item_info.folded_aliases[item_fold_point].inter_elem_aliases
+                    {
+                        expr_info.add_folded_alias(
+                            &ret_array_fold_point,
+                            pair.clone(),
+                            cond.clone(),
+                        );
+                    }
+                }
+            }
+
+            (
+                annot::Expr::ArrayLit(item_type.clone(), items.clone()),
+                expr_info,
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
