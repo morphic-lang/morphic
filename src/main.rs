@@ -100,6 +100,8 @@ fn usage() -> String {
 }
 
 fn main() {
+    better_panic::install();
+
     if let Some(config) = parse_args() {
         let result = run(&mut io::stdin().lock(), &mut io::stdout().lock(), config);
         if let Err(err) = result {
@@ -186,6 +188,10 @@ fn run<R: io::BufRead, W: io::Write>(
     let flat = flatten::flatten(split);
 
     println!("Flat program: {:#?}", flat);
+
+    let alias_annot = annot_aliases_alt::annot_aliases(flat);
+
+    println!("Alias-annotated program: {:#?}", alias_annot);
 
     interpreter::interpret(stdin, stdout, &specialized);
 

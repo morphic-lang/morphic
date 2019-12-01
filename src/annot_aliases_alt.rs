@@ -10,7 +10,7 @@ use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
 
-fn annot_aliases(program: flat::Program) -> annot::Program {
+pub fn annot_aliases(program: flat::Program) -> annot::Program {
     let mut annotated = IdVec::from_items((0..program.funcs.len()).map(|_| None).collect());
 
     let dep_graph = func_dependency_graph(&program);
@@ -192,21 +192,16 @@ fn get_fold_points_in<'a>(
     add_points_from_type(
         type_defs,
         &mut points,
-        &mut BTreeMap::new(),
+        &mut BTreeSet::new(),
         type_,
         Vector::new(),
     );
     return points;
 
-    enum FoldingStatus {
-        MightAppearRecursively,
-        AppearedRecursively,
-    }
-
     fn add_points_from_type<'a>(
         type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
         points: &mut Vec<(annot::FieldPath, &'a anon::Type)>,
-        typedefs_on_path: &mut BTreeMap<first_ord::CustomTypeId, FoldingStatus>,
+        typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
         type_: &'a anon::Type,
         prefix: annot::FieldPath,
     ) {
@@ -248,34 +243,25 @@ fn get_fold_points_in<'a>(
                 }
             }
             anon::Type::Custom(id) => {
-                if typedefs_on_path.contains_key(id) {
-                    typedefs_on_path.insert(*id, FoldingStatus::AppearedRecursively);
-                } else {
-                    typedefs_on_path.insert(*id, FoldingStatus::MightAppearRecursively);
+                if !typedefs_on_path.contains(id) {
+                    typedefs_on_path.insert(*id);
 
                     let mut new_prefix = prefix.clone();
                     new_prefix.push_back(annot::Field::Custom(*id));
+
+                    // This is a fold point
+                    points.push((new_prefix.clone(), &type_defs[id]));
+
                     add_points_from_type(
                         type_defs,
                         points,
                         typedefs_on_path,
                         &type_defs[id],
-                        new_prefix.clone(),
+                        new_prefix,
                     );
 
                     // Remove if we added it
-                    let final_status = typedefs_on_path.remove(id);
-
-                    match final_status {
-                        Some(FoldingStatus::MightAppearRecursively) => {
-                            // Didn't actually appear recursively, so this is not a fold point
-                        }
-                        Some(FoldingStatus::AppearedRecursively) => {
-                            // This is a fold point
-                            points.push((new_prefix, &type_defs[id]));
-                        }
-                        None => unreachable!(),
-                    }
+                    typedefs_on_path.remove(id);
                 }
             }
         }
@@ -955,7 +941,6 @@ fn annot_expr(
 
             let local_info = &ctx[local];
             for (path, _) in get_names_in(&orig.custom_types, &local_info.type_) {
-                expr_info.create_path(path.clone());
                 copy_aliases(&mut expr_info, &path, &local_info, *local, &path);
             }
 
@@ -1197,7 +1182,6 @@ fn annot_expr(
                     let mut path_in_tuple = path_in_item.clone();
                     path_in_tuple.push_front(annot::Field::Field(i));
 
-                    expr_info.create_path(path_in_tuple.clone());
                     // copy_aliases handles the creation of both aliases to locals and self-aliases
                     // within the tuple under construction.
                     copy_aliases(
@@ -1240,7 +1224,6 @@ fn annot_expr(
                 let mut path_in_tuple = path_in_item.clone();
                 path_in_tuple.push_front(annot::Field::Field(*field_idx));
 
-                expr_info.create_path(path_in_item.clone());
                 copy_aliases(
                     &mut expr_info,
                     &path_in_item,
@@ -1319,7 +1302,6 @@ fn annot_expr(
                 let mut path_in_variant = path_in_content.clone();
                 path_in_variant.push_front(annot::Field::Variant(*variant_id));
 
-                expr_info.create_path(path_in_content.clone());
                 copy_aliases(
                     &mut expr_info,
                     &path_in_content,
