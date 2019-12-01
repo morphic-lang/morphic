@@ -1706,7 +1706,10 @@ fn annot_expr(
             )
         }
 
-        _ => unimplemented!(),
+        &flat::Expr::BoolLit(val) => (annot::Expr::BoolLit(val), ValInfo::new()),
+        &flat::Expr::ByteLit(val) => (annot::Expr::ByteLit(val), ValInfo::new()),
+        &flat::Expr::IntLit(val) => (annot::Expr::IntLit(val), ValInfo::new()),
+        &flat::Expr::FloatLit(val) => (annot::Expr::FloatLit(val), ValInfo::new()),
     }
 }
 
