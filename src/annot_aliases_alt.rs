@@ -611,8 +611,6 @@ fn copy_aliases(
     src_id: flat::LocalId,
     src_path: &annot::FieldPath,
 ) {
-    dest.create_path(dest_path.clone());
-
     // Wire up transitive edges to other paths in dest
     //
     // We are careful to do this before wiring up the path in the dest directly to the
@@ -725,6 +723,7 @@ fn array_extraction_aliases(
             let mut ret_path = array_path.clone();
             ret_path.push_front(ret_array_field);
 
+            expr_info.create_path(ret_path.clone());
             copy_aliases(&mut expr_info, &ret_path, array_info, array, &array_path);
         }
 
@@ -838,16 +837,23 @@ fn array_insertion_aliases(
     // `Type::HoleArray`.  In either case, we expect its names to be the same as those of an array.
 
     debug_assert_eq!(
-        get_names_in(&orig.custom_types, &array_info.type_),
+        get_names_in(&orig.custom_types, &array_info.type_)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect::<BTreeSet<_>>(),
         get_names_in(
             &orig.custom_types,
             &anon::Type::Array(Box::new(item_type.clone()))
         )
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect::<BTreeSet<_>>()
     );
 
     // Wire up aliases contributed by array
     {
         for (array_path, _) in get_names_in(&orig.custom_types, &array_info.type_) {
+            expr_info.create_path(array_path.clone());
             copy_aliases(&mut expr_info, &array_path, array_info, array, &array_path);
         }
 
@@ -941,6 +947,7 @@ fn annot_expr(
 
             let local_info = &ctx[local];
             for (path, _) in get_names_in(&orig.custom_types, &local_info.type_) {
+                expr_info.create_path(path.clone());
                 copy_aliases(&mut expr_info, &path, &local_info, *local, &path);
             }
 
@@ -1182,6 +1189,7 @@ fn annot_expr(
                     let mut path_in_tuple = path_in_item.clone();
                     path_in_tuple.push_front(annot::Field::Field(i));
 
+                    expr_info.create_path(path_in_tuple.clone());
                     // copy_aliases handles the creation of both aliases to locals and self-aliases
                     // within the tuple under construction.
                     copy_aliases(
@@ -1224,6 +1232,7 @@ fn annot_expr(
                 let mut path_in_tuple = path_in_item.clone();
                 path_in_tuple.push_front(annot::Field::Field(*field_idx));
 
+                expr_info.create_path(path_in_item.clone());
                 copy_aliases(
                     &mut expr_info,
                     &path_in_item,
@@ -1302,6 +1311,7 @@ fn annot_expr(
                 let mut path_in_variant = path_in_content.clone();
                 path_in_variant.push_front(annot::Field::Variant(*variant_id));
 
+                expr_info.create_path(path_in_content.clone());
                 copy_aliases(
                     &mut expr_info,
                     &path_in_content,
@@ -1353,7 +1363,7 @@ fn annot_expr(
 
                         if other_fold_point == fold_point {
                             let mut other_wrapped = other_normalized.0;
-                            other_wrapped.push_back(annot::Field::Custom(*custom_id));
+                            other_wrapped.push_front(annot::Field::Custom(*custom_id));
 
                             expr_info.add_self_edge(
                                 wrapped_path.clone(),
@@ -1493,11 +1503,17 @@ fn annot_expr(
                 get_names_in(
                     &orig.custom_types,
                     &anon::Type::Array(Box::new(item_type.clone()))
-                ),
+                )
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect::<BTreeSet<_>>(),
                 get_names_in(
                     &orig.custom_types,
                     &anon::Type::HoleArray(Box::new(item_type.clone()))
                 )
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect::<BTreeSet<_>>()
             );
 
             let expr_info = array_extraction_aliases(
