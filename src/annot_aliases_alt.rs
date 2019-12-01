@@ -1608,6 +1608,23 @@ fn annot_expr(
             )
         }
 
+        flat::Expr::IOOp(flat::IOOp::Input) => (
+            annot::Expr::IOOp(annot::IOOp::Input),
+            empty_info(
+                &orig.custom_types,
+                &anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+            ),
+        ),
+
+        flat::Expr::IOOp(flat::IOOp::Output(array)) => {
+            let array_aliases = ctx[array].aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::IOOp(annot::IOOp::Output(array_aliases, *array)),
+                ValInfo::new(),
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
