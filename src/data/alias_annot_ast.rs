@@ -49,32 +49,32 @@ pub struct LocalAliases {
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Item(
-        anon::Type, // Item type
-        LocalAliases,    // Array aliases
-        flat::LocalId,   // Array
-        flat::LocalId,   // Index
+        anon::Type,    // Item type
+        LocalAliases,  // Array aliases
+        flat::LocalId, // Array
+        flat::LocalId, // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        anon::Type, // Item type
-        LocalAliases,    // Array aliases
-        flat::LocalId,   // Array
+        anon::Type,    // Item type
+        LocalAliases,  // Array aliases
+        flat::LocalId, // Array
     ),
     Push(
-        anon::Type, // Item type
-        LocalAliases,    // Array aliases
-        flat::LocalId,   // Array
-        flat::LocalId,   // Item
+        anon::Type,    // Item type
+        LocalAliases,  // Array aliases
+        flat::LocalId, // Array
+        flat::LocalId, // Item
     ), // Returns new array
     Pop(
-        anon::Type, // Item type
-        LocalAliases,    // Array aliases
-        flat::LocalId,   // Array
+        anon::Type,    // Item type
+        LocalAliases,  // Array aliases
+        flat::LocalId, // Array
     ), // Returns tuple (array, item)
     Replace(
-        anon::Type, // Item type
-        LocalAliases,    // Hole array aliases
-        flat::LocalId,   // Hole array
-        flat::LocalId,   // Item
+        anon::Type,    // Item type
+        LocalAliases,  // Hole array aliases
+        flat::LocalId, // Hole array
+        flat::LocalId, // Item
     ), // Returns new array
 }
 
@@ -103,7 +103,7 @@ pub enum Expr {
     Branch(flat::LocalId, Vec<(flat::Condition, Expr)>, anon::Type),
     LetMany(
         Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
-        flat::LocalId,                // body
+        flat::LocalId,           // body
     ),
 
     Tuple(Vec<flat::LocalId>),
