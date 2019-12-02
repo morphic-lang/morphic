@@ -106,18 +106,13 @@ impl<'a> SignatureAssumptions<'a> {
 }
 
 // Computes the fields in `type_` at which there is a name
-fn get_names_in<'a>(
+fn get_names_in_excluding<'a>(
     type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
+    mut exclude: BTreeSet<first_ord::CustomTypeId>,
 ) -> Vec<(annot::FieldPath, &'a anon::Type)> {
     let mut names = Vec::new();
-    add_names_from_type(
-        type_defs,
-        &mut names,
-        &mut BTreeSet::new(),
-        type_,
-        Vector::new(),
-    );
+    add_names_from_type(type_defs, &mut names, &mut exclude, type_, Vector::new());
     return names;
 
     // Recursively appends paths to names in `type_` to `names`
@@ -268,104 +263,11 @@ fn get_fold_points_in<'a>(
     }
 }
 
-fn get_content_folded_occurrences(
-    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-    target: first_ord::CustomTypeId,
-) -> Vec<annot::FieldPath> {
-    // We always have a 'root' occurrence
-    let mut occurs = vec![Vector::new()];
-    add_occurs_from_type(
-        type_defs,
-        target,
-        &mut occurs,
-        &mut BTreeSet::new(),
-        &type_defs[target],
-        &Vector::new(),
-    );
-    return occurs;
-
-    fn add_occurs_from_type(
-        type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-        target: first_ord::CustomTypeId,
-        occurs: &mut Vec<annot::FieldPath>,
-        typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
-        type_: &anon::Type,
-        prefix: &annot::FieldPath,
-    ) {
-        match type_ {
-            anon::Type::Bool | anon::Type::Num(_) => {}
-
-            anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => {
-                let mut new_prefix = prefix.clone();
-                new_prefix.push_back(annot::Field::ArrayMembers);
-                add_occurs_from_type(
-                    type_defs,
-                    target,
-                    occurs,
-                    typedefs_on_path,
-                    item_type,
-                    &new_prefix,
-                );
-            }
-
-            anon::Type::Tuple(item_types) => {
-                for (i, item_type) in item_types.iter().enumerate() {
-                    let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(annot::Field::Field(i));
-                    add_occurs_from_type(
-                        type_defs,
-                        target,
-                        occurs,
-                        typedefs_on_path,
-                        item_type,
-                        &new_prefix,
-                    );
-                }
-            }
-
-            anon::Type::Variants(variant_types) => {
-                for (variant, variant_type) in variant_types {
-                    let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(annot::Field::Variant(variant));
-                    add_occurs_from_type(
-                        type_defs,
-                        target,
-                        occurs,
-                        typedefs_on_path,
-                        variant_type,
-                        &new_prefix,
-                    );
-                }
-            }
-
-            anon::Type::Custom(id) => {
-                if !typedefs_on_path.contains(id) {
-                    if *id == target {
-                        // Add the occurrence itself
-                        let mut occurrence = prefix.clone();
-                        occurrence.push_back(annot::Field::Custom(target));
-                        occurs.push(occurrence);
-                    // Due to type folding, there can't be any recursive occurrences, so we
-                    // don't need to recurse into the content type.
-                    } else {
-                        typedefs_on_path.insert(*id);
-                        let mut new_prefix = prefix.clone();
-                        new_prefix.push_back(annot::Field::Custom(*id));
-                        add_occurs_from_type(
-                            type_defs,
-                            target,
-                            occurs,
-                            typedefs_on_path,
-                            &type_defs[id],
-                            &new_prefix,
-                        );
-                        // Remove if we added it
-                        typedefs_on_path.remove(id);
-                    }
-                }
-            }
-        }
-    }
+fn get_names_in<'a>(
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &'a anon::Type,
+) -> Vec<(annot::FieldPath, &'a anon::Type)> {
+    get_names_in_excluding(type_defs, type_, BTreeSet::new())
 }
 
 fn split_at_fold(
@@ -379,6 +281,18 @@ fn split_at_fold(
         }
         None => (Vector::new(), annot::SubPath(path)),
     }
+}
+
+fn group_unfolded_names_by_folded_form(
+    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    custom_id: first_ord::CustomTypeId,
+) -> BTreeMap<annot::SubPath, Vec<annot::FieldPath>> {
+    let mut groups = BTreeMap::<_, Vec<_>>::new();
+    for (path, _) in get_names_in(type_defs, &type_defs[custom_id]) {
+        let (_fold_point, sub_path) = split_at_fold(custom_id, path.clone());
+        groups.entry(sub_path).or_default().push(path.clone());
+    }
+    groups
 }
 
 #[derive(Clone, Debug)]
@@ -465,7 +379,11 @@ mod val_info {
 
         #[inline]
         fn assert_path(&self, path: &annot::FieldPath) {
-            debug_assert!(self.local_aliases.contains_key(path));
+            debug_assert!(
+                self.local_aliases.contains_key(path),
+                "Attempt to alias an unitilialized path: {:?}",
+                path
+            );
         }
 
         pub fn add_edge_to_local(
@@ -1104,6 +1022,18 @@ fn annot_expr(
             for (type_, rhs) in bindings {
                 let (annot_rhs, rhs_info) = annot_expr(orig, sigs, &new_ctx, rhs);
 
+                debug_assert_eq!(
+                    rhs_info
+                        .local_aliases()
+                        .keys()
+                        .cloned()
+                        .collect::<BTreeSet<_>>(),
+                    get_names_in(&orig.custom_types, type_)
+                        .into_iter()
+                        .map(|(path, _)| path)
+                        .collect::<BTreeSet<_>>()
+                );
+
                 let lhs = flat::LocalId(new_ctx.len());
                 debug_assert!(!new_ctx.contains_key(&lhs));
 
@@ -1414,67 +1344,50 @@ fn annot_expr(
         flat::Expr::UnwrapCustom(custom_id, wrapped) => {
             let mut expr_info = empty_info(&orig.custom_types, &orig.custom_types[custom_id]);
 
-            let occurs = get_content_folded_occurrences(&orig.custom_types, *custom_id);
-
             let wrapped_info = &ctx[wrapped];
 
-            for (wrapped_path, _) in
-                get_names_in(&orig.custom_types, &anon::Type::Custom(*custom_id))
+            for (content_path, _) in get_names_in(&orig.custom_types, &orig.custom_types[custom_id])
             {
-                debug_assert_eq!(&wrapped_path[0], &annot::Field::Custom(*custom_id));
-                let content_subpath = wrapped_path.clone().skip(1);
+                // This "fold_point" is a path prefix within the *content*, not the wrapped value.
+                // As such, it does not begin with a leading `Custom(custom_id)` field.
+                let (fold_point, wrapped_subpath) = split_at_fold(*custom_id, content_path.clone());
 
-                for occur in &occurs {
-                    let mut content_path = occur.clone();
-                    content_path.append(content_subpath.clone());
+                let mut wrapped_path = wrapped_subpath.0.clone();
+                wrapped_path.push_front(annot::Field::Custom(*custom_id));
 
-                    // Wire up directly
-                    expr_info.add_edge_to_local(
-                        content_path.clone(),
-                        (*wrapped, wrapped_path.clone()),
-                        Disj::True,
-                    );
+                // Wire up directly
+                expr_info.add_edge_to_local(
+                    content_path.clone(),
+                    (*wrapped, wrapped_path.clone()),
+                    Disj::True,
+                );
 
-                    for ((other, other_path), cond) in &wrapped_info.aliases[&wrapped_path].aliases
-                    {
-                        if other == wrapped {
-                            debug_assert_eq!(&other_path[0], &annot::Field::Custom(*custom_id));
-                            let other_content_subpath = other_path.clone().skip(1);
+                for ((other, other_path), cond) in &wrapped_info.aliases[&wrapped_path].aliases {
+                    if other == wrapped {
+                        debug_assert_eq!(&other_path[0], &annot::Field::Custom(*custom_id));
 
-                            let mut other_content_path = occur.clone();
-                            other_content_path.append(other_content_subpath.clone());
+                        let other_content_subpath = other_path.skip(1);
 
-                            expr_info.add_self_edge(
-                                content_path.clone(),
-                                other_content_path,
-                                cond.clone(),
-                            );
-                        }
+                        let mut other_content_path = fold_point.clone();
+                        other_content_path.append(other_content_subpath);
 
-                        expr_info.add_edge_to_local(
+                        debug_assert_eq!(
+                            split_at_fold(*custom_id, content_path.clone()).0,
+                            split_at_fold(*custom_id, other_content_path.clone()).0
+                        );
+
+                        expr_info.add_self_edge(
                             content_path.clone(),
-                            (*other, other_path.clone()),
+                            other_content_path,
                             cond.clone(),
                         );
                     }
-                }
-            }
 
-            // Unfurl folded edges
-            for (pair, cond) in &wrapped_info.folded_aliases
-                [&vector![annot::Field::Custom(*custom_id)]]
-                .inter_elem_aliases
-            {
-                for (i, occur1) in occurs.iter().enumerate() {
-                    for occur2 in &occurs[..i] {
-                        let mut content_path1 = occur1.clone();
-                        content_path1.append(pair.fst().0.clone());
-
-                        let mut content_path2 = occur2.clone();
-                        content_path2.append(pair.snd().0.clone());
-
-                        expr_info.add_self_edge(content_path1, content_path2, cond.clone());
-                    }
+                    expr_info.add_edge_to_local(
+                        content_path.clone(),
+                        (*other, other_path.clone()),
+                        cond.clone(),
+                    );
                 }
             }
 
@@ -1491,6 +1404,25 @@ fn annot_expr(
                     content_path,
                     wrapped_info.folded_aliases[&wrapped_path].clone(),
                 );
+            }
+
+            // Unfurl folded edges
+            let fold_groups = group_unfolded_names_by_folded_form(&orig.custom_types, *custom_id);
+            for (pair, cond) in &wrapped_info.folded_aliases
+                [&vector![annot::Field::Custom(*custom_id)]]
+                .inter_elem_aliases
+            {
+                for content_path1 in &fold_groups[pair.fst()] {
+                    for content_path2 in &fold_groups[pair.snd()] {
+                        if content_path1 != content_path2 {
+                            expr_info.add_self_edge(
+                                content_path1.clone(),
+                                content_path2.clone(),
+                                cond.clone(),
+                            );
+                        }
+                    }
+                }
             }
 
             (annot::Expr::UnwrapCustom(*custom_id, *wrapped), expr_info)
@@ -1714,13 +1646,14 @@ fn annot_expr(
     }
 }
 
-fn get_aliasable_name_groups_in(
+fn get_aliasable_name_groups_in_excluding(
     type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &anon::Type,
+    exclude: BTreeSet<first_ord::CustomTypeId>,
 ) -> Vec<Vec<annot::FieldPath>> {
     let mut paths_by_type = BTreeMap::<&anon::Type, Vec<annot::FieldPath>>::new();
 
-    for (path, type_) in get_names_in(type_defs, type_) {
+    for (path, type_) in get_names_in_excluding(type_defs, type_, exclude) {
         let item_type = match type_ {
             anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => item_type,
             _ => unreachable!(),
@@ -1733,6 +1666,13 @@ fn get_aliasable_name_groups_in(
         .into_iter()
         .map(|(_item_type, paths)| paths)
         .collect()
+}
+
+fn get_aliasable_name_groups_in(
+    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &anon::Type,
+) -> Vec<Vec<annot::FieldPath>> {
+    get_aliasable_name_groups_in_excluding(type_defs, type_, BTreeSet::new())
 }
 
 #[allow(unused_variables)]
@@ -1772,8 +1712,21 @@ fn annot_func(
     let arg_folded_aliases = get_fold_points_in(&orig.custom_types, &func_def.arg_type)
         .into_iter()
         .map(|(fold_point, folded_type)| {
+            let exclude = fold_point
+                .iter()
+                .filter_map(|field| {
+                    if let &annot::Field::Custom(custom_id) = field {
+                        Some(custom_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+
             let mut folded_aliases = OrdMap::new();
-            for paths in get_aliasable_name_groups_in(&orig.custom_types, folded_type) {
+            for paths in
+                get_aliasable_name_groups_in_excluding(&orig.custom_types, folded_type, exclude)
+            {
                 for (i, path1) in paths.iter().enumerate() {
                     // Folded edges are symmetric, so we only need to insert each edge in one
                     // direction.  This means it's enough to wire each sub-path up to all the

@@ -173,6 +173,18 @@ fn run<R: io::BufRead, W: io::Write>(
 
     typecheck_first_order::typecheck(&first_order);
 
+    let split = split_custom_types::split_custom_types(&first_order);
+
+    let flat = flatten::flatten(split);
+
+    println!("Flat program: {:#?}", flat);
+    println!("(end flat program)");
+
+    let alias_annot = annot_aliases_alt::annot_aliases(flat);
+
+    println!("Alias-annotated program: {:#?}", alias_annot);
+    println!("(end alias-annotated program)");
+
     let unique_infos = annot_aliases::annot_aliases(&first_order);
 
     let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);
@@ -182,16 +194,6 @@ fn run<R: io::BufRead, W: io::Write>(
     println!("==============================================================");
     println!("============== Running program ===============================");
     println!("==============================================================");
-
-    let split = split_custom_types::split_custom_types(&first_order);
-
-    let flat = flatten::flatten(split);
-
-    println!("Flat program: {:#?}", flat);
-
-    let alias_annot = annot_aliases_alt::annot_aliases(flat);
-
-    println!("Alias-annotated program: {:#?}", alias_annot);
 
     interpreter::interpret(stdin, stdout, &specialized);
 
