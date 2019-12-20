@@ -394,7 +394,7 @@ fn interpret_expr<R: BufRead, W: Write>(
                         let vec_cell = unwrap_array(array);
                         let mut vec = vec_cell
                             .replace(None)
-                            .expect("pushing to invalidated array!");;
+                            .expect("pushing to invalidated array!");
                         vec.push(item);
                         Value::Array(Rc::new(RefCell::new(Some(vec))))
                     }
@@ -416,7 +416,7 @@ fn interpret_expr<R: BufRead, W: Write>(
                         let vec_cell = unwrap_array(array);
                         let mut vec = vec_cell
                             .replace(None)
-                            .expect("pushing to invalidated array!");;
+                            .expect("pushing to invalidated array!");
                         let item = vec
                             .pop()
                             .expect("Hopper program error: popped from empty array");
@@ -439,7 +439,7 @@ fn interpret_expr<R: BufRead, W: Write>(
                         let (idx, vec_cell) = unwrap_holearray(array);
                         let mut vec = vec_cell
                             .replace(None)
-                            .expect("pushing to invalidated array!");;
+                            .expect("pushing to invalidated array!");
                         vec[idx as usize] = item;
                         Value::Array(Rc::new(RefCell::new(Some(vec))))
                     }

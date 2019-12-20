@@ -98,7 +98,7 @@ impl State {
         func: in_ast::CustomFuncId,
         args: &[in_ast::Solution],
     ) -> out_ast::CustomFuncId {
-        let reprs = ctx.resolve_all(args);;
+        let reprs = ctx.resolve_all(args);
         if let Some(inst) = self.func_id_for(func, &reprs) {
             inst
         } else {
