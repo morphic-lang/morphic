@@ -31,8 +31,8 @@ mod constrain;
 mod extract;
 
 use crate::annot_aliases::{self, UniqueInfo};
-use crate::graph;
 use crate::util::constraint_graph::ConstraintGraph;
+use crate::util::graph;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn annot_reprs(program: &in_ast::Program, unique_infos: Vec<UniqueInfo>) -> out_ast::Program {

@@ -1,6 +1,6 @@
 /// See `annot_reprs` mod comment for details.
 use super::{in_ast, mid_ast};
-use crate::graph::{self, Graph};
+use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 use std::collections::{BTreeMap, BTreeSet};
 

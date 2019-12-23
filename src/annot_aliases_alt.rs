@@ -10,8 +10,8 @@ use crate::field_path::{
     split_at_fold,
 };
 use crate::fixed_point::{iterate_fixed_point, Signature, SignatureAssumptions};
-use crate::graph::{self, Graph};
 use crate::util::disjunction::Disj;
+use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
 

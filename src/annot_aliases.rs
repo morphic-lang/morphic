@@ -1,5 +1,5 @@
 use crate::data::first_order_ast as ast;
-use crate::graph::{self, Graph};
+use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 use im_rc::Vector;
 use std::borrow::Cow;

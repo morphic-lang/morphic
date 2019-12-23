@@ -4,8 +4,8 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
-use crate::graph::Scc;
 use crate::util::disjunction::Disj;
+use crate::util::graph::Scc;
 use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
 

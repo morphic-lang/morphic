@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::mono_ast as mono;
 use crate::data::resolved_ast as res;
-use crate::graph::{self, Graph};
+use crate::util::graph::{self, Graph};
 
 fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
     match expr {

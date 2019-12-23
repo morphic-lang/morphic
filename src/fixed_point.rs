@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::graph::Scc;
+use crate::util::graph::Scc;
 use crate::util::id_type::Id;
 use crate::util::id_vec::IdVec;
 

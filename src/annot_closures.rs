@@ -6,8 +6,8 @@ use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
-use crate::graph::{self, Graph};
 use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
+use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 
 fn count_params(

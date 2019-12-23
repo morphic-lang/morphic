@@ -4,7 +4,6 @@
 mod util;
 
 mod data;
-mod graph;
 mod pretty_print;
 
 mod lex;

@@ -1,4 +1,4 @@
-use crate::graph;
+use crate::util::graph;
 use crate::util::id_vec::IdVec;
 use std::collections::BTreeSet;
 

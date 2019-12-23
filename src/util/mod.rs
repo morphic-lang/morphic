@@ -3,6 +3,8 @@ pub mod id_type;
 
 pub mod id_vec;
 
+pub mod graph;
+
 pub mod constraint_graph;
 
 pub mod norm_pair;
