@@ -39,6 +39,8 @@ mod split_custom_types;
 
 mod flatten;
 
+mod field_path;
+
 mod annot_aliases_alt;
 
 mod annot_aliases;
