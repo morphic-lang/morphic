@@ -9,7 +9,7 @@ use crate::field_path::{
     get_fold_points_in, get_names_in, get_names_in_excluding, group_unfolded_names_by_folded_form,
     split_at_fold,
 };
-use crate::fixed_point::{iterate_fixed_point, Signature, SignatureAssumptions};
+use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::util::disjunction::Disj;
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
@@ -24,28 +24,19 @@ impl Signature for annot::FuncDef {
 }
 
 pub fn annot_aliases(program: flat::Program) -> annot::Program {
-    let mut annotated = IdVec::from_items((0..program.funcs.len()).map(|_| None).collect());
-
     let dep_graph = func_dependency_graph(&program);
 
     let sccs = graph::acyclic_and_cyclic_sccs(&dep_graph);
 
-    for scc in &sccs {
-        let annotated_defs = iterate_fixed_point(
-            &annotated,
-            |sig_assumptions, func| annot_func(&program, sig_assumptions, &program.funcs[func]),
-            scc,
-        );
-
-        for (func, annotated_def) in annotated_defs {
-            debug_assert!(annotated[func].is_none());
-            annotated[func] = Some(annotated_def);
-        }
-    }
+    let funcs = annot_all(
+        program.funcs.len(),
+        |sig_assumptions, func| annot_func(&program, sig_assumptions, &program.funcs[func]),
+        &sccs,
+    );
 
     annot::Program {
         custom_types: program.custom_types,
-        funcs: annotated.into_mapped(|_, func_def| func_def.unwrap()),
+        funcs,
         main: program.main,
         sccs,
     }

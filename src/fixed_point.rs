@@ -105,3 +105,27 @@ where
         }
     }
 }
+
+pub fn annot_all<FuncId, FuncDef>(
+    num_funcs: usize,
+    annot_func: impl for<'a> Fn(&'a SignatureAssumptions<'a, FuncId, FuncDef>, &'a FuncId) -> FuncDef,
+    sccs: &[Scc<FuncId>],
+) -> IdVec<FuncId, FuncDef>
+where
+    FuncId: Id + Ord,
+    FuncDef: Signature,
+    FuncDef::Sig: Eq,
+{
+    let mut annotated = IdVec::from_items((0..num_funcs).map(|_| None).collect());
+
+    for scc in sccs {
+        let annotated_defs = iterate_fixed_point(&annotated, &annot_func, scc);
+
+        for (func, annotated_def) in annotated_defs {
+            debug_assert!(annotated[&func].is_none());
+            annotated[func] = Some(annotated_def);
+        }
+    }
+
+    annotated.into_mapped(|_, func_def| func_def.unwrap())
+}
