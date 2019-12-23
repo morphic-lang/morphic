@@ -81,7 +81,6 @@ fn translate_callee_status_cond(
     }
 }
 
-#[allow(unused_variables)]
 fn annot_expr(
     orig: &alias::Program,
     sigs: &SignatureAssumptions<first_ord::CustomFuncId, annot::FuncDef>,
@@ -178,6 +177,33 @@ fn annot_expr(
                         val_statuses,
                     }
                 }
+            };
+
+            (annot_expr, expr_info)
+        }
+
+        alias::Expr::Branch(discrim, cases, result_type) => {
+            let mut annot_cases = Vec::with_capacity(cases.len());
+            let mut mutations = Vec::new();
+            let mut val_statuses = empty_statuses(&orig.custom_types, result_type);
+
+            for (cond, body) in cases {
+                let (annot_body, body_info) = annot_expr(orig, sigs, ctx, body);
+                annot_cases.push((cond.clone(), annot_body));
+
+                for mutation in body_info.mutations {
+                    mutations.push(mutation);
+                }
+
+                for (path, status) in body_info.val_statuses {
+                    val_statuses[&path].mutated_cond.or_mut(status.mutated_cond);
+                }
+            }
+
+            let annot_expr = annot::Expr::Branch(*discrim, annot_cases, result_type.clone());
+            let expr_info = ExprInfo {
+                mutations,
+                val_statuses,
             };
 
             (annot_expr, expr_info)
