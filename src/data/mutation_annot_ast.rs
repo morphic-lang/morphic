@@ -6,6 +6,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
 use crate::util::disjunction::Disj;
+use crate::util::graph::Scc;
 use crate::util::id_vec::IdVec;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -16,7 +17,7 @@ pub enum MutationCondition {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LocalStatus {
-    mutated_cond: Disj<MutationCondition>,
+    pub mutated_cond: Disj<MutationCondition>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,9 +107,9 @@ pub enum Expr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MutationSig {
     // Conditions under which each argument field may be mutated during the call
-    arg_mutation_conds: OrdMap<alias::ArgName, Disj<alias::AliasCondition>>,
+    pub arg_mutation_conds: OrdMap<alias::ArgName, Disj<alias::AliasCondition>>,
     // Conditions under which each return value field may be mutated at the end of the call
-    ret_statuses: OrdMap<alias::RetName, LocalStatus>,
+    pub ret_statuses: OrdMap<alias::RetName, LocalStatus>,
 }
 
 #[derive(Clone, Debug)]
@@ -127,4 +128,6 @@ pub struct Program {
     pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub main: first_ord::CustomFuncId,
+
+    pub sccs: Vec<Scc<first_ord::CustomFuncId>>,
 }
