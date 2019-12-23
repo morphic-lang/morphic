@@ -22,6 +22,8 @@ pub mod flat_ast;
 
 pub mod alias_annot_ast;
 
+pub mod mutation_annot_ast;
+
 pub mod repr_annot_ast;
 
 pub mod repr_specialized_ast;
