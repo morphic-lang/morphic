@@ -4,6 +4,7 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
+use crate::graph::Scc;
 use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
@@ -158,5 +159,5 @@ pub struct Program {
     // It is not strictly necessary to store the SCCs here, as they can be recomputed from `funcs`.
     // However, we will need the SCCs again in several subsequent compiler passes (during which the
     // call graph topology does not change), so it is easiest and most efficient to cache them here.
-    pub sccs: Vec<Vec<first_ord::CustomFuncId>>,
+    pub sccs: Vec<Scc<first_ord::CustomFuncId>>,
 }

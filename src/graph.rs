@@ -113,6 +113,28 @@ pub fn strongly_connected<NodeId: Id>(graph: &Graph<NodeId>) -> Vec<Vec<NodeId>>
     sccs
 }
 
+#[derive(Clone, Debug)]
+pub enum Scc<NodeId> {
+    Acyclic(NodeId),
+    Cyclic(Vec<NodeId>),
+}
+
+pub fn acyclic_and_cyclic_sccs<NodeId: Id + Eq>(graph: &Graph<NodeId>) -> Vec<Scc<NodeId>> {
+    let sccs = strongly_connected(graph);
+
+    sccs.into_iter()
+        .map(|scc| {
+            if scc.len() == 1 {
+                let singleton = &scc[0];
+                if !graph.edges_out[singleton].contains(singleton) {
+                    return Scc::Acyclic(singleton.clone());
+                }
+            }
+            Scc::Cyclic(scc)
+        })
+        .collect()
+}
+
 // Simple generative property-based testing
 
 #[cfg(test)]

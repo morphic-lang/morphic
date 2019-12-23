@@ -40,6 +40,7 @@ mod split_custom_types;
 mod flatten;
 
 mod field_path;
+mod fixed_point;
 
 mod annot_aliases_alt;
 
