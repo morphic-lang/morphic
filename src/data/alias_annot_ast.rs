@@ -154,4 +154,9 @@ pub struct Program {
     pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub main: first_ord::CustomFuncId,
+
+    // It is not strictly necessary to store the SCCs here, as they can be recomputed from `funcs`.
+    // However, we will need the SCCs again in several subsequent compiler passes (during which the
+    // call graph topology does not change), so it is easiest and most efficient to cache them here.
+    pub sccs: Vec<Vec<first_ord::CustomFuncId>>,
 }

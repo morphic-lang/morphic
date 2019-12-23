@@ -15,7 +15,9 @@ pub fn annot_aliases(program: flat::Program) -> annot::Program {
 
     let dep_graph = func_dependency_graph(&program);
 
-    for scc in &graph::strongly_connected(&dep_graph) {
+    let sccs = graph::strongly_connected(&dep_graph);
+
+    for scc in &sccs {
         if scc.len() == 1 && !dep_graph.edges_out[scc[0]].contains(&scc[0]) {
             // This SCC consists of a single non-recursive function, which means that as a
             // performance optimization we can get away with only performing a single iteration of
@@ -52,6 +54,7 @@ pub fn annot_aliases(program: flat::Program) -> annot::Program {
         custom_types: program.custom_types,
         funcs: annotated.into_mapped(|_, func_def| func_def.unwrap()),
         main: program.main,
+        sccs,
     }
 }
 
