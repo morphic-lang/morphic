@@ -7,7 +7,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::field_path::{
     get_fold_points_in, get_names_in, get_names_in_excluding, group_unfolded_names_by_folded_form,
-    split_at_fold,
+    split_at_fold, translate_callee_cond, translate_callee_cond_disj,
 };
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::util::disjunction::Disj;
@@ -352,51 +352,6 @@ fn union_mut(dest: &mut ValInfo, src: &ValInfo) {
     }
 }
 
-fn translate_callee_cond(
-    arg_id: flat::LocalId,
-    arg_info: &LocalInfo,
-    callee_cond: &annot::AliasCondition,
-) -> Disj<annot::AliasCondition> {
-    match callee_cond {
-        annot::AliasCondition::AliasInArg(arg_pair) => {
-            let annot::ArgName(arg_pair_fst) = arg_pair.fst();
-            let annot::ArgName(arg_pair_snd) = arg_pair.snd();
-
-            arg_info.aliases[arg_pair_fst]
-                .aliases
-                .get(&(arg_id, arg_pair_snd.clone()))
-                .cloned()
-                .unwrap_or_default()
-        }
-
-        annot::AliasCondition::FoldedAliasInArg(annot::ArgName(fold_point), sub_path_pair) => {
-            arg_info.folded_aliases[fold_point]
-                .inter_elem_aliases
-                .get(sub_path_pair)
-                .cloned()
-                .unwrap_or_default()
-        }
-    }
-}
-
-fn translate_callee_cond_disj(
-    arg_id: flat::LocalId,
-    arg_info: &LocalInfo,
-    callee_cond_disj: &Disj<annot::AliasCondition>,
-) -> Disj<annot::AliasCondition> {
-    match callee_cond_disj {
-        Disj::True => Disj::True,
-
-        Disj::Any(callee_conds) => {
-            let mut caller_cond_disj = Disj::new();
-            for callee_cond in callee_conds {
-                caller_cond_disj.or_mut(translate_callee_cond(arg_id, arg_info, callee_cond));
-            }
-            caller_cond_disj
-        }
-    }
-}
-
 fn array_extraction_aliases(
     orig: &flat::Program,
     ctx: &OrdMap<flat::LocalId, LocalInfo>,
@@ -720,7 +675,8 @@ fn annot_expr(
                                     for callee_cond in callee_conds {
                                         caller_conds.or_mut(translate_callee_cond(
                                             *arg,
-                                            arg_info,
+                                            &arg_info.aliases,
+                                            &arg_info.folded_aliases,
                                             callee_cond,
                                         ));
                                     }
@@ -744,7 +700,12 @@ fn annot_expr(
                             .map(|(sub_path_pair, callee_cond)| {
                                 (
                                     sub_path_pair.clone(),
-                                    translate_callee_cond_disj(*arg, arg_info, callee_cond),
+                                    translate_callee_cond_disj(
+                                        *arg,
+                                        &arg_info.aliases,
+                                        &arg_info.folded_aliases,
+                                        callee_cond,
+                                    ),
                                 )
                             })
                             .filter(|(_, caller_cond)| !caller_cond.is_const_false())
@@ -759,7 +720,12 @@ fn annot_expr(
 
                     // Wire up self-edges of return value
                     for (ret_ret_pair, callee_cond) in &sig.ret_ret_aliases {
-                        let caller_cond = translate_callee_cond_disj(*arg, arg_info, callee_cond);
+                        let caller_cond = translate_callee_cond_disj(
+                            *arg,
+                            &arg_info.aliases,
+                            &arg_info.folded_aliases,
+                            callee_cond,
+                        );
 
                         let annot::RetName(ret_pair_fst) = ret_ret_pair.fst();
                         let annot::RetName(ret_pair_snd) = ret_ret_pair.snd();

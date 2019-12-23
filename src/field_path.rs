@@ -1,9 +1,11 @@
-use im_rc::Vector;
+use im_rc::{OrdMap, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_annot_ast as annot;
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
+use crate::data::flat_ast as flat;
+use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
 
 // Computes the fields in `type_` at which there is a name
@@ -194,6 +196,44 @@ pub fn group_unfolded_names_by_folded_form(
         groups.entry(sub_path).or_default().push(path.clone());
     }
     groups
+}
+
+pub fn translate_callee_cond(
+    arg_id: flat::LocalId,
+    arg_aliases: &OrdMap<annot::FieldPath, annot::LocalAliases>,
+    arg_folded_aliases: &OrdMap<annot::FieldPath, annot::FoldedAliases>,
+    callee_cond: &annot::AliasCondition,
+) -> Disj<annot::AliasCondition> {
+    match callee_cond {
+        annot::AliasCondition::AliasInArg(arg_pair) => {
+            let annot::ArgName(arg_pair_fst) = arg_pair.fst();
+            let annot::ArgName(arg_pair_snd) = arg_pair.snd();
+
+            arg_aliases[arg_pair_fst]
+                .aliases
+                .get(&(arg_id, arg_pair_snd.clone()))
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        annot::AliasCondition::FoldedAliasInArg(annot::ArgName(fold_point), sub_path_pair) => {
+            arg_folded_aliases[fold_point]
+                .inter_elem_aliases
+                .get(sub_path_pair)
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+}
+
+pub fn translate_callee_cond_disj(
+    arg_id: flat::LocalId,
+    arg_aliases: &OrdMap<annot::FieldPath, annot::LocalAliases>,
+    arg_folded_aliases: &OrdMap<annot::FieldPath, annot::FoldedAliases>,
+    callee_cond: &Disj<annot::AliasCondition>,
+) -> Disj<annot::AliasCondition> {
+    callee_cond
+        .flat_map(|cond| translate_callee_cond(arg_id, arg_aliases, arg_folded_aliases, cond))
 }
 
 #[cfg(test)]

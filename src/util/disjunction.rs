@@ -29,6 +29,27 @@ impl<T: Ord + Clone> Disj<T> {
             Disj::Any(conds) => conds.is_empty(),
         }
     }
+
+    pub fn into_mapped<U: Ord + Clone>(self, transform: impl Fn(T) -> U) -> Disj<U> {
+        match self {
+            Disj::True => Disj::True,
+            Disj::Any(clauses) => Disj::Any(clauses.into_iter().map(transform).collect()),
+        }
+    }
+
+    pub fn flat_map<U: Ord + Clone>(&self, transform: impl Fn(&T) -> Disj<U>) -> Disj<U> {
+        match self {
+            Disj::True => Disj::True,
+
+            Disj::Any(clauses) => {
+                let mut result = Disj::new();
+                for clause in clauses {
+                    result.or_mut(transform(clause));
+                }
+                result
+            }
+        }
+    }
 }
 
 impl<T: Ord + Clone> Default for Disj<T> {

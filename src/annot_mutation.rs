@@ -5,9 +5,10 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as annot;
-use crate::field_path::get_names_in;
+use crate::field_path::{get_names_in, translate_callee_cond, translate_callee_cond_disj};
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::util::disjunction::Disj;
+use crate::util::id_vec::IdVec;
 
 impl Signature for annot::FuncDef {
     type Sig = annot::MutationSig;
@@ -40,8 +41,44 @@ struct LocalInfo {
 
 #[derive(Clone, Debug)]
 struct ExprInfo {
-    val_statuses: OrdMap<alias::FieldPath, annot::LocalStatus>,
     mutations: Vec<(flat::LocalId, alias::FieldPath, Disj<alias::AliasCondition>)>,
+    val_statuses: OrdMap<alias::FieldPath, annot::LocalStatus>,
+}
+
+fn empty_statuses(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &anon::Type,
+) -> OrdMap<alias::FieldPath, annot::LocalStatus> {
+    get_names_in(typedefs, type_)
+        .into_iter()
+        .map(|(name, _)| {
+            (
+                name,
+                annot::LocalStatus {
+                    mutated_cond: Disj::new(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn translate_callee_status_cond(
+    arg_id: flat::LocalId,
+    arg_aliases: &OrdMap<alias::FieldPath, alias::LocalAliases>,
+    arg_folded_aliases: &OrdMap<alias::FieldPath, alias::FoldedAliases>,
+    arg_statuses: &OrdMap<alias::FieldPath, annot::LocalStatus>,
+    callee_cond: &annot::MutationCondition,
+) -> Disj<annot::MutationCondition> {
+    match callee_cond {
+        annot::MutationCondition::AliasCondition(alias_cond) => {
+            translate_callee_cond(arg_id, arg_aliases, arg_folded_aliases, alias_cond)
+                .into_mapped(annot::MutationCondition::AliasCondition)
+        }
+
+        annot::MutationCondition::ArgMutated(alias::ArgName(arg_path)) => {
+            arg_statuses[arg_path].mutated_cond.clone()
+        }
+    }
 }
 
 #[allow(unused_variables)]
@@ -52,6 +89,100 @@ fn annot_expr(
     expr: &alias::Expr,
 ) -> (annot::Expr, ExprInfo) {
     match expr {
+        alias::Expr::Local(local) => (
+            annot::Expr::Local(*local),
+            ExprInfo {
+                mutations: Vec::new(),
+                val_statuses: ctx[local].statuses.clone(),
+            },
+        ),
+
+        alias::Expr::Call(purity, func, arg_aliases, arg_folded_aliases, arg) => {
+            let arg_info = &ctx[arg];
+
+            let annot_expr = annot::Expr::Call(
+                *purity,
+                *func,
+                arg_aliases.clone(),
+                arg_folded_aliases.clone(),
+                arg_info.statuses.clone(),
+                *arg,
+            );
+
+            let ret_type = &orig.funcs[func].ret_type;
+
+            let expr_info = match sigs.sig_of(func) {
+                None => {
+                    // On the first iteration of fixed point analysis, we assume all recursive calls
+                    // return fresh (un-mutated) values, and do not mutate their arguments.
+                    ExprInfo {
+                        mutations: Vec::new(),
+                        val_statuses: empty_statuses(&orig.custom_types, ret_type),
+                    }
+                }
+
+                Some(sig) => {
+                    let mut mutations = Vec::new();
+                    for (alias::ArgName(arg_path), mut_cond) in &sig.arg_mutation_conds {
+                        mutations.push((
+                            *arg,
+                            arg_path.clone(),
+                            translate_callee_cond_disj(
+                                *arg,
+                                arg_aliases,
+                                arg_folded_aliases,
+                                mut_cond,
+                            ),
+                        ));
+
+                        // Propagate mutations along aliasing edges
+                        if mut_cond == &Disj::True {
+                            for ((other, other_path), alias_cond) in &arg_aliases[arg_path].aliases
+                            {
+                                if other == arg {
+                                    // The consequences of this aliasing relationship have already
+                                    // been accounted for in the callee's signature.
+                                    continue;
+                                }
+
+                                mutations.push((*other, other_path.clone(), alias_cond.clone()));
+                            }
+                        }
+                    }
+
+                    let val_statuses = sig
+                        .ret_statuses
+                        .iter()
+                        .map(|(alias::RetName(ret_path), callee_status)| {
+                            (
+                                ret_path.clone(),
+                                annot::LocalStatus {
+                                    mutated_cond: callee_status.mutated_cond.flat_map(
+                                        |callee_cond| {
+                                            translate_callee_status_cond(
+                                                *arg,
+                                                arg_aliases,
+                                                arg_folded_aliases,
+                                                &arg_info.statuses,
+                                                callee_cond,
+                                            )
+                                        },
+                                    ),
+                                },
+                            )
+                        })
+                        .collect();
+
+                    ExprInfo {
+                        mutations,
+                        val_statuses,
+                    }
+                }
+            };
+
+            (annot_expr, expr_info)
+        }
+
         _ => unimplemented!(),
     }
 }
