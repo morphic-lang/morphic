@@ -252,6 +252,29 @@ fn annot_expr(
             )
         }
 
+        alias::Expr::Tuple(items) => {
+            let mut tuple_statuses = OrdMap::new();
+
+            for (idx, item) in items.iter().enumerate() {
+                let item_info = &ctx[item];
+
+                for (item_path, _) in get_names_in(&orig.custom_types, &item_info.type_) {
+                    let mut tuple_path = item_path.clone();
+                    tuple_path.push_front(alias::Field::Field(idx));
+
+                    tuple_statuses.insert(tuple_path, item_info.statuses[&item_path].clone());
+                }
+            }
+
+            (
+                annot::Expr::Tuple(items.clone()),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: tuple_statuses,
+                },
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
