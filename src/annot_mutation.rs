@@ -582,6 +582,18 @@ fn annot_expr(
             },
         ),
 
+        alias::Expr::ArrayOp(alias::ArrayOp::Len(item_type, _array_aliases, array)) => (
+            annot::Expr::ArrayOp(annot::ArrayOp::Len(
+                item_type.clone(),
+                ctx[array].statuses[&Vector::new()].clone(),
+                *array,
+            )),
+            ExprInfo {
+                mutations: Vec::new(),
+                val_statuses: OrdMap::new(),
+            },
+        ),
+
         _ => unimplemented!(),
     }
 }
