@@ -390,6 +390,32 @@ fn annot_expr(
             )
         }
 
+        alias::Expr::UnwrapCustom(custom_id, wrapped) => {
+            let wrapped_info = &ctx[wrapped];
+
+            debug_assert_eq!(&wrapped_info.type_, &anon::Type::Custom(*custom_id));
+
+            let content_type = &orig.custom_types[custom_id];
+
+            let mut content_statuses = OrdMap::new();
+            for (content_path, _) in get_names_in(&orig.custom_types, content_type) {
+                let (_, sub_path) = split_at_fold(*custom_id, content_path.clone());
+
+                let mut wrapped_path = sub_path.0.clone();
+                wrapped_path.push_front(alias::Field::Custom(*custom_id));
+
+                content_statuses.insert(content_path, wrapped_info.statuses[&wrapped_path].clone());
+            }
+
+            (
+                annot::Expr::UnwrapCustom(*custom_id, *wrapped),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: content_statuses,
+                },
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
