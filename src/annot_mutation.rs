@@ -209,6 +209,49 @@ fn annot_expr(
             (annot_expr, expr_info)
         }
 
+        alias::Expr::LetMany(bindings, final_local) => {
+            let mut new_bindings = Vec::with_capacity(bindings.len());
+            let mut mutations = Vec::new();
+
+            let mut new_ctx = ctx.clone();
+            for (type_, rhs) in bindings {
+                let (annot_rhs, rhs_info) = annot_expr(orig, sigs, &new_ctx, rhs);
+
+                new_bindings.push((type_.clone(), annot_rhs));
+
+                for (other, other_path, mut_cond) in rhs_info.mutations {
+                    if other.0 < ctx.len() {
+                        // This is a mutation of a variable outside the scope of this `let`.
+                        mutations.push((other, other_path.clone(), mut_cond.clone()));
+                    }
+
+                    new_ctx[&other].statuses[&other_path]
+                        .mutated_cond
+                        .or_mut(mut_cond.into_mapped(annot::MutationCondition::AliasCondition));
+                }
+
+                let lhs = flat::LocalId(new_ctx.len());
+                debug_assert!(!new_ctx.contains_key(&lhs));
+
+                let lhs_info = LocalInfo {
+                    type_: type_.clone(),
+                    statuses: rhs_info.val_statuses,
+                };
+
+                new_ctx.insert(lhs, lhs_info);
+            }
+
+            debug_assert_eq!(new_bindings.len(), bindings.len());
+
+            (
+                annot::Expr::LetMany(new_bindings, *final_local),
+                ExprInfo {
+                    mutations,
+                    val_statuses: new_ctx[final_local].statuses.clone(),
+                },
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
