@@ -275,6 +275,32 @@ fn annot_expr(
             )
         }
 
+        alias::Expr::TupleField(tuple, idx) => {
+            let tuple_info = &ctx[tuple];
+
+            let item_type = if let anon::Type::Tuple(item_types) = &tuple_info.type_ {
+                &item_types[*idx]
+            } else {
+                unreachable!()
+            };
+
+            let mut item_statuses = OrdMap::new();
+            for (item_path, _) in get_names_in(&orig.custom_types, item_type) {
+                let mut tuple_path = item_path.clone();
+                tuple_path.push_front(alias::Field::Field(*idx));
+
+                item_statuses.insert(item_path, tuple_info.statuses[&tuple_path].clone());
+            }
+
+            (
+                annot::Expr::TupleField(*tuple, *idx),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: item_statuses,
+                },
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
