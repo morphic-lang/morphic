@@ -47,6 +47,13 @@ struct ExprInfo {
     val_statuses: OrdMap<alias::FieldPath, annot::LocalStatus>,
 }
 
+fn trivial_info() -> ExprInfo {
+    ExprInfo {
+        mutations: Vec::new(),
+        val_statuses: OrdMap::new(),
+    }
+}
+
 fn empty_statuses(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &anon::Type,
@@ -503,13 +510,7 @@ fn annot_expr(
             )
         }
 
-        alias::Expr::ArithOp(op) => (
-            annot::Expr::ArithOp(*op),
-            ExprInfo {
-                mutations: Vec::new(),
-                val_statuses: OrdMap::new(),
-            },
-        ),
+        alias::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), trivial_info()),
 
         alias::Expr::ArrayOp(alias::ArrayOp::Item(item_type, _array_aliases, array, index)) => (
             annot::Expr::ArrayOp(annot::ArrayOp::Item(
@@ -588,10 +589,7 @@ fn annot_expr(
                 ctx[array].statuses[&Vector::new()].clone(),
                 *array,
             )),
-            ExprInfo {
-                mutations: Vec::new(),
-                val_statuses: OrdMap::new(),
-            },
+            trivial_info(),
         ),
 
         alias::Expr::IOOp(alias::IOOp::Input) => (
@@ -612,13 +610,45 @@ fn annot_expr(
                 ctx[bytes].statuses[&Vector::new()].clone(),
                 *bytes,
             )),
-            ExprInfo {
-                mutations: Vec::new(),
-                val_statuses: OrdMap::new(),
-            },
+            trivial_info(),
         ),
 
-        _ => unimplemented!(),
+        alias::Expr::ArrayLit(item_type, items) => {
+            let mut array_statuses = empty_statuses(
+                &orig.custom_types,
+                &anon::Type::Array(Box::new(item_type.clone())),
+            );
+
+            let item_paths = get_names_in(&orig.custom_types, item_type);
+
+            for item in items {
+                let item_info = &ctx[item];
+
+                debug_assert_eq!(&item_info.type_, item_type);
+
+                for (item_path, _) in &item_paths {
+                    let mut array_path = item_path.clone();
+                    array_path.push_front(alias::Field::ArrayMembers);
+
+                    array_statuses[&array_path]
+                        .mutated_cond
+                        .or_mut(item_info.statuses[&item_path].mutated_cond.clone());
+                }
+            }
+
+            (
+                annot::Expr::ArrayLit(item_type.clone(), items.clone()),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: array_statuses,
+                },
+            )
+        }
+
+        &alias::Expr::BoolLit(val) => (annot::Expr::BoolLit(val), trivial_info()),
+        &alias::Expr::ByteLit(val) => (annot::Expr::ByteLit(val), trivial_info()),
+        &alias::Expr::IntLit(val) => (annot::Expr::IntLit(val), trivial_info()),
+        &alias::Expr::FloatLit(val) => (annot::Expr::FloatLit(val), trivial_info()),
     }
 }
 
