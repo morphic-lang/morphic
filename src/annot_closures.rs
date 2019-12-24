@@ -8,6 +8,7 @@ use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
 use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
 use crate::util::graph::{self, Graph};
+use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 
 fn count_params(
@@ -36,21 +37,10 @@ fn count_params(
     }
 }
 
-#[derive(Clone, Debug)]
-struct ParamIdGen(usize);
-
-impl ParamIdGen {
-    fn fresh(&mut self) -> annot::RepParamId {
-        let result = annot::RepParamId(self.0);
-        self.0 += 1;
-        result
-    }
-}
-
 fn parameterize(
     parameterized: &IdVec<mono::CustomTypeId, Option<annot::TypeDef>>,
     scc_num_params: usize,
-    id_gen: &mut ParamIdGen,
+    id_gen: &mut IdGen<annot::RepParamId>,
     type_: &mono::Type,
 ) -> annot::Type<annot::RepParamId> {
     match type_ {
@@ -124,7 +114,7 @@ fn parameterize_typedef_scc(
         })
         .sum::<usize>();
 
-    let mut id_gen = ParamIdGen(0);
+    let mut id_gen = IdGen::new();
 
     let to_populate: BTreeMap<mono::CustomTypeId, _> = scc
         .iter()
@@ -147,6 +137,8 @@ fn parameterize_typedef_scc(
             )
         })
         .collect();
+
+    debug_assert_eq!(id_gen.count(), num_params);
 
     for (type_id, typedef) in to_populate {
         debug_assert!(parameterized[type_id].is_none());

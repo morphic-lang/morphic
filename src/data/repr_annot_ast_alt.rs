@@ -21,7 +21,7 @@ pub enum Type<Rep> {
     HoleArray(Rep, Box<Type<Rep>>),
     Tuple(Vec<Type<Rep>>),
     Variants(IdVec<first_ord::VariantId, Type<Rep>>),
-    Custom(first_ord::CustomTypeId, Vec<Rep>),
+    Custom(first_ord::CustomTypeId, IdVec<RepParamId, Rep>),
 }
 
 #[derive(Clone, Debug)]
