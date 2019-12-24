@@ -334,6 +334,32 @@ fn annot_expr(
             )
         }
 
+        alias::Expr::UnwrapVariant(variant_id, variant) => {
+            let variant_info = &ctx[variant];
+
+            let content_type = if let anon::Type::Variants(variant_types) = &variant_info.type_ {
+                &variant_types[variant_id]
+            } else {
+                unreachable!()
+            };
+
+            let mut content_statuses = OrdMap::new();
+            for (content_path, _) in get_names_in(&orig.custom_types, content_type) {
+                let mut variant_path = content_path.clone();
+                variant_path.push_front(alias::Field::Variant(*variant_id));
+
+                content_statuses.insert(content_path, variant_info.statuses[&variant_path].clone());
+            }
+
+            (
+                annot::Expr::UnwrapVariant(*variant_id, *variant),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: content_statuses,
+                },
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
