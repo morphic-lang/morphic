@@ -5,7 +5,9 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as annot;
-use crate::field_path::{get_names_in, translate_callee_cond, translate_callee_cond_disj};
+use crate::field_path::{
+    get_names_in, split_at_fold, translate_callee_cond, translate_callee_cond_disj,
+};
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
@@ -356,6 +358,34 @@ fn annot_expr(
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: content_statuses,
+                },
+            )
+        }
+
+        alias::Expr::WrapCustom(custom_id, content) => {
+            let content_info = &ctx[content];
+
+            debug_assert_eq!(&content_info.type_, &orig.custom_types[custom_id]);
+
+            let mut wrapped_statuses =
+                empty_statuses(&orig.custom_types, &anon::Type::Custom(*custom_id));
+
+            for (content_path, _) in get_names_in(&orig.custom_types, &content_info.type_) {
+                let (_, sub_path) = split_at_fold(*custom_id, content_path.clone());
+
+                let mut wrapped_path = sub_path.0.clone();
+                wrapped_path.push_front(alias::Field::Custom(*custom_id));
+
+                wrapped_statuses[&wrapped_path]
+                    .mutated_cond
+                    .or_mut(content_info.statuses[&content_path].mutated_cond.clone());
+            }
+
+            (
+                annot::Expr::WrapCustom(*custom_id, *content),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: wrapped_statuses,
                 },
             )
         }
