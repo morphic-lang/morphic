@@ -189,6 +189,11 @@ fn run<R: io::BufRead, W: io::Write>(
     println!("Alias-annotated program: {:#?}", alias_annot);
     println!("(end alias-annotated program)");
 
+    let mut_annot = annot_mutation::annot_mutation(alias_annot);
+
+    println!("Mutation-annotated program: {:#?}", mut_annot);
+    println!("(end mutation-annotated program)");
+
     let unique_infos = annot_aliases::annot_aliases(&first_order);
 
     let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);
