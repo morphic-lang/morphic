@@ -1,4 +1,4 @@
-use im_rc::{OrdMap, OrdSet};
+use im_rc::{vector, OrdMap, OrdSet, Vector};
 
 use crate::data::alias_annot_ast as alias;
 use crate::data::anon_sum_ast as anon;
@@ -81,6 +81,56 @@ fn translate_callee_status_cond(
             arg_statuses[arg_path].mutated_cond.clone()
         }
     }
+}
+
+fn array_extraction_statuses(
+    orig: &alias::Program,
+    ctx: &OrdMap<flat::LocalId, LocalInfo>,
+    item_type: &anon::Type,
+    array: flat::LocalId,
+    ret_array_field: alias::Field,
+    ret_item_field: alias::Field,
+) -> OrdMap<alias::FieldPath, annot::LocalStatus> {
+    let arg_info = &ctx[&array];
+
+    let mut ret_statuses = OrdMap::new();
+
+    for (item_path, _) in get_names_in(&orig.custom_types, item_type) {
+        let mut arg_path = item_path.clone();
+        arg_path.push_front(alias::Field::ArrayMembers);
+
+        let mut ret_array_path = item_path.clone();
+        ret_array_path.push_front(alias::Field::ArrayMembers);
+        ret_array_path.push_front(ret_array_field);
+
+        let mut ret_item_path = item_path.clone();
+        ret_item_path.push_front(ret_item_field);
+
+        let arg_path_status = &arg_info.statuses[&arg_path];
+
+        ret_statuses.insert(ret_array_path, arg_path_status.clone());
+        ret_statuses.insert(ret_item_path, arg_path_status.clone());
+    }
+
+    ret_statuses.insert(
+        vector![ret_array_field],
+        annot::LocalStatus {
+            mutated_cond: Disj::new(),
+        },
+    );
+
+    ret_statuses
+}
+
+fn propagated_mutations(
+    array: flat::LocalId,
+    aliases: &alias::LocalAliases,
+) -> Vec<(flat::LocalId, alias::FieldPath, Disj<alias::AliasCondition>)> {
+    let mut mutations = vec![(array, Vector::new(), Disj::True)];
+    for ((other, other_path), alias_cond) in &aliases.aliases {
+        mutations.push((*other, other_path.clone(), alias_cond.clone()));
+    }
+    mutations
 }
 
 fn annot_expr(
@@ -421,6 +471,48 @@ fn annot_expr(
             ExprInfo {
                 mutations: Vec::new(),
                 val_statuses: OrdMap::new(),
+            },
+        ),
+
+        alias::Expr::ArrayOp(alias::ArrayOp::Item(item_type, _array_aliases, array, index)) => {
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Item(
+                    item_type.clone(),
+                    ctx[array].statuses[&Vector::new()].clone(),
+                    *array,
+                    *index,
+                )),
+                ExprInfo {
+                    // 'Item' is not a mutating operation, but 'Replace' is.
+                    mutations: Vec::new(),
+                    val_statuses: array_extraction_statuses(
+                        orig,
+                        ctx,
+                        item_type,
+                        *array,
+                        alias::Field::Field(1), // hole array is the second return value
+                        alias::Field::Field(0), // item is the first return value
+                    ),
+                },
+            )
+        }
+
+        alias::Expr::ArrayOp(alias::ArrayOp::Pop(item_type, array_aliases, array)) => (
+            annot::Expr::ArrayOp(annot::ArrayOp::Pop(
+                item_type.clone(),
+                ctx[array].statuses[&Vector::new()].clone(),
+                *array,
+            )),
+            ExprInfo {
+                mutations: propagated_mutations(*array, array_aliases),
+                val_statuses: array_extraction_statuses(
+                    orig,
+                    ctx,
+                    item_type,
+                    *array,
+                    alias::Field::Field(0), // new array is the first return value
+                    alias::Field::Field(1), // item is the second return value
+                ),
             },
         ),
 
