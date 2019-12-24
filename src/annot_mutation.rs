@@ -416,6 +416,14 @@ fn annot_expr(
             )
         }
 
+        alias::Expr::ArithOp(op) => (
+            annot::Expr::ArithOp(*op),
+            ExprInfo {
+                mutations: Vec::new(),
+                val_statuses: OrdMap::new(),
+            },
+        ),
+
         _ => unimplemented!(),
     }
 }
