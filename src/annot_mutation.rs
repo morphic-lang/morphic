@@ -301,6 +301,39 @@ fn annot_expr(
             )
         }
 
+        alias::Expr::WrapVariant(variant_types, variant_id, content) => {
+            let content_info = &ctx[content];
+
+            debug_assert_eq!(variant_types[variant_id], content_info.type_);
+
+            let mut variant_statuses = OrdMap::new();
+            for (idx, variant_type) in variant_types.iter() {
+                for (path, _) in get_names_in(&orig.custom_types, variant_type) {
+                    let mut variant_path = path.clone();
+                    variant_path.push_front(alias::Field::Variant(idx));
+
+                    variant_statuses.insert(
+                        variant_path,
+                        if idx == *variant_id {
+                            content_info.statuses[&path].clone()
+                        } else {
+                            annot::LocalStatus {
+                                mutated_cond: Disj::new(),
+                            }
+                        },
+                    );
+                }
+            }
+
+            (
+                annot::Expr::WrapVariant(variant_types.clone(), *variant_id, *content),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: variant_statuses,
+                },
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
