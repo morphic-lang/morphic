@@ -45,7 +45,7 @@ mod annot_aliases_alt;
 
 mod annot_mutation;
 
-mod annot_reprs_alt;
+mod unify_reprs;
 
 mod annot_aliases;
 

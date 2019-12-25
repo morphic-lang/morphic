@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::mutation_annot_ast as mutation;
-use crate::data::repr_annot_ast_alt as annot;
-use crate::util::graph::{self, Graph};
+use crate::data::repr_unified_ast as unif;
+use crate::util::graph::{strongly_connected, Graph, Scc};
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 
@@ -30,7 +30,7 @@ fn add_type_deps(type_: &anon::Type, deps: &mut BTreeSet<first_ord::CustomTypeId
 }
 
 fn count_params(
-    parameterized: &IdVec<first_ord::CustomTypeId, Option<annot::TypeDef>>,
+    parameterized: &IdVec<first_ord::CustomTypeId, Option<unif::TypeDef>>,
     type_: &anon::Type,
 ) -> usize {
     match type_ {
@@ -55,16 +55,16 @@ fn count_params(
 }
 
 fn parameterize(
-    parameterized: &IdVec<first_ord::CustomTypeId, Option<annot::TypeDef>>,
+    parameterized: &IdVec<first_ord::CustomTypeId, Option<unif::TypeDef>>,
     scc_num_params: usize,
-    id_gen: &mut IdGen<annot::RepParamId>,
+    id_gen: &mut IdGen<unif::RepParamId>,
     type_: &anon::Type,
-) -> annot::Type<annot::RepParamId> {
+) -> unif::Type<unif::RepParamId> {
     match type_ {
-        anon::Type::Bool => annot::Type::Bool,
-        anon::Type::Num(num) => annot::Type::Num(*num),
+        anon::Type::Bool => unif::Type::Bool,
+        anon::Type::Num(num) => unif::Type::Num(*num),
 
-        anon::Type::Array(item_type) => annot::Type::Array(
+        anon::Type::Array(item_type) => unif::Type::Array(
             id_gen.fresh(),
             Box::new(parameterize(
                 parameterized,
@@ -74,7 +74,7 @@ fn parameterize(
             )),
         ),
 
-        anon::Type::HoleArray(item_type) => annot::Type::HoleArray(
+        anon::Type::HoleArray(item_type) => unif::Type::HoleArray(
             id_gen.fresh(),
             Box::new(parameterize(
                 parameterized,
@@ -84,27 +84,27 @@ fn parameterize(
             )),
         ),
 
-        anon::Type::Tuple(items) => annot::Type::Tuple(
+        anon::Type::Tuple(items) => unif::Type::Tuple(
             items
                 .iter()
                 .map(|item| parameterize(parameterized, scc_num_params, id_gen, item))
                 .collect(),
         ),
 
-        anon::Type::Variants(variants) => annot::Type::Variants(
+        anon::Type::Variants(variants) => unif::Type::Variants(
             variants.map(|_, variant| parameterize(parameterized, scc_num_params, id_gen, variant)),
         ),
 
         anon::Type::Custom(custom) => match &parameterized[custom] {
-            Some(typedef) => annot::Type::Custom(
+            Some(typedef) => unif::Type::Custom(
                 *custom,
                 IdVec::from_items((0..typedef.num_params).map(|_| id_gen.fresh()).collect()),
             ),
 
             // This is a typedef in the same SCC, so we need to parameterize it by all the SCC parameters.
-            None => annot::Type::Custom(
+            None => unif::Type::Custom(
                 *custom,
-                IdVec::from_items((0..scc_num_params).map(annot::RepParamId).collect()),
+                IdVec::from_items((0..scc_num_params).map(unif::RepParamId).collect()),
             ),
         },
     }
@@ -112,9 +112,9 @@ fn parameterize(
 
 fn parameterize_typedef_scc(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-    parameterized: &IdVec<first_ord::CustomTypeId, Option<annot::TypeDef>>,
+    parameterized: &IdVec<first_ord::CustomTypeId, Option<unif::TypeDef>>,
     scc: &[first_ord::CustomTypeId],
-) -> BTreeMap<first_ord::CustomTypeId, annot::TypeDef> {
+) -> BTreeMap<first_ord::CustomTypeId, unif::TypeDef> {
     let num_params = scc
         .iter()
         .map(|custom| count_params(parameterized, &typedefs[custom]))
@@ -127,7 +127,7 @@ fn parameterize_typedef_scc(
         .map(|&custom| {
             (
                 custom,
-                annot::TypeDef {
+                unif::TypeDef {
                     num_params,
                     content: parameterize(
                         parameterized,
@@ -147,7 +147,7 @@ fn parameterize_typedef_scc(
 
 fn parameterize_typedefs(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-) -> IdVec<first_ord::CustomTypeId, annot::TypeDef> {
+) -> IdVec<first_ord::CustomTypeId, unif::TypeDef> {
     let type_deps = Graph {
         edges_out: typedefs.map(|_, content| {
             let mut deps = BTreeSet::new();
@@ -156,7 +156,7 @@ fn parameterize_typedefs(
         }),
     };
 
-    let sccs = graph::strongly_connected(&type_deps);
+    let sccs = strongly_connected(&type_deps);
 
     let mut parameterized = IdVec::from_items(vec![None; typedefs.len()]);
     for scc in &sccs {
@@ -176,8 +176,37 @@ fn parameterize_typedefs(
     parameterized.into_mapped(|_, typedef| typedef.unwrap())
 }
 
-pub fn annot_reprs(program: mutation::Program) -> annot::Program {
-    let _typedefs = parameterize_typedefs(&program.custom_types);
-
+#[allow(unused_variables)]
+fn unify_func_scc(
+    typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
+    orig_funcs: &IdVec<first_ord::CustomFuncId, mutation::FuncDef>,
+    funcs_annot: &IdVec<first_ord::CustomFuncId, Option<unif::FuncDef>>,
+    scc: &[first_ord::CustomFuncId],
+) -> BTreeMap<first_ord::CustomFuncId, unif::FuncDef> {
     unimplemented!()
+}
+
+pub fn unify_reprs(program: mutation::Program) -> unif::Program {
+    let typedefs = parameterize_typedefs(&program.custom_types);
+
+    let mut funcs_annot = IdVec::from_items(vec![None; program.funcs.len()]);
+    for scc in &program.sccs {
+        let scc_annot = match scc {
+            Scc::Acyclic(func) => unify_func_scc(&typedefs, &program.funcs, &funcs_annot, &[*func]),
+            Scc::Cyclic(funcs) => unify_func_scc(&typedefs, &program.funcs, &funcs_annot, funcs),
+        };
+
+        for (func_id, func_annot) in scc_annot {
+            debug_assert!(funcs_annot[func_id].is_none());
+            funcs_annot[func_id] = Some(func_annot);
+        }
+    }
+
+    unif::Program {
+        custom_types: typedefs,
+        funcs: funcs_annot.into_mapped(|_, func| func.unwrap()),
+        main: program.main,
+
+        sccs: program.sccs,
+    }
 }
