@@ -538,6 +538,33 @@ fn instantiate_expr(
             )
         }
 
+        mutation::Expr::ArithOp(op) => {
+            let ret_type = match op {
+                flat::ArithOp::Op(num_type, _, _, _) => unif::Type::Num(*num_type),
+                flat::ArithOp::Cmp(_, _, _, _) => unif::Type::Bool,
+                flat::ArithOp::Negate(num_type, _) => unif::Type::Num(*num_type),
+            };
+
+            (unif::Expr::ArithOp(*op), ret_type)
+        }
+
+        mutation::Expr::BoolLit(val) => (unif::Expr::BoolLit(*val), unif::Type::Bool),
+
+        mutation::Expr::ByteLit(val) => (
+            unif::Expr::ByteLit(*val),
+            unif::Type::Num(first_ord::NumType::Byte),
+        ),
+
+        mutation::Expr::IntLit(val) => (
+            unif::Expr::IntLit(*val),
+            unif::Type::Num(first_ord::NumType::Int),
+        ),
+
+        mutation::Expr::FloatLit(val) => (
+            unif::Expr::FloatLit(*val),
+            unif::Type::Num(first_ord::NumType::Float),
+        ),
+
         _ => unimplemented!(),
     }
 }
