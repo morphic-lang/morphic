@@ -16,7 +16,7 @@ pub struct TypeDef {
     pub content: Type<RepParamId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type<Rep> {
     Bool,
     Num(first_ord::NumType),
@@ -68,8 +68,9 @@ pub enum ArrayOp<Rep> {
 pub enum IOOp<Rep> {
     Input(Rep), // Returns byte array
     Output(
-        Rep,           // Array representation
-        flat::LocalId, // Byte array
+        Rep,                   // Array representation
+        mutation::LocalStatus, // Byte array status
+        flat::LocalId,         // Byte array
     ),
 }
 

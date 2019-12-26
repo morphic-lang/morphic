@@ -671,6 +671,37 @@ fn instantiate_expr(
             )
         }
 
+        mutation::Expr::IOOp(mutation::IOOp::Input) => {
+            let rep_var = graph.new_var();
+
+            (
+                unif::Expr::IOOp(unif::IOOp::Input(rep_var)),
+                unif::Type::Array(rep_var, Box::new(unif::Type::Num(first_ord::NumType::Byte))),
+            )
+        }
+
+        mutation::Expr::IOOp(mutation::IOOp::Output(array_status, byte_array)) => {
+            let rep_var =
+                if let unif::Type::Array(rep_var, item_type) = locals.local_type(*byte_array) {
+                    debug_assert_eq!(
+                        item_type as &unif::Type<_>,
+                        &unif::Type::Num(first_ord::NumType::Byte)
+                    );
+                    *rep_var
+                } else {
+                    unreachable!();
+                };
+
+            (
+                unif::Expr::IOOp(unif::IOOp::Output(
+                    rep_var,
+                    array_status.clone(),
+                    *byte_array,
+                )),
+                unif::Type::Tuple(Vec::new()),
+            )
+        }
+
         mutation::Expr::BoolLit(val) => (unif::Expr::BoolLit(*val), unif::Type::Bool),
 
         mutation::Expr::ByteLit(val) => (
