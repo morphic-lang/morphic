@@ -454,6 +454,55 @@ fn instantiate_expr(
             (expr_inst, result_type)
         }),
 
+        mutation::Expr::Tuple(items) => {
+            let item_types = items
+                .iter()
+                .map(|&item| locals.local_type(item).clone())
+                .collect();
+
+            (
+                unif::Expr::Tuple(items.clone()),
+                unif::Type::Tuple(item_types),
+            )
+        }
+
+        mutation::Expr::TupleField(tuple, idx) => {
+            let item_type = if let unif::Type::Tuple(item_types) = locals.local_type(*tuple) {
+                item_types[*idx].clone()
+            } else {
+                unreachable!()
+            };
+
+            (unif::Expr::TupleField(*tuple, *idx), item_type)
+        }
+
+        mutation::Expr::WrapVariant(variant_types, variant, content) => {
+            let variant_types_inst = variant_types
+                .map(|_, variant_type| instantiate_type(typedefs, graph, variant_type));
+
+            equate_types(
+                graph,
+                &variant_types_inst[variant],
+                locals.local_type(*content),
+            );
+
+            (
+                unif::Expr::WrapVariant(variant_types_inst.clone(), *variant, *content),
+                unif::Type::Variants(variant_types_inst),
+            )
+        }
+
+        mutation::Expr::UnwrapVariant(variant, wrapped) => {
+            let variant_type =
+                if let unif::Type::Variants(variant_types) = locals.local_type(*wrapped) {
+                    variant_types[variant].clone()
+                } else {
+                    unreachable!()
+                };
+
+            (unif::Expr::UnwrapVariant(*variant, *wrapped), variant_type)
+        }
+
         _ => unimplemented!(),
     }
 }
