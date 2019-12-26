@@ -503,6 +503,41 @@ fn instantiate_expr(
             (unif::Expr::UnwrapVariant(*variant, *wrapped), variant_type)
         }
 
+        mutation::Expr::WrapCustom(custom, content) => {
+            let typedef = &typedefs[custom];
+
+            let rep_vars =
+                IdVec::from_items((0..typedef.num_params).map(|_| graph.new_var()).collect());
+
+            let content_type_inst = instantiate_subst(&rep_vars, &typedef.content);
+            equate_types(graph, &content_type_inst, locals.local_type(*content));
+
+            (
+                unif::Expr::WrapCustom(*custom, rep_vars.clone(), *content),
+                unif::Type::Custom(*custom, rep_vars),
+            )
+        }
+
+        mutation::Expr::UnwrapCustom(custom, wrapped) => {
+            let typedef = &typedefs[custom];
+
+            let rep_vars =
+                if let unif::Type::Custom(wrapped_custom, rep_vars) = locals.local_type(*wrapped) {
+                    debug_assert_eq!(wrapped_custom, custom);
+                    debug_assert_eq!(rep_vars.len(), typedef.num_params);
+                    rep_vars
+                } else {
+                    unreachable!();
+                };
+
+            let content_type_inst = instantiate_subst(rep_vars, &typedef.content);
+
+            (
+                unif::Expr::UnwrapCustom(*custom, rep_vars.clone(), *wrapped),
+                content_type_inst,
+            )
+        }
+
         _ => unimplemented!(),
     }
 }
