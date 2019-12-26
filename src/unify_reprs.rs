@@ -356,7 +356,6 @@ fn instantiate_subst(
     }
 }
 
-#[allow(unused_variables)]
 fn instantiate_expr(
     typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
     globals: GlobalContext,
@@ -414,6 +413,46 @@ fn instantiate_expr(
                 }
             }
         }
+
+        mutation::Expr::Branch(discrim, cases, result_type) => {
+            let result_type_inst = instantiate_type(typedefs, graph, result_type);
+
+            let cases_inst = cases
+                .iter()
+                .map(|(cond, body)| {
+                    let (body_inst, body_type) =
+                        instantiate_expr(typedefs, globals, graph, locals, body);
+
+                    equate_types(graph, &body_type, &result_type_inst);
+
+                    (cond.clone(), body_inst)
+                })
+                .collect();
+
+            let expr_inst = unif::Expr::Branch(*discrim, cases_inst, result_type_inst.clone());
+
+            (expr_inst, result_type_inst)
+        }
+
+        mutation::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
+            let bindings_inst = bindings
+                .iter()
+                .map(|(_type, binding)| {
+                    let (binding_inst, binding_type) =
+                        instantiate_expr(typedefs, globals, graph, sub_locals, binding);
+
+                    sub_locals.add_local(binding_type.clone());
+
+                    (binding_type, binding_inst)
+                })
+                .collect();
+
+            let expr_inst = unif::Expr::LetMany(bindings_inst, *final_local);
+
+            let result_type = sub_locals.local_type(*final_local).clone();
+
+            (expr_inst, result_type)
+        }),
 
         _ => unimplemented!(),
     }
