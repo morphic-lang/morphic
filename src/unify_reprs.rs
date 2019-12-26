@@ -548,6 +548,129 @@ fn instantiate_expr(
             (unif::Expr::ArithOp(*op), ret_type)
         }
 
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Item(
+            _item_type,
+            array_status,
+            array,
+            index,
+        )) => {
+            let (rep_var, item_type_inst) =
+                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_type(*array) {
+                    (*rep_var, item_type_inst as &unif::Type<_>)
+                } else {
+                    unreachable!()
+                };
+
+            (
+                unif::Expr::ArrayOp(unif::ArrayOp::Item(
+                    rep_var,
+                    item_type_inst.clone(),
+                    array_status.clone(),
+                    *array,
+                    *index,
+                )),
+                unif::Type::Tuple(vec![
+                    item_type_inst.clone(),
+                    unif::Type::HoleArray(rep_var, Box::new(item_type_inst.clone())),
+                ]),
+            )
+        }
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Len(_item_type, array_status, array)) => {
+            let (rep_var, item_type_inst) =
+                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_type(*array) {
+                    (*rep_var, item_type_inst as &unif::Type<_>)
+                } else {
+                    unreachable!()
+                };
+
+            (
+                unif::Expr::ArrayOp(unif::ArrayOp::Len(
+                    rep_var,
+                    item_type_inst.clone(),
+                    array_status.clone(),
+                    *array,
+                )),
+                unif::Type::Num(first_ord::NumType::Int),
+            )
+        }
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Push(_item_type, array_status, array, item)) => {
+            let (rep_var, array_item_type) =
+                if let unif::Type::Array(rep_var, array_item_type) = locals.local_type(*array) {
+                    (*rep_var, array_item_type as &unif::Type<_>)
+                } else {
+                    unreachable!()
+                };
+
+            let item_type = locals.local_type(*item);
+
+            equate_types(graph, array_item_type, item_type);
+
+            (
+                unif::Expr::ArrayOp(unif::ArrayOp::Push(
+                    rep_var,
+                    array_item_type.clone(),
+                    array_status.clone(),
+                    *array,
+                    *item,
+                )),
+                unif::Type::Array(rep_var, Box::new(array_item_type.clone())),
+            )
+        }
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Pop(_item_type, array_status, array)) => {
+            let (rep_var, item_type_inst) =
+                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_type(*array) {
+                    (*rep_var, item_type_inst as &unif::Type<_>)
+                } else {
+                    unreachable!()
+                };
+
+            (
+                unif::Expr::ArrayOp(unif::ArrayOp::Pop(
+                    rep_var,
+                    item_type_inst.clone(),
+                    array_status.clone(),
+                    *array,
+                )),
+                unif::Type::Tuple(vec![
+                    unif::Type::Array(rep_var, Box::new(item_type_inst.clone())),
+                    item_type_inst.clone(),
+                ]),
+            )
+        }
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Replace(
+            _item_type,
+            hole_array_status,
+            hole_array,
+            item,
+        )) => {
+            let (rep_var, array_item_type) = if let unif::Type::Array(rep_var, array_item_type) =
+                locals.local_type(*hole_array)
+            {
+                (*rep_var, array_item_type as &unif::Type<_>)
+            } else {
+                unreachable!()
+            };
+
+            let item_type = locals.local_type(*item);
+
+            equate_types(graph, array_item_type, item_type);
+
+            (
+                unif::Expr::ArrayOp(unif::ArrayOp::Replace(
+                    rep_var,
+                    array_item_type.clone(),
+                    hole_array_status.clone(),
+                    *hole_array,
+                    *item,
+                )),
+                unif::Type::Array(rep_var, Box::new(array_item_type.clone())),
+            )
+        }
+
         mutation::Expr::BoolLit(val) => (unif::Expr::BoolLit(*val), unif::Type::Bool),
 
         mutation::Expr::ByteLit(val) => (
