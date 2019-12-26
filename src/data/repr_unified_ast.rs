@@ -111,7 +111,7 @@ pub enum Expr<Call, Rep> {
     ArrayOp(ArrayOp<Rep>),
     IOOp(IOOp<Rep>),
 
-    ArrayLit(Type<Rep>, Vec<flat::LocalId>),
+    ArrayLit(Rep, Type<Rep>, Vec<flat::LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),

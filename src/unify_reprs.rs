@@ -702,6 +702,21 @@ fn instantiate_expr(
             )
         }
 
+        mutation::Expr::ArrayLit(item_type, items) => {
+            let rep_var = graph.new_var();
+
+            let item_type_inst = instantiate_type(typedefs, graph, item_type);
+
+            for item in items {
+                equate_types(graph, &item_type_inst, locals.local_type(*item));
+            }
+
+            (
+                unif::Expr::ArrayLit(rep_var, item_type_inst.clone(), items.clone()),
+                unif::Type::Array(rep_var, Box::new(item_type_inst)),
+            )
+        }
+
         mutation::Expr::BoolLit(val) => (unif::Expr::BoolLit(*val), unif::Type::Bool),
 
         mutation::Expr::ByteLit(val) => (
@@ -718,8 +733,6 @@ fn instantiate_expr(
             unif::Expr::FloatLit(*val),
             unif::Type::Num(first_ord::NumType::Float),
         ),
-
-        _ => unimplemented!(),
     }
 }
 
