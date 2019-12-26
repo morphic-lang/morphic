@@ -5,6 +5,8 @@ pub mod id_vec;
 
 pub mod id_gen;
 
+pub mod local_context;
+
 pub mod graph;
 
 pub mod constraint_graph;

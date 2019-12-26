@@ -1,12 +1,17 @@
+use im_rc::OrdMap;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::data::alias_annot_ast as alias;
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
+use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as mutation;
+use crate::data::purity::Purity;
 use crate::data::repr_unified_ast as unif;
 use crate::util::graph::{strongly_connected, Graph, Scc};
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
+use crate::util::local_context::LocalContext;
 
 fn add_type_deps(type_: &anon::Type, deps: &mut BTreeSet<first_ord::CustomTypeId>) {
     match type_ {
@@ -176,6 +181,244 @@ fn parameterize_typedefs(
     parameterized.into_mapped(|_, typedef| typedef.unwrap())
 }
 
+id_type!(SolverVarId);
+
+#[derive(Clone, Debug)]
+struct PendingSig {
+    arg: unif::Type<SolverVarId>,
+    ret: unif::Type<SolverVarId>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GlobalContext<'a> {
+    funcs_annot: &'a IdVec<first_ord::CustomFuncId, Option<unif::FuncDef>>,
+    sigs_pending: &'a BTreeMap<first_ord::CustomFuncId, PendingSig>,
+}
+
+#[derive(Clone, Debug)]
+enum SolverCall {
+    KnownCall(unif::SolvedCall<SolverVarId>),
+    PendingCall(
+        Purity,
+        first_ord::CustomFuncId,
+        OrdMap<alias::FieldPath, alias::LocalAliases>,
+        OrdMap<alias::FieldPath, alias::FoldedAliases>,
+        OrdMap<alias::FieldPath, mutation::LocalStatus>,
+        flat::LocalId,
+    ),
+}
+
+type SolverExpr = unif::Expr<SolverCall, SolverVarId>;
+
+type SolverType = unif::Type<SolverVarId>;
+
+#[derive(Clone, Debug)]
+struct ConstraintGraph {
+    var_equalities: IdVec<SolverVarId, BTreeSet<SolverVarId>>,
+}
+
+impl ConstraintGraph {
+    fn new() -> Self {
+        ConstraintGraph {
+            var_equalities: IdVec::new(),
+        }
+    }
+
+    fn new_var(&mut self) -> SolverVarId {
+        self.var_equalities.push(BTreeSet::new())
+    }
+
+    fn equate(&mut self, fst: SolverVarId, snd: SolverVarId) {
+        self.var_equalities[fst].insert(snd);
+        self.var_equalities[snd].insert(fst);
+    }
+}
+
+fn instantiate_type(
+    typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
+    graph: &mut ConstraintGraph,
+    type_: &anon::Type,
+) -> SolverType {
+    match type_ {
+        anon::Type::Bool => unif::Type::Bool,
+        anon::Type::Num(num) => unif::Type::Num(*num),
+
+        anon::Type::Array(item_type) => unif::Type::Array(
+            graph.new_var(),
+            Box::new(instantiate_type(typedefs, graph, item_type)),
+        ),
+
+        anon::Type::HoleArray(item_type) => unif::Type::HoleArray(
+            graph.new_var(),
+            Box::new(instantiate_type(typedefs, graph, item_type)),
+        ),
+
+        anon::Type::Tuple(items) => unif::Type::Tuple(
+            items
+                .iter()
+                .map(|item| instantiate_type(typedefs, graph, item))
+                .collect(),
+        ),
+
+        anon::Type::Variants(variants) => unif::Type::Variants(
+            variants.map(|_, variant| instantiate_type(typedefs, graph, variant)),
+        ),
+
+        anon::Type::Custom(custom) => unif::Type::Custom(
+            *custom,
+            IdVec::from_items(
+                (0..typedefs[custom].num_params)
+                    .map(|_| graph.new_var())
+                    .collect(),
+            ),
+        ),
+    }
+}
+
+fn equate_types(graph: &mut ConstraintGraph, type1: &SolverType, type2: &SolverType) {
+    match (type1, type2) {
+        (unif::Type::Bool, unif::Type::Bool) => {}
+
+        (unif::Type::Num(num1), unif::Type::Num(num2)) => {
+            debug_assert_eq!(num1, num2);
+        }
+
+        (unif::Type::Array(rep1, item_type1), unif::Type::Array(rep2, item_type2)) => {
+            graph.equate(*rep1, *rep2);
+            equate_types(graph, item_type1, item_type2);
+        }
+
+        (unif::Type::HoleArray(rep1, item_type1), unif::Type::HoleArray(rep2, item_type2)) => {
+            graph.equate(*rep1, *rep2);
+            equate_types(graph, item_type1, item_type2);
+        }
+
+        (unif::Type::Tuple(items1), unif::Type::Tuple(items2)) => {
+            debug_assert_eq!(items1.len(), items2.len());
+            for (item1, item2) in items1.iter().zip(items2) {
+                equate_types(graph, item1, item2);
+            }
+        }
+
+        (unif::Type::Variants(variants1), unif::Type::Variants(variants2)) => {
+            for (_, variant1, variant2) in variants1
+                .try_zip_exact(variants2)
+                .expect("variants1.len() should equal variants2.len()")
+            {
+                equate_types(graph, variant1, variant2);
+            }
+        }
+
+        (unif::Type::Custom(custom1, args1), unif::Type::Custom(custom2, args2)) => {
+            debug_assert_eq!(custom1, custom2);
+            for (_, arg1, arg2) in args1
+                .try_zip_exact(args2)
+                .expect("args1.len() should equal args2.len()")
+            {
+                graph.equate(*arg1, *arg2);
+            }
+        }
+
+        _ => panic!("Cannot unify types {:?} and {:?}", type1, type2),
+    }
+}
+
+fn instantiate_subst(
+    vars: &IdVec<unif::RepParamId, SolverVarId>,
+    type_: &unif::Type<unif::RepParamId>,
+) -> SolverType {
+    match type_ {
+        unif::Type::Bool => unif::Type::Bool,
+        unif::Type::Num(num) => unif::Type::Num(*num),
+
+        unif::Type::Array(rep, item_type) => {
+            unif::Type::Array(vars[rep], Box::new(instantiate_subst(vars, item_type)))
+        }
+
+        unif::Type::HoleArray(rep, item_type) => {
+            unif::Type::HoleArray(vars[rep], Box::new(instantiate_subst(vars, item_type)))
+        }
+
+        unif::Type::Tuple(items) => unif::Type::Tuple(
+            items
+                .iter()
+                .map(|item| instantiate_subst(vars, item))
+                .collect(),
+        ),
+
+        unif::Type::Variants(variants) => {
+            unif::Type::Variants(variants.map(|_, variant| instantiate_subst(vars, variant)))
+        }
+
+        unif::Type::Custom(custom, args) => {
+            unif::Type::Custom(*custom, args.map(|_, arg| vars[arg]))
+        }
+    }
+}
+
+#[allow(unused_variables)]
+fn instantiate_expr(
+    typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
+    globals: GlobalContext,
+    graph: &mut ConstraintGraph,
+    locals: &mut LocalContext<flat::LocalId, SolverType>,
+    expr: &mutation::Expr,
+) -> (SolverExpr, SolverType) {
+    match expr {
+        mutation::Expr::Local(local) => {
+            (unif::Expr::Local(*local), locals.local_type(*local).clone())
+        }
+
+        mutation::Expr::Call(purity, func, arg_aliases, arg_folded_aliases, arg_statuses, arg) => {
+            match &globals.funcs_annot[func] {
+                Some(def_annot) => {
+                    let rep_vars = IdVec::from_items(
+                        (0..def_annot.num_params).map(|_| graph.new_var()).collect(),
+                    );
+
+                    let arg_type = instantiate_subst(&rep_vars, &def_annot.arg_type);
+                    let ret_type = instantiate_subst(&rep_vars, &def_annot.ret_type);
+
+                    equate_types(graph, locals.local_type(*arg), &arg_type);
+
+                    let expr_inst = unif::Expr::Call(SolverCall::KnownCall(unif::SolvedCall(
+                        *purity,
+                        *func,
+                        rep_vars,
+                        arg_aliases.clone(),
+                        arg_folded_aliases.clone(),
+                        arg_statuses.clone(),
+                        *arg,
+                    )));
+
+                    (expr_inst, ret_type)
+                }
+
+                None => {
+                    // This is a function in the current SCC
+
+                    let pending_sig = &globals.sigs_pending[func];
+
+                    equate_types(graph, locals.local_type(*arg), &pending_sig.arg);
+
+                    let expr_inst = unif::Expr::Call(SolverCall::PendingCall(
+                        *purity,
+                        *func,
+                        arg_aliases.clone(),
+                        arg_folded_aliases.clone(),
+                        arg_statuses.clone(),
+                        *arg,
+                    ));
+
+                    (expr_inst, pending_sig.ret.clone())
+                }
+            }
+        }
+
+        _ => unimplemented!(),
+    }
+}
+
 #[allow(unused_variables)]
 fn unify_func_scc(
     typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
@@ -183,6 +426,53 @@ fn unify_func_scc(
     funcs_annot: &IdVec<first_ord::CustomFuncId, Option<unif::FuncDef>>,
     scc: &[first_ord::CustomFuncId],
 ) -> BTreeMap<first_ord::CustomFuncId, unif::FuncDef> {
+    let mut graph = ConstraintGraph::new();
+
+    let sigs_pending = scc
+        .iter()
+        .map(|&func| {
+            let orig_sig = &orig_funcs[func];
+
+            let arg_inst = instantiate_type(typedefs, &mut graph, &orig_sig.arg_type);
+            let ret_inst = instantiate_type(typedefs, &mut graph, &orig_sig.ret_type);
+
+            (
+                func,
+                PendingSig {
+                    arg: arg_inst,
+                    ret: ret_inst,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let globals = GlobalContext {
+        funcs_annot,
+        sigs_pending: &sigs_pending,
+    };
+
+    let funcs_inst = scc
+        .iter()
+        .map(|&func| {
+            let pending_sig = &sigs_pending[&func];
+
+            let mut locals = LocalContext::new();
+            locals.add_local(pending_sig.arg.clone());
+
+            let (body_inst, body_type) = instantiate_expr(
+                typedefs,
+                globals,
+                &mut graph,
+                &mut locals,
+                &orig_funcs[func].body,
+            );
+
+            equate_types(&mut graph, &pending_sig.ret, &body_type);
+
+            (func, body_inst)
+        })
+        .collect::<Vec<_>>();
+
     unimplemented!()
 }
 

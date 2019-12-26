@@ -75,7 +75,7 @@ pub enum IOOp<Rep> {
 
 #[derive(Clone, Debug)]
 pub enum Expr<Call, Rep> {
-    Local(first_ord::LocalId),
+    Local(flat::LocalId),
     Call(Call),
     Branch(
         flat::LocalId,
@@ -119,17 +119,17 @@ pub enum Expr<Call, Rep> {
 
 #[derive(Clone, Debug)]
 pub struct SolvedCall<Rep>(
-    Purity,
-    first_ord::CustomFuncId,
-    IdVec<RepParamId, Rep>,
+    pub Purity,
+    pub first_ord::CustomFuncId,
+    pub IdVec<RepParamId, Rep>,
     // Aliases from argument fields (keys) to other names in scope (values) (which may
     // potentially also be fields of the argument)
-    OrdMap<alias::FieldPath, alias::LocalAliases>,
+    pub OrdMap<alias::FieldPath, alias::LocalAliases>,
     // Folded aliases for each argument fold point
-    OrdMap<alias::FieldPath, alias::FoldedAliases>,
+    pub OrdMap<alias::FieldPath, alias::FoldedAliases>,
     // Statuses of argument fields prior to call
-    OrdMap<alias::FieldPath, mutation::LocalStatus>,
-    flat::LocalId,
+    pub OrdMap<alias::FieldPath, mutation::LocalStatus>,
+    pub flat::LocalId,
 );
 
 id_type!(pub InternalRepVarId);

@@ -10,6 +10,7 @@ use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, S
 use crate::util::graph::{self, Graph};
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
+use crate::util::local_context::LocalContext;
 
 fn count_params(
     parameterized: &IdVec<mono::CustomTypeId, Option<annot::TypeDef>>,
@@ -388,33 +389,6 @@ fn equate_types(
     }
 }
 
-// TODO: Determine if this should be merged with similar structures in other passes
-#[derive(Clone, Debug)]
-struct LocalContext {
-    types: Vec<annot::Type<SolverVarId>>,
-}
-
-impl LocalContext {
-    fn new() -> Self {
-        LocalContext { types: Vec::new() }
-    }
-
-    fn add_local(&mut self, type_: annot::Type<SolverVarId>) {
-        self.types.push(type_);
-    }
-
-    fn local_type(&mut self, local: lifted::LocalId) -> annot::Type<SolverVarId> {
-        self.types[local.0].clone()
-    }
-
-    fn with_scope<R, F: for<'a> FnOnce(&'a mut LocalContext) -> R>(&mut self, body: F) -> R {
-        let old_len = self.types.len();
-        let result = body(self);
-        self.types.truncate(old_len);
-        result
-    }
-}
-
 fn instantiate_subst(
     vars: &IdVec<annot::RepParamId, SolverVarId>,
     type_: &annot::Type<annot::RepParamId>,
@@ -449,7 +423,7 @@ fn instantiate_subst(
 
 fn instantiate_pattern(
     typedefs: &IdVec<mono::CustomTypeId, annot::TypeDef>,
-    locals: &mut LocalContext,
+    locals: &mut LocalContext<lifted::LocalId, annot::Type<SolverVarId>>,
     rhs: &annot::Type<SolverVarId>,
     pat: &mono::Pattern,
 ) -> SolverPattern {
@@ -788,7 +762,7 @@ fn instantiate_expr(
     globals: GlobalContext,
     graph: &mut ConstraintGraph<SolverRequirement>,
     captures: &IdVec<lifted::CaptureId, annot::Type<SolverVarId>>,
-    locals: &mut LocalContext,
+    locals: &mut LocalContext<lifted::LocalId, annot::Type<SolverVarId>>,
     expr: &lifted::Expr,
 ) -> (SolverExpr, annot::Type<SolverVarId>) {
     match expr {
@@ -864,7 +838,7 @@ fn instantiate_expr(
             ),
         },
 
-        &lifted::Expr::Local(local) => (SolverExpr::Local(local), locals.local_type(local)),
+        &lifted::Expr::Local(local) => (SolverExpr::Local(local), locals.local_type(local).clone()),
 
         &lifted::Expr::Capture(capture) => {
             (SolverExpr::Capture(capture), captures[capture].clone())
@@ -1168,7 +1142,7 @@ fn instantiate_scc(
                 &vals[val_id].body,
             );
 
-            debug_assert!(local_ctx.types.is_empty());
+            debug_assert_eq!(local_ctx.len(), 0);
 
             equate_types(&mut graph, &global_ctx.curr_vals[&val_id], &solver_val_type);
 
@@ -1202,7 +1176,7 @@ fn instantiate_scc(
                 (solver_arg, solver_body)
             });
 
-            debug_assert!(local_ctx.types.is_empty());
+            debug_assert_eq!(local_ctx.len(), 0);
 
             (lam_id, (solver_arg, solver_body))
         })
