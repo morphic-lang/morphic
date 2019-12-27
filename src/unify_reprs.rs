@@ -647,13 +647,14 @@ fn instantiate_expr(
             hole_array,
             item,
         )) => {
-            let (rep_var, array_item_type) = if let unif::Type::Array(rep_var, array_item_type) =
-                locals.local_type(*hole_array)
-            {
-                (*rep_var, array_item_type as &unif::Type<_>)
-            } else {
-                unreachable!()
-            };
+            let (rep_var, array_item_type) =
+                if let unif::Type::HoleArray(rep_var, array_item_type) =
+                    locals.local_type(*hole_array)
+                {
+                    (*rep_var, array_item_type as &unif::Type<_>)
+                } else {
+                    unreachable!()
+                };
 
             let item_type = locals.local_type(*item);
 

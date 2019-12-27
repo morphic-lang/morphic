@@ -196,6 +196,11 @@ fn run<R: io::BufRead, W: io::Write>(
     println!("Mutation-annotated program: {:#?}", mut_annot);
     println!("(end mutation-annotated program)");
 
+    let repr_unified = unify_reprs::unify_reprs(mut_annot);
+
+    println!("Representation-unified program: {:#?}", repr_unified);
+    println!("(end repr-unified program)");
+
     let unique_infos = annot_aliases::annot_aliases(&first_order);
 
     let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);
