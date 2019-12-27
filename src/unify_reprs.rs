@@ -212,6 +212,8 @@ type SolverExpr = unif::Expr<SolverCall, SolverVarId>;
 
 type SolverType = unif::Type<SolverVarId>;
 
+type SolverCondition = unif::Condition<SolverVarId>;
+
 #[derive(Clone, Debug)]
 struct ConstraintGraph {
     var_equalities: IdVec<SolverVarId, BTreeSet<SolverVarId>>,
@@ -356,6 +358,77 @@ fn instantiate_subst(
     }
 }
 
+fn instantate_condition(
+    typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
+    type_matched: &SolverType,
+    cond: &flat::Condition,
+) -> SolverCondition {
+    match (cond, type_matched) {
+        (flat::Condition::Any, _) => unif::Condition::Any,
+
+        (flat::Condition::Tuple(item_conds), unif::Type::Tuple(item_types)) => {
+            debug_assert_eq!(item_conds.len(), item_types.len());
+
+            unif::Condition::Tuple(
+                item_types
+                    .iter()
+                    .zip(item_conds)
+                    .map(|(item_type, item_cond)| {
+                        instantate_condition(typedefs, item_type, item_cond)
+                    })
+                    .collect(),
+            )
+        }
+
+        (flat::Condition::Variant(variant, content_cond), unif::Type::Variants(variant_types)) => {
+            let content_type = &variant_types[variant];
+
+            unif::Condition::Variant(
+                *variant,
+                Box::new(instantate_condition(typedefs, content_type, content_cond)),
+            )
+        }
+
+        (
+            flat::Condition::Custom(custom, content_cond),
+            unif::Type::Custom(matched_custom, rep_vars),
+        ) => {
+            let typedef = &typedefs[custom];
+
+            debug_assert_eq!(custom, matched_custom);
+            debug_assert_eq!(typedef.num_params, rep_vars.len());
+
+            let content_type_inst = instantiate_subst(&rep_vars, &typedef.content);
+
+            unif::Condition::Custom(
+                *custom,
+                rep_vars.clone(),
+                Box::new(instantate_condition(
+                    typedefs,
+                    &content_type_inst,
+                    content_cond,
+                )),
+            )
+        }
+
+        (flat::Condition::BoolConst(val), unif::Type::Bool) => unif::Condition::BoolConst(*val),
+
+        (flat::Condition::ByteConst(val), unif::Type::Num(first_ord::NumType::Byte)) => {
+            unif::Condition::ByteConst(*val)
+        }
+
+        (flat::Condition::IntConst(val), unif::Type::Num(first_ord::NumType::Int)) => {
+            unif::Condition::IntConst(*val)
+        }
+
+        (flat::Condition::FloatConst(val), unif::Type::Num(first_ord::NumType::Float)) => {
+            unif::Condition::FloatConst(*val)
+        }
+
+        _ => unreachable!(),
+    }
+}
+
 fn instantiate_expr(
     typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
     globals: GlobalContext,
@@ -420,12 +493,15 @@ fn instantiate_expr(
             let cases_inst = cases
                 .iter()
                 .map(|(cond, body)| {
+                    let cond_inst =
+                        instantate_condition(typedefs, locals.local_type(*discrim), cond);
+
                     let (body_inst, body_type) =
                         instantiate_expr(typedefs, globals, graph, locals, body);
 
                     equate_types(graph, &body_type, &result_type_inst);
 
-                    (cond.clone(), body_inst)
+                    (cond_inst.clone(), body_inst)
                 })
                 .collect();
 
@@ -882,6 +958,39 @@ fn extract_type(
     }
 }
 
+fn extract_condition(
+    to_unified: &IdVec<SolverVarId, UnifiedVarId>,
+    this_solutions: &IdVec<UnifiedVarId, unif::RepSolution>,
+    cond: SolverCondition,
+) -> unif::Condition<unif::RepSolution> {
+    match cond {
+        unif::Condition::Any => unif::Condition::Any,
+
+        unif::Condition::Tuple(item_conds) => unif::Condition::Tuple(
+            item_conds
+                .into_iter()
+                .map(|item_cond| extract_condition(to_unified, this_solutions, item_cond))
+                .collect(),
+        ),
+
+        unif::Condition::Variant(variant, content_cond) => unif::Condition::Variant(
+            variant,
+            Box::new(extract_condition(to_unified, this_solutions, *content_cond)),
+        ),
+
+        unif::Condition::Custom(custom, rep_vars, content_cond) => unif::Condition::Custom(
+            custom,
+            rep_vars.into_mapped(|_, rep_var| this_solutions[to_unified[rep_var]]),
+            Box::new(extract_condition(to_unified, this_solutions, *content_cond)),
+        ),
+
+        unif::Condition::BoolConst(val) => unif::Condition::BoolConst(val),
+        unif::Condition::ByteConst(val) => unif::Condition::ByteConst(val),
+        unif::Condition::IntConst(val) => unif::Condition::IntConst(val),
+        unif::Condition::FloatConst(val) => unif::Condition::FloatConst(val),
+    }
+}
+
 // TODO: This type signature needs to not be like this.
 fn extract_expr(
     to_unified: &IdVec<SolverVarId, UnifiedVarId>,
@@ -945,7 +1054,7 @@ fn extract_expr(
                 .into_iter()
                 .map(|(cond, body)| {
                     (
-                        cond,
+                        extract_condition(to_unified, this_solutions, cond),
                         extract_expr(to_unified, this_solutions, scc_sigs, body),
                     )
                 })

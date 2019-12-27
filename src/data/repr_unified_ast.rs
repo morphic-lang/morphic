@@ -80,7 +80,7 @@ pub enum Expr<Call, Rep> {
     Call(Call),
     Branch(
         flat::LocalId,
-        Vec<(flat::Condition, Expr<Call, Rep>)>,
+        Vec<(Condition<Rep>, Expr<Call, Rep>)>,
         Type<Rep>,
     ),
     LetMany(
@@ -116,6 +116,22 @@ pub enum Expr<Call, Rep> {
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
+}
+
+#[derive(Clone, Debug)]
+pub enum Condition<Rep> {
+    Any,
+    Tuple(Vec<Condition<Rep>>),
+    Variant(first_ord::VariantId, Box<Condition<Rep>>),
+    Custom(
+        first_ord::CustomTypeId,
+        IdVec<RepParamId, Rep>,
+        Box<Condition<Rep>>,
+    ),
+    BoolConst(bool),
+    ByteConst(u8),
+    IntConst(i64),
+    FloatConst(f64),
 }
 
 #[derive(Clone, Debug)]
