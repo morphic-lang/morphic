@@ -8,7 +8,7 @@ use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::purity::Purity;
 use crate::data::repr_unified_ast as unif;
-use crate::util::graph::{strongly_connected, Graph, Scc};
+use crate::util::graph::{connected_components, strongly_connected, Graph, Scc, Undirected};
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
@@ -736,6 +736,350 @@ fn instantiate_expr(
     }
 }
 
+id_type!(UnifiedVarId);
+
+// Partitions the set of unified solver variables into 'internal variables' and 'parameters' on a
+// per-function basis, where the 'parameters' correspond to exactly those variables which appear in
+// the function's signature, and all other variables are considered 'internal'.
+struct FuncVarPartition {
+    solutions: IdVec<UnifiedVarId, unif::RepSolution>,
+    params: IdVec<unif::RepParamId, UnifiedVarId>,
+}
+
+fn get_param(
+    to_params: &mut BTreeMap<UnifiedVarId, unif::RepParamId>,
+    unified: UnifiedVarId,
+) -> unif::RepParamId {
+    if let Some(param) = to_params.get(&unified) {
+        *param
+    } else {
+        let new_param = unif::RepParamId(to_params.len());
+        to_params.insert(unified, new_param);
+        new_param
+    }
+}
+
+fn extract_sig_type(
+    to_unified: &IdVec<SolverVarId, UnifiedVarId>,
+    to_params: &mut BTreeMap<UnifiedVarId, unif::RepParamId>,
+    type_: &SolverType,
+) -> unif::Type<unif::RepParamId> {
+    match type_ {
+        unif::Type::Bool => unif::Type::Bool,
+        unif::Type::Num(num_type) => unif::Type::Num(*num_type),
+
+        unif::Type::Array(rep_var, item_type) => {
+            let rep_param = get_param(to_params, to_unified[rep_var]);
+            let item_type_extracted = extract_sig_type(to_unified, to_params, item_type);
+            unif::Type::Array(rep_param, Box::new(item_type_extracted))
+        }
+
+        unif::Type::HoleArray(rep_var, item_type) => {
+            let rep_param = get_param(to_params, to_unified[rep_var]);
+            let item_type_extracted = extract_sig_type(to_unified, to_params, item_type);
+            unif::Type::HoleArray(rep_param, Box::new(item_type_extracted))
+        }
+
+        unif::Type::Tuple(items) => unif::Type::Tuple(
+            items
+                .iter()
+                .map(|item| extract_sig_type(to_unified, to_params, item))
+                .collect(),
+        ),
+
+        unif::Type::Variants(variants) => unif::Type::Variants(
+            variants.map(|_, variant| extract_sig_type(to_unified, to_params, variant)),
+        ),
+
+        unif::Type::Custom(custom, args) => {
+            let arg_params = args.map(|_, arg_var| get_param(to_params, to_unified[arg_var]));
+            unif::Type::Custom(*custom, arg_params)
+        }
+    }
+}
+
+fn partition_vars_for_sig(
+    num_unified: usize,
+    to_unified: &IdVec<SolverVarId, UnifiedVarId>,
+    arg_type: &SolverType,
+    ret_type: &SolverType,
+) -> (
+    unif::Type<unif::RepParamId>, // extracted arg type
+    unif::Type<unif::RepParamId>, // extracted ret type
+    FuncVarPartition,
+) {
+    let mut to_params = BTreeMap::new();
+
+    let arg_extracted = extract_sig_type(to_unified, &mut to_params, arg_type);
+    let ret_extracted = extract_sig_type(to_unified, &mut to_params, ret_type);
+
+    let params = {
+        let mut params = IdVec::from_items(vec![None; to_params.len()]);
+        for (unified, &param) in &to_params {
+            debug_assert!(params[param].is_none());
+            params[param] = Some(*unified);
+        }
+        params.into_mapped(|_, unified| unified.unwrap())
+    };
+
+    let mut internal_var_gen = IdGen::<unif::InternalRepVarId>::new();
+
+    let solutions = IdVec::from_items(
+        (0..num_unified)
+            .map(UnifiedVarId)
+            .map(|unified| {
+                if let Some(param) = to_params.get(&unified) {
+                    unif::RepSolution::Param(*param)
+                } else {
+                    unif::RepSolution::Internal(internal_var_gen.fresh())
+                }
+            })
+            .collect(),
+    );
+
+    (
+        arg_extracted,
+        ret_extracted,
+        FuncVarPartition { solutions, params },
+    )
+}
+
+fn extract_type(
+    to_unified: &IdVec<SolverVarId, UnifiedVarId>,
+    this_solutions: &IdVec<UnifiedVarId, unif::RepSolution>,
+    type_: SolverType,
+) -> unif::Type<unif::RepSolution> {
+    match type_ {
+        unif::Type::Bool => unif::Type::Bool,
+        unif::Type::Num(num_type) => unif::Type::Num(num_type),
+
+        unif::Type::Array(rep_var, item_type) => unif::Type::Array(
+            this_solutions[to_unified[rep_var]],
+            Box::new(extract_type(to_unified, this_solutions, *item_type)),
+        ),
+
+        unif::Type::HoleArray(rep_var, item_type) => unif::Type::HoleArray(
+            this_solutions[to_unified[rep_var]],
+            Box::new(extract_type(to_unified, this_solutions, *item_type)),
+        ),
+
+        unif::Type::Tuple(items) => unif::Type::Tuple(
+            items
+                .into_iter()
+                .map(|item| extract_type(to_unified, this_solutions, item))
+                .collect(),
+        ),
+
+        unif::Type::Variants(variants) => unif::Type::Variants(
+            variants.into_mapped(|_, variant| extract_type(to_unified, this_solutions, variant)),
+        ),
+
+        unif::Type::Custom(custom, arg_vars) => unif::Type::Custom(
+            custom,
+            arg_vars.into_mapped(|_, arg_var| this_solutions[to_unified[arg_var]]),
+        ),
+    }
+}
+
+// TODO: This type signature needs to not be like this.
+fn extract_expr(
+    to_unified: &IdVec<SolverVarId, UnifiedVarId>,
+    this_solutions: &IdVec<UnifiedVarId, unif::RepSolution>,
+    scc_sigs: &BTreeMap<
+        first_ord::CustomFuncId,
+        (
+            unif::Type<unif::RepParamId>,
+            unif::Type<unif::RepParamId>,
+            FuncVarPartition,
+        ),
+    >,
+    expr: SolverExpr,
+) -> unif::Expr<unif::SolvedCall<unif::RepSolution>, unif::RepSolution> {
+    match expr {
+        unif::Expr::Local(local) => unif::Expr::Local(local),
+
+        unif::Expr::Call(SolverCall::KnownCall(unif::SolvedCall(
+            purity,
+            func,
+            rep_args,
+            arg_aliases,
+            arg_folded_aliases,
+            arg_statuses,
+            arg,
+        ))) => unif::Expr::Call(unif::SolvedCall(
+            purity,
+            func,
+            rep_args.map(|_, arg| this_solutions[to_unified[arg]]),
+            arg_aliases,
+            arg_folded_aliases,
+            arg_statuses,
+            arg,
+        )),
+
+        unif::Expr::Call(SolverCall::PendingCall(
+            purity,
+            func,
+            arg_aliases,
+            arg_folded_aliases,
+            arg_statuses,
+            arg,
+        )) => {
+            let (_, _, func_partition) = &scc_sigs[&func];
+
+            unif::Expr::Call(unif::SolvedCall(
+                purity,
+                func,
+                func_partition
+                    .params
+                    .map(|_, unified| this_solutions[unified]),
+                arg_aliases,
+                arg_folded_aliases,
+                arg_statuses,
+                arg,
+            ))
+        }
+
+        unif::Expr::Branch(discrim, cases, result_type) => {
+            let cases_extracted = cases
+                .into_iter()
+                .map(|(cond, body)| {
+                    (
+                        cond,
+                        extract_expr(to_unified, this_solutions, scc_sigs, body),
+                    )
+                })
+                .collect();
+
+            let result_type_extracted = extract_type(to_unified, this_solutions, result_type);
+
+            unif::Expr::Branch(discrim, cases_extracted, result_type_extracted)
+        }
+
+        unif::Expr::LetMany(bindings, final_local) => {
+            let bindings_extracted = bindings
+                .into_iter()
+                .map(|(type_, binding)| {
+                    (
+                        extract_type(to_unified, this_solutions, type_),
+                        extract_expr(to_unified, this_solutions, scc_sigs, binding),
+                    )
+                })
+                .collect();
+
+            unif::Expr::LetMany(bindings_extracted, final_local)
+        }
+
+        unif::Expr::Tuple(items) => unif::Expr::Tuple(items),
+
+        unif::Expr::TupleField(tuple, idx) => unif::Expr::TupleField(tuple, idx),
+
+        unif::Expr::WrapVariant(variants, variant, content) => {
+            let variants_extracted = variants.into_mapped(|_, variant_type| {
+                extract_type(to_unified, this_solutions, variant_type)
+            });
+
+            unif::Expr::WrapVariant(variants_extracted, variant, content)
+        }
+
+        unif::Expr::UnwrapVariant(variant, wrapped) => unif::Expr::UnwrapVariant(variant, wrapped),
+
+        unif::Expr::WrapCustom(custom, rep_args, content) => {
+            let rep_args_extracted =
+                rep_args.into_mapped(|_, arg_var| this_solutions[to_unified[arg_var]]);
+
+            unif::Expr::WrapCustom(custom, rep_args_extracted, content)
+        }
+
+        unif::Expr::UnwrapCustom(custom, rep_args, wrapped) => {
+            let rep_args_extracted =
+                rep_args.into_mapped(|_, arg_var| this_solutions[to_unified[arg_var]]);
+
+            unif::Expr::UnwrapCustom(custom, rep_args_extracted, wrapped)
+        }
+
+        unif::Expr::ArithOp(op) => unif::Expr::ArithOp(op),
+
+        unif::Expr::ArrayOp(unif::ArrayOp::Item(
+            rep_var,
+            item_type,
+            array_status,
+            array,
+            index,
+        )) => unif::Expr::ArrayOp(unif::ArrayOp::Item(
+            this_solutions[to_unified[rep_var]],
+            extract_type(to_unified, this_solutions, item_type),
+            array_status,
+            array,
+            index,
+        )),
+
+        unif::Expr::ArrayOp(unif::ArrayOp::Len(rep_var, item_type, array_status, array)) => {
+            unif::Expr::ArrayOp(unif::ArrayOp::Len(
+                this_solutions[to_unified[rep_var]],
+                extract_type(to_unified, this_solutions, item_type),
+                array_status,
+                array,
+            ))
+        }
+
+        unif::Expr::ArrayOp(unif::ArrayOp::Push(rep_var, item_type, array_status, array, item)) => {
+            unif::Expr::ArrayOp(unif::ArrayOp::Push(
+                this_solutions[to_unified[rep_var]],
+                extract_type(to_unified, this_solutions, item_type),
+                array_status,
+                array,
+                item,
+            ))
+        }
+
+        unif::Expr::ArrayOp(unif::ArrayOp::Pop(rep_var, item_type, array_status, array)) => {
+            unif::Expr::ArrayOp(unif::ArrayOp::Pop(
+                this_solutions[to_unified[rep_var]],
+                extract_type(to_unified, this_solutions, item_type),
+                array_status,
+                array,
+            ))
+        }
+
+        unif::Expr::ArrayOp(unif::ArrayOp::Replace(
+            rep_var,
+            item_type,
+            array_status,
+            hole_array,
+            item,
+        )) => unif::Expr::ArrayOp(unif::ArrayOp::Replace(
+            this_solutions[to_unified[rep_var]],
+            extract_type(to_unified, this_solutions, item_type),
+            array_status,
+            hole_array,
+            item,
+        )),
+
+        unif::Expr::IOOp(unif::IOOp::Input(rep_var)) => {
+            unif::Expr::IOOp(unif::IOOp::Input(this_solutions[to_unified[rep_var]]))
+        }
+
+        unif::Expr::IOOp(unif::IOOp::Output(rep_var, array_status, byte_array)) => {
+            unif::Expr::IOOp(unif::IOOp::Output(
+                this_solutions[to_unified[rep_var]],
+                array_status,
+                byte_array,
+            ))
+        }
+
+        unif::Expr::ArrayLit(rep_var, item_type, items) => unif::Expr::ArrayLit(
+            this_solutions[to_unified[rep_var]],
+            extract_type(to_unified, this_solutions, item_type),
+            items,
+        ),
+
+        unif::Expr::BoolLit(val) => unif::Expr::BoolLit(val),
+        unif::Expr::ByteLit(val) => unif::Expr::ByteLit(val),
+        unif::Expr::IntLit(val) => unif::Expr::IntLit(val),
+        unif::Expr::FloatLit(val) => unif::Expr::FloatLit(val),
+    }
+}
+
 #[allow(unused_variables)]
 fn unify_func_scc(
     typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
@@ -790,7 +1134,94 @@ fn unify_func_scc(
         })
         .collect::<Vec<_>>();
 
-    unimplemented!()
+    // TODO: This doesn't quite fit the structure of the utilities offer in utils::constraint_graph,
+    // but it comes very close.  Can we factor this out into a reusable abstraction?
+    let unified_vars: IdVec<UnifiedVarId, _> = IdVec::from_items(connected_components(
+        &Undirected::from_directed_unchecked(Graph {
+            edges_out: graph
+                .var_equalities
+                .map(|_, equalities| equalities.iter().cloned().collect()),
+        }),
+    ));
+
+    let to_unified: IdVec<SolverVarId, _> = {
+        let mut to_unified = IdVec::from_items(vec![None; graph.var_equalities.len()]);
+
+        for (unified, solver_vars) in &unified_vars {
+            for solver_var in solver_vars {
+                debug_assert!(to_unified[solver_var].is_none());
+                to_unified[solver_var] = Some(unified);
+            }
+        }
+
+        to_unified.into_mapped(|_, unified| unified.unwrap())
+    };
+
+    let solved_sigs = sigs_pending
+        .iter()
+        .map(|(func, pending_sig)| {
+            (
+                *func,
+                partition_vars_for_sig(
+                    unified_vars.len(),
+                    &to_unified,
+                    &pending_sig.arg,
+                    &pending_sig.ret,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let solved_bodies = funcs_inst
+        .into_iter()
+        .map(|(func, body_inst)| {
+            let (_, _, func_partition) = &solved_sigs[&func];
+
+            (
+                func,
+                extract_expr(
+                    &to_unified,
+                    &func_partition.solutions,
+                    &solved_sigs,
+                    body_inst,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    // Collect everything together into a single BTreeMap
+
+    let mut solved_funcs = BTreeMap::new();
+
+    let mut remaining_solved_sigs = solved_sigs;
+    let mut remaining_solved_bodies = solved_bodies;
+
+    for func in scc {
+        let (arg_type, ret_type, partition) = remaining_solved_sigs
+            .remove(func)
+            .expect("func should be present in remaining_solved_sigs");
+
+        let body = remaining_solved_bodies
+            .remove(func)
+            .expect("func should be present in remaining_solved_bodies");
+
+        let orig_def = &orig_funcs[func];
+
+        let solved_def = unif::FuncDef {
+            purity: orig_def.purity,
+            num_params: partition.params.len(),
+            // This includes 'internal' variables which do not actually appear in this function,
+            // and only appear inside other functions in the same SCC.
+            num_internal_vars: unified_vars.len() - partition.params.len(),
+            arg_type,
+            ret_type,
+            body,
+        };
+
+        solved_funcs.insert(*func, solved_def);
+    }
+
+    solved_funcs
 }
 
 pub fn unify_reprs(program: mutation::Program) -> unif::Program {
