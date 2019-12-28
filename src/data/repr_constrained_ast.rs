@@ -10,7 +10,7 @@ pub enum RepChoice {
     FallbackImmut,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ParamConstraints {
     pub fallback_immut_if: Disj<mutation::MutationCondition>,
 }
