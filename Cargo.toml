@@ -10,7 +10,6 @@ lalrpop = "0.16.2"
 
 [dependencies]
 lalrpop-util = "0.16.2"
-regex = "1.1.0"
 pretty = "0.5.2"
 failure = "0.1.5"
 im-rc = "12.3.3"
@@ -18,6 +17,7 @@ itertools = "0.8.0"
 lazy_static = "1.3.0"
 stacker = "0.1.5"
 better-panic = "0.2.0"
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "llvm8-0" }
 
 # RNG used for procedurally (but deterministically) generating test inputs
 rand = "0.6.5"
