@@ -57,6 +57,8 @@ mod lower_reprs;
 
 mod interpreter;
 
+mod llvm;
+
 #[cfg(test)]
 mod test;
 
