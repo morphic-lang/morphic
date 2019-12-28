@@ -74,7 +74,43 @@ fn constrain_expr(
             // analysis, and we can optimistically assume that the callee imposes no constraints.
         }
 
-        _ => unimplemented!(),
+        unif::Expr::Branch(_discrim, cases, _result_type) => {
+            for (_cond, body) in cases {
+                constrain_expr(sigs, params, internal, body);
+            }
+        }
+
+        unif::Expr::LetMany(bindings, _final_local) => {
+            for (_type, binding) in bindings {
+                constrain_expr(sigs, params, internal, binding);
+            }
+        }
+
+        unif::Expr::ArrayOp(unif::ArrayOp::Item(rep_var, _, status, _, _))
+        | unif::Expr::ArrayOp(unif::ArrayOp::Len(rep_var, _, status, _))
+        | unif::Expr::ArrayOp(unif::ArrayOp::Push(rep_var, _, status, _, _))
+        | unif::Expr::ArrayOp(unif::ArrayOp::Pop(rep_var, _, status, _))
+        | unif::Expr::ArrayOp(unif::ArrayOp::Replace(rep_var, _, status, _, _))
+        | unif::Expr::IOOp(unif::IOOp::Output(rep_var, status, _)) => {
+            constrain_var(params, internal, *rep_var, status.mutated_cond.clone())
+        }
+
+        // Explicitly discard additional cases to trigger exhaustivity check if more cases are added
+        // in the future.
+        unif::Expr::Local(_)
+        | unif::Expr::Tuple(_)
+        | unif::Expr::TupleField(_, _)
+        | unif::Expr::WrapVariant(_, _, _)
+        | unif::Expr::UnwrapVariant(_, _)
+        | unif::Expr::WrapCustom(_, _, _)
+        | unif::Expr::UnwrapCustom(_, _, _)
+        | unif::Expr::ArithOp(_)
+        | unif::Expr::IOOp(unif::IOOp::Input(_))
+        | unif::Expr::ArrayLit(_, _, _)
+        | unif::Expr::BoolLit(_)
+        | unif::Expr::ByteLit(_)
+        | unif::Expr::IntLit(_)
+        | unif::Expr::FloatLit(_) => {}
     }
 }
 

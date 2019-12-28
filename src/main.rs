@@ -207,6 +207,11 @@ fn run<R: io::BufRead, W: io::Write>(
     println!("Representation-unified program: {:#?}", repr_unified);
     println!("(end repr-unified program)");
 
+    let rep_constrained = constrain_reprs::constrain_reprs(repr_unified);
+
+    println!("Representation-constrained program: {:#?}", rep_constrained);
+    println!("(end repr-constrained program)");
+
     let unique_infos = annot_aliases::annot_aliases(&first_order);
 
     let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);
