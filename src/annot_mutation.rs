@@ -5,10 +5,9 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as annot;
-use crate::field_path::{
-    get_names_in, split_at_fold, translate_callee_cond, translate_callee_cond_disj,
-};
+use crate::field_path::{get_names_in, split_at_fold, translate_callee_cond_disj};
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
+use crate::mutation_status::translate_callee_status_cond_disj;
 use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
 
@@ -69,25 +68,6 @@ fn empty_statuses(
             )
         })
         .collect()
-}
-
-fn translate_callee_status_cond(
-    arg_id: flat::LocalId,
-    arg_aliases: &OrdMap<alias::FieldPath, alias::LocalAliases>,
-    arg_folded_aliases: &OrdMap<alias::FieldPath, alias::FoldedAliases>,
-    arg_statuses: &OrdMap<alias::FieldPath, annot::LocalStatus>,
-    callee_cond: &annot::MutationCondition,
-) -> Disj<annot::MutationCondition> {
-    match callee_cond {
-        annot::MutationCondition::AliasCondition(alias_cond) => {
-            translate_callee_cond(arg_id, arg_aliases, arg_folded_aliases, alias_cond)
-                .into_mapped(annot::MutationCondition::AliasCondition)
-        }
-
-        annot::MutationCondition::ArgMutated(alias::ArgName(arg_path)) => {
-            arg_statuses[arg_path].mutated_cond.clone()
-        }
-    }
 }
 
 fn array_extraction_statuses(
@@ -252,16 +232,12 @@ fn annot_expr(
                             (
                                 ret_path.clone(),
                                 annot::LocalStatus {
-                                    mutated_cond: callee_status.mutated_cond.flat_map(
-                                        |callee_cond| {
-                                            translate_callee_status_cond(
-                                                *arg,
-                                                arg_aliases,
-                                                arg_folded_aliases,
-                                                &arg_info.statuses,
-                                                callee_cond,
-                                            )
-                                        },
+                                    mutated_cond: translate_callee_status_cond_disj(
+                                        *arg,
+                                        arg_aliases,
+                                        arg_folded_aliases,
+                                        &arg_info.statuses,
+                                        &callee_status.mutated_cond,
                                     ),
                                 },
                             )

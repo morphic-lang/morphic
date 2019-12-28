@@ -38,8 +38,10 @@ mod split_custom_types;
 
 mod flatten;
 
+// Abstract interpretation utilities
 mod field_path;
 mod fixed_point;
+mod mutation_status;
 
 mod annot_aliases_alt;
 

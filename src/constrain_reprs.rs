@@ -1,7 +1,10 @@
 use crate::data::first_order_ast as first_ord;
+use crate::data::mutation_annot_ast as mutation;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_unified_ast as unif;
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
+use crate::mutation_status::translate_callee_status_cond_disj;
+use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
 
 impl Signature for constrain::FuncRepConstraints {
@@ -12,12 +15,96 @@ impl Signature for constrain::FuncRepConstraints {
     }
 }
 
-#[allow(unused_variables)]
+fn constrain_var(
+    params: &mut IdVec<unif::RepParamId, constrain::ParamConstraints>,
+    internal: &mut IdVec<unif::InternalRepVarId, constrain::RepChoice>,
+    rep_var: unif::RepSolution,
+    fallback_cond: Disj<mutation::MutationCondition>,
+) {
+    match rep_var {
+        unif::RepSolution::Internal(var) => match fallback_cond {
+            Disj::True => internal[var] = constrain::RepChoice::FallbackImmut,
+
+            Disj::Any(clauses) => {
+                assert!(
+                    clauses.is_empty(),
+                    "Internal representation variables should not be constrained by symbolic \
+                     aliasing/mutation conditions from the caller.  Any variable constrained by a \
+                     symbolic condition should have unified with an external representation \
+                     parameter at some point."
+                );
+            }
+        },
+
+        unif::RepSolution::Param(param) => params[param].fallback_immut_if.or_mut(fallback_cond),
+    }
+}
+
+fn constrain_expr(
+    sigs: &SignatureAssumptions<first_ord::CustomFuncId, constrain::FuncRepConstraints>,
+    params: &mut IdVec<unif::RepParamId, constrain::ParamConstraints>,
+    internal: &mut IdVec<unif::InternalRepVarId, constrain::RepChoice>,
+    expr: &unif::Expr<unif::SolvedCall<unif::RepSolution>, unif::RepSolution>,
+) {
+    match expr {
+        unif::Expr::Call(unif::SolvedCall(
+            _purity,
+            func,
+            rep_vars,
+            arg_aliases,
+            arg_folded_aliases,
+            arg_statuses,
+            arg,
+        )) => {
+            if let Some(callee_sig) = sigs.sig_of(func) {
+                for (callee_param, callee_constraint) in callee_sig {
+                    let caller_rep_var = rep_vars[callee_param];
+                    let caller_cond = translate_callee_status_cond_disj(
+                        *arg,
+                        arg_aliases,
+                        arg_folded_aliases,
+                        arg_statuses,
+                        &callee_constraint.fallback_immut_if,
+                    );
+
+                    constrain_var(params, internal, caller_rep_var, caller_cond);
+                }
+            }
+            // If `sigs.sig_of(func)` is `None` then we are on the first iteration of fixed-point
+            // analysis, and we can optimistically assume that the callee imposes no constraints.
+        }
+
+        _ => unimplemented!(),
+    }
+}
+
 fn constrain_func(
     sigs: &SignatureAssumptions<first_ord::CustomFuncId, constrain::FuncRepConstraints>,
     func_def: &unif::FuncDef,
 ) -> constrain::FuncRepConstraints {
-    unimplemented!()
+    let mut param_constraints = IdVec::from_items(vec![
+        constrain::ParamConstraints {
+            fallback_immut_if: Disj::new()
+        };
+        func_def.num_params
+    ]);
+
+    let mut internal_vars = IdVec::from_items(vec![
+        constrain::RepChoice::OptimizedMut;
+        func_def.num_internal_vars
+    ]);
+
+    constrain_expr(
+        sigs,
+        &mut param_constraints,
+        &mut internal_vars,
+        &func_def.body,
+    );
+
+    constrain::FuncRepConstraints {
+        param_constraints,
+        internal_vars,
+    }
 }
 
 pub fn constrain_reprs(program: unif::Program) -> constrain::Program {
