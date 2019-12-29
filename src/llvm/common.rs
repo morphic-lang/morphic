@@ -1,18 +1,41 @@
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicTypeEnum, IntType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::AddressSpace;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LibC<'a> {
+    pub exit: FunctionValue<'a>,
     pub memcpy: FunctionValue<'a>,
 }
 
+// TODO: this isn't portable
 impl<'a> LibC<'a> {
-    pub fn new(context: &'a Context) -> Self {
-        // TODO: initialize libc
-        unimplemented!();
+    pub fn declare(context: &'a Context, module: &'a Module<'a>) -> Self {
+        let void_type = context.void_type();
+        let i64_type = context.i64_type();
+        let i32_type = context.i32_type();
+        let i8_ptr_type = context.i8_type().ptr_type(AddressSpace::Generic);
+
+        let exit = module.add_function(
+            "exit",
+            void_type.fn_type(&[i32_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        let memcpy = module.add_function(
+            "memcpy",
+            void_type.fn_type(
+                &[i8_ptr_type.into(), i8_ptr_type.into(), i64_type.into()],
+                false,
+            ),
+            Some(Linkage::External),
+        );
+
+        Self { exit, memcpy }
     }
 }
 

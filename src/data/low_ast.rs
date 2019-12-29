@@ -31,6 +31,8 @@ pub enum ArithOp {
 // Mutable operations on persistent arrays with refcount 1 should mutate
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
+    New(),
+
     // Returns tuple of (item, hole array)
     // Argument is borrowed; Return is owned
     Item(
@@ -115,7 +117,6 @@ pub enum Expr {
     ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
     IoOp(IoOp),
 
-    ArrayLit(Type, Vec<LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
