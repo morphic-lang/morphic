@@ -14,7 +14,7 @@ pub struct LibC<'a> {
 
 // TODO: this isn't portable
 impl<'a> LibC<'a> {
-    pub fn declare(context: &'a Context, module: &'a Module<'a>) -> Self {
+    pub fn declare(context: &'a Context, module: &Module<'a>) -> Self {
         let void_type = context.void_type();
         let i64_type = context.i64_type();
         let i32_type = context.i32_type();
@@ -61,6 +61,8 @@ pub(super) fn if_<'a>(
     let if_tail = context.append_basic_block(f, "if_tail");
     builder.build_conditional_branch(cond, &if_body, &if_tail);
     builder.position_at_end(&if_body);
+    let br_tail = builder.build_unconditional_branch(&if_tail);
+    builder.position_before(&br_tail);
     if_tail
 }
 
