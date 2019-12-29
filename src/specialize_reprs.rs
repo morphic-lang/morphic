@@ -1,4 +1,6 @@
 use crate::data::first_order_ast as first_ord;
+use crate::data::flat_ast as flat;
+use crate::data::mutation_annot_ast as mutation;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast_alt as special;
 use crate::data::repr_unified_ast as unif;
@@ -220,8 +222,20 @@ fn resolve_expr(
 
         &unif::Expr::ArithOp(op) => special::Expr::ArithOp(op),
 
-        unif::Expr::ArrayOp(_, _, _, _) => unimplemented!(),
-        unif::Expr::IOOp(_, _) => unimplemented!(),
+        unif::Expr::ArrayOp(rep_var, item_type, _array_status, op) => special::Expr::ArrayOp(
+            resolve_solution(params, internal, *rep_var),
+            resolve_body_type(type_insts, params, internal, item_type),
+            *op,
+        ),
+
+        unif::Expr::IOOp(rep_var, op) => {
+            let resolved_var = resolve_solution(params, internal, *rep_var);
+            let resolved_op = match op {
+                mutation::IOOp::Input => flat::IOOp::Input,
+                mutation::IOOp::Output(_, array) => flat::IOOp::Output(*array),
+            };
+            special::Expr::IoOp(resolved_var, resolved_op)
+        }
 
         unif::Expr::ArrayLit(rep_var, item_type, items) => special::Expr::ArrayLit(
             resolve_solution(params, internal, *rep_var),

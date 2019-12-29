@@ -2,6 +2,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
 use crate::data::repr_constrained_ast as constrain;
+use crate::data::repr_unified_ast as unif;
 use crate::util::id_vec::IdVec;
 
 id_type!(pub CustomTypeId);
@@ -17,31 +18,6 @@ pub enum Type {
     Tuple(Vec<Type>),
     Variants(IdVec<first_ord::VariantId, Type>),
     Custom(CustomTypeId),
-}
-
-#[derive(Clone, Debug)]
-pub enum ArrayOp {
-    // Returns tuple of (item, hole array)
-    Item(
-        flat::LocalId, // Array
-        flat::LocalId, // Index
-    ),
-
-    Len(flat::LocalId),
-
-    Push(
-        flat::LocalId, // Array
-        flat::LocalId, // Item
-    ),
-
-    // Returns tuple of (array, item)
-    Pop(constrain::RepChoice, flat::LocalId),
-
-    // Returns new array
-    Replace(
-        flat::LocalId, // Hole array
-        flat::LocalId, // Item
-    ),
 }
 
 #[derive(Clone, Debug)]
@@ -72,9 +48,10 @@ pub enum Expr {
     ArrayOp(
         constrain::RepChoice,
         Type, // Item type
-        ArrayOp,
+        unif::ArrayOp,
     ),
-    IoOp(constrain::RepChoice, IoOp),
+    // TODO: Rename IOOp to IoOp!
+    IoOp(constrain::RepChoice, flat::IOOp),
 
     ArrayLit(constrain::RepChoice, Type, Vec<flat::LocalId>),
     BoolLit(bool),

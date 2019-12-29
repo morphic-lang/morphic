@@ -27,7 +27,7 @@ pub enum Type<Rep> {
     Custom(first_ord::CustomTypeId, IdVec<RepParamId, Rep>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ArrayOp {
     Item(
         flat::LocalId, // Array
