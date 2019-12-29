@@ -86,12 +86,8 @@ fn constrain_expr(
             }
         }
 
-        unif::Expr::ArrayOp(unif::ArrayOp::Item(rep_var, _, status, _, _))
-        | unif::Expr::ArrayOp(unif::ArrayOp::Len(rep_var, _, status, _))
-        | unif::Expr::ArrayOp(unif::ArrayOp::Push(rep_var, _, status, _, _))
-        | unif::Expr::ArrayOp(unif::ArrayOp::Pop(rep_var, _, status, _))
-        | unif::Expr::ArrayOp(unif::ArrayOp::Replace(rep_var, _, status, _, _))
-        | unif::Expr::IOOp(unif::IOOp::Output(rep_var, status, _)) => {
+        unif::Expr::ArrayOp(rep_var, _, status, _)
+        | unif::Expr::IOOp(rep_var, mutation::IOOp::Output(status, _)) => {
             constrain_var(params, internal, *rep_var, status.mutated_cond.clone())
         }
 
@@ -105,7 +101,7 @@ fn constrain_expr(
         | unif::Expr::WrapCustom(_, _, _)
         | unif::Expr::UnwrapCustom(_, _, _)
         | unif::Expr::ArithOp(_)
-        | unif::Expr::IOOp(unif::IOOp::Input(_))
+        | unif::Expr::IOOp(_, mutation::IOOp::Input)
         | unif::Expr::ArrayLit(_, _, _)
         | unif::Expr::BoolLit(_)
         | unif::Expr::ByteLit(_)

@@ -638,13 +638,12 @@ fn instantiate_expr(
                 };
 
             (
-                unif::Expr::ArrayOp(unif::ArrayOp::Item(
+                unif::Expr::ArrayOp(
                     rep_var,
                     item_type_inst.clone(),
                     array_status.clone(),
-                    *array,
-                    *index,
-                )),
+                    unif::ArrayOp::Item(*array, *index),
+                ),
                 unif::Type::Tuple(vec![
                     item_type_inst.clone(),
                     unif::Type::HoleArray(rep_var, Box::new(item_type_inst.clone())),
@@ -661,12 +660,12 @@ fn instantiate_expr(
                 };
 
             (
-                unif::Expr::ArrayOp(unif::ArrayOp::Len(
+                unif::Expr::ArrayOp(
                     rep_var,
                     item_type_inst.clone(),
                     array_status.clone(),
-                    *array,
-                )),
+                    unif::ArrayOp::Len(*array),
+                ),
                 unif::Type::Num(first_ord::NumType::Int),
             )
         }
@@ -684,13 +683,12 @@ fn instantiate_expr(
             equate_types(graph, array_item_type, item_type);
 
             (
-                unif::Expr::ArrayOp(unif::ArrayOp::Push(
+                unif::Expr::ArrayOp(
                     rep_var,
                     array_item_type.clone(),
                     array_status.clone(),
-                    *array,
-                    *item,
-                )),
+                    unif::ArrayOp::Push(*array, *item),
+                ),
                 unif::Type::Array(rep_var, Box::new(array_item_type.clone())),
             )
         }
@@ -704,12 +702,12 @@ fn instantiate_expr(
                 };
 
             (
-                unif::Expr::ArrayOp(unif::ArrayOp::Pop(
+                unif::Expr::ArrayOp(
                     rep_var,
                     item_type_inst.clone(),
                     array_status.clone(),
-                    *array,
-                )),
+                    unif::ArrayOp::Pop(*array),
+                ),
                 unif::Type::Tuple(vec![
                     unif::Type::Array(rep_var, Box::new(item_type_inst.clone())),
                     item_type_inst.clone(),
@@ -737,13 +735,12 @@ fn instantiate_expr(
             equate_types(graph, array_item_type, item_type);
 
             (
-                unif::Expr::ArrayOp(unif::ArrayOp::Replace(
+                unif::Expr::ArrayOp(
                     rep_var,
                     array_item_type.clone(),
                     hole_array_status.clone(),
-                    *hole_array,
-                    *item,
-                )),
+                    unif::ArrayOp::Replace(*hole_array, *item),
+                ),
                 unif::Type::Array(rep_var, Box::new(array_item_type.clone())),
             )
         }
@@ -752,7 +749,7 @@ fn instantiate_expr(
             let rep_var = graph.new_var();
 
             (
-                unif::Expr::IOOp(unif::IOOp::Input(rep_var)),
+                unif::Expr::IOOp(rep_var, mutation::IOOp::Input),
                 unif::Type::Array(rep_var, Box::new(unif::Type::Num(first_ord::NumType::Byte))),
             )
         }
@@ -770,11 +767,10 @@ fn instantiate_expr(
                 };
 
             (
-                unif::Expr::IOOp(unif::IOOp::Output(
+                unif::Expr::IOOp(
                     rep_var,
-                    array_status.clone(),
-                    *byte_array,
-                )),
+                    mutation::IOOp::Output(array_status.clone(), *byte_array),
+                ),
                 unif::Type::Tuple(Vec::new()),
             )
         }
@@ -1109,73 +1105,14 @@ fn extract_expr(
 
         unif::Expr::ArithOp(op) => unif::Expr::ArithOp(op),
 
-        unif::Expr::ArrayOp(unif::ArrayOp::Item(
-            rep_var,
-            item_type,
-            array_status,
-            array,
-            index,
-        )) => unif::Expr::ArrayOp(unif::ArrayOp::Item(
+        unif::Expr::ArrayOp(rep_var, item_type, array_status, op) => unif::Expr::ArrayOp(
             this_solutions[to_unified[rep_var]],
             extract_type(to_unified, this_solutions, item_type),
             array_status,
-            array,
-            index,
-        )),
+            op,
+        ),
 
-        unif::Expr::ArrayOp(unif::ArrayOp::Len(rep_var, item_type, array_status, array)) => {
-            unif::Expr::ArrayOp(unif::ArrayOp::Len(
-                this_solutions[to_unified[rep_var]],
-                extract_type(to_unified, this_solutions, item_type),
-                array_status,
-                array,
-            ))
-        }
-
-        unif::Expr::ArrayOp(unif::ArrayOp::Push(rep_var, item_type, array_status, array, item)) => {
-            unif::Expr::ArrayOp(unif::ArrayOp::Push(
-                this_solutions[to_unified[rep_var]],
-                extract_type(to_unified, this_solutions, item_type),
-                array_status,
-                array,
-                item,
-            ))
-        }
-
-        unif::Expr::ArrayOp(unif::ArrayOp::Pop(rep_var, item_type, array_status, array)) => {
-            unif::Expr::ArrayOp(unif::ArrayOp::Pop(
-                this_solutions[to_unified[rep_var]],
-                extract_type(to_unified, this_solutions, item_type),
-                array_status,
-                array,
-            ))
-        }
-
-        unif::Expr::ArrayOp(unif::ArrayOp::Replace(
-            rep_var,
-            item_type,
-            array_status,
-            hole_array,
-            item,
-        )) => unif::Expr::ArrayOp(unif::ArrayOp::Replace(
-            this_solutions[to_unified[rep_var]],
-            extract_type(to_unified, this_solutions, item_type),
-            array_status,
-            hole_array,
-            item,
-        )),
-
-        unif::Expr::IOOp(unif::IOOp::Input(rep_var)) => {
-            unif::Expr::IOOp(unif::IOOp::Input(this_solutions[to_unified[rep_var]]))
-        }
-
-        unif::Expr::IOOp(unif::IOOp::Output(rep_var, array_status, byte_array)) => {
-            unif::Expr::IOOp(unif::IOOp::Output(
-                this_solutions[to_unified[rep_var]],
-                array_status,
-                byte_array,
-            ))
-        }
+        unif::Expr::IOOp(rep_var, op) => unif::Expr::IOOp(this_solutions[to_unified[rep_var]], op),
 
         unif::Expr::ArrayLit(rep_var, item_type, items) => unif::Expr::ArrayLit(
             this_solutions[to_unified[rep_var]],

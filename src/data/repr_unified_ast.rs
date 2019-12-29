@@ -28,50 +28,25 @@ pub enum Type<Rep> {
 }
 
 #[derive(Clone, Debug)]
-pub enum ArrayOp<Rep> {
+pub enum ArrayOp {
     Item(
-        Rep,                   // Array representation
-        Type<Rep>,             // Item type
-        mutation::LocalStatus, // Array status
-        flat::LocalId,         // Array
-        flat::LocalId,         // Index
+        flat::LocalId, // Array
+        flat::LocalId, // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        Rep,                   // Array representation
-        Type<Rep>,             // Item type
-        mutation::LocalStatus, // Array status
-        flat::LocalId,         // Array
+        flat::LocalId, // Array
     ),
     Push(
-        Rep,                   // Array representation
-        Type<Rep>,             // Item type
-        mutation::LocalStatus, // Array status
-        flat::LocalId,         // Array
-        flat::LocalId,         // Item
+        flat::LocalId, // Array
+        flat::LocalId, // Item
     ),
     Pop(
-        Rep,                   // Array representation
-        Type<Rep>,             // Item type
-        mutation::LocalStatus, // Array status
-        flat::LocalId,         // Array
+        flat::LocalId, // Array
     ), // Returns tuple (array, item)
     Replace(
-        Rep,                   // Hole array representation
-        Type<Rep>,             // Item type
-        mutation::LocalStatus, // Array status
-        flat::LocalId,         // Hole array
-        flat::LocalId,         // Item
+        flat::LocalId, // Hole array
+        flat::LocalId, // Item
     ), // Returns new array
-}
-
-#[derive(Clone, Debug)]
-pub enum IOOp<Rep> {
-    Input(Rep), // Returns byte array
-    Output(
-        Rep,                   // Array representation
-        mutation::LocalStatus, // Byte array status
-        flat::LocalId,         // Byte array
-    ),
 }
 
 #[derive(Clone, Debug)]
@@ -108,8 +83,13 @@ pub enum Expr<Call, Rep> {
     ),
 
     ArithOp(flat::ArithOp),
-    ArrayOp(ArrayOp<Rep>),
-    IOOp(IOOp<Rep>),
+    ArrayOp(
+        Rep,                   // Array representation
+        Type<Rep>,             // Item type
+        mutation::LocalStatus, // Array status
+        ArrayOp,
+    ),
+    IOOp(Rep, mutation::IOOp),
 
     ArrayLit(Rep, Type<Rep>, Vec<flat::LocalId>),
     BoolLit(bool),

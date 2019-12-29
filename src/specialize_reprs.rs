@@ -220,8 +220,8 @@ fn resolve_expr(
 
         &unif::Expr::ArithOp(op) => special::Expr::ArithOp(op),
 
-        unif::Expr::ArrayOp(_) => unimplemented!(),
-        unif::Expr::IOOp(_) => unimplemented!(),
+        unif::Expr::ArrayOp(_, _, _, _) => unimplemented!(),
+        unif::Expr::IOOp(_, _) => unimplemented!(),
 
         unif::Expr::ArrayLit(rep_var, item_type, items) => special::Expr::ArrayLit(
             resolve_solution(params, internal, *rep_var),
