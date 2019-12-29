@@ -209,10 +209,21 @@ fn run<R: io::BufRead, W: io::Write>(
     println!("Representation-unified program: {:#?}", repr_unified);
     println!("(end repr-unified program)");
 
-    let rep_constrained = constrain_reprs::constrain_reprs(repr_unified);
+    let repr_constrained = constrain_reprs::constrain_reprs(repr_unified);
 
-    println!("Representation-constrained program: {:#?}", rep_constrained);
+    println!(
+        "Representation-constrained program: {:#?}",
+        repr_constrained
+    );
     println!("(end repr-constrained program)");
+
+    let repr_specialized = specialize_reprs::specialize_reprs(repr_constrained);
+
+    println!(
+        "Representation-specialized program: {:#?}",
+        repr_specialized
+    );
+    println!("(end repr-specialized program)");
 
     let unique_infos = annot_aliases::annot_aliases(&first_order);
 
