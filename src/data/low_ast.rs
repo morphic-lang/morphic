@@ -7,6 +7,7 @@ use crate::util::id_vec::IdVec;
 
 id_type!(pub LocalId);
 id_type!(pub CustomTypeId);
+id_type!(pub VariantId);
 id_type!(pub CustomFuncId);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,7 +17,7 @@ pub enum Type {
     Array(constrain::RepChoice, Box<Type>),
     HoleArray(constrain::RepChoice, Box<Type>),
     Tuple(Vec<Type>),
-    Variants(IdVec<first_ord::VariantId, Type>),
+    Variants(IdVec<VariantId, Type>),
     Boxed(Box<Type>),
     Custom(CustomTypeId),
 }
@@ -96,22 +97,15 @@ pub enum Expr {
 
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),
-    WrapVariant(
-        IdVec<first_ord::VariantId, Type>,
-        first_ord::VariantId,
-        LocalId,
-    ),
-    UnwrapVariant(first_ord::VariantId, LocalId),
+    WrapVariant(IdVec<VariantId, Type>, VariantId, LocalId),
+    UnwrapVariant(VariantId, LocalId),
     WrapCustom(first_ord::CustomTypeId, LocalId),
     UnwrapCustom(first_ord::CustomTypeId, LocalId),
 
-    WrapBoxed(LocalId),
-    UnwrapBoxed(LocalId),
+    Retain(LocalId),  // Takes any type, returns unit
+    Release(LocalId), // Takes any type, returns unit
 
-    RetainBoxed(LocalId),
-    ReleaseBoxed(LocalId),
-
-    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
+    CheckVariant(VariantId, LocalId), // Returns a bool
 
     ArithOp(ArithOp),
     ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
