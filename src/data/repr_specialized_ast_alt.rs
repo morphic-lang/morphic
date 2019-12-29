@@ -54,12 +54,16 @@ pub enum IoOp {
 pub enum Expr {
     Local(flat::LocalId),
     Call(Purity, CustomFuncId, flat::LocalId),
-    Branch(flat::LocalId, Vec<(Condition, Expr)>),
+    Branch(flat::LocalId, Vec<(Condition, Expr)>, Type),
     LetMany(Vec<(Type, Expr)>, flat::LocalId),
 
     Tuple(Vec<flat::LocalId>),
     TupleField(flat::LocalId, usize),
-    WrapVariant(IdVec<first_ord::VariantId, Type>),
+    WrapVariant(
+        IdVec<first_ord::VariantId, Type>,
+        first_ord::VariantId,
+        flat::LocalId,
+    ),
     UnwrapVariant(first_ord::VariantId, flat::LocalId),
     WrapCustom(CustomTypeId, flat::LocalId),
     UnwrapCustom(CustomTypeId, flat::LocalId),

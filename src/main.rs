@@ -51,6 +51,8 @@ mod unify_reprs;
 
 mod constrain_reprs;
 
+mod specialize_reprs;
+
 mod annot_aliases;
 
 mod annot_reprs;
