@@ -26,14 +26,14 @@ macro_rules! id_type_trait_impl {
 
 macro_rules! id_type {
     (pub $name:ident) => {
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(pub usize);
 
         id_type_trait_impl!($name);
     };
 
     ($name:ident) => {
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         struct $name(usize);
 
         id_type_trait_impl!($name);

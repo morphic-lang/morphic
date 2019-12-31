@@ -99,8 +99,8 @@ pub enum Expr {
     TupleField(LocalId, usize),
     WrapVariant(IdVec<VariantId, Type>, VariantId, LocalId),
     UnwrapVariant(VariantId, LocalId),
-    WrapCustom(first_ord::CustomTypeId, LocalId),
-    UnwrapCustom(first_ord::CustomTypeId, LocalId),
+    WrapCustom(CustomTypeId, LocalId),
+    UnwrapCustom(CustomTypeId, LocalId),
 
     Retain(LocalId),  // Takes any type, returns unit
     Release(LocalId), // Takes any type, returns unit
@@ -130,7 +130,7 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub custom_types: IdVec<first_ord::CustomTypeId, Type>,
-    pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
-    pub main: first_ord::CustomFuncId,
+    pub custom_types: IdVec<CustomTypeId, Type>,
+    pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub main: CustomFuncId,
 }

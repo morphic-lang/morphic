@@ -53,7 +53,7 @@ pub(super) fn size_of<'a>(ty: BasicTypeEnum<'a>) -> Option<IntValue<'a>> {
 
 pub(super) fn if_<'a>(
     context: &'a Context,
-    builder: &'a Builder<'a>,
+    builder: &Builder<'a>,
     f: FunctionValue<'a>,
     cond: IntValue<'a>,
 ) -> BasicBlock {
@@ -68,7 +68,7 @@ pub(super) fn if_<'a>(
 
 pub(super) unsafe fn get_member<'a>(
     context: &'a Context,
-    builder: &'a Builder<'a>,
+    builder: &Builder<'a>,
     struct_ptr: PointerValue<'a>,
     idx: u32,
     name: &str,
@@ -82,7 +82,7 @@ pub(super) unsafe fn get_member<'a>(
 
 pub(super) unsafe fn set_member<'a>(
     context: &'a Context,
-    builder: &'a Builder<'a>,
+    builder: &Builder<'a>,
     struct_ptr: PointerValue<'a>,
     idx: u32,
     val: BasicValueEnum<'a>,
@@ -96,7 +96,7 @@ pub(super) unsafe fn set_member<'a>(
 }
 
 pub(super) fn int_ptr_deref_inc<'a>(
-    builder: &'a Builder<'a>,
+    builder: &Builder<'a>,
     int_type: IntType<'a>,
     int_ptr: PointerValue<'a>,
     name: &str,
@@ -107,7 +107,7 @@ pub(super) fn int_ptr_deref_inc<'a>(
 }
 
 pub(super) fn int_ptr_deref_dec<'a>(
-    builder: &'a Builder<'a>,
+    builder: &Builder<'a>,
     int_type: IntType<'a>,
     int_ptr: PointerValue<'a>,
     name: &str,
