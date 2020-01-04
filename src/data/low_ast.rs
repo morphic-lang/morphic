@@ -1,14 +1,15 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::repr_constrained_ast as constrain;
+use crate::data::repr_specialized_ast_alt as special;
 use crate::util::id_vec::IdVec;
 
 // Second pass:
 // (1) flatten sum types over sum types
 
 id_type!(pub LocalId);
-id_type!(pub CustomTypeId);
 id_type!(pub VariantId);
 id_type!(pub CustomFuncId);
+pub type CustomTypeId = special::CustomTypeId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {

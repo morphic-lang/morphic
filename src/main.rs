@@ -53,6 +53,8 @@ mod constrain_reprs;
 
 mod specialize_reprs;
 
+mod lower_structures;
+
 mod annot_aliases;
 
 mod annot_reprs;
