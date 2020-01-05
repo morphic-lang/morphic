@@ -1,6 +1,5 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
-use crate::llvm::common::LibC;
 use crate::util::id_vec::IdVec;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -8,6 +7,7 @@ use inkwell::module::Module;
 use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::{FloatPredicate, IntPredicate};
+use lib_builtins::core::LibC;
 use std::convert::TryInto;
 
 #[derive(Clone, Debug)]
@@ -19,7 +19,7 @@ struct Globals<'a> {
     unit: BasicValueEnum<'a>,
 }
 
-fn get_llvm_type<'a>(context: &'a Context, ty: &low::Type) -> BasicTypeEnum<'a> {
+fn get_llvm_type<'a>(_context: &'a Context, _ty: &low::Type) -> BasicTypeEnum<'a> {
     unimplemented!();
 }
 

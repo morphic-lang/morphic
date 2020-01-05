@@ -1,0 +1,9 @@
+[package]
+name = "lib-builtins-test"
+version = "0.1.0"
+authors = ["William Brandon", "Wilson Berkow", "Frank Dai", "Benjamin Driscoll"]
+edition = "2018"
+build = "build.rs"
+
+[build-dependencies]
+lib-builtins = { path = "./lib-builtins" }

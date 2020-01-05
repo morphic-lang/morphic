@@ -1,4 +1,4 @@
-use crate::llvm::common::*;
+use crate::core::*;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};

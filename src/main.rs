@@ -61,7 +61,7 @@ mod lower_reprs;
 
 mod interpreter;
 
-mod llvm;
+mod low_ast_transform;
 
 #[cfg(test)]
 mod test;
