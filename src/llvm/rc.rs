@@ -26,14 +26,12 @@ impl<'a> RcBuiltin<'a> {
         module: &Module<'a>,
         inner_type: BasicTypeEnum<'a>,
     ) -> Self {
-        let i32_type = context.i32_type();
         let void_type = context.void_type();
 
         let inner_mangled = mangle_basic(context, inner_type);
 
         let self_type =
             context.opaque_struct_type(&format!("compiler_builtin_rc_{}", inner_mangled));
-        self_type.set_body(&[i32_type.into(), inner_type.into()], false);
         let self_ptr_type = self_type.ptr_type(AddressSpace::Generic);
 
         let new = module.add_function(
@@ -64,6 +62,9 @@ impl<'a> RcBuiltin<'a> {
     }
 
     pub fn define(&self, context: &'a Context, inner_drop: FunctionValue<'a>) {
+        let i32_type = context.i32_type();
+        self.self_type
+            .set_body(&[i32_type.into(), self.inner_type.into()], false);
         self.define_new(context);
         self.define_retain(context);
         self.define_release(context, inner_drop);
@@ -139,6 +140,7 @@ impl<'a> RcBuiltin<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use inkwell::values::BasicValue;
     use std::path::Path;
 
     #[test]
