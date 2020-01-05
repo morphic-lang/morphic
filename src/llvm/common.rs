@@ -2,7 +2,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
+use inkwell::types::{BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
 use itertools::Itertools;
@@ -10,7 +10,7 @@ use itertools::Itertools;
 #[derive(Clone, Copy, Debug)]
 pub struct LibC<'a> {
     pub exit: FunctionValue<'a>,
-    pub memcpy: FunctionValue<'a>,
+    pub realloc: FunctionValue<'a>,
     pub printf: FunctionValue<'a>,
 }
 
@@ -28,12 +28,9 @@ impl<'a> LibC<'a> {
             Some(Linkage::External),
         );
 
-        let memcpy = module.add_function(
-            "memcpy",
-            void_type.fn_type(
-                &[i8_ptr_type.into(), i8_ptr_type.into(), i64_type.into()],
-                false,
-            ),
+        let realloc = module.add_function(
+            "realloc",
+            i8_ptr_type.fn_type(&[i8_ptr_type.into(), i64_type.into()], false),
             Some(Linkage::External),
         );
 
@@ -45,7 +42,7 @@ impl<'a> LibC<'a> {
 
         Self {
             exit,
-            memcpy,
+            realloc,
             printf,
         }
     }

@@ -2,16 +2,19 @@ use crate::llvm::common::*;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
-use inkwell::values::FunctionValue;
+use inkwell::values::{FunctionValue, InstructionOpcode};
 use inkwell::{AddressSpace, IntPredicate};
 
-const DATA_IDX: u32 = 0;
-const CAP_IDX: u32 = 1;
-const LEN_IDX: u32 = 2;
-const REFCOUNT_IDX: u32 = 3;
+const DATA_IDX: u32 = 0; // has type T*
+const CAP_IDX: u32 = 1; // has type u64
+const LEN_IDX: u32 = 2; // has type u64
 
 #[derive(Clone, Copy, Debug)]
-struct FlatArrayBuiltin<'a> {
+pub struct FlatArrayBuiltin<'a> {
+    // related types
+    inner_type: BasicTypeEnum<'a>,
+    self_type: StructType<'a>,
+
     // public API
     new: FunctionValue<'a>,
     item: FunctionValue<'a>,
@@ -19,489 +22,331 @@ struct FlatArrayBuiltin<'a> {
     push: FunctionValue<'a>,
     pop: FunctionValue<'a>,
     replace: FunctionValue<'a>,
-    retain: FunctionValue<'a>,
-    release: FunctionValue<'a>,
+    drop: FunctionValue<'a>,
 
     // helper functions
     ensure_cap: FunctionValue<'a>,
-    ensure_in_bounds: FunctionValue<'a>,
+    bounds_check: FunctionValue<'a>,
 }
 
 impl<'a> FlatArrayBuiltin<'a> {
-    fn declare(
+    pub fn declare(
         context: &'a Context,
         module: &Module<'a>,
-        item_type: BasicTypeEnum<'a>,
-        flat_type: BasicTypeEnum<'a>,
+        inner_type: BasicTypeEnum<'a>,
     ) -> Self {
         let void_type = context.void_type();
         let i64_type = context.i64_type();
-        let flat_ptr_type = flat_type.ptr_type(AddressSpace::Generic);
+
+        let inner_mangled = mangle_basic(context, inner_type);
+
+        let self_type =
+            context.opaque_struct_type(&format!("compiler_builtin_flat_array_{}", inner_mangled));
+        let self_ptr_type = self_type.ptr_type(AddressSpace::Generic);
 
         let new = module.add_function(
-            "compiler_builtin_flat_array_new",
-            flat_ptr_type.fn_type(&[], false),
+            &format!("compiler_builtin_flat_array_{}_new", inner_mangled),
+            self_type.fn_type(&[], false),
             Some(Linkage::External),
         );
 
-        // TODO: item signature (this is a placeholder)
+        // TODO: signature (this is a placeholder)
         let item = module.add_function(
-            "compiler_builtin_flat_array_item",
+            &format!("compiler_builtin_flat_array_{}_item", inner_mangled),
             void_type.fn_type(&[], false),
             Some(Linkage::External),
         );
 
         let len = module.add_function(
-            "compiler_builtin_flat_array_len",
-            i64_type.fn_type(&[flat_ptr_type.into()], false),
+            &format!("compiler_builtin_flat_array_{}_len", inner_mangled),
+            i64_type.fn_type(&[self_ptr_type.into()], false),
             Some(Linkage::External),
         );
 
         let push = module.add_function(
-            "compiler_builtin_flat_array_push",
-            void_type.fn_type(&[flat_ptr_type.into(), item_type], false),
+            &format!("compiler_builtin_flat_array_{}_push", inner_mangled),
+            void_type.fn_type(&[self_ptr_type.into(), inner_type.into()], false),
             Some(Linkage::External),
         );
 
         let pop = module.add_function(
-            "compiler_builtin_flat_array_pop",
-            item_type.fn_type(&[flat_ptr_type.into()], false),
-            Some(Linkage::External),
-        );
-
-        let retain = module.add_function(
-            "compiler_builtin_flat_array_retain",
-            void_type.fn_type(&[flat_ptr_type.into()], false),
-            Some(Linkage::External),
-        );
-
-        let release = module.add_function(
-            "compiler_builtin_flat_array_release",
-            void_type.fn_type(&[flat_ptr_type.into()], false),
+            &format!("compiler_builtin_flat_array_{}_pop", inner_mangled),
+            inner_type.fn_type(&[self_ptr_type.into()], false),
             Some(Linkage::External),
         );
 
         let replace = module.add_function(
-            "compiler_builtin_flat_array_replace",
-            flat_ptr_type.fn_type(&[flat_ptr_type.into(), item_type.into()], false),
+            &format!("compiler_builtin_flat_array_{}_replace", inner_mangled),
+            self_type.fn_type(&[self_ptr_type.into(), inner_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        let drop = module.add_function(
+            &format!("compiler_builtin_flat_array_{}_drop", inner_mangled),
+            void_type.fn_type(&[self_ptr_type.into()], false),
             Some(Linkage::External),
         );
 
         let ensure_cap = module.add_function(
-            "compiler_builtin_flat_array_ensure_cap",
-            void_type.fn_type(&[flat_ptr_type.into()], false),
+            &format!("compiler_builtin_flat_array_{}_ensure_cap", inner_mangled),
+            void_type.fn_type(&[self_ptr_type.into(), i64_type.into()], false),
             Some(Linkage::External),
         );
 
-        let ensure_in_bounds = module.add_function(
-            "compiler_builtin_flat_array_ensure_in_bounds",
-            void_type.fn_type(&[flat_ptr_type.into(), i64_type.into()], false),
+        let bounds_check = module.add_function(
+            &format!("compiler_builtin_flat_array_{}_bounds_check", inner_mangled),
+            void_type.fn_type(&[self_ptr_type.into(), i64_type.into()], false),
             Some(Linkage::External),
         );
 
         Self {
+            inner_type,
+            self_type,
             new,
             item,
             len,
             push,
             pop,
             replace,
-            retain,
-            release,
+            drop,
             ensure_cap,
-            ensure_in_bounds,
+            bounds_check,
         }
     }
-}
 
-// ********************************************************************
-// struct flat_array { data: item*, cap: u64, len: u64, refcount: u64 }
-// ********************************************************************
-pub fn gen_flat_array<'a>(
-    context: &'a Context,
-    module: &Module<'a>,
-    libc: LibC<'a>,
-    item_type: BasicTypeEnum<'a>,
-) {
-    let i64_type = context.i64_type();
-    let item_ptr_type = item_type.ptr_type(AddressSpace::Generic);
+    pub fn define(&self, context: &'a Context, libc: &LibC<'a>, _inner_drop: FunctionValue<'a>) {
+        let i64_type = context.i64_type();
+        let inner_ptr_type = self.inner_type.ptr_type(AddressSpace::Generic);
+        self.self_type.set_body(
+            &[inner_ptr_type.into(), i64_type.into(), i64_type.into()],
+            false,
+        );
+        self.define_new(context);
+        // TODO: define_item
+        self.define_len(context);
+        self.define_push(context);
+        self.define_pop(context);
+        // TODO: define_replace
+        // TODO: define_drop
+        self.define_ensure_cap(context, libc);
+        self.define_bounds_check(context, libc);
+    }
 
-    let flat_type = context.opaque_struct_type("compiler_builtin_flat_array");
-    flat_type.set_body(
-        &[
-            item_ptr_type.into(),
-            i64_type.into(),
-            i64_type.into(),
-            i64_type.into(),
-        ],
-        false,
-    );
+    fn define_new(&self, context: &'a Context) {
+        let i32_type = context.i32_type();
+        let i64_type = context.i64_type();
 
-    let lib_flat = FlatArrayBuiltin::declare(context, module, item_type, flat_type.into());
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.new, "entry");
 
-    gen_new(context, module, libc, lib_flat, item_type, flat_type.into());
-    gen_item(context, module, libc, lib_flat, item_type, flat_type.into());
-    gen_len(context, module, libc, lib_flat, item_type, flat_type.into());
-    gen_push(context, module, libc, lib_flat, item_type, flat_type.into());
-    gen_pop(context, module, libc, lib_flat, item_type, flat_type.into());
-    gen_replace(context, module, libc, lib_flat, item_type, flat_type.into());
-    gen_retain(context, module, libc, lib_flat, item_type, flat_type.into());
-    gen_release(context, module, libc, lib_flat, item_type, flat_type.into());
+        builder.position_at_end(&entry);
 
-    gen_ensure_cap(context, module, libc, lib_flat, item_type, flat_type.into());
-    gen_ensure_in_bounds(context, module, libc, lib_flat, item_type, flat_type.into());
-}
+        let init_cap = 8;
+        // for some reason, LLVM's built in malloc takes an i32 instead of a size_t (i.e. a u64)
+        let data =
+            builder.build_array_malloc(self.inner_type, i32_type.const_int(init_cap, true), "data");
 
-// ****************************************************
-// compiler_builtin_flat_array_new :: () -> flat_array*
-// ****************************************************
-fn gen_new<'a>(
-    context: &'a Context,
-    module: &Module<'a>,
-    libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    item_type: BasicTypeEnum<'a>,
-    flat_type: StructType<'a>,
-) {
-    let builder = context.create_builder();
-    let i64_type = context.i64_type();
-    let i32_type = context.i32_type();
+        let mut new = self.self_type.get_undef();
+        new = builder
+            .build_insert_value(new, data, DATA_IDX, "tmp0")
+            .unwrap()
+            .into_struct_value();
+        new = builder
+            .build_insert_value(new, i64_type.const_int(init_cap, false), CAP_IDX, "tmp1")
+            .unwrap()
+            .into_struct_value();
+        new = builder
+            .build_insert_value(new, i64_type.const_int(0, false), LEN_IDX, "tmp2")
+            .unwrap()
+            .into_struct_value();
+        builder.build_return(Some(&new));
+    }
 
-    let init_cap = i32_type.const_int(8, false);
+    fn define_len(&self, context: &'a Context) {
+        let ptr = self.len.get_nth_param(0).unwrap().into_pointer_value();
 
-    let entry = context.append_basic_block(lib_flat.new, "entry");
-    builder.position_at_end(&entry);
-    let new_data = builder.build_array_malloc(item_type, init_cap, "new_data");
-    let array_ptr = builder.build_malloc(flat_type, "array_ptr");
-    unsafe { set_member(&builder, array_ptr, DATA_IDX, new_data.into(), "data") };
-    unsafe { set_member(&builder, array_ptr, CAP_IDX, init_cap.into(), "cap") };
-    unsafe {
-        set_member(
-            &builder,
-            array_ptr,
-            LEN_IDX,
-            i64_type.const_int(0, false).into(),
-            "len",
-        )
-    };
-    unsafe {
-        set_member(
-            &builder,
-            array_ptr,
-            REFCOUNT_IDX,
-            i64_type.const_int(1, false).into(),
-            "refcount",
-        )
-    };
-    builder.build_return(Some(&array_ptr));
-}
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.len, "entry");
 
-// **********************************************************************************
-// compiler_builtin_flat_array_item :: flat_array* -> u64 -> (flat_array*, item_type)
-// **********************************************************************************
-fn gen_item<'a>(
-    context: &'a Context,
-    module: &Module<'a>,
-    libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    item_type: BasicTypeEnum<'a>,
-    struct_type: StructType<'a>,
-) {
-    // TODO
-}
+        builder.position_at_end(&entry);
+        let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") };
+        builder.build_return(Some(&len));
+    }
 
-// *****************************************************
-// compiler_builtin_flat_array_len :: flat_array* -> u64
-// *****************************************************
-fn gen_len<'a>(
-    context: &'a Context,
-    _module: &Module<'a>,
-    _libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    _item_type: BasicTypeEnum<'a>,
-    _flat_type: StructType<'a>,
-) {
-    let builder = context.create_builder();
+    fn define_push(&self, context: &'a Context) {
+        let i64_type = context.i64_type();
+        let ptr = self.push.get_nth_param(0).unwrap().into_pointer_value();
+        let item = self.push.get_nth_param(1).unwrap();
 
-    let entry = context.append_basic_block(lib_flat.len, "entry");
-    builder.position_at_end(&entry);
-    let ptr = lib_flat.len.get_nth_param(0).unwrap().into_pointer_value();
-    let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") };
-    builder.build_return(Some(&len));
-}
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.push, "entry");
 
-// *************************************************************
-// compiler_builtin_flat_array_push :: flat_array* -> item -> ()
-// *************************************************************
-fn gen_push<'a>(
-    context: &'a Context,
-    _module: &Module<'a>,
-    _libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    _item_type: BasicTypeEnum<'a>,
-    _flat_type: StructType<'a>,
-) {
-    let builder = context.create_builder();
-    let i64_type = context.i64_type();
+        builder.position_at_end(&entry);
 
-    let entry = context.append_basic_block(lib_flat.push, "entry");
-    builder.position_at_end(&entry);
-    let ptr = lib_flat.push.get_nth_param(0).unwrap().into_pointer_value();
-    let item = lib_flat.push.get_nth_param(1).unwrap();
+        let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
+        let len = builder.build_load(len_ptr, "len").into_int_value();
+        let len_new = builder.build_int_add(len, i64_type.const_int(1, false), "len_new");
 
-    builder.build_call(lib_flat.ensure_cap, &[ptr.into()], "");
-    let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
-    let len_old = builder.build_load(len_ptr, "len_old").into_int_value();
-    let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
-    let dest = unsafe { builder.build_in_bounds_gep(data, &[len_old.into()], "dest") };
-    builder.build_store(dest, item);
-    let len_new = builder.build_int_add(len_old, i64_type.const_int(1, false), "len_new");
-    builder.build_store(len_ptr, len_new);
-    builder.build_return(None);
-}
+        builder.build_call(self.ensure_cap, &[ptr.into(), len_new.into()], "");
+        builder.build_store(len_ptr, len_new);
 
-// ******************************************************
-// compiler_builtin_flat_array_pop :: flat_array* -> item
-// ******************************************************
-fn gen_pop<'a>(
-    context: &'a Context,
-    _module: &Module<'a>,
-    _libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    _item_type: BasicTypeEnum<'a>,
-    _flat_type: StructType<'a>,
-) {
-    let builder = context.create_builder();
-    let i64_type = context.i64_type();
+        let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
+        let item_dest = unsafe { builder.build_in_bounds_gep(data, &[len.into()], "item_dest") };
+        builder.build_store(item_dest, item);
 
-    let entry = context.append_basic_block(lib_flat.pop, "entry");
-    builder.position_at_end(&entry);
-    let ptr = lib_flat.pop.get_nth_param(0).unwrap().into_pointer_value();
+        builder.build_return(None);
+    }
 
-    let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
-    let len_old = builder.build_load(len_ptr, "len_old").into_int_value();
-    let len_new = builder.build_int_sub(len_old, i64_type.const_int(1, false), "len_new");
-    let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
-    let src = unsafe { builder.build_in_bounds_gep(data, &[len_new], "src") };
-    let item = builder.build_load(src, "item");
-    builder.build_store(len_ptr, len_new);
-    builder.build_return(Some(&item));
-}
+    fn define_pop(&self, context: &'a Context) {
+        let i64_type = context.i64_type();
+        let ptr = self.pop.get_nth_param(0).unwrap().into_pointer_value();
 
-// ******************************************************************************
-// compiler_builtin_flat_array_replace :: flat_array* -> item_type -> flat_array*
-// ******************************************************************************
-fn gen_replace<'a>(
-    context: &'a Context,
-    module: &Module<'a>,
-    libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    item_type: BasicTypeEnum<'a>,
-    flat_type: StructType<'a>,
-) {
-    // TODO
-    // let builder = context.create_builder();
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.pop, "entry");
 
-    // let entry = context.append_basic_block(lib_flat.replace, "entry");
-    // builder.position_at_end(&entry);
-    // let ptr = lib_flat
-    //     .replace
-    //     .get_nth_param(0)
-    //     .unwrap()
-    //     .into_pointer_value();
-    // let item = lib_flat.replace.get_nth_param(1).unwrap();
-}
+        builder.position_at_end(&entry);
+        let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
+        let len = builder.build_load(len_ptr, "len").into_int_value();
 
-// *******************************************************
-// compiler_builtin_flat_array_retain :: flat_array* -> ()
-// *******************************************************
-fn gen_retain<'a>(
-    context: &'a Context,
-    module: &Module<'a>,
-    libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    item_type: BasicTypeEnum<'a>,
-    flat_type: StructType<'a>,
-) {
-    let builder = context.create_builder();
-    let i64_type = context.i64_type();
+        let len_new = builder.build_int_sub(len, i64_type.const_int(1, false), "len_new");
+        builder.build_store(len_ptr, len_new);
 
-    let entry = context.append_basic_block(lib_flat.retain, "entry");
-    builder.position_at_end(&entry);
-    let ptr = lib_flat
-        .retain
-        .get_nth_param(0)
-        .unwrap()
-        .into_pointer_value();
+        let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
+        let item_src = unsafe { builder.build_in_bounds_gep(data, &[len_new], "item_src") };
+        let item = builder.build_load(item_src, "item");
 
-    let refcount_ptr = unsafe { builder.build_struct_gep(ptr, REFCOUNT_IDX, "refcount_ptr") };
-    let refcount = builder
-        .build_load(refcount_ptr, "refcount")
-        .into_int_value();
-    let tmp = builder.build_int_add(refcount, i64_type.const_int(1, false), "tmp");
-    builder.build_store(refcount_ptr, tmp);
-    builder.build_return(None);
-}
+        builder.build_return(Some(&item));
+    }
 
-// *******************************************************
-// compiler_builtin_flat_array_retain :: flat_array* -> ()
-// *******************************************************
-fn gen_release<'a>(
-    context: &'a Context,
-    module: &Module<'a>,
-    libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    item_type: BasicTypeEnum<'a>,
-    flat_type: StructType<'a>,
-) {
-    let builder = context.create_builder();
-    let i64_type = context.i64_type();
+    fn define_ensure_cap(&self, context: &'a Context, libc: &LibC<'a>) {
+        let i32_type = context.i32_type();
+        let i64_type = context.i64_type();
+        let i8_ptr_type = context.i8_type().ptr_type(AddressSpace::Generic);
+        let inner_ptr_type = self.inner_type.ptr_type(AddressSpace::Generic);
+        let ptr = self
+            .ensure_cap
+            .get_nth_param(0)
+            .unwrap()
+            .into_pointer_value();
+        let min_cap = self.ensure_cap.get_nth_param(1).unwrap().into_int_value();
 
-    let entry = context.append_basic_block(lib_flat.release, "entry");
-    builder.position_at_end(&entry);
-    let ptr = lib_flat
-        .release
-        .get_nth_param(0)
-        .unwrap()
-        .into_pointer_value();
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.ensure_cap, "entry");
+        let resize_block = context.append_basic_block(self.ensure_cap, "resize_block");
+        let panic_block = context.append_basic_block(self.ensure_cap, "panic_block");
+        let success_block = context.append_basic_block(self.ensure_cap, "success_block");
+        let exit_block = context.append_basic_block(self.ensure_cap, "exit_block");
 
-    let refcount_ptr = unsafe { builder.build_struct_gep(ptr, REFCOUNT_IDX, "refcount_ptr") };
-    let refcount = builder
-        .build_load(refcount_ptr, "refcount")
-        .into_int_value();
-    let tmp = builder.build_int_sub(refcount, i64_type.const_int(1, false), "tmp");
-    builder.build_store(refcount_ptr, tmp);
+        builder.position_at_end(&entry);
 
-    let should_drop = builder.build_int_compare(
-        IntPredicate::EQ,
-        tmp,
-        i64_type.const_int(0, false),
-        "should_drop",
-    );
-    let exit = if_(context, &builder, lib_flat.release, should_drop);
-    // TODO: drop
+        // if this isn't an integer we need to start using floating point multiplication
+        let resize_factor = 2;
 
-    builder.position_at_end(&exit);
-    builder.build_return(None);
-}
+        let cap_ptr = unsafe { builder.build_struct_gep(ptr, CAP_IDX, "cap_ptr") };
+        let cap = builder.build_load(cap_ptr, "cap").into_int_value();
+        let should_resize =
+            builder.build_int_compare(IntPredicate::ULT, cap, min_cap, "should_resize");
+        builder.build_conditional_branch(should_resize, &resize_block, &exit_block);
 
-// ************************************************************
-// compiler_internal_flat_array_ensure_cap :: flat_array* -> ()
-// ************************************************************
-fn gen_ensure_cap<'a>(
-    context: &'a Context,
-    _module: &Module<'a>,
-    libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    item_type: BasicTypeEnum<'a>,
-    _flat_type: StructType<'a>,
-) {
-    // if this isn't an integer we need to start using floating point multiplication
-    let resize_factor = 2;
+        builder.position_at_end(&resize_block);
+        let cap_new =
+            builder.build_int_mul(cap, i64_type.const_int(resize_factor, false), "cap_new");
 
-    let builder = context.create_builder();
-    let i64_type = context.i64_type();
-    let i32_type = context.i32_type();
+        let data_ptr = unsafe { builder.build_struct_gep(ptr, DATA_IDX, "data_ptr") };
+        let data = builder.build_load(data_ptr, "data");
+        let data_i8 = builder.build_cast(InstructionOpcode::BitCast, data, i8_ptr_type, "data_i8");
+        let data_new_i8 = builder
+            .build_call(
+                libc.realloc,
+                &[data_i8.into(), cap_new.into()],
+                "data_new_i8",
+            )
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
 
-    let entry = context.append_basic_block(lib_flat.ensure_cap, "entry");
-    builder.position_at_end(&entry);
-    let ptr = lib_flat
-        .ensure_cap
-        .get_nth_param(0)
-        .unwrap()
-        .into_pointer_value();
+        let is_null = builder.build_is_null(data_new_i8, "is_null");
+        builder.build_conditional_branch(is_null, &panic_block, &success_block);
 
-    let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") }.into_int_value();
-    let cap = unsafe { get_member(&builder, ptr, CAP_IDX, "cap") }.into_int_value();
-    let should_resize = builder.build_int_compare(IntPredicate::UGE, len, cap, "should_resize");
+        builder.position_at_end(&panic_block);
+        builder.build_call(libc.exit, &[i32_type.const_int(1, true).into()], "");
+        builder.build_unconditional_branch(&exit_block); // unreachable
 
-    // let exit = if_(context, &builder, lib_flat.ensure_cap, should_resize);
-    // let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
-    // let new_cap = builder.build_int_mul(cap, i64_type.const_int(resize_factor, false), "new_cap");
-    // let new_data = builder.build_array_malloc(item_type, new_cap, "new_data");
-    // // let is_not_null = builder.build_is_not_null(new_data, "is_not_null");
-    // // let is_null = builder.build_not(is_not_null, "is_null");
+        builder.position_at_end(&success_block);
+        let data_new = builder.build_cast(
+            InstructionOpcode::BitCast,
+            data_new_i8,
+            inner_ptr_type,
+            "data_new",
+        );
+        builder.build_store(data_ptr, data_new);
+        builder.build_store(cap_ptr, cap_new);
+        builder.build_unconditional_branch(&exit_block);
 
-    // // let success = if_(context, &builder, lib_flat.ensure_cap, is_null);
-    // // builder.build_call(libc.exit, &[i32_type.const_int(1, false).into()], "");
+        builder.position_at_end(&exit_block);
+        builder.build_return(None);
+    }
 
-    // // builder.position_at_end(&success);
-    // unsafe { set_member(&builder, ptr, CAP_IDX, new_cap.into(), "cap") };
-    // let count = builder.build_int_mul(len, size_of(item_type).unwrap(), "count");
-    // builder.build_call(
-    //     libc.memcpy,
-    //     &[new_data.into(), data.into(), count.into()],
-    //     "",
-    // );
-    // builder.build_free(data);
+    fn define_bounds_check(&self, context: &'a Context, libc: &LibC<'a>) {
+        let i32_type = context.i32_type();
+        let ptr = self
+            .bounds_check
+            .get_nth_param(0)
+            .unwrap()
+            .into_pointer_value();
+        let idx = self.bounds_check.get_nth_param(1).unwrap().into_int_value();
 
-    // builder.position_at_end(&exit);
-    builder.build_return(None);
-}
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.bounds_check, "entry");
 
-// ***************************************************************
-// compiler_builtin_flat_array_in_bounds: flat_array* -> u64 -> ()
-// ***************************************************************
-fn gen_ensure_in_bounds<'a>(
-    context: &'a Context,
-    module: &Module<'a>,
-    libc: LibC<'a>,
-    lib_flat: FlatArrayBuiltin<'a>,
-    item_type: BasicTypeEnum<'a>,
-    flat_type: StructType<'a>,
-) {
-    let builder = context.create_builder();
-    let i32_type = context.i32_type();
+        builder.position_at_end(&entry);
+        let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") }.into_int_value();
+        let out_of_bounds = builder.build_int_compare(IntPredicate::UGE, idx, len, "out_of_bounds");
+        let then_block = if_(context, &builder, self.bounds_check, out_of_bounds);
+        builder.build_call(libc.exit, &[i32_type.const_int(1, false).into()], "");
 
-    let entry = context.append_basic_block(lib_flat.ensure_in_bounds, "entry");
-    builder.position_at_end(&entry);
-    let ptr = lib_flat
-        .ensure_in_bounds
-        .get_nth_param(0)
-        .unwrap()
-        .into_pointer_value();
-    let idx = lib_flat
-        .ensure_in_bounds
-        .get_nth_param(1)
-        .unwrap()
-        .into_int_value();
-
-    let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") }.into_int_value();
-    let out_of_bounds = builder.build_int_compare(IntPredicate::UGE, idx, len, "out_of_bounds");
-    let exit = if_(context, &builder, lib_flat.ensure_in_bounds, out_of_bounds);
-    builder.build_call(libc.exit, &[i32_type.const_int(1, false).into()], "");
-
-    builder.position_at_end(&exit);
-    builder.build_return(None);
+        builder.position_at_end(&then_block);
+        builder.build_return(None);
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target};
-    use inkwell::OptimizationLevel;
+    use inkwell::values::BasicValue;
     use std::path::Path;
 
     #[test]
     fn well_formed() {
-        Target::initialize_all(&InitializationConfig::default());
-        let target = Target::from_triple("x86_64-pc-linux-gnu").unwrap();
-        let target_machine = target
-            .create_target_machine(
-                "x86_64-pc-linux-gnu",
-                "x86-64",
-                "",
-                OptimizationLevel::None,
-                RelocMode::Default,
-                CodeModel::Default,
-            )
-            .unwrap();
-
         let context = Context::create();
         let module = context.create_module("test");
-        let item_type = context.i32_type();
+        let inner_type = context.i32_type();
+        let inner_ptr_type = inner_type.ptr_type(AddressSpace::Generic);
+
         let libc = LibC::declare(&context, &module);
-        gen_flat_array(&context, &module, libc, item_type.into());
+
+        // TODO: deduplicate dummy (also in rc.rs)
+
+        // declare dummy
+        let void_type = context.void_type();
+        let dummy = module.add_function(
+            "dummy",
+            void_type.fn_type(&[inner_ptr_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        // define dummy
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(dummy, "entry");
+        builder.position_at_end(&entry);
+        let hello_global = builder.build_global_string_ptr("Hello, world!", "hello");
+        let hello_value = (&hello_global as &dyn BasicValue).as_basic_value_enum();
+        builder.build_call(libc.printf, &[hello_value], "");
+        builder.build_return(None);
+
+        let flat_array = FlatArrayBuiltin::declare(&context, &module, inner_type.into());
+        flat_array.define(&context, &libc, dummy);
 
         module
             .print_to_file(Path::new("test_flat_array.ll.out"))

@@ -80,11 +80,11 @@ impl<'a> RcBuiltin<'a> {
         builder.position_at_end(&entry);
         let mut new = self.self_type.get_undef();
         new = builder
-            .build_insert_value(new, i32_type.const_int(1, false), REFCOUNT_IDX, "refcount")
+            .build_insert_value(new, i32_type.const_int(1, false), REFCOUNT_IDX, "tmp0")
             .unwrap()
             .into_struct_value();
         new = builder
-            .build_insert_value(new, value, INNER_IDX, "inner")
+            .build_insert_value(new, value, INNER_IDX, "tmp1")
             .unwrap()
             .into_struct_value();
         builder.build_return(Some(&new));
@@ -152,16 +152,20 @@ mod test {
 
         let libc = LibC::declare(&context, &module);
 
+        // TODO: deduplicate dummy (also in flat_array.rs)
+
+        // declare dummy
         let void_type = context.void_type();
         let dummy = module.add_function(
             "dummy",
             void_type.fn_type(&[inner_ptr_type.into()], false),
             Some(Linkage::External),
         );
+
+        // define dummy
         let builder = context.create_builder();
         let entry = context.append_basic_block(dummy, "entry");
         builder.position_at_end(&entry);
-
         let hello_global = builder.build_global_string_ptr("Hello, world!", "hello");
         let hello_value = (&hello_global as &dyn BasicValue).as_basic_value_enum();
         builder.build_call(libc.printf, &[hello_value], "");
