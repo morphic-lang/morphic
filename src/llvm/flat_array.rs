@@ -1,13 +1,9 @@
 use crate::llvm::common::*;
-use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::FunctionValue;
-use inkwell::OptimizationLevel;
 use inkwell::{AddressSpace, IntPredicate};
-use std::path::Path;
 
 const DATA_IDX: u32 = 0;
 const CAP_IDX: u32 = 1;
@@ -15,7 +11,7 @@ const LEN_IDX: u32 = 2;
 const REFCOUNT_IDX: u32 = 3;
 
 #[derive(Clone, Copy, Debug)]
-struct LibFlatArray<'a> {
+struct FlatArrayBuiltin<'a> {
     // public API
     new: FunctionValue<'a>,
     item: FunctionValue<'a>,
@@ -31,7 +27,7 @@ struct LibFlatArray<'a> {
     ensure_in_bounds: FunctionValue<'a>,
 }
 
-impl<'a> LibFlatArray<'a> {
+impl<'a> FlatArrayBuiltin<'a> {
     fn declare(
         context: &'a Context,
         module: &Module<'a>,
@@ -112,7 +108,6 @@ impl<'a> LibFlatArray<'a> {
             replace,
             retain,
             release,
-
             ensure_cap,
             ensure_in_bounds,
         }
@@ -142,7 +137,7 @@ pub fn gen_flat_array<'a>(
         false,
     );
 
-    let lib_flat = LibFlatArray::declare(context, module, item_type, flat_type.into());
+    let lib_flat = FlatArrayBuiltin::declare(context, module, item_type, flat_type.into());
 
     gen_new(context, module, libc, lib_flat, item_type, flat_type.into());
     gen_item(context, module, libc, lib_flat, item_type, flat_type.into());
@@ -164,7 +159,7 @@ fn gen_new<'a>(
     context: &'a Context,
     module: &Module<'a>,
     libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     item_type: BasicTypeEnum<'a>,
     flat_type: StructType<'a>,
 ) {
@@ -178,29 +173,10 @@ fn gen_new<'a>(
     builder.position_at_end(&entry);
     let new_data = builder.build_array_malloc(item_type, init_cap, "new_data");
     let array_ptr = builder.build_malloc(flat_type, "array_ptr");
+    unsafe { set_member(&builder, array_ptr, DATA_IDX, new_data.into(), "data") };
+    unsafe { set_member(&builder, array_ptr, CAP_IDX, init_cap.into(), "cap") };
     unsafe {
         set_member(
-            context,
-            &builder,
-            array_ptr,
-            DATA_IDX,
-            new_data.into(),
-            "data",
-        )
-    };
-    unsafe {
-        set_member(
-            context,
-            &builder,
-            array_ptr,
-            CAP_IDX,
-            init_cap.into(),
-            "cap",
-        )
-    };
-    unsafe {
-        set_member(
-            context,
             &builder,
             array_ptr,
             LEN_IDX,
@@ -210,7 +186,6 @@ fn gen_new<'a>(
     };
     unsafe {
         set_member(
-            context,
             &builder,
             array_ptr,
             REFCOUNT_IDX,
@@ -228,7 +203,7 @@ fn gen_item<'a>(
     context: &'a Context,
     module: &Module<'a>,
     libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     item_type: BasicTypeEnum<'a>,
     struct_type: StructType<'a>,
 ) {
@@ -242,7 +217,7 @@ fn gen_len<'a>(
     context: &'a Context,
     _module: &Module<'a>,
     _libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     _item_type: BasicTypeEnum<'a>,
     _flat_type: StructType<'a>,
 ) {
@@ -251,7 +226,7 @@ fn gen_len<'a>(
     let entry = context.append_basic_block(lib_flat.len, "entry");
     builder.position_at_end(&entry);
     let ptr = lib_flat.len.get_nth_param(0).unwrap().into_pointer_value();
-    let len = unsafe { get_member(context, &builder, ptr, LEN_IDX, "len") };
+    let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") };
     builder.build_return(Some(&len));
 }
 
@@ -262,7 +237,7 @@ fn gen_push<'a>(
     context: &'a Context,
     _module: &Module<'a>,
     _libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     _item_type: BasicTypeEnum<'a>,
     _flat_type: StructType<'a>,
 ) {
@@ -277,7 +252,7 @@ fn gen_push<'a>(
     builder.build_call(lib_flat.ensure_cap, &[ptr.into()], "");
     let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
     let len_old = builder.build_load(len_ptr, "len_old").into_int_value();
-    let data = unsafe { get_member(context, &builder, ptr, DATA_IDX, "data") }.into_pointer_value();
+    let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
     let dest = unsafe { builder.build_in_bounds_gep(data, &[len_old.into()], "dest") };
     builder.build_store(dest, item);
     let len_new = builder.build_int_add(len_old, i64_type.const_int(1, false), "len_new");
@@ -292,7 +267,7 @@ fn gen_pop<'a>(
     context: &'a Context,
     _module: &Module<'a>,
     _libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     _item_type: BasicTypeEnum<'a>,
     _flat_type: StructType<'a>,
 ) {
@@ -306,7 +281,7 @@ fn gen_pop<'a>(
     let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
     let len_old = builder.build_load(len_ptr, "len_old").into_int_value();
     let len_new = builder.build_int_sub(len_old, i64_type.const_int(1, false), "len_new");
-    let data = unsafe { get_member(context, &builder, ptr, DATA_IDX, "data") }.into_pointer_value();
+    let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
     let src = unsafe { builder.build_in_bounds_gep(data, &[len_new], "src") };
     let item = builder.build_load(src, "item");
     builder.build_store(len_ptr, len_new);
@@ -320,7 +295,7 @@ fn gen_replace<'a>(
     context: &'a Context,
     module: &Module<'a>,
     libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     item_type: BasicTypeEnum<'a>,
     flat_type: StructType<'a>,
 ) {
@@ -344,7 +319,7 @@ fn gen_retain<'a>(
     context: &'a Context,
     module: &Module<'a>,
     libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     item_type: BasicTypeEnum<'a>,
     flat_type: StructType<'a>,
 ) {
@@ -375,7 +350,7 @@ fn gen_release<'a>(
     context: &'a Context,
     module: &Module<'a>,
     libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     item_type: BasicTypeEnum<'a>,
     flat_type: StructType<'a>,
 ) {
@@ -417,7 +392,7 @@ fn gen_ensure_cap<'a>(
     context: &'a Context,
     _module: &Module<'a>,
     libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     item_type: BasicTypeEnum<'a>,
     _flat_type: StructType<'a>,
 ) {
@@ -436,12 +411,12 @@ fn gen_ensure_cap<'a>(
         .unwrap()
         .into_pointer_value();
 
-    let len = unsafe { get_member(context, &builder, ptr, LEN_IDX, "len") }.into_int_value();
-    let cap = unsafe { get_member(context, &builder, ptr, CAP_IDX, "cap") }.into_int_value();
+    let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") }.into_int_value();
+    let cap = unsafe { get_member(&builder, ptr, CAP_IDX, "cap") }.into_int_value();
     let should_resize = builder.build_int_compare(IntPredicate::UGE, len, cap, "should_resize");
 
     // let exit = if_(context, &builder, lib_flat.ensure_cap, should_resize);
-    // let data = unsafe { get_member(context, &builder, ptr, DATA_IDX, "data") }.into_pointer_value();
+    // let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
     // let new_cap = builder.build_int_mul(cap, i64_type.const_int(resize_factor, false), "new_cap");
     // let new_data = builder.build_array_malloc(item_type, new_cap, "new_data");
     // // let is_not_null = builder.build_is_not_null(new_data, "is_not_null");
@@ -451,7 +426,7 @@ fn gen_ensure_cap<'a>(
     // // builder.build_call(libc.exit, &[i32_type.const_int(1, false).into()], "");
 
     // // builder.position_at_end(&success);
-    // unsafe { set_member(context, &builder, ptr, CAP_IDX, new_cap.into(), "cap") };
+    // unsafe { set_member(&builder, ptr, CAP_IDX, new_cap.into(), "cap") };
     // let count = builder.build_int_mul(len, size_of(item_type).unwrap(), "count");
     // builder.build_call(
     //     libc.memcpy,
@@ -471,7 +446,7 @@ fn gen_ensure_in_bounds<'a>(
     context: &'a Context,
     module: &Module<'a>,
     libc: LibC<'a>,
-    lib_flat: LibFlatArray<'a>,
+    lib_flat: FlatArrayBuiltin<'a>,
     item_type: BasicTypeEnum<'a>,
     flat_type: StructType<'a>,
 ) {
@@ -491,7 +466,7 @@ fn gen_ensure_in_bounds<'a>(
         .unwrap()
         .into_int_value();
 
-    let len = unsafe { get_member(context, &builder, ptr, LEN_IDX, "len") }.into_int_value();
+    let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") }.into_int_value();
     let out_of_bounds = builder.build_int_compare(IntPredicate::UGE, idx, len, "out_of_bounds");
     let exit = if_(context, &builder, lib_flat.ensure_in_bounds, out_of_bounds);
     builder.build_call(libc.exit, &[i32_type.const_int(1, false).into()], "");
@@ -503,6 +478,9 @@ fn gen_ensure_in_bounds<'a>(
 #[cfg(test)]
 mod test {
     use super::*;
+    use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target};
+    use inkwell::OptimizationLevel;
+    use std::path::Path;
 
     #[test]
     fn well_formed() {

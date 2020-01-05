@@ -2,17 +2,19 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::{BasicTypeEnum, IntType};
+use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
+use itertools::Itertools;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LibC<'a> {
     pub exit: FunctionValue<'a>,
     pub memcpy: FunctionValue<'a>,
+    pub printf: FunctionValue<'a>,
 }
 
-// TODO: this isn't portable
+// TODO: these declarations are not portable
 impl<'a> LibC<'a> {
     pub fn declare(context: &'a Context, module: &Module<'a>) -> Self {
         let void_type = context.void_type();
@@ -35,11 +37,20 @@ impl<'a> LibC<'a> {
             Some(Linkage::External),
         );
 
-        Self { exit, memcpy }
+        let printf = module.add_function(
+            "printf",
+            i32_type.fn_type(&[i8_ptr_type.into()], true),
+            Some(Linkage::External),
+        );
+
+        Self {
+            exit,
+            memcpy,
+            printf,
+        }
     }
 }
 
-// there must be a better way to do this, but I couldn't find it
 pub(super) fn size_of<'a>(ty: BasicTypeEnum<'a>) -> Option<IntValue<'a>> {
     match ty {
         BasicTypeEnum::ArrayType(actual_ty) => actual_ty.size_of(),
@@ -57,23 +68,22 @@ pub(super) fn if_<'a>(
     f: FunctionValue<'a>,
     cond: IntValue<'a>,
 ) -> BasicBlock {
-    let if_body = context.append_basic_block(f, "if_body");
-    let if_tail = context.append_basic_block(f, "if_tail");
-    builder.build_conditional_branch(cond, &if_body, &if_tail);
-    builder.position_at_end(&if_body);
-    let br_tail = builder.build_unconditional_branch(&if_tail);
-    builder.position_before(&br_tail);
-    if_tail
+    let then_block = context.append_basic_block(f, "then_block");
+    let next_block = context.append_basic_block(f, "next_block");
+    builder.build_conditional_branch(cond, &then_block, &next_block);
+    builder.position_at_end(&then_block);
+    let branch = builder.build_unconditional_branch(&next_block);
+    builder.position_before(&branch);
+    next_block
 }
 
 pub(super) unsafe fn get_member<'a>(
-    context: &'a Context,
     builder: &Builder<'a>,
     struct_ptr: PointerValue<'a>,
     idx: u32,
     name: &str,
 ) -> BasicValueEnum<'a> {
-    let member_ptr_name = [name, "ptr"].join("_");
+    let member_ptr_name = format!("{}_ptr", name);
     builder.build_load(
         builder.build_struct_gep(struct_ptr, idx, &member_ptr_name),
         name,
@@ -81,38 +91,86 @@ pub(super) unsafe fn get_member<'a>(
 }
 
 pub(super) unsafe fn set_member<'a>(
-    context: &'a Context,
     builder: &Builder<'a>,
     struct_ptr: PointerValue<'a>,
     idx: u32,
     val: BasicValueEnum<'a>,
     name: &str,
 ) {
-    let member_ptr_name = [name, "ptr"].join("_");
+    let member_ptr_name = format!("{}_ptr", name);
     builder.build_store(
         builder.build_struct_gep(struct_ptr, idx, &member_ptr_name),
         val,
     );
 }
 
-pub(super) fn int_ptr_deref_inc<'a>(
-    builder: &Builder<'a>,
-    int_type: IntType<'a>,
-    int_ptr: PointerValue<'a>,
-    name: &str,
-) {
-    let old = builder.build_load(int_ptr, name).into_int_value();
-    let tmp = builder.build_int_add(old, int_type.const_int(1, false), "tmp");
-    builder.build_store(int_ptr, tmp);
+fn get_float_name<'a>(context: &'a Context, ty: FloatType<'a>) -> &'static str {
+    if ty == context.f16_type() {
+        "f16"
+    } else if ty == context.f32_type() {
+        "f32"
+    } else if ty == context.f64_type() {
+        "f64"
+    } else if ty == context.f128_type() {
+        "f128"
+    } else {
+        unreachable!();
+    }
 }
 
-pub(super) fn int_ptr_deref_dec<'a>(
-    builder: &Builder<'a>,
-    int_type: IntType<'a>,
-    int_ptr: PointerValue<'a>,
-    name: &str,
-) {
-    let old = builder.build_load(int_ptr, name).into_int_value();
-    let tmp = builder.build_int_sub(old, int_type.const_int(1, false), "tmp");
-    builder.build_store(int_ptr, tmp);
+fn get_int_name<'a>(context: &'a Context, ty: IntType<'a>) -> &'static str {
+    if ty == context.i8_type() {
+        "i8"
+    } else if ty == context.i16_type() {
+        "i16"
+    } else if ty == context.i32_type() {
+        "i32"
+    } else if ty == context.i64_type() {
+        "i64"
+    } else if ty == context.i128_type() {
+        "i128"
+    } else {
+        unreachable!();
+    }
+}
+
+pub(super) fn mangle_basic<'a>(context: &'a Context, ty: BasicTypeEnum<'a>) -> String {
+    match ty {
+        BasicTypeEnum::ArrayType(inner_ty) => format!(
+            "A{}{}",
+            inner_ty.len(),
+            mangle_basic(context, inner_ty.get_element_type())
+        ),
+        BasicTypeEnum::FloatType(inner_ty) => get_float_name(context, inner_ty).to_owned(),
+        BasicTypeEnum::IntType(inner_ty) => get_int_name(context, inner_ty).to_owned(),
+        BasicTypeEnum::PointerType(inner_ty) => {
+            format!("P{}", mangle_basic(context, inner_ty.into()))
+        }
+        BasicTypeEnum::StructType(inner_ty) => {
+            if inner_ty.is_opaque() {
+                format!(
+                    "T{}{}",
+                    inner_ty.count_fields(),
+                    inner_ty
+                        .get_field_types()
+                        .iter()
+                        .map(|x| mangle_basic(context, *x))
+                        .join("")
+                )
+            } else {
+                format!("${}", inner_ty.get_name().unwrap().to_str().unwrap())
+            }
+        }
+        BasicTypeEnum::VectorType(inner_ty) => {
+            if inner_ty.is_sized() {
+                format!(
+                    "V{}{}",
+                    inner_ty.get_size(),
+                    mangle_basic(context, inner_ty.get_element_type())
+                )
+            } else {
+                format!("V{}", mangle_basic(context, inner_ty.get_element_type()))
+            }
+        }
+    }
 }
