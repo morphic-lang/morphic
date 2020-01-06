@@ -6,4 +6,5 @@ edition = "2018"
 build = "build.rs"
 
 [build-dependencies]
-lib-builtins = { path = "./lib-builtins" }
+lib-builtins = { path = "../lib-builtins" }
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "llvm8-0" }
