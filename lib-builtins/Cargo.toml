@@ -1,0 +1,9 @@
+[package]
+name = "lib-builtins"
+version = "0.1.0"
+authors = ["William Brandon", "Wilson Berkow", "Frank Dai", "Benjamin Driscoll"]
+edition = "2018"
+
+[dependencies]
+itertools = "0.8.0"
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "llvm8-0" }

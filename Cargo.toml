@@ -9,6 +9,7 @@ build = "build.rs"
 lalrpop = "0.16.2"
 
 [dependencies]
+lib-builtins = { path = "./lib-builtins" }
 lalrpop-util = "0.16.2"
 pretty = "0.5.2"
 failure = "0.1.5"

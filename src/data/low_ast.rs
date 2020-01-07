@@ -66,18 +66,6 @@ pub enum ArrayOp {
         LocalId, // Hole array
         LocalId, // Item
     ),
-
-    // Returns unit
-    // Argument is borrowed
-    Retain(
-        LocalId, // Array
-    ),
-
-    // Returns unit
-    // Argument is owned
-    Release(
-        LocalId, // Array
-    ),
 }
 
 #[derive(Clone, Debug)]
