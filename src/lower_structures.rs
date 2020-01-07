@@ -1,6 +1,7 @@
 use crate::data::flat_ast as flat;
 use crate::data::low_ast as low;
 use crate::data::repr_specialized_ast_alt as special;
+use crate::data::repr_unified_ast as unif;
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 use im_rc::OrdMap;
@@ -276,40 +277,80 @@ impl MoveInfo {
 }
 
 fn count_moves(expr: &special::Expr) -> MoveInfo {
-    todo![];
-    // let mut move_info = MoveInfo {
-    //     move_info: OrdMap::new(),
-    // };
+    let mut move_info = MoveInfo {
+        move_info: OrdMap::new(),
+    };
 
-    // match expr {
-    // special::Expr::Local(local_id) => OrdSet::new(),
-    // special::Expr::Call(purity, func_id, local_id) => OrdSet::new(),
+    match expr {
+        special::Expr::Local(local_id) => move_info.add_move(*local_id),
+        special::Expr::Call(_purity, _func_id, local_id) => move_info.add_move(*local_id),
 
-    // special::Expr::Tuple(Vec<flat::LocalId>),
-    // special::Expr::TupleField(flat::LocalId, usize),
-    // special::Expr::WrapVariant(
-    // IdVec<first_ord::VariantId, Type>,
-    //  first_ord::VariantId,
-    //  flat::LocalId,
-    // ),
-    // special::Expr::UnwrapVariant(first_ord::VariantId, flat::LocalId),
-    // special::Expr::WrapCustom(CustomTypeId, flat::LocalId),
-    // special::Expr::UnwrapCustom(CustomTypeId, flat::LocalId),
+        special::Expr::Tuple(local_ids) => {
+            for local_id in local_ids {
+                move_info.add_move(*local_id);
+            }
+        }
+        special::Expr::TupleField(local_id, _index) => move_info.add_borrow(*local_id),
+        special::Expr::WrapVariant(_variants, _variant_id, local_id) => {
+            move_info.add_move(*local_id);
+        }
 
-    // special::Expr::ArithOp(flat::ArithOp),
-    // special::Expr::ArrayOp(
-    //     constrain::RepChoice,
-    //     Type, // Item type
-    //     unif::ArrayOp,
-    // ),
-    // special::Expr::IoOp(constrain::RepChoice, flat::IOOp),
+        special::Expr::UnwrapVariant(_variant_id, local_id) => move_info.add_move(*local_id),
+        special::Expr::WrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
+        special::Expr::UnwrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
 
-    // special::Expr::ArrayLit(constrain::RepChoice, Type, Vec<flat::LocalId>),
-    // special::Expr::BoolLit(bool),
-    // special::Expr::ByteLit(u8),
-    // special::Expr::IntLit(i64),
-    // special::Expr::FloatLit(f64),
-    // }
+        special::Expr::ArithOp(arith_op) => match arith_op {
+            flat::ArithOp::Op(_, _, local_id1, local_id2)
+            | flat::ArithOp::Cmp(_, _, local_id1, local_id2) => {
+                move_info.add_move(*local_id1);
+                move_info.add_move(*local_id2);
+            }
+            flat::ArithOp::Negate(_num_type, local_id) => {
+                move_info.add_move(*local_id);
+            }
+        },
+        special::Expr::ArrayOp(_rep_choice, _item_type, array_op) => match array_op {
+            unif::ArrayOp::Item(array_id, index_id) => {
+                move_info.add_borrow(*array_id);
+                move_info.add_move(*index_id);
+            }
+            unif::ArrayOp::Len(array_id) => {
+                move_info.add_borrow(*array_id);
+            }
+            unif::ArrayOp::Push(array_id, item_id) => {
+                move_info.add_move(*array_id);
+                move_info.add_move(*item_id);
+            }
+            unif::ArrayOp::Pop(array_id) => {
+                move_info.add_move(*array_id);
+            }
+            unif::ArrayOp::Replace(array_id, item_id) => {
+                move_info.add_move(*array_id);
+                move_info.add_move(*item_id);
+            }
+        },
+        special::Expr::IoOp(_rep_choice, io_op) => match io_op {
+            flat::IOOp::Input => {}
+            flat::IOOp::Output(local_id) => {
+                move_info.add_borrow(*local_id);
+            }
+        },
+
+        special::Expr::ArrayLit(_rep_choice, _item_type, elem_ids) => {
+            for elem_id in elem_ids {
+                move_info.add_move(*elem_id);
+            }
+        }
+        special::Expr::BoolLit(_)
+        | special::Expr::ByteLit(_)
+        | special::Expr::IntLit(_)
+        | special::Expr::FloatLit(_) => {}
+
+        special::Expr::LetMany(_, _) => unreachable![],
+        special::Expr::Branch(_, _, _) => unreachable![],
+    }
+
+    move_info
 }
 
 // we need to add retain and releases

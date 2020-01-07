@@ -71,7 +71,7 @@ pub enum ArrayOp {
 #[derive(Clone, Debug)]
 pub enum IoOp {
     Input,           // Returns array of bytes
-    Output(LocalId), // Takes array of bytes, returns unit
+    Output(LocalId), // Takes array of bytes by borrow, returns unit
 }
 
 #[derive(Clone, Debug)]
