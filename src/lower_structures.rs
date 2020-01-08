@@ -1,3 +1,4 @@
+use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::low_ast as low;
 use crate::data::repr_specialized_ast_alt as special;
@@ -382,12 +383,174 @@ impl LowAstBuilder {
         self.exprs.push((type_, expr));
         new_id
     }
+
+    fn build(self, final_local_id: low::LocalId) -> low::Expr {
+        low::Expr::LetMany(self.exprs, final_local_id)
+    }
+}
+
+fn lower_condition(
+    discrim: low::LocalId,
+    condition: &special::Condition,
+    builder: &mut LowAstBuilder,
+    match_type: &low::Type,
+    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
+) -> low::LocalId {
+    if let low::Type::Boxed(boxed_type) = match_type {
+        let unboxed_id = builder.add_expr((**boxed_type).clone(), low::Expr::UnwrapBoxed(discrim));
+        return lower_condition(unboxed_id, condition, builder, boxed_type, boxed_typedefs);
+    }
+
+    match condition {
+        special::Condition::Any => builder.add_expr(low::Type::Bool, low::Expr::BoolLit(true)),
+        special::Condition::Tuple(subconditions) => {
+            let item_types = if let low::Type::Tuple(item_types) = match_type {
+                item_types
+            } else {
+                unreachable![];
+            };
+
+            let subcondition_ids = item_types
+                .iter()
+                .zip(subconditions.iter())
+                .enumerate()
+                .map(|(index, (item_type, subcondition))| {
+                    let item_id =
+                        builder.add_expr(item_type.clone(), low::Expr::TupleField(discrim, index));
+                    lower_condition(item_id, subcondition, builder, item_type, boxed_typedefs)
+                })
+                .collect::<Vec<low::LocalId>>();
+            let if_expr =
+                subcondition_ids
+                    .into_iter()
+                    .rfold(low::Expr::BoolLit(true), |accum, item| {
+                        low::Expr::If(item, Box::new(accum), Box::new(low::Expr::BoolLit(false)))
+                    });
+
+            builder.add_expr(low::Type::Bool, if_expr)
+        }
+
+        special::Condition::Variant(variant_id, subcondition) => {
+            let variant_id = low::VariantId(variant_id.0);
+
+            let variant_check = builder.add_expr(
+                low::Type::Bool,
+                low::Expr::CheckVariant(variant_id, discrim),
+            );
+
+            let mut new_builder = builder.child();
+            let variant_types = if let low::Type::Variants(variant_types) = match_type {
+                variant_types
+            } else {
+                unreachable![];
+            };
+
+            let variant_type = &variant_types[variant_id];
+
+            let sub_discrim = new_builder.add_expr(
+                variant_type.clone(),
+                low::Expr::UnwrapVariant(low::VariantId(variant_id.0), discrim),
+            );
+
+            let sub_cond_id = lower_condition(
+                sub_discrim,
+                subcondition,
+                &mut new_builder,
+                variant_type,
+                boxed_typedefs,
+            );
+
+            builder.add_expr(
+                low::Type::Bool,
+                low::Expr::If(
+                    variant_check,
+                    Box::new(new_builder.build(sub_cond_id)),
+                    Box::new(low::Expr::BoolLit(false)),
+                ),
+            )
+        }
+        special::Condition::Custom(custom_type_id, subcondition) => {
+            let content_type = &boxed_typedefs[custom_type_id];
+
+            let content = builder.add_expr(
+                content_type.clone(),
+                low::Expr::UnwrapCustom(*custom_type_id, discrim),
+            );
+
+            lower_condition(content, subcondition, builder, content_type, boxed_typedefs)
+        }
+        special::Condition::BoolConst(val) => {
+            if *val {
+                discrim
+            } else {
+                builder.add_expr(
+                    low::Type::Bool,
+                    low::Expr::If(
+                        discrim,
+                        Box::new(low::Expr::BoolLit(false)),
+                        Box::new(low::Expr::BoolLit(true)),
+                    ),
+                )
+            }
+        }
+        special::Condition::ByteConst(val) => {
+            let val_id = builder.add_expr(
+                low::Type::Num(first_ord::NumType::Byte),
+                low::Expr::ByteLit(*val),
+            );
+
+            builder.add_expr(
+                low::Type::Bool,
+                low::Expr::ArithOp(low::ArithOp::Cmp(
+                    first_ord::NumType::Byte,
+                    first_ord::Comparison::Equal,
+                    val_id,
+                    discrim,
+                )),
+            )
+        }
+        special::Condition::IntConst(val) => {
+            let val_id = builder.add_expr(
+                low::Type::Num(first_ord::NumType::Int),
+                low::Expr::IntLit(*val),
+            );
+
+            builder.add_expr(
+                low::Type::Bool,
+                low::Expr::ArithOp(low::ArithOp::Cmp(
+                    first_ord::NumType::Int,
+                    first_ord::Comparison::Equal,
+                    val_id,
+                    discrim,
+                )),
+            )
+        }
+
+        special::Condition::FloatConst(val) => {
+            let val_id = builder.add_expr(
+                low::Type::Num(first_ord::NumType::Float),
+                low::Expr::FloatLit(*val),
+            );
+
+            builder.add_expr(
+                low::Type::Bool,
+                low::Expr::ArithOp(low::ArithOp::Cmp(
+                    first_ord::NumType::Float,
+                    first_ord::Comparison::Equal,
+                    val_id,
+                    discrim,
+                )),
+            )
+        }
+    }
 }
 
 fn lower_expr(
     expr: &AnnotExpr,
     context: &mut LocalContext<flat::LocalId, low::LocalId>,
     builder: &mut LowAstBuilder,
+    box_infos: &IdVec<special::CustomTypeId, BoxInfo>,
+    typedefs: &IdVec<special::CustomTypeId, special::Type>,
 ) -> low::LocalId {
     match &expr.kind {
         AnnotExprKind::LetMany(bindings, final_local_id) => {
@@ -412,7 +575,8 @@ fn lower_expr(
                     }
 
                     // emit expressions
-                    let low_binding_id = lower_expr(binding, subcontext, builder);
+                    let low_binding_id =
+                        lower_expr(binding, subcontext, builder, box_infos, typedefs);
                     let flat_binding_id = subcontext.add_local(low_binding_id);
 
                     // emit releases
@@ -443,7 +607,12 @@ fn lower_expr(
                 *subcontext.local_binding(*final_local_id)
             })
         }
-        _ => todo![],
+        AnnotExprKind::Branch(discrim, cases, result_type) => {
+            todo![];
+        }
+        AnnotExprKind::Leaf(leaf) => {
+            todo![];
+        }
     }
 }
 

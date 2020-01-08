@@ -90,6 +90,8 @@ pub enum Expr {
     UnwrapVariant(VariantId, LocalId),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
+    WrapBoxed(LocalId),
+    UnwrapBoxed(LocalId), // Does not touch refcount
 
     Retain(LocalId),  // Takes any type, returns unit
     Release(LocalId), // Takes any type, returns unit
