@@ -13,8 +13,8 @@ impl<Var: Id, T> LocalContext<Var, T> {
         }
     }
 
-    pub fn add_local(&mut self, type_: T) {
-        let _ = self.stack.push(type_);
+    pub fn add_local(&mut self, binding: T) -> Var {
+        self.stack.push(binding)
     }
 
     pub fn local_binding(&self, local: Var) -> &T

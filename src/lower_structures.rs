@@ -4,6 +4,7 @@ use crate::data::repr_specialized_ast_alt as special;
 use crate::data::repr_unified_ast as unif;
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
+use crate::util::local_context::LocalContext;
 use im_rc::OrdMap;
 use im_rc::OrdSet;
 use std::collections::BTreeSet;
@@ -356,7 +357,95 @@ fn count_moves(expr: &special::Expr) -> MoveInfo {
 // we need to add retain and releases
 // every time we have a syntactic occurence of a variable, we need to add a retain
 // we need to change branches to ifs
+// we need to unwrap array literals
 // we need to add boxing/unboxing in places
+
+struct LowAstBuilder {
+    offset: low::LocalId,
+    exprs: Vec<(low::Type, low::Expr)>,
+}
+
+impl LowAstBuilder {
+    fn new(offset: low::LocalId) -> LowAstBuilder {
+        LowAstBuilder {
+            offset,
+            exprs: Vec::new(),
+        }
+    }
+
+    fn child(&self) -> LowAstBuilder {
+        LowAstBuilder::new(low::LocalId(self.offset.0 + self.exprs.len()))
+    }
+
+    fn add_expr(&mut self, type_: low::Type, expr: low::Expr) -> low::LocalId {
+        let new_id = low::LocalId(self.offset.0 + self.exprs.len());
+        self.exprs.push((type_, expr));
+        new_id
+    }
+}
+
+fn lower_expr(
+    expr: &AnnotExpr,
+    context: &mut LocalContext<flat::LocalId, low::LocalId>,
+    builder: &mut LowAstBuilder,
+) -> low::LocalId {
+    match &expr.kind {
+        AnnotExprKind::LetMany(bindings, final_local_id) => {
+            context.with_scope(|subcontext| {
+                for (_type, binding, future_usages) in bindings {
+                    // emit retains
+                    for (var, move_count) in &binding.move_info.move_info {
+                        if *move_count != 0 {
+                            let retain_count = if future_usages.future_usages.contains(var) {
+                                *move_count
+                            } else {
+                                *move_count - 1
+                            };
+
+                            for _retain in 0..retain_count {
+                                builder.add_expr(
+                                    low::Type::Tuple(vec![]),
+                                    low::Expr::Retain(*subcontext.local_binding(*var)),
+                                );
+                            }
+                        }
+                    }
+
+                    // emit expressions
+                    let low_binding_id = lower_expr(binding, subcontext, builder);
+                    let flat_binding_id = subcontext.add_local(low_binding_id);
+
+                    // emit releases
+                    for (var, move_count) in &binding.move_info.move_info {
+                        if *move_count == 0 && !future_usages.future_usages.contains(var) {
+                            builder.add_expr(
+                                low::Type::Tuple(vec![]),
+                                low::Expr::Release(*subcontext.local_binding(*var)),
+                            );
+                        }
+                    }
+
+                    if !future_usages.future_usages.contains(&flat_binding_id) {
+                        builder.add_expr(
+                            low::Type::Tuple(vec![]),
+                            low::Expr::Release(*subcontext.local_binding(flat_binding_id)),
+                        );
+                    }
+                }
+
+                if expr.move_info.move_info.get(final_local_id) == Some(&0) {
+                    builder.add_expr(
+                        low::Type::Tuple(vec![]),
+                        low::Expr::Retain(*subcontext.local_binding(*final_local_id)),
+                    );
+                }
+
+                *subcontext.local_binding(*final_local_id)
+            })
+        }
+        _ => todo![],
+    }
+}
 
 fn lower_structures(_program: special::Program) -> low::Program {
     todo![];
