@@ -83,6 +83,7 @@ pub enum Expr {
         Vec<(Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
         LocalId,           // body
     ),
+    Unreachable(Type),
 
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),
