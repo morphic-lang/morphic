@@ -437,9 +437,10 @@ fn instantiate_expr(
     expr: &mutation::Expr,
 ) -> (SolverExpr, SolverType) {
     match expr {
-        mutation::Expr::Local(local) => {
-            (unif::Expr::Local(*local), locals.local_type(*local).clone())
-        }
+        mutation::Expr::Local(local) => (
+            unif::Expr::Local(*local),
+            locals.local_binding(*local).clone(),
+        ),
 
         mutation::Expr::Call(purity, func, arg_aliases, arg_folded_aliases, arg_statuses, arg) => {
             match &globals.funcs_annot[func] {
@@ -451,7 +452,7 @@ fn instantiate_expr(
                     let arg_type = instantiate_subst(&rep_vars, &def_annot.arg_type);
                     let ret_type = instantiate_subst(&rep_vars, &def_annot.ret_type);
 
-                    equate_types(graph, locals.local_type(*arg), &arg_type);
+                    equate_types(graph, locals.local_binding(*arg), &arg_type);
 
                     let expr_inst = unif::Expr::Call(SolverCall::KnownCall(unif::SolvedCall(
                         *purity,
@@ -471,7 +472,7 @@ fn instantiate_expr(
 
                     let pending_sig = &globals.sigs_pending[func];
 
-                    equate_types(graph, locals.local_type(*arg), &pending_sig.arg);
+                    equate_types(graph, locals.local_binding(*arg), &pending_sig.arg);
 
                     let expr_inst = unif::Expr::Call(SolverCall::PendingCall(
                         *purity,
@@ -494,7 +495,7 @@ fn instantiate_expr(
                 .iter()
                 .map(|(cond, body)| {
                     let cond_inst =
-                        instantate_condition(typedefs, locals.local_type(*discrim), cond);
+                        instantate_condition(typedefs, locals.local_binding(*discrim), cond);
 
                     let (body_inst, body_type) =
                         instantiate_expr(typedefs, globals, graph, locals, body);
@@ -525,7 +526,7 @@ fn instantiate_expr(
 
             let expr_inst = unif::Expr::LetMany(bindings_inst, *final_local);
 
-            let result_type = sub_locals.local_type(*final_local).clone();
+            let result_type = sub_locals.local_binding(*final_local).clone();
 
             (expr_inst, result_type)
         }),
@@ -533,7 +534,7 @@ fn instantiate_expr(
         mutation::Expr::Tuple(items) => {
             let item_types = items
                 .iter()
-                .map(|&item| locals.local_type(item).clone())
+                .map(|&item| locals.local_binding(item).clone())
                 .collect();
 
             (
@@ -543,7 +544,7 @@ fn instantiate_expr(
         }
 
         mutation::Expr::TupleField(tuple, idx) => {
-            let item_type = if let unif::Type::Tuple(item_types) = locals.local_type(*tuple) {
+            let item_type = if let unif::Type::Tuple(item_types) = locals.local_binding(*tuple) {
                 item_types[*idx].clone()
             } else {
                 unreachable!()
@@ -559,7 +560,7 @@ fn instantiate_expr(
             equate_types(
                 graph,
                 &variant_types_inst[variant],
-                locals.local_type(*content),
+                locals.local_binding(*content),
             );
 
             (
@@ -570,7 +571,7 @@ fn instantiate_expr(
 
         mutation::Expr::UnwrapVariant(variant, wrapped) => {
             let variant_type =
-                if let unif::Type::Variants(variant_types) = locals.local_type(*wrapped) {
+                if let unif::Type::Variants(variant_types) = locals.local_binding(*wrapped) {
                     variant_types[variant].clone()
                 } else {
                     unreachable!()
@@ -586,7 +587,7 @@ fn instantiate_expr(
                 IdVec::from_items((0..typedef.num_params).map(|_| graph.new_var()).collect());
 
             let content_type_inst = instantiate_subst(&rep_vars, &typedef.content);
-            equate_types(graph, &content_type_inst, locals.local_type(*content));
+            equate_types(graph, &content_type_inst, locals.local_binding(*content));
 
             (
                 unif::Expr::WrapCustom(*custom, rep_vars.clone(), *content),
@@ -597,14 +598,15 @@ fn instantiate_expr(
         mutation::Expr::UnwrapCustom(custom, wrapped) => {
             let typedef = &typedefs[custom];
 
-            let rep_vars =
-                if let unif::Type::Custom(wrapped_custom, rep_vars) = locals.local_type(*wrapped) {
-                    debug_assert_eq!(wrapped_custom, custom);
-                    debug_assert_eq!(rep_vars.len(), typedef.num_params);
-                    rep_vars
-                } else {
-                    unreachable!();
-                };
+            let rep_vars = if let unif::Type::Custom(wrapped_custom, rep_vars) =
+                locals.local_binding(*wrapped)
+            {
+                debug_assert_eq!(wrapped_custom, custom);
+                debug_assert_eq!(rep_vars.len(), typedef.num_params);
+                rep_vars
+            } else {
+                unreachable!();
+            };
 
             let content_type_inst = instantiate_subst(rep_vars, &typedef.content);
 
@@ -631,7 +633,7 @@ fn instantiate_expr(
             index,
         )) => {
             let (rep_var, item_type_inst) =
-                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_type(*array) {
+                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
                 } else {
                     unreachable!()
@@ -653,7 +655,7 @@ fn instantiate_expr(
 
         mutation::Expr::ArrayOp(mutation::ArrayOp::Len(_item_type, array_status, array)) => {
             let (rep_var, item_type_inst) =
-                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_type(*array) {
+                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
                 } else {
                     unreachable!()
@@ -672,13 +674,13 @@ fn instantiate_expr(
 
         mutation::Expr::ArrayOp(mutation::ArrayOp::Push(_item_type, array_status, array, item)) => {
             let (rep_var, array_item_type) =
-                if let unif::Type::Array(rep_var, array_item_type) = locals.local_type(*array) {
+                if let unif::Type::Array(rep_var, array_item_type) = locals.local_binding(*array) {
                     (*rep_var, array_item_type as &unif::Type<_>)
                 } else {
                     unreachable!()
                 };
 
-            let item_type = locals.local_type(*item);
+            let item_type = locals.local_binding(*item);
 
             equate_types(graph, array_item_type, item_type);
 
@@ -695,7 +697,7 @@ fn instantiate_expr(
 
         mutation::Expr::ArrayOp(mutation::ArrayOp::Pop(_item_type, array_status, array)) => {
             let (rep_var, item_type_inst) =
-                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_type(*array) {
+                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
                 } else {
                     unreachable!()
@@ -723,14 +725,14 @@ fn instantiate_expr(
         )) => {
             let (rep_var, array_item_type) =
                 if let unif::Type::HoleArray(rep_var, array_item_type) =
-                    locals.local_type(*hole_array)
+                    locals.local_binding(*hole_array)
                 {
                     (*rep_var, array_item_type as &unif::Type<_>)
                 } else {
                     unreachable!()
                 };
 
-            let item_type = locals.local_type(*item);
+            let item_type = locals.local_binding(*item);
 
             equate_types(graph, array_item_type, item_type);
 
@@ -756,7 +758,7 @@ fn instantiate_expr(
 
         mutation::Expr::IOOp(mutation::IOOp::Output(array_status, byte_array)) => {
             let rep_var =
-                if let unif::Type::Array(rep_var, item_type) = locals.local_type(*byte_array) {
+                if let unif::Type::Array(rep_var, item_type) = locals.local_binding(*byte_array) {
                     debug_assert_eq!(
                         item_type as &unif::Type<_>,
                         &unif::Type::Num(first_ord::NumType::Byte)
@@ -781,7 +783,7 @@ fn instantiate_expr(
             let item_type_inst = instantiate_type(typedefs, graph, item_type);
 
             for item in items {
-                equate_types(graph, &item_type_inst, locals.local_type(*item));
+                equate_types(graph, &item_type_inst, locals.local_binding(*item));
             }
 
             (

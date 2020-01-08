@@ -838,7 +838,10 @@ fn instantiate_expr(
             ),
         },
 
-        &lifted::Expr::Local(local) => (SolverExpr::Local(local), locals.local_type(local).clone()),
+        &lifted::Expr::Local(local) => (
+            SolverExpr::Local(local),
+            locals.local_binding(local).clone(),
+        ),
 
         &lifted::Expr::Capture(capture) => {
             (SolverExpr::Capture(capture), captures[capture].clone())

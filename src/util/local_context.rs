@@ -17,7 +17,7 @@ impl<Var: Id, T> LocalContext<Var, T> {
         let _ = self.stack.push(type_);
     }
 
-    pub fn local_type(&self, local: Var) -> &T
+    pub fn local_binding(&self, local: Var) -> &T
     where
         T: Clone,
     {
