@@ -227,6 +227,11 @@ fn run<R: io::BufRead, W: io::Write>(
     );
     println!("(end repr-specialized program)");
 
+    let lowered = lower_structures::lower_structures(repr_specialized);
+
+    println!("Lowered program: {:#?}", lowered);
+    println!("(end lowered program)");
+
     let unique_infos = annot_aliases::annot_aliases(&first_order);
 
     let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);

@@ -129,16 +129,10 @@ fn box_type(boxinfo: &BoxInfo, type_: &special::Type) -> low::Type {
 
 fn find_boxed_types(
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
-) -> (
-    IdVec<special::CustomTypeId, low::Type>,
-    IdVec<special::CustomTypeId, BoxInfo>,
-) {
+) -> IdVec<special::CustomTypeId, low::Type> {
     let box_infos = find_box_infos(typedefs);
 
-    (
-        typedefs.map(|id, typedef| box_type(&box_infos[id], typedef)),
-        box_infos,
-    )
+    typedefs.map(|id, typedef| box_type(&box_infos[id], typedef))
 }
 
 #[derive(Clone, Debug)]
@@ -552,7 +546,6 @@ fn lower_branch(
     move_info: &MoveInfo,
     context: &mut LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
-    box_infos: &IdVec<special::CustomTypeId, BoxInfo>,
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
     boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::LocalId {
@@ -595,7 +588,6 @@ fn lower_branch(
                 result_type,
                 context,
                 &mut then_builder,
-                box_infos,
                 typedefs,
                 boxed_typedefs,
             );
@@ -621,7 +613,6 @@ fn lower_branch(
                 move_info,
                 context,
                 &mut else_builder,
-                box_infos,
                 typedefs,
                 boxed_typedefs,
             );
@@ -941,7 +932,6 @@ fn lower_expr(
     result_type: &low::Type,
     context: &mut LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
-    box_infos: &IdVec<special::CustomTypeId, BoxInfo>,
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
     boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::LocalId {
@@ -973,7 +963,6 @@ fn lower_expr(
                         &lower_type(type_),
                         subcontext,
                         builder,
-                        box_infos,
                         typedefs,
                         boxed_typedefs,
                     );
@@ -1014,7 +1003,6 @@ fn lower_expr(
             &expr.move_info,
             context,
             builder,
-            box_infos,
             typedefs,
             boxed_typedefs,
         ),
@@ -1029,6 +1017,74 @@ fn lower_expr(
     }
 }
 
-fn lower_structures(_program: special::Program) -> low::Program {
-    todo![];
+fn lower_function(
+    func: special::FuncDef,
+    typedefs: &IdVec<special::CustomTypeId, special::Type>,
+    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
+) -> low::FuncDef {
+    let future_usages = FutureUsageInfo {
+        future_usages: OrdSet::new(),
+    };
+    let annotated_body = annotate_expr(func.body, &future_usages, 1);
+
+    let mut builder = LowAstBuilder::new(low::LocalId(1));
+
+    for _ in 1..*annotated_body
+        .move_info
+        .move_info
+        .get(&flat::LocalId(0))
+        .unwrap_or(&0)
+    {
+        builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Retain(low::LocalId(0)));
+    }
+
+    let mut context = LocalContext::new();
+
+    context.add_local((func.arg_type.clone(), low::LocalId(0)));
+
+    let final_local_id = lower_expr(
+        &annotated_body,
+        &lower_type(&func.ret_type),
+        &mut context,
+        &mut builder,
+        typedefs,
+        boxed_typedefs,
+    );
+
+    if annotated_body
+        .move_info
+        .move_info
+        .get(&flat::LocalId(0))
+        .unwrap_or(&0)
+        == &0
+    {
+        builder.add_expr(
+            low::Type::Tuple(vec![]),
+            low::Expr::Release(low::LocalId(0)),
+        );
+    }
+
+    low::FuncDef {
+        arg_type: lower_type(&func.arg_type),
+        ret_type: lower_type(&func.ret_type),
+        body: builder.build(final_local_id),
+    }
+}
+
+pub fn lower_structures(program: special::Program) -> low::Program {
+    let typedefs = program.custom_types;
+    let boxed_typedefs = find_boxed_types(&typedefs);
+
+    let lowered_funcs = program
+        .funcs
+        .items
+        .into_iter()
+        .map(|func| lower_function(func, &typedefs, &boxed_typedefs))
+        .collect();
+
+    low::Program {
+        custom_types: boxed_typedefs,
+        funcs: IdVec::from_items(lowered_funcs),
+        main: low::CustomFuncId(program.main.0),
+    }
 }
