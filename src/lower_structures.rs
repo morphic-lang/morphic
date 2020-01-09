@@ -636,6 +636,306 @@ fn lower_branch(
     }
 }
 
+impl flat::LocalId {
+    fn lookup_in(
+        &self,
+        context: &LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
+    ) -> low::LocalId {
+        context.local_binding(*self).1
+    }
+}
+
+fn coerce_variants(
+    local_id: low::LocalId,
+    original_variants: &IdVec<low::VariantId, low::Type>,
+    target_variants: &IdVec<low::VariantId, low::Type>,
+    offset: usize,
+    builder: &mut LowAstBuilder,
+    coerce: impl for<'a> Fn(
+        low::LocalId,
+        &'a low::Type,
+        &'a low::Type,
+        &'a mut LowAstBuilder,
+    ) -> low::LocalId,
+) -> low::LocalId {
+    debug_assert!(offset <= target_variants.len());
+
+    let result_type = low::Type::Variants(target_variants.clone());
+    if offset == target_variants.len() {
+        builder.add_expr(result_type.clone(), low::Expr::Unreachable(result_type))
+    } else {
+        let variant_id = low::VariantId(offset);
+        let target_variant_type = &target_variants[variant_id];
+        let original_variant_type = &original_variants[variant_id];
+
+        let is_this_variant = builder.add_expr(
+            low::Type::Bool,
+            low::Expr::CheckVariant(variant_id, local_id),
+        );
+
+        let mut then_builder = builder.child();
+
+        let unwrapped_variant_id = then_builder.add_expr(
+            original_variant_type.clone(),
+            low::Expr::UnwrapVariant(variant_id, local_id),
+        );
+
+        let boxed_content_unwrapped = coerce(
+            unwrapped_variant_id,
+            original_variant_type,
+            target_variant_type,
+            &mut then_builder,
+        );
+
+        let boxed_then_id = then_builder.add_expr(
+            result_type.clone(),
+            low::Expr::WrapVariant(target_variants.clone(), variant_id, boxed_content_unwrapped),
+        );
+
+        let mut else_builder = builder.child();
+        let boxed_else_id = coerce_variants(
+            local_id,
+            original_variants,
+            target_variants,
+            offset + 1,
+            &mut else_builder,
+            coerce,
+        );
+        builder.add_expr(
+            result_type,
+            low::Expr::If(
+                is_this_variant,
+                Box::new(then_builder.build(boxed_then_id)),
+                Box::new(else_builder.build(boxed_else_id)),
+            ),
+        )
+    }
+}
+
+fn box_content(
+    local_id: low::LocalId,
+    original_type: &low::Type,
+    target_type: &low::Type,
+    builder: &mut LowAstBuilder,
+) -> low::LocalId {
+    match target_type {
+        low::Type::Boxed(_inner_type) => {
+            builder.add_expr(target_type.clone(), low::Expr::WrapBoxed(local_id))
+        }
+        low::Type::Variants(target_variants) => {
+            if let low::Type::Variants(original_variants) = original_type {
+                coerce_variants(
+                    local_id,
+                    original_variants,
+                    target_variants,
+                    0,
+                    builder,
+                    box_content,
+                )
+            } else {
+                unreachable![];
+            }
+        }
+        _ => local_id,
+    }
+}
+
+fn unbox_content(
+    local_id: low::LocalId,
+    original_type: &low::Type,
+    target_type: &low::Type,
+    builder: &mut LowAstBuilder,
+) -> low::LocalId {
+    match original_type {
+        low::Type::Boxed(inner_type) => {
+            let inner_id =
+                builder.add_expr((**inner_type).clone(), low::Expr::UnwrapBoxed(local_id));
+            builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Release(inner_id));
+            inner_id
+        }
+        low::Type::Variants(original_variants) => {
+            if let low::Type::Variants(target_variants) = target_type {
+                coerce_variants(
+                    local_id,
+                    original_variants,
+                    target_variants,
+                    0,
+                    builder,
+                    unbox_content,
+                )
+            } else {
+                unreachable![];
+            }
+        }
+        _ => local_id,
+    }
+}
+
+fn lower_leaf(
+    expr: &special::Expr,
+    result_type: &low::Type,
+    context: &LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
+    builder: &mut LowAstBuilder,
+    typedefs: &IdVec<special::CustomTypeId, special::Type>,
+    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
+) -> low::LocalId {
+    match expr {
+        special::Expr::Local(local_id) => local_id.lookup_in(context),
+        special::Expr::Call(_purity, func_id, arg_id) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::Call(low::CustomFuncId(func_id.0), arg_id.lookup_in(context)),
+        ),
+        special::Expr::Tuple(elem_ids) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::Tuple(
+                elem_ids
+                    .iter()
+                    .map(|elem_id| elem_id.lookup_in(context))
+                    .collect(),
+            ),
+        ),
+        special::Expr::TupleField(tuple_id, index) => {
+            let tuple_elem_id = builder.add_expr(
+                result_type.clone(),
+                low::Expr::TupleField(tuple_id.lookup_in(context), *index),
+            );
+            builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Retain(tuple_elem_id));
+            tuple_elem_id
+        }
+        special::Expr::WrapVariant(variants, variant_id, content_id) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::WrapVariant(
+                IdVec::from_items(
+                    variants
+                        .iter()
+                        .map(|(_index, variant)| lower_type(variant))
+                        .collect(),
+                ),
+                low::VariantId(variant_id.0),
+                content_id.lookup_in(context),
+            ),
+        ),
+        special::Expr::UnwrapVariant(variant_id, content_id) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::UnwrapVariant(low::VariantId(variant_id.0), content_id.lookup_in(context)),
+        ),
+        special::Expr::WrapCustom(type_id, content_id) => {
+            let unboxed_type = lower_type(&typedefs[type_id]);
+            let boxed_type = &boxed_typedefs[type_id];
+
+            let boxed_content_id = box_content(
+                content_id.lookup_in(context),
+                &unboxed_type,
+                boxed_type,
+                builder,
+            );
+
+            builder.add_expr(
+                low::Type::Custom(*type_id),
+                low::Expr::WrapCustom(*type_id, boxed_content_id),
+            )
+        }
+        special::Expr::UnwrapCustom(type_id, content_id) => {
+            let unboxed_type = lower_type(&typedefs[type_id]);
+            let boxed_type = &boxed_typedefs[type_id];
+
+            let unwrapped_id = builder.add_expr(
+                boxed_type.clone(),
+                low::Expr::UnwrapCustom(*type_id, content_id.lookup_in(context)),
+            );
+
+            unbox_content(unwrapped_id, boxed_type, &unboxed_type, builder)
+        }
+        special::Expr::ArithOp(arith_op) => {
+            let arith_expr = match arith_op {
+                flat::ArithOp::Op(num_type, bin_op, local_id1, local_id2) => low::ArithOp::Op(
+                    *num_type,
+                    *bin_op,
+                    local_id1.lookup_in(context),
+                    local_id2.lookup_in(context),
+                ),
+                flat::ArithOp::Cmp(num_type, comp, local_id1, local_id2) => low::ArithOp::Cmp(
+                    *num_type,
+                    *comp,
+                    local_id1.lookup_in(context),
+                    local_id2.lookup_in(context),
+                ),
+                flat::ArithOp::Negate(num_type, local_id) => {
+                    low::ArithOp::Negate(*num_type, local_id.lookup_in(context))
+                }
+            };
+            builder.add_expr(result_type.clone(), low::Expr::ArithOp(arith_expr))
+        }
+
+        special::Expr::ArrayOp(rep, item_type, array_op) => {
+            let array_expr = match array_op {
+                unif::ArrayOp::Item(array_id, index_id) => {
+                    low::ArrayOp::Item(array_id.lookup_in(context), index_id.lookup_in(context))
+                }
+                unif::ArrayOp::Len(array_id) => low::ArrayOp::Len(array_id.lookup_in(context)),
+                unif::ArrayOp::Push(array_id, item_id) => {
+                    low::ArrayOp::Push(array_id.lookup_in(context), item_id.lookup_in(context))
+                }
+                unif::ArrayOp::Pop(array_id) => low::ArrayOp::Pop(array_id.lookup_in(context)),
+                unif::ArrayOp::Replace(array_id, item_id) => {
+                    low::ArrayOp::Replace(array_id.lookup_in(context), item_id.lookup_in(context))
+                }
+            };
+            builder.add_expr(
+                result_type.clone(),
+                low::Expr::ArrayOp(*rep, lower_type(item_type), array_expr),
+            )
+        }
+        special::Expr::IoOp(rep, io_type) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::IoOp(
+                *rep,
+                match io_type {
+                    flat::IOOp::Input => low::IoOp::Input,
+                    flat::IOOp::Output(output_id) => {
+                        low::IoOp::Output(output_id.lookup_in(context))
+                    }
+                },
+            ),
+        ),
+        special::Expr::ArrayLit(rep, elem_type, elems) => {
+            let mut result_id = builder.add_expr(
+                result_type.clone(),
+                low::Expr::ArrayOp(*rep, lower_type(elem_type), low::ArrayOp::New()),
+            );
+
+            for elem_id in elems {
+                result_id = builder.add_expr(
+                    result_type.clone(),
+                    low::Expr::ArrayOp(
+                        *rep,
+                        lower_type(elem_type),
+                        low::ArrayOp::Push(result_id, elem_id.lookup_in(context)),
+                    ),
+                );
+            }
+
+            result_id
+        }
+        special::Expr::BoolLit(val) => {
+            builder.add_expr(result_type.clone(), low::Expr::BoolLit(*val))
+        }
+        special::Expr::ByteLit(val) => {
+            builder.add_expr(result_type.clone(), low::Expr::ByteLit(*val))
+        }
+        special::Expr::IntLit(val) => {
+            builder.add_expr(result_type.clone(), low::Expr::IntLit(*val))
+        }
+        special::Expr::FloatLit(val) => {
+            builder.add_expr(result_type.clone(), low::Expr::FloatLit(*val))
+        }
+
+        special::Expr::Branch(_, _, _) | special::Expr::LetMany(_, _) => {
+            unreachable![];
+        }
+    }
+}
+
 fn lower_expr(
     expr: &AnnotExpr,
     result_type: &low::Type,
@@ -718,9 +1018,14 @@ fn lower_expr(
             typedefs,
             boxed_typedefs,
         ),
-        AnnotExprKind::Leaf(leaf) => {
-            todo![];
-        }
+        AnnotExprKind::Leaf(leaf) => lower_leaf(
+            leaf,
+            result_type,
+            context,
+            builder,
+            typedefs,
+            boxed_typedefs,
+        ),
     }
 }
 

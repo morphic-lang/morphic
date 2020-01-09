@@ -101,7 +101,7 @@ pub enum Expr {
 
     ArithOp(ArithOp),
     ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
-    IoOp(IoOp),
+    IoOp(constrain::RepChoice, IoOp),
 
     BoolLit(bool),
     ByteLit(u8),
