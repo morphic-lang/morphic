@@ -290,10 +290,10 @@ fn release(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
         }
         Value::Variant(_, content) | Value::Custom(_, content) => {
             let content2 = content.clone();
-            retain(
+            release(
                 heap,
                 content2,
-                stacktrace.add_frame("retaining subthing".into()),
+                stacktrace.add_frame("release subthing".into()),
             );
         }
     }
