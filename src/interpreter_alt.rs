@@ -48,10 +48,12 @@ enum Value {
 }
 
 impl Value {
-    fn assert_live(&self) -> &Value {
+    fn assert_live(&self, stacktrace: StackTrace) -> &Value {
         match self {
             Value::Array(_, _, rc, _) | Value::HoleArray(_, _, rc, _, _) | Value::Box(rc, _) => {
-                assert![*rc != 0, "value {:#?} has rc 0", &self];
+                if *rc == 0 {
+                    stacktrace.panic(format!["accessing rc 0 value {:?}", &self]);
+                }
             }
             _ => {}
         };
@@ -59,10 +61,9 @@ impl Value {
         match &self {
             Value::Array(RepChoice::OptimizedMut, status, _rc, _values)
             | Value::HoleArray(RepChoice::OptimizedMut, status, _rc, _, _values) => {
-                assert![
-                    *status == ArrayStatus::Valid,
-                    "accessing invalid flat array"
-                ];
+                if *status != ArrayStatus::Valid {
+                    stacktrace.panic(format!["accessing invalid flat array {:?}", self]);
+                }
             }
             _ => {}
         }
@@ -457,7 +458,7 @@ fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace)
 }
 
 fn unwrap_bool(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> bool {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap bool".into()));
     if let Value::Bool(val) = kind {
         *val
     } else {
@@ -466,7 +467,7 @@ fn unwrap_bool(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> bool {
 }
 
 fn unwrap_byte(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> u8 {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap byte".into()));
     if let Value::Num(NumValue::Byte(val)) = kind {
         *val
     } else {
@@ -475,7 +476,7 @@ fn unwrap_byte(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> u8 {
 }
 
 fn unwrap_int(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> i64 {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap int".into()));
     if let Value::Num(NumValue::Int(val)) = kind {
         *val
     } else {
@@ -484,7 +485,7 @@ fn unwrap_int(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> i64 {
 }
 
 fn unwrap_float(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> f64 {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap float".into()));
     if let Value::Num(NumValue::Float(val)) = kind {
         *val
     } else {
@@ -498,7 +499,7 @@ fn unwrap_array(
     rep: RepChoice,
     stacktrace: StackTrace,
 ) -> Vec<HeapId> {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap array".into()));
     if let Value::Array(runtime_rep, _status, _rc, values) = kind {
         if *runtime_rep != rep {
             stacktrace.panic(format![
@@ -518,7 +519,7 @@ fn unwrap_hole_array(
     rep: RepChoice,
     stacktrace: StackTrace,
 ) -> (i64, Vec<HeapId>) {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap hole array".into()));
     if let Value::HoleArray(runtime_rep, _status, _rc, index, values) = kind {
         if *runtime_rep != rep {
             stacktrace.panic(format![
@@ -533,7 +534,7 @@ fn unwrap_hole_array(
 }
 
 fn unwrap_tuple(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<HeapId> {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap tuple".into()));
     if let Value::Tuple(values) = kind {
         values.clone()
     } else {
@@ -542,7 +543,7 @@ fn unwrap_tuple(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<Hea
 }
 
 fn unwrap_variant(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (VariantId, HeapId) {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap variant".into()));
     if let Value::Variant(variant_id, heap_id) = kind {
         (*variant_id, *heap_id)
     } else {
@@ -551,7 +552,7 @@ fn unwrap_variant(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (Vari
 }
 
 fn unwrap_boxed(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> HeapId {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap boxed".into()));
     if let Value::Box(_rc, heap_id) = kind {
         *heap_id
     } else {
@@ -560,7 +561,7 @@ fn unwrap_boxed(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> HeapId 
 }
 
 fn unwrap_custom(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (CustomTypeId, HeapId) {
-    let kind = &heap[heap_id].assert_live();
+    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap custom".into()));
     if let Value::Custom(type_id, heap_id) = kind {
         (*type_id, *heap_id)
     } else {
@@ -1258,7 +1259,7 @@ fn interpret_expr<R: BufRead, W: Write>(
                 ));
             }
 
-            write!(
+            writeln!(
                 stdout,
                 "{}",
                 String::from_utf8(bytes).expect("UTF-8 output error")
@@ -1295,6 +1296,5 @@ pub fn interpret<R: BufRead, W: Write>(stdin: &mut R, stdout: &mut W, program: &
         &Type::Tuple(vec![]),
         StackTrace::new(),
     );
-    println!("{:#?}", heap.values);
     heap.assert_everything_else_deallocated();
 }
