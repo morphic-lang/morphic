@@ -185,21 +185,97 @@ impl Heap<'_> {
         HeapId(self.values.len() - 1)
     }
 
-    // the only two things that should have non-zero rc at the end of the program
-    // is the first thing on the heap (we use that for returning from retain/release)
-    // and the final_local from main
+    fn value_to_str(&self, kind: HeapId) -> String {
+        match &self[kind] {
+            Value::Bool(val) => val.to_string(),
+            Value::Num(NumValue::Byte(val)) => (*val as char).to_string(),
+            Value::Num(NumValue::Int(val)) => val.to_string(),
+            Value::Num(NumValue::Float(val)) => val.to_string(),
+            Value::Array(rep, status, rc, contents) => {
+                let rep_str = match rep {
+                    RepChoice::OptimizedMut => "flat",
+                    RepChoice::FallbackImmut => "persistent",
+                };
+                let status_str = match status {
+                    ArrayStatus::Valid => "",
+                    ArrayStatus::Invalid => "invalid ",
+                };
+                let contents_str = contents
+                    .iter()
+                    .map(|heap_id| self.value_to_str(*heap_id))
+                    .collect::<Vec<String>>()
+                    .join(",");
+                format![
+                    "{}{} rc:{} array [{}]",
+                    status_str, rep_str, rc, contents_str
+                ]
+            }
+            Value::HoleArray(rep, status, rc, hole, contents) => {
+                let rep_str = match rep {
+                    RepChoice::OptimizedMut => "flat",
+                    RepChoice::FallbackImmut => "persistent",
+                };
+                let status_str = match status {
+                    ArrayStatus::Valid => "",
+                    ArrayStatus::Invalid => "invalid ",
+                };
+                let contents_str = contents
+                    .iter()
+                    .enumerate()
+                    .map(|(i, heap_id)| {
+                        if i as i64 == *hole {
+                            "_".into()
+                        } else {
+                            self.value_to_str(*heap_id)
+                        }
+                    })
+                    .collect::<Vec<String>>()
+                    .join(",");
+                format![
+                    "{}{} hole array rc:{} [{}]",
+                    status_str, rep_str, rc, contents_str
+                ]
+            }
+            Value::Tuple(contents) => {
+                let contents_str = contents
+                    .iter()
+                    .map(|heap_id| self.value_to_str(*heap_id))
+                    .collect::<Vec<String>>()
+                    .join(",");
+                format!["tuple({})", contents_str]
+            }
+            Value::Variant(variant_id, heap_id) => format![
+                "variant #{} ({})",
+                variant_id.0,
+                self.value_to_str(*heap_id)
+            ],
+            Value::Box(rc, heap_id) => format!["box rc:{} ({})", rc, self.value_to_str(*heap_id)],
+            Value::Custom(type_id, heap_id) => {
+                format!["custom #{} ({})", type_id.0, self.value_to_str(*heap_id)]
+            }
+        }
+    }
+
     fn assert_everything_else_deallocated(&self) {
-        for value in self.values.iter() {
+        let mut not_freed_values = vec![];
+        for (index, value) in self.values.iter().enumerate() {
             match value {
                 Value::Box(rc, _)
                 | Value::Array(_, _, rc, _)
                 | Value::HoleArray(_, _, rc, _, _) => {
                     if *rc != 0 {
-                        panic!["rc != 0 at main"];
+                        not_freed_values.push(index);
                     }
                 }
                 _ => {}
             }
+        }
+        for value in &not_freed_values {
+            println!["{}", self.value_to_str(HeapId(*value))]
+        }
+
+        if not_freed_values.len() != 0 {
+            panic!["rc != 0 at end of main"];
         }
     }
 
