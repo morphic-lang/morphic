@@ -1164,8 +1164,6 @@ fn interpret_expr<R: BufRead, W: Write>(
                 stacktrace.add_frame("item index".into()),
             );
 
-            heap.maybe_invalidate(array_heap_id);
-
             let hole_array_id = heap.add(Value::HoleArray(
                 rep,
                 ArrayStatus::Valid,
