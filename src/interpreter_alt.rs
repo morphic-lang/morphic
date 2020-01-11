@@ -251,10 +251,10 @@ fn release(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
         Value::Bool(_) | Value::Num(_) => {}
         Value::Tuple(contents) => {
             for sub_heap_id in contents.clone() {
-                retain(
+                release(
                     heap,
                     sub_heap_id,
-                    stacktrace.add_frame("retaining subtuple".into()),
+                    stacktrace.add_frame("releasing subtuple".into()),
                 );
             }
         }
