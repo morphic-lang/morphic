@@ -55,6 +55,8 @@ mod specialize_reprs;
 
 mod lower_structures;
 
+mod interpreter_alt;
+
 mod annot_aliases;
 
 mod annot_reprs;
@@ -232,17 +234,11 @@ fn run<R: io::BufRead, W: io::Write>(
     println!("Lowered program: {:#?}", lowered);
     println!("(end lowered program)");
 
-    let unique_infos = annot_aliases::annot_aliases(&first_order);
-
-    let data_structure_annotated = annot_reprs::annot_reprs(&first_order, unique_infos);
-
-    let specialized = lower_reprs::lower_reprs(data_structure_annotated);
-
     println!("==============================================================");
     println!("============== Running program ===============================");
     println!("==============================================================");
 
-    interpreter::interpret(stdin, stdout, &specialized);
+    interpreter_alt::interpret(stdin, stdout, &lowered);
 
     Ok(())
 }
