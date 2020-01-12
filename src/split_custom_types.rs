@@ -6,9 +6,13 @@ use crate::data::first_order_ast as first_ord;
 use crate::util::id_vec::IdVec;
 
 pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
-    let custom_types = program
-        .custom_types
-        .map(|_, typedef| anon::Type::Variants(trans_variants(&typedef.variants)));
+    let custom_types = program.custom_types.map(|_, typedef| {
+        if typedef.variants.len() == 1 {
+            trans_content_type(&typedef.variants[first_ord::VariantId(0)])
+        } else {
+            anon::Type::Variants(trans_variants(&typedef.variants))
+        }
+    });
 
     let funcs = program.funcs.map(|_, func_def| anon::FuncDef {
         purity: func_def.purity,
@@ -48,6 +52,7 @@ fn trans_content_type(content: &Option<first_ord::Type>) -> anon::Type {
 fn trans_variants(
     variants: &IdVec<first_ord::VariantId, Option<first_ord::Type>>,
 ) -> IdVec<first_ord::VariantId, anon::Type> {
+    assert![variants.len() != 1];
     variants.map(|_, content| trans_content_type(content))
 }
 
@@ -125,14 +130,21 @@ fn trans_expr(
 
         first_ord::Expr::Ctor(type_id, variant, content) => anon::Expr::WrapCustom(
             *type_id,
-            Box::new(anon::Expr::WrapVariant(
-                trans_variants(&typedefs[type_id].variants),
-                *variant,
+            if typedefs[type_id].variants.len() != 1 {
+                Box::new(anon::Expr::WrapVariant(
+                    trans_variants(&typedefs[type_id].variants),
+                    *variant,
+                    Box::new(match content {
+                        Some(content) => trans_expr(typedefs, content),
+                        None => anon::Expr::Tuple(Vec::new()),
+                    }),
+                ))
+            } else {
                 Box::new(match content {
                     Some(content) => trans_expr(typedefs, content),
                     None => anon::Expr::Tuple(Vec::new()),
-                }),
-            )),
+                })
+            },
         ),
 
         first_ord::Expr::Local(local_id) => anon::Expr::Local(*local_id),
@@ -148,14 +160,27 @@ fn trans_expr(
             anon::Expr::Call(*purity, *func, Box::new(trans_expr(typedefs, arg)))
         }
 
-        first_ord::Expr::Match(discrim, cases, result_type) => anon::Expr::Match(
-            Box::new(trans_expr(typedefs, discrim)),
-            cases
-                .iter()
-                .map(|(pat, body)| (trans_pattern(typedefs, pat), trans_expr(typedefs, body)))
-                .collect(),
-            trans_type(result_type),
-        ),
+        first_ord::Expr::Match(discrim, cases, result_type) => {
+            if cases.len() != 1 {
+                anon::Expr::Match(
+                    Box::new(trans_expr(typedefs, discrim)),
+                    cases
+                        .iter()
+                        .map(|(pat, body)| {
+                            (trans_pattern(typedefs, pat), trans_expr(typedefs, body))
+                        })
+                        .collect(),
+                    trans_type(result_type),
+                )
+            } else {
+                let (pat, body) = &cases[0];
+                anon::Expr::Let(
+                    trans_pattern(typedefs, pat),
+                    Box::new(trans_expr(typedefs, discrim)),
+                    Box::new(trans_expr(typedefs, body)),
+                )
+            }
+        }
 
         first_ord::Expr::Let(lhs, rhs, body) => anon::Expr::Let(
             trans_pattern(typedefs, lhs),
@@ -193,14 +218,21 @@ fn trans_pattern(
         ),
         first_ord::Pattern::Ctor(type_id, variant, content) => anon::Pattern::Custom(
             *type_id,
-            Box::new(anon::Pattern::Variant(
-                trans_variants(&typedefs[type_id].variants),
-                *variant,
+            if typedefs[type_id].variants.len() != 1 {
+                Box::new(anon::Pattern::Variant(
+                    trans_variants(&typedefs[type_id].variants),
+                    *variant,
+                    Box::new(match content {
+                        Some(content) => trans_pattern(typedefs, content),
+                        None => anon::Pattern::Tuple(Vec::new()),
+                    }),
+                ))
+            } else {
                 Box::new(match content {
                     Some(content) => trans_pattern(typedefs, content),
                     None => anon::Pattern::Tuple(Vec::new()),
-                }),
-            )),
+                })
+            },
         ),
         first_ord::Pattern::BoolConst(val) => anon::Pattern::BoolConst(*val),
         first_ord::Pattern::ByteConst(val) => anon::Pattern::ByteConst(*val),
