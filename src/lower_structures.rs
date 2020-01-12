@@ -10,6 +10,16 @@ use im_rc::OrdMap;
 use im_rc::OrdSet;
 use std::collections::BTreeSet;
 
+fn contains_boxes(type_: &low::Type) -> bool {
+    match type_ {
+        low::Type::Variants(variants) => {
+            variants.iter().any(|(_i, variant)| contains_boxes(variant))
+        }
+        low::Type::Boxed(_) => true,
+        _ => false,
+    }
+}
+
 fn lower_type(type_: &special::Type) -> low::Type {
     match type_ {
         special::Type::Bool => low::Type::Bool,
@@ -814,12 +824,16 @@ fn lower_leaf(
             let unboxed_type = lower_type(&typedefs[type_id]);
             let boxed_type = &boxed_typedefs[type_id];
 
-            let boxed_content_id = box_content(
-                content_id.lookup_in(context),
-                &unboxed_type,
-                boxed_type,
-                builder,
-            );
+            let boxed_content_id = if contains_boxes(boxed_type) {
+                box_content(
+                    content_id.lookup_in(context),
+                    &unboxed_type,
+                    boxed_type,
+                    builder,
+                )
+            } else {
+                content_id.lookup_in(context)
+            };
 
             builder.add_expr(
                 low::Type::Custom(*type_id),
@@ -835,7 +849,11 @@ fn lower_leaf(
                 low::Expr::UnwrapCustom(*type_id, content_id.lookup_in(context)),
             );
 
-            unbox_content(unwrapped_id, boxed_type, &unboxed_type, builder)
+            if contains_boxes(boxed_type) {
+                unbox_content(unwrapped_id, boxed_type, &unboxed_type, builder)
+            } else {
+                unwrapped_id
+            }
         }
         special::Expr::ArithOp(arith_op) => {
             let arith_expr = match arith_op {
