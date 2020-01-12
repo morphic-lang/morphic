@@ -6,6 +6,7 @@ mod util;
 mod data;
 mod pretty_print_lifted;
 mod pretty_print_low;
+mod pretty_print_special;
 
 mod lex;
 
@@ -166,6 +167,11 @@ fn run<R: io::BufRead, W: io::Write>(
     let repr_constrained = constrain_reprs::constrain_reprs(repr_unified);
 
     let repr_specialized = specialize_reprs::specialize_reprs(repr_constrained);
+
+    println!("Representation-specialized program:");
+    pretty_print_special::write_program(&mut io::stdout(), &repr_specialized)
+        .expect("printing program failed");
+    println!("(end representation-specialized program)");
 
     let lowered = lower_structures::lower_structures(repr_specialized);
 
