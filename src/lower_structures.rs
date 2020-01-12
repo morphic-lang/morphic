@@ -199,16 +199,18 @@ fn annotate_expr(
             let mut new_bindings_reversed = Vec::new();
 
             for (index, (type_, binding)) in exprs.into_iter().enumerate().rev() {
+                let post_binding_future_usages = current_future_usages.clone();
+
+                current_future_usages
+                    .future_usages
+                    .remove(&flat::LocalId(index + ids_in_scope));
+
                 let annotated_binding =
                     annotate_expr(binding, &current_future_usages, ids_in_scope + index);
 
                 let binding_move_info = annotated_binding.move_info.clone();
 
-                new_bindings_reversed.push((
-                    type_,
-                    annotated_binding,
-                    current_future_usages.clone(),
-                ));
+                new_bindings_reversed.push((type_, annotated_binding, post_binding_future_usages));
 
                 for (var, _moves) in &binding_move_info.move_info {
                     if var.0 < ids_in_scope {
@@ -221,10 +223,6 @@ fn annotate_expr(
                 for var in binding_move_info.move_info.keys() {
                     current_future_usages.future_usages.insert(*var);
                 }
-
-                current_future_usages
-                    .future_usages
-                    .remove(&flat::LocalId(index + ids_in_scope));
             }
 
             let mut new_bindings = new_bindings_reversed;
