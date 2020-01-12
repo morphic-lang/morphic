@@ -21,12 +21,6 @@ pub enum Type {
 }
 
 #[derive(Clone, Debug)]
-pub enum IoOp {
-    Input,
-    Output(flat::LocalId),
-}
-
-#[derive(Clone, Debug)]
 pub enum Expr {
     Local(flat::LocalId),
     Call(Purity, CustomFuncId, flat::LocalId),

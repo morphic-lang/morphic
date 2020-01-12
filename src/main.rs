@@ -43,7 +43,7 @@ mod field_path;
 mod fixed_point;
 mod mutation_status;
 
-mod annot_aliases_alt;
+mod annot_aliases;
 
 mod annot_mutation;
 
@@ -55,7 +55,7 @@ mod specialize_reprs;
 
 mod lower_structures;
 
-mod interpreter_alt;
+mod interpreter;
 
 mod low_ast_transform;
 
@@ -156,7 +156,7 @@ fn run<R: io::BufRead, W: io::Write>(
 
     let flat = flatten::flatten(split);
 
-    let alias_annot = annot_aliases_alt::annot_aliases(flat);
+    let alias_annot = annot_aliases::annot_aliases(flat);
 
     let mut_annot = annot_mutation::annot_mutation(alias_annot);
 
@@ -175,7 +175,7 @@ fn run<R: io::BufRead, W: io::Write>(
     println!("============== Running program ===============================");
     println!("==============================================================");
 
-    interpreter_alt::interpret(stdin, stdout, &lowered);
+    interpreter::interpret(stdin, stdout, &lowered);
 
     Ok(())
 }

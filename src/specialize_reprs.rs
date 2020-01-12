@@ -2,7 +2,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::repr_constrained_ast as constrain;
-use crate::data::repr_specialized_ast_alt as special;
+use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
 use crate::util::id_vec::IdVec;
 use crate::util::instance_queue::InstanceQueue;

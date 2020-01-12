@@ -1,7 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::low_ast as low;
-use crate::data::repr_specialized_ast_alt as special;
+use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
