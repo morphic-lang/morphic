@@ -4,7 +4,8 @@
 mod util;
 
 mod data;
-mod pretty_print;
+mod pretty_print_lifted;
+mod pretty_print_low;
 
 mod lex;
 
@@ -168,7 +169,8 @@ fn run<R: io::BufRead, W: io::Write>(
 
     let lowered = lower_structures::lower_structures(repr_specialized);
 
-    println!("Lowered program: {:#?}", lowered);
+    println!("Lowered program:");
+    pretty_print_low::write_program(&mut io::stdout(), &lowered).expect("printing program failed");
     println!("(end lowered program)");
 
     println!("==============================================================");
