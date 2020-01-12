@@ -1,0 +1,7 @@
+module Core = file "lib/core/core.txt"
+  expose {
+    module Array expose { concat },
+  }
+
+proc main(): () =
+  do output(Array.concat("hello, ", "world"))
