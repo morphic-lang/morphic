@@ -41,7 +41,6 @@ pub enum ArrayOp {
     Len,
     Push,
     Pop,
-    Concat,
 }
 
 id_type!(pub LocalId);

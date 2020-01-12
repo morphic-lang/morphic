@@ -141,7 +141,6 @@ impl res::ArrayOp {
             res::ArrayOp::Len => Doc::text("len"),
             res::ArrayOp::Push => Doc::text("push"),
             res::ArrayOp::Pop => Doc::text("pop"),
-            res::ArrayOp::Concat => Doc::text("concat"),
         }
     }
 }

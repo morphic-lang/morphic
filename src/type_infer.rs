@@ -407,10 +407,6 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
                 Len => scheme(1, func(array(param(0)), int())),
                 Push => scheme(1, func(pair(array(param(0)), param(0)), array(param(0)))),
                 Pop => scheme(1, func(array(param(0)), pair(array(param(0)), param(0)))),
-                Concat => scheme(
-                    1,
-                    func(pair(array(param(0)), array(param(0))), array(param(0))),
-                ),
             };
             Cow::Owned(result)
         }

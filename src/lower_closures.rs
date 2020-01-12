@@ -493,22 +493,6 @@ impl<'a> Context<'a> {
                                             Box::new(ARG_LOCAL.clone()),
                                         ))
                                     }
-
-                                    ArrayOp::Concat => with_args(
-                                        vec![
-                                            first_ord::Type::Array(Box::new(
-                                                lowered_item_type.clone(),
-                                            )),
-                                            first_ord::Type::Array(Box::new(
-                                                lowered_item_type.clone(),
-                                            )),
-                                        ],
-                                        first_ord::Expr::ArrayOp(first_ord::ArrayOp::Concat(
-                                            lowered_item_type,
-                                            Box::new(local(2)), // First Array
-                                            Box::new(local(3)), // Second Array
-                                        )),
-                                    ),
                                 }
                             }
 

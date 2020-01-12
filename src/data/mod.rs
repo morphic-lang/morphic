@@ -30,8 +30,4 @@ pub mod repr_constrained_ast;
 
 pub mod repr_specialized_ast_alt;
 
-pub mod repr_annot_ast;
-
-pub mod repr_specialized_ast;
-
 pub mod low_ast;

@@ -57,14 +57,6 @@ mod lower_structures;
 
 mod interpreter_alt;
 
-mod annot_aliases;
-
-mod annot_reprs;
-
-mod lower_reprs;
-
-mod interpreter;
-
 mod low_ast_transform;
 
 #[cfg(test)]
