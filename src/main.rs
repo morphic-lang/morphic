@@ -150,44 +150,13 @@ fn run<R: io::BufRead, W: io::Write>(
     let shielded = shield_functions::shield_functions(mono);
 
     let lifted = lambda_lift::lambda_lift(shielded);
-    // println!("Lambda-lifted AST:\n{:#?}", lifted);
 
     let annot = annot_closures::annot_closures(lifted);
-    println!("Built closure-annotated AST");
 
     let special = closure_specialize::closure_specialize(annot);
     closure_specialize::check_patterns(&special);
-    println!("Built closure-specialized AST");
-    println!("Statistics:");
-    println!("  # custom types: {}", special.custom_types.len());
-    println!("  # opaque reps: {}", special.opaque_reps.len());
-    println!("  # globals: {}", special.vals.len());
-    println!("  # lambdas: {}", special.lams.len());
 
     let first_order = lower_closures::lower_closures(special);
-    println!("Built first-order AST");
-    println!("Statistics:");
-    println!("  # custom types: {}", first_order.custom_types.len());
-    println!("  # functions {}", first_order.funcs.len());
-    println!("First order AST:");
-    let fo = format!("{:#?}", first_order);
-    let mut fo_better = String::new();
-    let mut prev_comma = false;
-    for line in fo.lines() {
-        if prev_comma {
-            fo_better.push_str("\n");
-            fo_better.push_str(&line);
-        } else if !line.contains(":") && !line.contains("}") {
-            fo_better.push_str(line.trim());
-        } else {
-            if !fo_better.is_empty() {
-                fo_better.push_str("\n");
-            }
-            fo_better.push_str(line);
-        }
-        prev_comma = line.ends_with(",");
-    }
-    println!("{}", fo_better);
 
     typecheck_first_order::typecheck(&first_order);
 
@@ -195,39 +164,15 @@ fn run<R: io::BufRead, W: io::Write>(
 
     let flat = flatten::flatten(split);
 
-    println!("Flat program: {:#?}", flat);
-    println!("(end flat program)");
-
     let alias_annot = annot_aliases_alt::annot_aliases(flat);
-
-    println!("Alias-annotated program: {:#?}", alias_annot);
-    println!("(end alias-annotated program)");
 
     let mut_annot = annot_mutation::annot_mutation(alias_annot);
 
-    println!("Mutation-annotated program: {:#?}", mut_annot);
-    println!("(end mutation-annotated program)");
-
     let repr_unified = unify_reprs::unify_reprs(mut_annot);
-
-    println!("Representation-unified program: {:#?}", repr_unified);
-    println!("(end repr-unified program)");
 
     let repr_constrained = constrain_reprs::constrain_reprs(repr_unified);
 
-    println!(
-        "Representation-constrained program: {:#?}",
-        repr_constrained
-    );
-    println!("(end repr-constrained program)");
-
     let repr_specialized = specialize_reprs::specialize_reprs(repr_constrained);
-
-    println!(
-        "Representation-specialized program: {:#?}",
-        repr_specialized
-    );
-    println!("(end repr-specialized program)");
 
     let lowered = lower_structures::lower_structures(repr_specialized);
 
