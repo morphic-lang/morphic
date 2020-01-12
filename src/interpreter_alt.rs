@@ -1273,6 +1273,7 @@ fn interpret_expr<R: BufRead, W: Write>(
                 };
 
                 if let Some(get_item) = array.get(usize_index) {
+                    retain(heap, *get_item, stacktrace.add_frame("item retain".into()));
                     return heap.add(Value::Tuple(vec![*get_item, hole_array_id]));
                 } else {
                     stacktrace.panic(format!["item index out of range {}", index]);
@@ -1307,7 +1308,12 @@ fn interpret_expr<R: BufRead, W: Write>(
                     }
                 };
 
-                if let Some(_) = array.get(usize_index) {
+                if let Some(old_item_id) = array.get(usize_index) {
+                    release(
+                        heap,
+                        *old_item_id,
+                        stacktrace.add_frame("replace release item".into()),
+                    );
                     array[usize_index] = item_heap_id;
                     return heap.add(Value::Array(rep, ArrayStatus::Valid, 1, array));
                 } else {
