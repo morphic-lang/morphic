@@ -137,18 +137,18 @@ struct ModMap {
 pub struct GlobalContext {
     mods: IdVec<ModId, ModMap>,
     types: IdVec<res::CustomTypeId, Option<res::TypeDef>>,
-    type_data: IdVec<res::CustomTypeId, res::TypeData>,
+    type_symbols: IdVec<res::CustomTypeId, res::TypeSymbols>,
     vals: IdVec<res::CustomGlobalId, Option<res::ValDef>>,
-    val_data: IdVec<res::CustomGlobalId, res::ValData>,
+    val_symbols: IdVec<res::CustomGlobalId, res::ValSymbols>,
 }
 
 pub fn resolve_program(file_path: &Path) -> Result<res::Program, Error> {
     let mut ctx = GlobalContext {
         mods: IdVec::new(),
         types: IdVec::new(),
-        type_data: IdVec::new(),
+        type_symbols: IdVec::new(),
         vals: IdVec::new(),
-        val_data: IdVec::new(),
+        val_symbols: IdVec::new(),
     };
 
     let main_mod = resolve_mod_from_file(&mut ctx, BTreeMap::new(), file_path)?;
@@ -164,9 +164,9 @@ pub fn resolve_program(file_path: &Path) -> Result<res::Program, Error> {
 
     Ok(res::Program {
         custom_types: ctx.types.into_mapped(|_id, typedef| typedef.unwrap()),
-        custom_type_data: ctx.type_data,
+        custom_type_symbols: ctx.type_symbols,
         vals: ctx.vals.into_mapped(|_id, val_def| val_def.unwrap()),
-        val_data: ctx.val_data,
+        val_symbols: ctx.val_symbols,
         main: main_proc,
     })
 }
@@ -179,7 +179,7 @@ fn resolve_mod(
 ) -> Result<ModId, Error> {
     // Generate mappings
     //
-    // This pass also populates `type_data` and `val_data`
+    // This pass also populates `type_symbols` and `val_symbols`
 
     let (mod_map, pending_type_defs, pending_val_defs) = {
         let mut mod_map = ModMap {
@@ -197,18 +197,18 @@ fn resolve_mod(
                 raw::Item::TypeDef(name, params, variants) => {
                     let type_id = ctx.types.push(None);
                     {
-                        let type_data_id = ctx.type_data.push(res::TypeData {
+                        let type_symbols_id = ctx.type_symbols.push(res::TypeSymbols {
                             type_name: name.clone(),
-                            variant_data: IdVec::from_items(
+                            variant_symbols: IdVec::from_items(
                                 variants
                                     .iter()
-                                    .map(|(variant_name, _)| res::VariantData {
+                                    .map(|(variant_name, _)| res::VariantSymbols {
                                         variant_name: variant_name.clone(),
                                     })
                                     .collect(),
                             ),
                         });
-                        debug_assert_eq!(type_id, type_data_id);
+                        debug_assert_eq!(type_id, type_symbols_id);
                     }
 
                     insert_unique(
@@ -235,10 +235,10 @@ fn resolve_mod(
                 raw::Item::ValDef(name, type_, body) => {
                     let val_id = ctx.vals.push(None);
                     {
-                        let val_data_id = ctx.val_data.push(res::ValData {
+                        let val_symbols_id = ctx.val_symbols.push(res::ValSymbols {
                             val_name: name.clone(),
                         });
-                        debug_assert_eq!(val_id, val_data_id);
+                        debug_assert_eq!(val_id, val_symbols_id);
                     }
 
                     insert_unique(

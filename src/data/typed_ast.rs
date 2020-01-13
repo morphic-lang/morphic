@@ -5,9 +5,9 @@ use crate::util::id_vec::IdVec;
 #[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: IdVec<res::CustomTypeId, res::TypeDef>,
-    pub custom_type_data: IdVec<res::CustomTypeId, res::TypeData>,
+    pub custom_type_symbols: IdVec<res::CustomTypeId, res::TypeSymbols>,
     pub vals: IdVec<res::CustomGlobalId, ValDef>,
-    pub val_data: IdVec<res::CustomGlobalId, res::ValData>,
+    pub val_symbols: IdVec<res::CustomGlobalId, res::ValSymbols>,
     pub main: res::CustomGlobalId,
 }
 

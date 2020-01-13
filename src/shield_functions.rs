@@ -167,15 +167,15 @@ pub fn shield_functions(mut program: mono::Program) -> mono::Program {
                     ),
                 };
 
-                let wrapper_data = mono::ValData {
+                let wrapper_symbols = mono::ValSymbols {
                     is_wrapper: true,
-                    ..program.val_data[id].clone()
+                    ..program.val_symbols[id].clone()
                 };
 
                 let wrapper_id = program.vals.push(wrapper_def);
-                let wrapper_data_id = program.val_data.push(wrapper_data);
+                let wrapper_symbols_id = program.val_symbols.push(wrapper_symbols);
 
-                debug_assert_eq!(wrapper_id, wrapper_data_id);
+                debug_assert_eq!(wrapper_id, wrapper_symbols_id);
 
                 mapping.insert(id, wrapper_id);
             }

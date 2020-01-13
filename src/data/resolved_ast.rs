@@ -48,9 +48,9 @@ id_type!(pub LocalId);
 #[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
-    pub custom_type_data: IdVec<CustomTypeId, TypeData>,
+    pub custom_type_symbols: IdVec<CustomTypeId, TypeSymbols>,
     pub vals: IdVec<CustomGlobalId, ValDef>,
-    pub val_data: IdVec<CustomGlobalId, ValData>,
+    pub val_symbols: IdVec<CustomGlobalId, ValSymbols>,
     pub main: CustomGlobalId,
 }
 
@@ -61,15 +61,15 @@ pub struct TypeDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct VariantData {
+pub struct VariantSymbols {
     pub variant_name: raw::CtorName,
 }
 
 #[derive(Clone, Debug)]
-pub struct TypeData {
+pub struct TypeSymbols {
     // TODO: Include filename/module info
     pub type_name: raw::TypeName,
-    pub variant_data: IdVec<VariantId, VariantData>,
+    pub variant_symbols: IdVec<VariantId, VariantSymbols>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,7 +79,7 @@ pub struct ValDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct ValData {
+pub struct ValSymbols {
     // TODO: Include filename/module info
     pub val_name: raw::ValName,
 }

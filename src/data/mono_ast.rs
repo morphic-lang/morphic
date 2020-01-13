@@ -19,10 +19,10 @@ pub enum Type {
 }
 
 #[derive(Clone, Debug)]
-pub struct TypeData {
+pub struct TypeSymbols {
     pub type_name: raw::TypeName,
     pub mono_with: Vec<Type>,
-    pub variant_data: IdVec<res::VariantId, res::VariantData>,
+    pub variant_symbols: IdVec<res::VariantId, res::VariantSymbols>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,7 +78,7 @@ pub struct ValDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct ValData {
+pub struct ValSymbols {
     pub val_name: raw::ValName,
     pub mono_with: IdVec<res::TypeParamId, Type>,
     pub is_wrapper: bool,
@@ -87,8 +87,8 @@ pub struct ValData {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
-    pub custom_type_data: IdVec<CustomTypeId, TypeData>,
+    pub custom_type_symbols: IdVec<CustomTypeId, TypeSymbols>,
     pub vals: IdVec<CustomGlobalId, ValDef>,
-    pub val_data: IdVec<CustomGlobalId, ValData>,
+    pub val_symbols: IdVec<CustomGlobalId, ValSymbols>,
     pub main: CustomGlobalId,
 }

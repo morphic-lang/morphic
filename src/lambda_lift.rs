@@ -79,7 +79,7 @@ fn add_pattern<'a>(ctx: &mut TypeContext<'a>, pat: &'a mono::Pattern) {
 
 fn lift_expr<'a>(
     lambdas: &mut IdVec<lifted::LamId, lifted::LamDef>,
-    lam_data: &mut IdVec<lifted::LamId, lifted::LamData>,
+    lam_symbols: &mut IdVec<lifted::LamId, lifted::LamSymbols>,
     ctx: &mut TypeContext<'a>,
     captures: &mut CaptureMap,
     expr: &'a mono::Expr,
@@ -101,14 +101,14 @@ fn lift_expr<'a>(
         mono::Expr::Tuple(items) => lifted::Expr::Tuple(
             items
                 .iter()
-                .map(|item| lift_expr(lambdas, lam_data, ctx, captures, item, lifted_from))
+                .map(|item| lift_expr(lambdas, lam_symbols, ctx, captures, item, lifted_from))
                 .collect(),
         ),
 
         mono::Expr::Lam(purity, arg_type, ret_type, arg, body) => {
             let (id, captured) = lift_lam(
                 lambdas,
-                lam_data,
+                lam_symbols,
                 ctx,
                 *purity,
                 arg_type,
@@ -123,13 +123,13 @@ fn lift_expr<'a>(
         }
 
         mono::Expr::App(purity, func, arg) => {
-            let func_lifted = lift_expr(lambdas, lam_data, ctx, captures, func, lifted_from);
-            let arg_lifted = lift_expr(lambdas, lam_data, ctx, captures, arg, lifted_from);
+            let func_lifted = lift_expr(lambdas, lam_symbols, ctx, captures, func, lifted_from);
+            let arg_lifted = lift_expr(lambdas, lam_symbols, ctx, captures, arg, lifted_from);
             lifted::Expr::App(*purity, Box::new(func_lifted), Box::new(arg_lifted))
         }
 
         mono::Expr::Match(discrim, cases, result_type) => {
-            let discrim_lifted = lift_expr(lambdas, lam_data, ctx, captures, discrim, lifted_from);
+            let discrim_lifted = lift_expr(lambdas, lam_symbols, ctx, captures, discrim, lifted_from);
 
             let cases_lifted = cases
                 .iter()
@@ -138,7 +138,7 @@ fn lift_expr<'a>(
                         add_pattern(sub_ctx, pat);
                         (
                             pat.clone(),
-                            lift_expr(lambdas, lam_data, sub_ctx, captures, body, lifted_from),
+                            lift_expr(lambdas, lam_symbols, sub_ctx, captures, body, lifted_from),
                         )
                     })
                 })
@@ -148,11 +148,11 @@ fn lift_expr<'a>(
         }
 
         mono::Expr::Let(lhs, rhs, body) => {
-            let rhs_lifted = lift_expr(lambdas, lam_data, ctx, captures, rhs, lifted_from);
+            let rhs_lifted = lift_expr(lambdas, lam_symbols, ctx, captures, rhs, lifted_from);
 
             let body_lifted = ctx.with_scope(|sub_ctx| {
                 add_pattern(sub_ctx, lhs);
-                lift_expr(lambdas, lam_data, sub_ctx, captures, body, lifted_from)
+                lift_expr(lambdas, lam_symbols, sub_ctx, captures, body, lifted_from)
             });
 
             lifted::Expr::Let(lhs.clone(), Box::new(rhs_lifted), Box::new(body_lifted))
@@ -162,7 +162,7 @@ fn lift_expr<'a>(
             type_.clone(),
             items
                 .iter()
-                .map(|item| lift_expr(lambdas, lam_data, ctx, captures, item, lifted_from))
+                .map(|item| lift_expr(lambdas, lam_symbols, ctx, captures, item, lifted_from))
                 .collect(),
         ),
 
@@ -178,7 +178,7 @@ fn lift_expr<'a>(
 
 fn lift_lam<'a>(
     lambdas: &mut IdVec<lifted::LamId, lifted::LamDef>,
-    lam_data: &mut IdVec<lifted::LamId, lifted::LamData>,
+    lam_symbols: &mut IdVec<lifted::LamId, lifted::LamSymbols>,
     ctx: &mut TypeContext<'a>,
     purity: Purity,
     arg_type: &'a mono::Type,
@@ -196,7 +196,7 @@ fn lift_lam<'a>(
         add_pattern(sub_ctx, arg);
         lift_expr(
             lambdas,
-            lam_data,
+            lam_symbols,
             sub_ctx,
             &mut sub_captures,
             body,
@@ -221,14 +221,14 @@ fn lift_lam<'a>(
         body: body_lifted,
     };
 
-    let lam_datum = lifted::LamData {
+    let lam_datum = lifted::LamSymbols {
         lifted_from: lifted_from,
     };
 
     let lam_id = lambdas.push(lam_def);
     {
-        let lam_data_id = lam_data.push(lam_datum);
-        debug_assert_eq!(lam_id, lam_data_id);
+        let lam_symbols_id = lam_symbols.push(lam_datum);
+        debug_assert_eq!(lam_id, lam_symbols_id);
     }
 
     (
@@ -239,7 +239,7 @@ fn lift_lam<'a>(
 
 fn lift_def(
     lambdas: &mut IdVec<lifted::LamId, lifted::LamDef>,
-    lam_data: &mut IdVec<lifted::LamId, lifted::LamData>,
+    lam_symbols: &mut IdVec<lifted::LamId, lifted::LamSymbols>,
     def: mono::ValDef,
     def_id: mono::CustomGlobalId,
 ) -> lifted::ValDef {
@@ -251,7 +251,7 @@ fn lift_def(
 
     let body_lifted = lift_expr(
         lambdas,
-        lam_data,
+        lam_symbols,
         &mut ctx,
         &mut dummy_captures,
         &def.body,
@@ -269,19 +269,19 @@ fn lift_def(
 
 pub fn lambda_lift(program: mono::Program) -> lifted::Program {
     let mut lambdas = IdVec::new();
-    let mut lam_data = IdVec::new();
+    let mut lam_symbols = IdVec::new();
 
     let defs_lifted = program
         .vals
-        .into_mapped(|id, def| lift_def(&mut lambdas, &mut lam_data, def, id));
+        .into_mapped(|id, def| lift_def(&mut lambdas, &mut lam_symbols, def, id));
 
     lifted::Program {
         custom_types: program.custom_types,
-        custom_type_data: program.custom_type_data,
+        custom_type_symbols: program.custom_type_symbols,
         vals: defs_lifted,
-        val_data: program.val_data,
+        val_symbols: program.val_symbols,
         lams: lambdas,
-        lam_data: lam_data,
+        lam_symbols: lam_symbols,
         main: program.main,
     }
 }

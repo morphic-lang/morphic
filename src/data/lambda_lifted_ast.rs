@@ -53,17 +53,17 @@ pub struct LamDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct LamData {
+pub struct LamSymbols {
     pub lifted_from: mono::CustomGlobalId,
 }
 
 #[derive(Clone)]
 pub struct Program {
     pub custom_types: IdVec<mono::CustomTypeId, mono::TypeDef>,
-    pub custom_type_data: IdVec<mono::CustomTypeId, mono::TypeData>,
+    pub custom_type_symbols: IdVec<mono::CustomTypeId, mono::TypeSymbols>,
     pub vals: IdVec<mono::CustomGlobalId, ValDef>,
-    pub val_data: IdVec<mono::CustomGlobalId, mono::ValData>,
+    pub val_symbols: IdVec<mono::CustomGlobalId, mono::ValSymbols>,
     pub lams: IdVec<LamId, LamDef>,
-    pub lam_data: IdVec<LamId, LamData>,
+    pub lam_symbols: IdVec<LamId, LamSymbols>,
     pub main: mono::CustomGlobalId,
 }

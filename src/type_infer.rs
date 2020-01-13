@@ -819,16 +819,16 @@ fn infer_def(program: &res::Program, def: &res::ValDef) -> Result<typed::ValDef,
 pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError> {
     let vals_inferred = program.vals.try_map(|id, def| {
         infer_def(&program, def).map_err(|error| LocatedError {
-            def: program.val_data[id].val_name.0.clone(),
+            def: program.val_symbols[id].val_name.0.clone(),
             error,
         })
     })?;
 
     Ok(typed::Program {
         custom_types: program.custom_types,
-        custom_type_data: program.custom_type_data,
+        custom_type_symbols: program.custom_type_symbols,
         vals: vals_inferred,
-        val_data: program.val_data,
+        val_symbols: program.val_symbols,
         main: program.main,
     })
 }

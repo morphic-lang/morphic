@@ -308,55 +308,55 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
     let main_new_id = val_insts.resolve((program.main, IdVec::new()));
 
     let mut val_defs_resolved = IdVec::new();
-    let mut val_defs_resolved_data = IdVec::new();
+    let mut val_defs_resolved_symbols = IdVec::new();
 
     while let Some((new_id, (orig_id, inst_args))) = val_insts.pop_pending() {
         let def = &program.vals[orig_id];
 
         let def_resolved = resolve_val_def(&mut val_insts, &mut type_insts, &inst_args, def);
-        let def_resolved_data = mono::ValData {
-            val_name: program.val_data[orig_id].val_name.clone(),
+        let def_resolved_symbols = mono::ValSymbols {
+            val_name: program.val_symbols[orig_id].val_name.clone(),
             mono_with: inst_args,
             is_wrapper: false,
         };
 
         let pushed_val_id = val_defs_resolved.push(def_resolved);
-        let pushed_val_data_id = val_defs_resolved_data.push(def_resolved_data);
+        let pushed_val_symbols_id = val_defs_resolved_symbols.push(def_resolved_symbols);
 
         // We enqueue pending val defs to resolve in the order in which their ids are generated, so
         // this should always hold.  This allows us to insert resolved val defs at the appropriate
         // index simply by pushing them onto the end of the vector.
         assert_eq!(new_id, pushed_val_id);
-        assert_eq!(new_id, pushed_val_data_id);
+        assert_eq!(new_id, pushed_val_symbols_id);
     }
 
     let mut typedefs_resolved = IdVec::new();
-    let mut typedefs_resolved_data = IdVec::new();
+    let mut typedefs_resolved_symbols = IdVec::new();
 
     while let Some((new_id, (orig_id, inst_args))) = type_insts.pop_pending() {
         let typedef = &program.custom_types[orig_id];
 
         let typedef_resolved = resolve_typedef(&mut type_insts, &inst_args, typedef);
 
-        let typedef_resolved_data = mono::TypeData {
-            type_name: program.custom_type_data[orig_id].type_name.clone(),
+        let typedef_resolved_symbols = mono::TypeSymbols {
+            type_name: program.custom_type_symbols[orig_id].type_name.clone(),
             mono_with: inst_args.items,
-            variant_data: program.custom_type_data[orig_id].variant_data.clone(),
+            variant_symbols: program.custom_type_symbols[orig_id].variant_symbols.clone(),
         };
 
         let pushed_type_id = typedefs_resolved.push(typedef_resolved);
-        let pushed_type_data_id = typedefs_resolved_data.push(typedef_resolved_data);
+        let pushed_type_symbols_id = typedefs_resolved_symbols.push(typedef_resolved_symbols);
 
         // These assertions are analogous to those in the val def case, described above
         assert_eq!(new_id, pushed_type_id);
-        assert_eq!(new_id, pushed_type_data_id);
+        assert_eq!(new_id, pushed_type_symbols_id);
     }
 
     mono::Program {
         custom_types: typedefs_resolved,
-        custom_type_data: typedefs_resolved_data,
+        custom_type_symbols: typedefs_resolved_symbols,
         vals: val_defs_resolved,
-        val_data: val_defs_resolved_data,
+        val_symbols: val_defs_resolved_symbols,
         main: main_new_id,
     }
 }
