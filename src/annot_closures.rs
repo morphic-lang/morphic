@@ -2130,9 +2130,12 @@ pub fn annot_closures(program: lifted::Program) -> annot::Program {
 
     annot::Program {
         custom_types: typedefs,
+        custom_type_symbols: program.custom_type_symbols,
         templates,
         vals: annot_vals.into_mapped(|_id, val| val.unwrap()),
+        val_symbols: program.val_symbols,
         lams: annot_lams.into_mapped(|_id, lam| lam.unwrap()),
+        lam_symbols: program.lam_symbols,
         main: program.main,
     }
 }

@@ -165,8 +165,11 @@ pub struct LamDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub custom_types: IdVec<mono::CustomTypeId, TypeDef>,
+    pub custom_type_symbols: IdVec<mono::CustomTypeId, mono::TypeSymbols>,
     pub templates: IdVec<TemplateId, Template>,
     pub vals: IdVec<mono::CustomGlobalId, ValDef>,
+    pub val_symbols: IdVec<mono::CustomGlobalId, mono::ValSymbols>,
     pub lams: IdVec<lifted::LamId, LamDef>,
+    pub lam_symbols: IdVec<lifted::LamId, lifted::LamSymbols>,
     pub main: mono::CustomGlobalId,
 }
