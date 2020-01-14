@@ -643,9 +643,12 @@ impl<'a> Context<'a> {
         rep: &special::FuncRep,
         func: &special::Expr,
         arg: &special::Expr,
-        arg_type: &first_ord::Type,
-        ret_type: &first_ord::Type,
     ) -> Option<first_ord::Expr> {
+        let func_expr_atomic = is_atomic(func);
+        if !func_expr_atomic {
+            return None;
+        }
+
         let cases = {
             let mut cases = BTreeSet::new();
             add_rep_leaves(&self.program.opaque_reps, rep, &mut cases);
@@ -665,11 +668,6 @@ impl<'a> Context<'a> {
                     return None;
                 }
 
-                let func_expr_atomic = is_atomic(func);
-                if !func_expr_atomic {
-                    return None;
-                }
-
                 return Some(first_ord::Expr::Call(
                     purity,
                     self.mapping.map_lam_body(lam_id),
@@ -679,7 +677,77 @@ impl<'a> Context<'a> {
                     ])),
                 ));
             }
-            LeafFuncCase::ArithOp(_) => {}
+            LeafFuncCase::ArithOp(op) => {
+                let lowered_arg = self.lower_expr(local_mapping, arg);
+
+                let binop = |num_type, op| match &lowered_arg {
+                    first_ord::Expr::Tuple(args) => {
+                        assert![args.len() == 2];
+
+                        Some(first_ord::Expr::ArithOp(first_ord::ArithOp::Op(
+                            num_type,
+                            op,
+                            Box::new(args[0].clone()),
+                            Box::new(args[1].clone()),
+                        )))
+                    }
+                    _ => None,
+                };
+
+                let cmp = |num_type, cmp| match &lowered_arg {
+                    first_ord::Expr::Tuple(args) => {
+                        assert![args.len() == 2];
+
+                        Some(first_ord::Expr::ArithOp(first_ord::ArithOp::Cmp(
+                            num_type,
+                            cmp,
+                            Box::new(args[0].clone()),
+                            Box::new(args[1].clone()),
+                        )))
+                    }
+                    _ => None,
+                };
+
+                let negate = |num_type| {
+                    Some(first_ord::Expr::ArithOp(first_ord::ArithOp::Negate(
+                        num_type,
+                        Box::new(lowered_arg.clone()),
+                    )))
+                };
+
+                use first_ord::NumType::{Byte, Float, Int};
+                return match op {
+                    Op::AddByte => binop(Byte, first_ord::BinOp::Add),
+                    Op::SubByte => binop(Byte, first_ord::BinOp::Sub),
+                    Op::MulByte => binop(Byte, first_ord::BinOp::Mul),
+                    Op::DivByte => binop(Byte, first_ord::BinOp::Div),
+                    Op::NegByte => negate(Byte),
+
+                    Op::EqByte => cmp(Byte, first_ord::Comparison::Equal),
+                    Op::LtByte => cmp(Byte, first_ord::Comparison::Less),
+                    Op::LteByte => cmp(Byte, first_ord::Comparison::LessEqual),
+
+                    Op::AddInt => binop(Int, first_ord::BinOp::Add),
+                    Op::SubInt => binop(Int, first_ord::BinOp::Sub),
+                    Op::MulInt => binop(Int, first_ord::BinOp::Mul),
+                    Op::DivInt => binop(Int, first_ord::BinOp::Div),
+                    Op::NegInt => negate(Int),
+
+                    Op::EqInt => cmp(Int, first_ord::Comparison::Equal),
+                    Op::LtInt => cmp(Int, first_ord::Comparison::Less),
+                    Op::LteInt => cmp(Int, first_ord::Comparison::LessEqual),
+
+                    Op::AddFloat => binop(Float, first_ord::BinOp::Add),
+                    Op::SubFloat => binop(Float, first_ord::BinOp::Sub),
+                    Op::MulFloat => binop(Float, first_ord::BinOp::Mul),
+                    Op::DivFloat => binop(Float, first_ord::BinOp::Div),
+                    Op::NegFloat => negate(Float),
+
+                    Op::EqFloat => cmp(Float, first_ord::Comparison::Equal),
+                    Op::LtFloat => cmp(Float, first_ord::Comparison::Less),
+                    Op::LteFloat => cmp(Float, first_ord::Comparison::LessEqual),
+                };
+            }
             LeafFuncCase::ArrayOp(_, _) => {}
             LeafFuncCase::ArrayReplace(_) => {}
             LeafFuncCase::IOOp(_) => {}
@@ -762,22 +830,16 @@ impl<'a> Context<'a> {
             }
 
             special::Expr::App(purity, rep, func, arg, arg_type, ret_type) => {
+                if let Some(simplified_expr) =
+                    self.try_lower_app_simplified(local_mapping, *purity, rep, func, arg)
+                {
+                    return simplified_expr;
+                };
+
                 let lowered_rep = self.lower_closure(rep);
 
                 let lowered_arg_type = self.lower_type(arg_type);
                 let lowered_ret_type = self.lower_type(ret_type);
-
-                if let Some(simplified_expr) = self.try_lower_app_simplified(
-                    local_mapping,
-                    *purity,
-                    rep,
-                    func,
-                    arg,
-                    &lowered_arg_type,
-                    &lowered_ret_type,
-                ) {
-                    return simplified_expr;
-                };
 
                 let dispatch_func = self.make_dispatch_func(
                     lowered_rep,
