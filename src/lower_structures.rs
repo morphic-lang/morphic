@@ -749,7 +749,8 @@ fn unbox_content(
         low::Type::Boxed(inner_type) => {
             let inner_id =
                 builder.add_expr((**inner_type).clone(), low::Expr::UnwrapBoxed(local_id));
-            builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Release(inner_id));
+            builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Retain(inner_id));
+            builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Release(local_id));
             inner_id
         }
         low::Type::Variants(original_variants) => {
