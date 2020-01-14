@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::mono_ast as mono;
 use crate::data::resolved_ast as res;
-use crate::util::graph::{self, Graph};
+use crate::util::graph::{self, Graph, Scc};
 
 fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
     match expr {
@@ -64,7 +64,7 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
     }
 }
 
-fn global_sccs(program: &mono::Program) -> Vec<Vec<mono::CustomGlobalId>> {
+fn global_sccs(program: &mono::Program) -> Vec<Scc<mono::CustomGlobalId>> {
     let dep_graph = Graph {
         edges_out: program.vals.map(|_def_id, def| {
             let mut deps = BTreeSet::new();
@@ -73,7 +73,7 @@ fn global_sccs(program: &mono::Program) -> Vec<Vec<mono::CustomGlobalId>> {
         }),
     };
 
-    graph::strongly_connected(&dep_graph)
+    graph::acyclic_and_cyclic_sccs(&dep_graph)
 }
 
 fn rebind_references(
@@ -144,40 +144,47 @@ pub fn shield_functions(mut program: mono::Program) -> mono::Program {
     let mut mapping = BTreeMap::new();
 
     for scc in global_sccs(&program) {
-        for id in &scc {
-            rebind_references(&mapping, &mut program.vals[id].body);
-        }
+        match scc {
+            Scc::Acyclic(id) => {
+                rebind_references(&mapping, &mut program.vals[id].body);
+            }
+            Scc::Cyclic(scc) => {
+                for id in &scc {
+                    rebind_references(&mapping, &mut program.vals[id].body);
+                }
 
-        for &id in &scc {
-            let val_def = &program.vals[id];
+                for &id in &scc {
+                    let val_def = &program.vals[id];
 
-            if let mono::Type::Func(purity, arg, ret) = &val_def.type_ {
-                let wrapper_def = mono::ValDef {
-                    type_: val_def.type_.clone(),
-                    body: mono::Expr::Lam(
-                        *purity,
-                        (**arg).clone(),
-                        (**ret).clone(),
-                        mono::Pattern::Var((**arg).clone()),
-                        Box::new(mono::Expr::App(
-                            *purity,
-                            Box::new(mono::Expr::Global(id)),
-                            Box::new(mono::Expr::Local(res::LocalId(0))),
-                        )),
-                    ),
-                };
+                    if let mono::Type::Func(purity, arg, ret) = &val_def.type_ {
+                        let wrapper_def = mono::ValDef {
+                            type_: val_def.type_.clone(),
+                            body: mono::Expr::Lam(
+                                *purity,
+                                (**arg).clone(),
+                                (**ret).clone(),
+                                mono::Pattern::Var((**arg).clone()),
+                                Box::new(mono::Expr::App(
+                                    *purity,
+                                    Box::new(mono::Expr::Global(id)),
+                                    Box::new(mono::Expr::Local(res::LocalId(0))),
+                                )),
+                            ),
+                        };
 
-                let wrapper_symbols = mono::ValSymbols {
-                    is_wrapper: true,
-                    ..program.val_symbols[id].clone()
-                };
+                        let wrapper_symbols = mono::ValSymbols {
+                            is_wrapper: true,
+                            ..program.val_symbols[id].clone()
+                        };
 
-                let wrapper_id = program.vals.push(wrapper_def);
-                let wrapper_symbols_id = program.val_symbols.push(wrapper_symbols);
+                        let wrapper_id = program.vals.push(wrapper_def);
+                        let wrapper_symbols_id = program.val_symbols.push(wrapper_symbols);
 
-                debug_assert_eq!(wrapper_id, wrapper_symbols_id);
+                        debug_assert_eq!(wrapper_id, wrapper_symbols_id);
 
-                mapping.insert(id, wrapper_id);
+                        mapping.insert(id, wrapper_id);
+                    }
+                }
             }
         }
     }
