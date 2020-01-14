@@ -170,6 +170,33 @@ impl LocalIdMapping {
     }
 }
 
+// TODO: Add a termination checker for globals otherwise this pass causes undefined behavior for
+// globals which panic or loop infinitely on evaluation
+fn is_atomic(expr: &special::Expr) -> bool {
+    match expr {
+        special::Expr::App(Purity::Impure, _, _, _, _, _)
+        | special::Expr::App(Purity::Pure, _, _, _, _, _)
+        | special::Expr::Tuple(_)
+        | special::Expr::Lam(_, _, _)
+        | special::Expr::Match(_, _, _)
+        | special::Expr::Let(_, _, _)
+        | special::Expr::ArrayLit(_, _) => false,
+
+        special::Expr::ArithOp(_, _)
+        | special::Expr::ArrayOp(_, _, _)
+        | special::Expr::IOOp(_, _)
+        | special::Expr::NullaryCtor(_, _)
+        | special::Expr::Ctor(_, _, _)
+        | special::Expr::Global(_)
+        | special::Expr::Local(_)
+        | special::Expr::Capture(_)
+        | special::Expr::BoolLit(_)
+        | special::Expr::ByteLit(_)
+        | special::Expr::IntLit(_)
+        | special::Expr::FloatLit(_) => true,
+    }
+}
+
 impl<'a> Context<'a> {
     fn new(mapping: &'a IdMapping, program: &'a special::Program) -> Self {
         Context {
@@ -609,6 +636,59 @@ impl<'a> Context<'a> {
         }
     }
 
+    fn try_lower_app_simplified(
+        &mut self,
+        local_mapping: &LocalIdMapping,
+        purity: Purity,
+        rep: &special::FuncRep,
+        func: &special::Expr,
+        arg: &special::Expr,
+        arg_type: &first_ord::Type,
+        ret_type: &first_ord::Type,
+    ) -> Option<first_ord::Expr> {
+        let cases = {
+            let mut cases = BTreeSet::new();
+            add_rep_leaves(&self.program.opaque_reps, rep, &mut cases);
+            cases
+        };
+
+        if cases.len() != 1 {
+            return None;
+        }
+
+        let leaf = cases.into_iter().next().unwrap();
+
+        match leaf {
+            LeafFuncCase::Lam(lam_id) => {
+                let has_captures = !self.program.lams[lam_id].captures.is_empty();
+                if has_captures {
+                    return None;
+                }
+
+                let func_expr_atomic = is_atomic(func);
+                if !func_expr_atomic {
+                    return None;
+                }
+
+                return Some(first_ord::Expr::Call(
+                    purity,
+                    self.mapping.map_lam_body(lam_id),
+                    Box::new(first_ord::Expr::Tuple(vec![
+                        first_ord::Expr::Tuple(vec![]),
+                        self.lower_expr(local_mapping, arg),
+                    ])),
+                ));
+            }
+            LeafFuncCase::ArithOp(_) => {}
+            LeafFuncCase::ArrayOp(_, _) => {}
+            LeafFuncCase::ArrayReplace(_) => {}
+            LeafFuncCase::IOOp(_) => {}
+            LeafFuncCase::Ctor(_, _) => {}
+        }
+
+        None
+    }
+
     fn lower_expr(
         &mut self,
         local_mapping: &LocalIdMapping,
@@ -686,6 +766,18 @@ impl<'a> Context<'a> {
 
                 let lowered_arg_type = self.lower_type(arg_type);
                 let lowered_ret_type = self.lower_type(ret_type);
+
+                if let Some(simplified_expr) = self.try_lower_app_simplified(
+                    local_mapping,
+                    *purity,
+                    rep,
+                    func,
+                    arg,
+                    &lowered_arg_type,
+                    &lowered_ret_type,
+                ) {
+                    return simplified_expr;
+                };
 
                 let dispatch_func = self.make_dispatch_func(
                     lowered_rep,
