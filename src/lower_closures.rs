@@ -334,14 +334,22 @@ impl<'a> Context<'a> {
 
                                 let lam_body_func = self.mapping.map_lam_body(*lam);
 
-                                first_ord::Expr::Call(
-                                    purity,
-                                    lam_body_func,
-                                    Box::new(first_ord::Expr::Tuple(vec![
-                                        ENV_LOCAL.clone(), // Environment
-                                        ARG_LOCAL.clone(), // Argument
-                                    ])),
-                                )
+                                if self.program.lams[lam].captures.is_empty() {
+                                    first_ord::Expr::Call(
+                                        purity,
+                                        lam_body_func,
+                                        Box::new(ARG_LOCAL.clone()),
+                                    )
+                                } else {
+                                    first_ord::Expr::Call(
+                                        purity,
+                                        lam_body_func,
+                                        Box::new(first_ord::Expr::Tuple(vec![
+                                            ENV_LOCAL.clone(), // Environment
+                                            ARG_LOCAL.clone(), // Argument
+                                        ])),
+                                    )
+                                }
                             }
 
                             LeafFuncCase::ArithOp(op) => {
@@ -670,10 +678,7 @@ impl<'a> Context<'a> {
                 return Some(first_ord::Expr::Call(
                     purity,
                     self.mapping.map_lam_body(lam_id),
-                    Box::new(first_ord::Expr::Tuple(vec![
-                        first_ord::Expr::Tuple(vec![]),
-                        arg.clone(),
-                    ])),
+                    Box::new(arg.clone()),
                 ));
             }
             LeafFuncCase::ArithOp(op) => {
@@ -978,22 +983,32 @@ impl<'a> Context<'a> {
             &lam_def.body,
         );
 
-        let (captures_type, captures_pat) = (
-            first_ord::Type::Tuple(lowered_captures.clone()),
-            first_ord::Pattern::Tuple(
-                lowered_captures
-                    .into_iter()
-                    .map(first_ord::Pattern::Var)
-                    .collect(),
-            ),
-        );
+        if lowered_captures.is_empty() {
+            first_ord::FuncDef {
+                purity: lam_def.purity,
+                arg_type: lowered_arg,
+                ret_type: lowered_ret,
+                arg: lowered_arg_pat,
+                body: lowered_body,
+            }
+        } else {
+            let (captures_type, captures_pat) = (
+                first_ord::Type::Tuple(lowered_captures.clone()),
+                first_ord::Pattern::Tuple(
+                    lowered_captures
+                        .into_iter()
+                        .map(first_ord::Pattern::Var)
+                        .collect(),
+                ),
+            );
 
-        first_ord::FuncDef {
-            purity: lam_def.purity,
-            arg_type: first_ord::Type::Tuple(vec![captures_type, lowered_arg]),
-            ret_type: lowered_ret,
-            arg: first_ord::Pattern::Tuple(vec![captures_pat, lowered_arg_pat]),
-            body: lowered_body,
+            first_ord::FuncDef {
+                purity: lam_def.purity,
+                arg_type: first_ord::Type::Tuple(vec![captures_type, lowered_arg]),
+                ret_type: lowered_ret,
+                arg: first_ord::Pattern::Tuple(vec![captures_pat, lowered_arg_pat]),
+                body: lowered_body,
+            }
         }
     }
 
