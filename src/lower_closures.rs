@@ -638,11 +638,10 @@ impl<'a> Context<'a> {
 
     fn try_lower_app_simplified(
         &mut self,
-        local_mapping: &LocalIdMapping,
         purity: Purity,
         rep: &special::FuncRep,
         func: &special::Expr,
-        arg: &special::Expr,
+        arg: &first_ord::Expr,
     ) -> Option<first_ord::Expr> {
         let func_expr_atomic = is_atomic(func);
         if !func_expr_atomic {
@@ -673,14 +672,12 @@ impl<'a> Context<'a> {
                     self.mapping.map_lam_body(lam_id),
                     Box::new(first_ord::Expr::Tuple(vec![
                         first_ord::Expr::Tuple(vec![]),
-                        self.lower_expr(local_mapping, arg),
+                        arg.clone(),
                     ])),
                 ));
             }
             LeafFuncCase::ArithOp(op) => {
-                let lowered_arg = self.lower_expr(local_mapping, arg);
-
-                let binop = |num_type, op| match &lowered_arg {
+                let binop = |num_type, op| match &arg {
                     first_ord::Expr::Tuple(args) => {
                         assert![args.len() == 2];
 
@@ -694,7 +691,7 @@ impl<'a> Context<'a> {
                     _ => None,
                 };
 
-                let cmp = |num_type, cmp| match &lowered_arg {
+                let cmp = |num_type, cmp| match &arg {
                     first_ord::Expr::Tuple(args) => {
                         assert![args.len() == 2];
 
@@ -711,7 +708,7 @@ impl<'a> Context<'a> {
                 let negate = |num_type| {
                     Some(first_ord::Expr::ArithOp(first_ord::ArithOp::Negate(
                         num_type,
-                        Box::new(lowered_arg.clone()),
+                        Box::new(arg.clone()),
                     )))
                 };
 
@@ -748,9 +745,56 @@ impl<'a> Context<'a> {
                     Op::LteFloat => cmp(Float, first_ord::Comparison::LessEqual),
                 };
             }
-            LeafFuncCase::ArrayOp(_, _) => {}
+            LeafFuncCase::ArrayOp(op, item_type) => {
+                return match op {
+                    // TODO: optimize Item
+                    res::ArrayOp::Item => None,
+                    res::ArrayOp::Len => Some(first_ord::Expr::ArrayOp(first_ord::ArrayOp::Len(
+                        self.lower_type(&item_type),
+                        Box::new(arg.clone()),
+                    ))),
+                    res::ArrayOp::Push => match &arg {
+                        first_ord::Expr::Tuple(args) => {
+                            assert![args.len() == 2];
+
+                            Some(first_ord::Expr::ArrayOp(first_ord::ArrayOp::Push(
+                                self.lower_type(&item_type),
+                                Box::new(args[0].clone()),
+                                Box::new(args[1].clone()),
+                            )))
+                        }
+                        _ => None,
+                    },
+                    res::ArrayOp::Pop => Some(first_ord::Expr::ArrayOp(first_ord::ArrayOp::Pop(
+                        self.lower_type(&item_type),
+                        Box::new(arg.clone()),
+                    ))),
+                };
+            }
+            // TODO: optimize ArrayReplace
             LeafFuncCase::ArrayReplace(_) => {}
-            LeafFuncCase::IOOp(_) => {}
+            LeafFuncCase::IOOp(op) => match op {
+                res::IOOp::Input => {
+                    let arg_optimizable = match arg {
+                        first_ord::Expr::Tuple(args) => {
+                            assert![args.len() == 0];
+                            true
+                        }
+                        first_ord::Expr::Local(_) => true,
+                        _ => false,
+                    };
+
+                    if !arg_optimizable {
+                        return None;
+                    }
+                    return Some(first_ord::Expr::IOOp(first_ord::IOOp::Input));
+                }
+                res::IOOp::Output => {
+                    return Some(first_ord::Expr::IOOp(first_ord::IOOp::Output(Box::new(
+                        arg.clone(),
+                    ))));
+                }
+            },
             LeafFuncCase::Ctor(_, _) => {}
         }
 
@@ -830,8 +874,10 @@ impl<'a> Context<'a> {
             }
 
             special::Expr::App(purity, rep, func, arg, arg_type, ret_type) => {
+                let lowered_arg = self.lower_expr(local_mapping, arg);
+
                 if let Some(simplified_expr) =
-                    self.try_lower_app_simplified(local_mapping, *purity, rep, func, arg)
+                    self.try_lower_app_simplified(*purity, rep, func, &lowered_arg)
                 {
                     return simplified_expr;
                 };
@@ -849,7 +895,6 @@ impl<'a> Context<'a> {
                 );
 
                 let lowered_func = self.lower_expr(local_mapping, func);
-                let lowered_arg = self.lower_expr(local_mapping, arg);
 
                 first_ord::Expr::Call(
                     *purity,
