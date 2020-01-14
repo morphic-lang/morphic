@@ -795,7 +795,13 @@ impl<'a> Context<'a> {
                     ))));
                 }
             },
-            LeafFuncCase::Ctor(_, _) => {}
+            LeafFuncCase::Ctor(type_id, variant_id) => {
+                return Some(first_ord::Expr::Ctor(
+                    self.mapping.map_custom_type(type_id),
+                    first_ord::VariantId(variant_id.0),
+                    Some(Box::new(arg.clone())),
+                ));
+            }
         }
 
         None
