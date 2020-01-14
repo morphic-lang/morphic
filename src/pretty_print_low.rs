@@ -99,7 +99,7 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
             Ok(())
         }
         Type::Boxed(box_type) => {
-            write![w, " Box ("]?;
+            write![w, "Box ("]?;
             write_type(w, box_type)?;
             write![w, ")"]
         }
@@ -186,8 +186,8 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::UnwrapCustom(type_id, local_id) => {
             write![w, "unwrap custom ~{} %{}", type_id.0, local_id.0]
         }
-        Expr::WrapBoxed(local_id) => write_single(w, "wrap boxed", local_id),
-        Expr::UnwrapBoxed(local_id) => write_single(w, "unwrap boxed", local_id),
+        Expr::WrapBoxed(local_id) => write![w, "wrap boxed %{}", local_id.0],
+        Expr::UnwrapBoxed(local_id) => write![w, "unwrap boxed %{}", local_id.0],
         Expr::Retain(local_id) => write_single(w, "retain", local_id),
         Expr::Release(local_id) => write_single(w, "release", local_id),
         Expr::CheckVariant(variant_id, local_id) => {
