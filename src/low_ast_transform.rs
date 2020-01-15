@@ -119,8 +119,6 @@ fn gen_expr<'a>(
             body
         }
         E::Tuple(fields) => {
-            // TODO: what if the tuple holds a unit?
-
             let field_tys: Vec<_> = fields
                 .iter()
                 .map(|id| locals[id].as_basic().get_type())

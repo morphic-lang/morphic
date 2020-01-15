@@ -4,7 +4,7 @@ use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
-use inkwell::AddressSpace;
+use inkwell::{AddressSpace, IntPredicate};
 use itertools::Itertools;
 
 #[derive(Clone, Copy, Debug)]
@@ -72,6 +72,32 @@ pub(super) fn if_<'a>(
     let branch = builder.build_unconditional_branch(&next_block);
     builder.position_before(&branch);
     next_block
+}
+
+pub(super) fn for_i_less_than<'a>(
+    context: &'a Context,
+    builder: &Builder<'a>,
+    f: FunctionValue<'a>,
+    end_for: IntValue<'a>,
+) -> (BasicBlock, IntValue<'a>) {
+    let i64_type = context.i64_type();
+
+    let i_ptr = builder.build_alloca(i64_type, "i_ptr");
+    builder.build_store(i_ptr, i64_type.const_int(0, false));
+
+    let for_block = context.append_basic_block(f, "for_block");
+    let next_block = context.append_basic_block(f, "next_block");
+
+    builder.position_at_end(&for_block);
+    let i_cur = builder.build_load(i_ptr, "i_cur").into_int_value();
+    let i_new = builder.build_int_add(i_cur, i64_type.const_int(1, false), "i_new");
+    let store = builder.build_store(i_ptr, i_new);
+
+    let done = builder.build_int_compare(IntPredicate::UGE, i_new, end_for, "done");
+    builder.build_conditional_branch(done, &next_block, &for_block);
+
+    builder.position_at(&for_block, &store);
+    (next_block, i_cur)
 }
 
 pub(super) unsafe fn get_member<'a>(

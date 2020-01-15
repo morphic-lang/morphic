@@ -1,7 +1,7 @@
 use crate::core::*;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::{BasicTypeEnum, StructType};
+use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::FunctionValue;
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -9,24 +9,26 @@ const REFCOUNT_IDX: u32 = 0; // has type u32
 const INNER_IDX: u32 = 1; // has type T
 
 #[derive(Clone, Copy, Debug)]
-pub struct RcBuiltin<'a> {
+pub struct RcBoxBuiltin<'a> {
     // related types
-    inner_type: BasicTypeEnum<'a>,
-    self_type: StructType<'a>,
+    pub inner_type: BasicTypeEnum<'a>,
+    pub self_type: StructType<'a>,
 
     // public API
-    new: FunctionValue<'a>,
-    retain: FunctionValue<'a>,
-    release: FunctionValue<'a>,
+    pub new: FunctionValue<'a>,
+    pub get: FunctionValue<'a>,
+    pub retain: FunctionValue<'a>,
+    pub release: FunctionValue<'a>,
 }
 
-impl<'a> RcBuiltin<'a> {
+impl<'a> RcBoxBuiltin<'a> {
     pub fn declare(
         context: &'a Context,
         module: &Module<'a>,
         inner_type: BasicTypeEnum<'a>,
     ) -> Self {
         let void_type = context.void_type();
+        let inner_ptr_type = inner_type.ptr_type(AddressSpace::Generic);
 
         let inner_mangled = mangle_basic(context, inner_type);
 
@@ -36,7 +38,13 @@ impl<'a> RcBuiltin<'a> {
 
         let new = module.add_function(
             &format!("compiler_builtin_rc_{}_new", inner_mangled),
-            self_type.fn_type(&[inner_type.into()], false),
+            self_ptr_type.fn_type(&[inner_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        let get = module.add_function(
+            &format!("compiler_builtin_rc_{}_get", inner_mangled),
+            inner_ptr_type.fn_type(&[self_ptr_type.into()], false),
             Some(Linkage::External),
         );
 
@@ -56,6 +64,7 @@ impl<'a> RcBuiltin<'a> {
             inner_type,
             self_type,
             new,
+            get,
             retain,
             release,
         }
@@ -66,28 +75,42 @@ impl<'a> RcBuiltin<'a> {
         self.self_type
             .set_body(&[i32_type.into(), self.inner_type.into()], false);
         self.define_new(context);
+        self.define_get(context);
         self.define_retain(context);
         self.define_release(context, inner_drop);
     }
 
     fn define_new(&self, context: &'a Context) {
         let i32_type = context.i32_type();
-        let value = self.new.get_nth_param(0).unwrap();
+        let inner = self.new.get_nth_param(0).unwrap();
 
         let builder = context.create_builder();
         let entry = context.append_basic_block(self.new, "entry");
 
         builder.position_at_end(&entry);
-        let mut new = self.self_type.get_undef();
-        new = builder
-            .build_insert_value(new, i32_type.const_int(1, false), REFCOUNT_IDX, "tmp0")
-            .unwrap()
-            .into_struct_value();
-        new = builder
-            .build_insert_value(new, value, INNER_IDX, "tmp1")
-            .unwrap()
-            .into_struct_value();
-        builder.build_return(Some(&new));
+        let new_ptr = builder.build_malloc(self.self_type, "new_ptr");
+        unsafe {
+            set_member(
+                &builder,
+                new_ptr,
+                REFCOUNT_IDX,
+                i32_type.const_int(1, false).into(),
+                "refcount",
+            );
+            set_member(&builder, new_ptr, INNER_IDX, inner, "inner");
+        }
+        builder.build_return(Some(&new_ptr));
+    }
+
+    fn define_get(&self, context: &'a Context) {
+        let ptr = self.retain.get_nth_param(0).unwrap().into_pointer_value();
+
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.retain, "entry");
+
+        builder.position_at_end(&entry);
+        let inner = unsafe { get_member(&builder, ptr, INNER_IDX, "inner") };
+        builder.build_return(Some(&inner));
     }
 
     fn define_retain(&self, context: &'a Context) {
