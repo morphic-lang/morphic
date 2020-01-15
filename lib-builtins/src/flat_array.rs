@@ -6,12 +6,20 @@ use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{FunctionValue, InstructionOpcode};
 use inkwell::{AddressSpace, IntPredicate};
 
+// TODO: make sure retains/releases are correct
+
 const DATA_IDX: u32 = 0; // has type T*
 const CAP_IDX: u32 = 1; // has type u64
 const LEN_IDX: u32 = 2; // has type u64
 
 const HOLE_IDX_IDX: u32 = 0; // has type u64
 const HOLE_PTR_IDX: u32 = 1; // has type FlatArray<T>*
+
+const ITEM_RET_ITEM_IDX: u32 = 0; // has type T
+const ITEM_RET_HOLE_IDX: u32 = 1; // has type HoleArray<T>
+
+const POP_RET_PTR_IDX: u32 = 0; // has type FlatArray<T>*
+const POP_RET_ITEM_IDX: u32 = 1; // has type T
 
 #[derive(Clone, Copy, Debug)]
 pub struct FlatArrayBuiltin<'a> {
@@ -258,29 +266,45 @@ impl<'a> FlatArrayBuiltin<'a> {
         let item_src = unsafe { builder.build_in_bounds_gep(data, &[len_new], "item_src") };
         let item = builder.build_load(item_src, "item");
 
-        // TODO: fix return type
-        // builder.build_return(Some(&item));
+        let mut ret = self.pop_ret_type.get_undef();
+        ret = builder
+            .build_insert_value(ret, ptr, POP_RET_PTR_IDX, "ptr")
+            .unwrap()
+            .into_struct_value();
+        ret = builder
+            .build_insert_value(ret, item, POP_RET_ITEM_IDX, "item")
+            .unwrap()
+            .into_struct_value();
+        builder.build_return(Some(&ret));
     }
 
     fn define_replace(&self, context: &'a Context) {
-        let hole = self.replace.get_nth_param(0).unwrap();
+        let hole = self.replace.get_nth_param(0).unwrap().into_struct_value();
         let item = self.replace.get_nth_param(1).unwrap();
 
         let builder = context.create_builder();
         let entry = context.append_basic_block(self.pop, "entry");
 
         builder.position_at_end(&entry);
-        // TODO: get idx and ptr from hole
-        //let idx = unsafe { get_member(&builder, hole_ptr, HOLE_IDX_IDX, "idx") };
-        //let ptr = unsafe { get_member(&builder, hole_ptr, HOLE_PTR_IDX, "ptr") };
-        //let ptr = builder
-        //    .build_call(self.self_type.get, &[ptr], "ptr")
-        //    .into_pointer_value();
-        //let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
-        //let item_dest = unsafe { builder.build_in_bounds_gep(data, &[idx], "item_dest") };
-        //builder.build_store(item_dest, item);
+        let idx = builder
+            .build_extract_value(hole, HOLE_IDX_IDX, "idx")
+            .unwrap()
+            .into_int_value();
+        let rc_ptr = builder
+            .build_extract_value(hole, HOLE_PTR_IDX, "rc_ptr")
+            .unwrap();
+        let array_ptr = builder
+            .build_call(self.self_type.get, &[rc_ptr], "array_ptr")
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+        let data =
+            unsafe { get_member(&builder, array_ptr, DATA_IDX, "data") }.into_pointer_value();
+        let item_dest = unsafe { builder.build_in_bounds_gep(data, &[idx], "item_dest") };
+        builder.build_store(item_dest, item);
 
-        //builder.build_return(Some(&ptr));
+        builder.build_return(Some(&rc_ptr));
     }
 
     fn define_drop(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {
