@@ -266,13 +266,15 @@ fn gen_expr<'a>(
                 .into_int_type()
                 .const_int(variant_id.0.try_into().unwrap(), false);
 
-            let variant_value = variant_type.get_undef();
-            builder
+            let mut variant_value = variant_type.get_undef();
+            variant_value = builder
                 .build_insert_value(variant_value, discrim, VARIANT_DISCRIM_IDX, "insert")
-                .unwrap();
-            builder
+                .unwrap()
+                .into_struct_value();
+            variant_value = builder
                 .build_insert_value(variant_value, byte_array, VARIANT_BYTES_IDX, "insert")
-                .unwrap();
+                .unwrap()
+                .into_struct_value();
             variant_value.into()
         }
         E::UnwrapVariant(variants, variant_id, local_id) => {
@@ -304,10 +306,19 @@ fn gen_expr<'a>(
             content
         }
         E::WrapCustom(type_id, local_id) => {
-            todo![];
+            let mut custom_type_val = globals.custom_types[type_id].get_undef();
+            custom_type_val = builder
+                .build_insert_value(custom_type_val, locals[local_id], 0, "insert")
+                .unwrap()
+                .into_struct_value();
+
+            custom_type_val.into()
         }
         E::UnwrapCustom(type_id, local_id) => {
-            todo![];
+            let mut custom_type_content = builder
+                .build_extract_value(locals[local_id].into_struct_value(), 0, "custom_type_val")
+                .unwrap();
+            custom_type_content
         }
         E::CheckVariant(variant_id, local_id) => {
             todo![];
