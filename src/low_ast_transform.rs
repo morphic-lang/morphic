@@ -23,34 +23,6 @@ fn get_llvm_type<'a>(_context: &'a Context, _ty: &low::Type) -> BasicTypeEnum<'a
     unimplemented!();
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ExprValue<'a> {
-    Basic(BasicValueEnum<'a>),
-    Unit,
-}
-
-impl<'a> ExprValue<'a> {
-    fn is_basic(&self) -> bool {
-        match self {
-            ExprValue::Basic(_) => true,
-            ExprValue::Unit => false,
-        }
-    }
-
-    fn as_basic(&self) -> BasicValueEnum<'a> {
-        match self {
-            ExprValue::Basic(val) => *val,
-            ExprValue::Unit => panic!(),
-        }
-    }
-}
-
-impl<'a> From<BasicValueEnum<'a>> for ExprValue<'a> {
-    fn from(val: BasicValueEnum<'a>) -> ExprValue<'a> {
-        ExprValue::Basic(val)
-    }
-}
-
 fn gen_expr<'a>(
     context: &'a Context,
     module: &Module<'a>,
@@ -58,26 +30,22 @@ fn gen_expr<'a>(
     globals: &Globals<'a>,
     func: FunctionValue<'a>,
     expr: &low::Expr,
-    locals: &mut IdVec<low::LocalId, ExprValue<'a>>,
-) -> ExprValue<'a> {
+    locals: &mut IdVec<low::LocalId, BasicValueEnum<'a>>,
+) -> BasicValueEnum<'a> {
     use low::Expr as E;
     match expr {
         E::Local(local_id) => locals[local_id],
         E::Call(func_id, local_id) => builder
-            .build_call(
-                globals.funcs[func_id],
-                &[locals[local_id].as_basic()],
-                "result",
-            )
+            .build_call(globals.funcs[func_id], &[locals[local_id]], "result")
             .try_as_basic_value()
-            .map_left(|x| x.into())
-            .left_or(ExprValue::Unit),
+            .left()
+            .unwrap(),
         E::If(local_id, then_expr, else_expr) => {
             let then_block = context.append_basic_block(func, "then_block");
             let else_block = context.append_basic_block(func, "else_block");
             let next_block = context.append_basic_block(func, "next_block");
 
-            let cond = locals[local_id].as_basic().into_int_value();
+            let cond = locals[local_id].into_int_value();
             builder.build_conditional_branch(cond, &then_block, &else_block);
 
             builder.position_at_end(&then_block);
@@ -89,16 +57,9 @@ fn gen_expr<'a>(
             builder.build_unconditional_branch(&next_block);
 
             builder.position_at_end(&next_block);
-            if result_then.is_basic() {
-                let phi = builder.build_phi(result_then.as_basic().get_type(), "result");
-                phi.add_incoming(&[
-                    (&result_then.as_basic(), &then_block),
-                    (&result_else.as_basic(), &else_block),
-                ]);
-                phi.as_basic_value().into()
-            } else {
-                ExprValue::Unit
-            }
+            let phi = builder.build_phi(result_then.get_type(), "result");
+            phi.add_incoming(&[(&result_then, &then_block), (&result_else, &else_block)]);
+            phi.as_basic_value().into()
         }
         E::LetMany(bindings, local_id) => {
             let len = locals.len();
@@ -122,21 +83,13 @@ fn gen_expr<'a>(
             todo![];
         }
         E::Tuple(fields) => {
-            let field_tys: Vec<_> = fields
-                .iter()
-                .map(|id| locals[id].as_basic().get_type())
-                .collect();
+            let field_tys: Vec<_> = fields.iter().map(|id| locals[id].get_type()).collect();
             let tup_ty = context.struct_type(&field_tys[..], false);
 
             let mut tup = tup_ty.get_undef();
             for (elem, id) in fields.iter().enumerate() {
                 tup = builder
-                    .build_insert_value(
-                        tup,
-                        locals[id].as_basic(),
-                        elem.try_into().unwrap(),
-                        "insert",
-                    )
+                    .build_insert_value(tup, locals[id], elem.try_into().unwrap(), "insert")
                     .unwrap()
                     .into_struct_value();
             }
@@ -145,7 +98,7 @@ fn gen_expr<'a>(
         }
         E::TupleField(local_id, elem) => builder
             .build_extract_value(
-                locals[local_id].as_basic().into_struct_value(),
+                locals[local_id].into_struct_value(),
                 (*elem).try_into().unwrap(),
                 "extract",
             )
@@ -182,60 +135,60 @@ fn gen_expr<'a>(
             low::ArithOp::Op(ty, bin_op, lhs, rhs) => match bin_op {
                 first_ord::BinOp::Add => match ty {
                     first_ord::NumType::Byte => BasicValueEnum::from(builder.build_int_add(
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "byte_add",
                     ))
                     .into(),
                     first_ord::NumType::Int => BasicValueEnum::from(builder.build_int_add(
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "int_add",
                     ))
                     .into(),
                     first_ord::NumType::Float => BasicValueEnum::from(builder.build_float_add(
-                        locals[lhs].as_basic().into_float_value(),
-                        locals[rhs].as_basic().into_float_value(),
+                        locals[lhs].into_float_value(),
+                        locals[rhs].into_float_value(),
                         "float_add",
                     ))
                     .into(),
                 },
                 first_ord::BinOp::Sub => match ty {
                     first_ord::NumType::Byte => BasicValueEnum::from(builder.build_int_sub(
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "byte_sub",
                     ))
                     .into(),
                     first_ord::NumType::Int => BasicValueEnum::from(builder.build_int_sub(
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "int_sub",
                     ))
                     .into(),
                     first_ord::NumType::Float => BasicValueEnum::from(builder.build_float_sub(
-                        locals[lhs].as_basic().into_float_value(),
-                        locals[rhs].as_basic().into_float_value(),
+                        locals[lhs].into_float_value(),
+                        locals[rhs].into_float_value(),
                         "float_sub",
                     ))
                     .into(),
                 },
                 first_ord::BinOp::Mul => match ty {
                     first_ord::NumType::Byte => BasicValueEnum::from(builder.build_int_mul(
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "byte_mul",
                     ))
                     .into(),
                     first_ord::NumType::Int => BasicValueEnum::from(builder.build_int_mul(
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "int_mul",
                     ))
                     .into(),
                     first_ord::NumType::Float => BasicValueEnum::from(builder.build_float_mul(
-                        locals[lhs].as_basic().into_float_value(),
-                        locals[rhs].as_basic().into_float_value(),
+                        locals[lhs].into_float_value(),
+                        locals[rhs].into_float_value(),
                         "float_mul",
                     ))
                     .into(),
@@ -243,21 +196,21 @@ fn gen_expr<'a>(
                 first_ord::BinOp::Div => match ty {
                     first_ord::NumType::Byte => {
                         BasicValueEnum::from(builder.build_int_unsigned_div(
-                            locals[lhs].as_basic().into_int_value(),
-                            locals[rhs].as_basic().into_int_value(),
+                            locals[lhs].into_int_value(),
+                            locals[rhs].into_int_value(),
                             "byte_div",
                         ))
                         .into()
                     }
                     first_ord::NumType::Int => BasicValueEnum::from(builder.build_int_signed_div(
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "int_div",
                     ))
                     .into(),
                     first_ord::NumType::Float => BasicValueEnum::from(builder.build_float_div(
-                        locals[lhs].as_basic().into_float_value(),
-                        locals[rhs].as_basic().into_float_value(),
+                        locals[lhs].into_float_value(),
+                        locals[rhs].into_float_value(),
                         "float_div",
                     ))
                     .into(),
@@ -267,22 +220,22 @@ fn gen_expr<'a>(
                 first_ord::Comparison::Less => match ty {
                     first_ord::NumType::Byte => BasicValueEnum::from(builder.build_int_compare(
                         IntPredicate::ULT,
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "bytes_less",
                     ))
                     .into(),
                     first_ord::NumType::Int => BasicValueEnum::from(builder.build_int_compare(
                         IntPredicate::SLT,
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "int_less",
                     ))
                     .into(),
                     first_ord::NumType::Float => BasicValueEnum::from(builder.build_float_compare(
                         FloatPredicate::OLT,
-                        locals[lhs].as_basic().into_float_value(),
-                        locals[rhs].as_basic().into_float_value(),
+                        locals[lhs].into_float_value(),
+                        locals[rhs].into_float_value(),
                         "float_less",
                     ))
                     .into(),
@@ -290,22 +243,22 @@ fn gen_expr<'a>(
                 first_ord::Comparison::LessEqual => match ty {
                     first_ord::NumType::Byte => BasicValueEnum::from(builder.build_int_compare(
                         IntPredicate::ULE,
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "bytes_less_equal",
                     ))
                     .into(),
                     first_ord::NumType::Int => BasicValueEnum::from(builder.build_int_compare(
                         IntPredicate::SLE,
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "int_less_equal",
                     ))
                     .into(),
                     first_ord::NumType::Float => BasicValueEnum::from(builder.build_float_compare(
                         FloatPredicate::OLE,
-                        locals[lhs].as_basic().into_float_value(),
-                        locals[rhs].as_basic().into_float_value(),
+                        locals[lhs].into_float_value(),
+                        locals[rhs].into_float_value(),
                         "float_less_equal",
                     ))
                     .into(),
@@ -313,22 +266,22 @@ fn gen_expr<'a>(
                 first_ord::Comparison::Equal => match ty {
                     first_ord::NumType::Byte => BasicValueEnum::from(builder.build_int_compare(
                         IntPredicate::EQ,
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "bytes_equal",
                     ))
                     .into(),
                     first_ord::NumType::Int => BasicValueEnum::from(builder.build_int_compare(
                         IntPredicate::EQ,
-                        locals[lhs].as_basic().into_int_value(),
-                        locals[rhs].as_basic().into_int_value(),
+                        locals[lhs].into_int_value(),
+                        locals[rhs].into_int_value(),
                         "int_equal",
                     ))
                     .into(),
                     first_ord::NumType::Float => BasicValueEnum::from(builder.build_float_compare(
                         FloatPredicate::OEQ,
-                        locals[lhs].as_basic().into_float_value(),
-                        locals[rhs].as_basic().into_float_value(),
+                        locals[lhs].into_float_value(),
+                        locals[rhs].into_float_value(),
                         "float_equal",
                     ))
                     .into(),
@@ -337,16 +290,13 @@ fn gen_expr<'a>(
             low::ArithOp::Negate(ty, local_id) => match ty {
                 first_ord::NumType::Byte => panic!(), // Bytes are unsigned. Don't negate them!
                 first_ord::NumType::Int => BasicValueEnum::from(
-                    builder.build_int_neg(locals[local_id].as_basic().into_int_value(), "int_neg"),
+                    builder.build_int_neg(locals[local_id].into_int_value(), "int_neg"),
                 )
                 .into(),
-                first_ord::NumType::Float => {
-                    BasicValueEnum::from(builder.build_float_neg(
-                        locals[local_id].as_basic().into_float_value(),
-                        "float_neg",
-                    ))
-                    .into()
-                }
+                first_ord::NumType::Float => BasicValueEnum::from(
+                    builder.build_float_neg(locals[local_id].into_float_value(), "float_neg"),
+                )
+                .into(),
             },
         },
         E::ArrayOp(rep, item_type, array_op) => {
