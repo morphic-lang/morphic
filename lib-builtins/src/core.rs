@@ -59,45 +59,50 @@ pub(super) fn size_of<'a>(ty: BasicTypeEnum<'a>) -> Option<IntValue<'a>> {
     }
 }
 
-pub(super) fn if_<'a>(
+pub(super) fn build_if<'a>(
     context: &'a Context,
     builder: &Builder<'a>,
-    f: FunctionValue<'a>,
+    func: FunctionValue<'a>,
     cond: IntValue<'a>,
-) -> BasicBlock {
-    let then_block = context.append_basic_block(f, "then_block");
-    let next_block = context.append_basic_block(f, "next_block");
+    body: impl FnOnce() -> (),
+) {
+    let then_block = context.append_basic_block(func, "then_block");
+    let next_block = context.append_basic_block(func, "next_block");
     builder.build_conditional_branch(cond, &then_block, &next_block);
     builder.position_at_end(&then_block);
+
+    body();
+
     let branch = builder.build_unconditional_branch(&next_block);
-    builder.position_before(&branch);
-    next_block
+    builder.position_at_end(&next_block);
 }
 
-pub(super) fn for_i_less_than<'a>(
+pub(super) fn build_for<'a>(
     context: &'a Context,
     builder: &Builder<'a>,
-    f: FunctionValue<'a>,
+    func: FunctionValue<'a>,
     end_for: IntValue<'a>,
-) -> (BasicBlock, IntValue<'a>) {
+    body: impl for<'b> FnOnce(IntValue<'b>) -> (),
+) {
     let i64_type = context.i64_type();
 
     let i_ptr = builder.build_alloca(i64_type, "i_ptr");
     builder.build_store(i_ptr, i64_type.const_int(0, false));
 
-    let for_block = context.append_basic_block(f, "for_block");
-    let next_block = context.append_basic_block(f, "next_block");
+    let for_block = context.append_basic_block(func, "for_block");
+    let next_block = context.append_basic_block(func, "next_block");
+    builder.build_unconditional_branch(&for_block);
 
     builder.position_at_end(&for_block);
     let i_cur = builder.build_load(i_ptr, "i_cur").into_int_value();
     let i_new = builder.build_int_add(i_cur, i64_type.const_int(1, false), "i_new");
     let store = builder.build_store(i_ptr, i_new);
 
+    body(i_cur);
+
     let done = builder.build_int_compare(IntPredicate::UGE, i_new, end_for, "done");
     builder.build_conditional_branch(done, &next_block, &for_block);
-
-    builder.position_at(&for_block, &store);
-    (next_block, i_cur)
+    builder.position_at_end(&next_block);
 }
 
 pub(super) unsafe fn get_member<'a>(
@@ -170,7 +175,7 @@ pub(super) fn mangle_basic<'a>(context: &'a Context, ty: BasicTypeEnum<'a>) -> S
             format!("P{}", mangle_basic(context, inner_ty.into()))
         }
         BasicTypeEnum::StructType(inner_ty) => {
-            if inner_ty.is_opaque() {
+            if !inner_ty.is_opaque() {
                 format!(
                     "T{}{}",
                     inner_ty.count_fields(),

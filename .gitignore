@@ -1,7 +1,9 @@
-/target
+/lib-builtins/target
 /lib-builtins-test/target
+/target
 **/*.rs.bk
 **/*.out
+**/*.out.ll
 
 # Editor/system files
 *.swp

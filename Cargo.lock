@@ -323,6 +323,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "lib-builtins"
 version = "0.1.0"
 dependencies = [
+ "better-panic 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "inkwell 0.1.0 (git+https://github.com/TheDan64/inkwell?branch=llvm8-0)",
  "itertools 0.8.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
