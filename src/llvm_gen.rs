@@ -80,7 +80,17 @@ fn gen_expr<'a>(
             body
         }
         E::Unreachable(type_) => {
-            todo![];
+            builder.build_unreachable();
+            let unreachable_block = context.append_basic_block(func, "unreachable");
+            builder.position_at_end(&unreachable_block);
+            match get_llvm_type(context, type_) {
+                BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
+                BasicTypeEnum::FloatType(t) => t.get_undef().into(),
+                BasicTypeEnum::IntType(t) => t.get_undef().into(),
+                BasicTypeEnum::PointerType(t) => t.get_undef().into(),
+                BasicTypeEnum::StructType(t) => t.get_undef().into(),
+                BasicTypeEnum::VectorType(t) => t.get_undef().into(),
+            }
         }
         E::Tuple(fields) => {
             let field_tys: Vec<_> = fields.iter().map(|id| locals[id].get_type()).collect();
