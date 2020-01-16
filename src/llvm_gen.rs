@@ -1,38 +1,168 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
+use crate::data::repr_constrained_ast as constrain;
 use crate::util::id_vec::IdVec;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
+use inkwell::targets::TargetData;
 use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue};
+use inkwell::AddressSpace;
 use inkwell::{FloatPredicate, IntPredicate};
 use lib_builtins::core::LibC;
+use lib_builtins::flat_array::FlatArrayBuiltin;
+use lib_builtins::rc::RcBoxBuiltin;
+use std::collections::BTreeMap;
 use std::convert::TryInto;
+
+const VARIANT_DISCRIM_IDX: u32 = 0;
+const VARIANT_ALIGN_IDX: u32 = 1;
+const VARIANT_BYTES_IDX: u32 = 2;
 
 #[derive(Clone, Debug)]
 struct Globals<'a> {
+    context: &'a Context,
+    module: &'a Module<'a>,
+    target: &'a TargetData,
     libc: LibC<'a>,
     custom_types: IdVec<low::CustomTypeId, StructType<'a>>,
     funcs: IdVec<low::CustomFuncId, FunctionValue<'a>>,
-    main: FunctionValue<'a>,
-    unit: BasicValueEnum<'a>,
 }
 
-fn get_llvm_type<'a>(_context: &'a Context, _ty: &low::Type) -> BasicTypeEnum<'a> {
-    unimplemented!();
+struct Instances<'a> {
+    flat_arrays: BTreeMap<low::Type, FlatArrayBuiltin<'a>>,
+    rcs: BTreeMap<low::Type, RcBoxBuiltin<'a>>,
+}
+
+impl<'a> Instances<'a> {
+    fn get_flat_array(
+        &mut self,
+        globals: &Globals<'a>,
+        item_type: &low::Type,
+    ) -> FlatArrayBuiltin<'a> {
+        if let Some(existing) = self.flat_arrays.get(&item_type.clone()) {
+            return *existing;
+        }
+        let new_builtin = FlatArrayBuiltin::declare(
+            globals.context,
+            globals.module,
+            get_llvm_type(globals, self, item_type),
+        );
+        self.flat_arrays.insert(item_type.clone(), new_builtin);
+        return new_builtin;
+    }
+    fn get_rc(&mut self, globals: &Globals<'a>, item_type: &low::Type) -> RcBoxBuiltin<'a> {
+        if let Some(existing) = self.rcs.get(&item_type.clone()) {
+            return *existing;
+        }
+        let new_builtin = RcBoxBuiltin::declare(
+            globals.context,
+            globals.module,
+            get_llvm_type(globals, self, item_type),
+        );
+        self.rcs.insert(item_type.clone(), new_builtin);
+        return new_builtin;
+    }
+}
+
+fn get_llvm_type<'a>(
+    globals: &Globals<'a>,
+    instances: &mut Instances<'a>,
+    type_: &low::Type,
+) -> BasicTypeEnum<'a> {
+    match type_ {
+        low::Type::Bool => globals.context.bool_type().into(),
+        low::Type::Num(first_ord::NumType::Byte) => globals.context.i8_type().into(),
+        low::Type::Num(first_ord::NumType::Int) => globals.context.i64_type().into(),
+        low::Type::Num(first_ord::NumType::Float) => globals.context.f64_type().into(),
+        low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => instances
+            .get_flat_array(globals, item_type)
+            .self_type
+            .self_type
+            .ptr_type(AddressSpace::Generic)
+            .into(),
+        low::Type::Array(constrain::RepChoice::FallbackImmut, _item_type) => {
+            unimplemented![];
+        }
+        low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => instances
+            .get_flat_array(globals, item_type)
+            .self_hole_type
+            .into(),
+        low::Type::HoleArray(constrain::RepChoice::FallbackImmut, _item_type) => {
+            unimplemented![];
+        }
+        low::Type::Tuple(item_types) => {
+            let mut field_types = vec![];
+            for item_type in item_types.iter() {
+                field_types.push(get_llvm_type(globals, instances, item_type));
+            }
+
+            globals.context.struct_type(&field_types[..], false).into()
+        }
+        low::Type::Variants(variants) => {
+            if variants.len() == 0 {
+                return globals.context.struct_type(&[], false).into();
+            }
+
+            let discrim_type = if variants.len() <= 1 << 8 {
+                globals.context.i8_type()
+            } else if variants.len() <= 1 << 16 {
+                globals.context.i16_type()
+            } else if variants.len() <= 1 << 32 {
+                globals.context.i32_type()
+            } else {
+                globals.context.i64_type()
+            };
+
+            let (max_alignment, max_size) = {
+                let mut max_alignment = 1;
+                let mut max_size = 0;
+                for variant_type in &variants.items {
+                    let variant_type = get_llvm_type(globals, instances, &variant_type);
+                    let alignment = globals.target.get_abi_alignment(&variant_type);
+                    let size = globals.target.get_abi_size(&variant_type);
+                    max_alignment = max_alignment.max(alignment);
+                    max_size = max_size.max(size);
+                }
+                (max_alignment, max_size)
+            };
+
+            let alignment_array = {
+                let alignment_type = match max_alignment {
+                    1 => globals.context.i8_type(),
+                    2 => globals.context.i16_type(),
+                    4 => globals.context.i32_type(),
+                    8 => globals.context.i64_type(),
+                    _ => panic!["Unsupported alignment {}", max_alignment],
+                };
+                alignment_type.array_type(0)
+            };
+
+            let bytes = globals
+                .context
+                .i8_type()
+                .array_type(max_size.try_into().unwrap());
+
+            let field_types = &[discrim_type.into(), alignment_array.into(), bytes.into()];
+            globals.context.struct_type(field_types, false).into()
+        }
+        low::Type::Boxed(type_) => instances.get_rc(globals, type_).self_type.into(),
+        low::Type::Custom(type_id) => globals.custom_types[type_id].into(),
+    }
 }
 
 fn gen_expr<'a>(
-    context: &'a Context,
-    module: &Module<'a>,
     builder: &Builder<'a>,
+    instances: &mut Instances<'a>,
     globals: &Globals<'a>,
     func: FunctionValue<'a>,
     expr: &low::Expr,
     locals: &mut IdVec<low::LocalId, BasicValueEnum<'a>>,
 ) -> BasicValueEnum<'a> {
     use low::Expr as E;
+    let context = globals.context;
+    let module = globals.module;
     match expr {
         E::Local(local_id) => locals[local_id],
         E::Call(func_id, local_id) => builder
@@ -49,11 +179,11 @@ fn gen_expr<'a>(
             builder.build_conditional_branch(cond, &then_block, &else_block);
 
             builder.position_at_end(&then_block);
-            let result_then = gen_expr(context, module, builder, globals, func, then_expr, locals);
+            let result_then = gen_expr(builder, instances, globals, func, then_expr, locals);
             builder.build_unconditional_branch(&next_block);
 
             builder.position_at_end(&else_block);
-            let result_else = gen_expr(context, module, builder, globals, func, else_expr, locals);
+            let result_else = gen_expr(builder, instances, globals, func, else_expr, locals);
             builder.build_unconditional_branch(&next_block);
 
             builder.position_at_end(&next_block);
@@ -64,15 +194,8 @@ fn gen_expr<'a>(
         E::LetMany(bindings, local_id) => {
             let len = locals.len();
             for (_, binding_expr) in bindings {
-                let binding_val = gen_expr(
-                    context,
-                    module,
-                    builder,
-                    globals,
-                    func,
-                    &*binding_expr,
-                    locals,
-                );
+                let binding_val =
+                    gen_expr(builder, instances, globals, func, &*binding_expr, locals);
                 let _ = locals.push(binding_val);
             }
             let body = locals[local_id];
@@ -83,7 +206,7 @@ fn gen_expr<'a>(
             builder.build_unreachable();
             let unreachable_block = context.append_basic_block(func, "unreachable");
             builder.position_at_end(&unreachable_block);
-            match get_llvm_type(context, type_) {
+            match get_llvm_type(globals, instances, type_) {
                 BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
                 BasicTypeEnum::FloatType(t) => t.get_undef().into(),
                 BasicTypeEnum::IntType(t) => t.get_undef().into(),

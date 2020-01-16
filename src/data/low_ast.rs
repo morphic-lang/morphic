@@ -11,7 +11,7 @@ id_type!(pub VariantId);
 id_type!(pub CustomFuncId);
 pub type CustomTypeId = special::CustomTypeId;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bool,
     Num(first_ord::NumType),
