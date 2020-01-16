@@ -66,6 +66,58 @@ impl<'a> Instances<'a> {
     }
 }
 
+fn get_llvm_variant_type<'a>(
+    globals: &Globals<'a>,
+    instances: &mut Instances<'a>,
+    variants: &IdVec<low::VariantId, low::Type>,
+) -> StructType<'a> {
+    if variants.len() == 0 {
+        return globals.context.struct_type(&[], false).into();
+    }
+
+    let discrim_type = if variants.len() <= 1 << 8 {
+        globals.context.i8_type()
+    } else if variants.len() <= 1 << 16 {
+        globals.context.i16_type()
+    } else if variants.len() <= 1 << 32 {
+        globals.context.i32_type()
+    } else {
+        globals.context.i64_type()
+    };
+
+    let (max_alignment, max_size) = {
+        let mut max_alignment = 1;
+        let mut max_size = 0;
+        for variant_type in &variants.items {
+            let variant_type = get_llvm_type(globals, instances, &variant_type);
+            let alignment = globals.target.get_abi_alignment(&variant_type);
+            let size = globals.target.get_abi_size(&variant_type);
+            max_alignment = max_alignment.max(alignment);
+            max_size = max_size.max(size);
+        }
+        (max_alignment, max_size)
+    };
+
+    let alignment_array = {
+        let alignment_type = match max_alignment {
+            1 => globals.context.i8_type(),
+            2 => globals.context.i16_type(),
+            4 => globals.context.i32_type(),
+            8 => globals.context.i64_type(),
+            _ => panic!["Unsupported alignment {}", max_alignment],
+        };
+        alignment_type.array_type(0)
+    };
+
+    let bytes = globals
+        .context
+        .i8_type()
+        .array_type(max_size.try_into().unwrap());
+
+    let field_types = &[discrim_type.into(), alignment_array.into(), bytes.into()];
+    globals.context.struct_type(field_types, false)
+}
+
 fn get_llvm_type<'a>(
     globals: &Globals<'a>,
     instances: &mut Instances<'a>,
@@ -101,51 +153,7 @@ fn get_llvm_type<'a>(
             globals.context.struct_type(&field_types[..], false).into()
         }
         low::Type::Variants(variants) => {
-            if variants.len() == 0 {
-                return globals.context.struct_type(&[], false).into();
-            }
-
-            let discrim_type = if variants.len() <= 1 << 8 {
-                globals.context.i8_type()
-            } else if variants.len() <= 1 << 16 {
-                globals.context.i16_type()
-            } else if variants.len() <= 1 << 32 {
-                globals.context.i32_type()
-            } else {
-                globals.context.i64_type()
-            };
-
-            let (max_alignment, max_size) = {
-                let mut max_alignment = 1;
-                let mut max_size = 0;
-                for variant_type in &variants.items {
-                    let variant_type = get_llvm_type(globals, instances, &variant_type);
-                    let alignment = globals.target.get_abi_alignment(&variant_type);
-                    let size = globals.target.get_abi_size(&variant_type);
-                    max_alignment = max_alignment.max(alignment);
-                    max_size = max_size.max(size);
-                }
-                (max_alignment, max_size)
-            };
-
-            let alignment_array = {
-                let alignment_type = match max_alignment {
-                    1 => globals.context.i8_type(),
-                    2 => globals.context.i16_type(),
-                    4 => globals.context.i32_type(),
-                    8 => globals.context.i64_type(),
-                    _ => panic!["Unsupported alignment {}", max_alignment],
-                };
-                alignment_type.array_type(0)
-            };
-
-            let bytes = globals
-                .context
-                .i8_type()
-                .array_type(max_size.try_into().unwrap());
-
-            let field_types = &[discrim_type.into(), alignment_array.into(), bytes.into()];
-            globals.context.struct_type(field_types, false).into()
+            get_llvm_variant_type(globals, instances, &variants).into()
         }
         low::Type::Boxed(type_) => instances.get_rc(globals, type_).self_type.into(),
         low::Type::Custom(type_id) => globals.custom_types[type_id].into(),
@@ -238,7 +246,32 @@ fn gen_expr<'a>(
             .unwrap()
             .into(),
         E::WrapVariant(variants, variant_id, local_id) => {
-            todo![];
+            let variant_type = get_llvm_variant_type(globals, instances, &variants);
+            let local_id_alloca = builder.build_alloca(locals[local_id].get_type(), "variant_item");
+            builder.build_store(local_id_alloca, locals[local_id]);
+            let byte_array_ptr = builder.build_bitcast(
+                local_id_alloca,
+                variant_type
+                    .get_field_type_at_index(VARIANT_BYTES_IDX)
+                    .unwrap(),
+                "byte_array_ptr",
+            );
+            let byte_array = builder.build_load(byte_array_ptr.into_pointer_value(), "byte_array");
+
+            let discrim = variant_type
+                .get_field_type_at_index(VARIANT_DISCRIM_IDX)
+                .unwrap()
+                .into_int_type()
+                .const_int(variant_id.0.try_into().unwrap(), false);
+
+            let mut variant_value = variant_type.get_undef();
+            builder
+                .build_insert_value(variant_value, discrim, VARIANT_DISCRIM_IDX, "insert")
+                .unwrap();
+            builder
+                .build_insert_value(variant_value, byte_array, VARIANT_BYTES_IDX, "insert")
+                .unwrap();
+            variant_value.into()
         }
         E::UnwrapVariant(variant_id, local_id) => {
             todo![];
