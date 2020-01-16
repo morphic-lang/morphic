@@ -118,6 +118,9 @@ fn gen_expr<'a>(
             locals.truncate(len);
             body
         }
+        E::Unreachable(type_) => {
+            todo![];
+        }
         E::Tuple(fields) => {
             let field_tys: Vec<_> = fields
                 .iter()
@@ -148,6 +151,33 @@ fn gen_expr<'a>(
             )
             .unwrap()
             .into(),
+        E::WrapVariant(variants, variant_id, local_id) => {
+            todo![];
+        }
+        E::UnwrapVariant(variant_id, local_id) => {
+            todo![];
+        }
+        E::WrapCustom(type_id, local_id) => {
+            todo![];
+        }
+        E::UnwrapCustom(type_id, local_id) => {
+            todo![];
+        }
+        E::CheckVariant(variant_id, local_id) => {
+            todo![];
+        }
+        E::WrapBoxed(local_id) => {
+            todo![];
+        }
+        E::UnwrapBoxed(local_id) => {
+            todo![];
+        }
+        E::Retain(local_id, type_) => {
+            todo![];
+        }
+        E::Release(local_id, type_) => {
+            todo![];
+        }
         E::ArithOp(op) => match op {
             low::ArithOp::Op(ty, bin_op, lhs, rhs) => match bin_op {
                 first_ord::BinOp::Add => match ty {
@@ -319,6 +349,12 @@ fn gen_expr<'a>(
                 }
             },
         },
+        E::ArrayOp(rep, item_type, array_op) => {
+            todo![];
+        }
+        E::IoOp(rep, io_op) => {
+            todo![];
+        }
         E::BoolLit(val) => {
             BasicValueEnum::from(context.bool_type().const_int(*val as u64, false)).into()
         }
@@ -331,6 +367,5 @@ fn gen_expr<'a>(
             BasicValueEnum::from(context.i64_type().const_int(*val as u64, true)).into()
         }
         E::FloatLit(val) => BasicValueEnum::from(context.f64_type().const_float(*val)).into(),
-        _ => unimplemented!(),
     }
 }
