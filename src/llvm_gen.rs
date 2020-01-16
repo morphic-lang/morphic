@@ -247,16 +247,18 @@ fn gen_expr<'a>(
             .into(),
         E::WrapVariant(variants, variant_id, local_id) => {
             let variant_type = get_llvm_variant_type(globals, instances, &variants);
-            let local_id_alloca = builder.build_alloca(locals[local_id].get_type(), "variant_item");
-            builder.build_store(local_id_alloca, locals[local_id]);
-            let byte_array_ptr = builder.build_bitcast(
-                local_id_alloca,
-                variant_type
-                    .get_field_type_at_index(VARIANT_BYTES_IDX)
-                    .unwrap(),
-                "byte_array_ptr",
+            let byte_array_type = variant_type
+                .get_field_type_at_index(VARIANT_BYTES_IDX)
+                .unwrap();
+            let byte_array_ptr = builder.build_alloca(byte_array_type, "byte_array_ptr");
+            let casted_byte_array_ptr = builder.build_bitcast(
+                byte_array_ptr,
+                locals[local_id].get_type(),
+                "casted_byte_array_ptr",
             );
-            let byte_array = builder.build_load(byte_array_ptr.into_pointer_value(), "byte_array");
+            let byte_array = builder.build_load(byte_array_ptr, "byte_array");
+
+            builder.build_store(casted_byte_array_ptr.into_pointer_value(), locals[local_id]);
 
             let discrim = variant_type
                 .get_field_type_at_index(VARIANT_DISCRIM_IDX)
@@ -264,7 +266,7 @@ fn gen_expr<'a>(
                 .into_int_type()
                 .const_int(variant_id.0.try_into().unwrap(), false);
 
-            let mut variant_value = variant_type.get_undef();
+            let variant_value = variant_type.get_undef();
             builder
                 .build_insert_value(variant_value, discrim, VARIANT_DISCRIM_IDX, "insert")
                 .unwrap();
@@ -273,7 +275,7 @@ fn gen_expr<'a>(
                 .unwrap();
             variant_value.into()
         }
-        E::UnwrapVariant(variant_id, local_id) => {
+        E::UnwrapVariant(variants, variant_id, local_id) => {
             todo![];
         }
         E::WrapCustom(type_id, local_id) => {

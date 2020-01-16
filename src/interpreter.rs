@@ -788,8 +788,14 @@ fn interpret_expr<R: BufRead, W: Write>(
                 heap.add(Value::Variant(variant_id, heap_id))
             }
 
-            Expr::UnwrapVariant(variant_id, local_id) => {
+            Expr::UnwrapVariant(variants, variant_id, local_id) => {
                 let heap_id = locals[local_id];
+                typecheck(
+                    heap,
+                    heap_id,
+                    &Type::Variants(variants),
+                    stacktrace.add_frame("unwrap variant".into()),
+                );
                 let (runtime_variant_id, local_variant_id) =
                     unwrap_variant(heap, heap_id, stacktrace.add_frame("unwrap variant".into()));
 

@@ -177,7 +177,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::WrapVariant(_variants, variant_id, local_id) => {
             write![w, "wrap variant {} %{}", variant_id.0, local_id.0]
         }
-        Expr::UnwrapVariant(variant_id, local_id) => {
+        Expr::UnwrapVariant(_variants, variant_id, local_id) => {
             write![w, "unwrap variant {} %{}", variant_id.0, local_id.0]
         }
         Expr::WrapCustom(type_id, local_id) => {

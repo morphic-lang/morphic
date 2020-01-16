@@ -88,7 +88,7 @@ pub enum Expr {
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),
     WrapVariant(IdVec<VariantId, Type>, VariantId, LocalId),
-    UnwrapVariant(VariantId, LocalId),
+    UnwrapVariant(IdVec<VariantId, Type>, VariantId, LocalId),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
     WrapBoxed(LocalId),

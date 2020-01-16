@@ -451,7 +451,11 @@ fn lower_condition(
 
             let sub_discrim = new_builder.add_expr(
                 variant_type.clone(),
-                low::Expr::UnwrapVariant(low::VariantId(variant_id.0), discrim),
+                low::Expr::UnwrapVariant(
+                    variant_types.clone(),
+                    low::VariantId(variant_id.0),
+                    discrim,
+                ),
             );
 
             let sub_cond_id = lower_condition(
@@ -680,7 +684,7 @@ fn coerce_variants(
 
         let unwrapped_variant_id = then_builder.add_expr(
             original_variant_type.clone(),
-            low::Expr::UnwrapVariant(variant_id, local_id),
+            low::Expr::UnwrapVariant(original_variants.clone(), variant_id, local_id),
         );
 
         let boxed_content_unwrapped = coerce(
@@ -828,10 +832,28 @@ fn lower_leaf(
                 content_id.lookup_in(context),
             ),
         ),
-        special::Expr::UnwrapVariant(variant_id, content_id) => builder.add_expr(
-            result_type.clone(),
-            low::Expr::UnwrapVariant(low::VariantId(variant_id.0), content_id.lookup_in(context)),
-        ),
+        special::Expr::UnwrapVariant(variant_id, content_id) => {
+            builder.add_expr(result_type.clone(), {
+                let variant_type = &context.local_binding(*content_id).0;
+                let variants = if let special::Type::Variants(variants) = variant_type {
+                    IdVec::from_items(
+                        variants
+                            .items
+                            .iter()
+                            .map(|variant| lower_type(variant))
+                            .collect(),
+                    )
+                } else {
+                    panic![];
+                };
+
+                low::Expr::UnwrapVariant(
+                    variants,
+                    low::VariantId(variant_id.0),
+                    content_id.lookup_in(context),
+                )
+            })
+        }
         special::Expr::WrapCustom(type_id, content_id) => {
             let unboxed_type = lower_type(&typedefs[type_id]);
             let boxed_type = &boxed_typedefs[type_id];
