@@ -276,7 +276,32 @@ fn gen_expr<'a>(
             variant_value.into()
         }
         E::UnwrapVariant(variants, variant_id, local_id) => {
-            todo![];
+            let variant_type = get_llvm_variant_type(globals, instances, &variants);
+
+            let byte_array_type = variant_type
+                .get_field_type_at_index(VARIANT_BYTES_IDX)
+                .unwrap();
+            let byte_array_ptr = builder.build_alloca(byte_array_type, "byte_array_ptr");
+
+            let byte_array = builder
+                .build_extract_value(
+                    locals[local_id].into_struct_value(),
+                    VARIANT_BYTES_IDX,
+                    "byte_array",
+                )
+                .unwrap();
+
+            builder.build_store(byte_array_ptr, byte_array);
+
+            let content_ptr = builder.build_bitcast(
+                byte_array_ptr,
+                get_llvm_type(globals, instances, &variants[variant_id]),
+                "content_ptr",
+            );
+
+            let content = builder.build_load(content_ptr.into_pointer_value(), "content");
+
+            content
         }
         E::WrapCustom(type_id, local_id) => {
             todo![];
