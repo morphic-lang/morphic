@@ -59,7 +59,7 @@ mod lower_structures;
 
 mod interpreter;
 
-mod low_ast_transform;
+mod llvm_gen;
 
 #[cfg(test)]
 mod test;
