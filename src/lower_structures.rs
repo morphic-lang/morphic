@@ -573,20 +573,22 @@ fn lower_branch(
 
             let mut then_builder = builder.child();
             for (var, move_count) in &body.move_info.move_info {
+                let context_info = context.local_binding(*var);
                 for _ in move_info.move_info[var]..*move_count {
                     then_builder.add_expr(
                         low::Type::Tuple(vec![]),
-                        low::Expr::Retain(context.local_binding(*var).1),
+                        low::Expr::Retain(context_info.1, lower_type(&context_info.0)),
                     );
                 }
             }
 
             for (var, move_count) in &move_info.move_info {
                 debug_assert!(*move_count == 0 || *move_count == 1);
+                let context_info = context.local_binding(*var);
                 if *move_count == 1 && !body.move_info.move_info.contains_key(&var) {
                     then_builder.add_expr(
                         low::Type::Tuple(vec![]),
-                        low::Expr::Release(context.local_binding(*var).1),
+                        low::Expr::Release(context_info.1, lower_type(&context_info.0)),
                     );
                 }
             }
@@ -604,10 +606,12 @@ fn lower_branch(
                 let branch_move_count = move_info.move_info[var];
 
                 debug_assert!(branch_move_count == 0 || branch_move_count == 1);
+
+                let context_info = context.local_binding(*var);
                 if branch_move_count == 1 && *move_count == 0 {
                     then_builder.add_expr(
                         low::Type::Tuple(vec![]),
-                        low::Expr::Release(context.local_binding(*var).1),
+                        low::Expr::Release(context_info.1, lower_type(&context_info.0)),
                     );
                 }
             }
@@ -749,8 +753,14 @@ fn unbox_content(
         low::Type::Boxed(inner_type) => {
             let inner_id =
                 builder.add_expr((**inner_type).clone(), low::Expr::UnwrapBoxed(local_id));
-            builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Retain(inner_id));
-            builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Release(local_id));
+            builder.add_expr(
+                low::Type::Tuple(vec![]),
+                low::Expr::Retain(inner_id, (**inner_type).clone()),
+            );
+            builder.add_expr(
+                low::Type::Tuple(vec![]),
+                low::Expr::Release(local_id, original_type.clone()),
+            );
             inner_id
         }
         low::Type::Variants(original_variants) => {
@@ -799,7 +809,10 @@ fn lower_leaf(
                 result_type.clone(),
                 low::Expr::TupleField(tuple_id.lookup_in(context), *index),
             );
-            builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Retain(tuple_elem_id));
+            builder.add_expr(
+                low::Type::Tuple(vec![]),
+                low::Expr::Retain(tuple_elem_id, result_type.clone()),
+            );
             tuple_elem_id
         }
         special::Expr::WrapVariant(variants, variant_id, content_id) => builder.add_expr(
@@ -965,10 +978,12 @@ fn lower_expr(
                                 *move_count - 1
                             };
 
+                            let var_info = subcontext.local_binding(*var);
+
                             for _retain in 0..retain_count {
                                 builder.add_expr(
                                     low::Type::Tuple(vec![]),
-                                    low::Expr::Retain(subcontext.local_binding(*var).1),
+                                    low::Expr::Retain(var_info.1, lower_type(&var_info.0)),
                                 );
                             }
                         }
@@ -987,10 +1002,11 @@ fn lower_expr(
 
                     // emit releases
                     for (var, move_count) in &binding.move_info.move_info {
+                        let var_info = subcontext.local_binding(*var);
                         if *move_count == 0 && !future_usages.future_usages.contains(var) {
                             builder.add_expr(
                                 low::Type::Tuple(vec![]),
-                                low::Expr::Release(subcontext.local_binding(*var).1),
+                                low::Expr::Release(var_info.1, lower_type(&var_info.0)),
                             );
                         }
                     }
@@ -998,15 +1014,19 @@ fn lower_expr(
                     if !future_usages.future_usages.contains(&flat_binding_id) {
                         builder.add_expr(
                             low::Type::Tuple(vec![]),
-                            low::Expr::Release(subcontext.local_binding(flat_binding_id).1),
+                            low::Expr::Release(
+                                subcontext.local_binding(flat_binding_id).1,
+                                lower_type(&type_),
+                            ),
                         );
                     }
                 }
 
                 if expr.move_info.move_info.get(final_local_id) == Some(&0) {
+                    let var_info = subcontext.local_binding(*final_local_id);
                     builder.add_expr(
                         low::Type::Tuple(vec![]),
-                        low::Expr::Retain(subcontext.local_binding(*final_local_id).1),
+                        low::Expr::Retain(var_info.1, lower_type(&var_info.0)),
                     );
                 }
 
@@ -1052,7 +1072,10 @@ fn lower_function(
         .get(&flat::LocalId(0))
         .unwrap_or(&0)
     {
-        builder.add_expr(low::Type::Tuple(vec![]), low::Expr::Retain(low::LocalId(0)));
+        builder.add_expr(
+            low::Type::Tuple(vec![]),
+            low::Expr::Retain(low::LocalId(0), lower_type(&func.arg_type)),
+        );
     }
 
     let mut context = LocalContext::new();
@@ -1077,7 +1100,7 @@ fn lower_function(
     {
         builder.add_expr(
             low::Type::Tuple(vec![]),
-            low::Expr::Release(low::LocalId(0)),
+            low::Expr::Release(low::LocalId(0), lower_type(&func.arg_type)),
         );
     }
 

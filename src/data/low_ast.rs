@@ -94,8 +94,8 @@ pub enum Expr {
     WrapBoxed(LocalId),
     UnwrapBoxed(LocalId), // Does not touch refcount
 
-    Retain(LocalId),  // Takes any type, returns unit
-    Release(LocalId), // Takes any type, returns unit
+    Retain(LocalId, Type),  // Takes any type, returns unit
+    Release(LocalId, Type), // Takes any type, returns unit
 
     CheckVariant(VariantId, LocalId), // Returns a bool
 

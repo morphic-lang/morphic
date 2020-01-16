@@ -838,13 +838,25 @@ fn interpret_expr<R: BufRead, W: Write>(
                 local_heap_id
             }
 
-            Expr::Retain(local_id) => {
+            Expr::Retain(local_id, type_) => {
+                typecheck(
+                    heap,
+                    locals[local_id],
+                    &type_,
+                    stacktrace.add_frame("retain typecheck".into()),
+                );
                 retain(heap, locals[local_id], stacktrace);
 
                 HeapId(0)
             }
 
-            Expr::Release(local_id) => {
+            Expr::Release(local_id, type_) => {
+                typecheck(
+                    heap,
+                    locals[local_id],
+                    &type_,
+                    stacktrace.add_frame("retain typecheck".into()),
+                );
                 release(heap, locals[local_id], stacktrace);
 
                 HeapId(0)
