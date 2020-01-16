@@ -314,14 +314,34 @@ fn gen_expr<'a>(
 
             custom_type_val.into()
         }
-        E::UnwrapCustom(type_id, local_id) => {
-            let mut custom_type_content = builder
+        E::UnwrapCustom(_type_id, local_id) => {
+            let custom_type_content = builder
                 .build_extract_value(locals[local_id].into_struct_value(), 0, "custom_type_val")
                 .unwrap();
             custom_type_content
         }
         E::CheckVariant(variant_id, local_id) => {
-            todo![];
+            let discrim = builder
+                .build_extract_value(
+                    locals[local_id].into_struct_value(),
+                    VARIANT_DISCRIM_IDX,
+                    "discrim",
+                )
+                .unwrap()
+                .into_int_value();
+
+            let casted_variant_id = discrim
+                .get_type()
+                .const_int(variant_id.0.try_into().unwrap(), false);
+
+            builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    casted_variant_id,
+                    discrim,
+                    "check_variant",
+                )
+                .into()
         }
         E::WrapBoxed(local_id) => {
             todo![];
