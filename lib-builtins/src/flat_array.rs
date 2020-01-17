@@ -261,7 +261,6 @@ impl<'a> FlatArrayBuiltin<'a> {
     }
 
     fn define_len(&self, context: &'a Context) {
-        let i32_type = context.i32_type();
         let rc_ptr = self.len.get_nth_param(0).unwrap().into_pointer_value();
 
         let builder = context.create_builder();

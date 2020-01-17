@@ -103,7 +103,6 @@ impl<'a> RcBoxBuiltin<'a> {
     }
 
     fn define_get(&self, context: &'a Context) {
-        let i32_type = context.i32_type();
         let ptr = self.get.get_nth_param(0).unwrap().into_pointer_value();
 
         let builder = context.create_builder();

@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::convert::TryInto;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
+// we use a zero sized array to enforce proper alignment on `bytes`
 const VARIANT_ALIGN_IDX: u32 = 1;
 const VARIANT_BYTES_IDX: u32 = 2;
 
@@ -224,10 +225,10 @@ fn gen_expr<'a>(
             }
         }
         E::Tuple(fields) => {
-            let field_tys: Vec<_> = fields.iter().map(|id| locals[id].get_type()).collect();
-            let tup_ty = context.struct_type(&field_tys[..], false);
+            let field_types: Vec<_> = fields.iter().map(|id| locals[id].get_type()).collect();
+            let tup_type = context.struct_type(&field_types[..], false);
 
-            let mut tup = tup_ty.get_undef();
+            let mut tup = tup_type.get_undef();
             for (elem, id) in fields.iter().enumerate() {
                 tup = builder
                     .build_insert_value(tup, locals[id], elem.try_into().unwrap(), "insert")
@@ -360,14 +361,20 @@ fn gen_expr<'a>(
                 .unwrap()
         }
         E::Retain(local_id, type_) => {
-            todo![];
+            let retain = instances.get_rc(globals, type_).retain;
+            builder.build_call(retain, &[locals[local_id]], "");
+            // retain returns void, but we always need to return a basic type so create a unit
+            context.struct_type(&[], false).get_undef().into()
         }
         E::Release(local_id, type_) => {
-            todo![];
+            let release = instances.get_rc(globals, type_).release;
+            builder.build_call(release, &[locals[local_id]], "");
+            // release returns void, but we always need to return a basic type so we create a unit
+            context.struct_type(&[], false).get_undef().into()
         }
         E::ArithOp(op) => match op {
-            low::ArithOp::Op(ty, bin_op, lhs, rhs) => match bin_op {
-                first_ord::BinOp::Add => match ty {
+            low::ArithOp::Op(type_, bin_op, lhs, rhs) => match bin_op {
+                first_ord::BinOp::Add => match type_ {
                     first_ord::NumType::Byte => builder
                         .build_int_add(
                             locals[lhs].into_int_value(),
@@ -390,7 +397,7 @@ fn gen_expr<'a>(
                         )
                         .into(),
                 },
-                first_ord::BinOp::Sub => match ty {
+                first_ord::BinOp::Sub => match type_ {
                     first_ord::NumType::Byte => builder
                         .build_int_sub(
                             locals[lhs].into_int_value(),
@@ -413,7 +420,7 @@ fn gen_expr<'a>(
                         )
                         .into(),
                 },
-                first_ord::BinOp::Mul => match ty {
+                first_ord::BinOp::Mul => match type_ {
                     first_ord::NumType::Byte => builder
                         .build_int_mul(
                             locals[lhs].into_int_value(),
@@ -436,7 +443,7 @@ fn gen_expr<'a>(
                         )
                         .into(),
                 },
-                first_ord::BinOp::Div => match ty {
+                first_ord::BinOp::Div => match type_ {
                     first_ord::NumType::Byte => builder
                         .build_int_unsigned_div(
                             locals[lhs].into_int_value(),
@@ -460,8 +467,8 @@ fn gen_expr<'a>(
                         .into(),
                 },
             },
-            low::ArithOp::Cmp(ty, cmp, lhs, rhs) => match cmp {
-                first_ord::Comparison::Less => match ty {
+            low::ArithOp::Cmp(type_, cmp, lhs, rhs) => match cmp {
+                first_ord::Comparison::Less => match type_ {
                     first_ord::NumType::Byte => builder
                         .build_int_compare(
                             IntPredicate::ULT,
@@ -487,7 +494,7 @@ fn gen_expr<'a>(
                         )
                         .into(),
                 },
-                first_ord::Comparison::LessEqual => match ty {
+                first_ord::Comparison::LessEqual => match type_ {
                     first_ord::NumType::Byte => builder
                         .build_int_compare(
                             IntPredicate::ULE,
@@ -513,7 +520,7 @@ fn gen_expr<'a>(
                         )
                         .into(),
                 },
-                first_ord::Comparison::Equal => match ty {
+                first_ord::Comparison::Equal => match type_ {
                     first_ord::NumType::Byte => builder
                         .build_int_compare(
                             IntPredicate::EQ,
@@ -540,7 +547,7 @@ fn gen_expr<'a>(
                         .into(),
                 },
             },
-            low::ArithOp::Negate(ty, local_id) => match ty {
+            low::ArithOp::Negate(type_, local_id) => match type_ {
                 first_ord::NumType::Byte => builder
                     .build_int_neg(locals[local_id].into_int_value(), "byte_neg")
                     .into(),

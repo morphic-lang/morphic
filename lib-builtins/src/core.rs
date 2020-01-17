@@ -1,4 +1,3 @@
-use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
@@ -73,7 +72,7 @@ pub(super) fn build_if<'a>(
 
     body();
 
-    let branch = builder.build_unconditional_branch(&next_block);
+    builder.build_unconditional_branch(&next_block);
     builder.position_at_end(&next_block);
 }
 
@@ -96,7 +95,7 @@ pub(super) fn build_for<'a>(
     builder.position_at_end(&for_block);
     let i_cur = builder.build_load(i_ptr, "i_cur").into_int_value();
     let i_new = builder.build_int_add(i_cur, i64_type.const_int(1, false), "i_new");
-    let store = builder.build_store(i_ptr, i_new);
+    builder.build_store(i_ptr, i_new);
 
     body(i_cur);
 
