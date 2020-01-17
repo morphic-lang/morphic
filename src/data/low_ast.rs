@@ -91,8 +91,8 @@ pub enum Expr {
     UnwrapVariant(IdVec<VariantId, Type>, VariantId, LocalId),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
-    WrapBoxed(LocalId),
-    UnwrapBoxed(LocalId), // Does not touch refcount
+    WrapBoxed(LocalId, Type),   // Inner type
+    UnwrapBoxed(LocalId, Type), // Inner type, does not touch refcount
 
     Retain(LocalId, Type),  // Takes any type, returns unit
     Release(LocalId, Type), // Takes any type, returns unit

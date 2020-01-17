@@ -399,7 +399,10 @@ fn lower_condition(
     boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::LocalId {
     if let low::Type::Boxed(boxed_type) = match_type {
-        let unboxed_id = builder.add_expr((**boxed_type).clone(), low::Expr::UnwrapBoxed(discrim));
+        let unboxed_id = builder.add_expr(
+            (**boxed_type).clone(),
+            low::Expr::UnwrapBoxed(discrim, (**boxed_type).clone()),
+        );
         return lower_condition(unboxed_id, condition, builder, boxed_type, boxed_typedefs);
     }
 
@@ -726,9 +729,10 @@ fn box_content(
     builder: &mut LowAstBuilder,
 ) -> low::LocalId {
     match target_type {
-        low::Type::Boxed(_inner_type) => {
-            builder.add_expr(target_type.clone(), low::Expr::WrapBoxed(local_id))
-        }
+        low::Type::Boxed(inner_type) => builder.add_expr(
+            target_type.clone(),
+            low::Expr::WrapBoxed(local_id, (**inner_type).clone()),
+        ),
         low::Type::Variants(target_variants) => {
             if let low::Type::Variants(original_variants) = original_type {
                 coerce_variants(
@@ -755,8 +759,10 @@ fn unbox_content(
 ) -> low::LocalId {
     match original_type {
         low::Type::Boxed(inner_type) => {
-            let inner_id =
-                builder.add_expr((**inner_type).clone(), low::Expr::UnwrapBoxed(local_id));
+            let inner_id = builder.add_expr(
+                (**inner_type).clone(),
+                low::Expr::UnwrapBoxed(local_id, (**inner_type).clone()),
+            );
             builder.add_expr(
                 low::Type::Tuple(vec![]),
                 low::Expr::Retain(inner_id, (**inner_type).clone()),

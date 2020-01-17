@@ -343,11 +343,21 @@ fn gen_expr<'a>(
                 )
                 .into()
         }
-        E::WrapBoxed(local_id) => {
-            todo![];
+        E::WrapBoxed(local_id, inner_type) => {
+            let builtin = instances.get_rc(globals, inner_type);
+            builder
+                .build_call(builtin.new, &[locals[local_id]], "new_box")
+                .try_as_basic_value()
+                .left()
+                .unwrap()
         }
-        E::UnwrapBoxed(local_id) => {
-            todo![];
+        E::UnwrapBoxed(local_id, inner_type) => {
+            let builtin = instances.get_rc(globals, inner_type);
+            builder
+                .build_call(builtin.get, &[locals[local_id]], "unbox")
+                .try_as_basic_value()
+                .left()
+                .unwrap()
         }
         E::Retain(local_id, type_) => {
             todo![];

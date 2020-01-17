@@ -830,16 +830,29 @@ fn interpret_expr<R: BufRead, W: Write>(
                 local_custom_id
             }
 
-            Expr::WrapBoxed(local_id) => {
+            Expr::WrapBoxed(local_id, type_) => {
+                typecheck(
+                    heap,
+                    locals[local_id],
+                    &type_,
+                    stacktrace.add_frame("wrap boxed typecheck".into()),
+                );
                 let heap_id = locals[local_id];
 
                 heap.add(Value::Box(1, heap_id))
             }
 
-            Expr::UnwrapBoxed(local_id) => {
+            Expr::UnwrapBoxed(local_id, type_) => {
                 let heap_id = locals[local_id];
                 let local_heap_id =
                     unwrap_boxed(heap, heap_id, stacktrace.add_frame("unwrap boxed".into()));
+
+                typecheck(
+                    heap,
+                    local_heap_id,
+                    &type_,
+                    stacktrace.add_frame("unwrap boxed typecheck".into()),
+                );
 
                 local_heap_id
             }
