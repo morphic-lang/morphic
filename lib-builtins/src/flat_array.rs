@@ -37,6 +37,8 @@ pub struct FlatArrayBuiltin<'a> {
     pub push: FunctionValue<'a>,
     pub pop: FunctionValue<'a>,
     pub replace: FunctionValue<'a>,
+    pub retain_hole: FunctionValue<'a>,
+    pub release_hole: FunctionValue<'a>,
     // only exists to be passed to RcBoxBuiltin
     drop: FunctionValue<'a>,
 
@@ -104,6 +106,18 @@ impl<'a> FlatArrayBuiltin<'a> {
             Some(Linkage::External),
         );
 
+        let retain_hole = module.add_function(
+            &format!("builtin_flat_array_{}_retain_hole", inner_mangled),
+            void_type.fn_type(&[self_hole_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        let release_hole = module.add_function(
+            &format!("builtin_flat_array_{}_release_hole", inner_mangled),
+            void_type.fn_type(&[self_hole_type.into()], false),
+            Some(Linkage::External),
+        );
+
         // opearates on a raw FlatArray (not an RcBoxFlatArray)
         let drop = module.add_function(
             &format!("builtin_flat_array_{}_drop", inner_mangled),
@@ -135,6 +149,8 @@ impl<'a> FlatArrayBuiltin<'a> {
             push,
             pop,
             replace,
+            retain_hole,
+            release_hole,
             drop,
             ensure_cap,
             bounds_check,
@@ -163,6 +179,8 @@ impl<'a> FlatArrayBuiltin<'a> {
         self.define_push(context);
         self.define_pop(context);
         self.define_replace(context, inner_drop);
+        self.define_retain_hole(context);
+        self.define_release_hole(context);
         self.define_drop(context, inner_drop);
         self.define_ensure_cap(context, libc);
         self.define_bounds_check(context, libc);
@@ -378,6 +396,34 @@ impl<'a> FlatArrayBuiltin<'a> {
         }
 
         builder.build_return(Some(&rc_ptr));
+    }
+
+    fn define_retain_hole(&self, context: &'a Context) {
+        let hole = self.retain_hole.get_nth_param(0).unwrap();
+
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.retain_hole, "entry");
+
+        builder.position_at_end(&entry);
+        let rc_ptr = builder
+            .build_extract_value(hole.into_struct_value(), HOLE_PTR_IDX, "rc_ptr")
+            .unwrap();
+
+        builder.build_call(self.self_type.retain, &[rc_ptr], "retain_hole");
+    }
+
+    fn define_release_hole(&self, context: &'a Context) {
+        let hole = self.release_hole.get_nth_param(0).unwrap();
+
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.release_hole, "entry");
+
+        builder.position_at_end(&entry);
+        let rc_ptr = builder
+            .build_extract_value(hole.into_struct_value(), HOLE_PTR_IDX, "rc_ptr")
+            .unwrap();
+
+        builder.build_call(self.self_type.release, &[rc_ptr], "release_hole");
     }
 
     fn define_drop(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {

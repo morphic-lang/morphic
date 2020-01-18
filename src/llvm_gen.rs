@@ -27,8 +27,15 @@ struct Globals<'a> {
     module: &'a Module<'a>,
     target: &'a TargetData,
     libc: LibC<'a>,
-    custom_types: IdVec<low::CustomTypeId, StructType<'a>>,
+    custom_types: IdVec<low::CustomTypeId, CustomTypeDecls<'a>>,
     funcs: IdVec<low::CustomFuncId, FunctionValue<'a>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CustomTypeDecls<'a> {
+    ty: StructType<'a>,
+    release: FunctionValue<'a>,
+    retain: FunctionValue<'a>,
 }
 
 struct Instances<'a> {
@@ -157,8 +164,195 @@ fn get_llvm_type<'a>(
             get_llvm_variant_type(globals, instances, &variants).into()
         }
         low::Type::Boxed(type_) => instances.get_rc(globals, type_).self_type.into(),
-        low::Type::Custom(type_id) => globals.custom_types[type_id].into(),
+        low::Type::Custom(type_id) => globals.custom_types[type_id].ty.into(),
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RcOp {
+    Retain,
+    Release,
+}
+
+fn gen_rc_op<'a>(
+    op: RcOp,
+    builder: &Builder<'a>,
+    instances: &mut Instances<'a>,
+    globals: &Globals<'a>,
+    func: FunctionValue<'a>,
+    ty: &low::Type,
+    arg: BasicValueEnum<'a>,
+) {
+    match ty {
+        low::Type::Bool => {}
+        low::Type::Num(_) => {}
+        low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => match op {
+            RcOp::Retain => {
+                let retain_func = instances
+                    .get_flat_array(globals, item_type)
+                    .self_type
+                    .retain;
+                builder.build_call(retain_func, &[arg], "retain_flat_array");
+            }
+            RcOp::Release => {
+                let release_func = instances
+                    .get_flat_array(globals, item_type)
+                    .self_type
+                    .release;
+                builder.build_call(release_func, &[arg], "release_flat_array");
+            }
+        },
+        low::Type::Array(constrain::RepChoice::FallbackImmut, _item_type) => {
+            unimplemented![];
+        }
+        low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => match op {
+            RcOp::Retain => {
+                let release_func = instances.get_flat_array(globals, item_type).retain_hole;
+                builder.build_call(release_func, &[arg], "release_flat_hole_array");
+            }
+            RcOp::Release => {
+                let release_func = instances.get_flat_array(globals, item_type).release_hole;
+                builder.build_call(release_func, &[arg], "release_flat_hole_array");
+            }
+        },
+        low::Type::HoleArray(constrain::RepChoice::FallbackImmut, _item_type) => {
+            unimplemented![];
+        }
+        low::Type::Tuple(item_types) => {
+            for i in 0..item_types.len() {
+                let current_item = builder
+                    .build_extract_value(
+                        arg.into_struct_value(),
+                        i.try_into().unwrap(),
+                        "current_item",
+                    )
+                    .unwrap();
+                gen_rc_op(
+                    op,
+                    builder,
+                    instances,
+                    globals,
+                    func,
+                    &item_types[i],
+                    current_item,
+                );
+            }
+        }
+        low::Type::Variants(variant_types) => {
+            let discrim = builder
+                .build_extract_value(arg.into_struct_value(), VARIANT_DISCRIM_IDX, "discrim")
+                .unwrap()
+                .into_int_value();
+            let undefined_block = globals.context.append_basic_block(func, "undefined");
+            let mut variant_blocks = vec![];
+            for _ in 0..variant_types.len() {
+                variant_blocks.push(globals.context.append_basic_block(func, "variant"));
+            }
+            let switch_blocks = variant_blocks
+                .iter()
+                .enumerate()
+                .map(|(i, variant_block)| {
+                    (
+                        globals
+                            .context
+                            .i64_type()
+                            .const_int(i.try_into().unwrap(), false),
+                        variant_block,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            builder.build_switch(discrim, &undefined_block, &switch_blocks[..]);
+
+            let next_block = globals.context.append_basic_block(func, "next");
+
+            builder.position_at_end(&undefined_block);
+            builder.build_unreachable();
+            for (i, variant_block) in variant_blocks.iter().enumerate() {
+                builder.position_at_end(variant_block);
+                let variant_id = low::VariantId(i);
+
+                let unwrapped_variant =
+                    gen_unwrap_variant(builder, instances, globals, arg, variant_types, variant_id);
+
+                gen_rc_op(
+                    op,
+                    builder,
+                    instances,
+                    globals,
+                    func,
+                    &variant_types[variant_id],
+                    unwrapped_variant,
+                );
+
+                builder.build_unconditional_branch(&next_block);
+            }
+
+            builder.position_at_end(&next_block);
+        }
+        low::Type::Boxed(inner_type) => match op {
+            RcOp::Retain => {
+                let retain_func = instances.get_rc(globals, inner_type).retain;
+                builder.build_call(retain_func, &[arg], "retain_boxed");
+            }
+            RcOp::Release => {
+                let release_func = instances.get_rc(globals, inner_type).release;
+                builder.build_call(release_func, &[arg], "release_boxed");
+            }
+        },
+        low::Type::Custom(type_id) => {
+            let custom_type_content = builder
+                .build_extract_value(arg.into_struct_value(), 0, "custom_type_val")
+                .unwrap();
+
+            match op {
+                RcOp::Retain => {
+                    let retain_func = globals.custom_types[type_id].retain;
+                    builder.build_call(retain_func, &[custom_type_content], "retain_boxed");
+                }
+                RcOp::Release => {
+                    let release_func = globals.custom_types[type_id].release;
+                    builder.build_call(release_func, &[custom_type_content], "release_boxed");
+                }
+            }
+        }
+    }
+}
+
+fn gen_unwrap_variant<'a>(
+    builder: &Builder<'a>,
+    instances: &mut Instances<'a>,
+    globals: &Globals<'a>,
+    variant_value: BasicValueEnum<'a>,
+    variants: &IdVec<low::VariantId, low::Type>,
+    variant_id: low::VariantId,
+) -> BasicValueEnum<'a> {
+    let variant_type = get_llvm_variant_type(globals, instances, &variants);
+
+    let byte_array_type = variant_type
+        .get_field_type_at_index(VARIANT_BYTES_IDX)
+        .unwrap();
+    let byte_array_ptr = builder.build_alloca(byte_array_type, "byte_array_ptr");
+
+    let byte_array = builder
+        .build_extract_value(
+            variant_value.into_struct_value(),
+            VARIANT_BYTES_IDX,
+            "byte_array",
+        )
+        .unwrap();
+
+    builder.build_store(byte_array_ptr, byte_array);
+
+    let content_ptr = builder.build_bitcast(
+        byte_array_ptr,
+        get_llvm_type(globals, instances, &variants[variant_id]),
+        "content_ptr",
+    );
+
+    let content = builder.build_load(content_ptr.into_pointer_value(), "content");
+
+    content
 }
 
 fn gen_expr<'a>(
@@ -171,7 +365,6 @@ fn gen_expr<'a>(
 ) -> BasicValueEnum<'a> {
     use low::Expr as E;
     let context = globals.context;
-    let module = globals.module;
     match expr {
         E::Local(local_id) => locals[local_id],
         E::Call(func_id, local_id) => builder
@@ -277,36 +470,16 @@ fn gen_expr<'a>(
                 .into_struct_value();
             variant_value.into()
         }
-        E::UnwrapVariant(variants, variant_id, local_id) => {
-            let variant_type = get_llvm_variant_type(globals, instances, &variants);
-
-            let byte_array_type = variant_type
-                .get_field_type_at_index(VARIANT_BYTES_IDX)
-                .unwrap();
-            let byte_array_ptr = builder.build_alloca(byte_array_type, "byte_array_ptr");
-
-            let byte_array = builder
-                .build_extract_value(
-                    locals[local_id].into_struct_value(),
-                    VARIANT_BYTES_IDX,
-                    "byte_array",
-                )
-                .unwrap();
-
-            builder.build_store(byte_array_ptr, byte_array);
-
-            let content_ptr = builder.build_bitcast(
-                byte_array_ptr,
-                get_llvm_type(globals, instances, &variants[variant_id]),
-                "content_ptr",
-            );
-
-            let content = builder.build_load(content_ptr.into_pointer_value(), "content");
-
-            content
-        }
+        E::UnwrapVariant(variants, variant_id, local_id) => gen_unwrap_variant(
+            builder,
+            instances,
+            globals,
+            locals[local_id],
+            variants,
+            *variant_id,
+        ),
         E::WrapCustom(type_id, local_id) => {
-            let mut custom_type_val = globals.custom_types[type_id].get_undef();
+            let mut custom_type_val = globals.custom_types[type_id].ty.get_undef();
             custom_type_val = builder
                 .build_insert_value(custom_type_val, locals[local_id], 0, "insert")
                 .unwrap()
@@ -360,16 +533,28 @@ fn gen_expr<'a>(
                 .left()
                 .unwrap()
         }
-        E::Retain(local_id, type_) => {
-            let retain = instances.get_rc(globals, type_).retain;
-            builder.build_call(retain, &[locals[local_id]], "");
-            // retain returns void, but we always need to return a basic type so create a unit
+        E::Retain(local_id, ty) => {
+            gen_rc_op(
+                RcOp::Retain,
+                builder,
+                instances,
+                globals,
+                func,
+                ty,
+                locals[local_id],
+            );
             context.struct_type(&[], false).get_undef().into()
         }
-        E::Release(local_id, type_) => {
-            let release = instances.get_rc(globals, type_).release;
-            builder.build_call(release, &[locals[local_id]], "");
-            // release returns void, but we always need to return a basic type so we create a unit
+        E::Release(local_id, ty) => {
+            gen_rc_op(
+                RcOp::Release,
+                builder,
+                instances,
+                globals,
+                func,
+                ty,
+                locals[local_id],
+            );
             context.struct_type(&[], false).get_undef().into()
         }
         E::ArithOp(op) => match op {
