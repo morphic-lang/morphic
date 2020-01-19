@@ -11,7 +11,7 @@ use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
 use inkwell::{FloatPredicate, IntPredicate};
 use lib_builtins::core::LibC;
-use lib_builtins::flat_array::FlatArrayBuiltin;
+use lib_builtins::flat_array::{FlatArrayBuiltin, FlatArrayIoBuiltin};
 use lib_builtins::rc::RcBoxBuiltin;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
@@ -40,6 +40,7 @@ struct CustomTypeDecls<'a> {
 
 struct Instances<'a> {
     flat_arrays: BTreeMap<low::Type, FlatArrayBuiltin<'a>>,
+    flat_array_io: FlatArrayIoBuiltin<'a>,
     rcs: BTreeMap<low::Type, RcBoxBuiltin<'a>>,
 }
 
@@ -744,12 +745,78 @@ fn gen_expr<'a>(
                     .into(),
             },
         },
-        E::ArrayOp(rep, item_type, array_op) => {
-            todo![];
-        }
-        E::IoOp(rep, io_op) => {
-            todo![];
-        }
+        E::ArrayOp(rep, item_type, array_op) => match rep {
+            constrain::RepChoice::OptimizedMut => {
+                let builtin = instances.get_flat_array(globals, item_type);
+                match array_op {
+                    low::ArrayOp::New() => builder
+                        .build_call(builtin.new, &[], "flat_array_new")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Item(array_id, index_id) => builder
+                        .build_call(
+                            builtin.item,
+                            &[locals[array_id], locals[index_id]],
+                            "flat_array_item",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Len(array_id) => builder
+                        .build_call(builtin.len, &[locals[array_id]], "flat_array_len")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Push(array_id, item_id) => builder
+                        .build_call(
+                            builtin.len,
+                            &[locals[array_id], locals[item_id]],
+                            "flat_array_push",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Pop(array_id) => builder
+                        .build_call(builtin.pop, &[locals[array_id]], "flat_array_pop")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Replace(array_id, item_id) => builder
+                        .build_call(
+                            builtin.len,
+                            &[locals[array_id], locals[item_id]],
+                            "flat_array_replace",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                }
+            }
+            constrain::RepChoice::FallbackImmut => {
+                unimplemented![];
+            }
+        },
+        E::IoOp(rep, io_op) => match rep {
+            constrain::RepChoice::OptimizedMut => {
+                let builtin_io = instances.flat_array_io;
+                match io_op {
+                    low::IoOp::Input => builder
+                        .build_call(builtin_io.input, &[], "flat_array_input")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::IoOp::Output(array_id) => builder
+                        .build_call(builtin_io.output, &[locals[array_id]], "flat_array_output")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                }
+            }
+            constrain::RepChoice::FallbackImmut => {
+                unimplemented![];
+            }
+        },
         E::BoolLit(val) => {
             BasicValueEnum::from(context.bool_type().const_int(*val as u64, false)).into()
         }
