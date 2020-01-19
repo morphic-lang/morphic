@@ -4,17 +4,20 @@ use crate::data::repr_constrained_ast as constrain;
 use crate::util::id_vec::IdVec;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
-use inkwell::module::Module;
-use inkwell::targets::TargetData;
-use inkwell::types::{BasicTypeEnum, StructType};
+use inkwell::module::{Linkage, Module};
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetData};
+use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
+use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
 use lib_builtins::core::LibC;
 use lib_builtins::flat_array::{FlatArrayBuiltin, FlatArrayIoBuiltin};
 use lib_builtins::rc::RcBoxBuiltin;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
+use std::path::Path;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
 // we use a zero sized array to enforce proper alignment on `bytes`
@@ -22,13 +25,12 @@ const VARIANT_ALIGN_IDX: u32 = 1;
 const VARIANT_BYTES_IDX: u32 = 2;
 
 #[derive(Clone, Debug)]
-struct Globals<'a> {
+struct Globals<'a, 'b> {
     context: &'a Context,
-    module: &'a Module<'a>,
-    target: &'a TargetData,
+    module: &'b Module<'a>,
+    target: &'b TargetData,
     libc: LibC<'a>,
     custom_types: IdVec<low::CustomTypeId, CustomTypeDecls<'a>>,
-    funcs: IdVec<low::CustomFuncId, FunctionValue<'a>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,19 +40,109 @@ struct CustomTypeDecls<'a> {
     retain: FunctionValue<'a>,
 }
 
+impl<'a> CustomTypeDecls<'a> {
+    fn declare(context: &'a Context, module: &Module<'a>, type_id: low::CustomTypeId) -> Self {
+        let ty = context.opaque_struct_type(&format!("type_{}", type_id.0));
+        let void_type = context.void_type();
+        let release_func = module.add_function(
+            &format!("release_{}", type_id.0),
+            void_type.fn_type(&[ty.into()], false),
+            Some(Linkage::Private),
+        );
+        let retain_func = module.add_function(
+            &format!("retain_{}", type_id.0),
+            void_type.fn_type(&[ty.into()], false),
+            Some(Linkage::Private),
+        );
+        CustomTypeDecls {
+            ty,
+            release: release_func,
+            retain: retain_func,
+        }
+    }
+
+    fn define_type<'b>(
+        &self,
+        globals: &Globals<'a, 'b>,
+        instances: &Instances<'a>,
+        ty: &low::Type,
+    ) {
+        let ty = get_llvm_type(globals, instances, ty);
+        self.ty.set_body(&[ty], false);
+    }
+
+    fn define<'b>(&self, globals: &Globals<'a, 'b>, instances: &Instances<'a>, ty: &low::Type) {
+        let context = globals.context;
+        let builder = context.create_builder();
+
+        let retain_entry = context.append_basic_block(self.retain, "retain_entry");
+
+        builder.position_at_end(&retain_entry);
+        let arg = self.retain.get_nth_param(0).unwrap();
+
+        gen_rc_op(
+            RcOp::Retain,
+            &builder,
+            instances,
+            globals,
+            self.retain,
+            ty,
+            arg,
+        );
+
+        builder.build_return(None);
+
+        let release_entry = context.append_basic_block(self.release, "release_entry");
+
+        builder.position_at_end(&release_entry);
+        let arg = self.release.get_nth_param(0).unwrap();
+
+        gen_rc_op(
+            RcOp::Release,
+            &builder,
+            instances,
+            globals,
+            self.release,
+            ty,
+            arg,
+        );
+
+        builder.build_return(None);
+    }
+}
+
 struct Instances<'a> {
-    flat_arrays: BTreeMap<low::Type, FlatArrayBuiltin<'a>>,
+    flat_arrays: RefCell<BTreeMap<low::Type, FlatArrayBuiltin<'a>>>,
     flat_array_io: FlatArrayIoBuiltin<'a>,
-    rcs: BTreeMap<low::Type, RcBoxBuiltin<'a>>,
+    rcs: RefCell<BTreeMap<low::Type, RcBoxBuiltin<'a>>>,
 }
 
 impl<'a> Instances<'a> {
-    fn get_flat_array(
-        &mut self,
-        globals: &Globals<'a>,
+    fn new<'b>(globals: &Globals<'a, 'b>) -> Self {
+        let mut flat_arrays = BTreeMap::new();
+        let byte_builtin = FlatArrayBuiltin::declare(
+            globals.context,
+            globals.module,
+            globals.context.i8_type().into(),
+        );
+
+        flat_arrays.insert(low::Type::Num(first_ord::NumType::Byte), byte_builtin);
+        let flat_array_io =
+            FlatArrayIoBuiltin::declare(globals.context, globals.module, byte_builtin);
+
+        Self {
+            flat_arrays: RefCell::new(flat_arrays),
+            flat_array_io,
+            rcs: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    fn get_flat_array<'b>(
+        &self,
+        globals: &Globals<'a, 'b>,
         item_type: &low::Type,
     ) -> FlatArrayBuiltin<'a> {
-        if let Some(existing) = self.flat_arrays.get(&item_type.clone()) {
+        if let Some(existing) = self.flat_arrays.borrow().get(&item_type.clone()) {
             return *existing;
         }
         let new_builtin = FlatArrayBuiltin::declare(
@@ -58,12 +150,14 @@ impl<'a> Instances<'a> {
             globals.module,
             get_llvm_type(globals, self, item_type),
         );
-        self.flat_arrays.insert(item_type.clone(), new_builtin);
+        self.flat_arrays
+            .borrow_mut()
+            .insert(item_type.clone(), new_builtin);
         return new_builtin;
     }
 
-    fn get_rc(&mut self, globals: &Globals<'a>, item_type: &low::Type) -> RcBoxBuiltin<'a> {
-        if let Some(existing) = self.rcs.get(&item_type.clone()) {
+    fn get_rc<'b>(&self, globals: &Globals<'a, 'b>, item_type: &low::Type) -> RcBoxBuiltin<'a> {
+        if let Some(existing) = self.rcs.borrow().get(&item_type.clone()) {
             return *existing;
         }
         let new_builtin = RcBoxBuiltin::declare(
@@ -71,14 +165,127 @@ impl<'a> Instances<'a> {
             globals.module,
             get_llvm_type(globals, self, item_type),
         );
-        self.rcs.insert(item_type.clone(), new_builtin);
+        self.rcs.borrow_mut().insert(item_type.clone(), new_builtin);
         return new_builtin;
+    }
+
+    fn define<'b>(&self, globals: &Globals<'a, 'b>) {
+        let builder = globals.context.create_builder();
+        let void_type = globals.context.void_type();
+        for (i, (inner_type, rc_builtin)) in self.rcs.borrow().iter().enumerate() {
+            let llvm_inner_type = get_llvm_type(globals, self, inner_type);
+
+            let release_func = globals.module.add_function(
+                &format!("rc_release_{}", i),
+                void_type.fn_type(
+                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    false,
+                ),
+                Some(Linkage::Private),
+            );
+
+            let release_entry = globals
+                .context
+                .append_basic_block(release_func, "release_entry");
+
+            builder.position_at_end(&release_entry);
+            let arg = release_func.get_nth_param(0).unwrap();
+
+            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+
+            gen_rc_op(
+                RcOp::Release,
+                &builder,
+                self,
+                globals,
+                release_func,
+                inner_type,
+                arg,
+            );
+
+            builder.build_return(None);
+
+            rc_builtin.define(globals.context, Some(release_func));
+        }
+
+        for (i, (inner_type, flat_array_builtin)) in self.flat_arrays.borrow().iter().enumerate() {
+            let llvm_inner_type = get_llvm_type(globals, self, inner_type);
+
+            let retain_func = globals.module.add_function(
+                &format!("flat_array_retain_{}", i),
+                void_type.fn_type(
+                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    false,
+                ),
+                Some(Linkage::Private),
+            );
+
+            let retain_entry = globals
+                .context
+                .append_basic_block(retain_func, "retain_entry");
+
+            builder.position_at_end(&retain_entry);
+            let arg = retain_func.get_nth_param(0).unwrap();
+
+            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+
+            gen_rc_op(
+                RcOp::Retain,
+                &builder,
+                self,
+                globals,
+                retain_func,
+                inner_type,
+                arg,
+            );
+
+            builder.build_return(None);
+
+            let release_func = globals.module.add_function(
+                &format!("flat_array_release_{}", i),
+                void_type.fn_type(
+                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    false,
+                ),
+                Some(Linkage::Private),
+            );
+
+            let release_entry = globals
+                .context
+                .append_basic_block(release_func, "release_entry");
+
+            builder.position_at_end(&release_entry);
+            let arg = release_func.get_nth_param(0).unwrap();
+
+            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+
+            gen_rc_op(
+                RcOp::Release,
+                &builder,
+                self,
+                globals,
+                release_func,
+                inner_type,
+                arg,
+            );
+
+            builder.build_return(None);
+
+            flat_array_builtin.define(
+                globals.context,
+                &globals.libc,
+                Some(retain_func),
+                Some(release_func),
+            );
+        }
+
+        self.flat_array_io.define(globals.context, &globals.libc);
     }
 }
 
-fn get_llvm_variant_type<'a>(
-    globals: &Globals<'a>,
-    instances: &mut Instances<'a>,
+fn get_llvm_variant_type<'a, 'b>(
+    globals: &Globals<'a, 'b>,
+    instances: &Instances<'a>,
     variants: &IdVec<low::VariantId, low::Type>,
 ) -> StructType<'a> {
     if variants.len() == 0 {
@@ -128,9 +335,9 @@ fn get_llvm_variant_type<'a>(
     globals.context.struct_type(field_types, false)
 }
 
-fn get_llvm_type<'a>(
-    globals: &Globals<'a>,
-    instances: &mut Instances<'a>,
+fn get_llvm_type<'a, 'b>(
+    globals: &Globals<'a, 'b>,
+    instances: &Instances<'a>,
     type_: &low::Type,
 ) -> BasicTypeEnum<'a> {
     match type_ {
@@ -175,11 +382,11 @@ enum RcOp {
     Release,
 }
 
-fn gen_rc_op<'a>(
+fn gen_rc_op<'a, 'b>(
     op: RcOp,
     builder: &Builder<'a>,
-    instances: &mut Instances<'a>,
-    globals: &Globals<'a>,
+    instances: &Instances<'a>,
+    globals: &Globals<'a, 'b>,
     func: FunctionValue<'a>,
     ty: &low::Type,
     arg: BasicValueEnum<'a>,
@@ -301,29 +508,23 @@ fn gen_rc_op<'a>(
                 builder.build_call(release_func, &[arg], "release_boxed");
             }
         },
-        low::Type::Custom(type_id) => {
-            let custom_type_content = builder
-                .build_extract_value(arg.into_struct_value(), 0, "custom_type_val")
-                .unwrap();
-
-            match op {
-                RcOp::Retain => {
-                    let retain_func = globals.custom_types[type_id].retain;
-                    builder.build_call(retain_func, &[custom_type_content], "retain_boxed");
-                }
-                RcOp::Release => {
-                    let release_func = globals.custom_types[type_id].release;
-                    builder.build_call(release_func, &[custom_type_content], "release_boxed");
-                }
+        low::Type::Custom(type_id) => match op {
+            RcOp::Retain => {
+                let retain_func = globals.custom_types[type_id].retain;
+                builder.build_call(retain_func, &[arg], "retain_boxed");
             }
-        }
+            RcOp::Release => {
+                let release_func = globals.custom_types[type_id].release;
+                builder.build_call(release_func, &[arg], "release_boxed");
+            }
+        },
     }
 }
 
-fn gen_unwrap_variant<'a>(
+fn gen_unwrap_variant<'a, 'b>(
     builder: &Builder<'a>,
-    instances: &mut Instances<'a>,
-    globals: &Globals<'a>,
+    instances: &Instances<'a>,
+    globals: &Globals<'a, 'b>,
     variant_value: BasicValueEnum<'a>,
     variants: &IdVec<low::VariantId, low::Type>,
     variant_id: low::VariantId,
@@ -356,12 +557,13 @@ fn gen_unwrap_variant<'a>(
     content
 }
 
-fn gen_expr<'a>(
+fn gen_expr<'a, 'b>(
     builder: &Builder<'a>,
-    instances: &mut Instances<'a>,
-    globals: &Globals<'a>,
+    instances: &Instances<'a>,
+    globals: &Globals<'a, 'b>,
     func: FunctionValue<'a>,
     expr: &low::Expr,
+    funcs: &IdVec<low::CustomFuncId, FunctionValue<'a>>,
     locals: &mut IdVec<low::LocalId, BasicValueEnum<'a>>,
 ) -> BasicValueEnum<'a> {
     use low::Expr as E;
@@ -369,7 +571,7 @@ fn gen_expr<'a>(
     match expr {
         E::Local(local_id) => locals[local_id],
         E::Call(func_id, local_id) => builder
-            .build_call(globals.funcs[func_id], &[locals[local_id]], "result")
+            .build_call(funcs[func_id], &[locals[local_id]], "result")
             .try_as_basic_value()
             .left()
             .unwrap(),
@@ -382,11 +584,11 @@ fn gen_expr<'a>(
             builder.build_conditional_branch(cond, &then_block, &else_block);
 
             builder.position_at_end(&then_block);
-            let result_then = gen_expr(builder, instances, globals, func, then_expr, locals);
+            let result_then = gen_expr(builder, instances, globals, func, then_expr, funcs, locals);
             builder.build_unconditional_branch(&next_block);
 
             builder.position_at_end(&else_block);
-            let result_else = gen_expr(builder, instances, globals, func, else_expr, locals);
+            let result_else = gen_expr(builder, instances, globals, func, else_expr, funcs, locals);
             builder.build_unconditional_branch(&next_block);
 
             builder.position_at_end(&next_block);
@@ -397,8 +599,15 @@ fn gen_expr<'a>(
         E::LetMany(bindings, local_id) => {
             let len = locals.len();
             for (_, binding_expr) in bindings {
-                let binding_val =
-                    gen_expr(builder, instances, globals, func, &*binding_expr, locals);
+                let binding_val = gen_expr(
+                    builder,
+                    instances,
+                    globals,
+                    func,
+                    &*binding_expr,
+                    funcs,
+                    locals,
+                );
                 let _ = locals.push(binding_val);
             }
             let body = locals[local_id];
@@ -806,11 +1015,15 @@ fn gen_expr<'a>(
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
-                    low::IoOp::Output(array_id) => builder
-                        .build_call(builtin_io.output, &[locals[array_id]], "flat_array_output")
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
+                    low::IoOp::Output(array_id) => {
+                        builder.build_call(
+                            builtin_io.output,
+                            &[locals[array_id]],
+                            "flat_array_output",
+                        );
+
+                        context.struct_type(&[], false).get_undef().into()
+                    }
                 }
             }
             constrain::RepChoice::FallbackImmut => {
@@ -830,4 +1043,115 @@ fn gen_expr<'a>(
         }
         E::FloatLit(val) => BasicValueEnum::from(context.f64_type().const_float(*val)).into(),
     }
+}
+
+fn get_target() -> TargetData {
+    Target::initialize_x86(&InitializationConfig::default());
+    let target = Target::from_name("x86-64").unwrap();
+    let mach = target
+        .create_target_machine(
+            "x86_64-unknown-linux-gnu",
+            "x86_64",
+            "",
+            OptimizationLevel::None,
+            RelocMode::Default,
+            CodeModel::Default,
+        )
+        .unwrap();
+    mach.get_target_data()
+}
+
+pub fn llvm_gen(program: low::Program, output_path: &Path) {
+    let context = Context::create();
+    let module = context.create_module("module");
+    // module.set_target();
+
+    let target = get_target();
+    let libc = LibC::declare(&context, &module);
+
+    let custom_types = program
+        .custom_types
+        .map(|type_id, _type| CustomTypeDecls::declare(&context, &module, type_id));
+
+    let globals = Globals {
+        context: &context,
+        module: &module,
+        target: &target,
+        libc,
+        custom_types,
+    };
+
+    let instances = Instances::new(&globals);
+
+    let funcs = program.funcs.map(|func_id, func_def| {
+        let return_type = get_llvm_type(&globals, &instances, &func_def.ret_type);
+        let arg_type = get_llvm_type(&globals, &instances, &func_def.arg_type);
+
+        module.add_function(
+            &format!("func_{}", func_id.0),
+            return_type.fn_type(&[arg_type], false),
+            Some(Linkage::Private),
+        )
+    });
+
+    for (type_id, ty) in &globals.custom_types {
+        ty.define_type(&globals, &instances, &program.custom_types[type_id]);
+    }
+
+    for (func_id, func) in &funcs {
+        let mut locals = IdVec::from_items(vec![func.get_nth_param(0).unwrap()]);
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(*func, "entry");
+
+        builder.position_at_end(&entry);
+        let ret_value = gen_expr(
+            &builder,
+            &instances,
+            &globals,
+            *func,
+            &program.funcs[func_id].body,
+            &funcs,
+            &mut locals,
+        );
+        builder.build_return(Some(&ret_value));
+    }
+
+    instances.define(&globals);
+
+    for (type_id, type_decls) in &globals.custom_types {
+        type_decls.define(&globals, &instances, &program.custom_types[type_id]);
+    }
+
+    libc.define(&context);
+
+    let i32_type = context.i32_type();
+    let unit_type = context.struct_type(&[], false);
+    let i8_ptr_ptr_type = context
+        .i8_type()
+        .ptr_type(AddressSpace::Generic)
+        .ptr_type(AddressSpace::Generic);
+    let main = module.add_function(
+        "main",
+        i32_type.fn_type(&[i32_type.into(), i8_ptr_ptr_type.into()], false),
+        Some(Linkage::External),
+    );
+
+    let builder = context.create_builder();
+    let main_block = context.append_basic_block(main, "main_block");
+
+    builder.position_at_end(&main_block);
+    builder.build_call(libc.initialize, &[], "libc_initialize");
+
+    builder.build_call(
+        funcs[program.main],
+        &[unit_type.get_undef().into()],
+        "main_result",
+    );
+
+    builder.build_return(Some(&i32_type.const_int(0, false)));
+
+    module
+        .print_to_file(output_path.with_extension("ll"))
+        .unwrap();
+    module.verify().unwrap();
 }

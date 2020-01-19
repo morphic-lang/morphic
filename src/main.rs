@@ -168,10 +168,10 @@ fn run<R: io::BufRead, W: io::Write>(
 
     let repr_specialized = specialize_reprs::specialize_reprs(repr_constrained);
 
-    println!("Representation-specialized program:");
-    pretty_print_special::write_program(&mut io::stdout(), &repr_specialized)
-        .expect("printing program failed");
-    println!("(end representation-specialized program)");
+    // println!("Representation-specialized program:");
+    // pretty_print_special::write_program(&mut io::stdout(), &repr_specialized)
+    //     .expect("printing program failed");
+    // println!("(end representation-specialized program)");
 
     let lowered = lower_structures::lower_structures(repr_specialized);
 
@@ -179,11 +179,13 @@ fn run<R: io::BufRead, W: io::Write>(
     pretty_print_low::write_program(&mut io::stdout(), &lowered).expect("printing program failed");
     println!("(end lowered program)");
 
-    println!("==============================================================");
-    println!("============== Running program ===============================");
-    println!("==============================================================");
+    llvm_gen::llvm_gen(lowered, "a.out".as_ref());
 
-    interpreter::interpret(stdin, stdout, &lowered);
+    // println!("==============================================================");
+    // println!("============== Running program ===============================");
+    // println!("==============================================================");
+
+    // interpreter::interpret(stdin, stdout, &lowered);
 
     Ok(())
 }

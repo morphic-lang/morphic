@@ -204,7 +204,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         // for some reason, LLVM's built in malloc takes an i32 instead of a size_t (i.e. a u64)
         let data =
-            builder.build_array_malloc(self.inner_type, i32_type.const_int(0, false), "data");
+            builder.build_array_malloc(self.inner_type, i32_type.const_int(1, false), "data");
 
         let mut new_inner = self.self_type.inner_type.into_struct_type().get_undef();
         new_inner = builder
@@ -214,7 +214,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         new_inner = builder
             .build_insert_value(
                 new_inner,
-                i64_type.const_int(0, false),
+                i64_type.const_int(1, false),
                 CAP_IDX,
                 "new_inner",
             )
@@ -329,7 +329,6 @@ impl<'a> FlatArrayBuiltin<'a> {
         let item_dest = unsafe { builder.build_in_bounds_gep(data, &[len.into()], "item_dest") };
         builder.build_store(item_dest, item);
 
-        builder.build_call(self.self_type.release, &[rc_ptr], "");
         builder.build_return(None);
     }
 
