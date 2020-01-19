@@ -513,7 +513,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         builder.position_at_end(&panic_block);
         builder.build_call(libc.exit, &[i32_type.const_int(1, true).into()], "");
-        builder.build_unconditional_branch(&exit_block); // unreachable
+        builder.build_unreachable();
 
         builder.position_at_end(&success_block);
         let data_new = builder.build_cast(
@@ -600,6 +600,9 @@ impl<'a> FlatArrayIoBuiltin<'a> {
         let exit_block = context.append_basic_block(self.input, "exit");
 
         builder.position_at_end(&entry_block);
+
+        let stdout_value = builder.build_load(libc.stdout.as_pointer_value(), "stdout_value");
+        builder.build_call(libc.fflush, &[stdout_value], "fflush");
 
         let array = builder
             .build_call(self.byte_array_type.new, &[], "input_array")
@@ -727,6 +730,7 @@ mod test {
         let inner_type = context.i8_type();
 
         let libc = LibC::declare(&context, &module);
+        libc.define(&context);
 
         let flat_array = FlatArrayBuiltin::declare(&context, &module, inner_type.into());
         flat_array.define(&context, &libc, None, None);

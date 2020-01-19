@@ -10,8 +10,11 @@ use itertools::Itertools;
 pub struct LibC<'a> {
     pub stdout: GlobalValue<'a>,
 
+    pub initialize: FunctionValue<'a>,
+
     pub exit: FunctionValue<'a>,
     pub fdopen: FunctionValue<'a>,
+    pub fflush: FunctionValue<'a>,
     pub fwrite: FunctionValue<'a>,
     pub getchar: FunctionValue<'a>,
     pub printf: FunctionValue<'a>,
@@ -33,6 +36,12 @@ impl<'a> LibC<'a> {
         stdout.set_linkage(Linkage::Private);
         stdout.set_initializer(&file_ptr_type.const_null());
 
+        let initialize = module.add_function(
+            "builtin_init_libc",
+            void_type.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+
         let exit = module.add_function(
             "exit",
             void_type.fn_type(&[i32_type.into()], false),
@@ -42,6 +51,12 @@ impl<'a> LibC<'a> {
         let fdopen = module.add_function(
             "fdopen",
             file_ptr_type.fn_type(&[i32_type.into(), i8_ptr_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        let fflush = module.add_function(
+            "fflush",
+            i32_type.fn_type(&[file_ptr_type.into()], false),
             Some(Linkage::External),
         );
 
@@ -79,13 +94,56 @@ impl<'a> LibC<'a> {
 
         Self {
             stdout,
+            initialize,
             exit,
             fdopen,
+            fflush,
             fwrite,
             getchar,
             printf,
             realloc,
         }
+    }
+
+    pub fn define(&self, context: &'a Context) {
+        let i32_type = context.i32_type();
+
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.initialize, "entry");
+        let success_block = context.append_basic_block(self.initialize, "success");
+        let panic_block = context.append_basic_block(self.initialize, "panic");
+
+        builder.position_at_end(&entry);
+        let stdout_fd_no = 1;
+        let stdout_fd = context.i32_type().const_int(stdout_fd_no, false);
+
+        let stdout_mode = builder
+            .build_global_string_ptr("w", "stdout_mode")
+            .as_pointer_value();
+
+        let file_ptr = builder
+            .build_call(
+                self.fdopen,
+                &[stdout_fd.into(), stdout_mode.into()],
+                "file_ptr",
+            )
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        let is_null = builder.build_is_null(file_ptr.into_pointer_value(), "is_null");
+        builder.build_conditional_branch(is_null, &panic_block, &success_block);
+
+        builder.position_at_end(&success_block);
+        let stdout_ptr = self.stdout.as_pointer_value();
+
+        builder.build_store(stdout_ptr, file_ptr);
+
+        builder.build_return(None);
+
+        builder.position_at_end(&panic_block);
+        builder.build_call(self.exit, &[i32_type.const_int(1, true).into()], "");
+        builder.build_unreachable();
     }
 }
 
