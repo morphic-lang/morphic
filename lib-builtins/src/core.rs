@@ -2,15 +2,20 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicTypeEnum, FloatType, IntType};
-use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 use itertools::Itertools;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LibC<'a> {
+    pub stdout: GlobalValue<'a>,
+
     pub exit: FunctionValue<'a>,
-    pub realloc: FunctionValue<'a>,
+    pub fdopen: FunctionValue<'a>,
+    pub fwrite: FunctionValue<'a>,
+    pub getchar: FunctionValue<'a>,
     pub printf: FunctionValue<'a>,
+    pub realloc: FunctionValue<'a>,
 }
 
 // TODO: these declarations are not portable
@@ -20,6 +25,13 @@ impl<'a> LibC<'a> {
         let i64_type = context.i64_type();
         let i32_type = context.i32_type();
         let i8_ptr_type = context.i8_type().ptr_type(AddressSpace::Generic);
+        let file_ptr_type = context
+            .opaque_struct_type("FILE")
+            .ptr_type(AddressSpace::Generic);
+
+        let stdout = module.add_global(file_ptr_type, None, "builtin_stdout");
+        stdout.set_linkage(Linkage::Private);
+        stdout.set_initializer(&file_ptr_type.const_null());
 
         let exit = module.add_function(
             "exit",
@@ -27,9 +39,29 @@ impl<'a> LibC<'a> {
             Some(Linkage::External),
         );
 
-        let realloc = module.add_function(
-            "realloc",
-            i8_ptr_type.fn_type(&[i8_ptr_type.into(), i64_type.into()], false),
+        let fdopen = module.add_function(
+            "fdopen",
+            file_ptr_type.fn_type(&[i32_type.into(), i8_ptr_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        let fwrite = module.add_function(
+            "fwrite",
+            i64_type.fn_type(
+                &[
+                    i8_ptr_type.into(),
+                    i64_type.into(),
+                    i64_type.into(),
+                    file_ptr_type.into(),
+                ],
+                false,
+            ),
+            Some(Linkage::External),
+        );
+
+        let getchar = module.add_function(
+            "getchar",
+            i32_type.fn_type(&[], false),
             Some(Linkage::External),
         );
 
@@ -39,10 +71,20 @@ impl<'a> LibC<'a> {
             Some(Linkage::External),
         );
 
+        let realloc = module.add_function(
+            "realloc",
+            i8_ptr_type.fn_type(&[i8_ptr_type.into(), i64_type.into()], false),
+            Some(Linkage::External),
+        );
+
         Self {
+            stdout,
             exit,
-            realloc,
+            fdopen,
+            fwrite,
+            getchar,
             printf,
+            realloc,
         }
     }
 }

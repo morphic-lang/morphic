@@ -47,6 +47,13 @@ pub struct FlatArrayBuiltin<'a> {
     pub bounds_check: FunctionValue<'a>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct FlatArrayIoBuiltin<'a> {
+    pub byte_array_type: FlatArrayBuiltin<'a>,
+    pub input: FunctionValue<'a>,
+    pub output: FunctionValue<'a>,
+}
+
 impl<'a> FlatArrayBuiltin<'a> {
     pub fn declare(
         context: &'a Context,
@@ -410,6 +417,8 @@ impl<'a> FlatArrayBuiltin<'a> {
             .unwrap();
 
         builder.build_call(self.self_type.retain, &[rc_ptr], "retain_hole");
+
+        builder.build_return(None);
     }
 
     fn define_release_hole(&self, context: &'a Context) {
@@ -424,6 +433,8 @@ impl<'a> FlatArrayBuiltin<'a> {
             .unwrap();
 
         builder.build_call(self.self_type.release, &[rc_ptr], "release_hole");
+
+        builder.build_return(None);
     }
 
     fn define_drop(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {
@@ -544,6 +555,124 @@ impl<'a> FlatArrayBuiltin<'a> {
     }
 }
 
+impl<'a> FlatArrayIoBuiltin<'a> {
+    pub fn define(&self, context: &'a Context, libc: &LibC<'a>) {
+        self.define_input(context, libc);
+        self.define_output(context, libc);
+    }
+
+    pub fn declare(
+        context: &'a Context,
+        module: &Module<'a>,
+        byte_array_type: FlatArrayBuiltin<'a>,
+    ) -> Self {
+        let void_type = context.void_type();
+
+        let self_ptr_type = byte_array_type
+            .self_type
+            .self_type
+            .ptr_type(AddressSpace::Generic);
+
+        let input = module.add_function(
+            "builtin_flat_array_input",
+            self_ptr_type.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+
+        let output = module.add_function(
+            "builtin_flat_array_output",
+            void_type.fn_type(&[self_ptr_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        Self {
+            byte_array_type,
+            input,
+            output,
+        }
+    }
+
+    fn define_input(&self, context: &'a Context, libc: &LibC<'a>) {
+        let builder = context.create_builder();
+        let entry_block = context.append_basic_block(self.input, "entry");
+        let loop_block = context.append_basic_block(self.input, "loop");
+        let append_block = context.append_basic_block(self.input, "append");
+        let exit_block = context.append_basic_block(self.input, "exit");
+
+        builder.position_at_end(&entry_block);
+
+        let array = builder
+            .build_call(self.byte_array_type.new, &[], "input_array")
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        builder.build_unconditional_branch(&loop_block);
+
+        builder.position_at_end(&loop_block);
+
+        let getchar_result = builder
+            .build_call(libc.getchar, &[], "char")
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+        let eof_value = context.i32_type().const_int(0xff_ff_ff_ff, false);
+        let new_line = context.i32_type().const_int('\n' as u64, false);
+        builder.build_switch(
+            getchar_result.into_int_value(),
+            &append_block,
+            &[(eof_value, &exit_block), (new_line, &exit_block)],
+        );
+
+        builder.position_at_end(&append_block);
+        let input_byte = builder.build_int_truncate(
+            getchar_result.into_int_value(),
+            context.i8_type(),
+            "input_byte",
+        );
+        builder.build_call(
+            self.byte_array_type.push,
+            &[array, input_byte.into()],
+            "push_call",
+        );
+        builder.build_unconditional_branch(&loop_block);
+
+        builder.position_at_end(&exit_block);
+        builder.build_return(Some(&array));
+    }
+
+    fn define_output(&self, context: &'a Context, libc: &LibC<'a>) {
+        let i64_type = context.i64_type();
+        let rc_ptr = self.output.get_nth_param(0).unwrap();
+
+        let builder = context.create_builder();
+        let entry = context.append_basic_block(self.output, "entry");
+
+        builder.position_at_end(&entry);
+        let ptr = builder
+            .build_call(self.byte_array_type.self_type.get, &[rc_ptr], "ptr")
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+        let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
+        let len = builder.build_load(len_ptr, "len");
+
+        let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") };
+
+        let stdout_value = builder.build_load(libc.stdout.as_pointer_value(), "stdout_value");
+
+        // TODO: check bytes_written for errors
+        let _bytes_written = builder.build_call(
+            libc.fwrite,
+            &[data, i64_type.const_int(1, false).into(), len, stdout_value],
+            "bytes_written",
+        );
+
+        builder.build_return(None);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -585,6 +714,28 @@ mod test {
 
         module
             .print_to_file(Path::new("test_flat_array.out.ll"))
+            .unwrap();
+        module.verify().unwrap();
+    }
+
+    #[test]
+    fn well_formed_io() {
+        better_panic::install();
+
+        let context = Context::create();
+        let module = context.create_module("test");
+        let inner_type = context.i8_type();
+
+        let libc = LibC::declare(&context, &module);
+
+        let flat_array = FlatArrayBuiltin::declare(&context, &module, inner_type.into());
+        flat_array.define(&context, &libc, None, None);
+
+        let flat_array_io = FlatArrayIoBuiltin::declare(&context, &module, flat_array);
+        flat_array_io.define(&context, &libc);
+
+        module
+            .print_to_file(Path::new("test_flat_array_io.out.ll"))
             .unwrap();
         module.verify().unwrap();
     }
