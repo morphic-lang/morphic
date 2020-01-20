@@ -10,13 +10,16 @@ use itertools::Itertools;
 pub struct LibC<'a> {
     pub stdout: GlobalValue<'a>,
 
+    // initializes stdout
     pub initialize: FunctionValue<'a>,
 
     pub exit: FunctionValue<'a>,
     pub fdopen: FunctionValue<'a>,
     pub fflush: FunctionValue<'a>,
+    pub free: FunctionValue<'a>,
     pub fwrite: FunctionValue<'a>,
     pub getchar: FunctionValue<'a>,
+    pub malloc: FunctionValue<'a>,
     pub printf: FunctionValue<'a>,
     pub realloc: FunctionValue<'a>,
 }
@@ -60,6 +63,12 @@ impl<'a> LibC<'a> {
             Some(Linkage::External),
         );
 
+        let free = module.add_function(
+            "free",
+            void_type.fn_type(&[i8_ptr_type.into()], false),
+            Some(Linkage::External),
+        );
+
         let fwrite = module.add_function(
             "fwrite",
             i64_type.fn_type(
@@ -77,6 +86,12 @@ impl<'a> LibC<'a> {
         let getchar = module.add_function(
             "getchar",
             i32_type.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+
+        let malloc = module.add_function(
+            "malloc",
+            i8_ptr_type.fn_type(&[i64_type.into()], false),
             Some(Linkage::External),
         );
 
@@ -98,8 +113,10 @@ impl<'a> LibC<'a> {
             exit,
             fdopen,
             fflush,
+            free,
             fwrite,
             getchar,
+            malloc,
             printf,
             realloc,
         }
@@ -256,75 +273,4 @@ pub(super) unsafe fn set_member<'a>(
         builder.build_struct_gep(struct_ptr, idx, &member_ptr_name),
         val,
     );
-}
-
-fn get_float_name<'a>(context: &'a Context, ty: FloatType<'a>) -> &'static str {
-    if ty == context.f16_type() {
-        "f16"
-    } else if ty == context.f32_type() {
-        "f32"
-    } else if ty == context.f64_type() {
-        "f64"
-    } else if ty == context.f128_type() {
-        "f128"
-    } else {
-        unreachable!();
-    }
-}
-
-fn get_int_name<'a>(context: &'a Context, ty: IntType<'a>) -> &'static str {
-    if ty == context.i8_type() {
-        "i8"
-    } else if ty == context.i16_type() {
-        "i16"
-    } else if ty == context.i32_type() {
-        "i32"
-    } else if ty == context.i64_type() {
-        "i64"
-    } else if ty == context.i128_type() {
-        "i128"
-    } else {
-        unreachable!();
-    }
-}
-
-pub(super) fn mangle_basic<'a>(context: &'a Context, ty: BasicTypeEnum<'a>) -> String {
-    match ty {
-        BasicTypeEnum::ArrayType(inner_ty) => format!(
-            "A{}{}",
-            inner_ty.len(),
-            mangle_basic(context, inner_ty.get_element_type())
-        ),
-        BasicTypeEnum::FloatType(inner_ty) => get_float_name(context, inner_ty).to_owned(),
-        BasicTypeEnum::IntType(inner_ty) => get_int_name(context, inner_ty).to_owned(),
-        BasicTypeEnum::PointerType(inner_ty) => {
-            format!("P{}", mangle_basic(context, inner_ty.into()))
-        }
-        BasicTypeEnum::StructType(inner_ty) => {
-            if !inner_ty.is_opaque() {
-                format!(
-                    "T{}{}",
-                    inner_ty.count_fields(),
-                    inner_ty
-                        .get_field_types()
-                        .iter()
-                        .map(|x| mangle_basic(context, *x))
-                        .join("")
-                )
-            } else {
-                format!("${}", inner_ty.get_name().unwrap().to_str().unwrap())
-            }
-        }
-        BasicTypeEnum::VectorType(inner_ty) => {
-            if inner_ty.is_sized() {
-                format!(
-                    "V{}{}",
-                    inner_ty.get_size(),
-                    mangle_basic(context, inner_ty.get_element_type())
-                )
-            } else {
-                format!("V{}", mangle_basic(context, inner_ty.get_element_type()))
-            }
-        }
-    }
 }

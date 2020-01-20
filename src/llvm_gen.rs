@@ -209,7 +209,7 @@ impl<'a> Instances<'a> {
 
             builder.build_return(None);
 
-            rc_builtin.define(globals.context, Some(release_func));
+            rc_builtin.define(globals.context, &globals.libc, Some(release_func));
         }
 
         for (i, (inner_type, flat_array_builtin)) in self.flat_arrays.borrow().iter().enumerate() {
@@ -375,7 +375,11 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Variants(variants) => {
             get_llvm_variant_type(globals, instances, &variants).into()
         }
-        low::Type::Boxed(type_) => instances.get_rc(globals, type_).self_type.into(),
+        low::Type::Boxed(type_) => instances
+            .get_rc(globals, type_)
+            .self_type
+            .ptr_type(AddressSpace::Generic)
+            .into(),
         low::Type::Custom(type_id) => globals.custom_types[type_id].ty.into(),
     }
 }

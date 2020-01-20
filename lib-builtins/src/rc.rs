@@ -30,33 +30,31 @@ impl<'a> RcBoxBuiltin<'a> {
         let void_type = context.void_type();
         let inner_ptr_type = inner_type.ptr_type(AddressSpace::Generic);
 
-        let inner_mangled = mangle_basic(context, inner_type);
-
-        let self_type = context.opaque_struct_type(&format!("builtin_rc_{}", inner_mangled));
+        let self_type = context.opaque_struct_type("builtin_rc");
         let self_ptr_type = self_type.ptr_type(AddressSpace::Generic);
 
         let new = module.add_function(
-            &format!("builtin_rc_{}_new", inner_mangled),
+            "builtin_rc_new",
             self_ptr_type.fn_type(&[inner_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let get = module.add_function(
-            &format!("builtin_rc_{}_get", inner_mangled),
+            "builtin_rc_get",
             inner_ptr_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let retain = module.add_function(
-            &format!("builtin_rc_{}_retain", inner_mangled),
+            "builtin_rc_retain",
             void_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let release = module.add_function(
-            &format!("builtin_rc_{}_release", inner_mangled),
+            "builtin_rc_release",
             void_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         Self {
@@ -69,17 +67,22 @@ impl<'a> RcBoxBuiltin<'a> {
         }
     }
 
-    pub fn define(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {
+    pub fn define(
+        &self,
+        context: &'a Context,
+        libc: &LibC<'a>,
+        inner_drop: Option<FunctionValue<'a>>,
+    ) {
         let i32_type = context.i32_type();
         self.self_type
             .set_body(&[i32_type.into(), self.inner_type.into()], false);
-        self.define_new(context);
+        self.define_new(context, libc);
         self.define_get(context);
         self.define_retain(context);
-        self.define_release(context, inner_drop);
+        self.define_release(context, libc, inner_drop);
     }
 
-    fn define_new(&self, context: &'a Context) {
+    fn define_new(&self, context: &'a Context, libc: &LibC<'a>) {
         let i32_type = context.i32_type();
         let inner = self.new.get_nth_param(0).unwrap();
 
@@ -88,7 +91,24 @@ impl<'a> RcBoxBuiltin<'a> {
 
         builder.position_at_end(&entry);
 
-        let new_ptr = builder.build_malloc(self.self_type, "new_ptr");
+        let i8_new_ptr = builder
+            .build_call(
+                libc.malloc,
+                &[self.self_type.size_of().unwrap().into()],
+                "i8_new_ptr",
+            )
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        let new_ptr = builder
+            .build_bitcast(
+                i8_new_ptr,
+                self.self_type.ptr_type(AddressSpace::Generic),
+                "new_ptr",
+            )
+            .into_pointer_value();
+
         unsafe {
             set_member(
                 &builder,
@@ -97,8 +117,10 @@ impl<'a> RcBoxBuiltin<'a> {
                 i32_type.const_int(1, false).into(),
                 "refcount",
             );
+
             set_member(&builder, new_ptr, INNER_IDX, inner, "inner");
         }
+
         builder.build_return(Some(&new_ptr));
     }
 
@@ -130,8 +152,15 @@ impl<'a> RcBoxBuiltin<'a> {
         builder.build_return(None);
     }
 
-    fn define_release(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {
+    fn define_release(
+        &self,
+        context: &'a Context,
+        libc: &LibC<'a>,
+        inner_drop: Option<FunctionValue<'a>>,
+    ) {
+        let i8_type = context.i8_type();
         let i32_type = context.i32_type();
+        let i8_ptr_type = i8_type.ptr_type(AddressSpace::Generic);
         let ptr = self.release.get_nth_param(0).unwrap().into_pointer_value();
 
         let builder = context.create_builder();
@@ -156,7 +185,8 @@ impl<'a> RcBoxBuiltin<'a> {
                 let inner_ptr = unsafe { builder.build_struct_gep(ptr, INNER_IDX, "inner_ptr") };
                 builder.build_call(actual_drop, &[inner_ptr.into()], "");
             }
-            builder.build_free(ptr);
+            let i8_ptr = builder.build_bitcast(ptr, i8_ptr_type, "i8_ptr");
+            builder.build_call(libc.free, &[i8_ptr.into()], "");
         });
 
         builder.build_return(None);
@@ -185,7 +215,7 @@ mod test {
         let dummy = module.add_function(
             "dummy",
             void_type.fn_type(&[inner_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         // define dummy

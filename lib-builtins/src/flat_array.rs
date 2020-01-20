@@ -63,10 +63,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         let void_type = context.void_type();
         let i64_type = context.i64_type();
 
-        let inner_mangled = mangle_basic(context, inner_type);
-
-        let unwrapped_array_type =
-            context.opaque_struct_type(&format!("builtin_flat_array_{}", inner_mangled));
+        let unwrapped_array_type = context.opaque_struct_type("builtin_flat_array");
         let unwrapped_array_ptr_type = unwrapped_array_type.ptr_type(AddressSpace::Generic);
 
         let rc_box = RcBoxBuiltin::declare(context, module, unwrapped_array_type.into());
@@ -78,70 +75,70 @@ impl<'a> FlatArrayBuiltin<'a> {
         let pop_ret_type = context.struct_type(&[self_ptr_type.into(), inner_type.into()], false);
 
         let new = module.add_function(
-            &format!("builtin_flat_array_{}_new", inner_mangled),
+            "builtin_flat_array_new",
             self_ptr_type.fn_type(&[], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let item = module.add_function(
-            &format!("builtin_flat_array_{}_item", inner_mangled),
+            "builtin_flat_array_item",
             item_ret_type.fn_type(&[self_ptr_type.into(), i64_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let len = module.add_function(
-            &format!("builtin_flat_array_{}_len", inner_mangled),
+            "builtin_flat_array_len",
             i64_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let push = module.add_function(
-            &format!("builtin_flat_array_{}_push", inner_mangled),
+            "builtin_flat_array_push",
             self_ptr_type.fn_type(&[self_ptr_type.into(), inner_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let pop = module.add_function(
-            &format!("builtin_flat_array_{}_pop", inner_mangled),
+            "builtin_flat_array_pop",
             pop_ret_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let replace = module.add_function(
-            &format!("builtin_flat_array_{}_replace", inner_mangled),
+            "builtin_flat_array_replace",
             self_ptr_type.fn_type(&[self_hole_type.into(), inner_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let retain_hole = module.add_function(
-            &format!("builtin_flat_array_{}_retain_hole", inner_mangled),
+            "builtin_flat_array_retain_hole",
             void_type.fn_type(&[self_hole_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let release_hole = module.add_function(
-            &format!("builtin_flat_array_{}_release_hole", inner_mangled),
+            "builtin_flat_array_release_hole",
             void_type.fn_type(&[self_hole_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         // opearates on a raw FlatArray (not an RcBoxFlatArray)
         let drop = module.add_function(
-            &format!("builtin_flat_array_{}_drop", inner_mangled),
+            "builtin_flat_array_drop",
             void_type.fn_type(&[unwrapped_array_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let ensure_cap = module.add_function(
-            &format!("builtin_flat_array_{}_ensure_cap", inner_mangled),
+            "builtin_flat_array_ensure_cap",
             void_type.fn_type(&[self_ptr_type.into(), i64_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let bounds_check = module.add_function(
-            &format!("builtin_flat_array_{}_bounds_check", inner_mangled),
+            "builtin_flat_array_bounds_check",
             void_type.fn_type(&[self_ptr_type.into(), i64_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         Self {
@@ -178,7 +175,7 @@ impl<'a> FlatArrayBuiltin<'a> {
             &[inner_ptr_type.into(), i64_type.into(), i64_type.into()],
             false,
         );
-        self.self_type.define(context, Some(self.drop));
+        self.self_type.define(context, libc, Some(self.drop));
 
         self.define_new(context);
         self.define_item(context, inner_retain);
@@ -188,13 +185,12 @@ impl<'a> FlatArrayBuiltin<'a> {
         self.define_replace(context, inner_drop);
         self.define_retain_hole(context);
         self.define_release_hole(context);
-        self.define_drop(context, inner_drop);
+        self.define_drop(context, libc, inner_drop);
         self.define_ensure_cap(context, libc);
         self.define_bounds_check(context, libc);
     }
 
     fn define_new(&self, context: &'a Context) {
-        let i32_type = context.i32_type();
         let i64_type = context.i64_type();
         let inner_ptr_type = self.inner_type.ptr_type(AddressSpace::Generic);
 
@@ -436,7 +432,14 @@ impl<'a> FlatArrayBuiltin<'a> {
         builder.build_return(None);
     }
 
-    fn define_drop(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {
+    fn define_drop(
+        &self,
+        context: &'a Context,
+        libc: &LibC<'a>,
+        inner_drop: Option<FunctionValue<'a>>,
+    ) {
+        let i8_type = context.i8_type();
+        let i8_ptr_type = i8_type.ptr_type(AddressSpace::Generic);
         let ptr = self.drop.get_nth_param(0).unwrap().into_pointer_value();
 
         let builder = context.create_builder();
@@ -453,7 +456,8 @@ impl<'a> FlatArrayBuiltin<'a> {
             });
         }
 
-        builder.build_free(data);
+        let i8_data = builder.build_bitcast(data, i8_ptr_type, "i8_data");
+        builder.build_call(libc.free, &[i8_data.into()], "");
         builder.build_return(None);
     }
 
@@ -491,17 +495,20 @@ impl<'a> FlatArrayBuiltin<'a> {
         builder.build_conditional_branch(should_resize, &resize_block, &exit_block);
 
         builder.position_at_end(&resize_block);
+
         let candidate_cap = builder.build_int_mul(
             cap,
             i64_type.const_int(resize_factor, false),
             "candidate_cap",
         );
+
         let use_candidate_cap = builder.build_int_compare(
             IntPredicate::UGE,
             candidate_cap,
             min_cap,
             "use_candidate_cap",
         );
+
         let cap_new = build_ternary(
             context,
             &builder,
@@ -509,6 +516,13 @@ impl<'a> FlatArrayBuiltin<'a> {
             use_candidate_cap,
             || candidate_cap.into(),
             || min_cap.into(),
+        )
+        .into_int_value();
+
+        let allocation_size = builder.build_int_mul(
+            cap_new,
+            size_of(self.inner_type).unwrap(),
+            "allocation_size",
         );
 
         let data_ptr = unsafe { builder.build_struct_gep(ptr, DATA_IDX, "data_ptr") };
@@ -517,7 +531,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         let data_new_i8 = builder
             .build_call(
                 libc.realloc,
-                &[data_i8.into(), cap_new.into()],
+                &[data_i8.into(), allocation_size.into()],
                 "data_new_i8",
             )
             .try_as_basic_value()
@@ -593,13 +607,13 @@ impl<'a> FlatArrayIoBuiltin<'a> {
         let input = module.add_function(
             "builtin_flat_array_input",
             self_ptr_type.fn_type(&[], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         let output = module.add_function(
             "builtin_flat_array_output",
             void_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         Self {
@@ -717,7 +731,7 @@ mod test {
         let dummy = module.add_function(
             "dummy",
             void_type.fn_type(&[inner_ptr_type.into()], false),
-            Some(Linkage::External),
+            Some(Linkage::Private),
         );
 
         // define dummy
