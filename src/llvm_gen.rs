@@ -552,7 +552,7 @@ fn gen_unwrap_variant<'a, 'b>(
 
     let content_ptr = builder.build_bitcast(
         byte_array_ptr,
-        get_llvm_type(globals, instances, &variants[variant_id]),
+        get_llvm_type(globals, instances, &variants[variant_id]).ptr_type(AddressSpace::Generic),
         "content_ptr",
     );
 
@@ -663,14 +663,14 @@ fn gen_expr<'a, 'b>(
                 .get_field_type_at_index(VARIANT_BYTES_IDX)
                 .unwrap();
             let byte_array_ptr = builder.build_alloca(byte_array_type, "byte_array_ptr");
-            let casted_byte_array_ptr = builder.build_bitcast(
+            let cast_byte_array_ptr = builder.build_bitcast(
                 byte_array_ptr,
-                locals[local_id].get_type(),
-                "casted_byte_array_ptr",
+                locals[local_id].get_type().ptr_type(AddressSpace::Generic),
+                "cast_byte_array_ptr",
             );
             let byte_array = builder.build_load(byte_array_ptr, "byte_array");
 
-            builder.build_store(casted_byte_array_ptr.into_pointer_value(), locals[local_id]);
+            builder.build_store(cast_byte_array_ptr.into_pointer_value(), locals[local_id]);
 
             let discrim = variant_type
                 .get_field_type_at_index(VARIANT_DISCRIM_IDX)
@@ -746,11 +746,13 @@ fn gen_expr<'a, 'b>(
         }
         E::UnwrapBoxed(local_id, inner_type) => {
             let builtin = instances.get_rc(globals, inner_type);
-            builder
+            let ptr = builder
                 .build_call(builtin.get, &[locals[local_id]], "unbox")
                 .try_as_basic_value()
                 .left()
                 .unwrap()
+                .into_pointer_value();
+            builder.build_load(ptr, "content")
         }
         E::Retain(local_id, ty) => {
             gen_rc_op(
