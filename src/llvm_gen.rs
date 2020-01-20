@@ -979,7 +979,7 @@ fn gen_expr<'a, 'b>(
                         .unwrap(),
                     low::ArrayOp::Push(array_id, item_id) => builder
                         .build_call(
-                            builtin.len,
+                            builtin.push,
                             &[locals[array_id], locals[item_id]],
                             "flat_array_push",
                         )
@@ -993,7 +993,7 @@ fn gen_expr<'a, 'b>(
                         .unwrap(),
                     low::ArrayOp::Replace(array_id, item_id) => builder
                         .build_call(
-                            builtin.len,
+                            builtin.replace,
                             &[locals[array_id], locals[item_id]],
                             "flat_array_replace",
                         )

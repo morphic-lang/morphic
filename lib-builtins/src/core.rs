@@ -176,6 +176,33 @@ pub(super) fn build_if<'a>(
     builder.position_at_end(&next_block);
 }
 
+pub(super) fn build_ternary<'a>(
+    context: &'a Context,
+    builder: &Builder<'a>,
+    func: FunctionValue<'a>,
+    cond: IntValue<'a>,
+    then_body: impl FnOnce() -> BasicValueEnum<'a>,
+    else_body: impl FnOnce() -> BasicValueEnum<'a>,
+) -> BasicValueEnum<'a> {
+    let then_block = context.append_basic_block(func, "then_block");
+    let else_block = context.append_basic_block(func, "else_block");
+    let next_block = context.append_basic_block(func, "next_block");
+    builder.build_conditional_branch(cond, &then_block, &else_block);
+
+    builder.position_at_end(&then_block);
+    let then_ret = then_body();
+    builder.build_unconditional_branch(&next_block);
+
+    builder.position_at_end(&else_block);
+    let else_ret = else_body();
+    builder.build_unconditional_branch(&next_block);
+
+    builder.position_at_end(&next_block);
+    let phi = builder.build_phi(then_ret.get_type(), "result");
+    phi.add_incoming(&[(&then_ret, &then_block), (&else_ret, &else_block)]);
+    phi.as_basic_value()
+}
+
 pub(super) fn build_for<'a>(
     context: &'a Context,
     builder: &Builder<'a>,

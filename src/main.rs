@@ -114,6 +114,25 @@ fn usage() -> String {
 fn main() {
     better_panic::install();
 
+    // let matches = clap::App::new(clap::crate_name!())
+    //     .version(clap::crate_version!())
+    //     .author(clap::crate_authors!())
+    //     .about(clap::crate_description!())
+    //     .arg(
+    //         clap::Arg::with_name("src_file")
+    //             .help("Specify the source file to compile.")
+    //             .required(true)
+    //             .index(1),
+    //     )
+    //     .arg(
+    //         clap::Arg::with_name("target")
+    //             .long("Specify the architecture to compile for.
+    //                    The target has the general format <arch><sub>-<vendor>-<sys>-<abi>.
+    //                    If \"unknown\" is specified for one of these components, the defaults will be used.")
+    //             .help("")
+    //     )
+    //     .get_matches();
+
     if let Some(config) = parse_args() {
         let result = run(&mut io::stdin().lock(), &mut io::stdout().lock(), config);
         if let Err(err) = result {

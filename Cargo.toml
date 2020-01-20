@@ -2,6 +2,7 @@
 name = "opt-proto"
 version = "0.1.0"
 authors = ["William Brandon", "Wilson Berkow", "Frank Dai", "Benjamin Driscoll"]
+description = "Pure functional programming with whole-program memory management inference"
 edition = "2018"
 build = "build.rs"
 
@@ -18,6 +19,7 @@ itertools = "0.8.0"
 lazy_static = "1.3.0"
 stacker = "0.1.5"
 better-panic = "0.2.0"
+clap = "2.33.0"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "llvm8-0" }
 
 # RNG used for procedurally (but deterministically) generating test inputs

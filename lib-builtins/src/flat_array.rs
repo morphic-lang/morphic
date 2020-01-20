@@ -97,7 +97,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         let push = module.add_function(
             &format!("builtin_flat_array_{}_push", inner_mangled),
-            void_type.fn_type(&[self_ptr_type.into(), inner_type.into()], false),
+            self_ptr_type.fn_type(&[self_ptr_type.into(), inner_type.into()], false),
             Some(Linkage::External),
         );
 
@@ -196,25 +196,27 @@ impl<'a> FlatArrayBuiltin<'a> {
     fn define_new(&self, context: &'a Context) {
         let i32_type = context.i32_type();
         let i64_type = context.i64_type();
+        let inner_ptr_type = self.inner_type.ptr_type(AddressSpace::Generic);
 
         let builder = context.create_builder();
         let entry = context.append_basic_block(self.new, "entry");
 
         builder.position_at_end(&entry);
 
-        // for some reason, LLVM's built in malloc takes an i32 instead of a size_t (i.e. a u64)
-        let data =
-            builder.build_array_malloc(self.inner_type, i32_type.const_int(1, false), "data");
-
         let mut new_inner = self.self_type.inner_type.into_struct_type().get_undef();
         new_inner = builder
-            .build_insert_value(new_inner, data, DATA_IDX, "new_inner")
+            .build_insert_value(
+                new_inner,
+                inner_ptr_type.const_null(),
+                DATA_IDX,
+                "new_inner",
+            )
             .unwrap()
             .into_struct_value();
         new_inner = builder
             .build_insert_value(
                 new_inner,
-                i64_type.const_int(1, false),
+                i64_type.const_int(0, false),
                 CAP_IDX,
                 "new_inner",
             )
@@ -329,7 +331,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         let item_dest = unsafe { builder.build_in_bounds_gep(data, &[len.into()], "item_dest") };
         builder.build_store(item_dest, item);
 
-        builder.build_return(None);
+        builder.build_return(Some(&rc_ptr));
     }
 
     fn define_pop(&self, context: &'a Context) {
@@ -366,7 +368,6 @@ impl<'a> FlatArrayBuiltin<'a> {
             .unwrap()
             .into_struct_value();
 
-        builder.build_call(self.self_type.release, &[rc_ptr], "");
         builder.build_return(Some(&ret));
     }
 
@@ -396,7 +397,6 @@ impl<'a> FlatArrayBuiltin<'a> {
         let item_dest = unsafe { builder.build_in_bounds_gep(data, &[idx], "item_dest") };
         builder.build_store(item_dest, item);
 
-        builder.build_call(self.self_type.release, &[rc_ptr], "");
         if let Some(actual_drop) = inner_drop {
             builder.build_call(actual_drop, &[item_dest.into()], "");
         }
@@ -457,6 +457,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         builder.build_return(None);
     }
 
+    // TODO: handle unit
     fn define_ensure_cap(&self, context: &'a Context, libc: &LibC<'a>) {
         let i32_type = context.i32_type();
         let i64_type = context.i64_type();
@@ -490,8 +491,25 @@ impl<'a> FlatArrayBuiltin<'a> {
         builder.build_conditional_branch(should_resize, &resize_block, &exit_block);
 
         builder.position_at_end(&resize_block);
-        let cap_new =
-            builder.build_int_mul(cap, i64_type.const_int(resize_factor, false), "cap_new");
+        let candidate_cap = builder.build_int_mul(
+            cap,
+            i64_type.const_int(resize_factor, false),
+            "candidate_cap",
+        );
+        let use_candidate_cap = builder.build_int_compare(
+            IntPredicate::UGE,
+            candidate_cap,
+            min_cap,
+            "use_candidate_cap",
+        );
+        let cap_new = build_ternary(
+            context,
+            &builder,
+            self.ensure_cap,
+            use_candidate_cap,
+            || candidate_cap.into(),
+            || min_cap.into(),
+        );
 
         let data_ptr = unsafe { builder.build_struct_gep(ptr, DATA_IDX, "data_ptr") };
         let data = builder.build_load(data_ptr, "data");

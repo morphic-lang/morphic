@@ -1,3 +1,4 @@
 proc main (): () =
   let text = do input()
   in do output(text)
+  then do output("\n")
