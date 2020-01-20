@@ -469,10 +469,7 @@ fn gen_rc_op<'a, 'b>(
                 .enumerate()
                 .map(|(i, variant_block)| {
                     (
-                        globals
-                            .context
-                            .i64_type()
-                            .const_int(i.try_into().unwrap(), false),
+                        discrim.get_type().const_int(i.try_into().unwrap(), false),
                         variant_block,
                     )
                 })
