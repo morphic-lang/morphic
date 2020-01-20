@@ -4,5 +4,6 @@ proc test(msg: Array Byte, cond: Bool): () =
   if cond {
     ()
   } else {
-    do output(concat("Test failed: ", msg))
+    do output(concat("Test failed: ", msg)) then
+    do output("\n")
   }

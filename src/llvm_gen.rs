@@ -78,7 +78,9 @@ impl<'a> CustomTypeDecls<'a> {
         let retain_entry = context.append_basic_block(self.retain, "retain_entry");
 
         builder.position_at_end(&retain_entry);
-        let arg = self.retain.get_nth_param(0).unwrap();
+        let arg = self.retain.get_nth_param(0).unwrap().into_struct_value();
+        // customs types are wrapped in one element structs
+        let arg = builder.build_extract_value(arg, 0, "content").unwrap();
 
         gen_rc_op(
             RcOp::Retain,
@@ -95,7 +97,9 @@ impl<'a> CustomTypeDecls<'a> {
         let release_entry = context.append_basic_block(self.release, "release_entry");
 
         builder.position_at_end(&release_entry);
-        let arg = self.release.get_nth_param(0).unwrap();
+        let arg = self.release.get_nth_param(0).unwrap().into_struct_value();
+        // customs types are wrapped in one element structs
+        let arg = builder.build_extract_value(arg, 0, "content").unwrap();
 
         gen_rc_op(
             RcOp::Release,
@@ -585,15 +589,20 @@ fn gen_expr<'a, 'b>(
 
             builder.position_at_end(&then_block);
             let result_then = gen_expr(builder, instances, globals, func, then_expr, funcs, locals);
+            let last_then_expr_block = builder.get_insert_block().unwrap();
             builder.build_unconditional_branch(&next_block);
 
             builder.position_at_end(&else_block);
             let result_else = gen_expr(builder, instances, globals, func, else_expr, funcs, locals);
+            let last_else_expr_block = builder.get_insert_block().unwrap();
             builder.build_unconditional_branch(&next_block);
 
             builder.position_at_end(&next_block);
             let phi = builder.build_phi(result_then.get_type(), "result");
-            phi.add_incoming(&[(&result_then, &then_block), (&result_else, &else_block)]);
+            phi.add_incoming(&[
+                (&result_then, &last_then_expr_block),
+                (&result_else, &last_else_expr_block),
+            ]);
             phi.as_basic_value()
         }
         E::LetMany(bindings, local_id) => {
@@ -616,7 +625,7 @@ fn gen_expr<'a, 'b>(
         }
         E::Unreachable(type_) => {
             builder.build_unreachable();
-            let unreachable_block = context.append_basic_block(func, "unreachable");
+            let unreachable_block = context.append_basic_block(func, "after_unreachable");
             builder.position_at_end(&unreachable_block);
             match get_llvm_type(globals, instances, type_) {
                 BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
