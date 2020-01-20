@@ -36,25 +36,25 @@ impl<'a> RcBoxBuiltin<'a> {
         let new = module.add_function(
             "builtin_rc_new",
             self_ptr_type.fn_type(&[inner_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let get = module.add_function(
             "builtin_rc_get",
             inner_ptr_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let retain = module.add_function(
             "builtin_rc_retain",
             void_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let release = module.add_function(
             "builtin_rc_release",
             void_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         Self {
@@ -215,7 +215,7 @@ mod test {
         let dummy = module.add_function(
             "dummy",
             void_type.fn_type(&[inner_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         // define dummy

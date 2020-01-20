@@ -36,7 +36,7 @@ impl<'a> LibC<'a> {
             .ptr_type(AddressSpace::Generic);
 
         let stdout = module.add_global(file_ptr_type, None, "builtin_stdout");
-        stdout.set_linkage(Linkage::Private);
+        stdout.set_linkage(Linkage::Internal);
         stdout.set_initializer(&file_ptr_type.const_null());
 
         let initialize = module.add_function(

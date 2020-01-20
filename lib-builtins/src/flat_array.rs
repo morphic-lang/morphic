@@ -77,68 +77,68 @@ impl<'a> FlatArrayBuiltin<'a> {
         let new = module.add_function(
             "builtin_flat_array_new",
             self_ptr_type.fn_type(&[], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let item = module.add_function(
             "builtin_flat_array_item",
             item_ret_type.fn_type(&[self_ptr_type.into(), i64_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let len = module.add_function(
             "builtin_flat_array_len",
             i64_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let push = module.add_function(
             "builtin_flat_array_push",
             self_ptr_type.fn_type(&[self_ptr_type.into(), inner_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let pop = module.add_function(
             "builtin_flat_array_pop",
             pop_ret_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let replace = module.add_function(
             "builtin_flat_array_replace",
             self_ptr_type.fn_type(&[self_hole_type.into(), inner_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let retain_hole = module.add_function(
             "builtin_flat_array_retain_hole",
             void_type.fn_type(&[self_hole_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let release_hole = module.add_function(
             "builtin_flat_array_release_hole",
             void_type.fn_type(&[self_hole_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         // opearates on a raw FlatArray (not an RcBoxFlatArray)
         let drop = module.add_function(
             "builtin_flat_array_drop",
             void_type.fn_type(&[unwrapped_array_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let ensure_cap = module.add_function(
             "builtin_flat_array_ensure_cap",
             void_type.fn_type(&[self_ptr_type.into(), i64_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let bounds_check = module.add_function(
             "builtin_flat_array_bounds_check",
             void_type.fn_type(&[self_ptr_type.into(), i64_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         Self {
@@ -607,13 +607,13 @@ impl<'a> FlatArrayIoBuiltin<'a> {
         let input = module.add_function(
             "builtin_flat_array_input",
             self_ptr_type.fn_type(&[], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         let output = module.add_function(
             "builtin_flat_array_output",
             void_type.fn_type(&[self_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         Self {
@@ -731,7 +731,7 @@ mod test {
         let dummy = module.add_function(
             "dummy",
             void_type.fn_type(&[inner_ptr_type.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
 
         // define dummy

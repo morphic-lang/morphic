@@ -47,12 +47,12 @@ impl<'a> CustomTypeDecls<'a> {
         let release_func = module.add_function(
             &format!("release_{}", type_id.0),
             void_type.fn_type(&[ty.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
         let retain_func = module.add_function(
             &format!("retain_{}", type_id.0),
             void_type.fn_type(&[ty.into()], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         );
         CustomTypeDecls {
             ty,
@@ -185,7 +185,7 @@ impl<'a> Instances<'a> {
                     &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
                     false,
                 ),
-                Some(Linkage::Private),
+                Some(Linkage::Internal),
             );
 
             let release_entry = globals
@@ -221,7 +221,7 @@ impl<'a> Instances<'a> {
                     &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
                     false,
                 ),
-                Some(Linkage::Private),
+                Some(Linkage::Internal),
             );
 
             let retain_entry = globals
@@ -251,7 +251,7 @@ impl<'a> Instances<'a> {
                     &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
                     false,
                 ),
-                Some(Linkage::Private),
+                Some(Linkage::Internal),
             );
 
             let release_entry = globals
@@ -1102,7 +1102,7 @@ pub fn llvm_gen(program: low::Program, output_path: &Path) {
         module.add_function(
             &format!("func_{}", func_id.0),
             return_type.fn_type(&[arg_type], false),
-            Some(Linkage::Private),
+            Some(Linkage::Internal),
         )
     });
 
