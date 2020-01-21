@@ -7,7 +7,7 @@ use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetData};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
-use inkwell::values::{BasicValueEnum, FunctionValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -526,6 +526,27 @@ fn gen_rc_op<'a, 'b>(
     }
 }
 
+fn gen_entry_alloca<'a>(
+    context: &'a Context,
+    builder: &Builder<'a>,
+    ty: impl BasicType<'a>,
+    name: &str,
+) -> PointerValue<'a> {
+    let curr_block = builder.get_insert_block().unwrap();
+    let func = curr_block.get_parent().unwrap();
+    let entry = func.get_first_basic_block().unwrap();
+
+    let entry_builder = context.create_builder();
+
+    if let Some(entry_inst) = entry.get_first_instruction() {
+        entry_builder.position_before(&entry_inst);
+    } else {
+        entry_builder.position_at_end(&entry);
+    }
+
+    entry_builder.build_alloca(ty, name)
+}
+
 fn gen_unwrap_variant<'a, 'b>(
     builder: &Builder<'a>,
     instances: &Instances<'a>,
@@ -539,7 +560,8 @@ fn gen_unwrap_variant<'a, 'b>(
     let byte_array_type = variant_type
         .get_field_type_at_index(VARIANT_BYTES_IDX)
         .unwrap();
-    let byte_array_ptr = builder.build_alloca(byte_array_type, "byte_array_ptr");
+    let byte_array_ptr =
+        gen_entry_alloca(globals.context, builder, byte_array_type, "byte_array_ptr");
 
     let byte_array = builder
         .build_extract_value(
@@ -663,15 +685,17 @@ fn gen_expr<'a, 'b>(
             let byte_array_type = variant_type
                 .get_field_type_at_index(VARIANT_BYTES_IDX)
                 .unwrap();
-            let byte_array_ptr = builder.build_alloca(byte_array_type, "byte_array_ptr");
+            let byte_array_ptr =
+                gen_entry_alloca(globals.context, builder, byte_array_type, "byte_array_ptr");
             let cast_byte_array_ptr = builder.build_bitcast(
                 byte_array_ptr,
                 locals[local_id].get_type().ptr_type(AddressSpace::Generic),
                 "cast_byte_array_ptr",
             );
-            let byte_array = builder.build_load(byte_array_ptr, "byte_array");
 
             builder.build_store(cast_byte_array_ptr.into_pointer_value(), locals[local_id]);
+
+            let byte_array = builder.build_load(byte_array_ptr, "byte_array");
 
             let discrim = variant_type
                 .get_field_type_at_index(VARIANT_DISCRIM_IDX)
