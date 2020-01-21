@@ -1,3 +1,4 @@
+use crate::cli;
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::repr_constrained_ast as constrain;
@@ -5,7 +6,9 @@ use crate::util::id_vec::IdVec;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetData};
+use inkwell::targets::{
+    CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
+};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
@@ -1081,28 +1084,32 @@ fn gen_expr<'a, 'b>(
     }
 }
 
-fn get_target() -> TargetData {
-    Target::initialize_x86(&InitializationConfig::default());
-    let target = Target::from_name("x86-64").unwrap();
-    let mach = target
+fn get_target_machine(config: &cli::Config) -> TargetMachine {
+    Target::initialize_all(&InitializationConfig::default());
+    let target = Target::from_triple(&config.target).unwrap();
+    target
         .create_target_machine(
-            "x86_64-unknown-linux-gnu",
-            "x86_64",
-            "",
+            &config.target,
+            &config.target_cpu,
+            &config.target_features,
             OptimizationLevel::None,
             RelocMode::Default,
             CodeModel::Default,
         )
-        .unwrap();
-    mach.get_target_data()
+        .unwrap()
 }
 
-pub fn llvm_gen(program: low::Program, output_path: &Path) {
+pub fn llvm_gen(program: low::Program, config: &cli::Config, output_path: &Path) {
+    let target_machine = get_target_machine(config);
+    let _target = target_machine.get_target();
+    let target_data = target_machine.get_target_data();
+
     let context = Context::create();
     let module = context.create_module("module");
-    // module.set_target();
+    // TOOD: Inkwell does not handle this correctly. I submitted a bug report
+    // about it https://github.com/TheDan64/inkwell/issues/149.
+    // module.set_target(&target);
 
-    let target = get_target();
     let libc = LibC::declare(&context, &module);
 
     let custom_types = program
@@ -1112,7 +1119,7 @@ pub fn llvm_gen(program: low::Program, output_path: &Path) {
     let globals = Globals {
         context: &context,
         module: &module,
-        target: &target,
+        target: &target_data,
         libc,
         custom_types,
     };

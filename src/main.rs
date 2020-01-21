@@ -61,18 +61,21 @@ mod interpreter;
 
 mod llvm_gen;
 
+mod cli;
+
 #[cfg(test)]
 mod test;
 
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;
-use std::env::args_os;
 use std::io;
-use std::path::PathBuf;
 use std::process::exit;
 
 #[derive(Debug, Fail)]
 enum Error {
+    #[fail(display = "{}", _0)]
+    ParseArgsFailed(#[cause] cli::Error),
+
     #[fail(display = "{}", _0)]
     ResolveFailed(#[cause] resolve::Error),
 
@@ -89,66 +92,17 @@ enum Error {
     CheckMainFailed(#[cause] check_main::Error),
 }
 
-#[derive(Clone, Debug)]
-struct Config {
-    src_path: PathBuf,
-}
-
-fn parse_args() -> Option<Config> {
-    let mut args = args_os();
-    args.next()?; // Consume program name
-
-    let src_path = args.next().unwrap_or("samples/mutate.txt".into()).into();
-
-    if args.next().is_some() {
-        return None;
-    }
-
-    Some(Config { src_path })
-}
-
-fn usage() -> String {
-    "Usage: opt-proto <src.txt>".to_owned()
-}
-
-fn main() {
+fn main() -> Result<(), Error> {
     better_panic::install();
 
-    // let matches = clap::App::new(clap::crate_name!())
-    //     .version(clap::crate_version!())
-    //     .author(clap::crate_authors!())
-    //     .about(clap::crate_description!())
-    //     .arg(
-    //         clap::Arg::with_name("src_file")
-    //             .help("Specify the source file to compile.")
-    //             .required(true)
-    //             .index(1),
-    //     )
-    //     .arg(
-    //         clap::Arg::with_name("target")
-    //             .long("Specify the architecture to compile for.
-    //                    The target has the general format <arch><sub>-<vendor>-<sys>-<abi>.
-    //                    If \"unknown\" is specified for one of these components, the defaults will be used.")
-    //             .help("")
-    //     )
-    //     .get_matches();
-
-    if let Some(config) = parse_args() {
-        let result = run(&mut io::stdin().lock(), &mut io::stdout().lock(), config);
-        if let Err(err) = result {
-            eprintln!("{}", err);
-            eprintln!("{:?}", err);
-            exit(1);
-        }
-    } else {
-        println!("{}", usage());
-    }
+    let config = cli::Config::from_args().map_err(Error::ParseArgsFailed)?;
+    run(&mut io::stdin().lock(), &mut io::stdout().lock(), config)
 }
 
 fn run<R: io::BufRead, W: io::Write>(
     stdin: &mut R,
     stdout: &mut W,
-    config: Config,
+    config: cli::Config,
 ) -> Result<(), Error> {
     let resolved = resolve::resolve_program(&config.src_path).map_err(Error::ResolveFailed)?;
 
@@ -198,7 +152,7 @@ fn run<R: io::BufRead, W: io::Write>(
     pretty_print_low::write_program(&mut io::stdout(), &lowered).expect("printing program failed");
     println!("(end lowered program)");
 
-    llvm_gen::llvm_gen(lowered, "a.out".as_ref());
+    llvm_gen::llvm_gen(lowered, &config, "a.out".as_ref());
 
     // println!("==============================================================");
     // println!("============== Running program ===============================");
