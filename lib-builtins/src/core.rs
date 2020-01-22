@@ -1,21 +1,22 @@
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::{BasicTypeEnum, FloatType, IntType};
+use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
-use itertools::Itertools;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LibC<'a> {
+    pub stderr: GlobalValue<'a>,
     pub stdout: GlobalValue<'a>,
 
-    // initializes stdout
+    // initializes stderr and stdout
     pub initialize: FunctionValue<'a>,
 
     pub exit: FunctionValue<'a>,
     pub fdopen: FunctionValue<'a>,
     pub fflush: FunctionValue<'a>,
+    pub fprintf: FunctionValue<'a>,
     pub free: FunctionValue<'a>,
     pub fwrite: FunctionValue<'a>,
     pub getchar: FunctionValue<'a>,
@@ -34,6 +35,10 @@ impl<'a> LibC<'a> {
         let file_ptr_type = context
             .opaque_struct_type("FILE")
             .ptr_type(AddressSpace::Generic);
+
+        let stderr = module.add_global(file_ptr_type, None, "builtin_stderr");
+        stderr.set_linkage(Linkage::Internal);
+        stderr.set_initializer(&file_ptr_type.const_null());
 
         let stdout = module.add_global(file_ptr_type, None, "builtin_stdout");
         stdout.set_linkage(Linkage::Internal);
@@ -60,6 +65,12 @@ impl<'a> LibC<'a> {
         let fflush = module.add_function(
             "fflush",
             i32_type.fn_type(&[file_ptr_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        let fprintf = module.add_function(
+            "fprintf",
+            i32_type.fn_type(&[file_ptr_type.into(), i8_ptr_type.into()], true),
             Some(Linkage::External),
         );
 
@@ -108,11 +119,15 @@ impl<'a> LibC<'a> {
         );
 
         Self {
+            stderr,
             stdout,
+
             initialize,
+
             exit,
             fdopen,
             fflush,
+            fprintf,
             free,
             fwrite,
             getchar,
@@ -131,34 +146,47 @@ impl<'a> LibC<'a> {
         let panic_block = context.append_basic_block(self.initialize, "panic");
 
         builder.position_at_end(&entry);
-        let stdout_fd_no = 1;
-        let stdout_fd = context.i32_type().const_int(stdout_fd_no, false);
 
-        let stdout_mode = builder
-            .build_global_string_ptr("w", "stdout_mode")
+        let stdout_fd_no = 1;
+        let stderr_fd_no = 2;
+
+        let file_descriptors = [(stdout_fd_no, self.stdout), (stderr_fd_no, self.stderr)];
+
+        let fdopen_mode = builder
+            .build_global_string_ptr("w", "fdopen_mode")
             .as_pointer_value();
 
-        let file_ptr = builder
-            .build_call(
-                self.fdopen,
-                &[stdout_fd.into(), stdout_mode.into()],
-                "file_ptr",
-            )
-            .try_as_basic_value()
-            .left()
-            .unwrap();
+        for (fd_no, dest_global) in &file_descriptors {
+            let file_ptr = builder
+                .build_call(
+                    self.fdopen,
+                    &[i32_type.const_int(*fd_no, false).into(), fdopen_mode.into()],
+                    "file_ptr",
+                )
+                .try_as_basic_value()
+                .left()
+                .unwrap();
 
-        let is_null = builder.build_is_null(file_ptr.into_pointer_value(), "is_null");
-        builder.build_conditional_branch(is_null, &panic_block, &success_block);
+            let is_null = builder.build_is_null(file_ptr.into_pointer_value(), "is_null");
 
+            let next_block = context.append_basic_block(self.initialize, "next_fd");
+            builder.build_conditional_branch(is_null, &panic_block, &next_block);
+
+            builder.position_at_end(&success_block);
+            let global_ptr = dest_global.as_pointer_value();
+
+            builder.build_store(global_ptr, file_ptr);
+            builder.position_at_end(&next_block);
+        }
+
+        builder.build_unconditional_branch(&success_block);
         builder.position_at_end(&success_block);
-        let stdout_ptr = self.stdout.as_pointer_value();
-
-        builder.build_store(stdout_ptr, file_ptr);
-
         builder.build_return(None);
 
         builder.position_at_end(&panic_block);
+
+        // don't try to print on panic; we failed to open stderr/stdout,
+        // so chances of being able to report an error sucessfully are dubious
         builder.build_call(self.exit, &[i32_type.const_int(1, true).into()], "");
         builder.build_unreachable();
     }
