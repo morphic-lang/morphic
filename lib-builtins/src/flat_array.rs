@@ -244,6 +244,13 @@ impl<'a> FlatArrayBuiltin<'a> {
         let entry = context.append_basic_block(self.item, "entry");
 
         builder.position_at_end(&entry);
+
+        builder.build_call(
+            self.bounds_check,
+            &[rc_ptr.into(), idx.into()],
+            "bounds_check",
+        );
+
         let ptr = builder
             .build_call(self.self_type.get, &[rc_ptr.into()], "ptr")
             .try_as_basic_value()
@@ -338,6 +345,13 @@ impl<'a> FlatArrayBuiltin<'a> {
         let entry = context.append_basic_block(self.pop, "entry");
 
         builder.position_at_end(&entry);
+
+        builder.build_call(
+            self.bounds_check,
+            &[rc_ptr.into(), i64_type.const_int(0, false).into()],
+            "bounds_check",
+        );
+
         let ptr = builder
             .build_call(self.self_type.get, &[rc_ptr], "ptr")
             .try_as_basic_value()
