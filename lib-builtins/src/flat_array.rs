@@ -477,7 +477,6 @@ impl<'a> FlatArrayBuiltin<'a> {
 
     // TODO: handle unit
     fn define_ensure_cap(&self, context: &'a Context, libc: &LibC<'a>) {
-        let i32_type = context.i32_type();
         let i64_type = context.i64_type();
         let i8_ptr_type = context.i8_type().ptr_type(AddressSpace::Generic);
         let inner_ptr_type = self.inner_type.ptr_type(AddressSpace::Generic);
@@ -487,8 +486,6 @@ impl<'a> FlatArrayBuiltin<'a> {
         let builder = context.create_builder();
         let entry = context.append_basic_block(self.ensure_cap, "entry");
         let resize_block = context.append_basic_block(self.ensure_cap, "resize_block");
-        let panic_block = context.append_basic_block(self.ensure_cap, "panic_block");
-        let success_block = context.append_basic_block(self.ensure_cap, "success_block");
         let exit_block = context.append_basic_block(self.ensure_cap, "exit_block");
 
         builder.position_at_end(&entry);
@@ -554,13 +551,16 @@ impl<'a> FlatArrayBuiltin<'a> {
             .into_pointer_value();
 
         let is_null = builder.build_is_null(data_new_i8, "is_null");
-        builder.build_conditional_branch(is_null, &panic_block, &success_block);
 
-        builder.position_at_end(&panic_block);
-        builder.build_call(libc.exit, &[i32_type.const_int(1, true).into()], "");
-        builder.build_unreachable();
+        build_exiting_if(context, &builder, self.ensure_cap, is_null, || {
+            libc.gen_panic(
+                &builder,
+                context,
+                "ensure_capacity: failed to allocate %zu bytes\n",
+                &[allocation_size.into()],
+            );
+        });
 
-        builder.position_at_end(&success_block);
         let data_new = builder.build_cast(
             InstructionOpcode::BitCast,
             data_new_i8,
@@ -576,7 +576,6 @@ impl<'a> FlatArrayBuiltin<'a> {
     }
 
     fn define_bounds_check(&self, context: &'a Context, libc: &LibC<'a>) {
-        let i32_type = context.i32_type();
         let ptr = self.bounds_check.get_nth_param(0).unwrap();
         let idx = self.bounds_check.get_nth_param(1).unwrap().into_int_value();
 
@@ -592,8 +591,11 @@ impl<'a> FlatArrayBuiltin<'a> {
             .into_pointer_value();
         let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") }.into_int_value();
         let out_of_bounds = builder.build_int_compare(IntPredicate::UGE, idx, len, "out_of_bounds");
+
         build_if(context, &builder, self.bounds_check, out_of_bounds, || {
-            builder.build_call(libc.exit, &[i32_type.const_int(1, false).into()], "");
+            let error_str =
+                "index out of bounds: attempt to access item %lld of array with length %llu\n";
+            libc.gen_panic(&builder, context, error_str, &[idx.into(), len.into()]);
         });
 
         builder.build_return(None);

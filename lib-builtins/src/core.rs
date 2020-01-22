@@ -190,6 +190,27 @@ impl<'a> LibC<'a> {
         builder.build_call(self.exit, &[i32_type.const_int(1, true).into()], "");
         builder.build_unreachable();
     }
+
+    pub fn gen_panic(
+        &self,
+        builder: &Builder<'a>,
+        context: &'a Context,
+        panic_string: &str,
+        panic_args: &[BasicValueEnum<'a>],
+    ) {
+        let i32_type = context.i32_type();
+
+        let panic_global = builder.build_global_string_ptr(panic_string, "panic_str");
+
+        let stderr_value = builder.build_load(self.stderr.as_pointer_value(), "stderr_value");
+
+        let mut fprintf_args = vec![stderr_value, panic_global.as_pointer_value().into()];
+        fprintf_args.extend_from_slice(panic_args);
+
+        builder.build_call(self.fprintf, &fprintf_args, "fprintf_output");
+
+        builder.build_call(self.exit, &[i32_type.const_int(1, true).into()], "");
+    }
 }
 
 pub(super) fn size_of<'a>(ty: BasicTypeEnum<'a>) -> Option<IntValue<'a>> {
@@ -218,6 +239,24 @@ pub(super) fn build_if<'a>(
     body();
 
     builder.build_unconditional_branch(&next_block);
+    builder.position_at_end(&next_block);
+}
+
+pub(super) fn build_exiting_if<'a>(
+    context: &'a Context,
+    builder: &Builder<'a>,
+    func: FunctionValue<'a>,
+    cond: IntValue<'a>,
+    body: impl FnOnce() -> (),
+) {
+    let then_block = context.append_basic_block(func, "then_block");
+    let next_block = context.append_basic_block(func, "next_block");
+    builder.build_conditional_branch(cond, &then_block, &next_block);
+    builder.position_at_end(&then_block);
+
+    body();
+
+    builder.build_unreachable();
     builder.position_at_end(&next_block);
 }
 
