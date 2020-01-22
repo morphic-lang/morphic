@@ -3,7 +3,8 @@
 /target
 **/*.rs.bk
 **/*.out
-**/*.out.ll
+**/*.ll
+**/*.s
 
 # Editor/system files
 *.swp
