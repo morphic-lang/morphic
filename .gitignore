@@ -2,12 +2,15 @@
 /lib-builtins-test/target
 /target
 **/*.rs.bk
-**/*.out
+
+# opt-proto artifacts
 **/*.ll
 **/*.s
+**/*.out
 
 # Editor/system files
 *.swp
 *~
 .DS_Store
 .vscode
+.devcontainer
