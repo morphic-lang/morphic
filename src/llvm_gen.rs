@@ -7,7 +7,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::{
-    CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
 };
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
@@ -20,7 +20,9 @@ use lib_builtins::rc::RcBoxBuiltin;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
+use std::ffi::OsStr;
 use std::path::Path;
+use tempfile::NamedTempFile;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
 // we use a zero sized array to enforce proper alignment on `bytes`
@@ -1087,16 +1089,58 @@ fn gen_expr<'a, 'b>(
 fn get_target_machine(config: &cli::Config) -> TargetMachine {
     Target::initialize_all(&InitializationConfig::default());
     let target = Target::from_triple(&config.target).unwrap();
+    // RelocMode and CodeModel can affect the options we need to pass cc::Build in get_cc
     target
         .create_target_machine(
             &config.target,
             &config.target_cpu,
             &config.target_features,
             OptimizationLevel::None,
-            RelocMode::Default,
-            CodeModel::Default,
+            RelocMode::PIC,
+            // https://stackoverflow.com/questions/40493448/what-does-the-codemodel-in-clang-llvm-refer-to
+            CodeModel::Small,
         )
         .unwrap()
+}
+
+fn run_cc(target_triple: &str, obj_path: &Path, exe_path: &Path) {
+    let compiler = cc::Build::new()
+        .cargo_metadata(false)
+        .warnings(false)
+        .debug(false)
+        .opt_level(3)
+        .pic(true)
+        .out_dir(exe_path.parent().unwrap())
+        .target(target_triple)
+        .host(&TargetMachine::get_default_triple().to_string())
+        .get_compiler();
+    let mut command = compiler.to_command();
+
+    if compiler.is_like_gnu() {
+        command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
+
+        let mut o_arg = OsStr::new("-o").to_os_string();
+        o_arg.push(exe_path.file_name().unwrap());
+        command.arg(&o_arg);
+    } else if compiler.is_like_clang() {
+        command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
+
+        let mut o_arg = OsStr::new("-o").to_os_string();
+        o_arg.push(exe_path.file_name().unwrap());
+        command.arg(&o_arg);
+    } else if compiler.is_like_msvc() {
+        // TODO: are there any additional flags we should pass to msvc?
+
+        let mut o_arg = OsStr::new("/Fe").to_os_string();
+        o_arg.push(exe_path.file_name().unwrap());
+        command.arg(&o_arg); // TODO: actually test this on Windows
+    } else {
+        // Looking at the 1.0.50 source code for cc, this will never actually
+        // happen. But there's no guarantee that will remain true.
+        panic!("Unrecognized compiler. CC must be like gnu, clang, or msvc");
+    }
+
+    command.arg(obj_path).spawn().unwrap();
 }
 
 pub fn llvm_gen(program: low::Program, config: &cli::Config, output_path: &Path) {
@@ -1193,8 +1237,54 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config, output_path: &Path)
 
     builder.build_return(Some(&i32_type.const_int(0, false)));
 
-    module
-        .print_to_file(output_path.with_extension("ll"))
-        .unwrap();
-    module.verify().unwrap();
+    match &config.sub_command_config {
+        cli::SubCommandConfig::RunConfig() => {
+            module.verify().unwrap();
+
+            let obj_file = NamedTempFile::new().unwrap();
+            target_machine
+                .write_to_file(&module, FileType::Object, obj_file.path())
+                .unwrap();
+
+            let output_file = NamedTempFile::new().unwrap();
+            run_cc(&config.target, obj_file.path(), output_file.path())
+        }
+        cli::SubCommandConfig::BuildConfig(build_config) => {
+            if let Some(artifact_dir) = &build_config.artifact_dir {
+                let ll_path = artifact_dir
+                    .join(config.src_path.file_name().unwrap())
+                    .with_extension("ll");
+                module.print_to_file(ll_path).unwrap();
+
+                // We output the ll file before verifying so that it can be
+                // inspected even if verification fails.
+                module.verify().unwrap();
+
+                let asm_path = artifact_dir
+                    .join(config.src_path.file_name().unwrap())
+                    .with_extension("s");
+                target_machine
+                    .write_to_file(&module, FileType::Assembly, &asm_path)
+                    .unwrap();
+
+                let obj_path = artifact_dir
+                    .join(config.src_path.file_name().unwrap())
+                    .with_extension("o");
+                target_machine
+                    .write_to_file(&module, FileType::Object, &obj_path)
+                    .unwrap();
+
+                run_cc(&config.target, &obj_path, &build_config.output_path);
+            } else {
+                module.verify().unwrap();
+
+                let obj_file = NamedTempFile::new().unwrap();
+                target_machine
+                    .write_to_file(&module, FileType::Object, obj_file.path())
+                    .unwrap();
+
+                run_cc(&config.target, obj_file.path(), &build_config.output_path)
+            }
+        }
+    }
 }

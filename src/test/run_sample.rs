@@ -1,3 +1,5 @@
+use crate::cli;
+use inkwell::targets::TargetMachine;
 use std::io::Cursor;
 use std::path::Path;
 
@@ -18,8 +20,12 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>>(
     let result = crate::run(
         &mut stdin,
         &mut stdout,
-        crate::Config {
+        cli::Config {
             src_path: path.as_ref().to_owned(),
+            target: TargetMachine::get_default_triple().to_string(),
+            target_cpu: TargetMachine::get_host_cpu_name().to_string(),
+            target_features: TargetMachine::get_host_cpu_features().to_string(),
+            sub_command_config: cli::SubCommandConfig::RunConfig(),
         },
     );
 

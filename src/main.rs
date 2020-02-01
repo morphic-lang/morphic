@@ -69,7 +69,6 @@ mod test;
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;
 use std::io;
-use std::process::exit;
 
 #[derive(Debug, Fail)]
 enum Error {

@@ -40,14 +40,19 @@ impl lifted::Program {
                 .iter()
                 .filter(|(i, _)| !top_level_lams.contains(i))
                 .map(|(i, lam)| {
-                    lam.to_doc(i, &self.custom_type_symbols, &self.val_symbols, &self.lam_symbols[i])
+                    lam.to_doc(
+                        i,
+                        &self.custom_type_symbols,
+                        &self.val_symbols,
+                        &self.lam_symbols[i],
+                    )
                 }),
             Doc::newline().append(Doc::newline()),
         );
         let vals = Doc::intersperse(
-            self.vals
-                .iter()
-                .map(|(i, val)| val.to_doc(i, &self.custom_type_symbols, &self.val_symbols, &self.lams)),
+            self.vals.iter().map(|(i, val)| {
+                val.to_doc(i, &self.custom_type_symbols, &self.val_symbols, &self.lams)
+            }),
             Doc::newline().append(Doc::newline()),
         );
         custom_types
@@ -422,8 +427,10 @@ impl mono::Pattern {
                     let mut doc_list = Vec::new();
                     let mut tuple_local_count = NumBindings(0);
                     for pat in patterns {
-                        let (pat_doc, pat_bindings) =
-                            pat.to_doc(type_symbols, NumBindings(local_count.0 + tuple_local_count.0));
+                        let (pat_doc, pat_bindings) = pat.to_doc(
+                            type_symbols,
+                            NumBindings(local_count.0 + tuple_local_count.0),
+                        );
                         tuple_local_count.0 += pat_bindings.0;
                         doc_list.push(pat_doc);
                     }

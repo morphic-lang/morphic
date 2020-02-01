@@ -129,7 +129,8 @@ fn lift_expr<'a>(
         }
 
         mono::Expr::Match(discrim, cases, result_type) => {
-            let discrim_lifted = lift_expr(lambdas, lam_symbols, ctx, captures, discrim, lifted_from);
+            let discrim_lifted =
+                lift_expr(lambdas, lam_symbols, ctx, captures, discrim, lifted_from);
 
             let cases_lifted = cases
                 .iter()
