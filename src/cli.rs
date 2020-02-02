@@ -1,7 +1,8 @@
 use clap::{App, AppSettings, Arg, SubCommand};
 use failure::Fail;
 use inkwell::targets::TargetMachine;
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Fail)]
 #[fail(display = "Invalid compiler options: {}", _0)]
@@ -26,6 +27,12 @@ pub struct Config {
     pub target_cpu: String,
     pub target_features: String,
     pub sub_command_config: SubCommandConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct ArtifactDir<'a> {
+    pub dir_path: &'a Path,
+    pub filename_prefix: &'a Path,
 }
 
 impl Config {
@@ -173,5 +180,23 @@ impl Config {
         // Clap will exit our program gracefully if no subcommand is provided.
         // Therefore, one of the above if statements will always trigger.
         unreachable!();
+    }
+
+    pub fn artifact_dir(&self) -> Option<ArtifactDir> {
+        if let SubCommandConfig::BuildConfig(build_config) = &self.sub_command_config {
+            Some(ArtifactDir {
+                dir_path: build_config.artifact_dir.as_ref()?,
+                filename_prefix: build_config.output_path.file_name().unwrap().as_ref(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> ArtifactDir<'a> {
+    pub fn artifact_path(&self, extension: &(impl AsRef<OsStr> + ?Sized)) -> PathBuf {
+        self.dir_path
+            .join(self.filename_prefix.with_extension(extension))
     }
 }

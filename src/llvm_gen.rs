@@ -1259,26 +1259,20 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
             Command::new(&output_path).status().unwrap();
         }
         cli::SubCommandConfig::BuildConfig(build_config) => {
-            if let Some(artifact_dir) = &build_config.artifact_dir {
-                let ll_path = artifact_dir
-                    .join(config.src_path.file_name().unwrap())
-                    .with_extension("ll");
+            if let Some(artifact_dir) = config.artifact_dir() {
+                let ll_path = artifact_dir.artifact_path("ll");
                 module.print_to_file(ll_path).unwrap();
 
                 // We output the ll file before verifying so that it can be
                 // inspected even if verification fails.
                 module.verify().unwrap();
 
-                let asm_path = artifact_dir
-                    .join(config.src_path.file_name().unwrap())
-                    .with_extension("s");
+                let asm_path = artifact_dir.artifact_path("s");
                 target_machine
                     .write_to_file(&module, FileType::Assembly, &asm_path)
                     .unwrap();
 
-                let obj_path = artifact_dir
-                    .join(config.src_path.file_name().unwrap())
-                    .with_extension("o");
+                let obj_path = artifact_dir.artifact_path("o");
                 target_machine
                     .write_to_file(&module, FileType::Object, &obj_path)
                     .unwrap();

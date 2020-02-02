@@ -68,6 +68,7 @@ mod test;
 
 use failure::Fail;
 use lalrpop_util::lalrpop_mod;
+use std::fs;
 use std::io;
 
 #[derive(Debug, Fail)]
@@ -89,6 +90,15 @@ enum Error {
 
     #[fail(display = "{}", _0)]
     CheckMainFailed(#[cause] check_main::Error),
+
+    #[fail(display = "Could not create artifacts directory: {}", _0)]
+    CreateArtifactsFailed(#[cause] io::Error),
+
+    #[fail(
+        display = "Could not write intermediate representation artifacts: {}",
+        _0
+    )]
+    WriteIrFailed(#[cause] io::Error),
 }
 
 fn main() -> Result<(), Error> {
@@ -110,6 +120,12 @@ fn run<R: io::BufRead, W: io::Write>(
     let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
     check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;
     check_main::check_main(&typed).map_err(Error::CheckMainFailed)?;
+
+    // Ensure clean artifacts directory, if applicable
+    if let Some(artifact_dir) = config.artifact_dir() {
+        fs::remove_dir_all(artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
+        fs::create_dir(artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
+    }
 
     let mono = monomorphize::monomorphize(typed);
 
@@ -140,16 +156,22 @@ fn run<R: io::BufRead, W: io::Write>(
 
     let repr_specialized = specialize_reprs::specialize_reprs(repr_constrained);
 
-    // println!("Representation-specialized program:");
-    // pretty_print_special::write_program(&mut io::stdout(), &repr_specialized)
-    //     .expect("printing program failed");
-    // println!("(end representation-specialized program)");
+    if let Some(artifact_dir) = config.artifact_dir() {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("repr-spec-ir"))
+            .map_err(Error::WriteIrFailed)?;
+
+        pretty_print_special::write_program(&mut out_file, &repr_specialized)
+            .map_err(Error::WriteIrFailed)?;
+    }
 
     let lowered = lower_structures::lower_structures(repr_specialized);
 
-    println!("Lowered program:");
-    pretty_print_low::write_program(&mut io::stdout(), &lowered).expect("printing program failed");
-    println!("(end lowered program)");
+    if let Some(artifact_dir) = config.artifact_dir() {
+        let mut out_file =
+            fs::File::create(artifact_dir.artifact_path("low-ir")).map_err(Error::WriteIrFailed)?;
+
+        pretty_print_low::write_program(&mut out_file, &lowered).map_err(Error::WriteIrFailed)?;
+    }
 
     llvm_gen::llvm_gen(lowered, &config);
 
