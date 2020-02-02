@@ -1110,7 +1110,6 @@ fn run_cc(target_triple: &str, obj_path: &Path, exe_path: &Path) {
         .debug(false)
         .opt_level(3)
         .pic(true)
-        .out_dir(exe_path.parent().unwrap())
         .target(target_triple)
         .host(&TargetMachine::get_default_triple().to_string())
         .get_compiler();
@@ -1119,20 +1118,20 @@ fn run_cc(target_triple: &str, obj_path: &Path, exe_path: &Path) {
     if compiler.is_like_gnu() {
         command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
 
-        let mut o_arg = OsStr::new("-o").to_os_string();
-        o_arg.push(exe_path.file_name().unwrap());
+        let mut o_arg = OsStr::new("-o").to_owned();
+        o_arg.push(exe_path);
         command.arg(&o_arg);
     } else if compiler.is_like_clang() {
         command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
 
-        let mut o_arg = OsStr::new("-o").to_os_string();
-        o_arg.push(exe_path.file_name().unwrap());
+        let mut o_arg = OsStr::new("-o").to_owned();
+        o_arg.push(exe_path);
         command.arg(&o_arg);
     } else if compiler.is_like_msvc() {
         // TODO: are there any additional flags we should pass to msvc?
 
-        let mut o_arg = OsStr::new("/Fe").to_os_string();
-        o_arg.push(exe_path.file_name().unwrap());
+        let mut o_arg = OsStr::new("/Fe").to_owned();
+        o_arg.push(exe_path);
         command.arg(&o_arg); // TODO: actually test this on Windows
     } else {
         // Looking at the 1.0.50 source code for cc, this will never actually
