@@ -151,7 +151,7 @@ fn run<R: io::BufRead, W: io::Write>(
     pretty_print_low::write_program(&mut io::stdout(), &lowered).expect("printing program failed");
     println!("(end lowered program)");
 
-    llvm_gen::llvm_gen(lowered, &config, "a.out".as_ref());
+    llvm_gen::llvm_gen(lowered, &config);
 
     // println!("==============================================================");
     // println!("============== Running program ===============================");

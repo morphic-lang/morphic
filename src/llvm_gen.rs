@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::path::Path;
+use std::process::Command;
 use tempfile::NamedTempFile;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
@@ -1140,10 +1141,10 @@ fn run_cc(target_triple: &str, obj_path: &Path, exe_path: &Path) {
         panic!("Unrecognized compiler. CC must be like gnu, clang, or msvc");
     }
 
-    command.arg(obj_path).spawn().unwrap();
+    command.arg(obj_path).status().unwrap();
 }
 
-pub fn llvm_gen(program: low::Program, config: &cli::Config, output_path: &Path) {
+pub fn llvm_gen(program: low::Program, config: &cli::Config) {
     let target_machine = get_target_machine(config);
     let _target = target_machine.get_target();
     let target_data = target_machine.get_target_data();
@@ -1246,8 +1247,13 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config, output_path: &Path)
                 .write_to_file(&module, FileType::Object, obj_file.path())
                 .unwrap();
 
-            let output_file = NamedTempFile::new().unwrap();
-            run_cc(&config.target, obj_file.path(), output_file.path())
+            let output_path = tempfile::Builder::new()
+                .prefix(".tmp-exe-")
+                .tempfile_in("")
+                .unwrap()
+                .into_temp_path();
+            run_cc(&config.target, obj_file.path(), &output_path);
+            Command::new(&output_path).status().unwrap();
         }
         cli::SubCommandConfig::BuildConfig(build_config) => {
             if let Some(artifact_dir) = &build_config.artifact_dir {
