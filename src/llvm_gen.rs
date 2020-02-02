@@ -23,7 +23,6 @@ use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
-use tempfile::NamedTempFile;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
 // we use a zero sized array to enforce proper alignment on `bytes`
@@ -1242,7 +1241,10 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
         cli::SubCommandConfig::RunConfig() => {
             module.verify().unwrap();
 
-            let obj_file = NamedTempFile::new().unwrap();
+            let obj_file = tempfile::Builder::new()
+                .suffix(".o")
+                .tempfile_in("")
+                .unwrap();
             target_machine
                 .write_to_file(&module, FileType::Object, obj_file.path())
                 .unwrap();
@@ -1253,6 +1255,8 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
                 .unwrap()
                 .into_temp_path();
             run_cc(&config.target, obj_file.path(), &output_path);
+            std::mem::drop(obj_file);
+
             Command::new(&output_path).status().unwrap();
         }
         cli::SubCommandConfig::BuildConfig(build_config) => {
@@ -1284,7 +1288,10 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
             } else {
                 module.verify().unwrap();
 
-                let obj_file = NamedTempFile::new().unwrap();
+                let obj_file = tempfile::Builder::new()
+                    .suffix(".o")
+                    .tempfile_in("")
+                    .unwrap();
                 target_machine
                     .write_to_file(&module, FileType::Object, obj_file.path())
                     .unwrap();
