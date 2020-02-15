@@ -8,18 +8,12 @@ use inkwell::{AddressSpace, IntPredicate};
 
 // TODO: make sure retains/releases are correct
 
-const DATA_IDX: u32 = 0; // has type T*
-const CAP_IDX: u32 = 1; // has type u64
-const LEN_IDX: u32 = 2; // has type u64
+const F_DATA: u32 = 0; // has type T*
+const F_CAP: u32 = 1; // has type u64
+const F_LEN: u32 = 2; // has type u64
 
-const HOLE_IDX_IDX: u32 = 0; // has type u64
-const HOLE_PTR_IDX: u32 = 1; // has type FlatArray<T>*
-
-const ITEM_RET_ITEM_IDX: u32 = 0; // has type T
-const ITEM_RET_HOLE_IDX: u32 = 1; // has type HoleArray<T>
-
-const POP_RET_PTR_IDX: u32 = 0; // has type FlatArray<T>*
-const POP_RET_ITEM_IDX: u32 = 1; // has type T
+const HOLE_F_IDX: u32 = 0; // has type u64
+const HOLE_F_PTR: u32 = 1; // has type FlatArray<T>*
 
 #[derive(Clone, Copy, Debug)]
 pub struct FlatArrayBuiltin<'a> {
@@ -39,6 +33,7 @@ pub struct FlatArrayBuiltin<'a> {
     pub replace: FunctionValue<'a>,
     pub retain_hole: FunctionValue<'a>,
     pub release_hole: FunctionValue<'a>,
+
     // only exists to be passed to RcBoxBuiltin
     drop: FunctionValue<'a>,
 
@@ -191,259 +186,99 @@ impl<'a> FlatArrayBuiltin<'a> {
     }
 
     fn define_new(&self, context: &'a Context) {
-        let i64_type = context.i64_type();
-        let inner_ptr_type = self.inner_type.ptr_type(AddressSpace::Generic);
-
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.new, "entry");
-
-        builder.position_at_end(&entry);
-
-        let mut new_inner = self.self_type.inner_type.into_struct_type().get_undef();
-        new_inner = builder
-            .build_insert_value(
-                new_inner,
-                inner_ptr_type.const_null(),
-                DATA_IDX,
-                "new_inner",
-            )
-            .unwrap()
-            .into_struct_value();
-        new_inner = builder
-            .build_insert_value(
-                new_inner,
-                i64_type.const_int(0, false),
-                CAP_IDX,
-                "new_inner",
-            )
-            .unwrap()
-            .into_struct_value();
-        new_inner = builder
-            .build_insert_value(
-                new_inner,
-                i64_type.const_int(0, false),
-                LEN_IDX,
-                "new_inner",
-            )
-            .unwrap()
-            .into_struct_value();
-
-        let new = builder
-            .build_call(self.self_type.new, &[new_inner.into()], "new_inner")
-            .try_as_basic_value()
-            .left()
-            .unwrap();
-        builder.build_return(Some(&new));
+        let s = scope(self.new, context);
+        let me = s.make_struct(
+            self.self_type.inner_type,
+            &[(F_DATA, s.null(self.inner_type)), (F_CAP, 0), (F_LEN, 0)],
+        );
+        s.call(self.self_type.new, &[me]);
+        s.ret(me);
     }
 
     fn define_item(&self, context: &'a Context, inner_retain: Option<FunctionValue<'a>>) {
-        let rc_ptr = self.item.get_nth_param(0).unwrap().into_pointer_value();
-        let idx = self.item.get_nth_param(1).unwrap().into_int_value();
+        let s = scope(s.item, context);
+        let rc = s.arg(0);
+        let idx = s.arg(1);
+        let me = s.call(self.self_type.get, rc);
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.item, "entry");
+        s.call(self.bounds_check, &[rc, idx]);
+        let data = s.arrow(me, F_DATA);
 
-        builder.position_at_end(&entry);
-
-        builder.build_call(
-            self.bounds_check,
-            &[rc_ptr.into(), idx.into()],
-            "bounds_check",
-        );
-
-        let ptr = builder
-            .build_call(self.self_type.get, &[rc_ptr.into()], "ptr")
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-        let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
-        let item_src = unsafe { builder.build_in_bounds_gep(data, &[idx], "item_src") };
-
-        builder.build_call(self.self_type.retain, &[rc_ptr.into()], "");
+        s.call(self.self_type.retain, &[rc]);
         if let Some(actual_retain) = inner_retain {
-            builder.build_call(actual_retain, &[item_src.into()], "");
+            s.call(actual_retain, &[s.arr_addr(data, idx)]);
         }
 
-        let item = builder.build_load(item_src, "item");
-
-        let mut hole = self.self_hole_type.get_undef();
-        hole = builder
-            .build_insert_value(hole, idx, HOLE_IDX_IDX, "idx")
-            .unwrap()
-            .into_struct_value();
-        hole = builder
-            .build_insert_value(hole, rc_ptr, HOLE_PTR_IDX, "ptr")
-            .unwrap()
-            .into_struct_value();
-
-        let mut ret = self.item_ret_type.get_undef();
-        ret = builder
-            .build_insert_value(ret, hole, ITEM_RET_HOLE_IDX, "hole")
-            .unwrap()
-            .into_struct_value();
-        ret = builder
-            .build_insert_value(ret, item, ITEM_RET_ITEM_IDX, "item")
-            .unwrap()
-            .into_struct_value();
-
-        builder.build_return(Some(&ret));
+        s.build_ret(s.make_tup(&[
+            s.make_struct(self.self_hole_type, &[(HOLE_F_IDX, idx), (HOLE_F_PTR, rc)]),
+            s.arr_get(data, idx),
+        ]));
     }
 
     fn define_len(&self, context: &'a Context) {
-        let rc_ptr = self.len.get_nth_param(0).unwrap().into_pointer_value();
-
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.len, "entry");
-
-        builder.position_at_end(&entry);
-        let ptr = builder
-            .build_call(self.self_type.get, &[rc_ptr.into()], "ptr")
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-        let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") };
-        builder.build_return(Some(&len));
+        let s = scope(self.len, context);
+        s.ret(s.arrow(s.call(self.self_type.get, s.arg(0)), F_LEN))
     }
 
     fn define_push(&self, context: &'a Context) {
-        let i64_type = context.i64_type();
-        let rc_ptr = self.push.get_nth_param(0).unwrap();
-        let item = self.push.get_nth_param(1).unwrap();
+        let s = scope(self.push, context);
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.push, "entry");
+        let me = s.call(self.self_type.get, s.arg(0));
+        let len = s.arrow(me, F_LEN);
+        let new_len = s.add(len, 1);
 
-        builder.position_at_end(&entry);
-        let ptr = builder
-            .build_call(self.self_type.get, &[rc_ptr], "ptr")
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
+        s.call(self.ensure_cap, &[me, new_len]);
+        s.arrow_set(me, F_LEN, new_len);
+        s.arr_set(s.arrow(me, F_DATA), new_len, s.arg(1));
 
-        let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
-        let len = builder.build_load(len_ptr, "len").into_int_value();
-        let len_new = builder.build_int_add(len, i64_type.const_int(1, false), "len_new");
-
-        builder.build_call(self.ensure_cap, &[rc_ptr, len_new.into()], "");
-        builder.build_store(len_ptr, len_new);
-
-        let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
-        let item_dest = unsafe { builder.build_in_bounds_gep(data, &[len.into()], "item_dest") };
-        builder.build_store(item_dest, item);
-
-        builder.build_return(Some(&rc_ptr));
+        s.ret_void();
     }
 
     fn define_pop(&self, context: &'a Context) {
-        let i64_type = context.i64_type();
-        let rc_ptr = self.pop.get_nth_param(0).unwrap();
+        let s = scope(s.pop, context);
+        let rc = s.arg(0);
+        let me = s.call(self.self_type.get, rc);
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.pop, "entry");
+        s.call(self.bounds_check, &[me, 0]);
+        let len = s.arrow(me, F_LEN);
+        let new_len = s.sub(len, 1);
 
-        builder.position_at_end(&entry);
-
-        builder.build_call(
-            self.bounds_check,
-            &[rc_ptr.into(), i64_type.const_int(0, false).into()],
-            "bounds_check",
-        );
-
-        let ptr = builder
-            .build_call(self.self_type.get, &[rc_ptr], "ptr")
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-        let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
-        let len = builder.build_load(len_ptr, "len").into_int_value();
-
-        let len_new = builder.build_int_sub(len, i64_type.const_int(1, false), "len_new");
-        builder.build_store(len_ptr, len_new);
-
-        let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
-        let item_src = unsafe { builder.build_in_bounds_gep(data, &[len_new], "item_src") };
-        let item = builder.build_load(item_src, "item");
-
-        let mut ret = self.pop_ret_type.get_undef();
-        ret = builder
-            .build_insert_value(ret, rc_ptr, POP_RET_PTR_IDX, "rc_ptr")
-            .unwrap()
-            .into_struct_value();
-        ret = builder
-            .build_insert_value(ret, item, POP_RET_ITEM_IDX, "item")
-            .unwrap()
-            .into_struct_value();
-
-        builder.build_return(Some(&ret));
+        let item = s.arr_get(s.arrow(me, F_DATA), new_len);
+        s.ret(s.make_tup(&[rc, item]))
     }
 
     fn define_replace(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {
-        let hole = self.replace.get_nth_param(0).unwrap().into_struct_value();
-        let item = self.replace.get_nth_param(1).unwrap();
+        let s = scope(self.replace, context);
+        let me = s.call(self.self_type.get, rc);
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.replace, "entry");
-
-        builder.position_at_end(&entry);
-        let idx = builder
-            .build_extract_value(hole, HOLE_IDX_IDX, "idx")
-            .unwrap()
-            .into_int_value();
-        let rc_ptr = builder
-            .build_extract_value(hole, HOLE_PTR_IDX, "rc_ptr")
-            .unwrap();
-        let array_ptr = builder
-            .build_call(self.self_type.get, &[rc_ptr], "array_ptr")
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-        let data =
-            unsafe { get_member(&builder, array_ptr, DATA_IDX, "data") }.into_pointer_value();
-        let item_dest = unsafe { builder.build_in_bounds_gep(data, &[idx], "item_dest") };
-        builder.build_store(item_dest, item);
+        let hole = s.arg(0);
+        let item = s.arg(1);
+        s.arr_set(s.arrow(me, F_DATA), s.arrow(hole, HOLE_F_IDX), item);
 
         if let Some(actual_drop) = inner_drop {
-            builder.build_call(actual_drop, &[item_dest.into()], "");
+            s.call(
+                actual_drop,
+                s.arr_addr(s.arrow(me, F_DATA), s.arrow(hole, HOLE_F_IDX)),
+            );
         }
 
-        builder.build_return(Some(&rc_ptr));
+        s.ret(s.arrow(hole, HOLE_F_PTR));
     }
 
     fn define_retain_hole(&self, context: &'a Context) {
-        let hole = self.retain_hole.get_nth_param(0).unwrap();
+        let s = scope(self.retain_hole, context);
+        let hole = s.arg(0);
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.retain_hole, "entry");
-
-        builder.position_at_end(&entry);
-        let rc_ptr = builder
-            .build_extract_value(hole.into_struct_value(), HOLE_PTR_IDX, "rc_ptr")
-            .unwrap();
-
-        builder.build_call(self.self_type.retain, &[rc_ptr], "retain_hole");
-
-        builder.build_return(None);
+        s.call(self.self_type.retain, &[s.arrow(hole, HOLE_F_PTR)]);
+        s.ret_void();
     }
 
     fn define_release_hole(&self, context: &'a Context) {
-        let hole = self.release_hole.get_nth_param(0).unwrap();
+        let s = scope(self.release_hole, context);
+        let hole = s.arg(0);
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.release_hole, "entry");
-
-        builder.position_at_end(&entry);
-        let rc_ptr = builder
-            .build_extract_value(hole.into_struct_value(), HOLE_PTR_IDX, "rc_ptr")
-            .unwrap();
-
-        builder.build_call(self.self_type.release, &[rc_ptr], "release_hole");
-
-        builder.build_return(None);
+        s.call(self.self_type.release, &[s.arrow(hole, HOLE_F_PTR)]);
+        s.ret_void();
     }
 
     fn define_drop(
@@ -452,162 +287,75 @@ impl<'a> FlatArrayBuiltin<'a> {
         libc: &LibC<'a>,
         inner_drop: Option<FunctionValue<'a>>,
     ) {
-        let i8_type = context.i8_type();
-        let i8_ptr_type = i8_type.ptr_type(AddressSpace::Generic);
-        let ptr = self.drop.get_nth_param(0).unwrap().into_pointer_value();
-
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.drop, "entry");
-
-        builder.position_at_end(&entry);
-        let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") }.into_pointer_value();
+        let s = scope(self.drop, context);
+        let me = s.call(self.self_type.get, s.arg(0));
+        let data = s.arrow(me, F_DATA);
 
         if let Some(actual_drop) = inner_drop {
-            let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") }.into_int_value();
-            build_for(context, &builder, self.drop, len, |i| {
-                let item_src = unsafe { builder.build_in_bounds_gep(data, &[i], "item_src") };
-                builder.build_call(actual_drop, &[item_src.into()], "");
+            s.for_(s.arrow(me, F_LEN), |s, i| {
+                s.call(actual_drop, s.arr_addr(s.arrow(me, F_DATA), i));
             });
         }
 
-        let i8_data = builder.build_bitcast(data, i8_ptr_type, "i8_data");
-        builder.build_call(libc.free, &[i8_data.into()], "");
-        builder.build_return(None);
+        s.call(libc.free, s.ptr_cast(s.i8_t(), data));
+        s.ret_void();
     }
 
     // TODO: handle unit
     fn define_ensure_cap(&self, context: &'a Context, libc: &LibC<'a>) {
-        let i64_type = context.i64_type();
-        let i8_ptr_type = context.i8_type().ptr_type(AddressSpace::Generic);
-        let inner_ptr_type = self.inner_type.ptr_type(AddressSpace::Generic);
-        let ptr = self.ensure_cap.get_nth_param(0).unwrap();
-        let min_cap = self.ensure_cap.get_nth_param(1).unwrap().into_int_value();
+        let s = scope(self.ensure_cap, context);
+        let me = s.call(self.self_type.get, &[s.arg(0)]);
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.ensure_cap, "entry");
-        let resize_block = context.append_basic_block(self.ensure_cap, "resize_block");
-        let exit_block = context.append_basic_block(self.ensure_cap, "exit_block");
+        let min_cap = s.arg(1);
+        let curr_cap = s.arrow(ptr, F_CAP);
+        let should_resize = s.ult(cap, min_cap);
 
-        builder.position_at_end(&entry);
-        let ptr = builder
-            .build_call(self.self_type.get, &[ptr], "")
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
+        s.if_(should_resize, |s| {
+            let candidate_cap = s.mul(curr_cap, 2);
+            let use_candidate_cap = s.uge(candidate_cap, min_cap);
+            let new_cap = s.ternary(use_candidate_cap, candidate_cap, min_cap);
 
-        // if this isn't an integer we need to start using floating point multiplication
-        let resize_factor = 2;
-
-        let cap_ptr = unsafe { builder.build_struct_gep(ptr, CAP_IDX, "cap_ptr") };
-        let cap = builder.build_load(cap_ptr, "cap").into_int_value();
-        let should_resize =
-            builder.build_int_compare(IntPredicate::ULT, cap, min_cap, "should_resize");
-        builder.build_conditional_branch(should_resize, &resize_block, &exit_block);
-
-        builder.position_at_end(&resize_block);
-
-        let candidate_cap = builder.build_int_mul(
-            cap,
-            i64_type.const_int(resize_factor, false),
-            "candidate_cap",
-        );
-
-        let use_candidate_cap = builder.build_int_compare(
-            IntPredicate::UGE,
-            candidate_cap,
-            min_cap,
-            "use_candidate_cap",
-        );
-
-        let cap_new = build_ternary(
-            context,
-            &builder,
-            self.ensure_cap,
-            use_candidate_cap,
-            || candidate_cap.into(),
-            || min_cap.into(),
-        )
-        .into_int_value();
-
-        let allocation_size = builder.build_int_mul(
-            cap_new,
-            size_of(self.inner_type).unwrap(),
-            "allocation_size",
-        );
-
-        let data_ptr = unsafe { builder.build_struct_gep(ptr, DATA_IDX, "data_ptr") };
-        let data = builder.build_load(data_ptr, "data");
-        let data_i8 = builder.build_cast(InstructionOpcode::BitCast, data, i8_ptr_type, "data_i8");
-        let data_new_i8 = builder
-            .build_call(
-                libc.realloc,
-                &[data_i8.into(), allocation_size.into()],
-                "data_new_i8",
-            )
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-
-        let is_null = builder.build_is_null(data_new_i8, "is_null");
-
-        build_exiting_if(context, &builder, self.ensure_cap, is_null, || {
-            libc.gen_panic(
-                &builder,
-                context,
-                "ensure_capacity: failed to allocate %zu bytes\n",
-                &[allocation_size.into()],
+            let alloc_size = s.mul(s.size(self.inner_type), new_cap);
+            let new_data = s.ptr_cast(
+                self.inner_type,
+                s.call(
+                    libc.realloc,
+                    &[s.ptr_cast(s.i8_t(), s.arrow(ptr, F_DATA)), alloc_size],
+                ),
             );
+
+            s.if_(s.is_null(new_data), |s| {
+                s.panic(
+                    "ensure_capacity: failed to allocate %zu bytes\n",
+                    &[alloc_size],
+                );
+            });
+            s.arrow_set(ptr, F_DATA, new_data);
+            s.arrow_set(ptr, F_CAP, new_cap);
         });
 
-        let data_new = builder.build_cast(
-            InstructionOpcode::BitCast,
-            data_new_i8,
-            inner_ptr_type,
-            "data_new",
-        );
-        builder.build_store(data_ptr, data_new);
-        builder.build_store(cap_ptr, cap_new);
-        builder.build_unconditional_branch(&exit_block);
-
-        builder.position_at_end(&exit_block);
-        builder.build_return(None);
+        s.ret_void();
     }
 
     fn define_bounds_check(&self, context: &'a Context, libc: &LibC<'a>) {
-        let ptr = self.bounds_check.get_nth_param(0).unwrap();
-        let idx = self.bounds_check.get_nth_param(1).unwrap().into_int_value();
+        let s = scope(self.bounds_check, context);
+        let me = s.call(self.self_type.get, &[s.arg(0)]);
+        let idx = s.arg(1);
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.bounds_check, "entry");
-
-        builder.position_at_end(&entry);
-        let ptr = builder
-            .build_call(self.self_type.get, &[ptr], "ptr")
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-        let len = unsafe { get_member(&builder, ptr, LEN_IDX, "len") }.into_int_value();
+        let len = s.arrow(me, F_LEN);
         let out_of_bounds = builder.build_int_compare(IntPredicate::UGE, idx, len, "out_of_bounds");
 
-        build_if(context, &builder, self.bounds_check, out_of_bounds, || {
+        s.if_(out_of_bounds, |s| {
             let error_str =
                 "index out of bounds: attempt to access item %lld of array with length %llu\n";
-            libc.gen_panic(&builder, context, error_str, &[idx.into(), len.into()]);
+            s.panic(error_str, &[idx, len]);
         });
 
-        builder.build_return(None);
+        s.ret_void();
     }
 }
 
 impl<'a> FlatArrayIoBuiltin<'a> {
-    pub fn define(&self, context: &'a Context, libc: &LibC<'a>) {
-        self.define_input(context, libc);
-        self.define_output(context, libc);
-    }
-
     pub fn declare(
         context: &'a Context,
         module: &Module<'a>,
@@ -639,87 +387,52 @@ impl<'a> FlatArrayIoBuiltin<'a> {
         }
     }
 
+    pub fn define(&self, context: &'a Context, libc: &LibC<'a>) {
+        self.define_input(context, libc);
+        self.define_output(context, libc);
+    }
+
     fn define_input(&self, context: &'a Context, libc: &LibC<'a>) {
-        let builder = context.create_builder();
-        let entry_block = context.append_basic_block(self.input, "entry");
-        let loop_block = context.append_basic_block(self.input, "loop");
-        let append_block = context.append_basic_block(self.input, "append");
-        let exit_block = context.append_basic_block(self.input, "exit");
+        let s = scope(self.input, context);
 
-        builder.position_at_end(&entry_block);
+        s.call(libc.fflush, &[s.ptr_get(libc.stdout)], "fflush");
+        let array = s.call(self.byte_array_type.new & []);
 
-        let stdout_value = builder.build_load(libc.stdout.as_pointer_value(), "stdout_value");
-        builder.build_call(libc.fflush, &[stdout_value], "fflush");
-
-        let array = builder
-            .build_call(self.byte_array_type.new, &[], "input_array")
-            .try_as_basic_value()
-            .left()
-            .unwrap();
-
-        builder.build_unconditional_branch(&loop_block);
-
-        builder.position_at_end(&loop_block);
-
-        let getchar_result = builder
-            .build_call(libc.getchar, &[], "char")
-            .try_as_basic_value()
-            .left()
-            .unwrap();
-        let eof_value = context.i32_type().const_int(0xff_ff_ff_ff, false);
-        let new_line = context.i32_type().const_int('\n' as u64, false);
-        builder.build_switch(
-            getchar_result.into_int_value(),
-            &append_block,
-            &[(eof_value, &exit_block), (new_line, &exit_block)],
+        let getchar_result = s.alloca();
+        s.while_(
+            |s| {
+                let getchar_result_value = s.call(libc.getchar, &[]);
+                s.ptr_set(getchar_result, getchar_result_value);
+                s.or(
+                    s.eq(getchar_result_value, 0xff_ff_ff_ff), // EOF
+                    s.eq(getchar_result_value, '\n'),
+                )
+            },
+            |s| {
+                let input_bytes = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
+                s.call(self.byte_array_type.push, &[array, input_bytes]);
+            },
         );
 
-        builder.position_at_end(&append_block);
-        let input_byte = builder.build_int_truncate(
-            getchar_result.into_int_value(),
-            context.i8_type(),
-            "input_byte",
-        );
-        builder.build_call(
-            self.byte_array_type.push,
-            &[array, input_byte.into()],
-            "push_call",
-        );
-        builder.build_unconditional_branch(&loop_block);
-
-        builder.position_at_end(&exit_block);
-        builder.build_return(Some(&array));
+        s.ret(array);
     }
 
     fn define_output(&self, context: &'a Context, libc: &LibC<'a>) {
-        let i64_type = context.i64_type();
-        let rc_ptr = self.output.get_nth_param(0).unwrap();
-
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.output, "entry");
-
-        builder.position_at_end(&entry);
-        let ptr = builder
-            .build_call(self.byte_array_type.self_type.get, &[rc_ptr], "ptr")
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-        let len_ptr = unsafe { builder.build_struct_gep(ptr, LEN_IDX, "len_ptr") };
-        let len = builder.build_load(len_ptr, "len");
-
-        let data = unsafe { get_member(&builder, ptr, DATA_IDX, "data") };
-
-        let stdout_value = builder.build_load(libc.stdout.as_pointer_value(), "stdout_value");
+        let s = scope(self.output, context);
+        let me = s.call(self.self_type.get, &[s.arg(0)]);
+        let stdout_value = s.ptr_get(libc.stdout);
 
         // TODO: check bytes_written for errors
-        let _bytes_written = builder.build_call(
+        let _bytes_written = s.call(
             libc.fwrite,
-            &[data, i64_type.const_int(1, false).into(), len, stdout_value],
-            "bytes_written",
+            &[
+                s.arrow(me, F_DATA),
+                1,
+                s.arrow(me, F_LEN),
+                s.ptr_get(libc.stdout),
+            ],
         );
-
-        builder.build_return(None);
+        s.ret_void();
     }
 }
 
