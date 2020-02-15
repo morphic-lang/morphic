@@ -2,13 +2,13 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue};
+use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 #[derive(Clone, Copy, Debug)]
 pub struct LibC<'a> {
-    pub stderr: GlobalValue<'a>,
-    pub stdout: GlobalValue<'a>,
+    pub stderr: BasicValueEnum<'a>,
+    pub stdout: BasicValueEnum<'a>,
 
     // initializes stderr and stdout
     pub initialize: FunctionValue<'a>,
@@ -119,8 +119,8 @@ impl<'a> LibC<'a> {
         );
 
         Self {
-            stderr,
-            stdout,
+            stderr: stderr.as_basic_value_enum(),
+            stdout: stdout.as_basic_value_enum(),
 
             initialize,
 
@@ -173,7 +173,7 @@ impl<'a> LibC<'a> {
             builder.build_conditional_branch(is_null, &panic_block, &next_block);
 
             builder.position_at_end(&success_block);
-            let global_ptr = dest_global.as_pointer_value();
+            let global_ptr = dest_global.into_pointer_value();
 
             builder.build_store(global_ptr, file_ptr);
             builder.position_at_end(&next_block);
@@ -202,7 +202,7 @@ impl<'a> LibC<'a> {
 
         let panic_global = builder.build_global_string_ptr(panic_string, "panic_str");
 
-        let stderr_value = builder.build_load(self.stderr.as_pointer_value(), "stderr_value");
+        let stderr_value = builder.build_load(self.stderr.into_pointer_value(), "stderr_value");
 
         let mut fprintf_args = vec![stderr_value, panic_global.as_pointer_value().into()];
         fprintf_args.extend_from_slice(panic_args);

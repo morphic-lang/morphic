@@ -1,10 +1,11 @@
 use crate::core::*;
+use crate::fountain_pen::scope;
 use crate::rc::RcBoxBuiltin;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
-use inkwell::values::{FunctionValue, InstructionOpcode};
-use inkwell::{AddressSpace, IntPredicate};
+use inkwell::values::FunctionValue;
+use inkwell::AddressSpace;
 
 // TODO: make sure retains/releases are correct
 
@@ -188,18 +189,22 @@ impl<'a> FlatArrayBuiltin<'a> {
     fn define_new(&self, context: &'a Context) {
         let s = scope(self.new, context);
         let me = s.make_struct(
-            self.self_type.inner_type,
-            &[(F_DATA, s.null(self.inner_type)), (F_CAP, 0), (F_LEN, 0)],
+            self.self_type.inner_type.into_struct_type(),
+            &[
+                (F_DATA, s.null(self.inner_type)),
+                (F_CAP, s.i32(0)),
+                (F_LEN, s.i32(0)),
+            ],
         );
         s.call(self.self_type.new, &[me]);
         s.ret(me);
     }
 
     fn define_item(&self, context: &'a Context, inner_retain: Option<FunctionValue<'a>>) {
-        let s = scope(s.item, context);
+        let s = scope(self.item, context);
         let rc = s.arg(0);
         let idx = s.arg(1);
-        let me = s.call(self.self_type.get, rc);
+        let me = s.call(self.self_type.get, &[rc]);
 
         s.call(self.bounds_check, &[rc, idx]);
         let data = s.arrow(me, F_DATA);
@@ -209,7 +214,7 @@ impl<'a> FlatArrayBuiltin<'a> {
             s.call(actual_retain, &[s.arr_addr(data, idx)]);
         }
 
-        s.build_ret(s.make_tup(&[
+        s.ret(s.make_tup(&[
             s.make_struct(self.self_hole_type, &[(HOLE_F_IDX, idx), (HOLE_F_PTR, rc)]),
             s.arr_get(data, idx),
         ]));
@@ -217,13 +222,13 @@ impl<'a> FlatArrayBuiltin<'a> {
 
     fn define_len(&self, context: &'a Context) {
         let s = scope(self.len, context);
-        s.ret(s.arrow(s.call(self.self_type.get, s.arg(0)), F_LEN))
+        s.ret(s.arrow(s.call(self.self_type.get, &[s.arg(0)]), F_LEN))
     }
 
     fn define_push(&self, context: &'a Context) {
         let s = scope(self.push, context);
 
-        let me = s.call(self.self_type.get, s.arg(0));
+        let me = s.call(self.self_type.get, &[s.arg(0)]);
         let len = s.arrow(me, F_LEN);
         let new_len = s.add(len, 1);
 
@@ -235,11 +240,11 @@ impl<'a> FlatArrayBuiltin<'a> {
     }
 
     fn define_pop(&self, context: &'a Context) {
-        let s = scope(s.pop, context);
+        let s = scope(self.pop, context);
         let rc = s.arg(0);
-        let me = s.call(self.self_type.get, rc);
+        let me = s.call(self.self_type.get, &[rc]);
 
-        s.call(self.bounds_check, &[me, 0]);
+        s.call(self.bounds_check, &[me, s.i64(0)]);
         let len = s.arrow(me, F_LEN);
         let new_len = s.sub(len, 1);
 
@@ -249,7 +254,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
     fn define_replace(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {
         let s = scope(self.replace, context);
-        let me = s.call(self.self_type.get, rc);
+        let me = s.call(self.self_type.get, &[s.arg(0)]);
 
         let hole = s.arg(0);
         let item = s.arg(1);
@@ -258,7 +263,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         if let Some(actual_drop) = inner_drop {
             s.call(
                 actual_drop,
-                s.arr_addr(s.arrow(me, F_DATA), s.arrow(hole, HOLE_F_IDX)),
+                &[s.arr_addr(s.arrow(me, F_DATA), s.arrow(hole, HOLE_F_IDX))],
             );
         }
 
@@ -288,16 +293,16 @@ impl<'a> FlatArrayBuiltin<'a> {
         inner_drop: Option<FunctionValue<'a>>,
     ) {
         let s = scope(self.drop, context);
-        let me = s.call(self.self_type.get, s.arg(0));
+        let me = s.call(self.self_type.get, &[s.arg(0)]);
         let data = s.arrow(me, F_DATA);
 
         if let Some(actual_drop) = inner_drop {
             s.for_(s.arrow(me, F_LEN), |s, i| {
-                s.call(actual_drop, s.arr_addr(s.arrow(me, F_DATA), i));
+                s.call(actual_drop, &[s.arr_addr(s.arrow(me, F_DATA), i)]);
             });
         }
 
-        s.call(libc.free, s.ptr_cast(s.i8_t(), data));
+        s.call(libc.free, &[s.ptr_cast(s.i8_t(), data)]);
         s.ret_void();
     }
 
@@ -307,8 +312,8 @@ impl<'a> FlatArrayBuiltin<'a> {
         let me = s.call(self.self_type.get, &[s.arg(0)]);
 
         let min_cap = s.arg(1);
-        let curr_cap = s.arrow(ptr, F_CAP);
-        let should_resize = s.ult(cap, min_cap);
+        let curr_cap = s.arrow(me, F_CAP);
+        let should_resize = s.ult(curr_cap, min_cap);
 
         s.if_(should_resize, |s| {
             let candidate_cap = s.mul(curr_cap, 2);
@@ -320,7 +325,7 @@ impl<'a> FlatArrayBuiltin<'a> {
                 self.inner_type,
                 s.call(
                     libc.realloc,
-                    &[s.ptr_cast(s.i8_t(), s.arrow(ptr, F_DATA)), alloc_size],
+                    &[s.ptr_cast(s.i8_t(), s.arrow(me, F_DATA)), alloc_size],
                 ),
             );
 
@@ -328,10 +333,11 @@ impl<'a> FlatArrayBuiltin<'a> {
                 s.panic(
                     "ensure_capacity: failed to allocate %zu bytes\n",
                     &[alloc_size],
+                    libc,
                 );
             });
-            s.arrow_set(ptr, F_DATA, new_data);
-            s.arrow_set(ptr, F_CAP, new_cap);
+            s.arrow_set(me, F_DATA, new_data);
+            s.arrow_set(me, F_CAP, new_cap);
         });
 
         s.ret_void();
@@ -343,12 +349,12 @@ impl<'a> FlatArrayBuiltin<'a> {
         let idx = s.arg(1);
 
         let len = s.arrow(me, F_LEN);
-        let out_of_bounds = builder.build_int_compare(IntPredicate::UGE, idx, len, "out_of_bounds");
+        let out_of_bounds = s.uge(idx, len);
 
         s.if_(out_of_bounds, |s| {
             let error_str =
                 "index out of bounds: attempt to access item %lld of array with length %llu\n";
-            s.panic(error_str, &[idx, len]);
+            s.panic(error_str, &[idx, len], libc);
         });
 
         s.ret_void();
@@ -395,16 +401,16 @@ impl<'a> FlatArrayIoBuiltin<'a> {
     fn define_input(&self, context: &'a Context, libc: &LibC<'a>) {
         let s = scope(self.input, context);
 
-        s.call(libc.fflush, &[s.ptr_get(libc.stdout)], "fflush");
-        let array = s.call(self.byte_array_type.new & []);
+        s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
+        let array = s.call(self.byte_array_type.new, &[]);
 
-        let getchar_result = s.alloca();
+        let getchar_result = s.alloca(s.i32_t());
         s.while_(
             |s| {
                 let getchar_result_value = s.call(libc.getchar, &[]);
                 s.ptr_set(getchar_result, getchar_result_value);
                 s.or(
-                    s.eq(getchar_result_value, 0xff_ff_ff_ff), // EOF
+                    s.eq(getchar_result_value, -1i32), // EOF
                     s.eq(getchar_result_value, '\n'),
                 )
             },
@@ -419,7 +425,8 @@ impl<'a> FlatArrayIoBuiltin<'a> {
 
     fn define_output(&self, context: &'a Context, libc: &LibC<'a>) {
         let s = scope(self.output, context);
-        let me = s.call(self.self_type.get, &[s.arg(0)]);
+        let me = s.call(self.byte_array_type.self_type.get, &[s.arg(0)]);
+
         let stdout_value = s.ptr_get(libc.stdout);
 
         // TODO: check bytes_written for errors
@@ -427,9 +434,9 @@ impl<'a> FlatArrayIoBuiltin<'a> {
             libc.fwrite,
             &[
                 s.arrow(me, F_DATA),
-                1,
+                s.i32(1),
                 s.arrow(me, F_LEN),
-                s.ptr_get(libc.stdout),
+                stdout_value,
             ],
         );
         s.ret_void();
