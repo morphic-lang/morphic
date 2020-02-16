@@ -30,7 +30,9 @@
 * [ ] use fastcc calling convention
 
 ## flat_array.rs
-* [ ] replace uses of build_struct_gep with get_member
+* [X] replace uses of build_struct_gep with get_member
+* [X] Rewrite to use convenient utility wrapper
+* [ ] Fix allocation checking for arrays of zero-sized types
 * [ ] make things private
 
 ## core.rs
