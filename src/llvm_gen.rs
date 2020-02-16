@@ -1142,6 +1142,12 @@ fn run_cc(target_triple: &str, obj_path: &Path, exe_path: &Path) {
     command.arg(obj_path).status().unwrap();
 }
 
+fn verify_llvm(module: &Module) {
+    if let Err(err) = module.verify() {
+        panic!("LLVM verification failed:\n{}", err.to_string());
+    }
+}
+
 pub fn llvm_gen(program: low::Program, config: &cli::Config) {
     let target_machine = get_target_machine(config);
     let _target = target_machine.get_target();
@@ -1238,7 +1244,7 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
 
     match &config.sub_command_config {
         cli::SubCommandConfig::RunConfig() => {
-            module.verify().unwrap();
+            verify_llvm(&module);
 
             let obj_file = tempfile::Builder::new()
                 .suffix(".o")
@@ -1265,7 +1271,7 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
 
                 // We output the ll file before verifying so that it can be
                 // inspected even if verification fails.
-                module.verify().unwrap();
+                verify_llvm(&module);
 
                 let asm_path = artifact_dir.artifact_path("s");
                 target_machine
@@ -1279,7 +1285,7 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
 
                 run_cc(&config.target, &obj_path, &build_config.output_path);
             } else {
-                module.verify().unwrap();
+                verify_llvm(&module);
 
                 let obj_file = tempfile::Builder::new()
                     .suffix(".o")
