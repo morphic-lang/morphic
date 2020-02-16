@@ -196,8 +196,7 @@ impl<'a> FlatArrayBuiltin<'a> {
                 (F_LEN, s.i32(0)),
             ],
         );
-        s.call(self.self_type.new, &[me]);
-        s.ret(me);
+        s.ret(s.call(self.self_type.new, &[me]));
     }
 
     fn define_item(&self, context: &'a Context, inner_retain: Option<FunctionValue<'a>>) {
@@ -206,17 +205,17 @@ impl<'a> FlatArrayBuiltin<'a> {
         let idx = s.arg(1);
         let me = s.call(self.self_type.get, &[rc]);
 
-        s.call(self.bounds_check, &[rc, idx]);
+        s.call_void(self.bounds_check, &[rc, idx]);
         let data = s.arrow(me, F_DATA);
 
-        s.call(self.self_type.retain, &[rc]);
+        s.call_void(self.self_type.retain, &[rc]);
         if let Some(actual_retain) = inner_retain {
-            s.call(actual_retain, &[s.arr_addr(data, idx)]);
+            s.call_void(actual_retain, &[s.arr_addr(data, idx)]);
         }
 
         s.ret(s.make_tup(&[
-            s.make_struct(self.self_hole_type, &[(HOLE_F_IDX, idx), (HOLE_F_PTR, rc)]),
             s.arr_get(data, idx),
+            s.make_struct(self.self_hole_type, &[(HOLE_F_IDX, idx), (HOLE_F_PTR, rc)]),
         ]));
     }
 
@@ -228,15 +227,16 @@ impl<'a> FlatArrayBuiltin<'a> {
     fn define_push(&self, context: &'a Context) {
         let s = scope(self.push, context);
 
-        let me = s.call(self.self_type.get, &[s.arg(0)]);
-        let len = s.arrow(me, F_LEN);
-        let new_len = s.add(len, 1);
+        let rc = s.arg(0);
+        let me = s.call(self.self_type.get, &[rc]);
+        let old_len = s.arrow(me, F_LEN);
+        let new_len = s.add(old_len, 1u64);
 
-        s.call(self.ensure_cap, &[me, new_len]);
+        s.call_void(self.ensure_cap, &[rc, new_len]);
         s.arrow_set(me, F_LEN, new_len);
-        s.arr_set(s.arrow(me, F_DATA), new_len, s.arg(1));
+        s.arr_set(s.arrow(me, F_DATA), old_len, s.arg(1));
 
-        s.ret_void();
+        s.ret(rc);
     }
 
     fn define_pop(&self, context: &'a Context) {
@@ -244,9 +244,9 @@ impl<'a> FlatArrayBuiltin<'a> {
         let rc = s.arg(0);
         let me = s.call(self.self_type.get, &[rc]);
 
-        s.call(self.bounds_check, &[me, s.i64(0)]);
+        s.call_void(self.bounds_check, &[rc, s.i64(0)]);
         let len = s.arrow(me, F_LEN);
-        let new_len = s.sub(len, 1);
+        let new_len = s.sub(len, 1u64);
 
         let item = s.arr_get(s.arrow(me, F_DATA), new_len);
         s.ret(s.make_tup(&[rc, item]))
@@ -254,27 +254,27 @@ impl<'a> FlatArrayBuiltin<'a> {
 
     fn define_replace(&self, context: &'a Context, inner_drop: Option<FunctionValue<'a>>) {
         let s = scope(self.replace, context);
-        let me = s.call(self.self_type.get, &[s.arg(0)]);
 
         let hole = s.arg(0);
         let item = s.arg(1);
-        s.arr_set(s.arrow(me, F_DATA), s.arrow(hole, HOLE_F_IDX), item);
+        let idx = s.field(hole, HOLE_F_IDX);
+        let rc = s.field(hole, HOLE_F_PTR);
+        let me = s.call(self.self_type.get, &[rc]);
 
         if let Some(actual_drop) = inner_drop {
-            s.call(
-                actual_drop,
-                &[s.arr_addr(s.arrow(me, F_DATA), s.arrow(hole, HOLE_F_IDX))],
-            );
+            s.call_void(actual_drop, &[s.arr_addr(s.arrow(me, F_DATA), idx)]);
         }
 
-        s.ret(s.arrow(hole, HOLE_F_PTR));
+        s.arr_set(s.arrow(me, F_DATA), idx, item);
+
+        s.ret(rc);
     }
 
     fn define_retain_hole(&self, context: &'a Context) {
         let s = scope(self.retain_hole, context);
         let hole = s.arg(0);
 
-        s.call(self.self_type.retain, &[s.arrow(hole, HOLE_F_PTR)]);
+        s.call_void(self.self_type.retain, &[s.field(hole, HOLE_F_PTR)]);
         s.ret_void();
     }
 
@@ -282,7 +282,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         let s = scope(self.release_hole, context);
         let hole = s.arg(0);
 
-        s.call(self.self_type.release, &[s.arrow(hole, HOLE_F_PTR)]);
+        s.call_void(self.self_type.release, &[s.field(hole, HOLE_F_PTR)]);
         s.ret_void();
     }
 
@@ -293,16 +293,16 @@ impl<'a> FlatArrayBuiltin<'a> {
         inner_drop: Option<FunctionValue<'a>>,
     ) {
         let s = scope(self.drop, context);
-        let me = s.call(self.self_type.get, &[s.arg(0)]);
+        let me = s.arg(0);
         let data = s.arrow(me, F_DATA);
 
         if let Some(actual_drop) = inner_drop {
             s.for_(s.arrow(me, F_LEN), |s, i| {
-                s.call(actual_drop, &[s.arr_addr(s.arrow(me, F_DATA), i)]);
+                s.call_void(actual_drop, &[s.arr_addr(data, i)]);
             });
         }
 
-        s.call(libc.free, &[s.ptr_cast(s.i8_t(), data)]);
+        s.call_void(libc.free, &[s.ptr_cast(s.i8_t(), data)]);
         s.ret_void();
     }
 
@@ -316,7 +316,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         let should_resize = s.ult(curr_cap, min_cap);
 
         s.if_(should_resize, |s| {
-            let candidate_cap = s.mul(curr_cap, 2);
+            let candidate_cap = s.mul(curr_cap, 2u64);
             let use_candidate_cap = s.uge(candidate_cap, min_cap);
             let new_cap = s.ternary(use_candidate_cap, candidate_cap, min_cap);
 
@@ -409,10 +409,10 @@ impl<'a> FlatArrayIoBuiltin<'a> {
             |s| {
                 let getchar_result_value = s.call(libc.getchar, &[]);
                 s.ptr_set(getchar_result, getchar_result_value);
-                s.or(
+                s.not(s.or(
                     s.eq(getchar_result_value, -1i32), // EOF
-                    s.eq(getchar_result_value, '\n'),
-                )
+                    s.eq(getchar_result_value, '\n' as i32),
+                ))
             },
             |s| {
                 let input_bytes = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
@@ -434,7 +434,7 @@ impl<'a> FlatArrayIoBuiltin<'a> {
             libc.fwrite,
             &[
                 s.arrow(me, F_DATA),
-                s.i32(1),
+                s.i64(1),
                 s.arrow(me, F_LEN),
                 stdout_value,
             ],

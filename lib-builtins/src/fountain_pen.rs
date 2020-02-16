@@ -1,4 +1,5 @@
 use crate::core::LibC;
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::types::{BasicTypeEnum, StructType};
@@ -60,12 +61,12 @@ impl<'a> IntoInt<'a> for BasicValueEnum<'a> {
 
 pub fn scope<'a>(func: FunctionValue<'a>, context: &'a Context) -> Scope<'a> {
     assert![func.count_basic_blocks() == 0];
-    Scope::new(context, func)
+    let entry_block = context.append_basic_block(func, "entry");
+    Scope::new(context, func, entry_block)
 }
 
 impl<'a> Scope<'a> {
-    fn new(context: &'a Context, func: FunctionValue<'a>) -> Scope<'a> {
-        let block = context.append_basic_block(func, "new_scope");
+    fn new(context: &'a Context, func: FunctionValue<'a>, block: BasicBlock) -> Scope<'a> {
         let builder = context.create_builder();
         builder.position_at_end(&block);
 
@@ -89,7 +90,7 @@ impl<'a> Scope<'a> {
             .build_call(called, args, "call")
             .try_as_basic_value()
             .left()
-            .unwrap()
+            .expect("Cannot use 'call' to call a function without a return value")
     }
 
     pub fn call_void(&self, called: FunctionValue<'a>, args: &[BasicValueEnum<'a>]) {
@@ -97,17 +98,22 @@ impl<'a> Scope<'a> {
             .build_call(called, args, "call")
             .try_as_basic_value()
             .right()
-            .unwrap();
+            .expect("Cannot use 'call_void' to call a function with a return value");
     }
 
     pub fn arrow(&self, struct_ptr: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
-        let field_type = struct_ptr
+        let struct_type = struct_ptr
             .get_type()
             .into_pointer_type()
             .get_element_type()
             .into_struct_type();
 
-        field_type.get_field_type_at_index(idx).unwrap();
+        // This assert checks that the subsequent GEP is safe
+        assert!(
+            struct_type.get_field_type_at_index(idx).is_some(),
+            "Struct type has no field at index {}",
+            idx
+        );
 
         self.builder.build_load(
             unsafe {
@@ -118,19 +124,30 @@ impl<'a> Scope<'a> {
         )
     }
 
+    pub fn field(&self, struct_val: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
+        self.builder
+            .build_extract_value(struct_val.into_struct_value(), idx, "field")
+            .unwrap()
+    }
+
     pub fn arrow_set(
         &self,
         struct_ptr: BasicValueEnum<'a>,
         idx: u32,
         new_data: BasicValueEnum<'a>,
     ) {
-        let field_type = struct_ptr
+        let struct_type = struct_ptr
             .get_type()
             .into_pointer_type()
             .get_element_type()
             .into_struct_type();
 
-        field_type.get_field_type_at_index(idx).unwrap();
+        // This assert checks that the subsequent GEP is safe
+        assert!(
+            struct_type.get_field_type_at_index(idx).is_some(),
+            "Struct type has no field at index {}",
+            idx
+        );
 
         self.builder.build_store(
             unsafe {
@@ -148,8 +165,7 @@ impl<'a> Scope<'a> {
 
         self.builder
             .build_conditional_branch(cond_int, &then_block, &next_block);
-        self.builder.position_at_end(&then_block);
-        let new_scope = Scope::new(self.context, self.func);
+        let new_scope = Scope::new(self.context, self.func, then_block);
 
         body(&new_scope);
 
@@ -175,8 +191,7 @@ impl<'a> Scope<'a> {
 
         self.builder
             .build_conditional_branch(cond_int, &then_block, &else_block);
-        self.builder.position_at_end(&then_block);
-        let then_scope = Scope::new(self.context, self.func);
+        let then_scope = Scope::new(self.context, self.func, then_block);
 
         if_body(&then_scope);
 
@@ -186,9 +201,7 @@ impl<'a> Scope<'a> {
             then_scope.builder.build_unconditional_branch(&next_block);
         }
 
-        self.builder.position_at_end(&else_block);
-
-        let else_scope = Scope::new(self.context, self.func);
+        let else_scope = Scope::new(self.context, self.func, else_block);
 
         else_body(&else_scope);
 
@@ -210,22 +223,24 @@ impl<'a> Scope<'a> {
         let cond_int = cond.into_int_value();
         let then_block = self.context.append_basic_block(self.func, "then_block");
         let else_block = self.context.append_basic_block(self.func, "else_block");
+        let next_block = self.context.append_basic_block(self.func, "next_block");
 
         self.builder
             .build_conditional_branch(cond_int, &then_block, &else_block);
-        self.builder.position_at_end(&then_block);
 
-        let then_scope = Scope::new(self.context, self.func);
+        let then_scope = Scope::new(self.context, self.func, then_block);
         let then_value = then_body(&then_scope);
         let final_then_block = then_scope.builder.get_insert_block().unwrap();
+        then_scope.builder.build_unconditional_branch(&next_block);
 
-        self.builder.position_at_end(&else_block);
-
-        let else_scope = Scope::new(self.context, self.func);
+        let else_scope = Scope::new(self.context, self.func, else_block);
         let else_value = else_body(&else_scope);
         let final_else_block = else_scope.builder.get_insert_block().unwrap();
+        else_scope.builder.build_unconditional_branch(&next_block);
 
         assert![then_value.get_type() == else_value.get_type()];
+
+        self.builder.position_at_end(&next_block);
 
         let phi = self.builder.build_phi(then_value.get_type(), "result");
         phi.add_incoming(&[
@@ -335,47 +350,15 @@ impl<'a> Scope<'a> {
     }
 
     pub fn for_(&self, bound: impl IntoInt<'a>, body: impl FnOnce(&Scope<'a>, BasicValueEnum<'a>)) {
-        let i64_type = self.context.i64_type();
-
-        let i_ptr = self.builder.build_alloca(i64_type, "i_ptr");
-
-        self.builder
-            .build_store(i_ptr, i64_type.const_int(0, false));
-
-        let for_block = self.context.append_basic_block(self.func, "for_block");
-        let next_block = self.context.append_basic_block(self.func, "next_block");
-        self.builder.build_unconditional_branch(&for_block);
-
-        let for_scope = Scope::new(self.context, self.func);
-        let i = self.builder.build_load(i_ptr, "i");
-
-        let done = for_scope.builder.build_int_compare(
-            IntPredicate::UGE,
-            i.into_int_value(),
-            bound.into_int(&for_scope),
-            "for_done",
+        let i_ptr = self.alloca(self.i64_t());
+        self.ptr_set(i_ptr, self.i64(0));
+        self.while_(
+            |s| s.ult(s.ptr_get(i_ptr), bound),
+            |s| {
+                body(s, s.ptr_get(i_ptr));
+                s.ptr_set(i_ptr, s.add(s.ptr_get(i_ptr), 1u64));
+            },
         );
-
-        for_scope
-            .builder
-            .build_conditional_branch(done, &next_block, &for_block);
-
-        body(&for_scope, i);
-
-        let final_for_block = for_scope.builder.get_insert_block().unwrap();
-
-        assert![final_for_block.get_terminator().is_some()];
-
-        let i_new = for_scope.builder.build_int_add(
-            i.into_int_value(),
-            i64_type.const_int(1, false),
-            "i_new",
-        );
-        for_scope.builder.build_store(i_ptr, i_new);
-
-        for_scope.builder.build_unconditional_branch(&for_block);
-
-        self.builder.position_at_end(&next_block);
     }
 
     pub fn ptr_set(&self, ptr: BasicValueEnum<'a>, val: BasicValueEnum<'a>) {
@@ -407,6 +390,20 @@ impl<'a> Scope<'a> {
             .build_call(libc.exit, &[i32_type.const_int(1, true).into()], "");
     }
 
+    pub fn printf(&self, message: &str, message_args: &[BasicValueEnum], libc: &LibC<'a>) {
+        let message_global = self.builder.build_global_string_ptr(message, "panic_str");
+
+        let stdout_value = self
+            .builder
+            .build_load(libc.stdout.into_pointer_value(), "stdout_value");
+
+        let mut fprintf_args = vec![stdout_value, message_global.as_pointer_value().into()];
+        fprintf_args.extend_from_slice(message_args);
+
+        self.builder
+            .build_call(libc.fprintf, &fprintf_args, "fprintf_output");
+    }
+
     pub fn is_null(&self, ptr: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_is_null(ptr.into_pointer_value(), "is_null")
@@ -424,13 +421,35 @@ impl<'a> Scope<'a> {
             .into()
     }
 
+    pub fn ugt(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        self.builder
+            .build_int_compare(
+                IntPredicate::UGT,
+                arg1.into_int(self),
+                arg2.into_int(self),
+                "ugt",
+            )
+            .into()
+    }
+
+    pub fn ule(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        self.builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                arg1.into_int(self),
+                arg2.into_int(self),
+                "ule",
+            )
+            .into()
+    }
+
     pub fn uge(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_compare(
                 IntPredicate::UGE,
                 arg1.into_int(self),
                 arg2.into_int(self),
-                "ult",
+                "uge",
             )
             .into()
     }
@@ -474,6 +493,10 @@ impl<'a> Scope<'a> {
         self.builder
             .build_or(arg1.into_int(self), arg2.into_int(self), "and")
             .into()
+    }
+
+    pub fn not(&self, arg: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        self.builder.build_not(arg.into_int(self), "not").into()
     }
 
     pub fn truncate(
@@ -534,33 +557,43 @@ impl<'a> Scope<'a> {
         .into()
     }
 
+    // TODO: Should we consolidate this with similar code in 'llvm_gen.rs'?
     pub fn alloca(&self, ty: BasicTypeEnum<'a>) -> BasicValueEnum<'a> {
-        self.builder.build_alloca(ty, "alloca").into()
+        let entry = self.func.get_first_basic_block().unwrap();
+
+        let entry_builder = self.context.create_builder();
+
+        if let Some(entry_inst) = entry.get_first_instruction() {
+            entry_builder.position_before(&entry_inst);
+        } else {
+            entry_builder.position_at_end(&entry);
+        }
+
+        entry_builder.build_alloca(ty, "alloca").into()
     }
 
     pub fn while_(
         &self,
-        condition: impl FnOnce(&Scope<'a>) -> BasicValueEnum<'a>,
+        cond: impl FnOnce(&Scope<'a>) -> BasicValueEnum<'a>,
         body: impl FnOnce(&Scope<'a>),
     ) {
-        let while_block = self.context.append_basic_block(self.func, "while_block");
         let cond_block = self.context.append_basic_block(self.func, "cond_block");
+        let loop_block = self.context.append_basic_block(self.func, "loop_block");
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
         self.builder.build_unconditional_branch(&cond_block);
-        let cond_scope = Scope::new(self.context, self.func);
 
-        let truth_value = condition(&cond_scope).into_int_value();
+        let cond_scope = Scope::new(self.context, self.func, cond_block);
+        let cond_val = cond(&cond_scope);
+        cond_scope.builder.build_conditional_branch(
+            cond_val.into_int_value(),
+            &loop_block,
+            &next_block,
+        );
 
-        cond_scope
-            .builder
-            .build_conditional_branch(truth_value, &while_block, &next_block);
-
-        let while_scope = Scope::new(self.context, self.func);
-
-        body(&while_scope);
-
-        while_scope.builder.build_unconditional_branch(&cond_block);
+        let loop_scope = Scope::new(self.context, self.func, loop_block);
+        body(&loop_scope);
+        loop_scope.builder.build_unconditional_branch(&cond_block);
 
         self.builder.position_at_end(&next_block);
     }
