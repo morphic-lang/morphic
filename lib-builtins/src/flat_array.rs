@@ -22,8 +22,6 @@ pub struct FlatArrayBuiltin<'a> {
     pub inner_type: BasicTypeEnum<'a>,
     pub self_type: RcBoxBuiltin<'a>,
     pub self_hole_type: StructType<'a>,
-    pub item_ret_type: StructType<'a>,
-    pub pop_ret_type: StructType<'a>,
 
     // public API
     pub new: FunctionValue<'a>,
@@ -141,8 +139,6 @@ impl<'a> FlatArrayBuiltin<'a> {
             inner_type,
             self_type: rc_box,
             self_hole_type,
-            item_ret_type,
-            pop_ret_type,
             new,
             item,
             len,
