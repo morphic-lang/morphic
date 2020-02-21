@@ -188,8 +188,8 @@ impl<'a> FlatArrayBuiltin<'a> {
             self.self_type.inner_type.into_struct_type(),
             &[
                 (F_DATA, s.null(self.inner_type)),
-                (F_CAP, s.i32(0)),
-                (F_LEN, s.i32(0)),
+                (F_CAP, s.i64(0)),
+                (F_LEN, s.i64(0)),
             ],
         );
         s.ret(s.call(self.self_type.new, &[me]));
