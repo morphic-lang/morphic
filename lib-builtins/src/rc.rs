@@ -12,7 +12,7 @@ const INNER_IDX: u32 = 1; // has type T
 pub struct RcBoxBuiltin<'a> {
     // related types
     pub inner_type: BasicTypeEnum<'a>,
-    pub self_type: StructType<'a>,
+    pub rc_type: StructType<'a>,
 
     // public API
     pub new: FunctionValue<'a>,
@@ -30,36 +30,36 @@ impl<'a> RcBoxBuiltin<'a> {
         let void_type = context.void_type();
         let inner_ptr_type = inner_type.ptr_type(AddressSpace::Generic);
 
-        let self_type = context.opaque_struct_type("builtin_rc");
-        let self_ptr_type = self_type.ptr_type(AddressSpace::Generic);
+        let rc_type = context.opaque_struct_type("builtin_rc");
+        let rc_ptr_type = rc_type.ptr_type(AddressSpace::Generic);
 
         let new = module.add_function(
             "builtin_rc_new",
-            self_ptr_type.fn_type(&[inner_type.into()], false),
+            rc_ptr_type.fn_type(&[inner_type.into()], false),
             Some(Linkage::Internal),
         );
 
         let get = module.add_function(
             "builtin_rc_get",
-            inner_ptr_type.fn_type(&[self_ptr_type.into()], false),
+            inner_ptr_type.fn_type(&[rc_ptr_type.into()], false),
             Some(Linkage::Internal),
         );
 
         let retain = module.add_function(
             "builtin_rc_retain",
-            void_type.fn_type(&[self_ptr_type.into()], false),
+            void_type.fn_type(&[rc_ptr_type.into()], false),
             Some(Linkage::Internal),
         );
 
         let release = module.add_function(
             "builtin_rc_release",
-            void_type.fn_type(&[self_ptr_type.into()], false),
+            void_type.fn_type(&[rc_ptr_type.into()], false),
             Some(Linkage::Internal),
         );
 
         Self {
             inner_type,
-            self_type,
+            rc_type,
             new,
             get,
             retain,
@@ -74,7 +74,7 @@ impl<'a> RcBoxBuiltin<'a> {
         inner_drop: Option<FunctionValue<'a>>,
     ) {
         let i32_type = context.i32_type();
-        self.self_type
+        self.rc_type
             .set_body(&[i32_type.into(), self.inner_type.into()], false);
         self.define_new(context, libc);
         self.define_get(context);
@@ -94,7 +94,7 @@ impl<'a> RcBoxBuiltin<'a> {
         let i8_new_ptr = builder
             .build_call(
                 libc.malloc,
-                &[self.self_type.size_of().unwrap().into()],
+                &[self.rc_type.size_of().unwrap().into()],
                 "i8_new_ptr",
             )
             .try_as_basic_value()
@@ -104,7 +104,7 @@ impl<'a> RcBoxBuiltin<'a> {
         let new_ptr = builder
             .build_bitcast(
                 i8_new_ptr,
-                self.self_type.ptr_type(AddressSpace::Generic),
+                self.rc_type.ptr_type(AddressSpace::Generic),
                 "new_ptr",
             )
             .into_pointer_value();
