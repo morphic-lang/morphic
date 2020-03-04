@@ -356,8 +356,8 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Num(first_ord::NumType::Float) => globals.context.f64_type().into(),
         low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => instances
             .get_flat_array(globals, item_type)
-            .self_type
-            .self_type
+            .rc_builtin
+            .rc_type
             .ptr_type(AddressSpace::Generic)
             .into(),
         low::Type::Array(constrain::RepChoice::FallbackImmut, _item_type) => {
@@ -365,7 +365,7 @@ fn get_llvm_type<'a, 'b>(
         }
         low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => instances
             .get_flat_array(globals, item_type)
-            .self_hole_type
+            .hole_array_type
             .into(),
         low::Type::HoleArray(constrain::RepChoice::FallbackImmut, _item_type) => {
             unimplemented![];
@@ -382,7 +382,7 @@ fn get_llvm_type<'a, 'b>(
         }
         low::Type::Boxed(type_) => instances
             .get_rc(globals, type_)
-            .self_type
+            .rc_type
             .ptr_type(AddressSpace::Generic)
             .into(),
         low::Type::Custom(type_id) => globals.custom_types[type_id].ty.into(),
@@ -411,14 +411,14 @@ fn gen_rc_op<'a, 'b>(
             RcOp::Retain => {
                 let retain_func = instances
                     .get_flat_array(globals, item_type)
-                    .self_type
+                    .rc_builtin
                     .retain;
                 builder.build_call(retain_func, &[arg], "retain_flat_array");
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_flat_array(globals, item_type)
-                    .self_type
+                    .rc_builtin
                     .release;
                 builder.build_call(release_func, &[arg], "release_flat_array");
             }
