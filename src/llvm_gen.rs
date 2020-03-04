@@ -82,7 +82,7 @@ impl<'a> CustomTypeDecls<'a> {
 
         let retain_entry = context.append_basic_block(self.retain, "retain_entry");
 
-        builder.position_at_end(&retain_entry);
+        builder.position_at_end(retain_entry);
         let arg = self.retain.get_nth_param(0).unwrap().into_struct_value();
         // customs types are wrapped in one element structs
         let arg = builder.build_extract_value(arg, 0, "content").unwrap();
@@ -101,7 +101,7 @@ impl<'a> CustomTypeDecls<'a> {
 
         let release_entry = context.append_basic_block(self.release, "release_entry");
 
-        builder.position_at_end(&release_entry);
+        builder.position_at_end(release_entry);
         let arg = self.release.get_nth_param(0).unwrap().into_struct_value();
         // customs types are wrapped in one element structs
         let arg = builder.build_extract_value(arg, 0, "content").unwrap();
@@ -197,7 +197,7 @@ impl<'a> Instances<'a> {
                 .context
                 .append_basic_block(release_func, "release_entry");
 
-            builder.position_at_end(&release_entry);
+            builder.position_at_end(release_entry);
             let arg = release_func.get_nth_param(0).unwrap();
 
             let arg = builder.build_load(arg.into_pointer_value(), "arg");
@@ -233,7 +233,7 @@ impl<'a> Instances<'a> {
                 .context
                 .append_basic_block(retain_func, "retain_entry");
 
-            builder.position_at_end(&retain_entry);
+            builder.position_at_end(retain_entry);
             let arg = retain_func.get_nth_param(0).unwrap();
 
             let arg = builder.build_load(arg.into_pointer_value(), "arg");
@@ -263,7 +263,7 @@ impl<'a> Instances<'a> {
                 .context
                 .append_basic_block(release_func, "release_entry");
 
-            builder.position_at_end(&release_entry);
+            builder.position_at_end(release_entry);
             let arg = release_func.get_nth_param(0).unwrap();
 
             let arg = builder.build_load(arg.into_pointer_value(), "arg");
@@ -475,19 +475,19 @@ fn gen_rc_op<'a, 'b>(
                 .map(|(i, variant_block)| {
                     (
                         discrim.get_type().const_int(i.try_into().unwrap(), false),
-                        variant_block,
+                        *variant_block,
                     )
                 })
                 .collect::<Vec<_>>();
 
-            builder.build_switch(discrim, &undefined_block, &switch_blocks[..]);
+            builder.build_switch(discrim, undefined_block, &switch_blocks[..]);
 
             let next_block = globals.context.append_basic_block(func, "next");
 
-            builder.position_at_end(&undefined_block);
+            builder.position_at_end(undefined_block);
             builder.build_unreachable();
             for (i, variant_block) in variant_blocks.iter().enumerate() {
-                builder.position_at_end(variant_block);
+                builder.position_at_end(*variant_block);
                 let variant_id = low::VariantId(i);
 
                 let unwrapped_variant =
@@ -503,10 +503,10 @@ fn gen_rc_op<'a, 'b>(
                     unwrapped_variant,
                 );
 
-                builder.build_unconditional_branch(&next_block);
+                builder.build_unconditional_branch(next_block);
             }
 
-            builder.position_at_end(&next_block);
+            builder.position_at_end(next_block);
         }
         low::Type::Boxed(inner_type) => match op {
             RcOp::Retain => {
@@ -546,7 +546,7 @@ fn gen_entry_alloca<'a>(
     if let Some(entry_inst) = entry.get_first_instruction() {
         entry_builder.position_before(&entry_inst);
     } else {
-        entry_builder.position_at_end(&entry);
+        entry_builder.position_at_end(entry);
     }
 
     entry_builder.build_alloca(ty, name)
@@ -613,23 +613,23 @@ fn gen_expr<'a, 'b>(
             let next_block = context.append_basic_block(func, "next_block");
 
             let cond = locals[local_id].into_int_value();
-            builder.build_conditional_branch(cond, &then_block, &else_block);
+            builder.build_conditional_branch(cond, then_block, else_block);
 
-            builder.position_at_end(&then_block);
+            builder.position_at_end(then_block);
             let result_then = gen_expr(builder, instances, globals, func, then_expr, funcs, locals);
             let last_then_expr_block = builder.get_insert_block().unwrap();
-            builder.build_unconditional_branch(&next_block);
+            builder.build_unconditional_branch(next_block);
 
-            builder.position_at_end(&else_block);
+            builder.position_at_end(else_block);
             let result_else = gen_expr(builder, instances, globals, func, else_expr, funcs, locals);
             let last_else_expr_block = builder.get_insert_block().unwrap();
-            builder.build_unconditional_branch(&next_block);
+            builder.build_unconditional_branch(next_block);
 
-            builder.position_at_end(&next_block);
+            builder.position_at_end(next_block);
             let phi = builder.build_phi(result_then.get_type(), "result");
             phi.add_incoming(&[
-                (&result_then, &last_then_expr_block),
-                (&result_else, &last_else_expr_block),
+                (&result_then, last_then_expr_block),
+                (&result_else, last_else_expr_block),
             ]);
             phi.as_basic_value()
         }
@@ -654,7 +654,7 @@ fn gen_expr<'a, 'b>(
         E::Unreachable(type_) => {
             builder.build_unreachable();
             let unreachable_block = context.append_basic_block(func, "after_unreachable");
-            builder.position_at_end(&unreachable_block);
+            builder.position_at_end(unreachable_block);
             match get_llvm_type(globals, instances, type_) {
                 BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
                 BasicTypeEnum::FloatType(t) => t.get_undef().into(),
@@ -1195,7 +1195,7 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
         let builder = context.create_builder();
         let entry = context.append_basic_block(*func, "entry");
 
-        builder.position_at_end(&entry);
+        builder.position_at_end(entry);
         let ret_value = gen_expr(
             &builder,
             &instances,
@@ -1231,7 +1231,7 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
     let builder = context.create_builder();
     let main_block = context.append_basic_block(main, "main_block");
 
-    builder.position_at_end(&main_block);
+    builder.position_at_end(main_block);
     builder.build_call(libc.initialize, &[], "libc_initialize");
 
     builder.build_call(

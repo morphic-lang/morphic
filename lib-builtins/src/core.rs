@@ -145,7 +145,7 @@ impl<'a> LibC<'a> {
         let success_block = context.append_basic_block(self.initialize, "success");
         let panic_block = context.append_basic_block(self.initialize, "panic");
 
-        builder.position_at_end(&entry);
+        builder.position_at_end(entry);
 
         let stdout_fd_no = 1;
         let stderr_fd_no = 2;
@@ -170,20 +170,20 @@ impl<'a> LibC<'a> {
             let is_null = builder.build_is_null(file_ptr.into_pointer_value(), "is_null");
 
             let next_block = context.append_basic_block(self.initialize, "next_fd");
-            builder.build_conditional_branch(is_null, &panic_block, &next_block);
+            builder.build_conditional_branch(is_null, panic_block, next_block);
 
-            builder.position_at_end(&success_block);
+            builder.position_at_end(success_block);
             let global_ptr = dest_global.into_pointer_value();
 
             builder.build_store(global_ptr, file_ptr);
-            builder.position_at_end(&next_block);
+            builder.position_at_end(next_block);
         }
 
-        builder.build_unconditional_branch(&success_block);
-        builder.position_at_end(&success_block);
+        builder.build_unconditional_branch(success_block);
+        builder.position_at_end(success_block);
         builder.build_return(None);
 
-        builder.position_at_end(&panic_block);
+        builder.position_at_end(panic_block);
 
         // don't try to print on panic; we failed to open stderr/stdout,
         // so chances of being able to report an error sucessfully are dubious
@@ -233,13 +233,13 @@ pub(super) fn build_if<'a>(
 ) {
     let then_block = context.append_basic_block(func, "then_block");
     let next_block = context.append_basic_block(func, "next_block");
-    builder.build_conditional_branch(cond, &then_block, &next_block);
-    builder.position_at_end(&then_block);
+    builder.build_conditional_branch(cond, then_block, next_block);
+    builder.position_at_end(then_block);
 
     body();
 
-    builder.build_unconditional_branch(&next_block);
-    builder.position_at_end(&next_block);
+    builder.build_unconditional_branch(next_block);
+    builder.position_at_end(next_block);
 }
 
 pub(super) fn build_exiting_if<'a>(
@@ -251,13 +251,13 @@ pub(super) fn build_exiting_if<'a>(
 ) {
     let then_block = context.append_basic_block(func, "then_block");
     let next_block = context.append_basic_block(func, "next_block");
-    builder.build_conditional_branch(cond, &then_block, &next_block);
-    builder.position_at_end(&then_block);
+    builder.build_conditional_branch(cond, then_block, next_block);
+    builder.position_at_end(then_block);
 
     body();
 
     builder.build_unreachable();
-    builder.position_at_end(&next_block);
+    builder.position_at_end(next_block);
 }
 
 pub(super) fn build_ternary<'a>(
@@ -271,19 +271,19 @@ pub(super) fn build_ternary<'a>(
     let then_block = context.append_basic_block(func, "then_block");
     let else_block = context.append_basic_block(func, "else_block");
     let next_block = context.append_basic_block(func, "next_block");
-    builder.build_conditional_branch(cond, &then_block, &else_block);
+    builder.build_conditional_branch(cond, then_block, else_block);
 
-    builder.position_at_end(&then_block);
+    builder.position_at_end(then_block);
     let then_ret = then_body();
-    builder.build_unconditional_branch(&next_block);
+    builder.build_unconditional_branch(next_block);
 
-    builder.position_at_end(&else_block);
+    builder.position_at_end(else_block);
     let else_ret = else_body();
-    builder.build_unconditional_branch(&next_block);
+    builder.build_unconditional_branch(next_block);
 
-    builder.position_at_end(&next_block);
+    builder.position_at_end(next_block);
     let phi = builder.build_phi(then_ret.get_type(), "result");
-    phi.add_incoming(&[(&then_ret, &then_block), (&else_ret, &else_block)]);
+    phi.add_incoming(&[(&then_ret, then_block), (&else_ret, else_block)]);
     phi.as_basic_value()
 }
 
@@ -301,9 +301,9 @@ pub(super) fn build_for<'a>(
 
     let for_block = context.append_basic_block(func, "for_block");
     let next_block = context.append_basic_block(func, "next_block");
-    builder.build_unconditional_branch(&for_block);
+    builder.build_unconditional_branch(for_block);
 
-    builder.position_at_end(&for_block);
+    builder.position_at_end(for_block);
     let i_cur = builder.build_load(i_ptr, "i_cur").into_int_value();
     let i_new = builder.build_int_add(i_cur, i64_type.const_int(1, false), "i_new");
     builder.build_store(i_ptr, i_new);
@@ -311,8 +311,8 @@ pub(super) fn build_for<'a>(
     body(i_cur);
 
     let done = builder.build_int_compare(IntPredicate::UGE, i_new, end_for, "done");
-    builder.build_conditional_branch(done, &next_block, &for_block);
-    builder.position_at_end(&next_block);
+    builder.build_conditional_branch(done, next_block, for_block);
+    builder.position_at_end(next_block);
 }
 
 pub(super) unsafe fn get_member<'a>(

@@ -89,7 +89,7 @@ impl<'a> RcBoxBuiltin<'a> {
         let builder = context.create_builder();
         let entry = context.append_basic_block(self.new, "entry");
 
-        builder.position_at_end(&entry);
+        builder.position_at_end(entry);
 
         let i8_new_ptr = builder
             .build_call(
@@ -130,7 +130,7 @@ impl<'a> RcBoxBuiltin<'a> {
         let builder = context.create_builder();
         let entry = context.append_basic_block(self.get, "entry");
 
-        builder.position_at_end(&entry);
+        builder.position_at_end(entry);
         let inner = unsafe { builder.build_struct_gep(ptr, INNER_IDX, "inner") };
         builder.build_return(Some(&inner));
     }
@@ -142,7 +142,7 @@ impl<'a> RcBoxBuiltin<'a> {
         let builder = context.create_builder();
         let entry = context.append_basic_block(self.retain, "entry");
 
-        builder.position_at_end(&entry);
+        builder.position_at_end(entry);
         let refcount_ptr = unsafe { builder.build_struct_gep(ptr, REFCOUNT_IDX, "refcount_ptr") };
         let refcount = builder
             .build_load(refcount_ptr, "refcount")
@@ -166,7 +166,7 @@ impl<'a> RcBoxBuiltin<'a> {
         let builder = context.create_builder();
         let entry = context.append_basic_block(self.release, "entry");
 
-        builder.position_at_end(&entry);
+        builder.position_at_end(entry);
         let refcount_ptr = unsafe { builder.build_struct_gep(ptr, REFCOUNT_IDX, "refcount_ptr") };
         let refcount = builder
             .build_load(refcount_ptr, "refcount")

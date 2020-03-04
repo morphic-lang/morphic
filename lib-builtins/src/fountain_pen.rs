@@ -68,7 +68,7 @@ pub fn scope<'a>(func: FunctionValue<'a>, context: &'a Context) -> Scope<'a> {
 impl<'a> Scope<'a> {
     fn new(context: &'a Context, func: FunctionValue<'a>, block: BasicBlock) -> Scope<'a> {
         let builder = context.create_builder();
-        builder.position_at_end(&block);
+        builder.position_at_end(block);
 
         Scope {
             context: &context,
@@ -164,7 +164,7 @@ impl<'a> Scope<'a> {
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
         self.builder
-            .build_conditional_branch(cond_int, &then_block, &next_block);
+            .build_conditional_branch(cond_int, then_block, next_block);
         let new_scope = Scope::new(self.context, self.func, then_block);
 
         body(&new_scope);
@@ -172,10 +172,10 @@ impl<'a> Scope<'a> {
         let final_child_block = new_scope.builder.get_insert_block().unwrap();
 
         if final_child_block.get_terminator().is_none() {
-            new_scope.builder.build_unconditional_branch(&next_block);
+            new_scope.builder.build_unconditional_branch(next_block);
         }
 
-        self.builder.position_at_end(&next_block);
+        self.builder.position_at_end(next_block);
     }
 
     pub fn if_else(
@@ -190,7 +190,7 @@ impl<'a> Scope<'a> {
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
         self.builder
-            .build_conditional_branch(cond_int, &then_block, &else_block);
+            .build_conditional_branch(cond_int, then_block, else_block);
         let then_scope = Scope::new(self.context, self.func, then_block);
 
         if_body(&then_scope);
@@ -198,7 +198,7 @@ impl<'a> Scope<'a> {
         let final_then_block = then_scope.builder.get_insert_block().unwrap();
 
         if final_then_block.get_terminator().is_none() {
-            then_scope.builder.build_unconditional_branch(&next_block);
+            then_scope.builder.build_unconditional_branch(next_block);
         }
 
         let else_scope = Scope::new(self.context, self.func, else_block);
@@ -208,10 +208,10 @@ impl<'a> Scope<'a> {
         let final_else_block = else_scope.builder.get_insert_block().unwrap();
 
         if final_else_block.get_terminator().is_none() {
-            else_scope.builder.build_unconditional_branch(&next_block);
+            else_scope.builder.build_unconditional_branch(next_block);
         }
 
-        self.builder.position_at_end(&next_block);
+        self.builder.position_at_end(next_block);
     }
 
     pub fn if_expr(
@@ -226,26 +226,26 @@ impl<'a> Scope<'a> {
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
         self.builder
-            .build_conditional_branch(cond_int, &then_block, &else_block);
+            .build_conditional_branch(cond_int, then_block, else_block);
 
         let then_scope = Scope::new(self.context, self.func, then_block);
         let then_value = then_body(&then_scope);
         let final_then_block = then_scope.builder.get_insert_block().unwrap();
-        then_scope.builder.build_unconditional_branch(&next_block);
+        then_scope.builder.build_unconditional_branch(next_block);
 
         let else_scope = Scope::new(self.context, self.func, else_block);
         let else_value = else_body(&else_scope);
         let final_else_block = else_scope.builder.get_insert_block().unwrap();
-        else_scope.builder.build_unconditional_branch(&next_block);
+        else_scope.builder.build_unconditional_branch(next_block);
 
         assert![then_value.get_type() == else_value.get_type()];
 
-        self.builder.position_at_end(&next_block);
+        self.builder.position_at_end(next_block);
 
         let phi = self.builder.build_phi(then_value.get_type(), "result");
         phi.add_incoming(&[
-            (&then_value, &final_then_block),
-            (&else_value, &final_else_block),
+            (&then_value, final_then_block),
+            (&else_value, final_else_block),
         ]);
 
         phi.as_basic_value()
@@ -566,7 +566,7 @@ impl<'a> Scope<'a> {
         if let Some(entry_inst) = entry.get_first_instruction() {
             entry_builder.position_before(&entry_inst);
         } else {
-            entry_builder.position_at_end(&entry);
+            entry_builder.position_at_end(entry);
         }
 
         entry_builder.build_alloca(ty, "alloca").into()
@@ -581,20 +581,20 @@ impl<'a> Scope<'a> {
         let loop_block = self.context.append_basic_block(self.func, "loop_block");
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
-        self.builder.build_unconditional_branch(&cond_block);
+        self.builder.build_unconditional_branch(cond_block);
 
         let cond_scope = Scope::new(self.context, self.func, cond_block);
         let cond_val = cond(&cond_scope);
         cond_scope.builder.build_conditional_branch(
             cond_val.into_int_value(),
-            &loop_block,
-            &next_block,
+            loop_block,
+            next_block,
         );
 
         let loop_scope = Scope::new(self.context, self.func, loop_block);
         body(&loop_scope);
-        loop_scope.builder.build_unconditional_branch(&cond_block);
+        loop_scope.builder.build_unconditional_branch(cond_block);
 
-        self.builder.position_at_end(&next_block);
+        self.builder.position_at_end(next_block);
     }
 }
