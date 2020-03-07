@@ -1,42 +1,47 @@
 use clap::{App, AppSettings, Arg, SubCommand};
-use failure::Fail;
 use inkwell::targets::TargetMachine;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, Fail)]
-#[fail(display = "Invalid compiler options: {}", _0)]
-pub struct Error(String);
-
 #[derive(Clone, Debug)]
-pub struct BuildConfig {
-    pub output_path: PathBuf,
-    pub artifact_dir: Option<PathBuf>,
+pub struct ArtifactDir {
+    pub dir_path: PathBuf,
+    pub filename_prefix: PathBuf,
 }
 
 #[derive(Clone, Debug)]
-pub enum SubCommandConfig {
-    RunConfig(),
-    BuildConfig(BuildConfig),
-}
-
-#[derive(Clone, Debug)]
-pub struct Config {
+pub struct RunConfig {
     pub src_path: PathBuf,
     pub target: String,
     pub target_cpu: String,
     pub target_features: String,
-    pub sub_command_config: SubCommandConfig,
 }
 
 #[derive(Clone, Debug)]
-pub struct ArtifactDir<'a> {
-    pub dir_path: &'a Path,
-    pub filename_prefix: &'a Path,
+pub struct InterpretConfig {
+    pub src_path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildConfig {
+    pub src_path: PathBuf,
+    pub target: String,
+    pub target_cpu: String,
+    pub target_features: String,
+
+    pub output_path: PathBuf,
+    pub artifact_dir: Option<ArtifactDir>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Config {
+    RunConfig(RunConfig),
+    InterpretConfig(InterpretConfig),
+    BuildConfig(BuildConfig),
 }
 
 impl Config {
-    pub fn from_args() -> Result<Self, Error> {
+    pub fn from_args() -> Self {
         let matches = App::new(clap::crate_name!())
             .version(clap::crate_version!())
             .about(clap::crate_description!())
@@ -47,6 +52,16 @@ impl Config {
                     .arg(
                         Arg::with_name("src-path")
                             .help("Specify the source file for compilation.")
+                            .required(true)
+                            .index(1),
+                    ),
+            )
+            .subcommand(
+                SubCommand::with_name("interpret")
+                    .about("Interprets a program from source")
+                    .arg(
+                        Arg::with_name("src-path")
+                            .help("Specify the source file for interpretation.")
                             .required(true)
                             .index(1),
                     ),
@@ -113,13 +128,18 @@ impl Config {
         if let Some(matches) = matches.subcommand_matches("run") {
             let src_path = matches.value_of_os("src-path").unwrap().to_owned().into();
 
-            return Ok(Self {
+            let run_config = RunConfig {
                 src_path,
                 target: TargetMachine::get_default_triple().to_string(),
                 target_cpu: TargetMachine::get_host_cpu_name().to_string(),
                 target_features: TargetMachine::get_host_cpu_features().to_string(),
-                sub_command_config: SubCommandConfig::RunConfig(),
-            });
+            };
+            return Self::RunConfig(run_config);
+        }
+
+        if let Some(matches) = matches.subcommand_matches("interpret") {
+            let src_path = matches.value_of_os("src-path").unwrap().to_owned().into();
+            return Self::InterpretConfig(InterpretConfig { src_path });
         }
 
         if let Some(matches) = matches.subcommand_matches("build") {
@@ -128,6 +148,7 @@ impl Config {
             let specified_output_path = matches
                 .value_of_os("output-path")
                 .map(|s| s.to_owned().into());
+
             let specified_target = matches.value_of("target").map(|s| s.to_owned());
             let specified_target_cpu = matches.value_of("target-cpu").map(|s| s.to_owned());
             let specified_target_features =
@@ -159,22 +180,23 @@ impl Config {
                 let mut artifact_dir = output_path.clone().into_os_string();
                 artifact_dir.push("-artifacts");
                 std::fs::create_dir_all(&artifact_dir).unwrap();
-                Some(artifact_dir.into())
+                Some(ArtifactDir {
+                    dir_path: artifact_dir.into(),
+                    filename_prefix: output_path.file_name().unwrap().into(),
+                })
             } else {
                 None
             };
-            let build_config = BuildConfig {
-                output_path: output_path.into(),
-                artifact_dir,
-            };
 
-            return Ok(Self {
+            let build_config = BuildConfig {
                 src_path,
                 target,
                 target_cpu,
                 target_features,
-                sub_command_config: SubCommandConfig::BuildConfig(build_config),
-            });
+                output_path: output_path.into(),
+                artifact_dir,
+            };
+            return Self::BuildConfig(build_config);
         }
 
         // Clap will exit our program gracefully if no subcommand is provided.
@@ -182,19 +204,24 @@ impl Config {
         unreachable!();
     }
 
-    pub fn artifact_dir(&self) -> Option<ArtifactDir> {
-        if let SubCommandConfig::BuildConfig(build_config) = &self.sub_command_config {
-            Some(ArtifactDir {
-                dir_path: build_config.artifact_dir.as_ref()?,
-                filename_prefix: build_config.output_path.file_name().unwrap().as_ref(),
-            })
-        } else {
-            None
+    pub fn src_path(&self) -> &Path {
+        match self {
+            Self::RunConfig(config) => &config.src_path,
+            Self::InterpretConfig(config) => &config.src_path,
+            Self::BuildConfig(config) => &config.src_path,
+        }
+    }
+
+    pub fn artifact_dir(&self) -> Option<&ArtifactDir> {
+        match self {
+            Self::RunConfig(_) => None,
+            Self::InterpretConfig(_) => None,
+            Self::BuildConfig(build_config) => build_config.artifact_dir.as_ref(),
         }
     }
 }
 
-impl<'a> ArtifactDir<'a> {
+impl ArtifactDir {
     pub fn artifact_path(&self, extension: &(impl AsRef<OsStr> + ?Sized)) -> PathBuf {
         self.dir_path
             .join(self.filename_prefix.with_extension(extension))

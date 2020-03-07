@@ -74,9 +74,6 @@ use std::io;
 #[derive(Debug, Fail)]
 enum Error {
     #[fail(display = "{}", _0)]
-    ParseArgsFailed(#[cause] cli::Error),
-
-    #[fail(display = "{}", _0)]
     ResolveFailed(#[cause] resolve::Error),
 
     #[fail(display = "{}", _0)]
@@ -104,7 +101,7 @@ enum Error {
 fn main() -> Result<(), Error> {
     better_panic::install();
 
-    let config = cli::Config::from_args().map_err(Error::ParseArgsFailed)?;
+    let config = cli::Config::from_args();
     run(&mut io::stdin().lock(), &mut io::stdout().lock(), config)
 }
 
@@ -113,7 +110,7 @@ fn run<R: io::BufRead, W: io::Write>(
     stdout: &mut W,
     config: cli::Config,
 ) -> Result<(), Error> {
-    let resolved = resolve::resolve_program(&config.src_path).map_err(Error::ResolveFailed)?;
+    let resolved = resolve::resolve_program(config.src_path()).map_err(Error::ResolveFailed)?;
 
     // Check obvious errors and infer types
     check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;
@@ -123,8 +120,8 @@ fn run<R: io::BufRead, W: io::Write>(
 
     // Ensure clean artifacts directory, if applicable
     if let Some(artifact_dir) = config.artifact_dir() {
-        fs::remove_dir_all(artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
-        fs::create_dir(artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
+        fs::remove_dir_all(&artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
+        fs::create_dir(&artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
     }
 
     let mono = monomorphize::monomorphize(typed);
@@ -173,13 +170,11 @@ fn run<R: io::BufRead, W: io::Write>(
         pretty_print_low::write_program(&mut out_file, &lowered).map_err(Error::WriteIrFailed)?;
     }
 
-    llvm_gen::llvm_gen(lowered, &config);
-
-    // println!("==============================================================");
-    // println!("============== Running program ===============================");
-    // println!("==============================================================");
-
-    // interpreter::interpret(stdin, stdout, &lowered);
+    match config {
+        cli::Config::RunConfig(run_config) => llvm_gen::run(lowered, &run_config),
+        cli::Config::InterpretConfig(_) => interpreter::interpret(stdin, stdout, &lowered),
+        cli::Config::BuildConfig(build_config) => llvm_gen::build(lowered, &build_config),
+    }
 
     Ok(())
 }

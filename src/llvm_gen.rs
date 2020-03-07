@@ -1086,15 +1086,16 @@ fn gen_expr<'a, 'b>(
     }
 }
 
-fn get_target_machine(config: &cli::Config) -> TargetMachine {
+fn get_target_machine(target: &str, target_cpu: &str, target_features: &str) -> TargetMachine {
     Target::initialize_all(&InitializationConfig::default());
-    let target = Target::from_triple(&config.target).unwrap();
+    let llvm_target = Target::from_triple(target).unwrap();
+
     // RelocMode and CodeModel can affect the options we need to pass cc::Build in get_cc
-    target
+    llvm_target
         .create_target_machine(
-            &config.target,
-            &config.target_cpu,
-            &config.target_features,
+            target,
+            target_cpu,
+            target_features,
             OptimizationLevel::None,
             RelocMode::PIC,
             // https://stackoverflow.com/questions/40493448/what-does-the-codemodel-in-clang-llvm-refer-to
@@ -1103,57 +1104,11 @@ fn get_target_machine(config: &cli::Config) -> TargetMachine {
         .unwrap()
 }
 
-fn run_cc(target_triple: &str, obj_path: &Path, exe_path: &Path) {
-    let compiler = cc::Build::new()
-        .cargo_metadata(false)
-        .warnings(false)
-        .debug(false)
-        .opt_level(3)
-        .pic(true)
-        .target(target_triple)
-        .host(&TargetMachine::get_default_triple().to_string())
-        .get_compiler();
-    let mut command = compiler.to_command();
-
-    if compiler.is_like_gnu() {
-        command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
-
-        let mut o_arg = OsStr::new("-o").to_owned();
-        o_arg.push(exe_path);
-        command.arg(&o_arg);
-    } else if compiler.is_like_clang() {
-        command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
-
-        let mut o_arg = OsStr::new("-o").to_owned();
-        o_arg.push(exe_path);
-        command.arg(&o_arg);
-    } else if compiler.is_like_msvc() {
-        // TODO: are there any additional flags we should pass to msvc?
-
-        let mut o_arg = OsStr::new("/Fe").to_owned();
-        o_arg.push(exe_path);
-        command.arg(&o_arg); // TODO: actually test this on Windows
-    } else {
-        // Looking at the 1.0.50 source code for cc, this will never actually
-        // happen. But there's no guarantee that will remain true.
-        panic!("Unrecognized compiler. CC must be like gnu, clang, or msvc");
-    }
-
-    command.arg(obj_path).status().unwrap();
-}
-
-fn verify_llvm(module: &Module) {
-    if let Err(err) = module.verify() {
-        panic!("LLVM verification failed:\n{}", err.to_string());
-    }
-}
-
-pub fn llvm_gen(program: low::Program, config: &cli::Config) {
-    let target_machine = get_target_machine(config);
-    let _target = target_machine.get_target();
-    let target_data = target_machine.get_target_data();
-
-    let context = Context::create();
+fn gen_program<'a>(
+    program: low::Program,
+    target_machine: &TargetMachine,
+    context: &'a Context,
+) -> Module<'a> {
     let module = context.create_module("module");
     // TOOD: Inkwell does not handle this correctly. I submitted a bug report
     // about it https://github.com/TheDan64/inkwell/issues/149.
@@ -1168,7 +1123,7 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
     let globals = Globals {
         context: &context,
         module: &module,
-        target: &target_data,
+        target: &target_machine.get_target_data(),
         libc,
         custom_types,
     };
@@ -1242,61 +1197,119 @@ pub fn llvm_gen(program: low::Program, config: &cli::Config) {
 
     builder.build_return(Some(&i32_type.const_int(0, false)));
 
-    match &config.sub_command_config {
-        cli::SubCommandConfig::RunConfig() => {
-            verify_llvm(&module);
+    return module;
+}
 
-            let obj_file = tempfile::Builder::new()
-                .suffix(".o")
-                .tempfile_in("")
-                .unwrap();
-            target_machine
-                .write_to_file(&module, FileType::Object, obj_file.path())
-                .unwrap();
+fn run_cc(target_triple: &str, obj_path: &Path, exe_path: &Path) {
+    let compiler = cc::Build::new()
+        .cargo_metadata(false)
+        .warnings(false)
+        .debug(false)
+        .opt_level(3)
+        .pic(true)
+        .target(target_triple)
+        .host(&TargetMachine::get_default_triple().to_string())
+        .get_compiler();
+    let mut command = compiler.to_command();
 
-            let output_path = tempfile::Builder::new()
-                .prefix(".tmp-exe-")
-                .tempfile_in("")
-                .unwrap()
-                .into_temp_path();
-            run_cc(&config.target, obj_file.path(), &output_path);
-            std::mem::drop(obj_file);
+    if compiler.is_like_gnu() {
+        command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
 
-            Command::new(&output_path).status().unwrap();
-        }
-        cli::SubCommandConfig::BuildConfig(build_config) => {
-            if let Some(artifact_dir) = config.artifact_dir() {
-                let ll_path = artifact_dir.artifact_path("ll");
-                module.print_to_file(ll_path).unwrap();
+        let mut o_arg = OsStr::new("-o").to_owned();
+        o_arg.push(exe_path);
+        command.arg(&o_arg);
+    } else if compiler.is_like_clang() {
+        command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
 
-                // We output the ll file before verifying so that it can be
-                // inspected even if verification fails.
-                verify_llvm(&module);
+        let mut o_arg = OsStr::new("-o").to_owned();
+        o_arg.push(exe_path);
+        command.arg(&o_arg);
+    } else if compiler.is_like_msvc() {
+        // TODO: are there any additional flags we should pass to msvc?
 
-                let asm_path = artifact_dir.artifact_path("s");
-                target_machine
-                    .write_to_file(&module, FileType::Assembly, &asm_path)
-                    .unwrap();
+        let mut o_arg = OsStr::new("/Fe").to_owned();
+        o_arg.push(exe_path);
+        command.arg(&o_arg); // TODO: actually test this on Windows
+    } else {
+        // Looking at the 1.0.50 source code for cc, this will never actually
+        // happen. But there's no guarantee that will remain true.
+        panic!("Unrecognized compiler. CC must be like gnu, clang, or msvc");
+    }
 
-                let obj_path = artifact_dir.artifact_path("o");
-                target_machine
-                    .write_to_file(&module, FileType::Object, &obj_path)
-                    .unwrap();
+    command.arg(obj_path).status().unwrap();
+}
 
-                run_cc(&config.target, &obj_path, &build_config.output_path);
-            } else {
-                verify_llvm(&module);
+fn verify_llvm(module: &Module) {
+    if let Err(err) = module.verify() {
+        panic!("LLVM verification failed:\n{}", err.to_string());
+    }
+}
 
-                let obj_file = tempfile::Builder::new()
-                    .suffix(".o")
-                    .tempfile_in("")
-                    .unwrap();
-                target_machine
-                    .write_to_file(&module, FileType::Object, obj_file.path())
-                    .unwrap();
+pub fn run(program: low::Program, config: &cli::RunConfig) {
+    let target_machine =
+        get_target_machine(&config.target, &config.target_cpu, &config.target_features);
 
-                run_cc(&config.target, obj_file.path(), &build_config.output_path)
-            }
-        }
+    let context = Context::create();
+    let module = gen_program(program, &target_machine, &context);
+
+    verify_llvm(&module);
+
+    let obj_file = tempfile::Builder::new()
+        .suffix(".o")
+        .tempfile_in("")
+        .unwrap();
+    target_machine
+        .write_to_file(&module, FileType::Object, obj_file.path())
+        .unwrap();
+
+    let output_path = tempfile::Builder::new()
+        .prefix(".tmp-exe-")
+        .tempfile_in("")
+        .unwrap()
+        .into_temp_path();
+    run_cc(&config.target, obj_file.path(), &output_path);
+    std::mem::drop(obj_file);
+
+    Command::new(&output_path).status().unwrap();
+}
+
+pub fn build(program: low::Program, config: &cli::BuildConfig) {
+    let target_machine =
+        get_target_machine(&config.target, &config.target_cpu, &config.target_features);
+
+    let context = Context::create();
+    let module = gen_program(program, &target_machine, &context);
+
+    if let Some(artifact_dir) = &config.artifact_dir {
+        let ll_path = artifact_dir.artifact_path("ll");
+        module.print_to_file(ll_path).unwrap();
+
+        // We output the ll file before verifying so that it can be
+        // inspected even if verification fails.
+        verify_llvm(&module);
+
+        let asm_path = artifact_dir.artifact_path("s");
+        target_machine
+            .write_to_file(&module, FileType::Assembly, &asm_path)
+            .unwrap();
+
+        let obj_path = artifact_dir.artifact_path("o");
+        target_machine
+            .write_to_file(&module, FileType::Object, &obj_path)
+            .unwrap();
+
+        run_cc(&config.target, &obj_path, &config.output_path);
+    } else {
+        verify_llvm(&module);
+
+        let obj_file = tempfile::Builder::new()
+            .suffix(".o")
+            .tempfile_in("")
+            .unwrap();
+        target_machine
+            .write_to_file(&module, FileType::Object, obj_file.path())
+            .unwrap();
+
+        run_cc(&config.target, obj_file.path(), &config.output_path)
     }
 }
