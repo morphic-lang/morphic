@@ -1,6 +1,6 @@
-use crate::core::*;
-use crate::fountain_pen::scope;
-use crate::rc::RcBoxBuiltin;
+use crate::builtins::core::*;
+use crate::builtins::fountain_pen::scope;
+use crate::builtins::rc::RcBoxBuiltin;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
@@ -471,7 +471,7 @@ mod test {
         // define dummy
         let builder = context.create_builder();
         let entry = context.append_basic_block(dummy, "entry");
-        builder.position_at_end(&entry);
+        builder.position_at_end(entry);
         let hello_global = builder.build_global_string_ptr("Hello, world!", "hello");
         let hello_value = (&hello_global as &dyn BasicValue).as_basic_value_enum();
         builder.build_call(libc.printf, &[hello_value], "");

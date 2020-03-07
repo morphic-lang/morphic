@@ -1,3 +1,6 @@
+use crate::builtins::core::LibC;
+use crate::builtins::flat_array::{FlatArrayBuiltin, FlatArrayIoBuiltin};
+use crate::builtins::rc::RcBoxBuiltin;
 use crate::cli;
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
@@ -14,9 +17,6 @@ use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
-use lib_builtins::core::LibC;
-use lib_builtins::flat_array::{FlatArrayBuiltin, FlatArrayIoBuiltin};
-use lib_builtins::rc::RcBoxBuiltin;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::convert::TryInto;

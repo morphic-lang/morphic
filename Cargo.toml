@@ -10,7 +10,6 @@ build = "build.rs"
 lalrpop = "0.16.2"
 
 [dependencies]
-lib-builtins = { path = "./lib-builtins" }
 lalrpop-util = "0.16.2"
 pretty = "0.5.2"
 failure = "0.1.5"
@@ -22,7 +21,7 @@ better-panic = "0.2.0"
 clap = "2.33.0"
 cc = "1.0.50"
 tempfile = "3.1.0"
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "llvm8-0" }
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm8-0"] }
 
 # RNG used for procedurally (but deterministically) generating test inputs
 rand = "0.6.5"

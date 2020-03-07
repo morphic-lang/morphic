@@ -1,4 +1,4 @@
-use crate::core::*;
+use crate::builtins::core::*;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
@@ -221,14 +221,14 @@ mod test {
         // define dummy
         let builder = context.create_builder();
         let entry = context.append_basic_block(dummy, "entry");
-        builder.position_at_end(&entry);
+        builder.position_at_end(entry);
         let hello_global = builder.build_global_string_ptr("Hello, world!", "hello");
         let hello_value = (&hello_global as &dyn BasicValue).as_basic_value_enum();
         builder.build_call(libc.printf, &[hello_value], "");
         builder.build_return(None);
 
         let rc = RcBoxBuiltin::declare(&context, &module, inner_type.into());
-        rc.define(&context, Some(dummy));
+        rc.define(&context, &libc, Some(dummy));
 
         module.print_to_file(Path::new("test_rc.out.ll")).unwrap();
         module.verify().unwrap();

@@ -3,6 +3,8 @@
 #[macro_use]
 mod util;
 
+mod builtins;
+
 mod data;
 mod pretty_print_lifted;
 mod pretty_print_low;
