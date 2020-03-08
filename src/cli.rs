@@ -1,5 +1,5 @@
 use clap::{App, AppSettings, Arg, SubCommand};
-use inkwell::targets::TargetMachine;
+use inkwell::targets::{TargetMachine, TargetTriple};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -9,23 +9,23 @@ pub struct ArtifactDir {
     pub filename_prefix: PathBuf,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RunConfig {
     pub src_path: PathBuf,
-    pub target: String,
+    pub target: TargetTriple,
     pub target_cpu: String,
     pub target_features: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct InterpretConfig {
     pub src_path: PathBuf,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BuildConfig {
     pub src_path: PathBuf,
-    pub target: String,
+    pub target: TargetTriple,
     pub target_cpu: String,
     pub target_features: String,
 
@@ -33,7 +33,7 @@ pub struct BuildConfig {
     pub artifact_dir: Option<ArtifactDir>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Config {
     RunConfig(RunConfig),
     InterpretConfig(InterpretConfig),
@@ -79,10 +79,10 @@ impl Config {
                         Arg::with_name("emit-artifacts")
                             .long("emit-artifacts")
                             .help(
-                            "Emit compilation artifacts including the generated LLVM IR and \
-                             object file. Artifacts will be placed in a directory whose name is \
-                             derived from the generated executable's name.",
-                        ),
+                                "Emit compilation artifacts including the generated LLVM IR and \
+                                 object file. Artifacts will be placed in a directory whose name is \
+                                 derived from the generated executable's name.",
+                            ),
                     )
                     .arg(
                         Arg::with_name("target")
@@ -130,7 +130,7 @@ impl Config {
 
             let run_config = RunConfig {
                 src_path,
-                target: TargetMachine::get_default_triple().to_string(),
+                target: TargetMachine::get_default_triple(),
                 target_cpu: TargetMachine::get_host_cpu_name().to_string(),
                 target_features: TargetMachine::get_host_cpu_features().to_string(),
             };
@@ -149,7 +149,7 @@ impl Config {
                 .value_of_os("output-path")
                 .map(|s| s.to_owned().into());
 
-            let specified_target = matches.value_of("target").map(|s| s.to_owned());
+            let specified_target = matches.value_of("target").map(TargetTriple::create);
             let specified_target_cpu = matches.value_of("target-cpu").map(|s| s.to_owned());
             let specified_target_features =
                 matches.value_of("target-features").map(|s| s.to_owned());
@@ -162,7 +162,7 @@ impl Config {
                 )
             } else {
                 (
-                    TargetMachine::get_default_triple().to_string(),
+                    TargetMachine::get_default_triple(),
                     specified_target_cpu.unwrap_or(TargetMachine::get_host_cpu_name().to_string()),
                     specified_target_features
                         .unwrap_or(TargetMachine::get_host_cpu_features().to_string()),
