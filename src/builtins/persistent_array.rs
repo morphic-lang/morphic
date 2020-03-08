@@ -8,7 +8,8 @@ use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 
 // Performance-tuning parameters
-const BRANCHING_FACTOR: u32 = 32;
+const LOG2_BRANCHING_FACTOR: u32 = 5;
+const BRANCHING_FACTOR: u32 = 1 << LOG2_BRANCHING_FACTOR;
 const MIN_LEAF_BYTES: u32 = 128;
 
 // Fields of 'branch_type'
