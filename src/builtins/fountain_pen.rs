@@ -410,8 +410,11 @@ impl<'a> Scope<'a> {
         ty: BasicTypeEnum<'a>,
         libc: &LibC<'a>,
     ) -> BasicValueEnum<'a> {
-        let size = self.mul(num, self.size(ty));
-        self.call(libc.malloc, &[size])
+        let ptr = self.call(libc.malloc, &[self.mul(num, self.size(ty))]);
+        self.if_(self.is_null(ptr), |s| {
+            s.panic("malloc failed", &[], libc);
+        });
+        return ptr;
     }
 
     pub fn calloc(
@@ -420,7 +423,16 @@ impl<'a> Scope<'a> {
         ty: BasicTypeEnum<'a>,
         libc: &LibC<'a>,
     ) -> BasicValueEnum<'a> {
-        self.call(libc.calloc, &[num.into_int(self).into(), self.size(ty)])
+        let ptr = self.call(libc.calloc, &[num.into_int(self).into(), self.size(ty)]);
+        self.if_(self.is_null(ptr), |s| {
+            s.panic("calloc failed", &[], libc);
+        });
+        return ptr;
+    }
+
+    pub fn free(&self, ptr: BasicValueEnum<'a>, libc: &LibC<'a>) {
+        let i8_ptr_type = self.context.i32_type().ptr_type(AddressSpace::Generic);
+        self.call_void(libc.free, &[self.ptr_cast(i8_ptr_type.into(), ptr)]);
     }
 
     pub fn is_null(&self, ptr: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
