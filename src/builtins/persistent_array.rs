@@ -427,7 +427,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let arr = s.arg(0);
             let idx = s.arg(1);
 
-            let len = s.arrow(arr, F_ARR_LEN);
+            let len = s.field(arr, F_ARR_LEN);
             s.if_(s.uge(idx, len), |s| {
                 s.panic(
                     "idx %d is out of bounds for persistent array of length %d",
