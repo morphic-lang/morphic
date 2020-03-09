@@ -66,7 +66,7 @@ pub fn scope<'a>(func: FunctionValue<'a>, context: &'a Context) -> Scope<'a> {
 }
 
 impl<'a> Scope<'a> {
-    fn new(context: &'a Context, func: FunctionValue<'a>, block: BasicBlock) -> Scope<'a> {
+    fn new(context: &'a Context, func: FunctionValue<'a>, block: BasicBlock<'a>) -> Scope<'a> {
         let builder = context.create_builder();
         builder.position_at_end(block);
 
@@ -369,7 +369,7 @@ impl<'a> Scope<'a> {
         self.builder.build_load(ptr.into_pointer_value(), "get")
     }
 
-    pub fn panic(&self, panic_string: &str, panic_args: &[BasicValueEnum], libc: &LibC<'a>) {
+    pub fn panic(&self, panic_string: &str, panic_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
         let i32_type = self.context.i32_type();
 
         let panic_global = self
@@ -390,7 +390,7 @@ impl<'a> Scope<'a> {
             .build_call(libc.exit, &[i32_type.const_int(1, true).into()], "");
     }
 
-    pub fn printf(&self, message: &str, message_args: &[BasicValueEnum], libc: &LibC<'a>) {
+    pub fn printf(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
         let message_global = self.builder.build_global_string_ptr(message, "panic_str");
 
         let stdout_value = self
@@ -402,6 +402,25 @@ impl<'a> Scope<'a> {
 
         self.builder
             .build_call(libc.fprintf, &fprintf_args, "fprintf_output");
+    }
+
+    pub fn malloc(
+        &self,
+        num: impl IntoInt<'a>,
+        ty: BasicTypeEnum<'a>,
+        libc: &LibC<'a>,
+    ) -> BasicValueEnum<'a> {
+        let size = self.mul(num, self.size(ty));
+        self.call(libc.malloc, &[size])
+    }
+
+    pub fn calloc(
+        &self,
+        num: impl IntoInt<'a>,
+        ty: BasicTypeEnum<'a>,
+        libc: &LibC<'a>,
+    ) -> BasicValueEnum<'a> {
+        self.call(libc.calloc, &[num.into_int(self).into(), self.size(ty)])
     }
 
     pub fn is_null(&self, ptr: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
@@ -497,6 +516,18 @@ impl<'a> Scope<'a> {
 
     pub fn not(&self, arg: impl IntoInt<'a>) -> BasicValueEnum<'a> {
         self.builder.build_not(arg.into_int(self), "not").into()
+    }
+
+    pub fn sll(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        self.builder
+            .build_left_shift(arg1.into_int(self), arg2.into_int(self), "sll")
+            .into()
+    }
+
+    pub fn srl(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        self.builder
+            .build_right_shift(arg1.into_int(self), arg2.into_int(self), false, "srl")
+            .into()
     }
 
     pub fn truncate(

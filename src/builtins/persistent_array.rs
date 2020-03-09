@@ -415,8 +415,20 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'item'
         {
-            let s = scope(self.item, context);
-            todo!();
+            // let s = scope(self.item, context);
+            // let rc = s.arg(0);
+            // let idx = s.arg(1);
+            // let me = s.call(self.rc_builtin.get, &[rc]);
+
+            // s.call_void(self.bounds_check, &[rc, idx]);
+            // let data = s.arrow(me, F_DATA);
+
+            // s.call_void(self.rc_buildin.retain, &[rc]);
+            // if let Some(actual_retain) = inner_retain {
+            //     s.call_void(actual_retain, &[s.arr_addr(data, idx)]);
+            // }
+
+            // s.ret(s.make_tup(&[s.arr_get(data, idx)]))
         }
 
         // define 'len'

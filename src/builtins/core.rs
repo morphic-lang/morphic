@@ -13,6 +13,7 @@ pub struct LibC<'a> {
     // initializes stderr and stdout
     pub initialize: FunctionValue<'a>,
 
+    pub calloc: FunctionValue<'a>,
     pub exit: FunctionValue<'a>,
     pub fdopen: FunctionValue<'a>,
     pub fflush: FunctionValue<'a>,
@@ -47,6 +48,12 @@ impl<'a> LibC<'a> {
         let initialize = module.add_function(
             "builtin_init_libc",
             void_type.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+
+        let calloc = module.add_function(
+            "calloc",
+            i8_ptr_type.fn_type(&[i64_type.into(), i64_type.into()], false),
             Some(Linkage::External),
         );
 
@@ -124,6 +131,7 @@ impl<'a> LibC<'a> {
 
             initialize,
 
+            calloc,
             exit,
             fdopen,
             fflush,
