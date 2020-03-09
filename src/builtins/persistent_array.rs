@@ -10,7 +10,7 @@ use inkwell::AddressSpace;
 // Performance-tuning parameters
 const LOG2_BRANCHING_FACTOR: u32 = 5;
 const BRANCHING_FACTOR: u32 = 1 << LOG2_BRANCHING_FACTOR;
-const MIN_LEAF_BYTES: u32 = 128;
+const MIN_LEAF_BYTES: u64 = 128;
 
 // Fields of 'branch_type'
 const F_BRANCH_REFCOUNT: u32 = 0;
@@ -35,7 +35,7 @@ const F_CHILD_HEIGHT: u32 = 0;
 const F_CHILD_NODE_NUMBER: u32 = 1;
 const F_CHILD_INDEX: u32 = 2;
 
-fn get_items_per_leaf(item_bytes: u64) -> u32 {
+fn get_items_per_leaf(item_bytes: u64) -> u64 {
     if item_bytes == 0 {
         unimplemented!("Persistent arrays of zero-sized types are not yet implemented");
     }
@@ -44,7 +44,7 @@ fn get_items_per_leaf(item_bytes: u64) -> u32 {
     while items_per_leaf * item_bytes < MIN_LEAF_BYTES as u64 {
         items_per_leaf *= 2;
     }
-    items_per_leaf as u32
+    items_per_leaf
 }
 
 #[derive(Clone, Debug)]
@@ -401,7 +401,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                     // refcount
                     i64_type.into(),
                     // items
-                    self.item_type.array_type(items_per_leaf).into(),
+                    self.item_type.array_type(items_per_leaf as u32).into(),
                 ],
                 false,
             );
