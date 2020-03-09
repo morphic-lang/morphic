@@ -413,8 +413,11 @@ impl<'a> Scope<'a> {
         ty: BasicTypeEnum<'a>,
         libc: &LibC<'a>,
     ) -> BasicValueEnum<'a> {
-        let size = self.mul(num, self.size(ty));
-        self.call(libc.malloc, &[size])
+        let ptr = self.call(libc.malloc, &[self.mul(num, self.size(ty))]);
+        self.if_(self.is_null(ptr), |s| {
+            s.panic("malloc failed", &[], libc);
+        });
+        return ptr;
     }
 
     pub fn calloc(
@@ -423,7 +426,15 @@ impl<'a> Scope<'a> {
         ty: BasicTypeEnum<'a>,
         libc: &LibC<'a>,
     ) -> BasicValueEnum<'a> {
-        self.call(libc.calloc, &[num.into_int(self).into(), self.size(ty)])
+        let ptr = self.call(libc.calloc, &[num.into_int(self).into(), self.size(ty)]);
+        self.if_(self.is_null(ptr), |s| {
+            s.panic("calloc failed", &[], libc);
+        });
+        return ptr;
+    }
+
+    pub fn free(&self, ptr: BasicValueEnum<'a>, libc: &LibC<'a>) {
+        self.call_void(libc.free, &[self.ptr_cast(self.i8_t(), ptr)]);
     }
 
     pub fn is_null(&self, ptr: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
@@ -490,6 +501,12 @@ impl<'a> Scope<'a> {
     pub fn mul(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_mul(arg1.into_int(self), arg2.into_int(self), "mul")
+            .into()
+    }
+
+    pub fn udiv(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        self.builder
+            .build_int_unsigned_div(arg1.into_int(self), arg2.into_int(self), "udiv")
             .into()
     }
 
