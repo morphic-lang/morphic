@@ -434,7 +434,8 @@ impl<'a> PersistentArrayBuiltin<'a> {
         // define 'len'
         {
             let s = scope(self.len, context);
-            todo!();
+            let array = s.arg(0);
+            s.ret(s.field(array, F_ARR_LEN));
         }
 
         // define 'push'
@@ -452,43 +453,162 @@ impl<'a> PersistentArrayBuiltin<'a> {
         // define 'replace'
         {
             let s = scope(self.replace, context);
-            todo!();
+            let hole = s.arg(0);
+            let item = s.arg(1);
+
+            let idx = s.field(hole, F_HOLE_IDX);
+            let array = s.field(hole, F_HOLE_ARRAY);
+            s.ret(s.call(self.set, &[array, idx, item]));
         }
 
         // define 'retain_array'
         {
             let s = scope(self.retain_array, context);
-            todo!();
+            let array = s.arg(0);
+
+            s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), 0)), |s| {
+                s.call_void(self.retain_tail, &[s.field(array, F_ARR_TAIL)]);
+            });
+
+            s.if_(s.ugt(s.field(array, F_ARR_LEN), items_per_leaf), |s| {
+                s.call_void(
+                    self.retain_node,
+                    &[s.field(array, F_ARR_BODY), s.field(array, F_ARR_HEIGHT)],
+                );
+            });
+
+            s.ret_void();
         }
 
         // define 'release_array'
         {
             let s = scope(self.release_array, context);
-            todo!();
+            let array = s.arg(0);
+
+            s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), 0)), |s| {
+                s.call_void(
+                    self.release_tail,
+                    &[
+                        s.field(array, F_ARR_TAIL),
+                        s.call(self.tail_len, &[s.field(array, F_ARR_LEN)]),
+                    ],
+                );
+            });
+
+            s.if_(s.ugt(s.field(array, F_ARR_LEN), items_per_leaf), |s| {
+                s.call_void(
+                    self.release_node,
+                    &[s.field(array, F_ARR_BODY), s.field(array, F_ARR_HEIGHT)],
+                );
+            });
+
+            s.ret_void();
         }
 
         // define 'retain_hole'
         {
             let s = scope(self.retain_hole, context);
-            todo!();
+            let hole = s.arg(0);
+
+            let array = s.field(hole, F_HOLE_ARRAY);
+            s.call_void(self.retain_array, &[array]);
+            s.ret_void();
         }
 
         // define 'release_hole'
         {
             let s = scope(self.release_hole, context);
-            todo!();
+            let hole = s.arg(0);
+
+            let array = s.field(hole, F_HOLE_ARRAY);
+            s.call_void(self.release_array, &[array]);
+            s.ret_void();
         }
 
         // define 'set_next_path'
         {
             let s = scope(self.set_next_path, context);
-            todo!();
+            let node_height = s.arg(0);
+            let node_number = s.arg(1);
+
+            let num_shift_bits = s.mul(s.sub(node_height, 1), LOG2_BRANCHING_FACTOR as u64);
+
+            let child_index = s.srl(node_number, num_shift_bits);
+
+            let child_node_number = s.sub(node_number, s.sll(child_index, num_shift_bits));
+
+            let child_node_height = s.sub(node_height, 1);
+
+            s.ret(s.make_tup(&[child_node_height, child_node_number, child_index]));
         }
 
         // define 'get'
         {
             let s = scope(self.get, context);
-            todo!();
+            let array = s.arg(0);
+            let index = s.arg(1);
+
+            s.if_(s.uge(index, s.field(array, F_ARR_LEN)), |s| {
+                s.panic(
+                    "index out of bounds: attempt to access item %lld of array with length %llu",
+                    &[index, s.field(array, F_ARR_LEN)],
+                    &libc,
+                );
+            });
+
+            s.if_(s.eq(s.field(array, F_ARR_HEIGHT), -1i64), |s| {
+                s.ret(s.arr_get(s.gep(s.field(array, F_ARR_TAIL), F_LEAF_ITEMS), index));
+            });
+
+            let target_node_number = s.udiv(index, items_per_leaf);
+
+            let tail_node_number = s.udiv(s.sub(s.field(array, F_ARR_LEN), 1), items_per_leaf);
+
+            let index_in_leaf = s.urem(index, items_per_leaf);
+
+            s.if_(s.eq(target_node_number, tail_node_number), |s| {
+                s.ret(s.arr_get(
+                    s.gep(s.field(array, F_ARR_TAIL), F_LEAF_ITEMS),
+                    index_in_leaf,
+                ));
+            });
+
+            let curr_node = s.alloca(context.i8_type().ptr_type(AddressSpace::Generic).into());
+            s.ptr_set(curr_node, s.ptr_cast(s.i8_t(), s.field(array, F_ARR_BODY)));
+
+            let curr_node_height = s.alloca(s.i64_t());
+            s.ptr_set(curr_node_height, s.field(array, F_ARR_HEIGHT));
+
+            let curr_node_number = s.alloca(s.i64_t());
+            s.ptr_set(curr_node_number, target_node_number);
+
+            s.while_(
+                |s| s.not(s.eq(s.ptr_get(curr_node_height), 0)),
+                |s| {
+                    let child_info = s.call(
+                        self.set_next_path,
+                        &[s.ptr_get(curr_node_height), s.ptr_get(curr_node_number)],
+                    );
+
+                    s.ptr_set(curr_node_height, s.field(child_info, F_CHILD_HEIGHT));
+                    s.ptr_set(curr_node_number, s.field(child_info, F_CHILD_NODE_NUMBER));
+
+                    s.ptr_set(
+                        curr_node,
+                        s.arr_get(
+                            s.gep(
+                                s.ptr_cast(self.branch_type.into(), s.ptr_get(curr_node)),
+                                F_BRANCH_CHILDREN,
+                            ),
+                            s.field(child_info, F_CHILD_INDEX),
+                        ),
+                    );
+                },
+            );
+
+            let target_leaf = s.ptr_cast(self.leaf_type.into(), s.ptr_get(curr_node));
+
+            s.ret(s.arr_get(s.gep(target_leaf, F_LEAF_ITEMS), index_in_leaf));
         }
 
         // define 'retain_node'
@@ -530,7 +650,50 @@ impl<'a> PersistentArrayBuiltin<'a> {
         // define 'obtain_unique_branch'
         {
             let s = scope(self.obtain_unique_branch, context);
-            todo!();
+            let branch = s.arg(0);
+            let height = s.arg(1);
+
+            s.if_(s.eq(s.arrow(branch, F_BRANCH_REFCOUNT), 1), |s| {
+                s.ret(branch);
+            });
+
+            let result = s.calloc(1, self.branch_type.into(), &libc);
+            s.arrow_set(result, F_BRANCH_REFCOUNT, s.i64(1));
+            s.arrow_set(
+                result,
+                F_BRANCH_CHILDREN,
+                s.arrow(branch, F_BRANCH_CHILDREN),
+            );
+
+            let i = s.alloca(s.i64_t());
+            s.ptr_set(i, s.i64(0));
+            s.while_(
+                |s| {
+                    s.and(
+                        s.ult(s.ptr_get(i), BRANCHING_FACTOR as u64),
+                        s.not(
+                            s.is_null(s.arr_get(s.field(branch, F_BRANCH_CHILDREN), s.ptr_get(i))),
+                        ),
+                    )
+                },
+                |s| {
+                    s.call_void(
+                        self.retain_node,
+                        &[
+                            s.arr_get(s.field(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
+                            s.sub(height, 1),
+                        ],
+                    );
+                },
+            );
+
+            s.arrow_set(
+                branch,
+                F_BRANCH_REFCOUNT,
+                s.sub(s.arrow(branch, F_BRANCH_REFCOUNT), 1),
+            );
+
+            s.ret(result);
         }
 
         // define 'obtain_unique_tail'
