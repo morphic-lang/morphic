@@ -101,7 +101,7 @@ impl<'a> Scope<'a> {
             .expect("Cannot use 'call_void' to call a function with a return value");
     }
 
-    pub fn arrow(&self, struct_ptr: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
+    pub fn gep(&self, struct_ptr: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
         let struct_type = struct_ptr
             .get_type()
             .into_pointer_type()
@@ -115,13 +115,16 @@ impl<'a> Scope<'a> {
             idx
         );
 
-        self.builder.build_load(
-            unsafe {
-                self.builder
-                    .build_struct_gep(struct_ptr.into_pointer_value(), idx, "gep")
-            },
-            "arrow",
-        )
+        unsafe {
+            self.builder
+                .build_struct_gep(struct_ptr.into_pointer_value(), idx, "gep")
+                .into()
+        }
+    }
+
+    pub fn arrow(&self, struct_ptr: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
+        self.builder
+            .build_load(self.gep(struct_ptr, idx).into_pointer_value(), "arrow")
     }
 
     pub fn field(&self, struct_val: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
