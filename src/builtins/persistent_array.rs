@@ -368,6 +368,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
         }
     }
 
+    #[allow(unreachable_code)]
     fn define(
         &self,
         context: &'a Context,
@@ -406,7 +407,166 @@ impl<'a> PersistentArrayBuiltin<'a> {
             );
         }
 
-        // TODO: Define functions
-        todo!();
+        // define 'new'
+        {
+            let s = scope(self.new, context);
+            todo!();
+        }
+
+        // define 'item'
+        {
+            let s = scope(self.item, context);
+            todo!();
+        }
+
+        // define 'len'
+        {
+            let s = scope(self.len, context);
+            todo!();
+        }
+
+        // define 'push'
+        {
+            let s = scope(self.push, context);
+            todo!();
+        }
+
+        // define 'pop'
+        {
+            let s = scope(self.pop, context);
+            todo!();
+        }
+
+        // define 'replace'
+        {
+            let s = scope(self.replace, context);
+            todo!();
+        }
+
+        // define 'retain_array'
+        {
+            let s = scope(self.retain_array, context);
+            todo!();
+        }
+
+        // define 'release_array'
+        {
+            let s = scope(self.release_array, context);
+            todo!();
+        }
+
+        // define 'retain_hole'
+        {
+            let s = scope(self.retain_hole, context);
+            todo!();
+        }
+
+        // define 'release_hole'
+        {
+            let s = scope(self.release_hole, context);
+            todo!();
+        }
+
+        // define 'set_next_path'
+        {
+            let s = scope(self.set_next_path, context);
+            todo!();
+        }
+
+        // define 'get'
+        {
+            let s = scope(self.get, context);
+            todo!();
+        }
+
+        // define 'retain_node'
+        {
+            let s = scope(self.retain_node, context);
+            todo!();
+        }
+
+        // define 'release_node'
+        {
+            let s = scope(self.release_node, context);
+            todo!();
+        }
+
+        // define 'retain_tail'
+        {
+            let s = scope(self.retain_tail, context);
+            todo!();
+        }
+
+        // define 'release_tail'
+        {
+            let s = scope(self.release_tail, context);
+            todo!();
+        }
+
+        // define 'tail_len'
+        {
+            let s = scope(self.tail_len, context);
+            todo!();
+        }
+
+        // define 'obtain_unique_leaf'
+        {
+            let s = scope(self.obtain_unique_leaf, context);
+            todo!();
+        }
+
+        // define 'obtain_unique_branch'
+        {
+            let s = scope(self.obtain_unique_branch, context);
+            todo!();
+        }
+
+        // define 'obtain_unique_tail'
+        {
+            let s = scope(self.obtain_unique_tail, context);
+            todo!();
+        }
+
+        // define 'set_tail'
+        {
+            let s = scope(self.set_tail, context);
+            todo!();
+        }
+
+        // define 'set_node'
+        {
+            let s = scope(self.set_node, context);
+            todo!();
+        }
+
+        // define 'set'
+        {
+            let s = scope(self.set, context);
+            todo!();
+        }
+
+        // define 'push_tail'
+        {
+            let s = scope(self.push_tail, context);
+            todo!();
+        }
+
+        // define 'put_tail'
+        {
+            let s = scope(self.put_tail, context);
+            todo!();
+        }
+
+        // define 'pop_tail'
+        {
+            let s = scope(self.pop_tail, context);
+            todo!();
+        }
+
+        // define 'pop_node'
+        {
+            let s = scope(self.pop_node, context);
+            todo!();
+        }
     }
 }
