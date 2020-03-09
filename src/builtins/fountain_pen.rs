@@ -495,6 +495,17 @@ impl<'a> Scope<'a> {
             .into()
     }
 
+    pub fn ne(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        self.builder
+            .build_int_compare(
+                IntPredicate::NE,
+                arg1.into_int(self),
+                arg2.into_int(self),
+                "neq",
+            )
+            .into()
+    }
+
     pub fn mul(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_mul(arg1.into_int(self), arg2.into_int(self), "mul")
