@@ -431,8 +431,7 @@ impl<'a> Scope<'a> {
     }
 
     pub fn free(&self, ptr: BasicValueEnum<'a>, libc: &LibC<'a>) {
-        let i8_ptr_type = self.context.i32_type().ptr_type(AddressSpace::Generic);
-        self.call_void(libc.free, &[self.ptr_cast(i8_ptr_type.into(), ptr)]);
+        self.call_void(libc.free, &[self.ptr_cast(self.i8_t(), ptr)]);
     }
 
     pub fn is_null(&self, ptr: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
