@@ -11,6 +11,7 @@ use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
+    TargetTriple,
 };
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
@@ -1086,7 +1087,11 @@ fn gen_expr<'a, 'b>(
     }
 }
 
-fn get_target_machine(target: &str, target_cpu: &str, target_features: &str) -> TargetMachine {
+fn get_target_machine(
+    target: &TargetTriple,
+    target_cpu: &str,
+    target_features: &str,
+) -> TargetMachine {
     Target::initialize_all(&InitializationConfig::default());
     let llvm_target = Target::from_triple(target).unwrap();
 
@@ -1110,9 +1115,7 @@ fn gen_program<'a>(
     context: &'a Context,
 ) -> Module<'a> {
     let module = context.create_module("module");
-    // TOOD: Inkwell does not handle this correctly. I submitted a bug report
-    // about it https://github.com/TheDan64/inkwell/issues/149.
-    // module.set_target(&target);
+    module.set_triple(&target_machine.get_triple());
 
     let libc = LibC::declare(&context, &module);
 
@@ -1200,14 +1203,14 @@ fn gen_program<'a>(
     return module;
 }
 
-fn run_cc(target_triple: &str, obj_path: &Path, exe_path: &Path) {
+fn run_cc(target_triple: &TargetTriple, obj_path: &Path, exe_path: &Path) {
     let compiler = cc::Build::new()
         .cargo_metadata(false)
         .warnings(false)
         .debug(false)
         .opt_level(3)
         .pic(true)
-        .target(target_triple)
+        .target(target_triple.as_str().to_str().unwrap())
         .host(&TargetMachine::get_default_triple().to_string())
         .get_compiler();
     let mut command = compiler.to_command();
