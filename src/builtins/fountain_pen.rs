@@ -521,6 +521,12 @@ impl<'a> Scope<'a> {
             .into()
     }
 
+    pub fn urem(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        self.builder
+            .build_int_unsigned_rem(arg1.into_int(self), arg2.into_int(self), "urem")
+            .into()
+    }
+
     pub fn add(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_add(arg1.into_int(self), arg2.into_int(self), "add")
