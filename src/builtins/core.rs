@@ -22,6 +22,7 @@ pub struct LibC<'a> {
     pub fwrite: FunctionValue<'a>,
     pub getchar: FunctionValue<'a>,
     pub malloc: FunctionValue<'a>,
+    pub memcpy: FunctionValue<'a>,
     pub printf: FunctionValue<'a>,
     pub realloc: FunctionValue<'a>,
 }
@@ -113,6 +114,15 @@ impl<'a> LibC<'a> {
             Some(Linkage::External),
         );
 
+        let memcpy = module.add_function(
+            "memcpy",
+            i8_ptr_type.fn_type(
+                &[i8_ptr_type.into(), i8_ptr_type.into(), i64_type.into()],
+                false,
+            ),
+            Some(Linkage::External),
+        );
+
         let printf = module.add_function(
             "printf",
             i32_type.fn_type(&[i8_ptr_type.into()], true),
@@ -140,6 +150,7 @@ impl<'a> LibC<'a> {
             fwrite,
             getchar,
             malloc,
+            memcpy,
             printf,
             realloc,
         }
