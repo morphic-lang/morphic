@@ -18,7 +18,7 @@ itertools = "0.8.0"
 lazy_static = "1.3.0"
 stacker = "0.1.5"
 better-panic = "0.2.0"
-clap = "2.33.0"
+clap = { version = "2.33.0", features = ["color"] }
 cc = "1.0.50"
 tempfile = "3.1.0"
 crossbeam-channel = "0.4.2"
