@@ -1125,8 +1125,8 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.call(
                 libc.memcpy,
                 &[
-                    s.ptr_cast(self.item_type, s.gep(result, F_LEAF_ITEMS)),
-                    s.ptr_cast(self.item_type, s.gep(tail, F_LEAF_ITEMS)),
+                    s.ptr_cast(s.i8_t(), s.gep(result, F_LEAF_ITEMS)),
+                    s.ptr_cast(s.i8_t(), s.gep(tail, F_LEAF_ITEMS)),
                     s.mul(s.size(self.item_type), tail_len),
                 ],
             );
@@ -1496,7 +1496,9 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
 
             s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
 
-            let array = s.call(self.byte_array_type.new, &[]);
+            let array = s.alloca(self.byte_array_type.array_type.into());
+
+            s.ptr_set(array, s.call(self.byte_array_type.new, &[]));
 
             let getchar_result = s.alloca(s.i32_t());
             s.while_(
@@ -1510,11 +1512,13 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
                 },
                 |s| {
                     let input_bytes = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
-                    s.call(self.byte_array_type.push, &[array, input_bytes]);
+                    let new_arr =
+                        s.call(self.byte_array_type.push, &[s.ptr_get(array), input_bytes]);
+                    s.ptr_set(array, new_arr);
                 },
             );
 
-            s.ret(array);
+            s.ret(s.ptr_get(array));
         }
 
         // define 'output'
@@ -1548,10 +1552,16 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
 
             let stdout_value = s.ptr_get(libc.stdout);
 
+            let items = s.gep(tail, F_LEAF_ITEMS);
             // TODO: check bytes_written for errors
             let _bytes_written = s.call(
                 libc.fwrite,
-                &[s.ptr_cast(s.i8_t(), tail), s.i64(1), tail_len, stdout_value],
+                &[
+                    s.ptr_cast(s.i8_t(), items),
+                    s.i64(1),
+                    tail_len,
+                    stdout_value,
+                ],
             );
 
             s.ret_void();
