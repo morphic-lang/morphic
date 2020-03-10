@@ -178,10 +178,11 @@ fn run(config: cli::Config) -> Result<Option<pseudoprocess::Child>, Error> {
     }
 
     let child = match config {
-        cli::Config::RunConfig(run_config) => Some(llvm_gen::run(lowered, &run_config)),
-        cli::Config::InterpretConfig(interp_config) => {
-            Some(interpreter::interpret(lowered, &interp_config))
-        }
+        cli::Config::RunConfig(cli::RunConfig { mode, stdio, .. }) => match mode {
+            cli::RunMode::Compile => Some(llvm_gen::run(stdio, lowered)),
+            cli::RunMode::Interpret => Some(interpreter::interpret(stdio, lowered)),
+        },
+
         cli::Config::BuildConfig(build_config) => {
             llvm_gen::build(lowered, &build_config);
             None

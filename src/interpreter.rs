@@ -1,4 +1,3 @@
-use crate::cli::InterpretConfig;
 use crate::data::first_order_ast::BinOp;
 use crate::data::first_order_ast::Comparison;
 use crate::data::first_order_ast::NumType;
@@ -12,7 +11,7 @@ use crate::data::low_ast::Program;
 use crate::data::low_ast::Type;
 use crate::data::low_ast::VariantId;
 use crate::data::repr_constrained_ast::RepChoice;
-use crate::pseudoprocess::{spawn_thread, Child, ExitStatus};
+use crate::pseudoprocess::{spawn_thread, Child, ExitStatus, Stdio};
 use im_rc::Vector;
 use stacker;
 use std::convert::TryFrom;
@@ -1419,8 +1418,8 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
     })
 }
 
-pub fn interpret(program: Program, config: &InterpretConfig) -> Child {
-    spawn_thread(config.stdio, move |stdin, stdout| {
+pub fn interpret(stdio: Stdio, program: Program) -> Child {
+    spawn_thread(stdio, move |stdin, stdout| {
         let mut heap = Heap::new(&program);
         let final_heap_id = interpret_expr(
             program.funcs[program.main].body.clone(),

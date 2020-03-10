@@ -11,12 +11,16 @@ pub struct ArtifactDir {
     pub filename_prefix: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
+pub enum RunMode {
+    Compile,
+    Interpret,
+}
+
+#[derive(Clone, Debug)]
 pub struct RunConfig {
     pub src_path: PathBuf,
-    pub target: TargetTriple,
-    pub target_cpu: String,
-    pub target_features: String,
+    pub mode: RunMode,
 
     // This controls the stdio capture behavior of the *user* program.  Logging and error messages
     // from the compiler itself are unaffected.
@@ -27,19 +31,16 @@ pub struct RunConfig {
 }
 
 #[derive(Debug)]
-pub struct InterpretConfig {
-    pub src_path: PathBuf,
-
-    // Same as 'RunConfig'
-    pub stdio: Stdio,
+pub struct TargetConfig {
+    pub target: TargetTriple,
+    pub target_cpu: String,
+    pub target_features: String,
 }
 
 #[derive(Debug)]
 pub struct BuildConfig {
     pub src_path: PathBuf,
-    pub target: TargetTriple,
-    pub target_cpu: String,
-    pub target_features: String,
+    pub target: TargetConfig,
 
     pub output_path: PathBuf,
     pub artifact_dir: Option<ArtifactDir>,
@@ -48,8 +49,15 @@ pub struct BuildConfig {
 #[derive(Debug)]
 pub enum Config {
     RunConfig(RunConfig),
-    InterpretConfig(InterpretConfig),
     BuildConfig(BuildConfig),
+}
+
+pub fn default_target_config() -> TargetConfig {
+    TargetConfig {
+        target: TargetMachine::get_default_triple(),
+        target_cpu: TargetMachine::get_host_cpu_name().to_string(),
+        target_features: TargetMachine::get_host_cpu_features().to_string(),
+    }
 }
 
 impl Config {
@@ -66,17 +74,11 @@ impl Config {
                             .help("Specify the source file for compilation.")
                             .required(true)
                             .index(1),
-                    ),
-            )
-            .subcommand(
-                SubCommand::with_name("interpret")
-                    .about("Interprets a program from source")
-                    .arg(
-                        Arg::with_name("src-path")
-                            .help("Specify the source file for interpretation.")
-                            .required(true)
-                            .index(1),
-                    ),
+                    )
+                    .arg(Arg::with_name("interpret").long("interpret").help(
+                        "Run the program under the reference interpreter instead of generating
+                         LLVM",
+                    )),
             )
             .subcommand(
                 SubCommand::with_name("build")
@@ -91,10 +93,10 @@ impl Config {
                         Arg::with_name("emit-artifacts")
                             .long("emit-artifacts")
                             .help(
-                                "Emit compilation artifacts including the generated LLVM IR and \
-                                 object file. Artifacts will be placed in a directory whose name is \
-                                 derived from the generated executable's name.",
-                            ),
+                            "Emit compilation artifacts including the generated LLVM IR and \
+                             object file. Artifacts will be placed in a directory whose name is \
+                             derived from the generated executable's name.",
+                        ),
                     )
                     .arg(
                         Arg::with_name("target")
@@ -140,22 +142,18 @@ impl Config {
         if let Some(matches) = matches.subcommand_matches("run") {
             let src_path = matches.value_of_os("src-path").unwrap().to_owned().into();
 
+            let mode = if matches.is_present("interpret") {
+                RunMode::Interpret
+            } else {
+                RunMode::Compile
+            };
+
             let run_config = RunConfig {
                 src_path,
-                target: TargetMachine::get_default_triple(),
-                target_cpu: TargetMachine::get_host_cpu_name().to_string(),
-                target_features: TargetMachine::get_host_cpu_features().to_string(),
+                mode,
                 stdio: Stdio::Inherit,
             };
             return Self::RunConfig(run_config);
-        }
-
-        if let Some(matches) = matches.subcommand_matches("interpret") {
-            let src_path = matches.value_of_os("src-path").unwrap().to_owned().into();
-            return Self::InterpretConfig(InterpretConfig {
-                src_path,
-                stdio: Stdio::Inherit,
-            });
         }
 
         if let Some(matches) = matches.subcommand_matches("build") {
@@ -170,19 +168,21 @@ impl Config {
             let specified_target_features =
                 matches.value_of("target-features").map(|s| s.to_owned());
 
-            let (target, target_cpu, target_features) = if let Some(target) = specified_target {
-                (
+            let target = if let Some(target) = specified_target {
+                TargetConfig {
                     target,
-                    specified_target_cpu.unwrap_or("".to_owned()),
-                    specified_target_features.unwrap_or("".to_owned()),
-                )
+                    target_cpu: specified_target_cpu.unwrap_or("".to_owned()),
+                    target_features: specified_target_features.unwrap_or("".to_owned()),
+                }
             } else {
-                (
-                    TargetMachine::get_default_triple(),
-                    specified_target_cpu.unwrap_or(TargetMachine::get_host_cpu_name().to_string()),
-                    specified_target_features
-                        .unwrap_or(TargetMachine::get_host_cpu_features().to_string()),
-                )
+                let mut target = default_target_config();
+                if let Some(cpu) = specified_target_cpu {
+                    target.target_cpu = cpu;
+                }
+                if let Some(features) = specified_target_features {
+                    target.target_features = features;
+                }
+                target
             };
 
             let output_path = specified_output_path.unwrap_or(
@@ -207,8 +207,6 @@ impl Config {
             let build_config = BuildConfig {
                 src_path,
                 target,
-                target_cpu,
-                target_features,
                 output_path: output_path.into(),
                 artifact_dir,
             };
@@ -223,7 +221,6 @@ impl Config {
     pub fn src_path(&self) -> &Path {
         match self {
             Self::RunConfig(config) => &config.src_path,
-            Self::InterpretConfig(config) => &config.src_path,
             Self::BuildConfig(config) => &config.src_path,
         }
     }
@@ -231,7 +228,6 @@ impl Config {
     pub fn artifact_dir(&self) -> Option<&ArtifactDir> {
         match self {
             Self::RunConfig(_) => None,
-            Self::InterpretConfig(_) => None,
             Self::BuildConfig(build_config) => build_config.artifact_dir.as_ref(),
         }
     }

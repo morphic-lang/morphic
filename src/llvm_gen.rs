@@ -6,7 +6,7 @@ use crate::cli;
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::repr_constrained_ast as constrain;
-use crate::pseudoprocess::{spawn_process, Child};
+use crate::pseudoprocess::{spawn_process, Child, Stdio};
 use crate::util::id_vec::IdVec;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -1293,20 +1293,16 @@ fn gen_expr<'a, 'b>(
     }
 }
 
-fn get_target_machine(
-    target: &TargetTriple,
-    target_cpu: &str,
-    target_features: &str,
-) -> TargetMachine {
+fn get_target_machine(target: &cli::TargetConfig) -> TargetMachine {
     Target::initialize_all(&InitializationConfig::default());
-    let llvm_target = Target::from_triple(target).unwrap();
+    let llvm_target = Target::from_triple(&target.target).unwrap();
 
     // RelocMode and CodeModel can affect the options we need to pass cc::Build in get_cc
     llvm_target
         .create_target_machine(
-            target,
-            target_cpu,
-            target_features,
+            &target.target,
+            &target.target_cpu,
+            &target.target_features,
             OptimizationLevel::None,
             RelocMode::PIC,
             // https://stackoverflow.com/questions/40493448/what-does-the-codemodel-in-clang-llvm-refer-to
@@ -1454,9 +1450,10 @@ fn verify_llvm(module: &Module) {
     }
 }
 
-pub fn run(program: low::Program, config: &cli::RunConfig) -> Child {
-    let target_machine =
-        get_target_machine(&config.target, &config.target_cpu, &config.target_features);
+pub fn run(stdio: Stdio, program: low::Program) -> Child {
+    let target = cli::default_target_config();
+
+    let target_machine = get_target_machine(&target);
 
     let context = Context::create();
     let module = gen_program(program, &target_machine, &context);
@@ -1476,15 +1473,14 @@ pub fn run(program: low::Program, config: &cli::RunConfig) -> Child {
         .tempfile_in("")
         .unwrap()
         .into_temp_path();
-    run_cc(&config.target, obj_file.path(), &output_path);
+    run_cc(&target.target, obj_file.path(), &output_path);
     std::mem::drop(obj_file);
 
-    spawn_process(config.stdio, output_path).unwrap()
+    spawn_process(stdio, output_path).unwrap()
 }
 
 pub fn build(program: low::Program, config: &cli::BuildConfig) {
-    let target_machine =
-        get_target_machine(&config.target, &config.target_cpu, &config.target_features);
+    let target_machine = get_target_machine(&config.target);
 
     let context = Context::create();
     let module = gen_program(program, &target_machine, &context);
@@ -1507,7 +1503,7 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) {
             .write_to_file(&module, FileType::Object, &obj_path)
             .unwrap();
 
-        run_cc(&config.target, &obj_path, &config.output_path);
+        run_cc(&config.target.target, &obj_path, &config.output_path);
     } else {
         verify_llvm(&module);
 
@@ -1519,6 +1515,6 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) {
             .write_to_file(&module, FileType::Object, obj_file.path())
             .unwrap();
 
-        run_cc(&config.target, obj_file.path(), &config.output_path)
+        run_cc(&config.target.target, obj_file.path(), &config.output_path)
     }
 }
