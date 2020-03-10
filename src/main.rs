@@ -65,6 +65,8 @@ mod llvm_gen;
 
 mod cli;
 
+mod pseudoprocess;
+
 #[cfg(test)]
 mod test;
 
@@ -98,20 +100,23 @@ enum Error {
         _0
     )]
     WriteIrFailed(#[cause] io::Error),
+
+    #[fail(display = "Execute of compiled program failed: {}", _0)]
+    RunChildFailed(#[cause] io::Error),
 }
 
 fn main() -> Result<(), Error> {
     better_panic::install();
 
     let config = cli::Config::from_args();
-    run(&mut io::stdin().lock(), &mut io::stdout().lock(), config)
+    let result = run(config)?;
+    if let Some(spawned_child) = result {
+        spawned_child.wait().map_err(Error::RunChildFailed)?;
+    }
+    Ok(())
 }
 
-fn run<R: io::BufRead, W: io::Write>(
-    stdin: &mut R,
-    stdout: &mut W,
-    config: cli::Config,
-) -> Result<(), Error> {
+fn run(config: cli::Config) -> Result<Option<pseudoprocess::Child>, Error> {
     let resolved = resolve::resolve_program(config.src_path()).map_err(Error::ResolveFailed)?;
 
     // Check obvious errors and infer types
@@ -172,11 +177,16 @@ fn run<R: io::BufRead, W: io::Write>(
         pretty_print_low::write_program(&mut out_file, &lowered).map_err(Error::WriteIrFailed)?;
     }
 
-    match config {
-        cli::Config::RunConfig(run_config) => llvm_gen::run(lowered, &run_config),
-        cli::Config::InterpretConfig(_) => interpreter::interpret(stdin, stdout, &lowered),
-        cli::Config::BuildConfig(build_config) => llvm_gen::build(lowered, &build_config),
-    }
+    let child = match config {
+        cli::Config::RunConfig(run_config) => Some(llvm_gen::run(lowered, &run_config)),
+        cli::Config::InterpretConfig(interp_config) => {
+            Some(interpreter::interpret(lowered, &interp_config))
+        }
+        cli::Config::BuildConfig(build_config) => {
+            llvm_gen::build(lowered, &build_config);
+            None
+        }
+    };
 
-    Ok(())
+    Ok(child)
 }

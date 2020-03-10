@@ -2,6 +2,7 @@ module Core = file "lib/core/core.txt"
   expose {
     module Func expose { iterate, const, id },
     module String,
+    module Io expose { writeln },
   }
 
 incr(x: Int) : Int =
@@ -11,7 +12,7 @@ proc main(): () =
   let incr5 = iterate(incr, 5) in
   let five = const(incr5(0))([1, 2, 3]) in
   let five2 = const(incr5(0))(id) in
-  do output("The following should both be 5:") then
-  do output(String.int_to_string(five)) then
-  do output(String.int_to_string(five2)) then
+  do writeln("The following should both be 5:") then
+  do writeln(String.int_to_string(five)) then
+  do writeln(String.int_to_string(five2)) then
   ()

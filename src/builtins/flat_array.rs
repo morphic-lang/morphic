@@ -449,8 +449,6 @@ mod test {
 
     #[test]
     fn well_formed() {
-        better_panic::install();
-
         let context = Context::create();
         let module = context.create_module("test");
         let inner_type = context.i32_type();
@@ -488,8 +486,6 @@ mod test {
 
     #[test]
     fn well_formed_io() {
-        better_panic::install();
-
         let context = Context::create();
         let module = context.create_module("test");
         let inner_type = context.i8_type();

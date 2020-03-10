@@ -21,6 +21,7 @@ better-panic = "0.2.0"
 clap = "2.33.0"
 cc = "1.0.50"
 tempfile = "3.1.0"
+crossbeam-channel = "0.4.2"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm8-0"] }
 
 # RNG used for procedurally (but deterministically) generating test inputs

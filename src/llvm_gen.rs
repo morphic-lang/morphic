@@ -6,6 +6,7 @@ use crate::cli;
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::repr_constrained_ast as constrain;
+use crate::pseudoprocess::{spawn_process, Child};
 use crate::util::id_vec::IdVec;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -24,7 +25,6 @@ use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::Command;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
 // we use a zero sized array to enforce proper alignment on `bytes`
@@ -1454,7 +1454,7 @@ fn verify_llvm(module: &Module) {
     }
 }
 
-pub fn run(program: low::Program, config: &cli::RunConfig) {
+pub fn run(program: low::Program, config: &cli::RunConfig) -> Child {
     let target_machine =
         get_target_machine(&config.target, &config.target_cpu, &config.target_features);
 
@@ -1479,7 +1479,7 @@ pub fn run(program: low::Program, config: &cli::RunConfig) {
     run_cc(&config.target, obj_file.path(), &output_path);
     std::mem::drop(obj_file);
 
-    Command::new(&output_path).status().unwrap();
+    spawn_process(config.stdio, output_path).unwrap()
 }
 
 pub fn build(program: low::Program, config: &cli::BuildConfig) {

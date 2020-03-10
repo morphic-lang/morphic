@@ -1,3 +1,4 @@
+use crate::cli::InterpretConfig;
 use crate::data::first_order_ast::BinOp;
 use crate::data::first_order_ast::Comparison;
 use crate::data::first_order_ast::NumType;
@@ -11,11 +12,13 @@ use crate::data::low_ast::Program;
 use crate::data::low_ast::Type;
 use crate::data::low_ast::VariantId;
 use crate::data::repr_constrained_ast::RepChoice;
+use crate::pseudoprocess::{spawn_thread, Child, ExitStatus};
 use im_rc::Vector;
 use stacker;
 use std::convert::TryFrom;
 use std::io::BufRead;
 use std::io::Write;
+use std::num::Wrapping;
 use std::ops::Index;
 use std::ops::IndexMut;
 use std::rc::Rc;
@@ -24,8 +27,8 @@ type RefCount = usize;
 
 #[derive(Debug, Clone, Copy)]
 enum NumValue {
-    Byte(u8),
-    Int(i64),
+    Byte(Wrapping<u8>),
+    Int(Wrapping<i64>),
     Float(f64),
 }
 
@@ -188,8 +191,8 @@ impl Heap<'_> {
     fn value_to_str(&self, kind: HeapId) -> String {
         match &self[kind] {
             Value::Bool(val) => val.to_string(),
-            Value::Num(NumValue::Byte(val)) => (*val as char).to_string(),
-            Value::Num(NumValue::Int(val)) => val.to_string(),
+            Value::Num(NumValue::Byte(Wrapping(val))) => (*val as char).to_string(),
+            Value::Num(NumValue::Int(Wrapping(val))) => val.to_string(),
             Value::Num(NumValue::Float(val)) => val.to_string(),
             Value::Array(rep, status, rc, contents) => {
                 let rep_str = match rep {
@@ -543,7 +546,7 @@ fn unwrap_bool(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> bool {
     }
 }
 
-fn unwrap_byte(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> u8 {
+fn unwrap_byte(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<u8> {
     let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap byte".into()));
     if let Value::Num(NumValue::Byte(val)) = kind {
         *val
@@ -552,7 +555,7 @@ fn unwrap_byte(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> u8 {
     }
 }
 
-fn unwrap_int(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> i64 {
+fn unwrap_int(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<i64> {
     let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap int".into()));
     if let Value::Num(NumValue::Int(val)) = kind {
         *val
@@ -652,7 +655,7 @@ fn unwrap_custom(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (Custo
 const STACK_RED_ZONE_BYTES: usize = 128 * 1024;
 const STACK_GROW_BYTES: usize = 1024 * 1024;
 
-fn interpret_expr<R: BufRead, W: Write>(
+fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
     expr: Expr,
     stdin: &mut R,
     stdout: &mut W,
@@ -1188,8 +1191,13 @@ fn interpret_expr<R: BufRead, W: Write>(
                 ),
             )),
 
-            Expr::ArithOp(ArithOp::Negate(NumType::Byte, _local_id)) => {
-                stacktrace.panic("don't negate a byte u dummy".into());
+            // Don't negate a byte u dummy
+            Expr::ArithOp(ArithOp::Negate(NumType::Byte, local_id)) => {
+                heap.add(Value::Num(NumValue::Byte(-unwrap_byte(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                ))))
             }
 
             Expr::ArithOp(ArithOp::Negate(NumType::Int, local_id)) => {
@@ -1218,7 +1226,7 @@ fn interpret_expr<R: BufRead, W: Write>(
                 let array =
                     unwrap_array(heap, array_heap_id, rep, stacktrace.add_frame("len".into()));
 
-                heap.add(Value::Num(NumValue::Int(array.len() as i64)))
+                heap.add(Value::Num(NumValue::Int(Wrapping(array.len() as i64))))
             }
 
             Expr::ArrayOp(rep, _item_type, ArrayOp::Push(array_id, item_id)) => {
@@ -1290,12 +1298,12 @@ fn interpret_expr<R: BufRead, W: Write>(
                     rep,
                     ArrayStatus::Valid,
                     1,
-                    index,
+                    index.0,
                     array.clone(),
                 ));
 
                 // logic is duplicated in replace
-                let maybe_index = usize::try_from(index);
+                let maybe_index = usize::try_from(index.0);
                 let usize_index = match maybe_index {
                     Ok(actual_index) => actual_index,
                     Err(_) => {
@@ -1358,9 +1366,13 @@ fn interpret_expr<R: BufRead, W: Write>(
                     .read_line(&mut input)
                     .ok()
                     .expect("failed reading stdin");
+                if input.ends_with('\n') {
+                    input.pop();
+                }
+
                 let mut heap_ids = vec![];
                 for byte in input.into_bytes().into_iter() {
-                    heap_ids.push(heap.add(Value::Num(NumValue::Byte(byte))));
+                    heap_ids.push(heap.add(Value::Num(NumValue::Byte(Wrapping(byte)))));
                 }
 
                 heap.add(Value::Array(rep, ArrayStatus::Valid, 1, heap_ids))
@@ -1385,10 +1397,11 @@ fn interpret_expr<R: BufRead, W: Write>(
                     ));
                 }
 
-                writeln!(
+                write!(
                     stdout,
                     "{}",
-                    String::from_utf8(bytes).expect("UTF-8 output error")
+                    String::from_utf8(bytes.iter().map(|&Wrapping(byte)| byte).collect())
+                        .expect("UTF-8 output error")
                 )
                 .expect("write failed");
 
@@ -1397,31 +1410,34 @@ fn interpret_expr<R: BufRead, W: Write>(
 
             Expr::BoolLit(val) => heap.add(Value::Bool(val)),
 
-            Expr::ByteLit(val) => heap.add(Value::Num(NumValue::Byte(val))),
+            Expr::ByteLit(val) => heap.add(Value::Num(NumValue::Byte(Wrapping(val)))),
 
-            Expr::IntLit(val) => heap.add(Value::Num(NumValue::Int(val))),
+            Expr::IntLit(val) => heap.add(Value::Num(NumValue::Int(Wrapping(val)))),
 
             Expr::FloatLit(val) => heap.add(Value::Num(NumValue::Float(val))),
         }
     })
 }
 
-pub fn interpret<R: BufRead, W: Write>(stdin: &mut R, stdout: &mut W, program: &Program) {
-    let mut heap = Heap::new(program);
-    let final_heap_id = interpret_expr(
-        program.funcs[program.main].body.clone(),
-        stdin,
-        stdout,
-        program,
-        &Locals::new(HeapId(0)),
-        &mut heap,
-        StackTrace::new(),
-    );
-    typecheck(
-        &heap,
-        final_heap_id,
-        &Type::Tuple(vec![]),
-        StackTrace::new(),
-    );
-    heap.assert_everything_else_deallocated();
+pub fn interpret(program: Program, config: &InterpretConfig) -> Child {
+    spawn_thread(config.stdio, move |stdin, stdout| {
+        let mut heap = Heap::new(&program);
+        let final_heap_id = interpret_expr(
+            program.funcs[program.main].body.clone(),
+            stdin,
+            stdout,
+            &program,
+            &Locals::new(HeapId(0)),
+            &mut heap,
+            StackTrace::new(),
+        );
+        typecheck(
+            &heap,
+            final_heap_id,
+            &Type::Tuple(vec![]),
+            StackTrace::new(),
+        );
+        heap.assert_everything_else_deallocated();
+        Ok(ExitStatus::Success)
+    })
 }

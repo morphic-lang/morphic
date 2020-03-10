@@ -9,3 +9,5 @@ module String = file "string.txt" with { Array }
 module Func = file "func.txt"
 
 module Bool = file "bool.txt"
+
+module Io = file "io.txt"

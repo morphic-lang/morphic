@@ -3,6 +3,8 @@ use inkwell::targets::{TargetMachine, TargetTriple};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::pseudoprocess::Stdio;
+
 #[derive(Clone, Debug)]
 pub struct ArtifactDir {
     pub dir_path: PathBuf,
@@ -15,11 +17,21 @@ pub struct RunConfig {
     pub target: TargetTriple,
     pub target_cpu: String,
     pub target_features: String,
+
+    // This controls the stdio capture behavior of the *user* program.  Logging and error messages
+    // from the compiler itself are unaffected.
+    //
+    // When invoking the compiler from the command line this should always take the value 'Inherit'.
+    // The 'Piped' variant exists only for use within the internal testing framework.
+    pub stdio: Stdio,
 }
 
 #[derive(Debug)]
 pub struct InterpretConfig {
     pub src_path: PathBuf,
+
+    // Same as 'RunConfig'
+    pub stdio: Stdio,
 }
 
 #[derive(Debug)]
@@ -133,13 +145,17 @@ impl Config {
                 target: TargetMachine::get_default_triple(),
                 target_cpu: TargetMachine::get_host_cpu_name().to_string(),
                 target_features: TargetMachine::get_host_cpu_features().to_string(),
+                stdio: Stdio::Inherit,
             };
             return Self::RunConfig(run_config);
         }
 
         if let Some(matches) = matches.subcommand_matches("interpret") {
             let src_path = matches.value_of_os("src-path").unwrap().to_owned().into();
-            return Self::InterpretConfig(InterpretConfig { src_path });
+            return Self::InterpretConfig(InterpretConfig {
+                src_path,
+                stdio: Stdio::Inherit,
+            });
         }
 
         if let Some(matches) = matches.subcommand_matches("build") {
