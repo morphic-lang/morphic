@@ -211,11 +211,11 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         s.call_void(self.rc_builtin.retain, &[rc]);
         if let Some(actual_retain) = inner_retain {
-            s.call_void(actual_retain, &[s.arr_addr(data, idx)]);
+            s.call_void(actual_retain, &[s.buf_addr(data, idx)]);
         }
 
         s.ret(s.make_tup(&[
-            s.arr_get(data, idx),
+            s.buf_get(data, idx),
             s.make_struct(self.hole_array_type, &[(HOLE_F_IDX, idx), (HOLE_F_PTR, rc)]),
         ]));
     }
@@ -235,7 +235,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         s.call_void(self.ensure_cap, &[rc, new_len]);
         s.arrow_set(me, F_LEN, new_len);
-        s.arr_set(s.arrow(me, F_DATA), old_len, s.arg(1));
+        s.buf_set(s.arrow(me, F_DATA), old_len, s.arg(1));
 
         s.ret(rc);
     }
@@ -249,7 +249,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         let len = s.arrow(me, F_LEN);
         let new_len = s.sub(len, 1u64);
 
-        let item = s.arr_get(s.arrow(me, F_DATA), new_len);
+        let item = s.buf_get(s.arrow(me, F_DATA), new_len);
         s.ret(s.make_tup(&[rc, item]))
     }
 
@@ -263,10 +263,10 @@ impl<'a> FlatArrayBuiltin<'a> {
         let me = s.call(self.rc_builtin.get, &[rc]);
 
         if let Some(actual_drop) = inner_drop {
-            s.call_void(actual_drop, &[s.arr_addr(s.arrow(me, F_DATA), idx)]);
+            s.call_void(actual_drop, &[s.buf_addr(s.arrow(me, F_DATA), idx)]);
         }
 
-        s.arr_set(s.arrow(me, F_DATA), idx, item);
+        s.buf_set(s.arrow(me, F_DATA), idx, item);
 
         s.ret(rc);
     }
@@ -299,7 +299,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         if let Some(actual_drop) = inner_drop {
             s.for_(s.arrow(me, F_LEN), |s, i| {
-                s.call_void(actual_drop, &[s.arr_addr(data, i)]);
+                s.call_void(actual_drop, &[s.buf_addr(data, i)]);
             });
         }
 

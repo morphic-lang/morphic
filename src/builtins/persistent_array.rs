@@ -251,7 +251,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
         let obtain_unique_branch = fun(
             "obtain_unique_branch",
             branch_ptr_type.into(),
-            &[branch_ptr_type.into()],
+            &[branch_ptr_type.into(), i64_type.into()],
         );
 
         let obtain_unique_tail = fun(
@@ -263,7 +263,12 @@ impl<'a> PersistentArrayBuiltin<'a> {
         let set_tail = fun(
             "set_tail",
             leaf_ptr_type.into(),
-            &[leaf_ptr_type.into(), i64_type.into()],
+            &[
+                leaf_ptr_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                leaf_type.into(),
+            ],
         );
 
         let set_node = fun(
@@ -476,7 +481,8 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.if_(s.eq(len, 0), |s| {
                 let tail = s.calloc(1, self.leaf_type.into(), libc);
                 s.arrow_set(tail, F_LEAF_REFCOUNT, s.i64(1));
-                s.arr_set(s.arrow(tail, F_LEAF_ITEMS), 0, item);
+                s.add(s.arrow(tail, 0), 3);
+                s.arr_set(s.gep(tail, F_LEAF_ITEMS), 0, item);
 
                 s.ret(s.make_struct(
                     self.array_type,
@@ -512,7 +518,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 let new_tail = s.calloc(1, self.leaf_type.into(), libc);
 
                 s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
-                s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
+                s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), 0, item);
 
                 s.ret(s.make_struct(
                     self.array_type,
@@ -531,7 +537,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.if_(s.eq(next_missing_node_number, target_node_number), |s| {
                 let new_body = s.calloc(1, self.branch_type.into(), libc);
                 s.arrow_set(new_body, F_BRANCH_REFCOUNT, s.i64(1));
-                s.arr_set(s.arrow(new_body, F_BRANCH_CHILDREN), 0, new_body);
+                s.arr_set(s.gep(new_body, F_BRANCH_CHILDREN), 0, new_body);
 
                 let new_body = s.call(
                     self.put_tail,
@@ -545,7 +551,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
                 let new_tail = s.calloc(1, self.leaf_type.into(), libc);
                 s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
-                s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
+                s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), 0, item);
 
                 s.ret(s.make_struct(
                     self.array_type,
@@ -575,9 +581,9 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             let new_tail = s.calloc(1, self.leaf_type.into(), libc);
             s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
-            s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
+            s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), 0, item);
             s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
-            s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
+            s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), 0, item);
 
             s.ret(s.make_struct(
                 self.array_type,
@@ -599,7 +605,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.if_(s.eq(len, 0), |s| s.panic("pop: empty array", &[], libc));
 
             s.if_(s.eq(len, 1), |s| {
-                let item = s.arr_get(s.arrow(s.field(array, F_ARR_TAIL), F_LEAF_ITEMS), 0);
+                let item = s.arr_get(s.gep(s.field(array, F_ARR_TAIL), F_LEAF_ITEMS), 0);
 
                 s.free(s.field(array, F_ARR_TAIL), libc);
 
@@ -632,7 +638,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             );
 
             s.if_(s.eq(len, items_per_leaf + 1), |s| {
-                let item = s.arr_get(s.arrow(result_tail, F_LEAF_ITEMS), 0);
+                let item = s.arr_get(s.gep(result_tail, F_LEAF_ITEMS), 0);
 
                 s.free(result_tail, libc);
 
@@ -652,7 +658,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.ret(s.make_tup(&[new_array, item]));
             });
 
-            let item = s.arr_get(s.arrow(result_tail, F_LEAF_ITEMS), 0);
+            let item = s.arr_get(s.gep(result_tail, F_LEAF_ITEMS), 0);
 
             s.free(result_tail, libc);
 
@@ -669,10 +675,10 @@ impl<'a> PersistentArrayBuiltin<'a> {
             );
 
             s.if_(
-                s.is_null(s.arr_get(s.arrow(s.field(pop_node_ret, 1), F_BRANCH_CHILDREN), 1)),
+                s.is_null(s.arr_get(s.gep(s.field(pop_node_ret, 1), F_BRANCH_CHILDREN), 1)),
                 |s| {
                     let grandchild =
-                        s.arr_get(s.arrow(s.field(pop_node_ret, 0), F_BRANCH_CHILDREN), 0);
+                        s.arr_get(s.gep(s.field(pop_node_ret, 0), F_BRANCH_CHILDREN), 0);
 
                     let new_array = s.make_struct(
                         self.array_type,
@@ -903,7 +909,10 @@ impl<'a> PersistentArrayBuiltin<'a> {
                     s.if_(s.eq(new_refcount, 0), |s| {
                         if let Some(actual_release_item) = release_item {
                             s.for_(items_per_leaf, |s, i| {
-                                s.call_void(actual_release_item, &[s.arr_addr(leaf_ptr, i)]);
+                                s.call_void(
+                                    actual_release_item,
+                                    &[s.arr_addr(s.gep(leaf_ptr, F_LEAF_ITEMS), i)],
+                                );
                             });
                         }
                         s.free(leaf_ptr, libc);
@@ -921,17 +930,21 @@ impl<'a> PersistentArrayBuiltin<'a> {
                         s.while_(
                             |s| {
                                 s.and(
-                                    s.ult(i, BRANCHING_FACTOR),
-                                    s.not(s.is_null(
-                                        s.arr_get(s.arrow(branch_ptr, F_BRANCH_CHILDREN), i),
-                                    )),
+                                    s.ult(s.ptr_get(i), BRANCHING_FACTOR),
+                                    s.not(s.is_null(s.arr_get(
+                                        s.gep(branch_ptr, F_BRANCH_CHILDREN),
+                                        s.ptr_get(i),
+                                    ))),
                                 )
                             },
                             |s| {
                                 s.call_void(
                                     self.release_node,
                                     &[
-                                        s.arr_get(s.arrow(branch_ptr, F_BRANCH_CHILDREN), i),
+                                        s.arr_get(
+                                            s.gep(branch_ptr, F_BRANCH_CHILDREN),
+                                            s.ptr_get(i),
+                                        ),
                                         s.sub(height, 1),
                                     ],
                                 );
@@ -969,7 +982,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             if let Some(release_fn) = release_item {
                 s.if_(s.eq(s.arrow(tail, F_LEAF_REFCOUNT), 0), |s| {
                     s.for_(tail_len, |s, i| {
-                        s.call(release_fn, &[s.arr_addr(s.arrow(tail, F_ARR_TAIL), i)]);
+                        s.call_void(release_fn, &[s.arr_addr(s.gep(tail, F_LEAF_ITEMS), i)]);
                     })
                 });
 
@@ -990,7 +1003,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
         // define 'obtain_unique_leaf'
         {
             let s = scope(self.obtain_unique_leaf, context);
-            let leaf = s.arg(1);
+            let leaf = s.arg(0);
 
             s.if_(s.eq(s.arrow(leaf, F_LEAF_REFCOUNT), 1), |s| {
                 s.ret(leaf);
@@ -1000,13 +1013,13 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.arrow_set(result, F_LEAF_REFCOUNT, s.i64(1));
 
             s.ptr_set(
-                s.field(result, F_LEAF_ITEMS),
-                s.ptr_get(s.field(leaf, F_LEAF_ITEMS)),
+                s.gep(result, F_LEAF_ITEMS),
+                s.ptr_get(s.gep(leaf, F_LEAF_ITEMS)),
             );
 
             if let Some(retain_fn) = retain_item {
                 s.for_(items_per_leaf, |s, i| {
-                    s.call(retain_fn, &[s.arr_get(s.arrow(leaf, F_LEAF_ITEMS), i)]);
+                    s.call_void(retain_fn, &[s.arr_get(s.gep(leaf, F_LEAF_ITEMS), i)]);
                 });
             }
 
@@ -1040,16 +1053,14 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 |s| {
                     s.and(
                         s.ult(s.ptr_get(i), BRANCHING_FACTOR as u64),
-                        s.not(
-                            s.is_null(s.arr_get(s.field(branch, F_BRANCH_CHILDREN), s.ptr_get(i))),
-                        ),
+                        s.not(s.is_null(s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)))),
                     )
                 },
                 |s| {
                     s.call_void(
                         self.retain_node,
                         &[
-                            s.arr_get(s.field(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
+                            s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
                             s.sub(height, 1),
                         ],
                     );
@@ -1092,7 +1103,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.for_(tail_len, |s, i| {
                     s.call_void(
                         actual_retain_item,
-                        &[s.arr_addr(s.arrow(tail, F_LEAF_ITEMS), i)],
+                        &[s.arr_addr(s.gep(tail, F_LEAF_ITEMS), i)],
                     );
                 });
             }
@@ -1113,12 +1124,12 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let result = s.call(self.obtain_unique_tail, &[tail, tail_len]);
 
             if let Some(release_fn) = release_item {
-                s.call(
+                s.call_void(
                     release_fn,
-                    &[s.arr_get(s.arrow(result, F_LEAF_ITEMS), index_in_tail)],
+                    &[s.arr_get(s.gep(result, F_LEAF_ITEMS), index_in_tail)],
                 );
             }
-            s.arr_set(s.arrow(result, F_LEAF_ITEMS), index_in_tail, item);
+            s.arr_set(s.gep(result, F_LEAF_ITEMS), index_in_tail, item);
 
             s.ret(result);
         }
@@ -1139,13 +1150,13 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 );
 
                 if let Some(release_fn) = release_item {
-                    s.call(
+                    s.call_void(
                         release_fn,
-                        &[s.arr_addr(s.arrow(result, F_LEAF_ITEMS), index_in_child)],
+                        &[s.arr_addr(s.gep(result, F_LEAF_ITEMS), index_in_child)],
                     );
                 };
 
-                s.arr_set(s.arrow(result, F_LEAF_ITEMS), index_in_child, item);
+                s.arr_set(s.gep(result, F_LEAF_ITEMS), index_in_child, item);
 
                 s.ret(s.ptr_cast(s.i8_t(), result));
             });
@@ -1164,7 +1175,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let child_node = s.call(
                 self.set_node,
                 &[
-                    s.arr_get(s.arrow(result, F_BRANCH_CHILDREN), child_index),
+                    s.arr_get(s.gep(result, F_BRANCH_CHILDREN), child_index),
                     child_node_height,
                     child_node_number,
                     index_in_child,
@@ -1172,7 +1183,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 ],
             );
 
-            s.arr_set(s.arrow(result, F_BRANCH_CHILDREN), child_index, child_node);
+            s.arr_set(s.gep(result, F_BRANCH_CHILDREN), child_index, child_node);
 
             s.ret(s.ptr_cast(s.i8_t(), result));
         }
@@ -1252,7 +1263,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             let result = s.call(self.obtain_unique_tail, &[tail, tail_len]);
 
-            s.arr_set(s.arrow(result, F_LEAF_ITEMS), tail_len, item);
+            s.arr_set(s.gep(result, F_LEAF_ITEMS), tail_len, item);
 
             s.ret(result);
         }
@@ -1270,7 +1281,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             s.if_(s.eq(node_height, 1), |s| {
                 s.arr_set(
-                    s.arrow(result, F_BRANCH_CHILDREN),
+                    s.gep(result, F_BRANCH_CHILDREN),
                     node_number,
                     s.ptr_cast(s.i8_t(), tail),
                 );
@@ -1284,13 +1295,13 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let child_node_number = s.field(child_info, F_CHILD_NODE_NUMBER);
             let child_node_height = s.field(child_info, F_CHILD_HEIGHT);
 
-            let children = s.arrow(result, F_BRANCH_CHILDREN);
+            let children = s.gep(result, F_BRANCH_CHILDREN);
 
             s.if_(s.is_null(s.arr_get(children, child_index)), |s| {
-                let sub_child = s.ptr_cast(s.i8_t(), s.calloc(1, self.branch_type.into(), libc));
-                s.arr_set(sub_child, F_BRANCH_REFCOUNT, s.i64(1));
+                let sub_child = s.calloc(1, self.branch_type.into(), libc);
+                s.arrow_set(sub_child, F_BRANCH_REFCOUNT, s.i64(1));
 
-                s.arr_set(children, child_index, sub_child);
+                s.arr_set(children, child_index, s.ptr_cast(s.i8_t(), sub_child));
             });
 
             let child_location = s.arr_get(children, child_index);
@@ -1318,7 +1329,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             let result = s.call(self.obtain_unique_tail, &[tail, tail_len]);
 
-            let item = s.arr_get(s.arrow(result, F_LEAF_ITEMS), s.sub(tail_len, 1));
+            let item = s.arr_get(s.gep(result, F_LEAF_ITEMS), s.sub(tail_len, 1));
 
             s.ret(s.make_tup(&[item, result]));
         }
@@ -1335,11 +1346,11 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.if_(s.eq(node_height, 1), |s| {
                 let new_tail = s.ptr_cast(
                     self.leaf_type.into(),
-                    s.arr_get(s.arrow(result, F_BRANCH_CHILDREN), node_number),
+                    s.arr_get(s.gep(result, F_BRANCH_CHILDREN), node_number),
                 );
 
                 s.arr_set(
-                    s.arrow(result, F_BRANCH_CHILDREN),
+                    s.gep(result, F_BRANCH_CHILDREN),
                     node_number,
                     s.null(s.i8_t()),
                 );
@@ -1359,7 +1370,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let child_node_number = s.field(child_info, F_CHILD_NODE_NUMBER);
             let child_node_height = s.field(child_info, F_CHILD_HEIGHT);
 
-            let child_location = s.arr_get(s.arrow(result, F_BRANCH_CHILDREN), child_index);
+            let child_location = s.arr_get(s.gep(result, F_BRANCH_CHILDREN), child_index);
             let popnode_ret = s.call(
                 self.pop_node,
                 &[
@@ -1478,13 +1489,13 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
             let len = s.field(array, F_ARR_LEN);
 
             s.if_(s.not(s.is_null(body)), |s| {
-                s.call(self.output_node, &[body, height]);
+                s.call_void(self.output_node, &[body, height]);
             });
 
             let tail_len = s.call(self.byte_array_type.tail_len, &[len]);
 
             s.if_(s.not(s.is_null(tail)), |s| {
-                s.call(self.output_tail, &[tail, tail_len]);
+                s.call_void(self.output_tail, &[tail, tail_len]);
             });
 
             s.ret_void();
@@ -1506,7 +1517,7 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
 
         // define 'output_node'
         {
-            let s = scope(self.output_tail, context);
+            let s = scope(self.output_node, context);
             let branch = s.arg(0);
             let height = s.arg(1);
 
@@ -1521,24 +1532,31 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
                 // TODO: check bytes_written for errors
                 let _bytes_written = s.call(
                     libc.fwrite,
-                    &[branch, s.i64(1), s.i64(items_per_leaf), stdout_value],
+                    &[
+                        s.ptr_cast(self.byte_array_type.leaf_type.into(), branch),
+                        s.i64(1),
+                        s.i64(items_per_leaf),
+                        stdout_value,
+                    ],
                 );
+
+                s.ret_void();
             });
+
+            let branch = s.ptr_cast(self.byte_array_type.branch_type.into(), branch);
 
             s.while_(
                 |s| {
                     s.and(
                         s.ult(s.ptr_get(i), BRANCHING_FACTOR),
-                        s.not(
-                            s.is_null(s.arr_get(s.arrow(branch, F_BRANCH_CHILDREN), s.ptr_get(i))),
-                        ),
+                        s.not(s.is_null(s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)))),
                     )
                 },
                 |s| {
                     s.call_void(
                         self.output_node,
                         &[
-                            s.arr_get(s.arrow(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
+                            s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
                             s.sub(height, 1),
                         ],
                     );

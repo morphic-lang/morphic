@@ -315,7 +315,7 @@ impl<'a> Scope<'a> {
         tup.into()
     }
 
-    pub fn arr_addr(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn buf_addr(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>) -> BasicValueEnum<'a> {
         unsafe {
             self.builder
                 .build_in_bounds_gep(
@@ -325,6 +325,29 @@ impl<'a> Scope<'a> {
                 )
                 .into()
         }
+    }
+
+    pub fn buf_set(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>, val: BasicValueEnum<'a>) {
+        let addr = self.buf_addr(arr, idx).into_pointer_value();
+
+        self.builder.build_store(addr, val);
+    }
+
+    pub fn buf_get(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        let addr = self.buf_addr(arr, idx).into_pointer_value();
+
+        self.builder.build_load(addr, "get")
+    }
+
+    pub fn arr_addr(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+        let target_type = arr
+            .get_type()
+            .into_pointer_type()
+            .get_element_type()
+            .into_array_type()
+            .get_element_type();
+
+        self.buf_addr(self.ptr_cast(target_type, arr), idx)
     }
 
     pub fn arr_set(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>, val: BasicValueEnum<'a>) {
@@ -430,7 +453,8 @@ impl<'a> Scope<'a> {
         self.if_(self.is_null(ptr), |s| {
             s.panic("calloc failed", &[], libc);
         });
-        return ptr;
+
+        return self.ptr_cast(ty, ptr);
     }
 
     pub fn free(&self, ptr: BasicValueEnum<'a>, libc: &LibC<'a>) {
