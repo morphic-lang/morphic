@@ -235,11 +235,11 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         let retain_node = void_fun("retain_node", &[node_ptr_type.into(), i64_type.into()]);
 
-        let release_node = void_fun("retain_node", &[node_ptr_type.into(), i64_type.into()]);
+        let release_node = void_fun("release_node", &[node_ptr_type.into(), i64_type.into()]);
 
         let retain_tail = void_fun("retain_tail", &[leaf_ptr_type.into()]);
 
-        let release_tail = void_fun("retain_tail", &[leaf_ptr_type.into(), i64_type.into()]);
+        let release_tail = void_fun("release_tail", &[leaf_ptr_type.into(), i64_type.into()]);
 
         let tail_len = fun("tail_len", i64_type.into(), &[i64_type.into()]);
 
@@ -654,11 +654,11 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 &[s.field(array, F_ARR_TAIL), s.i64(1)],
             );
 
+            let item = s.arr_get(s.gep(result_tail, F_LEAF_ITEMS), s.i64(0));
+
+            s.free(result_tail, libc);
+
             s.if_(s.eq(len, s.i64(items_per_leaf + 1)), |s| {
-                let item = s.arr_get(s.gep(result_tail, F_LEAF_ITEMS), s.i64(0));
-
-                s.free(result_tail, libc);
-
                 let new_array = s.make_struct(
                     self.array_type,
                     &[
@@ -674,10 +674,6 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
                 s.ret(s.make_tup(&[new_array, item]));
             });
-
-            let item = s.arr_get(s.gep(result_tail, F_LEAF_ITEMS), s.i64(0));
-
-            s.free(result_tail, libc);
 
             let new_array_len = s.sub(len, s.i64(1));
             let target_node_numebr = s.udiv(s.sub(new_array_len, s.i64(1)), s.i64(items_per_leaf));
@@ -707,7 +703,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                         ],
                     );
 
-                    s.free(s.field(pop_node_ret, 0), libc);
+                    s.free(s.field(pop_node_ret, 1), libc);
 
                     s.ret(s.make_tup(&[new_array, item]));
                 },
@@ -1008,15 +1004,14 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let refcount = s.arrow(tail, F_LEAF_REFCOUNT);
             s.arrow_set(tail, F_LEAF_REFCOUNT, s.sub(refcount, s.i64(1)));
 
-            if let Some(release_fn) = release_item {
-                s.if_(s.eq(s.arrow(tail, F_LEAF_REFCOUNT), s.i64(0)), |s| {
+            s.if_(s.eq(s.arrow(tail, F_LEAF_REFCOUNT), s.i64(0)), |s| {
+                if let Some(release_fn) = release_item {
                     s.for_(tail_len, |s, i| {
                         s.call_void(release_fn, &[s.arr_addr(s.gep(tail, F_LEAF_ITEMS), i)]);
                     })
-                });
-
+                }
                 s.free(tail, libc);
-            }
+            });
 
             s.ret_void();
         }
