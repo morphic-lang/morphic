@@ -454,7 +454,127 @@ impl<'a> PersistentArrayBuiltin<'a> {
         // define 'push'
         {
             let s = scope(self.push, context);
-            todo!();
+            let array = s.arg(0);
+            let item = s.arg(1);
+
+            let len = s.field(array, F_ARR_LEN);
+            let height = s.field(array, F_ARR_HEIGHT);
+
+            s.if_(s.eq(len, 0), |s| {
+                let tail = s.calloc(1, self.leaf_type.into(), &libc);
+                s.arrow_set(tail, F_LEAF_REFCOUNT, s.i64(1));
+                s.arr_set(s.arrow(tail, F_LEAF_ITEMS), 0, item);
+
+                s.ret(s.make_struct(
+                    self.array_type,
+                    &[
+                        (F_ARR_LEN, s.i64(1)),
+                        (F_ARR_HEIGHT, s.i64(-1)),
+                        (F_ARR_TAIL, tail),
+                        (F_ARR_BODY, s.null(s.i8_t())),
+                    ],
+                ));
+            });
+
+            let tail_len = s.call(self.tail_len, &[len]);
+
+            s.if_(s.ne(tail_len, items_per_leaf), |s| {
+                let new_tail = s.call(
+                    self.push_tail,
+                    &[s.field(array, F_ARR_TAIL), tail_len, item],
+                );
+
+                s.ret(s.make_struct(
+                    self.array_type,
+                    &[
+                        (F_ARR_LEN, s.add(len, 1)),
+                        (F_ARR_HEIGHT, height),
+                        (F_ARR_TAIL, new_tail),
+                        (F_ARR_BODY, s.field(array, F_ARR_BODY)),
+                    ],
+                ));
+            });
+
+            s.if_(s.eq(len, items_per_leaf), |s| {
+                let new_tail = s.calloc(1, self.leaf_type.into(), &libc);
+
+                s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
+                s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
+
+                s.ret(s.make_struct(
+                    self.array_type,
+                    &[
+                        (F_ARR_LEN, s.add(len, 1)),
+                        (F_ARR_HEIGHT, s.i64(0)),
+                        (F_ARR_TAIL, new_tail),
+                        (F_ARR_BODY, s.ptr_cast(s.i8_t(), s.field(array, F_ARR_TAIL))),
+                    ],
+                ));
+            });
+
+            let next_missing_node_number = s.sll(1, s.mul(height, LOG2_BRANCHING_FACTOR));
+            let target_node_number = s.udiv(s.sub(len, items_per_leaf), items_per_leaf);
+
+            s.if_(s.eq(next_missing_node_number, target_node_number), |s| {
+                let new_body = s.calloc(1, self.branch_type.into(), &libc);
+                s.arrow_set(new_body, F_BRANCH_REFCOUNT, s.i64(1));
+                s.arr_set(s.arrow(new_body, F_BRANCH_CHILDREN), 0, new_body);
+
+                let new_body = s.call(
+                    self.put_tail,
+                    &[
+                        new_body,
+                        s.add(s.field(array, F_ARR_HEIGHT), 1),
+                        next_missing_node_number,
+                        s.field(array, F_ARR_TAIL),
+                    ],
+                );
+
+                let new_tail = s.calloc(1, self.leaf_type.into(), &libc);
+                s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
+                s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
+
+                s.ret(s.make_struct(
+                    self.array_type,
+                    &[
+                        (F_ARR_LEN, s.add(len, 1)),
+                        (F_ARR_HEIGHT, s.add(height, 1)),
+                        (F_ARR_TAIL, new_tail),
+                        (F_ARR_BODY, new_body),
+                    ],
+                ));
+            });
+
+            let result = s.call(
+                self.obtain_unique_branch,
+                &[s.ptr_cast(s.i8_t(), s.field(array, F_ARR_BODY)), height],
+            );
+
+            let new_body = s.call(
+                self.put_tail,
+                &[
+                    result,
+                    height,
+                    target_node_number,
+                    s.field(array, F_ARR_TAIL),
+                ],
+            );
+
+            let new_tail = s.calloc(1, self.leaf_type.into(), &libc);
+            s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
+            s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
+            s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
+            s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
+
+            s.ret(s.make_struct(
+                self.array_type,
+                &[
+                    (F_ARR_LEN, s.add(len, 1)),
+                    (F_ARR_HEIGHT, height),
+                    (F_ARR_TAIL, new_tail),
+                    (F_ARR_BODY, new_body),
+                ],
+            ));
         }
 
         // define 'pop'
@@ -993,37 +1113,261 @@ impl<'a> PersistentArrayBuiltin<'a> {
         // define 'set_node'
         {
             let s = scope(self.set_node, context);
-            todo!();
+            let node = s.arg(0);
+            let node_height = s.arg(1);
+            let node_number = s.arg(2);
+            let index_in_child = s.arg(3);
+            let item = s.arg(4);
+
+            s.if_(s.eq(node_height, 0), |s| {
+                let result = s.call(
+                    self.obtain_unique_leaf,
+                    &[s.ptr_cast(self.leaf_type.into(), node)],
+                );
+
+                if let Some(release_fn) = release_item {
+                    s.call(
+                        release_fn,
+                        &[s.arr_addr(s.arrow(result, F_LEAF_ITEMS), index_in_child)],
+                    );
+                };
+
+                s.arr_set(s.arrow(result, F_LEAF_ITEMS), index_in_child, item);
+
+                s.ret(s.ptr_cast(s.i8_t(), result));
+            });
+
+            let result = s.call(
+                self.obtain_unique_branch,
+                &[s.ptr_cast(self.branch_type.into(), node)],
+            );
+
+            let child_info = s.call(self.set_next_path, &[node_height, node_number]);
+
+            let child_index = s.field(child_info, F_CHILD_INDEX);
+            let child_node_number = s.field(child_info, F_CHILD_NODE_NUMBER);
+            let child_node_height = s.field(child_info, F_CHILD_HEIGHT);
+
+            let child_node = s.call(
+                self.set_node,
+                &[
+                    s.arr_get(s.arrow(result, F_BRANCH_CHILDREN), child_index),
+                    child_node_height,
+                    child_node_number,
+                    index_in_child,
+                    item,
+                ],
+            );
+
+            s.arr_set(s.arrow(result, F_BRANCH_CHILDREN), child_index, child_node);
+
+            s.ret(s.ptr_cast(s.i8_t(), result));
         }
 
         // define 'set'
         {
             let s = scope(self.set, context);
-            todo!();
+            let array = s.arg(0);
+            let index = s.arg(1);
+            let item = s.arg(2);
+
+            let len = s.field(array, F_ARR_LEN);
+            let height = s.field(array, F_ARR_HEIGHT);
+
+            s.if_(s.uge(index, len), |s| {
+                s.panic(
+                    "index out of bounds: attempt to set item %lld of array with length %llu",
+                    &[index, len],
+                    &libc,
+                );
+            });
+
+            let target_node_number = s.udiv(index, items_per_leaf);
+
+            let tail_node_number = s.udiv(s.sub(len, 1), items_per_leaf);
+
+            let index_in_leaf = s.urem(index, items_per_leaf);
+
+            s.if_(s.eq(target_node_number, tail_node_number), |s| {
+                let tail_len = s.call(self.tail_len, &[len]);
+
+                let new_tail = s.call(
+                    self.set_tail,
+                    &[s.field(array, F_ARR_TAIL), tail_len, index_in_leaf, item],
+                );
+
+                s.ret(s.make_struct(
+                    self.array_type,
+                    &[
+                        (F_ARR_LEN, len),
+                        (F_ARR_HEIGHT, height),
+                        (F_ARR_TAIL, new_tail),
+                        (F_ARR_BODY, s.field(array, F_ARR_BODY)),
+                    ],
+                ));
+            });
+
+            let new_body = s.call(
+                self.set_node,
+                &[
+                    s.field(array, F_ARR_BODY),
+                    height,
+                    target_node_number,
+                    index_in_leaf,
+                    item,
+                ],
+            );
+
+            s.ret(s.make_struct(
+                self.array_type,
+                &[
+                    (F_ARR_LEN, len),
+                    (F_ARR_HEIGHT, height),
+                    (F_ARR_TAIL, s.field(array, F_ARR_TAIL)),
+                    (F_ARR_BODY, new_body),
+                ],
+            ));
         }
 
         // define 'push_tail'
         {
             let s = scope(self.push_tail, context);
-            todo!();
+
+            let tail = s.arg(0);
+            let tail_len = s.arg(1);
+            let item = s.arg(2);
+
+            let result = s.call(self.obtain_unique_tail, &[tail, tail_len]);
+
+            s.arr_set(s.arrow(result, F_LEAF_ITEMS), tail_len, item);
+
+            s.ret(result);
         }
 
         // define 'put_tail'
         {
             let s = scope(self.put_tail, context);
-            todo!();
+
+            let branch = s.arg(0);
+            let node_height = s.arg(1);
+            let node_number = s.arg(2);
+            let tail = s.arg(3);
+
+            let result = s.call(self.obtain_unique_branch, &[branch, node_height]);
+
+            s.if_(s.eq(node_height, 1), |s| {
+                s.arr_set(
+                    s.arrow(result, F_BRANCH_CHILDREN),
+                    node_number,
+                    s.ptr_cast(s.i8_t(), tail),
+                );
+
+                s.ret(result);
+            });
+
+            let child_info = s.call(self.set_next_path, &[node_height, node_number]);
+
+            let child_index = s.field(child_info, F_CHILD_INDEX);
+            let child_node_number = s.field(child_info, F_CHILD_NODE_NUMBER);
+            let child_node_height = s.field(child_info, F_CHILD_HEIGHT);
+
+            let children = s.arrow(result, F_BRANCH_CHILDREN);
+
+            s.if_(s.is_null(s.arr_get(children, child_index)), |s| {
+                let sub_child = s.ptr_cast(s.i8_t(), s.calloc(1, self.branch_type.into(), &libc));
+                s.arr_set(sub_child, F_BRANCH_REFCOUNT, s.i64(1));
+
+                s.arr_set(children, child_index, sub_child);
+            });
+
+            let child_location = s.arr_get(children, child_index);
+
+            let new_child = s.call(
+                self.put_tail,
+                &[
+                    s.ptr_cast(self.branch_type.into(), child_location),
+                    child_node_height,
+                    child_node_number,
+                    tail,
+                ],
+            );
+
+            s.ptr_set(child_location, s.ptr_cast(s.i8_t(), new_child));
+
+            s.ret(result);
         }
 
         // define 'pop_tail'
         {
             let s = scope(self.pop_tail, context);
-            todo!();
+            let tail = s.arg(0);
+            let tail_len = s.arg(1);
+
+            let result = s.call(self.obtain_unique_tail, &[tail, tail_len]);
+
+            let item = s.arr_get(s.arrow(result, F_LEAF_ITEMS), s.sub(tail_len, 1));
+
+            s.ret(s.make_tup(&[item, result]));
         }
 
         // define 'pop_node'
         {
             let s = scope(self.pop_node, context);
-            todo!();
+            let branch = s.arg(0);
+            let node_height = s.arg(1);
+            let node_number = s.arg(2);
+
+            let result = s.call(self.obtain_unique_branch, &[branch, node_height]);
+
+            s.if_(s.eq(node_height, 1), |s| {
+                let new_tail = s.ptr_cast(
+                    self.leaf_type.into(),
+                    s.arr_get(s.arrow(result, F_BRANCH_CHILDREN), node_number),
+                );
+
+                s.arr_set(
+                    s.arrow(result, F_BRANCH_CHILDREN),
+                    node_number,
+                    s.null(s.i8_t()),
+                );
+
+                s.if_(s.eq(node_number, 0), |s| {
+                    s.free(result, &libc);
+
+                    s.ret(s.make_tup(&[new_tail, s.null(s.i8_t())]));
+                });
+
+                s.ret(s.make_tup(&[new_tail, result]));
+            });
+
+            let child_info = s.call(self.set_next_path, &[node_height, node_number]);
+
+            let child_index = s.field(child_info, F_CHILD_INDEX);
+            let child_node_number = s.field(child_info, F_CHILD_NODE_NUMBER);
+            let child_node_height = s.field(child_info, F_CHILD_HEIGHT);
+
+            let child_location = s.arr_get(s.arrow(result, F_BRANCH_CHILDREN), child_index);
+            let popnode_ret = s.call(
+                self.pop_node,
+                &[
+                    s.ptr_cast(self.branch_type.into(), child_location),
+                    child_node_height,
+                    child_node_number,
+                ],
+            );
+
+            s.if_(s.eq(node_number, 0), |s| {
+                s.free(result, &libc);
+
+                s.ret(s.make_tup(&[s.field(popnode_ret, 0), s.null(self.branch_type.into())]));
+            });
+
+            s.ptr_set(
+                child_location,
+                s.ptr_cast(s.i8_t(), s.field(popnode_ret, 1)),
+            );
+
+            s.ret(s.make_tup(&[s.field(popnode_ret, 0), result]));
         }
     }
 }
