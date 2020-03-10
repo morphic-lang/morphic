@@ -1,5 +1,6 @@
 use crate::builtins::core::LibC;
 use crate::builtins::flat_array::{FlatArrayBuiltin, FlatArrayIoBuiltin};
+use crate::builtins::persistent_array::{PersistentArrayBuiltin, PersistentArrayIoBuiltin};
 use crate::builtins::rc::RcBoxBuiltin;
 use crate::cli;
 use crate::data::first_order_ast as first_ord;
@@ -124,25 +125,46 @@ impl<'a> CustomTypeDecls<'a> {
 struct Instances<'a> {
     flat_arrays: RefCell<BTreeMap<low::Type, FlatArrayBuiltin<'a>>>,
     flat_array_io: FlatArrayIoBuiltin<'a>,
+    persistent_arrays: RefCell<BTreeMap<low::Type, PersistentArrayBuiltin<'a>>>,
+    persistent_array_io: PersistentArrayIoBuiltin<'a>,
     rcs: RefCell<BTreeMap<low::Type, RcBoxBuiltin<'a>>>,
 }
 
 impl<'a> Instances<'a> {
     fn new<'b>(globals: &Globals<'a, 'b>) -> Self {
         let mut flat_arrays = BTreeMap::new();
-        let byte_builtin = FlatArrayBuiltin::declare(
+        let byte_flat_builtin = FlatArrayBuiltin::declare(
             globals.context,
             globals.module,
             globals.context.i8_type().into(),
         );
 
-        flat_arrays.insert(low::Type::Num(first_ord::NumType::Byte), byte_builtin);
+        flat_arrays.insert(low::Type::Num(first_ord::NumType::Byte), byte_flat_builtin);
         let flat_array_io =
-            FlatArrayIoBuiltin::declare(globals.context, globals.module, byte_builtin);
+            FlatArrayIoBuiltin::declare(globals.context, globals.module, byte_flat_builtin);
+
+        let mut persistent_arrays = BTreeMap::new();
+        let byte_persistent_builtin = PersistentArrayBuiltin::declare(
+            globals.context,
+            globals.module,
+            globals.context.i8_type().into(),
+        );
+
+        persistent_arrays.insert(
+            low::Type::Num(first_ord::NumType::Byte),
+            byte_persistent_builtin,
+        );
+        let persistent_array_io = PersistentArrayIoBuiltin::declare(
+            globals.context,
+            globals.module,
+            byte_persistent_builtin,
+        );
 
         Self {
             flat_arrays: RefCell::new(flat_arrays),
             flat_array_io,
+            persistent_arrays: RefCell::new(persistent_arrays),
+            persistent_array_io,
             rcs: RefCell::new(BTreeMap::new()),
         }
     }
@@ -166,6 +188,25 @@ impl<'a> Instances<'a> {
         return new_builtin;
     }
 
+    fn get_persistent_array<'b>(
+        &self,
+        globals: &Globals<'a, 'b>,
+        item_type: &low::Type,
+    ) -> PersistentArrayBuiltin<'a> {
+        if let Some(existing) = self.persistent_arrays.borrow().get(&item_type.clone()) {
+            return *existing;
+        }
+        let new_builtin = PersistentArrayBuiltin::declare(
+            globals.context,
+            globals.module,
+            get_llvm_type(globals, self, item_type),
+        );
+        self.persistent_arrays
+            .borrow_mut()
+            .insert(item_type.clone(), new_builtin);
+        return new_builtin;
+    }
+
     fn get_rc<'b>(&self, globals: &Globals<'a, 'b>, item_type: &low::Type) -> RcBoxBuiltin<'a> {
         if let Some(existing) = self.rcs.borrow().get(&item_type.clone()) {
             return *existing;
@@ -182,6 +223,8 @@ impl<'a> Instances<'a> {
     fn define<'b>(&self, globals: &Globals<'a, 'b>) {
         let builder = globals.context.create_builder();
         let void_type = globals.context.void_type();
+
+        // rcs
         for (i, (inner_type, rc_builtin)) in self.rcs.borrow().iter().enumerate() {
             let llvm_inner_type = get_llvm_type(globals, self, inner_type);
 
@@ -218,6 +261,7 @@ impl<'a> Instances<'a> {
             rc_builtin.define(globals.context, &globals.libc, Some(release_func));
         }
 
+        // flat arrays
         for (i, (inner_type, flat_array_builtin)) in self.flat_arrays.borrow().iter().enumerate() {
             let llvm_inner_type = get_llvm_type(globals, self, inner_type);
 
@@ -290,6 +334,84 @@ impl<'a> Instances<'a> {
         }
 
         self.flat_array_io.define(globals.context, &globals.libc);
+
+        // persistent arrays
+        for (i, (inner_type, persistent_array_builtin)) in
+            self.persistent_arrays.borrow().iter().enumerate()
+        {
+            let llvm_inner_type = get_llvm_type(globals, self, inner_type);
+
+            let retain_func = globals.module.add_function(
+                &format!("persistent_array_retain_{}", i),
+                void_type.fn_type(
+                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    false,
+                ),
+                Some(Linkage::Internal),
+            );
+
+            let retain_entry = globals
+                .context
+                .append_basic_block(retain_func, "retain_entry");
+
+            builder.position_at_end(retain_entry);
+            let arg = retain_func.get_nth_param(0).unwrap();
+
+            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+
+            gen_rc_op(
+                RcOp::Retain,
+                &builder,
+                self,
+                globals,
+                retain_func,
+                inner_type,
+                arg,
+            );
+
+            builder.build_return(None);
+
+            let release_func = globals.module.add_function(
+                &format!("persistent_array_release_{}", i),
+                void_type.fn_type(
+                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    false,
+                ),
+                Some(Linkage::Internal),
+            );
+
+            let release_entry = globals
+                .context
+                .append_basic_block(release_func, "release_entry");
+
+            builder.position_at_end(release_entry);
+            let arg = release_func.get_nth_param(0).unwrap();
+
+            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+
+            gen_rc_op(
+                RcOp::Release,
+                &builder,
+                self,
+                globals,
+                release_func,
+                inner_type,
+                arg,
+            );
+
+            builder.build_return(None);
+
+            persistent_array_builtin.define(
+                globals.context,
+                globals.target,
+                &globals.libc,
+                Some(retain_func),
+                Some(release_func),
+            );
+        }
+
+        self.persistent_array_io
+            .define(globals.context, &globals.libc);
     }
 }
 
@@ -361,16 +483,18 @@ fn get_llvm_type<'a, 'b>(
             .rc_type
             .ptr_type(AddressSpace::Generic)
             .into(),
-        low::Type::Array(constrain::RepChoice::FallbackImmut, _item_type) => {
-            unimplemented![];
-        }
+        low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => instances
+            .get_persistent_array(globals, item_type)
+            .array_type
+            .into(),
         low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => instances
             .get_flat_array(globals, item_type)
             .hole_array_type
             .into(),
-        low::Type::HoleArray(constrain::RepChoice::FallbackImmut, _item_type) => {
-            unimplemented![];
-        }
+        low::Type::HoleArray(constrain::RepChoice::FallbackImmut, item_type) => instances
+            .get_persistent_array(globals, item_type)
+            .hole_array_type
+            .into(),
         low::Type::Tuple(item_types) => {
             let mut field_types = vec![];
             for item_type in item_types.iter() {
@@ -424,22 +548,44 @@ fn gen_rc_op<'a, 'b>(
                 builder.build_call(release_func, &[arg], "release_flat_array");
             }
         },
-        low::Type::Array(constrain::RepChoice::FallbackImmut, _item_type) => {
-            unimplemented![];
-        }
+        low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => match op {
+            RcOp::Retain => {
+                let retain_func = instances
+                    .get_persistent_array(globals, item_type)
+                    .retain_array;
+                builder.build_call(retain_func, &[arg], "retain_pers_array");
+            }
+            RcOp::Release => {
+                let release_func = instances
+                    .get_persistent_array(globals, item_type)
+                    .release_array;
+                builder.build_call(release_func, &[arg], "release_pers_array");
+            }
+        },
         low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => match op {
             RcOp::Retain => {
-                let release_func = instances.get_flat_array(globals, item_type).retain_hole;
-                builder.build_call(release_func, &[arg], "release_flat_hole_array");
+                let retain_func = instances.get_flat_array(globals, item_type).retain_hole;
+                builder.build_call(retain_func, &[arg], "retain_flat_hole_array");
             }
             RcOp::Release => {
                 let release_func = instances.get_flat_array(globals, item_type).release_hole;
                 builder.build_call(release_func, &[arg], "release_flat_hole_array");
             }
         },
-        low::Type::HoleArray(constrain::RepChoice::FallbackImmut, _item_type) => {
-            unimplemented![];
-        }
+        low::Type::HoleArray(constrain::RepChoice::FallbackImmut, item_type) => match op {
+            RcOp::Retain => {
+                let retain_func = instances
+                    .get_persistent_array(globals, item_type)
+                    .retain_hole;
+                builder.build_call(retain_func, &[arg], "retain_pers_hole_array");
+            }
+            RcOp::Release => {
+                let release_func = instances
+                    .get_persistent_array(globals, item_type)
+                    .release_hole;
+                builder.build_call(release_func, &[arg], "release_pers_hole_array");
+            }
+        },
         low::Type::Tuple(item_types) => {
             for i in 0..item_types.len() {
                 let current_item = builder
@@ -1045,7 +1191,51 @@ fn gen_expr<'a, 'b>(
                 }
             }
             constrain::RepChoice::FallbackImmut => {
-                unimplemented![];
+                let builtin = instances.get_persistent_array(globals, item_type);
+                match array_op {
+                    low::ArrayOp::New() => builder
+                        .build_call(builtin.new, &[], "pers_array_new")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Item(array_id, index_id) => builder
+                        .build_call(
+                            builtin.item,
+                            &[locals[array_id], locals[index_id]],
+                            "pers_array_item",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Len(array_id) => builder
+                        .build_call(builtin.len, &[locals[array_id]], "pers_array_len")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Push(array_id, item_id) => builder
+                        .build_call(
+                            builtin.push,
+                            &[locals[array_id], locals[item_id]],
+                            "pers_array_push",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Pop(array_id) => builder
+                        .build_call(builtin.pop, &[locals[array_id]], "pers_array_pop")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Replace(array_id, item_id) => builder
+                        .build_call(
+                            builtin.replace,
+                            &[locals[array_id], locals[item_id]],
+                            "pers_array_replace",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                }
             }
         },
         E::IoOp(rep, io_op) => match rep {
@@ -1069,7 +1259,23 @@ fn gen_expr<'a, 'b>(
                 }
             }
             constrain::RepChoice::FallbackImmut => {
-                unimplemented![];
+                let builtin_io = instances.persistent_array_io;
+                match io_op {
+                    low::IoOp::Input => builder
+                        .build_call(builtin_io.input, &[], "pers_array_input")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::IoOp::Output(array_id) => {
+                        builder.build_call(
+                            builtin_io.output,
+                            &[locals[array_id]],
+                            "pers_array_output",
+                        );
+
+                        context.struct_type(&[], false).get_undef().into()
+                    }
+                }
             }
         },
         E::BoolLit(val) => {

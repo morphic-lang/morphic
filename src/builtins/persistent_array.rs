@@ -382,12 +382,11 @@ impl<'a> PersistentArrayBuiltin<'a> {
         }
     }
 
-    #[allow(unreachable_code)]
-    fn define(
+    pub fn define(
         &self,
         context: &'a Context,
         target: &TargetData,
-        libc: LibC<'a>,
+        libc: &LibC<'a>,
         retain_item: Option<FunctionValue<'a>>,
         release_item: Option<FunctionValue<'a>>,
     ) {
@@ -446,7 +445,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.panic(
                     "idx %d is out of bounds for persistent array of length %d",
                     &[idx, len],
-                    &libc,
+                    libc,
                 )
             });
 
@@ -475,7 +474,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let height = s.field(array, F_ARR_HEIGHT);
 
             s.if_(s.eq(len, 0), |s| {
-                let tail = s.calloc(1, self.leaf_type.into(), &libc);
+                let tail = s.calloc(1, self.leaf_type.into(), libc);
                 s.arrow_set(tail, F_LEAF_REFCOUNT, s.i64(1));
                 s.arr_set(s.arrow(tail, F_LEAF_ITEMS), 0, item);
 
@@ -510,7 +509,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             });
 
             s.if_(s.eq(len, items_per_leaf), |s| {
-                let new_tail = s.calloc(1, self.leaf_type.into(), &libc);
+                let new_tail = s.calloc(1, self.leaf_type.into(), libc);
 
                 s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
                 s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
@@ -530,7 +529,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let target_node_number = s.udiv(s.sub(len, items_per_leaf), items_per_leaf);
 
             s.if_(s.eq(next_missing_node_number, target_node_number), |s| {
-                let new_body = s.calloc(1, self.branch_type.into(), &libc);
+                let new_body = s.calloc(1, self.branch_type.into(), libc);
                 s.arrow_set(new_body, F_BRANCH_REFCOUNT, s.i64(1));
                 s.arr_set(s.arrow(new_body, F_BRANCH_CHILDREN), 0, new_body);
 
@@ -544,7 +543,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                     ],
                 );
 
-                let new_tail = s.calloc(1, self.leaf_type.into(), &libc);
+                let new_tail = s.calloc(1, self.leaf_type.into(), libc);
                 s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
                 s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
 
@@ -574,7 +573,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 ],
             );
 
-            let new_tail = s.calloc(1, self.leaf_type.into(), &libc);
+            let new_tail = s.calloc(1, self.leaf_type.into(), libc);
             s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
             s.arr_set(s.arrow(new_tail, F_LEAF_ITEMS), 0, item);
             s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
@@ -597,12 +596,12 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let array = s.arg(0);
             let len = s.field(s.arg(0), F_ARR_LEN);
 
-            s.if_(s.eq(len, 0), |s| s.panic("pop: empty array", &[], &libc));
+            s.if_(s.eq(len, 0), |s| s.panic("pop: empty array", &[], libc));
 
             s.if_(s.eq(len, 1), |s| {
                 let item = s.arr_get(s.arrow(s.field(array, F_ARR_TAIL), F_LEAF_ITEMS), 0);
 
-                s.free(s.field(array, F_ARR_TAIL), &libc);
+                s.free(s.field(array, F_ARR_TAIL), libc);
 
                 let empty_arr = s.call(self.new, &[]);
 
@@ -635,7 +634,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.if_(s.eq(len, items_per_leaf + 1), |s| {
                 let item = s.arr_get(s.arrow(result_tail, F_LEAF_ITEMS), 0);
 
-                s.free(result_tail, &libc);
+                s.free(result_tail, libc);
 
                 let new_array = s.make_struct(
                     self.array_type,
@@ -655,7 +654,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             let item = s.arr_get(s.arrow(result_tail, F_LEAF_ITEMS), 0);
 
-            s.free(result_tail, &libc);
+            s.free(result_tail, libc);
 
             let new_array_len = s.sub(len, 1);
             let target_node_numebr = s.udiv(s.sub(new_array_len, 1), items_per_leaf);
@@ -685,7 +684,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                         ],
                     );
 
-                    s.free(s.field(pop_node_ret, 0), &libc);
+                    s.free(s.field(pop_node_ret, 0), libc);
 
                     s.ret(s.make_tup(&[new_array, item]));
                 },
@@ -806,7 +805,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.panic(
                     "index out of bounds: attempt to access item %lld of array with length %llu",
                     &[index, s.field(array, F_ARR_LEN)],
-                    &libc,
+                    libc,
                 );
             });
 
@@ -907,7 +906,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                                 s.call_void(actual_release_item, &[s.arr_addr(leaf_ptr, i)]);
                             });
                         }
-                        s.free(leaf_ptr, &libc);
+                        s.free(leaf_ptr, libc);
                     });
                 },
                 |s| {
@@ -939,7 +938,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                                 s.ptr_set(i, s.add(s.ptr_get(i), 1));
                             },
                         );
-                        s.free(branch_ptr, &libc);
+                        s.free(branch_ptr, libc);
                     });
                 },
             );
@@ -974,7 +973,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                     })
                 });
 
-                s.free(tail, &libc);
+                s.free(tail, libc);
             }
 
             s.ret_void();
@@ -997,7 +996,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.ret(leaf);
             });
 
-            let result = s.calloc(1, self.leaf_type.into(), &libc);
+            let result = s.calloc(1, self.leaf_type.into(), libc);
             s.arrow_set(result, F_LEAF_REFCOUNT, s.i64(1));
 
             s.ptr_set(
@@ -1027,7 +1026,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.ret(branch);
             });
 
-            let result = s.calloc(1, self.branch_type.into(), &libc);
+            let result = s.calloc(1, self.branch_type.into(), libc);
             s.arrow_set(result, F_BRANCH_REFCOUNT, s.i64(1));
             s.arrow_set(
                 result,
@@ -1078,7 +1077,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.ret(tail);
             });
 
-            let result = s.calloc(1, self.leaf_type.into(), &libc);
+            let result = s.calloc(1, self.leaf_type.into(), libc);
             s.arrow_set(result, F_LEAF_REFCOUNT, s.i64(1));
             s.call(
                 libc.memcpy,
@@ -1192,7 +1191,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.panic(
                     "index out of bounds: attempt to set item %lld of array with length %llu",
                     &[index, len],
-                    &libc,
+                    libc,
                 );
             });
 
@@ -1288,7 +1287,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             let children = s.arrow(result, F_BRANCH_CHILDREN);
 
             s.if_(s.is_null(s.arr_get(children, child_index)), |s| {
-                let sub_child = s.ptr_cast(s.i8_t(), s.calloc(1, self.branch_type.into(), &libc));
+                let sub_child = s.ptr_cast(s.i8_t(), s.calloc(1, self.branch_type.into(), libc));
                 s.arr_set(sub_child, F_BRANCH_REFCOUNT, s.i64(1));
 
                 s.arr_set(children, child_index, sub_child);
@@ -1346,7 +1345,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 );
 
                 s.if_(s.eq(node_number, 0), |s| {
-                    s.free(result, &libc);
+                    s.free(result, libc);
 
                     s.ret(s.make_tup(&[new_tail, s.null(s.i8_t())]));
                 });
@@ -1371,7 +1370,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             );
 
             s.if_(s.eq(node_number, 0), |s| {
-                s.free(result, &libc);
+                s.free(result, libc);
 
                 s.ret(s.make_tup(&[s.field(popnode_ret, 0), s.null(self.branch_type.into())]));
             });
