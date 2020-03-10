@@ -232,7 +232,7 @@ impl<'a> Scope<'a> {
             BasicTypeEnum::StructType(t) => t.ptr_type(AddressSpace::Generic),
             BasicTypeEnum::VectorType(t) => t.ptr_type(AddressSpace::Generic),
         };
-        self.builder.build_bitcast(ptr, ptr_type, "ptr cast")
+        self.builder.build_bitcast(ptr, ptr_type, "ptr_cast")
     }
 
     pub fn make_struct(
@@ -382,6 +382,8 @@ impl<'a> Scope<'a> {
 
         self.builder
             .build_call(libc.exit, &[i32_type.const_int(1, true).into()], "");
+
+        self.builder.build_unreachable();
     }
 
     pub fn printf(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {

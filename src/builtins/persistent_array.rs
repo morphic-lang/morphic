@@ -268,7 +268,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 leaf_ptr_type.into(),
                 i64_type.into(),
                 i64_type.into(),
-                leaf_type.into(),
+                item_type.into(),
             ],
         );
 
@@ -545,7 +545,11 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.if_(s.eq(next_missing_node_number, target_node_number), |s| {
                 let new_body = s.calloc(s.i64(1), self.branch_type.into(), libc);
                 s.arrow_set(new_body, F_BRANCH_REFCOUNT, s.i64(1));
-                s.arr_set(s.gep(new_body, F_BRANCH_CHILDREN), s.i32(0), new_body);
+                s.arr_set(
+                    s.gep(new_body, F_BRANCH_CHILDREN),
+                    s.i32(0),
+                    s.ptr_cast(s.i8_t(), new_body),
+                );
 
                 let new_body = s.call(
                     self.put_tail,
@@ -567,14 +571,17 @@ impl<'a> PersistentArrayBuiltin<'a> {
                         (F_ARR_LEN, s.add(len, s.i64(1))),
                         (F_ARR_HEIGHT, s.add(height, s.i64(1))),
                         (F_ARR_TAIL, new_tail),
-                        (F_ARR_BODY, new_body),
+                        (F_ARR_BODY, s.ptr_cast(s.i8_t(), new_body)),
                     ],
                 ));
             });
 
             let result = s.call(
                 self.obtain_unique_branch,
-                &[s.ptr_cast(s.i8_t(), s.field(array, F_ARR_BODY)), height],
+                &[
+                    s.ptr_cast(self.branch_type.into(), s.field(array, F_ARR_BODY)),
+                    height,
+                ],
             );
 
             let new_body = s.call(
@@ -599,7 +606,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                     (F_ARR_LEN, s.add(len, s.i64(1))),
                     (F_ARR_HEIGHT, height),
                     (F_ARR_TAIL, new_tail),
-                    (F_ARR_BODY, new_body),
+                    (F_ARR_BODY, s.ptr_cast(s.i8_t(), new_body)),
                 ],
             ));
         }
@@ -688,14 +695,14 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.is_null(s.arr_get(s.gep(s.field(pop_node_ret, 1), F_BRANCH_CHILDREN), s.i64(1))),
                 |s| {
                     let grandchild =
-                        s.arr_get(s.gep(s.field(pop_node_ret, 0), F_BRANCH_CHILDREN), s.i64(0));
+                        s.arr_get(s.gep(s.field(pop_node_ret, 1), F_BRANCH_CHILDREN), s.i64(0));
 
                     let new_array = s.make_struct(
                         self.array_type,
                         &[
                             (F_ARR_LEN, s.sub(len, s.i64(1))),
                             (F_ARR_HEIGHT, s.sub(s.field(array, F_ARR_HEIGHT), s.i64(1))),
-                            (F_ARR_TAIL, s.field(pop_node_ret, 1)),
+                            (F_ARR_TAIL, s.field(pop_node_ret, 0)),
                             (F_ARR_BODY, grandchild),
                         ],
                     );
@@ -711,8 +718,8 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 &[
                     (F_ARR_LEN, s.sub(len, s.i64(1))),
                     (F_ARR_HEIGHT, s.field(array, F_ARR_HEIGHT)),
-                    (F_ARR_TAIL, s.field(pop_node_ret, 1)),
-                    (F_ARR_BODY, s.field(pop_node_ret, 0)),
+                    (F_ARR_TAIL, s.field(pop_node_ret, 0)),
+                    (F_ARR_BODY, s.ptr_cast(s.i8_t(), s.field(pop_node_ret, 1))),
                 ],
             );
 
@@ -1044,7 +1051,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             if let Some(retain_fn) = retain_item {
                 s.for_(s.i64(items_per_leaf), |s, i| {
-                    s.call_void(retain_fn, &[s.arr_get(s.gep(leaf, F_LEAF_ITEMS), i)]);
+                    s.call_void(retain_fn, &[s.arr_addr(s.gep(leaf, F_LEAF_ITEMS), i)]);
                 });
             }
 
@@ -1118,8 +1125,8 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.call(
                 libc.memcpy,
                 &[
-                    s.gep(result, F_LEAF_ITEMS),
-                    s.gep(tail, F_LEAF_ITEMS),
+                    s.ptr_cast(self.item_type, s.gep(result, F_LEAF_ITEMS)),
+                    s.ptr_cast(self.item_type, s.gep(tail, F_LEAF_ITEMS)),
                     s.mul(s.size(self.item_type), tail_len),
                 ],
             );
@@ -1151,7 +1158,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             if let Some(release_fn) = release_item {
                 s.call_void(
                     release_fn,
-                    &[s.arr_get(s.gep(result, F_LEAF_ITEMS), index_in_tail)],
+                    &[s.arr_addr(s.gep(result, F_LEAF_ITEMS), index_in_tail)],
                 );
             }
             s.arr_set(s.gep(result, F_LEAF_ITEMS), index_in_tail, item);
@@ -1188,7 +1195,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             let result = s.call(
                 self.obtain_unique_branch,
-                &[s.ptr_cast(self.branch_type.into(), node)],
+                &[s.ptr_cast(self.branch_type.into(), node), node_height],
             );
 
             let child_info = s.call(self.set_next_path, &[node_height, node_number]);
@@ -1341,7 +1348,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 ],
             );
 
-            s.ptr_set(child_location, s.ptr_cast(s.i8_t(), new_child));
+            s.arr_set(children, child_index, s.ptr_cast(s.i8_t(), new_child));
 
             s.ret(result);
         }
@@ -1383,7 +1390,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.if_(s.eq(node_number, s.i64(0)), |s| {
                     s.free(result, libc);
 
-                    s.ret(s.make_tup(&[new_tail, s.null(s.i8_t())]));
+                    s.ret(s.make_tup(&[new_tail, s.null(self.branch_type.into())]));
                 });
 
                 s.ret(s.make_tup(&[new_tail, result]));
@@ -1411,8 +1418,9 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.ret(s.make_tup(&[s.field(popnode_ret, 0), s.null(self.branch_type.into())]));
             });
 
-            s.ptr_set(
-                child_location,
+            s.arr_set(
+                s.gep(result, F_BRANCH_CHILDREN),
+                child_index,
                 s.ptr_cast(s.i8_t(), s.field(popnode_ret, 1)),
             );
 
@@ -1443,17 +1451,23 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
         let output_tail = module.add_function(
             "builtin_pers_array_output_tail",
             void_type.fn_type(
-                &[byte_array_type.leaf_type.into(), context.i64_type().into()],
+                &[
+                    byte_array_type
+                        .leaf_type
+                        .ptr_type(AddressSpace::Generic)
+                        .into(),
+                    context.i64_type().into(),
+                ],
                 false,
             ),
             Some(Linkage::Internal),
         );
 
         let output_node = module.add_function(
-            "builtin_pers_array_output_branch",
+            "builtin_pers_array_output_node",
             void_type.fn_type(
                 &[
-                    byte_array_type.branch_type.into(),
+                    context.i8_type().ptr_type(AddressSpace::Generic).into(),
                     context.i64_type().into(),
                 ],
                 false,
@@ -1535,7 +1549,10 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
             let stdout_value = s.ptr_get(libc.stdout);
 
             // TODO: check bytes_written for errors
-            let _bytes_written = s.call(libc.fwrite, &[tail, s.i64(1), tail_len, stdout_value]);
+            let _bytes_written = s.call(
+                libc.fwrite,
+                &[s.ptr_cast(s.i8_t(), tail), s.i64(1), tail_len, stdout_value],
+            );
 
             s.ret_void();
         }
@@ -1558,7 +1575,7 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
                 let _bytes_written = s.call(
                     libc.fwrite,
                     &[
-                        s.ptr_cast(self.byte_array_type.leaf_type.into(), branch),
+                        s.ptr_cast(s.i8_t(), branch),
                         s.i64(1),
                         s.i64(items_per_leaf),
                         stdout_value,
@@ -1588,6 +1605,8 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
                     s.ptr_set(i, s.add(s.ptr_get(i), s.i64(1)));
                 },
             );
+
+            s.ret_void();
         }
     }
 }
