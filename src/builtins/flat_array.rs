@@ -231,7 +231,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         let rc = s.arg(0);
         let me = s.call(self.rc_builtin.get, &[rc]);
         let old_len = s.arrow(me, F_LEN);
-        let new_len = s.add(old_len, 1u64);
+        let new_len = s.add(old_len, s.i64(1));
 
         s.call_void(self.ensure_cap, &[rc, new_len]);
         s.arrow_set(me, F_LEN, new_len);
@@ -247,7 +247,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         s.call_void(self.bounds_check, &[rc, s.i64(0)]);
         let len = s.arrow(me, F_LEN);
-        let new_len = s.sub(len, 1u64);
+        let new_len = s.sub(len, s.i64(1));
 
         let item = s.buf_get(s.arrow(me, F_DATA), new_len);
         s.ret(s.make_tup(&[rc, item]))
@@ -317,7 +317,7 @@ impl<'a> FlatArrayBuiltin<'a> {
         let should_resize = s.ult(curr_cap, min_cap);
 
         s.if_(should_resize, |s| {
-            let candidate_cap = s.mul(curr_cap, 2u64);
+            let candidate_cap = s.mul(curr_cap, s.i64(2));
             let use_candidate_cap = s.uge(candidate_cap, min_cap);
             let new_cap = s.ternary(use_candidate_cap, candidate_cap, min_cap);
 
@@ -408,8 +408,8 @@ impl<'a> FlatArrayIoBuiltin<'a> {
                 let getchar_result_value = s.call(libc.getchar, &[]);
                 s.ptr_set(getchar_result, getchar_result_value);
                 s.not(s.or(
-                    s.eq(getchar_result_value, -1i32), // EOF
-                    s.eq(getchar_result_value, '\n' as i32),
+                    s.eq(getchar_result_value, s.i32(-1i32 as u32)), // EOF
+                    s.eq(getchar_result_value, s.i32('\n' as u32)),
                 ))
             },
             |s| {

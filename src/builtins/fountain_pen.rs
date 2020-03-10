@@ -3,7 +3,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::types::{BasicTypeEnum, StructType};
-use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
+use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
 use std::convert::TryInto;
 
@@ -11,52 +11,6 @@ pub struct Scope<'a> {
     context: &'a Context,
     builder: Builder<'a>,
     func: FunctionValue<'a>,
-}
-
-pub trait IntoInt<'a> {
-    fn into_int(self, s: &Scope<'a>) -> IntValue<'a>;
-}
-
-impl<'a> IntoInt<'a> for i32 {
-    fn into_int(self, s: &Scope<'a>) -> IntValue<'a> {
-        s.context.i32_type().const_int(self as u64, false).into()
-    }
-}
-
-impl<'a> IntoInt<'a> for u32 {
-    fn into_int(self, s: &Scope<'a>) -> IntValue<'a> {
-        s.context.i32_type().const_int(self as u64, false).into()
-    }
-}
-
-impl<'a> IntoInt<'a> for i64 {
-    fn into_int(self, s: &Scope<'a>) -> IntValue<'a> {
-        s.context.i64_type().const_int(self as u64, false).into()
-    }
-}
-
-impl<'a> IntoInt<'a> for u64 {
-    fn into_int(self, s: &Scope<'a>) -> IntValue<'a> {
-        s.context.i64_type().const_int(self as u64, false).into()
-    }
-}
-
-impl<'a> IntoInt<'a> for bool {
-    fn into_int(self, s: &Scope<'a>) -> IntValue<'a> {
-        s.context.i8_type().const_int(self as u64, false).into()
-    }
-}
-
-impl<'a> IntoInt<'a> for char {
-    fn into_int(self, s: &Scope<'a>) -> IntValue<'a> {
-        s.context.i8_type().const_int(self as u64, false).into()
-    }
-}
-
-impl<'a> IntoInt<'a> for BasicValueEnum<'a> {
-    fn into_int(self, _s: &Scope<'a>) -> IntValue<'a> {
-        self.into_int_value()
-    }
 }
 
 pub fn scope<'a>(func: FunctionValue<'a>, context: &'a Context) -> Scope<'a> {
@@ -315,31 +269,36 @@ impl<'a> Scope<'a> {
         tup.into()
     }
 
-    pub fn buf_addr(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn buf_addr(&self, arr: BasicValueEnum<'a>, idx: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         unsafe {
             self.builder
                 .build_in_bounds_gep(
                     arr.into_pointer_value().into(),
-                    &[idx.into_int(self)],
+                    &[idx.into_int_value()],
                     "arr_addr",
                 )
                 .into()
         }
     }
 
-    pub fn buf_set(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>, val: BasicValueEnum<'a>) {
+    pub fn buf_set(
+        &self,
+        arr: BasicValueEnum<'a>,
+        idx: BasicValueEnum<'a>,
+        val: BasicValueEnum<'a>,
+    ) {
         let addr = self.buf_addr(arr, idx).into_pointer_value();
 
         self.builder.build_store(addr, val);
     }
 
-    pub fn buf_get(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn buf_get(&self, arr: BasicValueEnum<'a>, idx: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         let addr = self.buf_addr(arr, idx).into_pointer_value();
 
         self.builder.build_load(addr, "get")
     }
 
-    pub fn arr_addr(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn arr_addr(&self, arr: BasicValueEnum<'a>, idx: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         let target_type = arr
             .get_type()
             .into_pointer_type()
@@ -350,13 +309,18 @@ impl<'a> Scope<'a> {
         self.buf_addr(self.ptr_cast(target_type, arr), idx)
     }
 
-    pub fn arr_set(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>, val: BasicValueEnum<'a>) {
+    pub fn arr_set(
+        &self,
+        arr: BasicValueEnum<'a>,
+        idx: BasicValueEnum<'a>,
+        val: BasicValueEnum<'a>,
+    ) {
         let addr = self.arr_addr(arr, idx).into_pointer_value();
 
         self.builder.build_store(addr, val);
     }
 
-    pub fn arr_get(&self, arr: BasicValueEnum<'a>, idx: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn arr_get(&self, arr: BasicValueEnum<'a>, idx: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         let addr = self.arr_addr(arr, idx).into_pointer_value();
 
         self.builder.build_load(addr, "get")
@@ -375,14 +339,18 @@ impl<'a> Scope<'a> {
         ptr_type.const_null().into()
     }
 
-    pub fn for_(&self, bound: impl IntoInt<'a>, body: impl FnOnce(&Scope<'a>, BasicValueEnum<'a>)) {
+    pub fn for_(
+        &self,
+        bound: BasicValueEnum<'a>,
+        body: impl FnOnce(&Scope<'a>, BasicValueEnum<'a>),
+    ) {
         let i_ptr = self.alloca(self.i64_t());
         self.ptr_set(i_ptr, self.i64(0));
         self.while_(
             |s| s.ult(s.ptr_get(i_ptr), bound),
             |s| {
                 body(s, s.ptr_get(i_ptr));
-                s.ptr_set(i_ptr, s.add(s.ptr_get(i_ptr), 1u64));
+                s.ptr_set(i_ptr, s.add(s.ptr_get(i_ptr), s.i64(1)));
             },
         );
     }
@@ -432,7 +400,7 @@ impl<'a> Scope<'a> {
 
     pub fn malloc(
         &self,
-        num: impl IntoInt<'a>,
+        num: BasicValueEnum<'a>,
         ty: BasicTypeEnum<'a>,
         libc: &LibC<'a>,
     ) -> BasicValueEnum<'a> {
@@ -445,11 +413,11 @@ impl<'a> Scope<'a> {
 
     pub fn calloc(
         &self,
-        num: impl IntoInt<'a>,
+        num: BasicValueEnum<'a>,
         ty: BasicTypeEnum<'a>,
         libc: &LibC<'a>,
     ) -> BasicValueEnum<'a> {
-        let ptr = self.call(libc.calloc, &[num.into_int(self).into(), self.size(ty)]);
+        let ptr = self.call(libc.calloc, &[num.into_int_value().into(), self.size(ty)]);
         self.if_(self.is_null(ptr), |s| {
             s.panic("calloc failed", &[], libc);
         });
@@ -467,138 +435,138 @@ impl<'a> Scope<'a> {
             .into()
     }
 
-    pub fn ult(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn ult(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_compare(
                 IntPredicate::ULT,
-                arg1.into_int(self),
-                arg2.into_int(self),
+                arg1.into_int_value(),
+                arg2.into_int_value(),
                 "ult",
             )
             .into()
     }
 
-    pub fn ugt(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn ugt(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_compare(
                 IntPredicate::UGT,
-                arg1.into_int(self),
-                arg2.into_int(self),
+                arg1.into_int_value(),
+                arg2.into_int_value(),
                 "ugt",
             )
             .into()
     }
 
-    pub fn ule(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn ule(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_compare(
                 IntPredicate::ULE,
-                arg1.into_int(self),
-                arg2.into_int(self),
+                arg1.into_int_value(),
+                arg2.into_int_value(),
                 "ule",
             )
             .into()
     }
 
-    pub fn uge(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn uge(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_compare(
                 IntPredicate::UGE,
-                arg1.into_int(self),
-                arg2.into_int(self),
+                arg1.into_int_value(),
+                arg2.into_int_value(),
                 "uge",
             )
             .into()
     }
 
-    pub fn eq(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn eq(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_compare(
                 IntPredicate::EQ,
-                arg1.into_int(self),
-                arg2.into_int(self),
+                arg1.into_int_value(),
+                arg2.into_int_value(),
                 "eq",
             )
             .into()
     }
 
-    pub fn ne(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn ne(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_compare(
                 IntPredicate::NE,
-                arg1.into_int(self),
-                arg2.into_int(self),
+                arg1.into_int_value(),
+                arg2.into_int_value(),
                 "neq",
             )
             .into()
     }
 
-    pub fn mul(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn mul(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_int_mul(arg1.into_int(self), arg2.into_int(self), "mul")
+            .build_int_mul(arg1.into_int_value(), arg2.into_int_value(), "mul")
             .into()
     }
 
-    pub fn udiv(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn udiv(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_int_unsigned_div(arg1.into_int(self), arg2.into_int(self), "udiv")
+            .build_int_unsigned_div(arg1.into_int_value(), arg2.into_int_value(), "udiv")
             .into()
     }
 
-    pub fn urem(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn urem(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_int_unsigned_rem(arg1.into_int(self), arg2.into_int(self), "urem")
+            .build_int_unsigned_rem(arg1.into_int_value(), arg2.into_int_value(), "urem")
             .into()
     }
 
-    pub fn add(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn add(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_int_add(arg1.into_int(self), arg2.into_int(self), "add")
+            .build_int_add(arg1.into_int_value(), arg2.into_int_value(), "add")
             .into()
     }
 
-    pub fn sub(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn sub(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_int_sub(arg1.into_int(self), arg2.into_int(self), "sub")
+            .build_int_sub(arg1.into_int_value(), arg2.into_int_value(), "sub")
             .into()
     }
 
-    pub fn and(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn and(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_and(arg1.into_int(self), arg2.into_int(self), "and")
+            .build_and(arg1.into_int_value(), arg2.into_int_value(), "and")
             .into()
     }
 
-    pub fn or(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn or(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_or(arg1.into_int(self), arg2.into_int(self), "and")
+            .build_or(arg1.into_int_value(), arg2.into_int_value(), "and")
             .into()
     }
 
-    pub fn not(&self, arg: impl IntoInt<'a>) -> BasicValueEnum<'a> {
-        self.builder.build_not(arg.into_int(self), "not").into()
+    pub fn not(&self, arg: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
+        self.builder.build_not(arg.into_int_value(), "not").into()
     }
 
-    pub fn sll(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn sll(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_left_shift(arg1.into_int(self), arg2.into_int(self), "sll")
+            .build_left_shift(arg1.into_int_value(), arg2.into_int_value(), "sll")
             .into()
     }
 
-    pub fn srl(&self, arg1: impl IntoInt<'a>, arg2: impl IntoInt<'a>) -> BasicValueEnum<'a> {
+    pub fn srl(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
-            .build_right_shift(arg1.into_int(self), arg2.into_int(self), false, "srl")
+            .build_right_shift(arg1.into_int_value(), arg2.into_int_value(), false, "srl")
             .into()
     }
 
     pub fn truncate(
         &self,
         result_type: BasicTypeEnum<'a>,
-        value: impl IntoInt<'a>,
+        value: BasicValueEnum<'a>,
     ) -> BasicValueEnum<'a> {
         self.builder
             .build_int_truncate(
-                value.into_int(self),
+                value.into_int_value(),
                 result_type.into_int_type(),
                 "truncate",
             )
@@ -617,15 +585,15 @@ impl<'a> Scope<'a> {
         self.context.i64_type().into()
     }
 
-    pub fn i8(&self, val: i8) -> BasicValueEnum<'a> {
+    pub fn i8(&self, val: u8) -> BasicValueEnum<'a> {
         self.context.i8_type().const_int(val as u64, false).into()
     }
 
-    pub fn i32(&self, val: i32) -> BasicValueEnum<'a> {
+    pub fn i32(&self, val: u32) -> BasicValueEnum<'a> {
         self.context.i32_type().const_int(val as u64, false).into()
     }
 
-    pub fn i64(&self, val: i64) -> BasicValueEnum<'a> {
+    pub fn i64(&self, val: u64) -> BasicValueEnum<'a> {
         self.context.i64_type().const_int(val as u64, false).into()
     }
 
