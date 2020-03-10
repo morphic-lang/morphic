@@ -47,7 +47,7 @@ fn get_items_per_leaf(item_bytes: u64) -> u64 {
     items_per_leaf
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct PersistentArrayBuiltin<'a> {
     // related types
     pub item_type: BasicTypeEnum<'a>,
@@ -86,6 +86,20 @@ pub struct PersistentArrayBuiltin<'a> {
     put_tail: FunctionValue<'a>,
     pop_tail: FunctionValue<'a>,
     pop_node: FunctionValue<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PersistentArrayIoBuiltin<'a> {
+    // related types
+    pub byte_array_type: PersistentArrayBuiltin<'a>,
+
+    // public API
+    pub input: FunctionValue<'a>,
+    pub output: FunctionValue<'a>,
+
+    // helper functions
+    pub output_tail: FunctionValue<'a>,
+    pub output_node: FunctionValue<'a>,
 }
 
 impl<'a> PersistentArrayBuiltin<'a> {
@@ -1368,6 +1382,170 @@ impl<'a> PersistentArrayBuiltin<'a> {
             );
 
             s.ret(s.make_tup(&[s.field(popnode_ret, 0), result]));
+        }
+    }
+}
+impl<'a> PersistentArrayIoBuiltin<'a> {
+    pub fn declare(
+        context: &'a Context,
+        module: &Module<'a>,
+        byte_array_type: PersistentArrayBuiltin<'a>,
+    ) -> Self {
+        let void_type = context.void_type();
+
+        let input = module.add_function(
+            "builtin_pers_array_input",
+            byte_array_type.array_type.fn_type(&[], false),
+            Some(Linkage::Internal),
+        );
+
+        let output = module.add_function(
+            "builtin_pers_array_output",
+            void_type.fn_type(&[byte_array_type.array_type.into()], false),
+            Some(Linkage::Internal),
+        );
+
+        let output_tail = module.add_function(
+            "builtin_pers_array_output_tail",
+            void_type.fn_type(
+                &[byte_array_type.leaf_type.into(), context.i64_type().into()],
+                false,
+            ),
+            Some(Linkage::Internal),
+        );
+
+        let output_node = module.add_function(
+            "builtin_pers_array_output_branch",
+            void_type.fn_type(
+                &[
+                    byte_array_type.branch_type.into(),
+                    context.i64_type().into(),
+                ],
+                false,
+            ),
+            Some(Linkage::Internal),
+        );
+
+        Self {
+            // related types
+            byte_array_type,
+
+            // public API
+            input,
+            output,
+
+            // helper functions
+            output_tail,
+            output_node,
+        }
+    }
+
+    pub fn define(&self, context: &'a Context, libc: &LibC<'a>) {
+        // define 'input'
+        {
+            let s = scope(self.input, context);
+
+            s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
+
+            let array = s.call(self.byte_array_type.new, &[]);
+
+            let getchar_result = s.alloca(s.i32_t());
+            s.while_(
+                |s| {
+                    let getchar_result_value = s.call(libc.getchar, &[]);
+                    s.ptr_set(getchar_result, getchar_result_value);
+                    s.not(s.or(
+                        s.eq(getchar_result_value, -1i32), // EOF
+                        s.eq(getchar_result_value, '\n' as i32),
+                    ))
+                },
+                |s| {
+                    let input_bytes = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
+                    s.call(self.byte_array_type.push, &[array, input_bytes]);
+                },
+            );
+
+            s.ret(array);
+        }
+
+        // define 'output'
+        {
+            let s = scope(self.output, context);
+            let array = s.arg(0);
+
+            let tail = s.field(array, F_ARR_TAIL);
+            let body = s.field(array, F_ARR_BODY);
+            let height = s.field(array, F_ARR_HEIGHT);
+            let len = s.field(array, F_ARR_LEN);
+
+            s.if_(s.not(s.is_null(body)), |s| {
+                s.call(self.output_node, &[body, height]);
+            });
+
+            let tail_len = s.call(self.byte_array_type.tail_len, &[len]);
+
+            s.if_(s.not(s.is_null(tail)), |s| {
+                s.call(self.output_tail, &[tail, tail_len]);
+            });
+
+            s.ret_void();
+        }
+
+        // define 'output_tail'
+        {
+            let s = scope(self.output_tail, context);
+            let tail = s.arg(0);
+            let tail_len = s.arg(1);
+
+            let stdout_value = s.ptr_get(libc.stdout);
+
+            // TODO: check bytes_written for errors
+            let _bytes_written = s.call(libc.fwrite, &[tail, s.i64(1), tail_len, stdout_value]);
+
+            s.ret_void();
+        }
+
+        // define 'output_node'
+        {
+            let s = scope(self.output_tail, context);
+            let branch = s.arg(0);
+            let height = s.arg(1);
+
+            let stdout_value = s.ptr_get(libc.stdout);
+
+            let i = s.alloca(s.i64_t());
+            s.ptr_set(i, s.i64(0));
+
+            s.if_(s.eq(height, 0), |s| {
+                let items_per_leaf = get_items_per_leaf(1) as i64;
+
+                // TODO: check bytes_written for errors
+                let _bytes_written = s.call(
+                    libc.fwrite,
+                    &[branch, s.i64(1), s.i64(items_per_leaf), stdout_value],
+                );
+            });
+
+            s.while_(
+                |s| {
+                    s.and(
+                        s.ult(s.ptr_get(i), BRANCHING_FACTOR),
+                        s.not(
+                            s.is_null(s.arr_get(s.arrow(branch, F_BRANCH_CHILDREN), s.ptr_get(i))),
+                        ),
+                    )
+                },
+                |s| {
+                    s.call_void(
+                        self.output_node,
+                        &[
+                            s.arr_get(s.arrow(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
+                            s.sub(height, 1),
+                        ],
+                    );
+                    s.ptr_set(i, s.add(s.ptr_get(i), 1));
+                },
+            );
         }
     }
 }
