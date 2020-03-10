@@ -66,9 +66,12 @@ impl Config {
             .version(clap::crate_version!())
             .about(clap::crate_description!())
             .setting(AppSettings::SubcommandRequiredElseHelp)
+            .setting(AppSettings::ColoredHelp)
             .subcommand(
                 SubCommand::with_name("run")
                     .about("Compiles and runs a program from source")
+                    .setting(AppSettings::ColoredHelp)
+                    .setting(AppSettings::NextLineHelp)
                     .arg(
                         Arg::with_name("src-path")
                             .help("Specify the source file for compilation.")
@@ -76,13 +79,15 @@ impl Config {
                             .index(1),
                     )
                     .arg(Arg::with_name("interpret").long("interpret").help(
-                        "Run the program under the reference interpreter instead of generating
+                        "Run the program using the reference interpreter instead of generating \
                          LLVM",
                     )),
             )
             .subcommand(
                 SubCommand::with_name("build")
                     .about("Builds a program from source")
+                    .setting(AppSettings::ColoredHelp)
+                    .setting(AppSettings::NextLineHelp)
                     .arg(
                         Arg::with_name("src-path")
                             .help("Specify the source file for compilation.")
