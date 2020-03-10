@@ -387,13 +387,27 @@ impl<'a> Scope<'a> {
     }
 
     pub fn printf(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
-        let message_global = self.builder.build_global_string_ptr(message, "panic_str");
+        let message_global = self.builder.build_global_string_ptr(message, "printf_str");
 
         let stdout_value = self
             .builder
             .build_load(libc.stdout.into_pointer_value(), "stdout_value");
 
         let mut fprintf_args = vec![stdout_value, message_global.as_pointer_value().into()];
+        fprintf_args.extend_from_slice(message_args);
+
+        self.builder
+            .build_call(libc.fprintf, &fprintf_args, "fprintf_output");
+    }
+
+    pub fn debug(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
+        let message_global = self.builder.build_global_string_ptr(message, "debug_str");
+
+        let stderr_value = self
+            .builder
+            .build_load(libc.stderr.into_pointer_value(), "stderr_value");
+
+        let mut fprintf_args = vec![stderr_value, message_global.as_pointer_value().into()];
         fprintf_args.extend_from_slice(message_args);
 
         self.builder
