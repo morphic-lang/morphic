@@ -60,3 +60,40 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>>(
         expected = String::from_utf8_lossy(expected_out.as_ref())
     );
 }
+
+macro_rules! sample {
+    ($name:ident $path:expr ; stdin = $stdin:expr ; stdout = $stdout:expr ; ) => {
+        mod $name {
+            #[test]
+            fn compile() {
+                crate::test::run_sample::run_sample(
+                    crate::cli::RunMode::Interpret,
+                    $path,
+                    $stdin,
+                    $stdout,
+                );
+            }
+
+            #[test]
+            fn interpret() {
+                crate::test::run_sample::run_sample(
+                    crate::cli::RunMode::Compile,
+                    $path,
+                    $stdin,
+                    $stdout,
+                );
+            }
+        }
+    };
+}
+
+macro_rules! lines {
+    ($($line:expr),* $(,)?) => { ( {
+        let mut result = String::new();
+        $(
+            result.push_str(&$line);
+            result.push('\n');
+        )*
+        result
+    } ) }
+}
