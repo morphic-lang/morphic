@@ -1,0 +1,11 @@
+module Core = file "lib/core/core.txt"
+  expose {
+    module Array expose { concat },
+    module Io expose { writeln },
+  }
+
+proc main(): () =
+  let hello = "hello" in
+  let hello_world = concat(hello, " world") in
+  do writeln(hello) then
+  do writeln(hello_world)

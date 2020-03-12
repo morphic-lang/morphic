@@ -30,5 +30,13 @@ sample! { arith "samples/arith.txt";
     stdout = "Completed all tests\n";
 }
 
+sample! { concat_persistent "samples/concat_persistent.txt";
+    stdin = "";
+    stdout = lines! [
+        "hello",
+        "hello world",
+    ];
+}
+
 // TODO: Carefully review 'samples/mutate.txt' to determine by hand what the stdouted output should
 // be, then add a test for it.
