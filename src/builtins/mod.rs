@@ -9,3 +9,6 @@ pub mod persistent_array;
 pub mod rc;
 
 pub mod fountain_pen;
+
+#[cfg(test)]
+mod test_utils;

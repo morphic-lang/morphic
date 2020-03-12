@@ -444,8 +444,8 @@ impl<'a> FlatArrayIoBuiltin<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::builtins::test_utils::verify;
     use inkwell::values::BasicValue;
-    use std::path::Path;
 
     #[test]
     fn well_formed() {
@@ -478,10 +478,7 @@ mod test {
         let flat_array = FlatArrayBuiltin::declare(&context, &module, inner_type.into());
         flat_array.define(&context, &libc, None, Some(dummy));
 
-        module
-            .print_to_file(Path::new("test_flat_array.out.ll"))
-            .unwrap();
-        module.verify().unwrap();
+        verify("test_flat_array.out.ll", &module);
     }
 
     #[test]
@@ -499,9 +496,6 @@ mod test {
         let flat_array_io = FlatArrayIoBuiltin::declare(&context, &module, flat_array);
         flat_array_io.define(&context, &libc);
 
-        module
-            .print_to_file(Path::new("test_flat_array_io.out.ll"))
-            .unwrap();
-        module.verify().unwrap();
+        verify("test_flat_array_io.out.ll", &module);
     }
 }

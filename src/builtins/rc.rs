@@ -196,8 +196,8 @@ impl<'a> RcBoxBuiltin<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::builtins::test_utils::verify;
     use inkwell::values::BasicValue;
-    use std::path::Path;
 
     #[test]
     fn well_formed() {
@@ -230,7 +230,6 @@ mod test {
         let rc = RcBoxBuiltin::declare(&context, &module, inner_type.into());
         rc.define(&context, &libc, Some(dummy));
 
-        module.print_to_file(Path::new("test_rc.out.ll")).unwrap();
-        module.verify().unwrap();
+        verify("test_rc.out.ll", &module);
     }
 }
