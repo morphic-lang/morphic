@@ -7,6 +7,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::repr_constrained_ast as constrain;
 use crate::pseudoprocess::{spawn_process, Child, Stdio};
+use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -21,7 +22,7 @@ use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -439,6 +440,7 @@ fn get_llvm_variant_type<'a, 'b>(
         let mut max_size = 0;
         for variant_type in &variants.items {
             let variant_type = get_llvm_type(globals, instances, &variant_type);
+            debug_assert!(variant_type.is_sized());
             let alignment = globals.target.get_abi_alignment(&variant_type);
             let size = globals.target.get_abi_size(&variant_type);
             max_alignment = max_alignment.max(alignment);
@@ -1311,6 +1313,49 @@ fn get_target_machine(target: &cli::TargetConfig) -> TargetMachine {
         .unwrap()
 }
 
+fn add_size_deps(type_: &low::Type, deps: &mut BTreeSet<low::CustomTypeId>) {
+    match type_ {
+        low::Type::Bool | low::Type::Num(_) => {}
+
+        low::Type::Array(_, _) | low::Type::HoleArray(_, _) | low::Type::Boxed(_) => {}
+
+        low::Type::Tuple(items) => {
+            for item in items {
+                add_size_deps(item, deps)
+            }
+        }
+
+        low::Type::Variants(variants) => {
+            for (_, variant) in variants {
+                add_size_deps(variant, deps)
+            }
+        }
+
+        low::Type::Custom(custom) => {
+            deps.insert(*custom);
+        }
+    }
+}
+
+fn custom_type_dep_order(typedefs: &IdVec<low::CustomTypeId, low::Type>) -> Vec<low::CustomTypeId> {
+    let size_deps = Graph {
+        edges_out: typedefs.map(|_, def| {
+            let mut deps = BTreeSet::new();
+            add_size_deps(def, &mut deps);
+            deps.into_iter().collect()
+        }),
+    };
+
+    let sccs = graph::strongly_connected(&size_deps);
+
+    sccs.into_iter()
+        .map(|scc| {
+            debug_assert_eq!(scc.len(), 1);
+            scc[0]
+        })
+        .collect()
+}
+
 fn gen_program<'a>(
     program: low::Program,
     target_machine: &TargetMachine,
@@ -1346,8 +1391,9 @@ fn gen_program<'a>(
         )
     });
 
-    for (type_id, ty) in &globals.custom_types {
-        ty.define_type(&globals, &instances, &program.custom_types[type_id]);
+    for type_id in custom_type_dep_order(&program.custom_types) {
+        let type_decls = &globals.custom_types[type_id];
+        type_decls.define_type(&globals, &instances, &program.custom_types[type_id]);
     }
 
     for (func_id, func) in &funcs {

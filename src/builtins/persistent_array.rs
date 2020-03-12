@@ -397,6 +397,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
         release_item: Option<FunctionValue<'a>>,
     ) {
         // Compute constants
+        debug_assert!(self.item_type.is_sized());
         let items_per_leaf = get_items_per_leaf(target.get_abi_size(&self.item_type));
 
         // Define types
