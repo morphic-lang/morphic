@@ -1,0 +1,78 @@
+module Core = file "lib/core/core.txt"
+  expose {
+    module String expose { int_to_string },
+    module Io expose { writeln },
+  }
+
+module State = file "lib/state.txt"
+  expose { State, bind, pure, seq, get, set }
+
+inc: State Int Int =
+  bind(get, \curr -> seq(set(curr + 1), pure(curr)))
+
+type Tree a {
+  Leaf(a),
+  Branch(Tree a, Tree a),
+}
+
+index_leaves(tree: Tree a): State Int (Tree (Int, a)) =
+  match tree {
+    Leaf(val) -> bind(inc, \idx -> pure(Leaf(idx, val))),
+
+    Branch(left, right) ->
+      bind(index_leaves(left), \left_indexed ->
+        bind(index_leaves(right), \right_indexed ->
+          pure(Branch(left_indexed, right_indexed))
+        )
+      )
+  }
+
+proc print_indent(indent: Int): () =
+  if indent <= 0 {
+    ()
+  } else {
+    do output("  ") then
+    do print_indent(indent - 1)
+  }
+
+proc print_tree_rec(print_leaf: proc a -> (), tree: Tree a, indent: Int): () =
+  match tree {
+    Leaf(x) ->
+      do output("Leaf(") then
+      do print_leaf(x) then
+      do output(")"),
+
+    Branch(left, right) ->
+      do output("Branch(\n") then
+      do print_indent(indent + 1) then
+      do print_tree_rec(print_leaf, left, indent + 1) then
+      do output(",\n") then
+      do print_indent(indent + 1) then
+      do print_tree_rec(print_leaf, right, indent + 1) then
+      do output("\n") then
+      do print_indent(indent) then
+      do output(")"),
+  }
+
+proc print_tree(print_leaf: proc a -> (), tree: Tree a): () =
+  do print_tree_rec(print_leaf, tree, 0) then
+  do output("\n")
+
+proc main(): () =
+  let tree = Branch(Leaf("foo"), Branch(Branch(Leaf("bar"), Leaf("baz")), Leaf("quux"))) in
+
+  do writeln("Original tree:") then
+  do print_tree(output, tree) then
+
+  let (_, indexed) = State.run(index_leaves(tree), 0) in
+
+  do writeln("Indexed tree:") then
+  do print_tree(
+    proc \(i, str) ->
+      do output(int_to_string(i)) then
+      do output(", ") then
+      do output(str),
+    indexed
+  ) then
+
+  ()

@@ -38,5 +38,33 @@ sample! { concat_persistent "samples/concat_persistent.txt";
     ];
 }
 
+sample! { index_tree "samples/index_tree.txt";
+    stdin = "";
+    stdout = lines! [
+        "Original tree:",
+        "Branch(",
+        "  Leaf(foo),",
+        "  Branch(",
+        "    Branch(",
+        "      Leaf(bar),",
+        "      Leaf(baz)",
+        "    ),",
+        "    Leaf(quux)",
+        "  )",
+        ")",
+        "Indexed tree:",
+        "Branch(",
+        "  Leaf(0, foo),",
+        "  Branch(",
+        "    Branch(",
+        "      Leaf(1, bar),",
+        "      Leaf(2, baz)",
+        "    ),",
+        "    Leaf(3, quux)",
+        "  )",
+        ")",
+    ];
+}
+
 // TODO: Carefully review 'samples/mutate.txt' to determine by hand what the stdouted output should
 // be, then add a test for it.
