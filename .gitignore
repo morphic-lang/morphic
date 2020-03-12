@@ -8,6 +8,7 @@
 **/*.s
 **/*.out
 **/*-artifacts
+**/.tmp-exe-*
 
 # Editor/system files
 *.swp
@@ -15,4 +16,4 @@
 .DS_Store
 .vscode
 .devcontainer
-.tmp-exe-*
+vgcore.*
