@@ -1,9 +1,10 @@
 use crate::builtins::core::*;
 use crate::builtins::fountain_pen::scope;
+use crate::builtins::zero_sized_array as zero_sized;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
-use inkwell::types::{BasicType, BasicTypeEnum, StructType};
+use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 use std::convert::TryInto;
@@ -52,10 +53,10 @@ fn get_items_per_leaf(item_bytes: u64) -> u64 {
 pub struct PersistentArrayBuiltin<'a> {
     // related types
     pub item_type: BasicTypeEnum<'a>,
-    branch_type: StructType<'a>,
-    leaf_type: StructType<'a>,
-    pub array_type: StructType<'a>,
-    pub hole_array_type: StructType<'a>,
+    branch_type: BasicTypeEnum<'a>,
+    leaf_type: BasicTypeEnum<'a>,
+    pub array_type: BasicTypeEnum<'a>,
+    pub hole_array_type: BasicTypeEnum<'a>,
 
     // public API
     pub new: FunctionValue<'a>,
@@ -106,9 +107,69 @@ pub struct PersistentArrayIoBuiltin<'a> {
 impl<'a> PersistentArrayBuiltin<'a> {
     pub fn declare(
         context: &'a Context,
+        target: &TargetData,
         module: &Module<'a>,
         item_type: BasicTypeEnum<'a>,
     ) -> Self {
+        debug_assert!(item_type.is_sized());
+        if target.get_abi_size(&item_type) == 0 {
+            let void_type = context.void_type();
+
+            // a placeholder for functions not used in the zero sized implementation
+            let dummy_fun = module.add_function(
+                "dummy",
+                void_type.fn_type(&[], false),
+                Some(Linkage::Internal),
+            );
+
+            // a placeholder for types not used in the zero sized implementation
+            let dummy_ty = context.struct_type(&[], false).into();
+
+            let builtin = zero_sized::declare(
+                zero_sized::ImplentationChoice::Persistent,
+                context,
+                module,
+                item_type,
+            );
+
+            return Self {
+                item_type: builtin.item_type,
+                branch_type: dummy_ty,
+                leaf_type: dummy_ty,
+                array_type: builtin.array_type,
+                hole_array_type: builtin.hole_array_type,
+
+                new: builtin.new,
+                item: builtin.item,
+                len: builtin.len,
+                push: builtin.push,
+                pop: builtin.pop,
+                replace: builtin.replace,
+                retain_array: builtin.retain_array,
+                release_array: builtin.release_array,
+                retain_hole: builtin.retain_hole,
+                release_hole: builtin.release_hole,
+
+                set_next_path: dummy_fun,
+                get: dummy_fun,
+                retain_node: dummy_fun,
+                release_node: dummy_fun,
+                retain_tail: dummy_fun,
+                release_tail: dummy_fun,
+                tail_len: dummy_fun,
+                obtain_unique_leaf: dummy_fun,
+                obtain_unique_branch: dummy_fun,
+                obtain_unique_tail: dummy_fun,
+                set_tail: dummy_fun,
+                set_node: dummy_fun,
+                set: dummy_fun,
+                push_tail: dummy_fun,
+                put_tail: dummy_fun,
+                pop_tail: dummy_fun,
+                pop_node: dummy_fun,
+            };
+        }
+
         let void_type = context.void_type();
         let i64_type = context.i64_type();
         let node_ptr_type = context.i8_type().ptr_type(AddressSpace::Generic);
@@ -350,10 +411,10 @@ impl<'a> PersistentArrayBuiltin<'a> {
         PersistentArrayBuiltin {
             // related types
             item_type,
-            branch_type,
-            leaf_type,
-            array_type,
-            hole_array_type,
+            branch_type: branch_type.into(),
+            leaf_type: leaf_type.into(),
+            array_type: array_type.into(),
+            hole_array_type: hole_array_type.into(),
 
             // public API
             new,
@@ -396,8 +457,32 @@ impl<'a> PersistentArrayBuiltin<'a> {
         retain_item: Option<FunctionValue<'a>>,
         release_item: Option<FunctionValue<'a>>,
     ) {
-        // Compute constants
         debug_assert!(self.item_type.is_sized());
+        if target.get_abi_size(&self.item_type) == 0 {
+            zero_sized::define(
+                &zero_sized::ZeroSizedArrayBuiltin {
+                    item_type: self.item_type,
+                    array_type: self.array_type,
+                    hole_array_type: self.hole_array_type,
+
+                    new: self.new,
+                    item: self.item,
+                    len: self.len,
+                    push: self.push,
+                    pop: self.pop,
+                    replace: self.replace,
+                    retain_array: self.retain_array,
+                    release_array: self.release_array,
+                    retain_hole: self.retain_hole,
+                    release_hole: self.release_hole,
+                },
+                context,
+                libc,
+            );
+            return;
+        }
+
+        // Compute constants
         let items_per_leaf = get_items_per_leaf(target.get_abi_size(&self.item_type));
 
         // Define types
@@ -406,7 +491,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             let node_ptr_type = context.i8_type().ptr_type(AddressSpace::Generic);
 
-            self.branch_type.set_body(
+            self.branch_type.into_struct_type().set_body(
                 &[
                     // refcount
                     i64_type.into(),
@@ -418,7 +503,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 false,
             );
 
-            self.leaf_type.set_body(
+            self.leaf_type.into_struct_type().set_body(
                 &[
                     // refcount
                     i64_type.into(),

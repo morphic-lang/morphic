@@ -136,6 +136,7 @@ impl<'a> Instances<'a> {
         let mut flat_arrays = BTreeMap::new();
         let byte_flat_builtin = FlatArrayBuiltin::declare(
             globals.context,
+            globals.target,
             globals.module,
             globals.context.i8_type().into(),
         );
@@ -147,6 +148,7 @@ impl<'a> Instances<'a> {
         let mut persistent_arrays = BTreeMap::new();
         let byte_persistent_builtin = PersistentArrayBuiltin::declare(
             globals.context,
+            globals.target,
             globals.module,
             globals.context.i8_type().into(),
         );
@@ -180,6 +182,7 @@ impl<'a> Instances<'a> {
         }
         let new_builtin = FlatArrayBuiltin::declare(
             globals.context,
+            globals.target,
             globals.module,
             get_llvm_type(globals, self, item_type),
         );
@@ -199,6 +202,7 @@ impl<'a> Instances<'a> {
         }
         let new_builtin = PersistentArrayBuiltin::declare(
             globals.context,
+            globals.target,
             globals.module,
             get_llvm_type(globals, self, item_type),
         );
@@ -328,6 +332,7 @@ impl<'a> Instances<'a> {
 
             flat_array_builtin.define(
                 globals.context,
+                globals.target,
                 &globals.libc,
                 Some(retain_func),
                 Some(release_func),
