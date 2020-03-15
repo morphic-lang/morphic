@@ -1,4 +1,4 @@
-use crate::builtins::core::LibC;
+use crate::builtins::libc::LibC;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
