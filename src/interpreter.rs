@@ -682,23 +682,40 @@ fn unwrap_custom(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (Custo
     }
 }
 
+fn bounds_check(stderr: &mut dyn Write, len: usize, index: i64) -> Result<(), ExitStatus> {
+    let maybe_index = usize::try_from(index);
+    match maybe_index {
+        Ok(actual_index) if actual_index < len => Ok(()),
+        _ => {
+            writeln!(
+                stderr,
+                "index out of bounds: attempt to access item {} of array with length {}",
+                index, len,
+            )
+            .unwrap();
+            Err(ExitStatus::Failure)
+        }
+    }
+}
+
 // This "red zone" value depends on the maximum stack space required by `interpret_expr`, which is
 // determined experimentally.  If you make a change to `interpret_expr and` `cargo test` starts
 // segfaulting, bump this value until it works.
 const STACK_RED_ZONE_BYTES: usize = 128 * 1024;
 const STACK_GROW_BYTES: usize = 1024 * 1024;
 
-fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
+fn interpret_expr(
     expr: Expr,
-    stdin: &mut R,
-    stdout: &mut W,
+    stdin: &mut dyn BufRead,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
     program: &Program,
     locals: &Locals,
     heap: &mut Heap,
     stacktrace: StackTrace,
-) -> HeapId {
+) -> Result<HeapId, ExitStatus> {
     stacker::maybe_grow(STACK_RED_ZONE_BYTES, STACK_GROW_BYTES, move || {
-        match expr {
+        Ok(match expr {
             Expr::Local(local_id) => locals[local_id],
             Expr::Call(func_id, arg_id) => {
                 typecheck(
@@ -712,11 +729,12 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
                     program.funcs[func_id].body.clone(),
                     stdin,
                     stdout,
+                    stderr,
                     program,
                     &Locals::new(locals[arg_id]),
                     heap,
                     stacktrace.add_frame(format!["func: {:?} arg: {:?}", func_id, locals[arg_id]]),
-                );
+                )?;
 
                 typecheck(
                     heap,
@@ -739,21 +757,23 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
                         *then_branch,
                         stdin,
                         stdout,
+                        stderr,
                         program,
                         locals,
                         heap,
                         stacktrace.add_frame("going into if branch".into()),
-                    )
+                    )?
                 } else {
                     interpret_expr(
                         *else_branch,
                         stdin,
                         stdout,
+                        stderr,
                         program,
                         locals,
                         heap,
                         stacktrace.add_frame("going into else branch".into()),
-                    )
+                    )?
                 }
             }
 
@@ -765,12 +785,13 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
                         let_expr,
                         stdin,
                         stdout,
+                        stderr,
                         program,
                         &new_locals,
                         heap,
                         stacktrace
                             .add_frame(format!["evaluating let expr {}", new_locals.values.len()]),
-                    );
+                    )?;
 
                     typecheck(
                         heap,
@@ -1306,7 +1327,8 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
 
                 let item_heap_id = match array.pop() {
                     None => {
-                        stacktrace.panic("pop on empty array".into());
+                        writeln!(stderr, "pop: empty array").unwrap();
+                        return Err(ExitStatus::Failure);
                     }
                     Some(id) => id,
                 };
@@ -1339,21 +1361,11 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
                     array.clone(),
                 ));
 
-                // logic is duplicated in replace
-                let maybe_index = usize::try_from(index.0);
-                let usize_index = match maybe_index {
-                    Ok(actual_index) => actual_index,
-                    Err(_) => {
-                        stacktrace.panic(format!["item index out of range {}", index]);
-                    }
-                };
+                bounds_check(stderr, array.len(), index.0)?;
 
-                if let Some(get_item) = array.get(usize_index) {
-                    retain(heap, *get_item, stacktrace.add_frame("item retain".into()));
-                    return heap.add(Value::Tuple(vec![*get_item, hole_array_id]));
-                } else {
-                    stacktrace.panic(format!["item index out of range {}", index]);
-                }
+                let get_item = array[index.0 as usize];
+                retain(heap, get_item, stacktrace.add_frame("item retain".into()));
+                heap.add(Value::Tuple(vec![get_item, hole_array_id]))
             }
 
             Expr::ArrayOp(rep, _item_type, ArrayOp::Replace(array_id, item_id)) => {
@@ -1375,26 +1387,16 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
 
                 heap.maybe_invalidate(array_heap_id);
 
-                // logic is duplicated in item
-                let maybe_index = usize::try_from(index);
-                let usize_index = match maybe_index {
-                    Ok(actual_index) => actual_index,
-                    Err(_) => {
-                        stacktrace.panic(format!["hole array index out of range {}", index]);
-                    }
-                };
+                bounds_check(stderr, array.len(), index)?;
 
-                if let Some(old_item_id) = array.get(usize_index) {
-                    release(
-                        heap,
-                        *old_item_id,
-                        stacktrace.add_frame("replace release item".into()),
-                    );
-                    array[usize_index] = item_heap_id;
-                    return heap.add(Value::Array(rep, ArrayStatus::Valid, 1, array));
-                } else {
-                    stacktrace.panic(format!["hole array index out of range {}", index]);
-                }
+                let old_item_id = array[index as usize];
+                release(
+                    heap,
+                    old_item_id,
+                    stacktrace.add_frame("replace release item".into()),
+                );
+                array[index as usize] = item_heap_id;
+                heap.add(Value::Array(rep, ArrayStatus::Valid, 1, array))
             }
 
             Expr::IoOp(rep, IoOp::Input) => {
@@ -1452,29 +1454,34 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
             Expr::IntLit(val) => heap.add(Value::Num(NumValue::Int(Wrapping(val)))),
 
             Expr::FloatLit(val) => heap.add(Value::Num(NumValue::Float(val))),
-        }
+        })
     })
 }
 
 pub fn interpret(stdio: Stdio, program: Program) -> Child {
-    spawn_thread(stdio, move |stdin, stdout| {
+    spawn_thread(stdio, move |stdin, stdout, stderr| {
         let mut heap = Heap::new(&program);
-        let final_heap_id = interpret_expr(
+        match interpret_expr(
             program.funcs[program.main].body.clone(),
             stdin,
             stdout,
+            stderr,
             &program,
             &Locals::new(HeapId(0)),
             &mut heap,
             StackTrace::new(),
-        );
-        typecheck(
-            &heap,
-            final_heap_id,
-            &Type::Tuple(vec![]),
-            StackTrace::new(),
-        );
-        heap.assert_everything_else_deallocated();
-        Ok(ExitStatus::Success)
+        ) {
+            Ok(final_heap_id) => {
+                typecheck(
+                    &heap,
+                    final_heap_id,
+                    &Type::Tuple(vec![]),
+                    StackTrace::new(),
+                );
+                heap.assert_everything_else_deallocated();
+                Ok(ExitStatus::Success)
+            }
+            Err(status) => Ok(status),
+        }
     })
 }

@@ -311,7 +311,10 @@ impl<'a> FlatArrayBuiltin<'a> {
             let s = scope(self.pop, context);
             let me = s.arg(0);
 
-            s.call_void(self.bounds_check, &[me, s.i64(0)]);
+            s.if_(s.eq(s.arrow(me, F_ARR_LEN), s.i64(0)), |s| {
+                s.panic("pop: empty array\n", &[], libc);
+            });
+
             let len = s.arrow(me, F_ARR_LEN);
             let new_len = s.sub(len, s.i64(1));
 

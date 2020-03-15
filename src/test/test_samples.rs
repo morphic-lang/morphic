@@ -1,3 +1,5 @@
+use crate::pseudoprocess::ExitStatus::Failure;
+
 sample! { io "samples/io.txt";
     stdin = "hello\n";
     stdout = "hello\n";
@@ -99,6 +101,27 @@ sample! { nested "samples/nested.txt";
         "hello",
         "mars",
     ];
+}
+
+sample! { item_oob1 "samples/run-fail/item_oob1.txt";
+    stdin = "";
+    stdout = "";
+    stderr = "index out of bounds: attempt to access item 3 of array with length 3\n";
+    status = Failure;
+}
+
+sample! { item_oob2 "samples/run-fail/item_oob2.txt";
+    stdin = "";
+    stdout = "";
+    stderr = "index out of bounds: attempt to access item -1 of array with length 3\n";
+    status = Failure;
+}
+
+sample! { pop_empty "samples/run-fail/pop_empty.txt";
+    stdin = "";
+    stdout = "";
+    stderr = "pop: empty array\n";
+    status = Failure;
 }
 
 // TODO: Carefully review 'samples/mutate.txt' to determine by hand what the stdouted output should
