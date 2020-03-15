@@ -1,6 +1,7 @@
-use crate::builtins::core::LibC;
-use crate::builtins::flat_array::{FlatArrayBuiltin, FlatArrayIoBuiltin};
-use crate::builtins::persistent_array::{PersistentArrayBuiltin, PersistentArrayIoBuiltin};
+use crate::builtins::array::ArrayImpl;
+use crate::builtins::flat_array::{FlatArrayImpl, FlatArrayIoBuiltin};
+use crate::builtins::libc::LibC;
+use crate::builtins::persistent_array::{PersistentArrayImpl, PersistentArrayIoBuiltin};
 use crate::builtins::rc::RcBoxBuiltin;
 use crate::cli;
 use crate::data::first_order_ast as first_ord;
@@ -124,9 +125,9 @@ impl<'a> CustomTypeDecls<'a> {
 }
 
 struct Instances<'a> {
-    flat_arrays: RefCell<BTreeMap<low::Type, FlatArrayBuiltin<'a>>>,
+    flat_arrays: RefCell<BTreeMap<low::Type, FlatArrayImpl<'a>>>,
     flat_array_io: FlatArrayIoBuiltin<'a>,
-    persistent_arrays: RefCell<BTreeMap<low::Type, PersistentArrayBuiltin<'a>>>,
+    persistent_arrays: RefCell<BTreeMap<low::Type, PersistentArrayImpl<'a>>>,
     persistent_array_io: PersistentArrayIoBuiltin<'a>,
     rcs: RefCell<BTreeMap<low::Type, RcBoxBuiltin<'a>>>,
 }
@@ -134,7 +135,7 @@ struct Instances<'a> {
 impl<'a> Instances<'a> {
     fn new<'b>(globals: &Globals<'a, 'b>) -> Self {
         let mut flat_arrays = BTreeMap::new();
-        let byte_flat_builtin = FlatArrayBuiltin::declare(
+        let byte_flat_builtin = FlatArrayImpl::declare(
             globals.context,
             globals.target,
             globals.module,
@@ -146,7 +147,7 @@ impl<'a> Instances<'a> {
             FlatArrayIoBuiltin::declare(globals.context, globals.module, byte_flat_builtin);
 
         let mut persistent_arrays = BTreeMap::new();
-        let byte_persistent_builtin = PersistentArrayBuiltin::declare(
+        let byte_persistent_builtin = PersistentArrayImpl::declare(
             globals.context,
             globals.target,
             globals.module,
@@ -176,11 +177,11 @@ impl<'a> Instances<'a> {
         &self,
         globals: &Globals<'a, 'b>,
         item_type: &low::Type,
-    ) -> FlatArrayBuiltin<'a> {
+    ) -> FlatArrayImpl<'a> {
         if let Some(existing) = self.flat_arrays.borrow().get(&item_type.clone()) {
             return *existing;
         }
-        let new_builtin = FlatArrayBuiltin::declare(
+        let new_builtin = FlatArrayImpl::declare(
             globals.context,
             globals.target,
             globals.module,
@@ -196,11 +197,11 @@ impl<'a> Instances<'a> {
         &self,
         globals: &Globals<'a, 'b>,
         item_type: &low::Type,
-    ) -> PersistentArrayBuiltin<'a> {
+    ) -> PersistentArrayImpl<'a> {
         if let Some(existing) = self.persistent_arrays.borrow().get(&item_type.clone()) {
             return *existing;
         }
-        let new_builtin = PersistentArrayBuiltin::declare(
+        let new_builtin = PersistentArrayImpl::declare(
             globals.context,
             globals.target,
             globals.module,
@@ -486,18 +487,22 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Num(first_ord::NumType::Float) => globals.context.f64_type().into(),
         low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => instances
             .get_flat_array(globals, item_type)
+            .interface()
             .array_type
             .into(),
         low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => instances
             .get_persistent_array(globals, item_type)
+            .interface()
             .array_type
             .into(),
         low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => instances
             .get_flat_array(globals, item_type)
+            .interface()
             .hole_array_type
             .into(),
         low::Type::HoleArray(constrain::RepChoice::FallbackImmut, item_type) => instances
             .get_persistent_array(globals, item_type)
+            .interface()
             .hole_array_type
             .into(),
         low::Type::Tuple(item_types) => {
@@ -539,11 +544,17 @@ fn gen_rc_op<'a, 'b>(
         low::Type::Num(_) => {}
         low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => match op {
             RcOp::Retain => {
-                let retain_func = instances.get_flat_array(globals, item_type).retain_array;
+                let retain_func = instances
+                    .get_flat_array(globals, item_type)
+                    .interface()
+                    .retain_array;
                 builder.build_call(retain_func, &[arg], "retain_flat_array");
             }
             RcOp::Release => {
-                let release_func = instances.get_flat_array(globals, item_type).release_array;
+                let release_func = instances
+                    .get_flat_array(globals, item_type)
+                    .interface()
+                    .release_array;
                 builder.build_call(release_func, &[arg], "release_flat_array");
             }
         },
@@ -551,23 +562,31 @@ fn gen_rc_op<'a, 'b>(
             RcOp::Retain => {
                 let retain_func = instances
                     .get_persistent_array(globals, item_type)
+                    .interface()
                     .retain_array;
                 builder.build_call(retain_func, &[arg], "retain_pers_array");
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_persistent_array(globals, item_type)
+                    .interface()
                     .release_array;
                 builder.build_call(release_func, &[arg], "release_pers_array");
             }
         },
         low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => match op {
             RcOp::Retain => {
-                let retain_func = instances.get_flat_array(globals, item_type).retain_hole;
+                let retain_func = instances
+                    .get_flat_array(globals, item_type)
+                    .interface()
+                    .retain_hole;
                 builder.build_call(retain_func, &[arg], "retain_flat_hole_array");
             }
             RcOp::Release => {
-                let release_func = instances.get_flat_array(globals, item_type).release_hole;
+                let release_func = instances
+                    .get_flat_array(globals, item_type)
+                    .interface()
+                    .release_hole;
                 builder.build_call(release_func, &[arg], "release_flat_hole_array");
             }
         },
@@ -575,12 +594,14 @@ fn gen_rc_op<'a, 'b>(
             RcOp::Retain => {
                 let retain_func = instances
                     .get_persistent_array(globals, item_type)
+                    .interface()
                     .retain_hole;
                 builder.build_call(retain_func, &[arg], "retain_pers_hole_array");
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_persistent_array(globals, item_type)
+                    .interface()
                     .release_hole;
                 builder.build_call(release_func, &[arg], "release_pers_hole_array");
             }
@@ -1146,13 +1167,13 @@ fn gen_expr<'a, 'b>(
                 let builtin = instances.get_flat_array(globals, item_type);
                 match array_op {
                     low::ArrayOp::New() => builder
-                        .build_call(builtin.new, &[], "flat_array_new")
+                        .build_call(builtin.interface().new, &[], "flat_array_new")
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                     low::ArrayOp::Item(array_id, index_id) => builder
                         .build_call(
-                            builtin.item,
+                            builtin.interface().item,
                             &[locals[array_id], locals[index_id]],
                             "flat_array_item",
                         )
@@ -1160,13 +1181,17 @@ fn gen_expr<'a, 'b>(
                         .left()
                         .unwrap(),
                     low::ArrayOp::Len(array_id) => builder
-                        .build_call(builtin.len, &[locals[array_id]], "flat_array_len")
+                        .build_call(
+                            builtin.interface().len,
+                            &[locals[array_id]],
+                            "flat_array_len",
+                        )
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                     low::ArrayOp::Push(array_id, item_id) => builder
                         .build_call(
-                            builtin.push,
+                            builtin.interface().push,
                             &[locals[array_id], locals[item_id]],
                             "flat_array_push",
                         )
@@ -1174,13 +1199,17 @@ fn gen_expr<'a, 'b>(
                         .left()
                         .unwrap(),
                     low::ArrayOp::Pop(array_id) => builder
-                        .build_call(builtin.pop, &[locals[array_id]], "flat_array_pop")
+                        .build_call(
+                            builtin.interface().pop,
+                            &[locals[array_id]],
+                            "flat_array_pop",
+                        )
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                     low::ArrayOp::Replace(array_id, item_id) => builder
                         .build_call(
-                            builtin.replace,
+                            builtin.interface().replace,
                             &[locals[array_id], locals[item_id]],
                             "flat_array_replace",
                         )
@@ -1193,13 +1222,13 @@ fn gen_expr<'a, 'b>(
                 let builtin = instances.get_persistent_array(globals, item_type);
                 match array_op {
                     low::ArrayOp::New() => builder
-                        .build_call(builtin.new, &[], "pers_array_new")
+                        .build_call(builtin.interface().new, &[], "pers_array_new")
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                     low::ArrayOp::Item(array_id, index_id) => builder
                         .build_call(
-                            builtin.item,
+                            builtin.interface().item,
                             &[locals[array_id], locals[index_id]],
                             "pers_array_item",
                         )
@@ -1207,13 +1236,17 @@ fn gen_expr<'a, 'b>(
                         .left()
                         .unwrap(),
                     low::ArrayOp::Len(array_id) => builder
-                        .build_call(builtin.len, &[locals[array_id]], "pers_array_len")
+                        .build_call(
+                            builtin.interface().len,
+                            &[locals[array_id]],
+                            "pers_array_len",
+                        )
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                     low::ArrayOp::Push(array_id, item_id) => builder
                         .build_call(
-                            builtin.push,
+                            builtin.interface().push,
                             &[locals[array_id], locals[item_id]],
                             "pers_array_push",
                         )
@@ -1221,13 +1254,17 @@ fn gen_expr<'a, 'b>(
                         .left()
                         .unwrap(),
                     low::ArrayOp::Pop(array_id) => builder
-                        .build_call(builtin.pop, &[locals[array_id]], "pers_array_pop")
+                        .build_call(
+                            builtin.interface().pop,
+                            &[locals[array_id]],
+                            "pers_array_pop",
+                        )
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                     low::ArrayOp::Replace(array_id, item_id) => builder
                         .build_call(
-                            builtin.replace,
+                            builtin.interface().replace,
                             &[locals[array_id], locals[item_id]],
                             "pers_array_replace",
                         )

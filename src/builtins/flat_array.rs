@@ -1,6 +1,6 @@
-use crate::builtins::core::*;
+use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::zero_sized_array as zero_sized;
+use crate::builtins::libc::LibC;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -19,92 +19,25 @@ const F_HOLE_IDX: u32 = 0; // has type u64
 const F_HOLE_ARR: u32 = 1; // has type FlatArray<T>*
 
 #[derive(Clone, Copy, Debug)]
-pub struct FlatArrayBuiltin<'a> {
-    // related types
-    pub item_type: BasicTypeEnum<'a>,
+pub struct FlatArrayImpl<'a> {
+    interface: ArrayInterface<'a>,
     array_deref_type: BasicTypeEnum<'a>,
-    pub array_type: BasicTypeEnum<'a>, // pointer to array_content_type
-    pub hole_array_type: BasicTypeEnum<'a>,
-
-    // public API
-    pub new: FunctionValue<'a>,
-    pub item: FunctionValue<'a>,
-    pub len: FunctionValue<'a>,
-    pub push: FunctionValue<'a>,
-    pub pop: FunctionValue<'a>,
-    pub replace: FunctionValue<'a>,
-    pub retain_array: FunctionValue<'a>,
-    pub release_array: FunctionValue<'a>,
-    pub retain_hole: FunctionValue<'a>,
-    pub release_hole: FunctionValue<'a>,
-
-    // helper functions
     ensure_cap: FunctionValue<'a>,
     bounds_check: FunctionValue<'a>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct FlatArrayIoBuiltin<'a> {
-    pub byte_array_type: FlatArrayBuiltin<'a>,
-    pub input: FunctionValue<'a>,
-    pub output: FunctionValue<'a>,
-}
-
-impl<'a> FlatArrayBuiltin<'a> {
-    pub fn declare(
+impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
+    fn declare(
         context: &'a Context,
-        target: &TargetData,
+        _target: &TargetData,
         module: &Module<'a>,
         item_type: BasicTypeEnum<'a>,
     ) -> Self {
-        debug_assert!(item_type.is_sized());
-        if target.get_abi_size(&item_type) == 0 {
-            let void_type = context.void_type();
-
-            // a placeholder for functions not used in the zero sized implementation
-            let dummy_fun = module.add_function(
-                "dummy",
-                void_type.fn_type(&[], false),
-                Some(Linkage::Internal),
-            );
-
-            // a placeholder for types not used in the zero sized implementation
-            let dummy_ty = context.struct_type(&[], false).into();
-
-            let builtin = zero_sized::declare(
-                zero_sized::ImplentationChoice::Persistent,
-                context,
-                module,
-                item_type,
-            );
-
-            return Self {
-                item_type: builtin.item_type,
-                array_deref_type: dummy_ty,
-                array_type: builtin.array_type,
-                hole_array_type: builtin.hole_array_type,
-
-                new: builtin.new,
-                item: builtin.item,
-                len: builtin.len,
-                push: builtin.push,
-                pop: builtin.pop,
-                replace: builtin.replace,
-                retain_array: builtin.retain_array,
-                release_array: builtin.release_array,
-                retain_hole: builtin.retain_hole,
-                release_hole: builtin.release_hole,
-
-                ensure_cap: dummy_fun,
-                bounds_check: dummy_fun,
-            };
-        }
-
         let void_type = context.void_type();
         let i64_type = context.i64_type();
 
-        let array_content_type = context.opaque_struct_type("builtin_flat_array_content");
-        let array_type = array_content_type.ptr_type(AddressSpace::Generic);
+        let array_deref_type = context.opaque_struct_type("builtin_flat_array_content");
+        let array_type = array_deref_type.ptr_type(AddressSpace::Generic);
 
         let hole_array_type = context.struct_type(&[i64_type.into(), array_type.into()], false);
         let item_ret_type = context.struct_type(&[item_type.into(), hole_array_type.into()], false);
@@ -182,9 +115,8 @@ impl<'a> FlatArrayBuiltin<'a> {
             Some(Linkage::Internal),
         );
 
-        Self {
+        let interface = ArrayInterface {
             item_type,
-            array_deref_type: array_content_type.into(),
             array_type: array_type.into(),
             hole_array_type: hole_array_type.into(),
             new,
@@ -197,46 +129,26 @@ impl<'a> FlatArrayBuiltin<'a> {
             release_array,
             retain_hole,
             release_hole,
+        };
+
+        Self {
+            interface,
+            array_deref_type: array_deref_type.into(),
             ensure_cap,
             bounds_check,
         }
     }
 
-    pub fn define(
+    fn define(
         &self,
         context: &'a Context,
-        target: &TargetData,
+        _target: &TargetData,
         libc: &LibC<'a>,
-        inner_retain: Option<FunctionValue<'a>>,
-        inner_drop: Option<FunctionValue<'a>>,
+        item_retain: Option<FunctionValue<'a>>,
+        item_release: Option<FunctionValue<'a>>,
     ) {
-        debug_assert!(self.item_type.is_sized());
-        if target.get_abi_size(&self.item_type) == 0 {
-            zero_sized::define(
-                &zero_sized::ZeroSizedArrayBuiltin {
-                    item_type: self.item_type,
-                    array_type: self.array_type,
-                    hole_array_type: self.hole_array_type,
-
-                    new: self.new,
-                    item: self.item,
-                    len: self.len,
-                    push: self.push,
-                    pop: self.pop,
-                    replace: self.replace,
-                    retain_array: self.retain_array,
-                    release_array: self.release_array,
-                    retain_hole: self.retain_hole,
-                    release_hole: self.release_hole,
-                },
-                context,
-                libc,
-            );
-            return;
-        }
-
         let i64_type = context.i64_type();
-        let item_ptr_type = self.item_type.ptr_type(AddressSpace::Generic);
+        let item_ptr_type = self.interface.item_type.ptr_type(AddressSpace::Generic);
 
         self.array_deref_type.into_struct_type().set_body(
             &[
@@ -250,13 +162,13 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         // define 'new'
         {
-            let s = scope(self.new, context);
+            let s = scope(self.interface.new, context);
             let me = s.ptr_cast(
                 self.array_deref_type,
                 s.malloc(s.i64(1), self.array_deref_type, libc),
             );
 
-            s.arrow_set(me, F_ARR_DATA, s.null(self.item_type));
+            s.arrow_set(me, F_ARR_DATA, s.null(self.interface.item_type));
             s.arrow_set(me, F_ARR_CAP, s.i64(0));
             s.arrow_set(me, F_ARR_LEN, s.i64(0));
             s.arrow_set(me, F_ARR_REFCOUNT, s.i64(1));
@@ -266,34 +178,37 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         // define 'item'
         {
-            let s = scope(self.item, context);
+            let s = scope(self.interface.item, context);
             let me = s.arg(0);
             let idx = s.arg(1);
 
             s.call_void(self.bounds_check, &[me, idx]);
             let data = s.arrow(me, F_ARR_DATA);
 
-            s.call_void(self.retain_array, &[me]);
-            if let Some(actual_retain) = inner_retain {
-                s.call_void(actual_retain, &[s.buf_addr(data, idx)]);
+            s.call_void(self.interface.retain_array, &[me]);
+            if let Some(item_retain) = item_retain {
+                s.call_void(item_retain, &[s.buf_addr(data, idx)]);
             }
 
             s.ret(s.make_tup(&[
                 s.buf_get(data, idx),
-                s.make_struct(self.hole_array_type, &[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)]),
+                s.make_struct(
+                    self.interface.hole_array_type,
+                    &[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)],
+                ),
             ]));
         }
 
         // define 'len'
         {
-            let s = scope(self.len, context);
+            let s = scope(self.interface.len, context);
             let me = s.arg(0);
             s.ret(s.arrow(me, F_ARR_LEN));
         }
 
         // define 'push'
         {
-            let s = scope(self.push, context);
+            let s = scope(self.interface.push, context);
 
             let me = s.arg(0);
             let old_len = s.arrow(me, F_ARR_LEN);
@@ -308,7 +223,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         // define 'pop'
         {
-            let s = scope(self.pop, context);
+            let s = scope(self.interface.pop, context);
             let me = s.arg(0);
 
             s.call_void(self.bounds_check, &[me, s.i64(0)]);
@@ -321,15 +236,15 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         // define 'replace'
         {
-            let s = scope(self.replace, context);
+            let s = scope(self.interface.replace, context);
 
             let hole = s.arg(0);
             let item = s.arg(1);
             let idx = s.field(hole, F_HOLE_IDX);
             let me = s.field(hole, F_HOLE_ARR);
 
-            if let Some(actual_drop) = inner_drop {
-                s.call_void(actual_drop, &[s.buf_addr(s.arrow(me, F_ARR_DATA), idx)]);
+            if let Some(item_release) = item_release {
+                s.call_void(item_release, &[s.buf_addr(s.arrow(me, F_ARR_DATA), idx)]);
             }
 
             s.buf_set(s.arrow(me, F_ARR_DATA), idx, item);
@@ -339,7 +254,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         // define 'retain_array'
         {
-            let s = scope(self.retain_array, context);
+            let s = scope(self.interface.retain_array, context);
             let me = s.arg(0);
 
             s.arrow_set(
@@ -352,7 +267,7 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         // define 'release_array'
         {
-            let s = scope(self.release_array, context);
+            let s = scope(self.interface.release_array, context);
             let me = s.arg(0);
 
             let new_refcount = s.sub(s.arrow(me, F_ARR_REFCOUNT), s.i64(1));
@@ -360,9 +275,9 @@ impl<'a> FlatArrayBuiltin<'a> {
 
             s.if_(s.eq(new_refcount, s.i64(0)), |s| {
                 let data = s.arrow(me, F_ARR_DATA);
-                if let Some(actual_drop) = inner_drop {
+                if let Some(item_release) = item_release {
                     s.for_(s.arrow(me, F_ARR_LEN), |s, i| {
-                        s.call_void(actual_drop, &[s.buf_addr(data, i)]);
+                        s.call_void(item_release, &[s.buf_addr(data, i)]);
                     });
                 }
                 s.call_void(libc.free, &[s.ptr_cast(s.i8_t(), data)]);
@@ -373,19 +288,19 @@ impl<'a> FlatArrayBuiltin<'a> {
 
         // define 'retain_hole'
         {
-            let s = scope(self.retain_hole, context);
+            let s = scope(self.interface.retain_hole, context);
             let hole = s.arg(0);
 
-            s.call_void(self.retain_array, &[s.field(hole, F_HOLE_ARR)]);
+            s.call_void(self.interface.retain_array, &[s.field(hole, F_HOLE_ARR)]);
             s.ret_void();
         }
 
         // define 'release_hole'
         {
-            let s = scope(self.release_hole, context);
+            let s = scope(self.interface.release_hole, context);
             let hole = s.arg(0);
 
-            s.call_void(self.release_array, &[s.field(hole, F_HOLE_ARR)]);
+            s.call_void(self.interface.release_array, &[s.field(hole, F_HOLE_ARR)]);
             s.ret_void();
         }
 
@@ -403,9 +318,9 @@ impl<'a> FlatArrayBuiltin<'a> {
                 let use_candidate_cap = s.uge(candidate_cap, min_cap);
                 let new_cap = s.ternary(use_candidate_cap, candidate_cap, min_cap);
 
-                let alloc_size = s.mul(s.size(self.item_type), new_cap);
+                let alloc_size = s.mul(s.size(self.interface.item_type), new_cap);
                 let new_data = s.ptr_cast(
-                    self.item_type,
+                    self.interface.item_type,
                     s.call(
                         libc.realloc,
                         &[s.ptr_cast(s.i8_t(), s.arrow(me, F_ARR_DATA)), alloc_size],
@@ -444,25 +359,36 @@ impl<'a> FlatArrayBuiltin<'a> {
             s.ret_void();
         }
     }
+
+    fn interface(&self) -> &ArrayInterface<'a> {
+        &self.interface
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FlatArrayIoBuiltin<'a> {
+    pub byte_array_type: FlatArrayImpl<'a>,
+    pub input: FunctionValue<'a>,
+    pub output: FunctionValue<'a>,
 }
 
 impl<'a> FlatArrayIoBuiltin<'a> {
     pub fn declare(
         context: &'a Context,
         module: &Module<'a>,
-        byte_array_type: FlatArrayBuiltin<'a>,
+        byte_array_type: FlatArrayImpl<'a>,
     ) -> Self {
         let void_type = context.void_type();
 
         let input = module.add_function(
             "builtin_flat_array_input",
-            byte_array_type.array_type.fn_type(&[], false),
+            byte_array_type.interface.array_type.fn_type(&[], false),
             Some(Linkage::Internal),
         );
 
         let output = module.add_function(
             "builtin_flat_array_output",
-            void_type.fn_type(&[byte_array_type.array_type.into()], false),
+            void_type.fn_type(&[byte_array_type.interface.array_type.into()], false),
             Some(Linkage::Internal),
         );
 
@@ -482,7 +408,7 @@ impl<'a> FlatArrayIoBuiltin<'a> {
         let s = scope(self.input, context);
 
         s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
-        let array = s.call(self.byte_array_type.new, &[]);
+        let array = s.call(self.byte_array_type.interface().new, &[]);
 
         let getchar_result = s.alloca(s.i32_t());
         s.while_(
@@ -496,7 +422,7 @@ impl<'a> FlatArrayIoBuiltin<'a> {
             },
             |s| {
                 let input_bytes = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
-                s.call(self.byte_array_type.push, &[array, input_bytes]);
+                s.call(self.byte_array_type.interface().push, &[array, input_bytes]);
             },
         );
 

@@ -1,4 +1,5 @@
-use crate::builtins::core::*;
+use crate::builtins::core;
+use crate::builtins::libc::LibC;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicType, BasicTypeEnum};
@@ -111,7 +112,7 @@ impl<'a> RcBoxBuiltin<'a> {
             .into_pointer_value();
 
         unsafe {
-            set_member(
+            core::set_member(
                 &builder,
                 new_ptr,
                 REFCOUNT_IDX,
@@ -119,7 +120,7 @@ impl<'a> RcBoxBuiltin<'a> {
                 "refcount",
             );
 
-            set_member(&builder, new_ptr, INNER_IDX, inner, "inner");
+            core::set_member(&builder, new_ptr, INNER_IDX, inner, "inner");
         }
 
         builder.build_return(Some(&new_ptr));
@@ -181,7 +182,7 @@ impl<'a> RcBoxBuiltin<'a> {
             i32_type.const_int(0, false),
             "should_drop",
         );
-        build_if(context, &builder, self.release, should_drop, || {
+        core::build_if(context, &builder, self.release, should_drop, || {
             if let Some(actual_drop) = inner_drop {
                 let inner_ptr = unsafe { builder.build_struct_gep(ptr, INNER_IDX, "inner_ptr") };
                 builder.build_call(actual_drop, &[inner_ptr.into()], "");

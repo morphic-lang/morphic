@@ -1,6 +1,6 @@
-use crate::builtins::core::*;
+use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::zero_sized_array as zero_sized;
+use crate::builtins::libc::LibC;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -50,25 +50,12 @@ fn get_items_per_leaf(item_bytes: u64) -> u64 {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PersistentArrayBuiltin<'a> {
+pub struct PersistentArrayImpl<'a> {
+    interface: ArrayInterface<'a>,
+
     // related types
-    pub item_type: BasicTypeEnum<'a>,
     branch_type: BasicTypeEnum<'a>,
     leaf_type: BasicTypeEnum<'a>,
-    pub array_type: BasicTypeEnum<'a>,
-    pub hole_array_type: BasicTypeEnum<'a>,
-
-    // public API
-    pub new: FunctionValue<'a>,
-    pub item: FunctionValue<'a>,
-    pub len: FunctionValue<'a>,
-    pub push: FunctionValue<'a>,
-    pub pop: FunctionValue<'a>,
-    pub replace: FunctionValue<'a>,
-    pub retain_array: FunctionValue<'a>,
-    pub release_array: FunctionValue<'a>,
-    pub retain_hole: FunctionValue<'a>,
-    pub release_hole: FunctionValue<'a>,
 
     // helper functions
     set_next_path: FunctionValue<'a>,
@@ -90,86 +77,13 @@ pub struct PersistentArrayBuiltin<'a> {
     pop_node: FunctionValue<'a>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct PersistentArrayIoBuiltin<'a> {
-    // related types
-    pub byte_array_type: PersistentArrayBuiltin<'a>,
-
-    // public API
-    pub input: FunctionValue<'a>,
-    pub output: FunctionValue<'a>,
-
-    // helper functions
-    pub output_tail: FunctionValue<'a>,
-    pub output_node: FunctionValue<'a>,
-}
-
-impl<'a> PersistentArrayBuiltin<'a> {
-    pub fn declare(
+impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
+    fn declare(
         context: &'a Context,
-        target: &TargetData,
+        _target: &TargetData,
         module: &Module<'a>,
         item_type: BasicTypeEnum<'a>,
     ) -> Self {
-        debug_assert!(item_type.is_sized());
-        if target.get_abi_size(&item_type) == 0 {
-            let void_type = context.void_type();
-
-            // a placeholder for functions not used in the zero sized implementation
-            let dummy_fun = module.add_function(
-                "dummy",
-                void_type.fn_type(&[], false),
-                Some(Linkage::Internal),
-            );
-
-            // a placeholder for types not used in the zero sized implementation
-            let dummy_ty = context.struct_type(&[], false).into();
-
-            let builtin = zero_sized::declare(
-                zero_sized::ImplentationChoice::Persistent,
-                context,
-                module,
-                item_type,
-            );
-
-            return Self {
-                item_type: builtin.item_type,
-                branch_type: dummy_ty,
-                leaf_type: dummy_ty,
-                array_type: builtin.array_type,
-                hole_array_type: builtin.hole_array_type,
-
-                new: builtin.new,
-                item: builtin.item,
-                len: builtin.len,
-                push: builtin.push,
-                pop: builtin.pop,
-                replace: builtin.replace,
-                retain_array: builtin.retain_array,
-                release_array: builtin.release_array,
-                retain_hole: builtin.retain_hole,
-                release_hole: builtin.release_hole,
-
-                set_next_path: dummy_fun,
-                get: dummy_fun,
-                retain_node: dummy_fun,
-                release_node: dummy_fun,
-                retain_tail: dummy_fun,
-                release_tail: dummy_fun,
-                tail_len: dummy_fun,
-                obtain_unique_leaf: dummy_fun,
-                obtain_unique_branch: dummy_fun,
-                obtain_unique_tail: dummy_fun,
-                set_tail: dummy_fun,
-                set_node: dummy_fun,
-                set: dummy_fun,
-                push_tail: dummy_fun,
-                put_tail: dummy_fun,
-                pop_tail: dummy_fun,
-                pop_node: dummy_fun,
-            };
-        }
-
         let void_type = context.void_type();
         let i64_type = context.i64_type();
         let node_ptr_type = context.i8_type().ptr_type(AddressSpace::Generic);
@@ -408,15 +322,11 @@ impl<'a> PersistentArrayBuiltin<'a> {
             ],
         );
 
-        PersistentArrayBuiltin {
-            // related types
+        let interface = ArrayInterface {
             item_type,
-            branch_type: branch_type.into(),
-            leaf_type: leaf_type.into(),
             array_type: array_type.into(),
             hole_array_type: hole_array_type.into(),
 
-            // public API
             new,
             item,
             len,
@@ -427,8 +337,14 @@ impl<'a> PersistentArrayBuiltin<'a> {
             release_array,
             retain_hole,
             release_hole,
+        };
 
-            // helper functions
+        Self {
+            interface,
+
+            branch_type: branch_type.into(),
+            leaf_type: leaf_type.into(),
+
             set_next_path,
             get,
             retain_node,
@@ -449,41 +365,16 @@ impl<'a> PersistentArrayBuiltin<'a> {
         }
     }
 
-    pub fn define(
+    fn define(
         &self,
         context: &'a Context,
         target: &TargetData,
         libc: &LibC<'a>,
-        retain_item: Option<FunctionValue<'a>>,
-        release_item: Option<FunctionValue<'a>>,
+        item_retain: Option<FunctionValue<'a>>,
+        item_release: Option<FunctionValue<'a>>,
     ) {
-        debug_assert!(self.item_type.is_sized());
-        if target.get_abi_size(&self.item_type) == 0 {
-            zero_sized::define(
-                &zero_sized::ZeroSizedArrayBuiltin {
-                    item_type: self.item_type,
-                    array_type: self.array_type,
-                    hole_array_type: self.hole_array_type,
-
-                    new: self.new,
-                    item: self.item,
-                    len: self.len,
-                    push: self.push,
-                    pop: self.pop,
-                    replace: self.replace,
-                    retain_array: self.retain_array,
-                    release_array: self.release_array,
-                    retain_hole: self.retain_hole,
-                    release_hole: self.release_hole,
-                },
-                context,
-                libc,
-            );
-            return;
-        }
-
         // Compute constants
-        let items_per_leaf = get_items_per_leaf(target.get_abi_size(&self.item_type));
+        let items_per_leaf = get_items_per_leaf(target.get_abi_size(&self.interface.item_type));
 
         // Define types
         {
@@ -508,7 +399,10 @@ impl<'a> PersistentArrayBuiltin<'a> {
                     // refcount
                     i64_type.into(),
                     // items
-                    self.item_type.array_type(items_per_leaf as u32).into(),
+                    self.interface
+                        .item_type
+                        .array_type(items_per_leaf as u32)
+                        .into(),
                 ],
                 false,
             );
@@ -516,9 +410,9 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'new'
         {
-            let s = scope(self.new, context);
+            let s = scope(self.interface.new, context);
             s.ret(s.make_struct(
-                self.array_type,
+                self.interface.array_type,
                 &[
                     (F_ARR_LEN, s.i64(0)),
                     (F_ARR_HEIGHT, s.i64(-1i64 as u64)),
@@ -530,7 +424,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'item'
         {
-            let s = scope(self.item, context);
+            let s = scope(self.interface.item, context);
             let arr = s.arg(0);
             let idx = s.arg(1);
 
@@ -543,10 +437,10 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 )
             });
 
-            s.call_void(self.retain_array, &[arr]);
+            s.call_void(self.interface.retain_array, &[arr]);
 
             let hole_array = s.make_struct(
-                self.hole_array_type,
+                self.interface.hole_array_type,
                 &[(F_HOLE_IDX, idx), (F_HOLE_ARRAY, arr)],
             );
 
@@ -557,14 +451,14 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'len'
         {
-            let s = scope(self.len, context);
+            let s = scope(self.interface.len, context);
             let array = s.arg(0);
             s.ret(s.field(array, F_ARR_LEN));
         }
 
         // define 'push'
         {
-            let s = scope(self.push, context);
+            let s = scope(self.interface.push, context);
             let array = s.arg(0);
             let item = s.arg(1);
 
@@ -577,7 +471,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.arr_set(s.gep(tail, F_LEAF_ITEMS), s.i32(0), item);
 
                 s.ret(s.make_struct(
-                    self.array_type,
+                    self.interface.array_type,
                     &[
                         (F_ARR_LEN, s.i64(1)),
                         (F_ARR_HEIGHT, s.i64(-1i64 as u64)),
@@ -596,7 +490,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 );
 
                 s.ret(s.make_struct(
-                    self.array_type,
+                    self.interface.array_type,
                     &[
                         (F_ARR_LEN, s.add(len, s.i64(1))),
                         (F_ARR_HEIGHT, height),
@@ -613,7 +507,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), s.i64(0), item);
 
                 s.ret(s.make_struct(
-                    self.array_type,
+                    self.interface.array_type,
                     &[
                         (F_ARR_LEN, s.add(len, s.i64(1))),
                         (F_ARR_HEIGHT, s.i64(0)),
@@ -652,7 +546,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), s.i64(0), item);
 
                 s.ret(s.make_struct(
-                    self.array_type,
+                    self.interface.array_type,
                     &[
                         (F_ARR_LEN, s.add(len, s.i64(1))),
                         (F_ARR_HEIGHT, s.add(height, s.i64(1))),
@@ -687,7 +581,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), s.i64(0), item);
 
             s.ret(s.make_struct(
-                self.array_type,
+                self.interface.array_type,
                 &[
                     (F_ARR_LEN, s.add(len, s.i64(1))),
                     (F_ARR_HEIGHT, height),
@@ -699,7 +593,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'pop'
         {
-            let s = scope(self.pop, context);
+            let s = scope(self.interface.pop, context);
             let array = s.arg(0);
             let len = s.field(s.arg(0), F_ARR_LEN);
 
@@ -712,7 +606,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
                 s.free(s.field(array, F_ARR_TAIL), libc);
 
-                let empty_arr = s.call(self.new, &[]);
+                let empty_arr = s.call(self.interface.new, &[]);
 
                 s.ret(s.make_tup(&[empty_arr, item]));
             });
@@ -723,7 +617,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 let poptail_ret = s.call(self.pop_tail, &[s.field(array, F_ARR_TAIL), tail_len]);
 
                 let new_array = s.make_struct(
-                    self.array_type,
+                    self.interface.array_type,
                     &[
                         (F_ARR_LEN, s.sub(len, s.i64(1))),
                         (F_ARR_HEIGHT, s.field(array, F_ARR_HEIGHT)),
@@ -746,7 +640,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             s.if_(s.eq(len, s.i64(items_per_leaf + 1)), |s| {
                 let new_array = s.make_struct(
-                    self.array_type,
+                    self.interface.array_type,
                     &[
                         (F_ARR_LEN, s.sub(len, s.i64(1))),
                         (F_ARR_HEIGHT, s.i64(-1i64 as u64)),
@@ -780,7 +674,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                         s.arr_get(s.gep(s.field(pop_node_ret, 1), F_BRANCH_CHILDREN), s.i64(0));
 
                     let new_array = s.make_struct(
-                        self.array_type,
+                        self.interface.array_type,
                         &[
                             (F_ARR_LEN, s.sub(len, s.i64(1))),
                             (F_ARR_HEIGHT, s.sub(s.field(array, F_ARR_HEIGHT), s.i64(1))),
@@ -796,7 +690,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             );
 
             let new_array = s.make_struct(
-                self.array_type,
+                self.interface.array_type,
                 &[
                     (F_ARR_LEN, s.sub(len, s.i64(1))),
                     (F_ARR_HEIGHT, s.field(array, F_ARR_HEIGHT)),
@@ -810,7 +704,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'replace'
         {
-            let s = scope(self.replace, context);
+            let s = scope(self.interface.replace, context);
             let hole = s.arg(0);
             let item = s.arg(1);
 
@@ -821,7 +715,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'retain_array'
         {
-            let s = scope(self.retain_array, context);
+            let s = scope(self.interface.retain_array, context);
             let array = s.arg(0);
 
             s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
@@ -843,7 +737,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'release_array'
         {
-            let s = scope(self.release_array, context);
+            let s = scope(self.interface.release_array, context);
             let array = s.arg(0);
 
             s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
@@ -871,21 +765,21 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
         // define 'retain_hole'
         {
-            let s = scope(self.retain_hole, context);
+            let s = scope(self.interface.retain_hole, context);
             let hole = s.arg(0);
 
             let array = s.field(hole, F_HOLE_ARRAY);
-            s.call_void(self.retain_array, &[array]);
+            s.call_void(self.interface.retain_array, &[array]);
             s.ret_void();
         }
 
         // define 'release_hole'
         {
-            let s = scope(self.release_hole, context);
+            let s = scope(self.interface.release_hole, context);
             let hole = s.arg(0);
 
             let array = s.field(hole, F_HOLE_ARRAY);
-            s.call_void(self.release_array, &[array]);
+            s.call_void(self.interface.release_array, &[array]);
             s.ret_void();
         }
 
@@ -1018,10 +912,10 @@ impl<'a> PersistentArrayBuiltin<'a> {
                     s.arrow_set(leaf_ptr, F_LEAF_REFCOUNT, new_refcount);
 
                     s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                        if let Some(actual_release_item) = release_item {
+                        if let Some(item_release) = item_release {
                             s.for_(s.i64(items_per_leaf), |s, i| {
                                 s.call_void(
-                                    actual_release_item,
+                                    item_release,
                                     &[s.arr_addr(s.gep(leaf_ptr, F_LEAF_ITEMS), i)],
                                 );
                             });
@@ -1091,9 +985,9 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.arrow_set(tail, F_LEAF_REFCOUNT, s.sub(refcount, s.i64(1)));
 
             s.if_(s.eq(s.arrow(tail, F_LEAF_REFCOUNT), s.i64(0)), |s| {
-                if let Some(release_fn) = release_item {
+                if let Some(item_release) = item_release {
                     s.for_(tail_len, |s, i| {
-                        s.call_void(release_fn, &[s.arr_addr(s.gep(tail, F_LEAF_ITEMS), i)]);
+                        s.call_void(item_release, &[s.arr_addr(s.gep(tail, F_LEAF_ITEMS), i)]);
                     })
                 }
                 s.free(tail, libc);
@@ -1130,9 +1024,9 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 s.ptr_get(s.gep(leaf, F_LEAF_ITEMS)),
             );
 
-            if let Some(retain_fn) = retain_item {
+            if let Some(item_retain) = item_retain {
                 s.for_(s.i64(items_per_leaf), |s, i| {
-                    s.call_void(retain_fn, &[s.arr_addr(s.gep(leaf, F_LEAF_ITEMS), i)]);
+                    s.call_void(item_retain, &[s.arr_addr(s.gep(leaf, F_LEAF_ITEMS), i)]);
                 });
             }
 
@@ -1208,16 +1102,13 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 &[
                     s.ptr_cast(s.i8_t(), s.gep(result, F_LEAF_ITEMS)),
                     s.ptr_cast(s.i8_t(), s.gep(tail, F_LEAF_ITEMS)),
-                    s.mul(s.size(self.item_type), tail_len),
+                    s.mul(s.size(self.interface.item_type), tail_len),
                 ],
             );
 
-            if let Some(actual_retain_item) = retain_item {
+            if let Some(item_retain) = item_retain {
                 s.for_(tail_len, |s, i| {
-                    s.call_void(
-                        actual_retain_item,
-                        &[s.arr_addr(s.gep(tail, F_LEAF_ITEMS), i)],
-                    );
+                    s.call_void(item_retain, &[s.arr_addr(s.gep(tail, F_LEAF_ITEMS), i)]);
                 });
             }
 
@@ -1236,9 +1127,9 @@ impl<'a> PersistentArrayBuiltin<'a> {
 
             let result = s.call(self.obtain_unique_tail, &[tail, tail_len]);
 
-            if let Some(release_fn) = release_item {
+            if let Some(item_release) = item_release {
                 s.call_void(
-                    release_fn,
+                    item_release,
                     &[s.arr_addr(s.gep(result, F_LEAF_ITEMS), index_in_tail)],
                 );
             }
@@ -1262,9 +1153,9 @@ impl<'a> PersistentArrayBuiltin<'a> {
                     &[s.ptr_cast(self.leaf_type.into(), node)],
                 );
 
-                if let Some(release_fn) = release_item {
+                if let Some(item_release) = item_release {
                     s.call_void(
-                        release_fn,
+                        item_release,
                         &[s.arr_addr(s.gep(result, F_LEAF_ITEMS), index_in_child)],
                     );
                 };
@@ -1334,7 +1225,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
                 );
 
                 s.ret(s.make_struct(
-                    self.array_type,
+                    self.interface.array_type,
                     &[
                         (F_ARR_LEN, len),
                         (F_ARR_HEIGHT, height),
@@ -1356,7 +1247,7 @@ impl<'a> PersistentArrayBuiltin<'a> {
             );
 
             s.ret(s.make_struct(
-                self.array_type,
+                self.interface.array_type,
                 &[
                     (F_ARR_LEN, len),
                     (F_ARR_HEIGHT, height),
@@ -1508,24 +1399,43 @@ impl<'a> PersistentArrayBuiltin<'a> {
             s.ret(s.make_tup(&[s.field(popnode_ret, 0), result]));
         }
     }
+
+    fn interface(&self) -> &ArrayInterface<'a> {
+        &self.interface
+    }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct PersistentArrayIoBuiltin<'a> {
+    // related types
+    pub byte_array_type: PersistentArrayImpl<'a>,
+
+    // public API
+    pub input: FunctionValue<'a>,
+    pub output: FunctionValue<'a>,
+
+    // helper functions
+    pub output_tail: FunctionValue<'a>,
+    pub output_node: FunctionValue<'a>,
+}
+
 impl<'a> PersistentArrayIoBuiltin<'a> {
     pub fn declare(
         context: &'a Context,
         module: &Module<'a>,
-        byte_array_type: PersistentArrayBuiltin<'a>,
+        byte_array_type: PersistentArrayImpl<'a>,
     ) -> Self {
         let void_type = context.void_type();
 
         let input = module.add_function(
             "builtin_pers_array_input",
-            byte_array_type.array_type.fn_type(&[], false),
+            byte_array_type.interface().array_type.fn_type(&[], false),
             Some(Linkage::Internal),
         );
 
         let output = module.add_function(
             "builtin_pers_array_output",
-            void_type.fn_type(&[byte_array_type.array_type.into()], false),
+            void_type.fn_type(&[byte_array_type.interface().array_type.into()], false),
             Some(Linkage::Internal),
         );
 
@@ -1577,9 +1487,9 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
 
             s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
 
-            let array = s.alloca(self.byte_array_type.array_type.into());
+            let array = s.alloca(self.byte_array_type.interface().array_type.into());
 
-            s.ptr_set(array, s.call(self.byte_array_type.new, &[]));
+            s.ptr_set(array, s.call(self.byte_array_type.interface().new, &[]));
 
             let getchar_result = s.alloca(s.i32_t());
             s.while_(
@@ -1593,8 +1503,10 @@ impl<'a> PersistentArrayIoBuiltin<'a> {
                 },
                 |s| {
                     let input_bytes = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
-                    let new_arr =
-                        s.call(self.byte_array_type.push, &[s.ptr_get(array), input_bytes]);
+                    let new_arr = s.call(
+                        self.byte_array_type.interface().push,
+                        &[s.ptr_get(array), input_bytes],
+                    );
                     s.ptr_set(array, new_arr);
                 },
             );
