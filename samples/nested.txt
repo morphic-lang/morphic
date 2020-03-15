@@ -1,0 +1,22 @@
+module Core = file "lib/core/core.txt"
+  expose {
+    module Array expose { get, set },
+    module Io expose { writeln },
+  }
+
+proc main(): () =
+  let words = ["hello", "world"] in
+
+  let (words2, word) = pop(words) in
+  do writeln(get(words2, 0)) then
+  do writeln(word) then
+
+  let words3 = push(words2, "moon") in
+  do writeln(get(words3, 0)) then
+  do writeln(get(words3, 1)) then
+
+  let words4 = set(words3, 1, "mars") in
+  do writeln(get(words4, 0)) then
+  do writeln(get(words4, 1)) then
+
+  ()

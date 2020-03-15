@@ -230,6 +230,8 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let len = s.arrow(me, F_ARR_LEN);
             let new_len = s.sub(len, s.i64(1));
 
+            s.arrow_set(me, F_ARR_LEN, new_len);
+
             let item = s.buf_get(s.arrow(me, F_ARR_DATA), new_len);
             s.ret(s.make_tup(&[me, item]))
         }
