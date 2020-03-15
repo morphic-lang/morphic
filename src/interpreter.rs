@@ -693,7 +693,7 @@ fn bounds_check(stderr: &mut dyn Write, len: usize, index: i64) -> Result<(), Ex
                 index, len,
             )
             .unwrap();
-            Err(ExitStatus::Failure)
+            Err(ExitStatus::Failure(Some(1)))
         }
     }
 }
@@ -1328,7 +1328,7 @@ fn interpret_expr(
                 let item_heap_id = match array.pop() {
                     None => {
                         writeln!(stderr, "pop: empty array").unwrap();
-                        return Err(ExitStatus::Failure);
+                        return Err(ExitStatus::Failure(Some(1)));
                     }
                     Some(id) => id,
                 };

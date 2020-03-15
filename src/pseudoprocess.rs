@@ -83,7 +83,8 @@ pub enum Stdio {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitStatus {
     Success,
-    Failure,
+    /// For real processes, this corresponds to the return value of std::process::ExitStatus.code()
+    Failure(Option<i32>),
 }
 
 #[derive(Debug)]
@@ -191,7 +192,7 @@ impl Child {
                 if status.success() {
                     Ok(ExitStatus::Success)
                 } else {
-                    Ok(ExitStatus::Failure)
+                    Ok(ExitStatus::Failure(status.code()))
                 }
             }
         }

@@ -111,7 +111,14 @@ fn main() -> Result<(), Error> {
     let config = cli::Config::from_args();
     let result = run(config)?;
     if let Some(spawned_child) = result {
-        spawned_child.wait().map_err(Error::RunChildFailed)?;
+        let exit_status = spawned_child.wait().map_err(Error::RunChildFailed)?;
+        match exit_status {
+            pseudoprocess::ExitStatus::Success => {}
+            pseudoprocess::ExitStatus::Failure(Some(code)) => std::process::exit(code),
+            pseudoprocess::ExitStatus::Failure(None) => eprintln!(
+                "Program terminated due to signal.  This probably indicates a SIGTERM or segfault."
+            ),
+        }
     }
     Ok(())
 }

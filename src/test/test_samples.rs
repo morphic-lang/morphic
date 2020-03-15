@@ -112,21 +112,21 @@ sample! { item_oob1 "samples/run-fail/item_oob1.txt";
     stdin = "";
     stdout = "";
     stderr = "index out of bounds: attempt to access item 3 of array with length 3\n";
-    status = Failure;
+    status = Failure(Some(1));
 }
 
 sample! { item_oob2 "samples/run-fail/item_oob2.txt";
     stdin = "";
     stdout = "";
     stderr = "index out of bounds: attempt to access item -1 of array with length 3\n";
-    status = Failure;
+    status = Failure(Some(1));
 }
 
 sample! { pop_empty "samples/run-fail/pop_empty.txt";
     stdin = "";
     stdout = "";
     stderr = "pop: empty array\n";
-    status = Failure;
+    status = Failure(Some(1));
 }
 
 // TODO: Carefully review 'samples/mutate.txt' to determine by hand what the stdouted output should
