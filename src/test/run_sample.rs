@@ -65,7 +65,7 @@ macro_rules! sample {
     ($name:ident $path:expr ; stdin = $stdin:expr ; stdout = $stdout:expr ; ) => {
         mod $name {
             #[test]
-            fn compile() {
+            fn interpret() {
                 crate::test::run_sample::run_sample(
                     crate::cli::RunMode::Interpret,
                     $path,
@@ -75,7 +75,7 @@ macro_rules! sample {
             }
 
             #[test]
-            fn interpret() {
+            fn compile() {
                 crate::test::run_sample::run_sample(
                     crate::cli::RunMode::Compile,
                     $path,

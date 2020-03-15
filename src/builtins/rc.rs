@@ -1,7 +1,7 @@
 use crate::builtins::core::*;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::{BasicType, BasicTypeEnum, StructType};
+use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -12,7 +12,7 @@ const INNER_IDX: u32 = 1; // has type T
 pub struct RcBoxBuiltin<'a> {
     // related types
     pub inner_type: BasicTypeEnum<'a>,
-    pub rc_type: StructType<'a>,
+    pub rc_type: BasicTypeEnum<'a>,
 
     // public API
     pub new: FunctionValue<'a>,
@@ -59,7 +59,7 @@ impl<'a> RcBoxBuiltin<'a> {
 
         Self {
             inner_type,
-            rc_type,
+            rc_type: rc_type.into(),
             new,
             get,
             retain,
@@ -75,6 +75,7 @@ impl<'a> RcBoxBuiltin<'a> {
     ) {
         let i32_type = context.i32_type();
         self.rc_type
+            .into_struct_type()
             .set_body(&[i32_type.into(), self.inner_type.into()], false);
         self.define_new(context, libc);
         self.define_get(context);
@@ -94,7 +95,7 @@ impl<'a> RcBoxBuiltin<'a> {
         let i8_new_ptr = builder
             .build_call(
                 libc.malloc,
-                &[self.rc_type.size_of().unwrap().into()],
+                &[self.rc_type.into_struct_type().size_of().unwrap().into()],
                 "i8_new_ptr",
             )
             .try_as_basic_value()

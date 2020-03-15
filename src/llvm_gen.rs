@@ -136,6 +136,7 @@ impl<'a> Instances<'a> {
         let mut flat_arrays = BTreeMap::new();
         let byte_flat_builtin = FlatArrayBuiltin::declare(
             globals.context,
+            globals.target,
             globals.module,
             globals.context.i8_type().into(),
         );
@@ -147,6 +148,7 @@ impl<'a> Instances<'a> {
         let mut persistent_arrays = BTreeMap::new();
         let byte_persistent_builtin = PersistentArrayBuiltin::declare(
             globals.context,
+            globals.target,
             globals.module,
             globals.context.i8_type().into(),
         );
@@ -180,6 +182,7 @@ impl<'a> Instances<'a> {
         }
         let new_builtin = FlatArrayBuiltin::declare(
             globals.context,
+            globals.target,
             globals.module,
             get_llvm_type(globals, self, item_type),
         );
@@ -199,6 +202,7 @@ impl<'a> Instances<'a> {
         }
         let new_builtin = PersistentArrayBuiltin::declare(
             globals.context,
+            globals.target,
             globals.module,
             get_llvm_type(globals, self, item_type),
         );
@@ -328,6 +332,7 @@ impl<'a> Instances<'a> {
 
             flat_array_builtin.define(
                 globals.context,
+                globals.target,
                 &globals.libc,
                 Some(retain_func),
                 Some(release_func),
@@ -481,9 +486,7 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Num(first_ord::NumType::Float) => globals.context.f64_type().into(),
         low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => instances
             .get_flat_array(globals, item_type)
-            .rc_builtin
-            .rc_type
-            .ptr_type(AddressSpace::Generic)
+            .array_type
             .into(),
         low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => instances
             .get_persistent_array(globals, item_type)
@@ -536,17 +539,11 @@ fn gen_rc_op<'a, 'b>(
         low::Type::Num(_) => {}
         low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => match op {
             RcOp::Retain => {
-                let retain_func = instances
-                    .get_flat_array(globals, item_type)
-                    .rc_builtin
-                    .retain;
+                let retain_func = instances.get_flat_array(globals, item_type).retain_array;
                 builder.build_call(retain_func, &[arg], "retain_flat_array");
             }
             RcOp::Release => {
-                let release_func = instances
-                    .get_flat_array(globals, item_type)
-                    .rc_builtin
-                    .release;
+                let release_func = instances.get_flat_array(globals, item_type).release_array;
                 builder.build_call(release_func, &[arg], "release_flat_array");
             }
         },

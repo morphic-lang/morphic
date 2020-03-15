@@ -10,5 +10,7 @@ pub mod rc;
 
 pub mod fountain_pen;
 
+pub mod zero_sized_array;
+
 #[cfg(test)]
 mod test_utils;

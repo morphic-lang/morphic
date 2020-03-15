@@ -2,7 +2,7 @@ use crate::builtins::core::LibC;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
-use inkwell::types::{BasicTypeEnum, StructType};
+use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
 use std::convert::TryInto;
@@ -237,17 +237,18 @@ impl<'a> Scope<'a> {
 
     pub fn make_struct(
         &self,
-        ty: StructType<'a>,
+        ty: BasicTypeEnum<'a>,
         fields: &[(u32, BasicValueEnum<'a>)],
     ) -> BasicValueEnum<'a> {
-        let mut new_inner = ty.get_undef();
+        let mut new_inner = self.undef(ty);
 
         for (idx, value) in fields {
             new_inner = self
                 .builder
-                .build_insert_value(new_inner, *value, *idx, "insert_value")
+                .build_insert_value(new_inner.into_struct_value(), *value, *idx, "insert_value")
                 .unwrap()
-                .into_struct_value();
+                .into_struct_value()
+                .into();
         }
 
         new_inner.into()
@@ -631,6 +632,17 @@ impl<'a> Scope<'a> {
             BasicTypeEnum::VectorType(t) => t.size_of().unwrap(),
         }
         .into()
+    }
+
+    pub fn undef(&self, ty: BasicTypeEnum<'a>) -> BasicValueEnum<'a> {
+        match ty {
+            BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
+            BasicTypeEnum::FloatType(t) => t.get_undef().into(),
+            BasicTypeEnum::IntType(t) => t.get_undef().into(),
+            BasicTypeEnum::PointerType(t) => t.get_undef().into(),
+            BasicTypeEnum::StructType(t) => t.get_undef().into(),
+            BasicTypeEnum::VectorType(t) => t.get_undef().into(),
+        }
     }
 
     // TODO: Should we consolidate this with similar code in 'llvm_gen.rs'?
