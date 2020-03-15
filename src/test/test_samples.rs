@@ -89,5 +89,17 @@ sample! { index_tree "samples/index_tree.txt";
     ];
 }
 
+sample! { nested "samples/nested.txt";
+    stdin = "";
+    stdout = lines! [
+        "hello",
+        "world",
+        "hello",
+        "moon",
+        "hello",
+        "mars",
+    ];
+}
+
 // TODO: Carefully review 'samples/mutate.txt' to determine by hand what the stdouted output should
 // be, then add a test for it.

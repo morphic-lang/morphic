@@ -249,6 +249,8 @@ impl<'a> FlatArrayBuiltin<'a> {
         let len = s.arrow(me, F_LEN);
         let new_len = s.sub(len, s.i64(1));
 
+        s.arrow_set(me, F_LEN, new_len);
+
         let item = s.buf_get(s.arrow(me, F_DATA), new_len);
         s.ret(s.make_tup(&[rc, item]))
     }

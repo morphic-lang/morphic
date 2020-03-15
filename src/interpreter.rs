@@ -592,6 +592,23 @@ fn unwrap_array(
     }
 }
 
+fn unwrap_array_retain(
+    heap: &mut Heap,
+    heap_id: HeapId,
+    rep: RepChoice,
+    stacktrace: StackTrace,
+) -> Vec<HeapId> {
+    let result = unwrap_array(heap, heap_id, rep, stacktrace.clone());
+    for &item_id in &result {
+        retain(
+            heap,
+            item_id,
+            stacktrace.add_frame("unwrap array retain".into()),
+        );
+    }
+    result
+}
+
 fn unwrap_hole_array(
     heap: &Heap,
     heap_id: HeapId,
@@ -610,6 +627,23 @@ fn unwrap_hole_array(
     } else {
         stacktrace.panic(format!["expected a hole array received {:?}", kind]);
     }
+}
+
+fn unwrap_hole_array_retain(
+    heap: &mut Heap,
+    heap_id: HeapId,
+    rep: RepChoice,
+    stacktrace: StackTrace,
+) -> (i64, Vec<HeapId>) {
+    let (idx, result) = unwrap_hole_array(heap, heap_id, rep, stacktrace.clone());
+    for &item_id in &result {
+        retain(
+            heap,
+            item_id,
+            stacktrace.add_frame("unwrap hole array retain".into()),
+        );
+    }
+    (idx, result)
 }
 
 fn unwrap_tuple(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<HeapId> {
@@ -1232,7 +1266,7 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
                 let array_heap_id = locals[array_id];
                 let item_heap_id = locals[item_id];
 
-                let mut array = unwrap_array(
+                let mut array = unwrap_array_retain(
                     heap,
                     array_heap_id,
                     rep,
@@ -1255,8 +1289,12 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
             Expr::ArrayOp(rep, _item_type, ArrayOp::Pop(array_id)) => {
                 let array_heap_id = locals[array_id];
 
-                let mut array =
-                    unwrap_array(heap, array_heap_id, rep, stacktrace.add_frame("pop".into()));
+                let mut array = unwrap_array_retain(
+                    heap,
+                    array_heap_id,
+                    rep,
+                    stacktrace.add_frame("pop".into()),
+                );
 
                 release(
                     heap,
@@ -1281,7 +1319,7 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
                 let array_heap_id = locals[array_id];
                 let index_heap_id = locals[index_id];
 
-                let array = unwrap_array(
+                let array = unwrap_array_retain(
                     heap,
                     array_heap_id,
                     rep,
@@ -1322,7 +1360,7 @@ fn interpret_expr<R: BufRead + ?Sized, W: Write + ?Sized>(
                 let array_heap_id = locals[array_id];
                 let item_heap_id = locals[item_id];
 
-                let (index, mut array) = unwrap_hole_array(
+                let (index, mut array) = unwrap_hole_array_retain(
                     heap,
                     array_heap_id,
                     rep,
