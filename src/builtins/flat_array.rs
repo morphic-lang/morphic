@@ -288,6 +288,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                     });
                 }
                 s.call_void(libc.free, &[s.ptr_cast(s.i8_t(), data)]);
+                s.call_void(libc.free, &[s.ptr_cast(s.i8_t(), me)]);
             });
 
             s.ret_void();
