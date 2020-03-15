@@ -77,8 +77,8 @@ pub struct PersistentArrayImpl<'a> {
     pop_node: FunctionValue<'a>,
 }
 
-impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
-    fn declare(
+impl<'a> PersistentArrayImpl<'a> {
+    pub fn declare(
         context: &'a Context,
         _target: &TargetData,
         module: &Module<'a>,
@@ -364,7 +364,9 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             pop_node,
         }
     }
+}
 
+impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
     fn define(
         &self,
         context: &'a Context,
@@ -1406,7 +1408,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PersistentArrayIoBuiltin<'a> {
+pub struct PersistentArrayIoImpl<'a> {
     // related types
     pub byte_array_type: PersistentArrayImpl<'a>,
 
@@ -1419,7 +1421,7 @@ pub struct PersistentArrayIoBuiltin<'a> {
     pub output_node: FunctionValue<'a>,
 }
 
-impl<'a> PersistentArrayIoBuiltin<'a> {
+impl<'a> PersistentArrayIoImpl<'a> {
     pub fn declare(
         context: &'a Context,
         module: &Module<'a>,

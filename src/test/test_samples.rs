@@ -5,6 +5,11 @@ sample! { io "samples/io.txt";
     stdout = "hello\n";
 }
 
+sample! { zero_sized_array "samples/zero_sized_array.txt";
+    stdin = "";
+    stdout = "Completed all tests\n";
+}
+
 sample! { iter "samples/iter.txt";
     stdin = "";
     stdout = lines! [

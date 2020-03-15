@@ -1,0 +1,24 @@
+module Core = file "lib/core/core.txt"
+  expose { module Bool expose { not } }
+
+module Test = file "lib/test.txt"
+  with { Core }
+  expose { test }
+
+proc main(): () =
+    let arr = [] in
+    let arr_pushed = push(arr, ((), ())) in
+    let (arr_popped, item1) = pop(arr_pushed) in
+
+    let arr_pushed_again = push(arr_popped, item1) in
+    let (item2, hole_arr) = item(arr_pushed_again, 0) in
+    let arr_filled = hole_arr(item2) in
+   
+    do test("Check initial length", len(arr) = 0) then
+    do test("Check length after push", len(arr_pushed) = 1) then
+    do test("Check length after pop", len(arr_popped) = 0) then
+
+    do test("Check that popped item can be pushed back on", len(arr_pushed_again) = 1) then
+    do test("Sanity check item and replace", len(arr_filled) = 1) then
+
+    do output("Completed all tests\n")

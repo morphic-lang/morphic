@@ -26,8 +26,8 @@ pub struct FlatArrayImpl<'a> {
     bounds_check: FunctionValue<'a>,
 }
 
-impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
-    fn declare(
+impl<'a> FlatArrayImpl<'a> {
+    pub fn declare(
         context: &'a Context,
         _target: &TargetData,
         module: &Module<'a>,
@@ -138,7 +138,9 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             bounds_check,
         }
     }
+}
 
+impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
     fn define(
         &self,
         context: &'a Context,
@@ -371,13 +373,13 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct FlatArrayIoBuiltin<'a> {
+pub struct FlatArrayIoImpl<'a> {
     pub byte_array_type: FlatArrayImpl<'a>,
     pub input: FunctionValue<'a>,
     pub output: FunctionValue<'a>,
 }
 
-impl<'a> FlatArrayIoBuiltin<'a> {
+impl<'a> FlatArrayIoImpl<'a> {
     pub fn declare(
         context: &'a Context,
         module: &Module<'a>,

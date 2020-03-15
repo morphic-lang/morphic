@@ -11,8 +11,8 @@ pub struct ZeroSizedArrayImpl<'a> {
     interface: ArrayInterface<'a>,
 }
 
-impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
-    fn declare(
+impl<'a> ZeroSizedArrayImpl<'a> {
+    pub fn declare(
         context: &'a Context,
         _target: &TargetData,
         module: &Module<'a>,
@@ -100,7 +100,9 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         Self { interface }
     }
+}
 
+impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
     fn define(
         &self,
         context: &'a Context,
@@ -109,6 +111,9 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
+        assert!(item_retain.is_none());
+        assert!(item_release.is_none());
+
         // define 'new'
         {
             let s = scope(self.interface.new, context);
@@ -151,7 +156,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
             let s = scope(self.interface.pop, context);
             let array = s.arg(0);
 
-            s.if_(s.sub(array, s.i64(1)), |s| {
+            s.if_(s.eq(array, s.i64(0)), |s| {
                 s.panic("cannot pop array of length 0", &[], libc);
             });
 

@@ -1,8 +1,9 @@
 use crate::builtins::array::ArrayImpl;
-use crate::builtins::flat_array::{FlatArrayImpl, FlatArrayIoBuiltin};
+use crate::builtins::flat_array::{FlatArrayImpl, FlatArrayIoImpl};
 use crate::builtins::libc::LibC;
-use crate::builtins::persistent_array::{PersistentArrayImpl, PersistentArrayIoBuiltin};
+use crate::builtins::persistent_array::{PersistentArrayImpl, PersistentArrayIoImpl};
 use crate::builtins::rc::RcBoxBuiltin;
+use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
 use crate::cli;
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
@@ -27,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::path::Path;
+use std::rc::Rc;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
 // we use a zero sized array to enforce proper alignment on `bytes`
@@ -125,10 +127,10 @@ impl<'a> CustomTypeDecls<'a> {
 }
 
 struct Instances<'a> {
-    flat_arrays: RefCell<BTreeMap<low::Type, FlatArrayImpl<'a>>>,
-    flat_array_io: FlatArrayIoBuiltin<'a>,
-    persistent_arrays: RefCell<BTreeMap<low::Type, PersistentArrayImpl<'a>>>,
-    persistent_array_io: PersistentArrayIoBuiltin<'a>,
+    flat_arrays: RefCell<BTreeMap<low::Type, Rc<dyn ArrayImpl<'a> + 'a>>>,
+    flat_array_io: FlatArrayIoImpl<'a>,
+    persistent_arrays: RefCell<BTreeMap<low::Type, Rc<dyn ArrayImpl<'a> + 'a>>>,
+    persistent_array_io: PersistentArrayIoImpl<'a>,
     rcs: RefCell<BTreeMap<low::Type, RcBoxBuiltin<'a>>>,
 }
 
@@ -142,9 +144,12 @@ impl<'a> Instances<'a> {
             globals.context.i8_type().into(),
         );
 
-        flat_arrays.insert(low::Type::Num(first_ord::NumType::Byte), byte_flat_builtin);
+        flat_arrays.insert(
+            low::Type::Num(first_ord::NumType::Byte),
+            Rc::new(byte_flat_builtin) as Rc<dyn ArrayImpl<'a>>,
+        );
         let flat_array_io =
-            FlatArrayIoBuiltin::declare(globals.context, globals.module, byte_flat_builtin);
+            FlatArrayIoImpl::declare(globals.context, globals.module, byte_flat_builtin);
 
         let mut persistent_arrays = BTreeMap::new();
         let byte_persistent_builtin = PersistentArrayImpl::declare(
@@ -156,9 +161,9 @@ impl<'a> Instances<'a> {
 
         persistent_arrays.insert(
             low::Type::Num(first_ord::NumType::Byte),
-            byte_persistent_builtin,
+            Rc::new(byte_persistent_builtin) as Rc<dyn ArrayImpl<'a>>,
         );
-        let persistent_array_io = PersistentArrayIoBuiltin::declare(
+        let persistent_array_io = PersistentArrayIoImpl::declare(
             globals.context,
             globals.module,
             byte_persistent_builtin,
@@ -177,40 +182,60 @@ impl<'a> Instances<'a> {
         &self,
         globals: &Globals<'a, 'b>,
         item_type: &low::Type,
-    ) -> FlatArrayImpl<'a> {
+    ) -> Rc<dyn ArrayImpl<'a> + 'a> {
         if let Some(existing) = self.flat_arrays.borrow().get(&item_type.clone()) {
-            return *existing;
+            return existing.clone();
         }
-        let new_builtin = FlatArrayImpl::declare(
-            globals.context,
-            globals.target,
-            globals.module,
-            get_llvm_type(globals, self, item_type),
-        );
+        let ty = get_llvm_type(globals, self, item_type);
+        let new_builtin = if globals.target.get_abi_size(&ty) == 0 {
+            Rc::new(ZeroSizedArrayImpl::declare(
+                globals.context,
+                globals.target,
+                globals.module,
+                ty,
+            )) as Rc<dyn ArrayImpl<'a>>
+        } else {
+            Rc::new(FlatArrayImpl::declare(
+                globals.context,
+                globals.target,
+                globals.module,
+                ty,
+            )) as Rc<dyn ArrayImpl<'a>>
+        };
         self.flat_arrays
             .borrow_mut()
-            .insert(item_type.clone(), new_builtin);
-        return new_builtin;
+            .insert(item_type.clone(), new_builtin.clone());
+        new_builtin
     }
 
     fn get_persistent_array<'b>(
         &self,
         globals: &Globals<'a, 'b>,
         item_type: &low::Type,
-    ) -> PersistentArrayImpl<'a> {
+    ) -> Rc<dyn ArrayImpl<'a> + 'a> {
         if let Some(existing) = self.persistent_arrays.borrow().get(&item_type.clone()) {
-            return *existing;
+            return existing.clone();
         }
-        let new_builtin = PersistentArrayImpl::declare(
-            globals.context,
-            globals.target,
-            globals.module,
-            get_llvm_type(globals, self, item_type),
-        );
+        let ty = get_llvm_type(globals, self, item_type);
+        let new_builtin = if globals.target.get_abi_size(&ty) == 0 {
+            Rc::new(ZeroSizedArrayImpl::declare(
+                globals.context,
+                globals.target,
+                globals.module,
+                ty,
+            )) as Rc<dyn ArrayImpl<'a>>
+        } else {
+            Rc::new(PersistentArrayImpl::declare(
+                globals.context,
+                globals.target,
+                globals.module,
+                ty,
+            )) as Rc<dyn ArrayImpl<'a>>
+        };
         self.persistent_arrays
             .borrow_mut()
-            .insert(item_type.clone(), new_builtin);
-        return new_builtin;
+            .insert(item_type.clone(), new_builtin.clone());
+        new_builtin
     }
 
     fn get_rc<'b>(&self, globals: &Globals<'a, 'b>, item_type: &low::Type) -> RcBoxBuiltin<'a> {
@@ -331,13 +356,24 @@ impl<'a> Instances<'a> {
 
             builder.build_return(None);
 
-            flat_array_builtin.define(
-                globals.context,
-                globals.target,
-                &globals.libc,
-                Some(retain_func),
-                Some(release_func),
-            );
+            // TODO: dont generate retains/releases that aren't used
+            if globals.target.get_abi_size(&llvm_inner_type) == 0 {
+                flat_array_builtin.define(
+                    globals.context,
+                    globals.target,
+                    &globals.libc,
+                    None,
+                    None,
+                );
+            } else {
+                flat_array_builtin.define(
+                    globals.context,
+                    globals.target,
+                    &globals.libc,
+                    Some(retain_func),
+                    Some(release_func),
+                );
+            }
         }
 
         self.flat_array_io.define(globals.context, &globals.libc);
@@ -408,13 +444,24 @@ impl<'a> Instances<'a> {
 
             builder.build_return(None);
 
-            persistent_array_builtin.define(
-                globals.context,
-                globals.target,
-                &globals.libc,
-                Some(retain_func),
-                Some(release_func),
-            );
+            // TODO: dont generate retains/releases that aren't used
+            if globals.target.get_abi_size(&llvm_inner_type) == 0 {
+                persistent_array_builtin.define(
+                    globals.context,
+                    globals.target,
+                    &globals.libc,
+                    None,
+                    None,
+                );
+            } else {
+                persistent_array_builtin.define(
+                    globals.context,
+                    globals.target,
+                    &globals.libc,
+                    Some(retain_func),
+                    Some(release_func),
+                );
+            }
         }
 
         self.persistent_array_io
