@@ -537,7 +537,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 s.arr_set(
                     s.gep(new_body, F_BRANCH_CHILDREN),
                     s.i32(0),
-                    s.ptr_cast(s.i8_t(), new_body),
+                    s.ptr_cast(s.i8_t(), s.field(array, F_ARR_BODY)),
                 );
 
                 let new_body = s.call(
@@ -943,13 +943,12 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
                         s.while_(
                             |s| {
-                                s.and(
-                                    s.ult(s.ptr_get(i), s.i64(BRANCHING_FACTOR)),
+                                s.and_lazy(s.ult(s.ptr_get(i), s.i64(BRANCHING_FACTOR)), |s| {
                                     s.not(s.is_null(s.arr_get(
                                         s.gep(branch_ptr, F_BRANCH_CHILDREN),
                                         s.ptr_get(i),
-                                    ))),
-                                )
+                                    )))
+                                })
                             },
                             |s| {
                                 s.call_void(
@@ -1067,10 +1066,9 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             s.ptr_set(i, s.i64(0));
             s.while_(
                 |s| {
-                    s.and(
-                        s.ult(s.ptr_get(i), s.i64(BRANCHING_FACTOR)),
-                        s.not(s.is_null(s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)))),
-                    )
+                    s.and_lazy(s.ult(s.ptr_get(i), s.i64(BRANCHING_FACTOR)), |s| {
+                        s.not(s.is_null(s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i))))
+                    })
                 },
                 |s| {
                     s.call_void(
@@ -1601,10 +1599,9 @@ impl<'a> PersistentArrayIoImpl<'a> {
 
             s.while_(
                 |s| {
-                    s.and(
-                        s.ult(s.ptr_get(i), s.i64(BRANCHING_FACTOR)),
-                        s.not(s.is_null(s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)))),
-                    )
+                    s.and_lazy(s.ult(s.ptr_get(i), s.i64(BRANCHING_FACTOR)), |s| {
+                        s.not(s.is_null(s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i))))
+                    })
                 },
                 |s| {
                     s.call_void(

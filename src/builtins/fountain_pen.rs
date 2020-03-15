@@ -208,6 +208,14 @@ impl<'a> Scope<'a> {
         phi.as_basic_value()
     }
 
+    pub fn and_lazy(
+        &self,
+        left: BasicValueEnum<'a>,
+        right: impl FnOnce(&Scope<'a>) -> BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
+        self.if_expr(left, right, |s| s.i1(false))
+    }
+
     pub fn ternary(
         &self,
         cond: BasicValueEnum<'a>,
@@ -600,6 +608,10 @@ impl<'a> Scope<'a> {
 
     pub fn i64_t(&self) -> BasicTypeEnum<'a> {
         self.context.i64_type().into()
+    }
+
+    pub fn i1(&self, val: bool) -> BasicValueEnum<'a> {
+        self.context.bool_type().const_int(val as u64, false).into()
     }
 
     pub fn i8(&self, val: u8) -> BasicValueEnum<'a> {
