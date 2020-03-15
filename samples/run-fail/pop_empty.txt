@@ -1,3 +1,5 @@
+empty_arr: Array Int = []
+
 proc main(): () =
-  let _ = pop([]) in
+  let _ = pop(empty_arr) in
   ()

@@ -1,6 +1,5 @@
 use crate::builtins::libc::LibC;
 use inkwell::context::Context;
-use inkwell::module::Module;
 use inkwell::targets::TargetData;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::FunctionValue;
@@ -24,13 +23,6 @@ pub struct ArrayInterface<'a> {
 }
 
 pub trait ArrayImpl<'a> {
-    fn declare(
-        context: &'a Context,
-        target: &TargetData,
-        module: &Module<'a>,
-        item_type: BasicTypeEnum<'a>,
-    ) -> Self;
-
     fn define(
         &self,
         context: &'a Context,

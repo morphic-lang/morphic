@@ -6,11 +6,13 @@ use std::path::Path;
 // requiring that the program writes certain output before the test harness provides input, or
 // requiring that the program conusmes certain input before the test harness expects output.
 
-pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>>(
+pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: AsRef<[u8]>>(
     mode: cli::RunMode,
     path: SrcPath,
     given_in: In,
     expected_out: Out,
+    expected_err: Err,
+    expected_status: ExitStatus,
 ) {
     let config = cli::Config::RunConfig(cli::RunConfig {
         src_path: path.as_ref().to_owned(),
@@ -32,6 +34,11 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>>(
         .take()
         .expect("Child process/thread should have captured stdout reader");
 
+    let mut stderr = child
+        .stderr
+        .take()
+        .expect("Child process/thread should have captured stdout reader");
+
     stdin
         .write_all(given_in.as_ref())
         .expect("Writing to child stdin failed");
@@ -41,14 +48,18 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>>(
         .read_to_end(&mut output)
         .expect("Reading from child stdout failed");
 
+    let mut err_output = Vec::with_capacity(expected_out.as_ref().len());
+    stderr
+        .read_to_end(&mut err_output)
+        .expect("Reading from child stdout failed");
+
     let status = child
         .wait()
         .expect("Waiting on child process/thread failed");
 
     assert_eq!(
-        status,
-        ExitStatus::Success,
-        "Child process returned failing exit status"
+        status, expected_status,
+        "Child process returned unexpected status"
     );
 
     assert!(
@@ -59,28 +70,76 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>>(
         actual = String::from_utf8_lossy(&output),
         expected = String::from_utf8_lossy(expected_out.as_ref())
     );
+
+    assert!(
+        &err_output[..] == expected_err.as_ref(),
+        r#"Program stderr did not match expected stderr:
+      actual: {actual:?}
+    expected: {expected:?}"#,
+        actual = String::from_utf8_lossy(&err_output),
+        expected = String::from_utf8_lossy(expected_err.as_ref())
+    );
 }
 
 macro_rules! sample {
-    ($name:ident $path:expr ; stdin = $stdin:expr ; stdout = $stdout:expr ; ) => {
+    (
+        $name:ident $path:expr ;
+        stdin = $stdin:expr ;
+        stdout = $stdout:expr ;
+        $( stderr = $stderr:expr; )?
+        $( status = $status:expr; )?
+    ) => {
         mod $name {
+            #[allow(unused_imports)]
+            use super::*;
+
             #[test]
             fn interpret() {
+                #[allow(unused_mut, unused_assignments)]
+                let mut stderr: String = "".into();
+                #[allow(unused_mut, unused_assignments)]
+                let mut status = crate::pseudoprocess::ExitStatus::Success;
+
+                $(
+                    stderr = $stderr.into();
+                )?
+
+                $(
+                    status = $status;
+                )?
+
                 crate::test::run_sample::run_sample(
                     crate::cli::RunMode::Interpret,
                     $path,
                     $stdin,
                     $stdout,
+                    stderr,
+                    status,
                 );
             }
 
             #[test]
             fn compile() {
+                #[allow(unused_mut, unused_assignments)]
+                let mut stderr: String = "".into();
+                #[allow(unused_mut, unused_assignments)]
+                let mut status = crate::pseudoprocess::ExitStatus::Success;
+
+                $(
+                    stderr = $stderr.into();
+                )?
+
+                $(
+                    status = $status;
+                )?
+
                 crate::test::run_sample::run_sample(
                     crate::cli::RunMode::Compile,
                     $path,
                     $stdin,
                     $stdout,
+                    stderr,
+                    status,
                 );
             }
         }

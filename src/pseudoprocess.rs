@@ -101,29 +101,39 @@ pub enum ChildHandle {
 pub struct Child {
     pub stdin: Option<Box<dyn Write>>,
     pub stdout: Option<Box<dyn Read>>,
+    pub stderr: Option<Box<dyn Read>>,
     handle: ChildHandle,
 }
 
 pub fn spawn_thread(
     stdio: Stdio,
-    body: impl FnOnce(&mut dyn BufRead, &mut dyn Write) -> io::Result<ExitStatus> + Send + 'static,
+    body: impl FnOnce(&mut dyn BufRead, &mut dyn Write, &mut dyn Write) -> io::Result<ExitStatus>
+        + Send
+        + 'static,
 ) -> Child {
     match stdio {
         Stdio::Inherit => Child {
             stdin: None,
             stdout: None,
+            stderr: None,
             handle: ChildHandle::Thread(thread::spawn(move || {
-                body(&mut io::stdin().lock(), &mut io::stdout().lock())
+                body(
+                    &mut io::stdin().lock(),
+                    &mut io::stdout().lock(),
+                    &mut io::stderr().lock(),
+                )
             })),
         },
         Stdio::Piped => {
             let (stdin_writer, mut stdin_reader) = channel_pipe();
             let (mut stdout_writer, stdout_reader) = channel_pipe();
+            let (mut stderr_writer, stderr_reader) = channel_pipe();
             Child {
                 stdin: Some(Box::new(stdin_writer)),
                 stdout: Some(Box::new(stdout_reader)),
+                stderr: Some(Box::new(stderr_reader)),
                 handle: ChildHandle::Thread(thread::spawn(move || {
-                    body(&mut stdin_reader, &mut stdout_writer)
+                    body(&mut stdin_reader, &mut stdout_writer, &mut stderr_writer)
                 })),
             }
         }
@@ -137,10 +147,12 @@ pub fn spawn_process(stdio: Stdio, path: TempPath) -> io::Result<Child> {
         Stdio::Inherit => {
             command.stdin(process::Stdio::inherit());
             command.stdout(process::Stdio::inherit());
+            command.stderr(process::Stdio::inherit());
         }
         Stdio::Piped => {
             command.stdin(process::Stdio::piped());
             command.stdout(process::Stdio::piped());
+            command.stderr(process::Stdio::piped());
         }
     }
 
@@ -155,6 +167,10 @@ pub fn spawn_process(stdio: Stdio, path: TempPath) -> io::Result<Child> {
             .stdout
             .take()
             .map(|stdout| Box::new(stdout) as Box<dyn Read>),
+        stderr: child
+            .stderr
+            .take()
+            .map(|stderr| Box::new(stderr) as Box<dyn Read>),
         handle: ChildHandle::Process { path, child },
     })
 }
