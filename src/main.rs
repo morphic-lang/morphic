@@ -14,6 +14,10 @@ mod lex;
 
 lalrpop_mod!(pub parse);
 
+mod file_cache;
+mod parse_error;
+mod report_error;
+
 mod resolve;
 
 mod check_purity;
@@ -70,61 +74,68 @@ mod pseudoprocess;
 #[cfg(test)]
 mod test;
 
-use failure::Fail;
 use lalrpop_util::lalrpop_mod;
 use std::fs;
 use std::io;
 
-#[derive(Debug, Fail)]
+#[derive(Debug)]
 enum Error {
-    #[fail(display = "{}", _0)]
-    ResolveFailed(#[cause] resolve::Error),
-
-    #[fail(display = "{}", _0)]
-    PurityCheckFailed(#[cause] check_purity::Error),
-
-    #[fail(display = "{}", _0)]
-    TypeInferFailed(#[cause] type_infer::LocatedError),
-
-    #[fail(display = "{}", _0)]
-    CheckExhaustiveFailed(#[cause] check_exhaustive::Error),
-
-    #[fail(display = "{}", _0)]
-    CheckMainFailed(#[cause] check_main::Error),
-
-    #[fail(display = "Could not create artifacts directory: {}", _0)]
-    CreateArtifactsFailed(#[cause] io::Error),
-
-    #[fail(
-        display = "Could not write intermediate representation artifacts: {}",
-        _0
-    )]
-    WriteIrFailed(#[cause] io::Error),
-
-    #[fail(display = "Execute of compiled program failed: {}", _0)]
-    RunChildFailed(#[cause] io::Error),
+    ResolveFailed(resolve::Error),
+    PurityCheckFailed(check_purity::Error),
+    TypeInferFailed(type_infer::LocatedError),
+    CheckExhaustiveFailed(check_exhaustive::Error),
+    CheckMainFailed(check_main::Error),
+    CreateArtifactsFailed(io::Error),
+    WriteIrFailed(io::Error),
 }
 
-fn main() -> Result<(), Error> {
-    better_panic::install();
-
-    let config = cli::Config::from_args();
-    let result = run(config)?;
-    if let Some(spawned_child) = result {
-        let exit_status = spawned_child.wait().map_err(Error::RunChildFailed)?;
-        match exit_status {
-            pseudoprocess::ExitStatus::Success => {}
-            pseudoprocess::ExitStatus::Failure(Some(code)) => std::process::exit(code),
-            pseudoprocess::ExitStatus::Failure(None) => eprintln!(
-                "Program terminated due to signal.  This probably indicates a SIGTERM or segfault."
+impl Error {
+    pub fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &file_cache::FileCache,
+    ) -> io::Result<()> {
+        use Error::*;
+        match self {
+            ResolveFailed(err) => err.report(dest, files),
+            PurityCheckFailed(err) => writeln!(dest, "{}", err),
+            TypeInferFailed(err) => writeln!(dest, "{}", err),
+            CheckExhaustiveFailed(err) => writeln!(dest, "{}", err),
+            CheckMainFailed(err) => writeln!(dest, "{}", err),
+            CreateArtifactsFailed(err) => {
+                writeln!(dest, "Could not create artifacts directory: {}", err)
+            }
+            WriteIrFailed(err) => writeln!(
+                dest,
+                "Could not write intermediate representation artifacts: {}",
+                err
             ),
         }
     }
-    Ok(())
 }
 
-fn run(config: cli::Config) -> Result<Option<pseudoprocess::Child>, Error> {
-    let resolved = resolve::resolve_program(config.src_path()).map_err(Error::ResolveFailed)?;
+fn main() {
+    better_panic::install();
+
+    let config = cli::Config::from_args();
+    let mut files = file_cache::FileCache::new();
+    let result = run(config, &mut files);
+    match result {
+        Ok(Some(spawned_child)) => wait_child(spawned_child),
+        Ok(None) => {}
+        Err(err) => {
+            let _ = err.report(&mut io::stderr().lock(), &files);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run(
+    config: cli::Config,
+    files: &mut file_cache::FileCache,
+) -> Result<Option<pseudoprocess::Child>, Error> {
+    let resolved =
+        resolve::resolve_program(files, config.src_path()).map_err(Error::ResolveFailed)?;
 
     // Check obvious errors and infer types
     check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;
@@ -197,4 +208,23 @@ fn run(config: cli::Config) -> Result<Option<pseudoprocess::Child>, Error> {
     };
 
     Ok(child)
+}
+
+fn wait_child(child: pseudoprocess::Child) {
+    let exit_status = child.wait();
+    match exit_status {
+        Ok(pseudoprocess::ExitStatus::Success) => {}
+        Ok(pseudoprocess::ExitStatus::Failure(Some(code))) => std::process::exit(code),
+        Ok(pseudoprocess::ExitStatus::Failure(None)) => {
+            eprintln!(
+                "Program terminated due to signal.  This probably indicates a SIGTERM or \
+                 segfault."
+            );
+            std::process::exit(1)
+        }
+        Err(err) => {
+            eprintln!("Could not execute compiled program: {}", err);
+            std::process::exit(1);
+        }
+    }
 }

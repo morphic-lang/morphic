@@ -1,4 +1,7 @@
 #[macro_use]
+pub mod lines;
+
+#[macro_use]
 pub mod id_type;
 
 pub mod id_vec;

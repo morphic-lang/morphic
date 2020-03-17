@@ -23,6 +23,8 @@ cc = "1.0.50"
 tempfile = "3.1.0"
 crossbeam-channel = "0.4.2"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm8-0"] }
+ansi_term = "0.12.1"
+textwrap = "0.11.0"
 
 # RNG used for procedurally (but deterministically) generating test inputs
 rand = "0.6.5"

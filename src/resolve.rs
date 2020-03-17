@@ -1,66 +1,171 @@
-use failure::Fail;
+use lalrpop_util::ParseError;
 use lazy_static::lazy_static;
 use std::collections::BTreeMap;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
+use crate::file_cache::FileCache;
 use crate::lex;
 use crate::parse;
+use crate::parse_error;
+use crate::report_error::{report_error, Report};
 use crate::util::id_vec::IdVec;
 
-#[derive(Debug, Fail)]
+#[derive(Debug)]
 pub enum ErrorKind {
-    #[fail(display = "Could not read source file: {}", _0)]
-    ReadFailed(#[cause] io::Error),
-
-    #[fail(display = "Could not parse source file: {}", _0)]
-    ParseFailed(#[cause] lalrpop_util::ParseError<usize, lex::Token, lex::Error>),
-
-    #[fail(display = "Illegal file path {:?}", _0)]
+    ReadFailed(PathBuf, io::Error),
+    ParseFailed(ParseError<usize, lex::Token, lex::Error>),
     IllegalFilePath(String),
-
-    #[fail(display = "Duplicate module name '{}'", _0)]
     DuplicateModName(String),
-
-    #[fail(display = "Duplicate type name '{}'", _0)]
     DuplicateTypeName(String),
-
-    #[fail(display = "Duplicate constructor name '{}'", _0)]
     DuplicateCtorName(String),
-
-    #[fail(display = "Duplicate variable name '{}'", _0)]
     DuplicateVarName(String),
-
-    #[fail(display = "Could not find a type named '{}'", _0)]
     TypeNotFound(String),
-
-    #[fail(display = "Could not find a variable named '{}'", _0)]
     VarNotFound(String),
-
-    #[fail(display = "Could not find a constructor named '{}'", _0)]
     CtorNotFound(String),
-
-    #[fail(display = "Could not find a module named '{}'", _0)]
     ModNotFound(String),
-
-    #[fail(display = "Could not find main procedure")]
     MainNotFound,
 }
 
-#[derive(Debug, Fail)]
-#[fail(display = "Error in {:?}: {}", file, kind)]
+#[derive(Debug)]
 pub struct Error {
-    pub file: PathBuf,
-    #[cause]
+    pub file: Option<PathBuf>,
     pub kind: ErrorKind,
+}
+
+impl Error {
+    pub fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
+        use ErrorKind::*;
+
+        let path = self.file.as_ref().map(|path| path.as_ref());
+
+        match &self.kind {
+            ReadFailed(path, err) if err.kind() != io::ErrorKind::NotFound => {
+                writeln!(dest, "Could not read {}: {}", path.display(), err)?;
+                return Ok(());
+            }
+            ParseFailed(err) => {
+                parse_error::report(dest, files, path, err)?;
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        let (title, message) = match &self.kind {
+            ReadFailed(path, err) => {
+                // Other cases are handled above
+                assert!(err.kind() == io::ErrorKind::NotFound);
+                (
+                    "File Not Found",
+                    format!(
+                        lines!["I couldn't find a file at this path:", "", "    {}",],
+                        path.display()
+                    ),
+                )
+            }
+            ParseFailed(_) => {
+                // Handled above
+                unreachable!()
+            }
+            IllegalFilePath(path) => (
+                "Invalid File Path",
+                format!(
+                    lines![
+                        "You cannot access a module using the path",
+                        "",
+                        "    {}",
+                        "",
+                        "Module file paths must be specified relative to the parent module's \
+                         directory, and may only access that directory and its subdirectories \
+                         (that is, module paths may not use the \"parent directory\" symbol '..').",
+                    ],
+                    path
+                ),
+            ),
+            DuplicateModName(name) => (
+                "Duplicate Module Name",
+                format!(
+                    "You have already declared a module named '{}' in this scope.",
+                    name
+                ),
+            ),
+            DuplicateTypeName(name) => (
+                "Duplicate Type Name",
+                format!(
+                    "You have already declared a type named '{}' in this scope.",
+                    name
+                ),
+            ),
+            DuplicateCtorName(name) => (
+                "Duplicate Constructor Name",
+                format!(
+                    "You have already declared a constructor named '{}' in this scope.",
+                    name
+                ),
+            ),
+            DuplicateVarName(name) => (
+                "Duplicate Variable Name",
+                format!(
+                    "You have already declared a variable named '{}' in this scope.",
+                    name
+                ),
+            ),
+            TypeNotFound(name) => (
+                "Type Not Found",
+                format!(
+                    "There is no type named '{}' available in the current scope.",
+                    name
+                ),
+            ),
+            VarNotFound(name) => (
+                "Variable Not Found",
+                format!(
+                    "There is no variable named '{}' available in the current scope.",
+                    name
+                ),
+            ),
+            CtorNotFound(name) => (
+                "Constructor Not Found",
+                format!(
+                    "There is no constructor named '{}' available in the current scope.",
+                    name
+                ),
+            ),
+            ModNotFound(name) => (
+                "Module Not Found",
+                format!(
+                    "There is no module named '{}' available in the current scope.",
+                    name
+                ),
+            ),
+            MainNotFound => (
+                "Main Not Found",
+                format!(
+                    "Your program does not have a 'main' function declared in its root module."
+                ),
+            ),
+        };
+
+        report_error(
+            dest,
+            files,
+            Report {
+                path,
+                span: None, // TODO: Add spans!
+                title,
+                message: Some(&message),
+            },
+        )?;
+
+        Ok(())
+    }
 }
 
 fn locate<'a>(file: &'a Path) -> impl FnOnce(ErrorKind) -> Error + 'a {
     move |kind| Error {
-        file: file.to_owned(),
+        file: Some(file.to_owned()),
         kind,
     }
 }
@@ -142,7 +247,7 @@ pub struct GlobalContext {
     val_symbols: IdVec<res::CustomGlobalId, res::ValSymbols>,
 }
 
-pub fn resolve_program(file_path: &Path) -> Result<res::Program, Error> {
+pub fn resolve_program(files: &mut FileCache, file_path: &Path) -> Result<res::Program, Error> {
     let mut ctx = GlobalContext {
         mods: IdVec::new(),
         types: IdVec::new(),
@@ -151,7 +256,7 @@ pub fn resolve_program(file_path: &Path) -> Result<res::Program, Error> {
         val_symbols: IdVec::new(),
     };
 
-    let main_mod = resolve_mod_from_file(&mut ctx, BTreeMap::new(), file_path)?;
+    let main_mod = resolve_mod_from_file(files, &mut ctx, BTreeMap::new(), file_path)?;
 
     let main_proc = if let Some(&res::GlobalId::Custom(id)) = ctx.mods[main_mod]
         .vals
@@ -172,6 +277,7 @@ pub fn resolve_program(file_path: &Path) -> Result<res::Program, Error> {
 }
 
 fn resolve_mod(
+    files: &mut FileCache,
     ctx: &mut GlobalContext,
     file_path: &Path,
     bindings: BTreeMap<raw::ModName, ModId>,
@@ -264,7 +370,8 @@ fn resolve_mod(
                         })
                         .collect::<Result<_, _>>()?;
 
-                    let sub_mod_id = resolve_mod_spec(ctx, file_path, sub_mod_bindings, spec)?;
+                    let sub_mod_id =
+                        resolve_mod_spec(files, ctx, file_path, sub_mod_bindings, spec)?;
 
                     insert_unique(&mut mod_map.mods, name.clone(), sub_mod_id)
                         .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()))
@@ -354,6 +461,7 @@ fn resolve_mod(
 }
 
 fn resolve_mod_spec(
+    files: &mut FileCache,
     ctx: &mut GlobalContext,
     file_path: &Path,
     bindings: BTreeMap<raw::ModName, ModId>,
@@ -361,30 +469,33 @@ fn resolve_mod_spec(
 ) -> Result<ModId, Error> {
     match spec {
         raw::ModSpec::File(sibling_path_components) => resolve_mod_from_file(
+            files,
             ctx,
             bindings,
             &sibling_path_from(file_path, sibling_path_components)?,
         ),
 
-        raw::ModSpec::Inline(content) => resolve_mod(ctx, file_path, bindings, content),
+        raw::ModSpec::Inline(content) => resolve_mod(files, ctx, file_path, bindings, content),
     }
 }
 
 fn resolve_mod_from_file(
+    files: &mut FileCache,
     ctx: &mut GlobalContext,
     bindings: BTreeMap<raw::ModName, ModId>,
     file_path: &Path,
 ) -> Result<ModId, Error> {
-    let src = fs::read_to_string(file_path)
-        .map_err(ErrorKind::ReadFailed)
-        .map_err(locate(file_path))?;
+    let src = files.read(file_path).map_err(|err| Error {
+        kind: ErrorKind::ReadFailed(file_path.to_owned(), err),
+        file: None,
+    })?;
 
     let content = parse::ProgramParser::new()
         .parse(lex::Lexer::new(&src))
         .map_err(ErrorKind::ParseFailed)
         .map_err(locate(file_path))?;
 
-    resolve_mod(ctx, file_path, bindings, content)
+    resolve_mod(files, ctx, file_path, bindings, content)
 }
 
 fn resolve_mod_path(
@@ -866,7 +977,7 @@ fn sibling_path_from(self_path: &Path, components: Vec<String>) -> Result<PathBu
         // This check also ensures we reject empty components.
         if component.chars().all(|c| c == '.') {
             return Err(Error {
-                file: self_path.to_owned(),
+                file: Some(self_path.to_owned()),
                 kind: ErrorKind::IllegalFilePath(components.join("/")),
             });
         }

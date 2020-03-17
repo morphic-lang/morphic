@@ -1,4 +1,5 @@
 use crate::cli;
+use crate::file_cache::FileCache;
 use crate::pseudoprocess::{ExitStatus, Stdio};
 use std::path::Path;
 
@@ -20,7 +21,7 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
         stdio: Stdio::Piped,
     });
 
-    let mut child = crate::run(config)
+    let mut child = crate::run(config, &mut FileCache::new())
         .expect("Compilation failed")
         .expect("'run' should return a child process/thread");
 
@@ -144,15 +145,4 @@ macro_rules! sample {
             }
         }
     };
-}
-
-macro_rules! lines {
-    ($($line:expr),* $(,)?) => { ( {
-        let mut result = String::new();
-        $(
-            result.push_str(&$line);
-            result.push('\n');
-        )*
-        result
-    } ) }
 }
