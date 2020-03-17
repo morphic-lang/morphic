@@ -299,7 +299,7 @@ Types: syntax::Type = {
 
 // Expressions
 
-AtomicExpr: syntax::Expr = {
+AtomicExpr_: syntax::Expr = {
   "(" <Exprs> ")",
 
   <path: QualPath> <name: ValName> => {
@@ -325,6 +325,10 @@ AtomicExpr: syntax::Expr = {
   <MatchExpr>,
 
   <IfExpr>,
+};
+
+AtomicExpr: syntax::Expr = {
+  <lo: @L> <expr: AtomicExpr_> <hi: @R> => syntax::Expr::Span(lo, hi, Box::new(expr)),
 };
 
 PrefixExpr: syntax::Expr = {

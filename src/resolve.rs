@@ -32,7 +32,18 @@ pub enum ErrorKind {
 #[derive(Debug)]
 pub struct Error {
     pub file: Option<PathBuf>,
+    pub span: Option<(usize, usize)>,
     pub kind: ErrorKind,
+}
+
+impl From<ErrorKind> for Error {
+    fn from(kind: ErrorKind) -> Error {
+        Error {
+            file: None,
+            span: None,
+            kind,
+        }
+    }
 }
 
 impl Error {
@@ -153,7 +164,7 @@ impl Error {
             files,
             Report {
                 path,
-                span: None, // TODO: Add spans!
+                span: self.span, // TODO: Add spans!
                 title,
                 message: Some(&message),
             },
@@ -163,10 +174,17 @@ impl Error {
     }
 }
 
-fn locate<'a>(file: &'a Path) -> impl FnOnce(ErrorKind) -> Error + 'a {
-    move |kind| Error {
+fn locate<'a>(file: &'a Path) -> impl FnOnce(Error) -> Error + 'a {
+    move |err| Error {
         file: Some(file.to_owned()),
-        kind,
+        ..err
+    }
+}
+
+fn locate_span(lo: usize, hi: usize) -> impl FnOnce(Error) -> Error {
+    move |err| Error {
+        span: Some((lo, hi)),
+        ..err
     }
 }
 
@@ -264,7 +282,7 @@ pub fn resolve_program(files: &mut FileCache, file_path: &Path) -> Result<res::P
     {
         id
     } else {
-        return Err(locate(file_path)(ErrorKind::MainNotFound));
+        return Err(locate(file_path)(ErrorKind::MainNotFound.into()));
     };
 
     Ok(res::Program {
@@ -322,7 +340,7 @@ fn resolve_mod(
                         name.clone(),
                         res::TypeId::Custom(type_id),
                     )
-                    .map_err(|()| ErrorKind::DuplicateTypeName(name.0.clone()))
+                    .map_err(|()| ErrorKind::DuplicateTypeName(name.0.clone()).into())
                     .map_err(locate(file_path))?;
 
                     for (idx, (ctor_name, _)) in variants.iter().enumerate() {
@@ -331,7 +349,7 @@ fn resolve_mod(
                             ctor_name.clone(),
                             (type_id, res::VariantId(idx)),
                         )
-                        .map_err(|()| ErrorKind::DuplicateCtorName(name.0.clone()))
+                        .map_err(|()| ErrorKind::DuplicateCtorName(name.0.clone()).into())
                         .map_err(locate(file_path))?;
                     }
 
@@ -352,7 +370,7 @@ fn resolve_mod(
                         name.clone(),
                         res::GlobalId::Custom(val_id),
                     )
-                    .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()))
+                    .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()).into())
                     .map_err(locate(file_path))?;
 
                     pending_val_defs.push((val_id, type_, body));
@@ -368,13 +386,13 @@ fn resolve_mod(
                                     .map_err(locate(file_path))?,
                             ))
                         })
-                        .collect::<Result<_, _>>()?;
+                        .collect::<Result<_, Error>>()?;
 
                     let sub_mod_id =
                         resolve_mod_spec(files, ctx, file_path, sub_mod_bindings, spec)?;
 
                     insert_unique(&mut mod_map.mods, name.clone(), sub_mod_id)
-                        .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()))
+                        .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()).into())
                         .map_err(locate(file_path))?;
 
                     resolve_exposures(&ctx.mods, &mut mod_map, sub_mod_id, expose)
@@ -384,11 +402,11 @@ fn resolve_mod(
                 raw::Item::ModImport(name, expose) => {
                     let bound_mod_id = *bindings
                         .get(&name)
-                        .ok_or_else(|| ErrorKind::ModNotFound(name.0.clone()))
+                        .ok_or_else(|| ErrorKind::ModNotFound(name.0.clone()).into())
                         .map_err(locate(file_path))?;
 
                     insert_unique(&mut mod_map.mods, name.clone(), bound_mod_id)
-                        .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()))
+                        .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()).into())
                         .map_err(locate(file_path))?;
 
                     resolve_exposures(&ctx.mods, &mut mod_map, bound_mod_id, expose)
@@ -414,7 +432,7 @@ fn resolve_mod(
         let mut param_map = BTreeMap::new();
         for (idx, param_name) in params.into_iter().enumerate() {
             insert_unique(&mut param_map, param_name.clone(), res::TypeParamId(idx))
-                .map_err(|()| ErrorKind::DuplicateTypeName(param_name.0))
+                .map_err(|()| ErrorKind::DuplicateTypeName(param_name.0).into())
                 .map_err(locate(file_path))?;
         }
 
@@ -487,12 +505,13 @@ fn resolve_mod_from_file(
 ) -> Result<ModId, Error> {
     let src = files.read(file_path).map_err(|err| Error {
         kind: ErrorKind::ReadFailed(file_path.to_owned(), err),
+        span: None,
         file: None,
     })?;
 
     let content = parse::ProgramParser::new()
         .parse(lex::Lexer::new(&src))
-        .map_err(ErrorKind::ParseFailed)
+        .map_err(|err| ErrorKind::ParseFailed(err).into())
         .map_err(locate(file_path))?;
 
     resolve_mod(files, ctx, file_path, bindings, content)
@@ -502,7 +521,7 @@ fn resolve_mod_path(
     global_mods: &IdVec<ModId, ModMap>,
     local_mods: &BTreeMap<raw::ModName, ModId>,
     path: &raw::ModPath,
-) -> Result<ModId, ErrorKind> {
+) -> Result<ModId, Error> {
     let local_mod_name = path.0.first().expect("ModPath should not be empty");
 
     let mut result = *local_mods
@@ -520,7 +539,7 @@ fn resolve_sub_mod(
     global_mods: &IdVec<ModId, ModMap>,
     mod_id: ModId,
     sub_mod_name: &raw::ModName,
-) -> Result<ModId, ErrorKind> {
+) -> Result<ModId, Error> {
     Ok(*global_mods[mod_id]
         .mods
         .get(sub_mod_name)
@@ -531,7 +550,7 @@ fn resolve_mod_val(
     global_mods: &IdVec<ModId, ModMap>,
     mod_id: ModId,
     val_name: &raw::ValName,
-) -> Result<res::GlobalId, ErrorKind> {
+) -> Result<res::GlobalId, Error> {
     Ok(*global_mods[mod_id]
         .vals
         .get(val_name)
@@ -542,7 +561,7 @@ fn resolve_mod_type(
     global_mods: &IdVec<ModId, ModMap>,
     mod_id: ModId,
     type_name: &raw::TypeName,
-) -> Result<res::TypeId, ErrorKind> {
+) -> Result<res::TypeId, Error> {
     Ok(*global_mods[mod_id]
         .types
         .get(type_name)
@@ -553,7 +572,7 @@ fn resolve_mod_ctor(
     global_mods: &IdVec<ModId, ModMap>,
     mod_id: ModId,
     ctor_name: &raw::CtorName,
-) -> Result<(res::CustomTypeId, res::VariantId), ErrorKind> {
+) -> Result<(res::CustomTypeId, res::VariantId), Error> {
     Ok(*global_mods[mod_id]
         .ctors
         .get(ctor_name)
@@ -565,7 +584,7 @@ fn resolve_exposures(
     local_mod_map: &mut ModMap,
     exposed_id: ModId,
     spec: raw::ExposeSpec,
-) -> Result<(), ErrorKind> {
+) -> Result<(), Error> {
     match spec {
         raw::ExposeSpec::Specific(items) => {
             for item in items {
@@ -588,7 +607,7 @@ fn resolve_exposures(
                                 resolve_mod_ctor(global_mods, exposed_id, &ctor_name)?;
 
                             if res::TypeId::Custom(ctor_type) != resolved_type {
-                                return Err(ErrorKind::CtorNotFound(ctor_name.0));
+                                return Err(ErrorKind::CtorNotFound(ctor_name.0).into());
                             }
 
                             insert_unique(
@@ -625,7 +644,7 @@ fn resolve_mod_map<'a>(
     global_mods: &'a IdVec<ModId, ModMap>,
     local_mod_map: &'a ModMap,
     path: &raw::ModPath,
-) -> Result<&'a ModMap, ErrorKind> {
+) -> Result<&'a ModMap, Error> {
     if path.0.is_empty() {
         Ok(local_mod_map)
     } else {
@@ -638,7 +657,7 @@ fn resolve_type_with_builtins(
     local_mod_map: &ModMap,
     path: &raw::ModPath,
     name: &raw::TypeName,
-) -> Result<res::TypeId, ErrorKind> {
+) -> Result<res::TypeId, Error> {
     if let Some(&id) = resolve_mod_map(global_mods, local_mod_map, path)?
         .types
         .get(name)
@@ -650,7 +669,7 @@ fn resolve_type_with_builtins(
             return Ok(id);
         }
     }
-    Err(ErrorKind::TypeNotFound(name.0.clone()))
+    Err(ErrorKind::TypeNotFound(name.0.clone()).into())
 }
 
 fn resolve_type(
@@ -658,13 +677,13 @@ fn resolve_type(
     local_mod_map: &ModMap,
     param_map: &BTreeMap<raw::TypeParam, res::TypeParamId>,
     type_: &raw::Type,
-) -> Result<res::Type, ErrorKind> {
+) -> Result<res::Type, Error> {
     match type_ {
         raw::Type::Var(param_name) => {
             if let Some(&id) = param_map.get(param_name) {
                 Ok(res::Type::Var(id))
             } else {
-                Err(ErrorKind::TypeNotFound(param_name.0.clone()))
+                Err(ErrorKind::TypeNotFound(param_name.0.clone()).into())
             }
         }
 
@@ -699,7 +718,7 @@ fn resolve_ctor_with_builtins(
     local_mod_map: &ModMap,
     path: &raw::ModPath,
     name: &raw::CtorName,
-) -> Result<(res::TypeId, res::VariantId), ErrorKind> {
+) -> Result<(res::TypeId, res::VariantId), Error> {
     if let Some(&(type_id, variant_id)) = resolve_mod_map(global_mods, local_mod_map, path)?
         .ctors
         .get(name)
@@ -711,7 +730,7 @@ fn resolve_ctor_with_builtins(
             return Ok(ids);
         }
     }
-    Err(ErrorKind::CtorNotFound(name.0.clone()))
+    Err(ErrorKind::CtorNotFound(name.0.clone()).into())
 }
 
 // Invariant: always leaves `local_map` exactly how it found it!
@@ -720,7 +739,7 @@ fn resolve_expr(
     local_mod_map: &ModMap,
     local_map: &mut BTreeMap<raw::ValName, res::LocalId>,
     expr: &raw::Expr,
-) -> Result<res::Expr, ErrorKind> {
+) -> Result<res::Expr, Error> {
     match expr {
         raw::Expr::Var(name) => {
             if let Some(&local_id) = local_map.get(name) {
@@ -730,7 +749,7 @@ fn resolve_expr(
             } else if let Some(&global_id) = BUILTIN_GLOBALS.get(name) {
                 Ok(res::Expr::Global(global_id))
             } else {
-                Err(ErrorKind::VarNotFound(name.0.clone()))
+                Err(ErrorKind::VarNotFound(name.0.clone()).into())
             }
         }
 
@@ -839,6 +858,10 @@ fn resolve_expr(
                 .map(|byte| res::Expr::ByteLit(*byte))
                 .collect(),
         )),
+
+        raw::Expr::Span(lo, hi, expr) => {
+            resolve_expr(global_mods, local_mod_map, local_map, expr).map_err(locate_span(*lo, *hi))
+        }
     }
 }
 
@@ -847,7 +870,7 @@ fn resolve_pattern(
     local_mod_map: &ModMap,
     pattern: &raw::Pattern,
     vars: &mut Vec<raw::ValName>,
-) -> Result<res::Pattern, ErrorKind> {
+) -> Result<res::Pattern, Error> {
     match pattern {
         raw::Pattern::Any => Ok(res::Pattern::Any),
 
@@ -895,12 +918,12 @@ fn with_pattern<R, F>(
     local_map: &mut BTreeMap<raw::ValName, res::LocalId>,
     pattern: &raw::Pattern,
     body: F,
-) -> Result<R, ErrorKind>
+) -> Result<R, Error>
 where
     F: for<'a> FnOnce(
         res::Pattern,
         &'a mut BTreeMap<raw::ValName, res::LocalId>,
-    ) -> Result<R, ErrorKind>,
+    ) -> Result<R, Error>,
 {
     let mut vars = Vec::new();
     let res_pattern = resolve_pattern(global_mods, local_mod_map, pattern, &mut vars)?;
@@ -949,7 +972,7 @@ fn resolve_scheme(
     global_mods: &IdVec<ModId, ModMap>,
     local_mod_map: &ModMap,
     scheme: &raw::Type,
-) -> Result<res::TypeScheme, ErrorKind> {
+) -> Result<res::TypeScheme, Error> {
     let mut scheme_params = BTreeMap::new();
     find_scheme_params(scheme, &mut scheme_params);
 
@@ -978,6 +1001,7 @@ fn sibling_path_from(self_path: &Path, components: Vec<String>) -> Result<PathBu
         if component.chars().all(|c| c == '.') {
             return Err(Error {
                 file: Some(self_path.to_owned()),
+                span: None,
                 kind: ErrorKind::IllegalFilePath(components.join("/")),
             });
         }

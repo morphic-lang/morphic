@@ -85,6 +85,8 @@ pub enum Expr {
     IntLit(i64),
     FloatLit(f64),
     TextLit(String),
+
+    Span(usize, usize, Box<Expr>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
