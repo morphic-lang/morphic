@@ -141,8 +141,25 @@ pub fn spawn_thread(
     }
 }
 
+fn check_valgrind() -> io::Result<()> {
+    match process::Command::new("valgrind").arg("--version").output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "valgrind appears to have a problem.  Running 'valgrind --version' failed.",
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "You don't appear to have valgrind installed in your environment.",
+        )),
+        Err(err) => Err(err),
+    }
+}
+
 pub fn spawn_process(stdio: Stdio, path: TempPath, use_valgrind: bool) -> io::Result<Child> {
     let mut command = if use_valgrind {
+        check_valgrind()?;
+
         let mut command = process::Command::new("valgrind");
         command
             .arg("--leak-check=full")
