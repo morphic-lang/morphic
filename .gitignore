@@ -3,6 +3,14 @@
 /target
 **/*.rs.bk
 
+# ignore everything without an extension
+*
+!/**/
+!*.*
+
+# exceptions
+!Dockerfile
+
 # opt-proto artifacts
 **/*.ll
 **/*.s
