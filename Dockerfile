@@ -10,6 +10,8 @@ RUN apt-get update \
     gpg-agent \
     ssh \
     zlib1g-dev \
+    valgrind \
+    vim \
   && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 
 ENV PATH="/root/.cargo/bin:${PATH}"
