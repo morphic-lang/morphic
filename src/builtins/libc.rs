@@ -1,3 +1,4 @@
+use crate::builtins::fountain_pen::scope;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
@@ -9,11 +10,13 @@ pub struct LibC<'a> {
     pub stderr: BasicValueEnum<'a>,
     pub stdout: BasicValueEnum<'a>,
 
-    // initializes stderr and stdout
+    // initialize/cleanup stderr and stdout
     pub initialize: FunctionValue<'a>,
+    pub cleanup: FunctionValue<'a>,
 
     pub calloc: FunctionValue<'a>,
     pub exit: FunctionValue<'a>,
+    pub fclose: FunctionValue<'a>,
     pub fdopen: FunctionValue<'a>,
     pub fflush: FunctionValue<'a>,
     pub fprintf: FunctionValue<'a>,
@@ -51,6 +54,12 @@ impl<'a> LibC<'a> {
             Some(Linkage::External),
         );
 
+        let cleanup = module.add_function(
+            "builtin_cleanup_libc",
+            void_type.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+
         let calloc = module.add_function(
             "calloc",
             i8_ptr_type.fn_type(&[i64_type.into(), i64_type.into()], false),
@@ -60,6 +69,12 @@ impl<'a> LibC<'a> {
         let exit = module.add_function(
             "exit",
             void_type.fn_type(&[i32_type.into()], false),
+            Some(Linkage::External),
+        );
+
+        let fclose = module.add_function(
+            "fclose",
+            i32_type.fn_type(&[file_ptr_type.into()], false),
             Some(Linkage::External),
         );
 
@@ -139,9 +154,11 @@ impl<'a> LibC<'a> {
             stdout: stdout.as_basic_value_enum(),
 
             initialize,
+            cleanup,
 
             calloc,
             exit,
+            fclose,
             fdopen,
             fflush,
             fprintf,
@@ -156,57 +173,68 @@ impl<'a> LibC<'a> {
     }
 
     pub fn define(&self, context: &'a Context) {
-        let i32_type = context.i32_type();
+        // define init
+        {
+            let i32_type = context.i32_type();
 
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(self.initialize, "entry");
-        let success_block = context.append_basic_block(self.initialize, "success");
-        let panic_block = context.append_basic_block(self.initialize, "panic");
+            let builder = context.create_builder();
+            let entry = context.append_basic_block(self.initialize, "entry");
+            let success_block = context.append_basic_block(self.initialize, "success");
+            let panic_block = context.append_basic_block(self.initialize, "panic");
 
-        builder.position_at_end(entry);
+            builder.position_at_end(entry);
 
-        let stdout_fd_no = 1;
-        let stderr_fd_no = 2;
+            let stdout_fd_no = 1;
+            let stderr_fd_no = 2;
 
-        let file_descriptors = [(stdout_fd_no, self.stdout), (stderr_fd_no, self.stderr)];
+            let file_descriptors = [(stdout_fd_no, self.stdout), (stderr_fd_no, self.stderr)];
 
-        let fdopen_mode = builder
-            .build_global_string_ptr("w", "fdopen_mode")
-            .as_pointer_value();
+            let fdopen_mode = builder
+                .build_global_string_ptr("w", "fdopen_mode")
+                .as_pointer_value();
 
-        for (fd_no, dest_global) in &file_descriptors {
-            let file_ptr = builder
-                .build_call(
-                    self.fdopen,
-                    &[i32_type.const_int(*fd_no, false).into(), fdopen_mode.into()],
-                    "file_ptr",
-                )
-                .try_as_basic_value()
-                .left()
-                .unwrap();
+            for (fd_no, dest_global) in &file_descriptors {
+                let file_ptr = builder
+                    .build_call(
+                        self.fdopen,
+                        &[i32_type.const_int(*fd_no, false).into(), fdopen_mode.into()],
+                        "file_ptr",
+                    )
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap();
 
-            let is_null = builder.build_is_null(file_ptr.into_pointer_value(), "is_null");
+                let is_null = builder.build_is_null(file_ptr.into_pointer_value(), "is_null");
 
-            let next_block = context.append_basic_block(self.initialize, "next_fd");
-            builder.build_conditional_branch(is_null, panic_block, next_block);
+                let next_block = context.append_basic_block(self.initialize, "next_fd");
+                builder.build_conditional_branch(is_null, panic_block, next_block);
 
+                builder.position_at_end(success_block);
+                let global_ptr = dest_global.into_pointer_value();
+
+                builder.build_store(global_ptr, file_ptr);
+                builder.position_at_end(next_block);
+            }
+
+            builder.build_unconditional_branch(success_block);
             builder.position_at_end(success_block);
-            let global_ptr = dest_global.into_pointer_value();
+            builder.build_return(None);
 
-            builder.build_store(global_ptr, file_ptr);
-            builder.position_at_end(next_block);
+            builder.position_at_end(panic_block);
+
+            // don't try to print on panic; we failed to open stderr/stdout,
+            // so chances of being able to report an error sucessfully are dubious
+            builder.build_call(self.exit, &[i32_type.const_int(1, true).into()], "");
+            builder.build_unreachable();
         }
 
-        builder.build_unconditional_branch(success_block);
-        builder.position_at_end(success_block);
-        builder.build_return(None);
-
-        builder.position_at_end(panic_block);
-
-        // don't try to print on panic; we failed to open stderr/stdout,
-        // so chances of being able to report an error sucessfully are dubious
-        builder.build_call(self.exit, &[i32_type.const_int(1, true).into()], "");
-        builder.build_unreachable();
+        // define cleanup
+        {
+            let s = scope(self.cleanup, context);
+            let _ = s.call(self.fclose, &[s.ptr_get(self.stdout)]);
+            let _ = s.call(self.fclose, &[s.ptr_get(self.stderr)]);
+            s.ret_void();
+        }
     }
 
     pub fn gen_panic(

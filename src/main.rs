@@ -197,7 +197,9 @@ fn run(
 
     let child = match config {
         cli::Config::RunConfig(cli::RunConfig { mode, stdio, .. }) => match mode {
-            cli::RunMode::Compile => Some(llvm_gen::run(stdio, lowered)),
+            cli::RunMode::Compile { use_valgrind } => {
+                Some(llvm_gen::run(stdio, lowered, use_valgrind))
+            }
             cli::RunMode::Interpret => Some(interpreter::interpret(stdio, lowered)),
         },
 

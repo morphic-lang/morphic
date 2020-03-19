@@ -135,7 +135,7 @@ macro_rules! sample {
                 )?
 
                 crate::test::run_sample::run_sample(
-                    crate::cli::RunMode::Compile,
+                    crate::cli::RunMode::Compile{ use_valgrind: true },
                     $path,
                     $stdin,
                     $stdout,

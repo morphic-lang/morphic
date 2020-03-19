@@ -13,7 +13,7 @@ pub struct ArtifactDir {
 
 #[derive(Clone, Copy, Debug)]
 pub enum RunMode {
-    Compile,
+    Compile { use_valgrind: bool },
     Interpret,
 }
 
@@ -78,9 +78,15 @@ impl Config {
                             .required(true)
                             .index(1),
                     )
+                    .arg(
+                        Arg::with_name("valgrind")
+                            .long("valgrind")
+                            .conflicts_with("interpret")
+                            .help("Run the compiler output program inside of valgrind."),
+                    )
                     .arg(Arg::with_name("interpret").long("interpret").help(
                         "Run the program using the reference interpreter instead of generating \
-                         LLVM",
+                         LLVM and running a fully compiled executable.",
                     )),
             )
             .subcommand(
@@ -150,7 +156,9 @@ impl Config {
             let mode = if matches.is_present("interpret") {
                 RunMode::Interpret
             } else {
-                RunMode::Compile
+                RunMode::Compile {
+                    use_valgrind: matches.is_present("valgrind"),
+                }
             };
 
             let run_config = RunConfig {
