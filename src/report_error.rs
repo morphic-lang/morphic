@@ -1,6 +1,7 @@
 use ansi_term::Color;
 use std::io;
 use std::path::Path;
+use std::path::PathBuf;
 use textwrap::{NoHyphenation, Wrapper};
 
 use crate::file_cache::FileCache;
@@ -281,4 +282,65 @@ pub fn report_error(
     writeln!(dest)?;
 
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Locate<E> {
+    pub path: Option<PathBuf>,
+    pub span: Option<(usize, usize)>,
+    pub error: E,
+}
+
+impl<E> From<E> for Locate<E> {
+    fn from(error: E) -> Self {
+        Locate {
+            path: None,
+            span: None,
+            error,
+        }
+    }
+}
+
+// These functions are curried for convenient usage with 'map_err'.
+
+pub fn locate_path<'a, E>(
+    path: &'a (impl AsRef<Path> + ?Sized),
+) -> impl FnOnce(Locate<E>) -> Locate<E> + 'a {
+    move |err| Locate {
+        path: Some(err.path.unwrap_or_else(|| path.as_ref().to_owned())),
+        ..err
+    }
+}
+
+pub fn locate_span<E>(lo: usize, hi: usize) -> impl FnOnce(Locate<E>) -> Locate<E> {
+    move |err| Locate {
+        span: Some(err.span.unwrap_or((lo, hi))),
+        ..err
+    }
+}
+
+impl<E> Locate<E> {
+    pub fn report_with<Title, Msg>(
+        &self,
+        dest: &mut impl io::Write,
+        files: &FileCache,
+        reporter: impl FnOnce(&E) -> (Title, Msg),
+    ) -> io::Result<()>
+    where
+        Title: AsRef<str>,
+        Msg: AsRef<str>,
+    {
+        let (title, message) = reporter(&self.error);
+
+        report_error(
+            dest,
+            files,
+            Report {
+                path: self.path.as_ref().map(|path| path.as_ref()),
+                span: self.span,
+                title: title.as_ref(),
+                message: Some(message.as_ref()),
+            },
+        )
+    }
 }

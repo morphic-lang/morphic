@@ -1,36 +1,30 @@
 use std::io;
-use std::path::PathBuf;
 
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::file_cache::FileCache;
-use crate::report_error::{report_error, Report};
+use crate::report_error::{locate_path, locate_span, Locate};
 
-#[derive(Clone, Debug)]
-pub struct Error {
-    file: Option<PathBuf>,
-    span: Option<(usize, usize)>,
-}
+#[derive(Clone, Copy, Debug)]
+pub struct PurityError;
+
+pub type Error = Locate<PurityError>;
 
 impl Error {
     pub fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        report_error(
-            dest,
-            files,
-            Report {
-                path: self.file.as_ref().map(|path| path.as_ref()),
-                span: self.span,
-                title: "Purity Mismatch",
-                message: Some(lines![
+        self.report_with(dest, files, |PurityError| {
+            (
+                "Purity Mismatch",
+                lines![
                     "You cannot call a function with side effects from inside a pure function.",
                     "",
                     "Maybe you didn't mean to mark the calling function as pure?  All function \
                      definitions are considered pure by default.  You can mark the calling \
                      function as having side effects by adding the keyword 'proc' before the \
                      function's definition.",
-                ]),
-            },
-        )
+                ],
+            )
+        })
     }
 }
 
@@ -54,10 +48,7 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), Error> {
 
         res::Expr::App(purity, func, arg) => {
             if ctx == Purity::Pure && *purity == Purity::Impure {
-                return Err(Error {
-                    file: None,
-                    span: None,
-                });
+                return Err(PurityError.into());
             }
 
             check_expr(ctx, func)?;
@@ -92,23 +83,15 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), Error> {
 
         res::Expr::FloatLit(_) => Ok(()),
 
-        res::Expr::Span(lo, hi, body) => check_expr(ctx, body).map_err(|err| Error {
-            span: Some(err.span.unwrap_or((*lo, *hi))),
-            ..err
-        }),
+        res::Expr::Span(lo, hi, body) => check_expr(ctx, body).map_err(locate_span(*lo, *hi)),
     }
 }
 
 pub fn check_purity(program: &res::Program) -> Result<(), Error> {
     for (id, def) in &program.vals {
-        check_expr(Purity::Pure, &def.body).map_err(|err| {
-            debug_assert!(err.file.is_none());
-            let val_mod = program.val_symbols[id].mod_;
-            Error {
-                file: Some(program.mod_symbols[val_mod].file.clone()),
-                ..err
-            }
-        })?;
+        check_expr(Purity::Pure, &def.body).map_err(locate_path(
+            &program.mod_symbols[program.val_symbols[id].mod_].file,
+        ))?;
     }
     Ok(())
 }

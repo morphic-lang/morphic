@@ -10,7 +10,7 @@ use crate::file_cache::FileCache;
 use crate::lex;
 use crate::parse;
 use crate::parse_error;
-use crate::report_error::{report_error, Report};
+use crate::report_error::{locate_path, locate_span, Locate};
 use crate::util::id_vec::IdVec;
 
 #[derive(Debug)]
@@ -29,42 +29,30 @@ pub enum ErrorKind {
     MainNotFound,
 }
 
-#[derive(Debug)]
-pub struct Error {
-    pub file: Option<PathBuf>,
-    pub span: Option<(usize, usize)>,
-    pub kind: ErrorKind,
-}
-
-impl From<ErrorKind> for Error {
-    fn from(kind: ErrorKind) -> Error {
-        Error {
-            file: None,
-            span: None,
-            kind,
-        }
-    }
-}
+pub type Error = Locate<ErrorKind>;
 
 impl Error {
     pub fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
         use ErrorKind::*;
 
-        let path = self.file.as_ref().map(|path| path.as_ref());
-
-        match &self.kind {
+        match &self.error {
             ReadFailed(path, err) if err.kind() != io::ErrorKind::NotFound => {
                 writeln!(dest, "Could not read {}: {}", path.display(), err)?;
                 return Ok(());
             }
             ParseFailed(err) => {
-                parse_error::report(dest, files, path, err)?;
+                parse_error::report(
+                    dest,
+                    files,
+                    self.path.as_ref().map(|path| path.as_ref()),
+                    err,
+                )?;
                 return Ok(());
             }
             _ => {}
         }
 
-        let (title, message) = match &self.kind {
+        self.report_with(dest, files, |kind| match kind {
             ReadFailed(path, err) => {
                 // Other cases are handled above
                 assert!(err.kind() == io::ErrorKind::NotFound);
@@ -157,34 +145,7 @@ impl Error {
                     "Your program does not have a 'main' function declared in its root module."
                 ),
             ),
-        };
-
-        report_error(
-            dest,
-            files,
-            Report {
-                path,
-                span: self.span, // TODO: Add spans!
-                title,
-                message: Some(&message),
-            },
-        )?;
-
-        Ok(())
-    }
-}
-
-fn locate<'a>(file: &'a Path) -> impl FnOnce(Error) -> Error + 'a {
-    move |err| Error {
-        file: Some(file.to_owned()),
-        ..err
-    }
-}
-
-fn locate_span(lo: usize, hi: usize) -> impl FnOnce(Error) -> Error {
-    move |err| Error {
-        span: Some(err.span.unwrap_or((lo, hi))),
-        ..err
+        })
     }
 }
 
@@ -288,7 +249,7 @@ pub fn resolve_program(files: &mut FileCache, file_path: &Path) -> Result<res::P
     {
         id
     } else {
-        return Err(locate(file_path)(ErrorKind::MainNotFound.into()));
+        return Err(locate_path(file_path)(ErrorKind::MainNotFound.into()));
     };
 
     Ok(res::Program {
@@ -370,7 +331,7 @@ fn resolve_mod(
                         res::TypeId::Custom(type_id),
                     )
                     .map_err(|()| ErrorKind::DuplicateTypeName(name.0.clone()).into())
-                    .map_err(locate(file_path))?;
+                    .map_err(locate_path(file_path))?;
 
                     for (idx, (ctor_name, _)) in variants.iter().enumerate() {
                         insert_unique(
@@ -379,7 +340,7 @@ fn resolve_mod(
                             (type_id, res::VariantId(idx)),
                         )
                         .map_err(|()| ErrorKind::DuplicateCtorName(name.0.clone()).into())
-                        .map_err(locate(file_path))?;
+                        .map_err(locate_path(file_path))?;
                     }
 
                     pending_type_defs.push((type_id, params, variants));
@@ -401,7 +362,7 @@ fn resolve_mod(
                         res::GlobalId::Custom(val_id),
                     )
                     .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()).into())
-                    .map_err(locate(file_path))?;
+                    .map_err(locate_path(file_path))?;
 
                     pending_val_defs.push((val_id, type_, body));
                 }
@@ -413,7 +374,7 @@ fn resolve_mod(
                             Ok((
                                 binding.name,
                                 resolve_mod_path(&ctx.mods, &mod_map.mods, &binding.binding)
-                                    .map_err(locate(file_path))?,
+                                    .map_err(locate_path(file_path))?,
                             ))
                         })
                         .collect::<Result<_, Error>>()?;
@@ -434,32 +395,32 @@ fn resolve_mod(
 
                     insert_unique(&mut mod_map.mods, name.clone(), sub_mod_id)
                         .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()).into())
-                        .map_err(locate(file_path))?;
+                        .map_err(locate_path(file_path))?;
 
                     resolve_exposures(&ctx.mods, &mut mod_map, sub_mod_id, expose)
-                        .map_err(locate(file_path))?;
+                        .map_err(locate_path(file_path))?;
                 }
 
                 raw::Item::ModImport(name, expose) => {
                     let bound_mod_id = *bindings
                         .get(&name)
                         .ok_or_else(|| ErrorKind::ModNotFound(name.0.clone()).into())
-                        .map_err(locate(file_path))?;
+                        .map_err(locate_path(file_path))?;
 
                     insert_unique(&mut mod_map.mods, name.clone(), bound_mod_id)
                         .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()).into())
-                        .map_err(locate(file_path))?;
+                        .map_err(locate_path(file_path))?;
 
                     resolve_exposures(&ctx.mods, &mut mod_map, bound_mod_id, expose)
-                        .map_err(locate(file_path))?;
+                        .map_err(locate_path(file_path))?;
                 }
 
                 raw::Item::ModExpose(local_mod_path, expose) => {
                     let exposed_id = resolve_mod_path(&ctx.mods, &mod_map.mods, &local_mod_path)
-                        .map_err(locate(file_path))?;
+                        .map_err(locate_path(file_path))?;
 
                     resolve_exposures(&ctx.mods, &mut mod_map, exposed_id, expose)
-                        .map_err(locate(file_path))?;
+                        .map_err(locate_path(file_path))?;
                 }
             }
         }
@@ -474,7 +435,7 @@ fn resolve_mod(
         for (idx, param_name) in params.into_iter().enumerate() {
             insert_unique(&mut param_map, param_name.clone(), res::TypeParamId(idx))
                 .map_err(|()| ErrorKind::DuplicateTypeName(param_name.0).into())
-                .map_err(locate(file_path))?;
+                .map_err(locate_path(file_path))?;
         }
 
         let resolved_variants = IdVec::from_items(
@@ -490,7 +451,7 @@ fn resolve_mod(
                     )?)),
                 })
                 .collect::<Result<_, _>>()
-                .map_err(locate(file_path))?,
+                .map_err(locate_path(file_path))?,
         );
 
         debug_assert!(ctx.types[type_id].is_none());
@@ -501,10 +462,11 @@ fn resolve_mod(
     }
 
     for (val_id, type_, body) in pending_val_defs {
-        let res_scheme = resolve_scheme(&ctx.mods, &mod_map, &type_).map_err(locate(file_path))?;
+        let res_scheme =
+            resolve_scheme(&ctx.mods, &mod_map, &type_).map_err(locate_path(file_path))?;
 
         let res_body = resolve_expr(&ctx.mods, &mod_map, &mut BTreeMap::new(), &body)
-            .map_err(locate(file_path))?;
+            .map_err(locate_path(file_path))?;
 
         debug_assert!(ctx.vals[val_id].is_none());
         ctx.vals[val_id] = Some(res::ValDef {
@@ -550,15 +512,15 @@ fn resolve_mod_from_file(
     decl_loc: res::ModDeclLoc,
 ) -> Result<res::ModId, Error> {
     let src = files.read(file_path).map_err(|err| Error {
-        kind: ErrorKind::ReadFailed(file_path.to_owned(), err),
+        error: ErrorKind::ReadFailed(file_path.to_owned(), err),
         span: None,
-        file: None,
+        path: None,
     })?;
 
     let content = parse::ProgramParser::new()
         .parse(lex::Lexer::new(&src))
         .map_err(|err| ErrorKind::ParseFailed(err).into())
-        .map_err(locate(file_path))?;
+        .map_err(locate_path(file_path))?;
 
     resolve_mod(files, ctx, file_path, decl_loc, bindings, content)
 }
@@ -1051,9 +1013,9 @@ fn sibling_path_from(self_path: &Path, components: Vec<String>) -> Result<PathBu
         // This check also ensures we reject empty components.
         if component.chars().all(|c| c == '.') {
             return Err(Error {
-                file: Some(self_path.to_owned()),
+                path: Some(self_path.to_owned()),
                 span: None,
-                kind: ErrorKind::IllegalFilePath(components.join("/")),
+                error: ErrorKind::IllegalFilePath(components.join("/")),
             });
         }
     }
