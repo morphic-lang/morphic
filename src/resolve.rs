@@ -183,7 +183,7 @@ fn locate<'a>(file: &'a Path) -> impl FnOnce(Error) -> Error + 'a {
 
 fn locate_span(lo: usize, hi: usize) -> impl FnOnce(Error) -> Error {
     move |err| Error {
-        span: Some((lo, hi)),
+        span: Some(err.span.unwrap_or((lo, hi))),
         ..err
     }
 }
