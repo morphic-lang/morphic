@@ -699,6 +699,8 @@ fn infer_expr(
             AnnotExpr::FloatLit(val),
             ctx.new_var(Assign::App(res::TypeId::Float, vec![])),
         )),
+
+        res::Expr::Span(_lo, _hi, body) => infer_expr(program, ctx, scope, body),
     }
 }
 

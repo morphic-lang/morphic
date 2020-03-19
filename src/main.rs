@@ -98,7 +98,7 @@ impl Error {
         use Error::*;
         match self {
             ResolveFailed(err) => err.report(dest, files),
-            PurityCheckFailed(err) => writeln!(dest, "{}", err),
+            PurityCheckFailed(err) => err.report(dest, files),
             TypeInferFailed(err) => writeln!(dest, "{}", err),
             CheckExhaustiveFailed(err) => writeln!(dest, "{}", err),
             CheckMainFailed(err) => writeln!(dest, "{}", err),

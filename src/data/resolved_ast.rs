@@ -1,6 +1,13 @@
+use std::path::PathBuf;
+
 use crate::data::purity::Purity;
 use crate::data::raw_ast::{self as raw, Op};
 use crate::util::id_vec::IdVec;
+
+// 'ModId' is used only for the purposes of reporting human-readable module information to the user,
+// for example during error reporting. After the initial name resolution pass is complete, the
+// module from which a particular type or value originated is semantically irrelevant.
+id_type!(pub ModId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TypeId {
@@ -47,11 +54,24 @@ id_type!(pub LocalId);
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub mod_symbols: IdVec<ModId, ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
     pub custom_type_symbols: IdVec<CustomTypeId, TypeSymbols>,
     pub vals: IdVec<CustomGlobalId, ValDef>,
     pub val_symbols: IdVec<CustomGlobalId, ValSymbols>,
     pub main: CustomGlobalId,
+}
+
+#[derive(Clone, Debug)]
+pub enum ModDeclLoc {
+    Root,
+    ChildOf { parent: ModId, name: raw::ModName },
+}
+
+#[derive(Clone, Debug)]
+pub struct ModSymbols {
+    pub file: PathBuf,
+    pub decl_loc: ModDeclLoc,
 }
 
 #[derive(Clone, Debug)]
@@ -67,7 +87,7 @@ pub struct VariantSymbols {
 
 #[derive(Clone, Debug)]
 pub struct TypeSymbols {
-    // TODO: Include filename/module info
+    pub mod_: ModId,
     pub type_name: raw::TypeName,
     pub variant_symbols: IdVec<VariantId, VariantSymbols>,
 }
@@ -80,7 +100,7 @@ pub struct ValDef {
 
 #[derive(Clone, Debug)]
 pub struct ValSymbols {
-    // TODO: Include filename/module info
+    pub mod_: ModId,
     pub val_name: raw::ValName,
 }
 
@@ -112,6 +132,8 @@ pub enum Expr {
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
+
+    Span(usize, usize, Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
