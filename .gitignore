@@ -1,7 +1,13 @@
-/lib-builtins/target
-/lib-builtins-test/target
-/target
 **/*.rs.bk
+
+# ignore everything without an extension
+*
+!/**/
+!*.*
+
+# exceptions
+!Dockerfile
+/target
 
 # opt-proto artifacts
 **/*.ll

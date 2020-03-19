@@ -141,8 +141,18 @@ pub fn spawn_thread(
     }
 }
 
-pub fn spawn_process(stdio: Stdio, path: TempPath) -> io::Result<Child> {
-    let mut command = process::Command::new(&path);
+pub fn spawn_process(stdio: Stdio, path: TempPath, use_valgrind: bool) -> io::Result<Child> {
+    let mut command = if use_valgrind {
+        let mut command = process::Command::new("valgrind");
+        command
+            .arg("--leak-check=full")
+            .arg("--quiet")
+            .arg("--error-exitcode=1")
+            .arg(&path);
+        command
+    } else {
+        process::Command::new(&path)
+    };
 
     match stdio {
         Stdio::Inherit => {

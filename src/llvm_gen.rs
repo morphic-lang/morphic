@@ -1527,6 +1527,7 @@ fn gen_program<'a>(
         "main_result",
     );
 
+    builder.build_call(libc.cleanup, &[], "libc_cleanup");
     builder.build_return(Some(&i32_type.const_int(0, false)));
 
     return module;
@@ -1577,7 +1578,7 @@ fn verify_llvm(module: &Module) {
     }
 }
 
-pub fn run(stdio: Stdio, program: low::Program) -> Child {
+pub fn run(stdio: Stdio, program: low::Program, use_valgrind: bool) -> Child {
     let target = cli::default_target_config();
 
     let target_machine = get_target_machine(&target);
@@ -1603,7 +1604,7 @@ pub fn run(stdio: Stdio, program: low::Program) -> Child {
     run_cc(&target.target, obj_file.path(), &output_path);
     std::mem::drop(obj_file);
 
-    spawn_process(stdio, output_path).unwrap()
+    spawn_process(stdio, output_path, use_valgrind).unwrap()
 }
 
 pub fn build(program: low::Program, config: &cli::BuildConfig) {
