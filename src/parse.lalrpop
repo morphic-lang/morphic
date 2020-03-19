@@ -91,6 +91,16 @@ CommaSep<T>: Vec<T> = {
   }
 };
 
+Spanned<T>: syntax::Expr = {
+  <lo: @L> <expr:T> <hi: @R> => {
+    if let syntax::Expr::Span(_, _, _) = &expr {
+      expr
+    } else {
+      syntax::Expr::Span(lo, hi, Box::new(expr))
+    }
+  },
+};
+
 // Names and Strings
 
 #[inline]
@@ -328,10 +338,10 @@ AtomicExpr_: syntax::Expr = {
 };
 
 AtomicExpr: syntax::Expr = {
-  <lo: @L> <expr: AtomicExpr_> <hi: @R> => syntax::Expr::Span(lo, hi, Box::new(expr)),
+  <Spanned<AtomicExpr_>>,
 };
 
-PrefixExpr: syntax::Expr = {
+PrefixExpr_: syntax::Expr = {
   <AtomicExpr>,
 
   "-&" <PrefixExpr> => syntax::unop(syntax::Op::NegByte, <>),
@@ -339,12 +349,20 @@ PrefixExpr: syntax::Expr = {
   "-." <PrefixExpr> => syntax::unop(syntax::Op::NegFloat, <>),
 };
 
-MatchExpr: syntax::Expr = {
+PrefixExpr: syntax::Expr = {
+  <Spanned<PrefixExpr_>>,
+};
+
+MatchExpr_: syntax::Expr = {
   "match" <expr: Expr> "{" <cases: CommaSep<(<Pattern> "->" <Expr>)>> "}" =>
     syntax::Expr::Match(Box::new(expr), cases),
 };
 
-IfExpr: syntax::Expr = {
+MatchExpr: syntax::Expr = {
+  <Spanned<MatchExpr_>>,
+};
+
+IfExpr_: syntax::Expr = {
   "if" <expr: Expr> "{" <if_block: Expr> "}" "else" <else_if_block: IfExpr> =>
     syntax::Expr::Match(
       Box::new(expr),
@@ -375,14 +393,22 @@ IfExpr: syntax::Expr = {
     ),
 };
 
-AppExpr: syntax::Expr = {
+IfExpr: syntax::Expr = {
+  <Spanned<IfExpr_>>,
+};
+
+AppExpr_: syntax::Expr = {
   <PrefixExpr>,
 
   <func: AppExpr> "(" <args: Exprs> ")" =>
     syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
 };
 
-ArithProdExpr: syntax::Expr = {
+AppExpr: syntax::Expr = {
+  <Spanned<AppExpr_>>,
+};
+
+ArithProdExpr_: syntax::Expr = {
   <AppExpr>,
 
   <left: ArithProdExpr> "*&" <right: AppExpr> => syntax::binop(syntax::Op::MulByte, left, right),
@@ -395,7 +421,11 @@ ArithProdExpr: syntax::Expr = {
   <left: ArithProdExpr> "/." <right: AppExpr> => syntax::binop(syntax::Op::DivFloat, left, right),
 };
 
-ArithSumExpr: syntax::Expr = {
+ArithProdExpr: syntax::Expr = {
+  <Spanned<ArithProdExpr_>>,
+};
+
+ArithSumExpr_: syntax::Expr = {
   <ArithProdExpr>,
 
   <left: ArithSumExpr> "+&" <right: ArithProdExpr> => syntax::binop(syntax::Op::AddByte, left, right),
@@ -408,9 +438,13 @@ ArithSumExpr: syntax::Expr = {
   <left: ArithSumExpr> "-." <right: ArithProdExpr> => syntax::binop(syntax::Op::SubFloat, left, right),
 };
 
+ArithSumExpr: syntax::Expr = {
+  <Spanned<ArithSumExpr_>>,
+};
+
 // TODO: Translating greater-than to less-than reverses the evaluation order of the operands.
 // If the operands have side effects, this can alter the program's semantics!
-ArithCompExpr: syntax::Expr = {
+ArithCompExpr_: syntax::Expr = {
   <ArithSumExpr>,
 
   <left: ArithSumExpr> "=&" <right: ArithSumExpr> => syntax::binop(syntax::Op::EqByte, left, right),
@@ -432,12 +466,16 @@ ArithCompExpr: syntax::Expr = {
   <left: ArithSumExpr> ">=." <right: ArithSumExpr> => syntax::binop(syntax::Op::LteFloat, right, left),
 };
 
-ArrayExpr: syntax::Expr = {
+ArithCompExpr: syntax::Expr = {
+  <Spanned<ArithCompExpr_>>,
+};
+
+ArithExpr: syntax::Expr = {
   <ArithCompExpr>,
 };
 
-BlockExpr: syntax::Expr = {
-  <ArrayExpr>,
+BlockExpr_: syntax::Expr = {
+  <ArithExpr>,
 
   <purity: OptProc> "\\" <param: Pattern> "->" <body: BlockExpr> =>
     syntax::Expr::Lam(purity, param, Box::new(body)),
@@ -455,11 +493,15 @@ BlockExpr: syntax::Expr = {
   }
 };
 
+BlockExpr: syntax::Expr = {
+  <Spanned<BlockExpr_>>,
+};
+
 Expr: syntax::Expr = {
   <BlockExpr>,
 };
 
-Exprs: syntax::Expr = {
+Exprs_: syntax::Expr = {
   <exprs: CommaSep<Expr>> => {
     if exprs.len() == 1 {
       exprs.into_iter().next().unwrap()
@@ -467,6 +509,10 @@ Exprs: syntax::Expr = {
       syntax::Expr::Tuple(exprs)
     }
   },
+};
+
+Exprs: syntax::Expr = {
+  <Spanned<Exprs_>>,
 };
 
 // Patterns
