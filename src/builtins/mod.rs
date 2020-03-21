@@ -12,7 +12,4 @@ pub mod persistent_array;
 
 pub mod rc;
 
-#[cfg(test)]
-mod test_utils;
-
 pub mod zero_sized_array;

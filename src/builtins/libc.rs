@@ -1,5 +1,4 @@
 use crate::builtins::fountain_pen::scope;
-use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue};
@@ -175,57 +174,27 @@ impl<'a> LibC<'a> {
     pub fn define(&self, context: &'a Context) {
         // define init
         {
-            let i32_type = context.i32_type();
-
-            let builder = context.create_builder();
-            let entry = context.append_basic_block(self.initialize, "entry");
-            let success_block = context.append_basic_block(self.initialize, "success");
-            let panic_block = context.append_basic_block(self.initialize, "panic");
-
-            builder.position_at_end(entry);
-
             let stdout_fd_no = 1;
             let stderr_fd_no = 2;
 
-            let file_descriptors = [(stdout_fd_no, self.stdout), (stderr_fd_no, self.stderr)];
+            let s = scope(self.initialize, context);
 
-            let fdopen_mode = builder
-                .build_global_string_ptr("w", "fdopen_mode")
-                .as_pointer_value();
+            let fdopen_mode = s.str("w");
 
-            for (fd_no, dest_global) in &file_descriptors {
-                let file_ptr = builder
-                    .build_call(
-                        self.fdopen,
-                        &[i32_type.const_int(*fd_no, false).into(), fdopen_mode.into()],
-                        "file_ptr",
-                    )
-                    .try_as_basic_value()
-                    .left()
-                    .unwrap();
+            // don't try to print on panic; we failed to open stderr/stdout, so chances of being
+            // able to report an error sucessfully are dubious
+            let stdout_ptr = s.call(self.fdopen, &[s.i32(stdout_fd_no), fdopen_mode]);
+            s.if_(s.is_null(stdout_ptr), |s| {
+                s.call_void(self.exit, &[s.i32(1)]);
+            });
+            let stderr_ptr = s.call(self.fdopen, &[s.i32(stderr_fd_no), fdopen_mode]);
+            s.if_(s.is_null(stderr_ptr), |s| {
+                s.call_void(self.exit, &[s.i32(1)]);
+            });
 
-                let is_null = builder.build_is_null(file_ptr.into_pointer_value(), "is_null");
-
-                let next_block = context.append_basic_block(self.initialize, "next_fd");
-                builder.build_conditional_branch(is_null, panic_block, next_block);
-
-                builder.position_at_end(success_block);
-                let global_ptr = dest_global.into_pointer_value();
-
-                builder.build_store(global_ptr, file_ptr);
-                builder.position_at_end(next_block);
-            }
-
-            builder.build_unconditional_branch(success_block);
-            builder.position_at_end(success_block);
-            builder.build_return(None);
-
-            builder.position_at_end(panic_block);
-
-            // don't try to print on panic; we failed to open stderr/stdout,
-            // so chances of being able to report an error sucessfully are dubious
-            builder.build_call(self.exit, &[i32_type.const_int(1, true).into()], "");
-            builder.build_unreachable();
+            s.ptr_set(self.stdout, stdout_ptr);
+            s.ptr_set(self.stderr, stderr_ptr);
+            s.ret_void();
         }
 
         // define cleanup
@@ -235,26 +204,5 @@ impl<'a> LibC<'a> {
             let _ = s.call(self.fclose, &[s.ptr_get(self.stderr)]);
             s.ret_void();
         }
-    }
-
-    pub fn gen_panic(
-        &self,
-        builder: &Builder<'a>,
-        context: &'a Context,
-        panic_string: &str,
-        panic_args: &[BasicValueEnum<'a>],
-    ) {
-        let i32_type = context.i32_type();
-
-        let panic_global = builder.build_global_string_ptr(panic_string, "panic_str");
-
-        let stderr_value = builder.build_load(self.stderr.into_pointer_value(), "stderr_value");
-
-        let mut fprintf_args = vec![stderr_value, panic_global.as_pointer_value().into()];
-        fprintf_args.extend_from_slice(panic_args);
-
-        builder.build_call(self.fprintf, &fprintf_args, "fprintf_output");
-
-        builder.build_call(self.exit, &[i32_type.const_int(1, true).into()], "");
     }
 }
