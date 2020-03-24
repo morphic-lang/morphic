@@ -1,6 +1,7 @@
 use failure::Fail;
 use std::borrow::Cow;
-use std::mem::replace;
+use std::cell::{RefCell, RefMut};
+use std::ops::{Deref, DerefMut};
 
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -62,15 +63,25 @@ enum Assign {
     Func(Purity, TypeVar, TypeVar),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum AssignState {
-    Available(Assign),
-    Recursing,
-}
-
 #[derive(Clone, Debug)]
 struct Context {
-    vars: IdVec<TypeVar, AssignState>,
+    // The dynamic borrowing state of each 'RefCell' in 'vars' is "load-bearing," because we use it
+    // during unification to track whether or not we are currently processing a given type variable
+    // higher up in the call stack.
+    //
+    // If the user writes a program that fails the "occurs check" -- that is, a program that forces
+    // the type inference system to attempt to unify a type variable 'x' with some type 'f(x)'
+    // mentioning that variable -- we want to report an "invalid recursive type" error.  The borrow
+    // state of each 'RefCell' is how we detect these cycles and report these errors.  If
+    // unification attempts to mutably borrow one of these 'RefCell's twice simultaneously, this
+    // does *not* represent a logic error in the compiler; instead, it indicates a type error in the
+    // user's program.
+    //
+    // In fact, the *only* reason we use 'RefCell's here is to implement this "occurs check"
+    // internally within unification (in a way the borrow checker understands).  The 'Context'
+    // struct shouldn't behave as if it has interior mutability; in particular, the public interface
+    // to unification takes 'Context' by '&mut'.
+    vars: IdVec<TypeVar, RefCell<Assign>>,
 }
 
 impl Context {
@@ -79,35 +90,26 @@ impl Context {
     }
 
     fn new_var(&mut self, assign: Assign) -> TypeVar {
-        self.vars.push(AssignState::Available(assign))
+        self.vars.push(RefCell::new(assign))
     }
 
-    fn obtain(&mut self, var: TypeVar) -> Result<Assign, Error> {
-        let state = replace(&mut self.vars[var], AssignState::Recursing);
-        match state {
-            AssignState::Available(assign) => Ok(assign),
-            AssignState::Recursing => Err(Error::RecursiveType),
-        }
+    fn obtain(&self, var: TypeVar) -> Result<RefMut<Assign>, Error> {
+        self.vars[var]
+            .try_borrow_mut()
+            .map_err(|_| Error::RecursiveType)
     }
 
-    fn assign(&mut self, var: TypeVar, assign: Assign) {
-        debug_assert_eq!(self.vars[var], AssignState::Recursing);
-        self.vars[var] = AssignState::Available(assign);
-    }
-
-    fn follow(&mut self, var: TypeVar) -> Result<TypeVar, Error> {
-        let assign = self.obtain(var)?;
-        if let Assign::Equal(other) = assign {
-            let dest = self.follow(other)?;
-            self.assign(var, Assign::Equal(dest));
-            Ok(dest)
+    fn follow(&self, var: TypeVar) -> Result<TypeVar, Error> {
+        let mut assign = self.obtain(var)?;
+        if let Assign::Equal(curr_dest) = assign.deref_mut() {
+            *curr_dest = self.follow(*curr_dest)?;
+            Ok(*curr_dest)
         } else {
-            self.assign(var, assign);
             Ok(var)
         }
     }
 
-    fn unify(&mut self, root_var1: TypeVar, root_var2: TypeVar) -> Result<(), Error> {
+    fn unify_rec(&self, root_var1: TypeVar, root_var2: TypeVar) -> Result<(), Error> {
         let var1 = self.follow(root_var1)?;
         let var2 = self.follow(root_var2)?;
 
@@ -115,22 +117,20 @@ impl Context {
             return Ok(());
         }
 
-        let assign1 = self.obtain(var1)?;
-        let assign2 = self.obtain(var2)?;
+        let mut assign1 = self.obtain(var1)?;
+        let mut assign2 = self.obtain(var2)?;
 
-        match (&assign1, &assign2) {
+        match (assign1.deref(), assign2.deref()) {
             (Assign::Equal(_), _) => unreachable!(),
             (_, Assign::Equal(_)) => unreachable!(),
 
             (Assign::Unknown, _) => {
-                self.assign(var1, Assign::Equal(var2));
-                self.assign(var2, assign2);
+                *assign1 = Assign::Equal(var2);
                 return Ok(());
             }
 
             (_, Assign::Unknown) => {
-                self.assign(var1, assign1);
-                self.assign(var2, Assign::Equal(var1));
+                *assign2 = Assign::Equal(var1);
                 return Ok(());
             }
 
@@ -150,7 +150,7 @@ impl Context {
                 }
 
                 for (&arg1, &arg2) in args1.iter().zip(args2.iter()) {
-                    self.unify(arg1, arg2)?;
+                    self.unify_rec(arg1, arg2)?;
                 }
             }
 
@@ -160,7 +160,7 @@ impl Context {
                 }
 
                 for (&item1, &item2) in items1.iter().zip(items2.iter()) {
-                    self.unify(item1, item2)?;
+                    self.unify_rec(item1, item2)?;
                 }
             }
 
@@ -169,8 +169,8 @@ impl Context {
                     return Err(Error::PurityMismatch);
                 }
 
-                self.unify(*arg1, *arg2)?;
-                self.unify(*ret1, *ret2)?;
+                self.unify_rec(*arg1, *arg2)?;
+                self.unify_rec(*ret1, *ret2)?;
             }
 
             _ => {
@@ -179,19 +179,19 @@ impl Context {
         }
 
         // This is purely an optimization
-        self.assign(var1, Assign::Equal(var2));
-        self.assign(var2, assign2);
+        *assign1 = Assign::Equal(var2);
 
         Ok(())
     }
 
-    fn extract(&self, var: TypeVar) -> res::Type {
-        let assign = match &self.vars[var] {
-            AssignState::Available(assign) => assign,
-            AssignState::Recursing => unreachable!(),
-        };
+    fn unify(&mut self, var1: TypeVar, var2: TypeVar) -> Result<(), Error> {
+        self.unify_rec(var1, var2)
+    }
 
-        match assign {
+    fn extract(&self, var: TypeVar) -> res::Type {
+        let assign = self.vars[var].borrow();
+
+        match assign.deref() {
             Assign::Unknown => {
                 // Unconstrained, so we can choose any type we like
                 res::Type::Tuple(vec![])
