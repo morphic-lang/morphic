@@ -779,128 +779,152 @@ fn infer_expr(
     program: &res::Program,
     ctx: &mut Context,
     scope: &mut Scope,
+    expected: TypeVar,
     expr: &res::Expr,
-) -> Result<(AnnotExpr, TypeVar), RawError> {
+) -> Result<AnnotExpr, RawError> {
     match expr {
         &res::Expr::Global(id) => {
             let scheme = global_scheme(program, id);
             let (param_vars, var) = instantiate_scheme(ctx, &scheme);
-            Ok((AnnotExpr::Global(id, param_vars), var))
+            ctx.unify(expected, var)?;
+            Ok(AnnotExpr::Global(id, param_vars))
         }
 
-        &res::Expr::Local(id) => Ok((AnnotExpr::Local(id), scope.local(id))),
+        &res::Expr::Local(id) => {
+            ctx.unify(expected, scope.local(id))?;
+            Ok(AnnotExpr::Local(id))
+        }
 
         res::Expr::Tuple(items) => {
-            let mut items_annot = Vec::new();
-            let mut item_vars = Vec::new();
-            for item in items {
-                let (item_annot, item_var) = infer_expr(program, ctx, scope, item)?;
-                items_annot.push(item_annot);
-                item_vars.push(item_var);
-            }
+            let item_vars: Vec<TypeVar> = (0..items.len())
+                .map(|_| ctx.new_var(Assign::Unknown))
+                .collect();
+            let tuple_var = ctx.new_var(Assign::Tuple(item_vars.clone()));
 
-            let tuple_annot = AnnotExpr::Tuple(items_annot);
-            let tuple_var = ctx.new_var(Assign::Tuple(item_vars));
-            Ok((tuple_annot, tuple_var))
+            ctx.unify(expected, tuple_var)?;
+
+            let items_annot = items
+                .iter()
+                .zip(item_vars)
+                .map(|(item, item_var)| infer_expr(program, ctx, scope, item_var, item))
+                .collect::<Result<_, _>>()?;
+
+            Ok(AnnotExpr::Tuple(items_annot))
         }
 
         res::Expr::Lam(purity, pat, body) => scope.with_subscope(|subscope| {
+            let arg_var = ctx.new_var(Assign::Unknown);
+            let ret_var = ctx.new_var(Assign::Unknown);
+            let lam_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
+
+            ctx.unify(expected, lam_var)?;
+
             let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, pat)?;
-            let (body_annot, body_var) = infer_expr(program, ctx, subscope, &body)?;
+
+            ctx.unify(arg_var, pat_var)?;
+
+            let body_annot = infer_expr(program, ctx, subscope, ret_var, &body)?;
 
             let lam_annot =
-                AnnotExpr::Lam(*purity, pat_var, body_var, pat_annot, Box::new(body_annot));
+                AnnotExpr::Lam(*purity, arg_var, ret_var, pat_annot, Box::new(body_annot));
 
-            let lam_var = ctx.new_var(Assign::Func(*purity, pat_var, body_var));
-            Ok((lam_annot, lam_var))
+            Ok(lam_annot)
         }),
 
         res::Expr::App(purity, func, arg) => {
-            let (func_annot, func_var) = infer_expr(program, ctx, scope, &func)?;
-            let (arg_annot, arg_var) = infer_expr(program, ctx, scope, &arg)?;
-
+            let arg_var = ctx.new_var(Assign::Unknown);
             let ret_var = ctx.new_var(Assign::Unknown);
-            let expected_func_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
-            ctx.unify(expected_func_var, func_var)?;
+            let func_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
+
+            let func_annot = infer_expr(program, ctx, scope, func_var, func)?;
+            let arg_annot = infer_expr(program, ctx, scope, arg_var, arg)?;
+
+            ctx.unify(expected, ret_var)?;
 
             let app_annot = AnnotExpr::App(*purity, Box::new(func_annot), Box::new(arg_annot));
-            Ok((app_annot, ret_var))
+
+            Ok(app_annot)
         }
 
         res::Expr::Match(discrim, cases) => {
-            let (discrim_annot, discrim_var) = infer_expr(program, ctx, scope, discrim)?;
+            let discrim_var = ctx.new_var(Assign::Unknown);
 
-            let result_var = ctx.new_var(Assign::Unknown);
+            let discrim_annot = infer_expr(program, ctx, scope, discrim_var, discrim)?;
 
             let cases_annot = cases
                 .iter()
                 .map(|(pat, body)| {
                     scope.with_subscope(|subscope| {
                         let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, pat)?;
-                        let (body_annot, body_var) = infer_expr(program, ctx, subscope, &body)?;
 
-                        ctx.unify(pat_var, discrim_var)?;
-                        ctx.unify(body_var, result_var)?;
+                        ctx.unify(discrim_var, pat_var)?;
+
+                        let body_annot = infer_expr(program, ctx, subscope, expected, &body)?;
 
                         Ok((pat_annot, body_annot))
                     })
                 })
                 .collect::<Result<_, RawError>>()?;
 
-            Ok((
-                AnnotExpr::Match(Box::new(discrim_annot), cases_annot, result_var),
-                result_var,
+            Ok(AnnotExpr::Match(
+                Box::new(discrim_annot),
+                cases_annot,
+                expected,
             ))
         }
 
         res::Expr::Let(lhs, rhs, body) => {
-            let (rhs_annot, rhs_var) = infer_expr(program, ctx, scope, rhs)?;
-            let (lhs_annot, (body_annot, body_var)) = (scope.with_subscope(|subscope| {
+            let rhs_var = ctx.new_var(Assign::Unknown);
+            let rhs_annot = infer_expr(program, ctx, scope, rhs_var, rhs)?;
+
+            let (lhs_annot, body_annot) = (scope.with_subscope(|subscope| {
                 let (lhs_annot, lhs_var) = infer_pat(program, ctx, subscope, lhs)?;
-                ctx.unify(lhs_var, rhs_var)?;
-                Ok((lhs_annot, infer_expr(program, ctx, subscope, body)?))
+                ctx.unify(rhs_var, lhs_var)?;
+                Ok((
+                    lhs_annot,
+                    infer_expr(program, ctx, subscope, expected, body)?,
+                ))
             }) as Result<_, RawError>)?;
 
             let let_annot = AnnotExpr::Let(lhs_annot, Box::new(rhs_annot), Box::new(body_annot));
-            Ok((let_annot, body_var))
+            Ok(let_annot)
         }
 
         res::Expr::ArrayLit(items) => {
             let param_var = ctx.new_var(Assign::Unknown);
+            let array_var = ctx.new_var(Assign::App(res::TypeId::Array, vec![param_var]));
+
+            ctx.unify(expected, array_var)?;
 
             let items_annot = items
                 .iter()
-                .map(|item| {
-                    let (item_annot, item_var) = infer_expr(program, ctx, scope, item)?;
-                    ctx.unify(item_var, param_var)?;
-                    Ok(item_annot)
-                })
+                .map(|item| infer_expr(program, ctx, scope, param_var, item))
                 .collect::<Result<_, RawError>>()?;
 
             let array_annot = AnnotExpr::ArrayLit(param_var, items_annot);
-            let array_var = ctx.new_var(Assign::App(res::TypeId::Array, vec![param_var]));
-            Ok((array_annot, array_var))
+            Ok(array_annot)
         }
 
-        &res::Expr::ByteLit(val) => Ok((
-            AnnotExpr::ByteLit(val),
-            ctx.new_var(Assign::App(res::TypeId::Byte, vec![])),
-        )),
+        &res::Expr::ByteLit(val) => {
+            let lit_var = ctx.new_var(Assign::App(res::TypeId::Byte, vec![]));
+            ctx.unify(expected, lit_var)?;
+            Ok(AnnotExpr::ByteLit(val))
+        }
 
-        &res::Expr::IntLit(val) => Ok((
-            AnnotExpr::IntLit(val),
-            ctx.new_var(Assign::App(res::TypeId::Int, vec![])),
-        )),
+        &res::Expr::IntLit(val) => {
+            let lit_var = ctx.new_var(Assign::App(res::TypeId::Int, vec![]));
+            ctx.unify(expected, lit_var)?;
+            Ok(AnnotExpr::IntLit(val))
+        }
 
-        &res::Expr::FloatLit(val) => Ok((
-            AnnotExpr::FloatLit(val),
-            ctx.new_var(Assign::App(res::TypeId::Float, vec![])),
-        )),
+        &res::Expr::FloatLit(val) => {
+            let lit_var = ctx.new_var(Assign::App(res::TypeId::Float, vec![]));
+            ctx.unify(expected, lit_var)?;
+            Ok(AnnotExpr::FloatLit(val))
+        }
 
         res::Expr::Span(lo, hi, body) => {
-            let (body_annot, body_var) =
-                infer_expr(program, ctx, scope, body).map_err(locate_span(*lo, *hi))?;
-            Ok((AnnotExpr::Span(*lo, *hi, Box::new(body_annot)), body_var))
+            infer_expr(program, ctx, scope, expected, body).map_err(locate_span(*lo, *hi))
         }
     }
 }
@@ -1027,9 +1051,7 @@ fn infer_def(
 
     let declared_type_var = instantiate_rigid(ctx, &def.scheme);
 
-    let (body_annot, body_var) = infer_expr(program, ctx, &mut scope, &def.body)?;
-
-    ctx.unify(declared_type_var, body_var)?;
+    let body_annot = infer_expr(program, ctx, &mut scope, declared_type_var, &def.body)?;
 
     let body_typed = extract_solution(ctx, body_annot)?;
 
