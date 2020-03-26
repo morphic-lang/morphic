@@ -933,6 +933,15 @@ fn resolve_pattern(
         &raw::Pattern::IntConst(val) => Ok(res::Pattern::IntConst(val)),
 
         &raw::Pattern::FloatConst(val) => Ok(res::Pattern::FloatConst(val)),
+
+        raw::Pattern::Span(lo, hi, content) => Ok(res::Pattern::Span(
+            *lo,
+            *hi,
+            Box::new(
+                resolve_pattern(global_mods, local_mod_map, content, vars)
+                    .map_err(locate_span(*lo, *hi))?,
+            ),
+        )),
     }
 }
 

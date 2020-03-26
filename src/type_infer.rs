@@ -471,6 +471,8 @@ enum AnnotPattern {
     ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
+
+    Span(usize, usize, Box<AnnotPattern>),
 }
 
 // Sounds ominous...
@@ -676,32 +678,32 @@ fn infer_pat(
     program: &res::Program,
     ctx: &mut Context,
     scope: &mut Scope,
+    expected: TypeVar,
     pat: &res::Pattern,
-) -> Result<(AnnotPattern, TypeVar), RawError> {
+) -> Result<AnnotPattern, RawError> {
     match pat {
-        res::Pattern::Any => {
-            let var = ctx.new_var(Assign::Unknown);
-            Ok((AnnotPattern::Any(var), var))
-        }
+        res::Pattern::Any => Ok(AnnotPattern::Any(expected)),
 
         res::Pattern::Var => {
-            let var = ctx.new_var(Assign::Unknown);
-            scope.add_local(var);
-            Ok((AnnotPattern::Var(var), var))
+            scope.add_local(expected);
+            Ok(AnnotPattern::Var(expected))
         }
 
         res::Pattern::Tuple(items) => {
-            let mut items_annot = Vec::new();
-            let mut item_vars = Vec::new();
-            for item in items {
-                let (item_annot, item_var) = infer_pat(program, ctx, scope, item)?;
-                items_annot.push(item_annot);
-                item_vars.push(item_var);
-            }
+            let item_vars: Vec<TypeVar> = (0..items.len())
+                .map(|_| ctx.new_var(Assign::Unknown))
+                .collect();
+            let tuple_var = ctx.new_var(Assign::Tuple(item_vars.clone()));
 
-            let tuple_annot = AnnotPattern::Tuple(items_annot);
-            let tuple_var = ctx.new_var(Assign::Tuple(item_vars));
-            Ok((tuple_annot, tuple_var))
+            ctx.unify(expected, tuple_var)?;
+
+            let items_annot = items
+                .iter()
+                .zip(item_vars)
+                .map(|(item, item_var)| infer_pat(program, ctx, scope, item_var, item))
+                .collect::<Result<_, _>>()?;
+
+            Ok(AnnotPattern::Tuple(items_annot))
         }
 
         res::Pattern::Ctor(id, variant, content) => {
@@ -723,11 +725,14 @@ fn infer_pat(
                     .collect(),
             );
 
+            let ctor_var = ctx.new_var(Assign::App(*id, param_vars.items.clone()));
+
+            ctx.unify(expected, ctor_var)?;
+
             let content_annot = match (expected_content, content) {
                 (Some(ref expected), Some(content)) => {
-                    let (content_annot, content_var) = infer_pat(program, ctx, scope, content)?;
                     let expected_var = instantiate_with(ctx, &param_vars, expected);
-                    ctx.unify(content_var, expected_var)?;
+                    let content_annot = infer_pat(program, ctx, scope, expected_var, content)?;
                     Some(Box::new(content_annot))
                 }
 
@@ -750,27 +755,35 @@ fn infer_pat(
                 }
             };
 
-            let ctor_annot =
-                AnnotPattern::Ctor(*id, param_vars.items.clone(), *variant, content_annot);
+            let ctor_annot = AnnotPattern::Ctor(*id, param_vars.items, *variant, content_annot);
 
-            let ctor_var = ctx.new_var(Assign::App(*id, param_vars.items));
-
-            Ok((ctor_annot, ctor_var))
+            Ok(ctor_annot)
         }
 
-        &res::Pattern::ByteConst(val) => Ok((
-            AnnotPattern::ByteConst(val),
-            ctx.new_var(Assign::App(res::TypeId::Byte, vec![])),
-        )),
+        &res::Pattern::ByteConst(val) => {
+            let const_var = ctx.new_var(Assign::App(res::TypeId::Byte, vec![]));
+            ctx.unify(expected, const_var)?;
+            Ok(AnnotPattern::ByteConst(val))
+        }
 
-        &res::Pattern::IntConst(val) => Ok((
-            AnnotPattern::IntConst(val),
-            ctx.new_var(Assign::App(res::TypeId::Int, vec![])),
-        )),
+        &res::Pattern::IntConst(val) => {
+            let const_var = ctx.new_var(Assign::App(res::TypeId::Int, vec![]));
+            ctx.unify(expected, const_var)?;
+            Ok(AnnotPattern::IntConst(val))
+        }
 
-        &res::Pattern::FloatConst(val) => Ok((
-            AnnotPattern::FloatConst(val),
-            ctx.new_var(Assign::App(res::TypeId::Float, vec![])),
+        &res::Pattern::FloatConst(val) => {
+            let const_var = ctx.new_var(Assign::App(res::TypeId::Float, vec![]));
+            ctx.unify(expected, const_var)?;
+            Ok(AnnotPattern::FloatConst(val))
+        }
+
+        res::Pattern::Span(lo, hi, content) => Ok(AnnotPattern::Span(
+            *lo,
+            *hi,
+            Box::new(
+                infer_pat(program, ctx, scope, expected, content).map_err(locate_span(*lo, *hi))?,
+            ),
         )),
     }
 }
@@ -819,9 +832,7 @@ fn infer_expr(
 
             ctx.unify(expected, lam_var)?;
 
-            let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, pat)?;
-
-            ctx.unify(arg_var, pat_var)?;
+            let pat_annot = infer_pat(program, ctx, subscope, arg_var, pat)?;
 
             let body_annot = infer_expr(program, ctx, subscope, ret_var, &body)?;
 
@@ -856,9 +867,7 @@ fn infer_expr(
                 .iter()
                 .map(|(pat, body)| {
                     scope.with_subscope(|subscope| {
-                        let (pat_annot, pat_var) = infer_pat(program, ctx, subscope, pat)?;
-
-                        ctx.unify(discrim_var, pat_var)?;
+                        let pat_annot = infer_pat(program, ctx, subscope, discrim_var, pat)?;
 
                         let body_annot = infer_expr(program, ctx, subscope, expected, &body)?;
 
@@ -879,8 +888,7 @@ fn infer_expr(
             let rhs_annot = infer_expr(program, ctx, scope, rhs_var, rhs)?;
 
             let (lhs_annot, body_annot) = (scope.with_subscope(|subscope| {
-                let (lhs_annot, lhs_var) = infer_pat(program, ctx, subscope, lhs)?;
-                ctx.unify(rhs_var, lhs_var)?;
+                let lhs_annot = infer_pat(program, ctx, subscope, rhs_var, lhs)?;
                 Ok((
                     lhs_annot,
                     infer_expr(program, ctx, subscope, expected, body)?,
@@ -973,6 +981,10 @@ fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> Result<typed::Patt
         AnnotPattern::ByteConst(val) => Ok(typed::Pattern::ByteConst(val)),
         AnnotPattern::IntConst(val) => Ok(typed::Pattern::IntConst(val)),
         AnnotPattern::FloatConst(val) => Ok(typed::Pattern::FloatConst(val)),
+
+        AnnotPattern::Span(lo, hi, content) => {
+            extract_pat_solution(ctx, *content).map_err(locate_span(lo, hi))
+        }
     }
 }
 

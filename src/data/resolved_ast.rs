@@ -146,4 +146,6 @@ pub enum Pattern {
     ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
+
+    Span(usize, usize, Box<Pattern>),
 }

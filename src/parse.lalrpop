@@ -517,7 +517,7 @@ Exprs: syntax::Expr = {
 
 // Patterns
 
-Pattern: syntax::Pattern = {
+Pattern_: syntax::Pattern = {
   "(" <Patterns> ")",
 
   "_" => syntax::Pattern::Any,
@@ -537,7 +537,17 @@ Pattern: syntax::Pattern = {
   <"FloatLit"> => syntax::Pattern::FloatConst(<>),
 };
 
-Patterns: syntax::Pattern = {
+Pattern: syntax::Pattern = {
+  <lo: @L> <pat: Pattern_> <hi: @R> => {
+    if let syntax::Pattern::Span(_, _, _) = &pat {
+      pat
+    } else {
+      syntax::Pattern::Span(lo, hi, Box::new(pat))
+    }
+  },
+};
+
+Patterns_: syntax::Pattern = {
   <patterns: CommaSep<Pattern>> => {
     if patterns.len() == 1 {
       patterns.into_iter().next().unwrap()
@@ -545,4 +555,14 @@ Patterns: syntax::Pattern = {
       syntax::Pattern::Tuple(patterns)
     }
   }
+};
+
+Patterns: syntax::Pattern = {
+  <lo: @L> <pat: Patterns_> <hi: @R> => {
+    if let syntax::Pattern::Span(_, _, _) = &pat {
+      pat
+    } else {
+      syntax::Pattern::Span(lo, hi, Box::new(pat))
+    }
+  },
 };
