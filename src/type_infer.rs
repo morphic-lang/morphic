@@ -836,10 +836,10 @@ fn infer_expr(
             let ret_var = ctx.new_var(Assign::Unknown);
             let func_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
 
+            ctx.unify(expected, ret_var)?;
+
             let func_annot = infer_expr(program, ctx, scope, func_var, func)?;
             let arg_annot = infer_expr(program, ctx, scope, arg_var, arg)?;
-
-            ctx.unify(expected, ret_var)?;
 
             let app_annot = AnnotExpr::App(*purity, Box::new(func_annot), Box::new(arg_annot));
 
