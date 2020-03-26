@@ -1,57 +1,182 @@
-use failure::Fail;
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
+use std::io;
 use std::ops::{Deref, DerefMut};
 
 use crate::data::purity::Purity;
+use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
+use crate::file_cache::FileCache;
+use crate::report_error::{locate_path, locate_span, Locate};
+use crate::report_type;
 use crate::util::id_vec::IdVec;
 
-// TODO: Improve these error messages!
-#[derive(Clone, Debug, Fail)]
-pub enum Error {
-    #[fail(display = "Illegal recursive type")]
-    RecursiveType,
-
-    #[fail(display = "Cannot match distinct type parameters")]
-    ParamMismatch(res::TypeParamId, res::TypeParamId),
-
-    #[fail(display = "Cannot match distinct type constructors")]
-    AppMismatch(res::TypeId, res::TypeId),
-
-    #[fail(
-        display = "Cannot match type constructor of arity {} with one of arity {}",
-        _1, _2
-    )]
-    ArityMismatch(res::TypeId, usize, usize),
-
-    #[fail(display = "Cannot match tuple of size {} with one of size {}", _0, _1)]
-    TupleArityMismatch(usize, usize),
-
-    // TODO: These are all bad, but this is inexcusable
-    #[fail(display = "Cannot unify types of different forms")]
-    FormMismatch,
-
-    #[fail(display = "Expected constructor argument")]
-    ExpectedCtorArg(res::TypeId, res::VariantId),
-
-    #[fail(display = "Unexpected constructor argument")]
-    UnexpectedCtorArg(res::TypeId, res::VariantId),
-
-    #[fail(display = "Function purity mismatch")]
-    PurityMismatch,
-}
-
-#[derive(Clone, Debug, Fail)]
-#[fail(display = "Type error in {}: {}", def, error)]
-pub struct LocatedError {
-    def: String,
-    #[cause]
-    error: Error,
-}
-
 id_type!(TypeVar);
+
+#[derive(Clone, Copy, Debug)]
+enum RawErrorKind {
+    Recursive,
+    Mismatch {
+        expected: TypeVar,
+        actual: TypeVar,
+    },
+    ExpectedCtorArg {
+        id: res::TypeId,
+        variant: res::VariantId,
+    },
+    UnexpectedCtorArg {
+        id: res::TypeId,
+        variant: res::VariantId,
+    },
+}
+
+type RawError = Locate<RawErrorKind>;
+
+#[derive(Clone, Debug)]
+pub enum ErrorKind {
+    Recursive,
+    Mismatch {
+        expected: String,
+        expected_is_concrete: bool,
+        actual: String,
+        actual_is_concrete: bool,
+    },
+    ExpectedCtorArg {
+        id: String,
+        variant: String,
+    },
+    UnexpectedCtorArg {
+        id: String,
+        variant: String,
+    },
+}
+
+pub type Error = Locate<ErrorKind>;
+
+impl RawErrorKind {
+    fn render(
+        &self,
+        program: &res::Program,
+        params: &IdVec<res::TypeParamId, raw::TypeParam>,
+        ctx: &Context,
+    ) -> ErrorKind {
+        match self {
+            RawErrorKind::Recursive => ErrorKind::Recursive,
+
+            RawErrorKind::Mismatch {
+                expected: expected_var,
+                actual: actual_var,
+            } => {
+                let renderer = report_type::TypeRenderer::new(program);
+
+                let expected_type = ctx.extract_report(*expected_var);
+                let actual_type = ctx.extract_report(*actual_var);
+
+                let expected = renderer.render(params, &expected_type);
+                let actual = renderer.render(params, &actual_type);
+
+                let expected_is_concrete = report_type::is_concrete(&expected_type);
+                let actual_is_concrete = report_type::is_concrete(&actual_type);
+
+                ErrorKind::Mismatch {
+                    expected,
+                    expected_is_concrete,
+                    actual,
+                    actual_is_concrete,
+                }
+            }
+
+            RawErrorKind::ExpectedCtorArg { id, variant } => {
+                let renderer = report_type::TypeRenderer::new(program);
+
+                let (id_rendered, variant_rendered) = renderer.render_ctor(*id, *variant);
+
+                ErrorKind::ExpectedCtorArg {
+                    id: id_rendered,
+                    variant: variant_rendered,
+                }
+            }
+
+            RawErrorKind::UnexpectedCtorArg { id, variant } => {
+                let renderer = report_type::TypeRenderer::new(program);
+
+                let (id_rendered, variant_rendered) = renderer.render_ctor(*id, *variant);
+
+                ErrorKind::UnexpectedCtorArg {
+                    id: id_rendered,
+                    variant: variant_rendered,
+                }
+            }
+        }
+    }
+}
+
+impl Error {
+    pub fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
+        self.report_with(dest, files, |err| match err {
+            ErrorKind::Recursive => (
+                "Cyclic Type",
+                lines![
+                    "I couldn't infer a type for this expression.",
+                    "",
+                    "Any type you could try to give this expression would need to mention itself \
+                     cyclically in order to type-check.  So a hypothetical type that could make \
+                     this expression type-check would need to be infinitely big!"
+                ]
+                .to_owned(),
+            ),
+
+            ErrorKind::Mismatch {
+                expected,
+                expected_is_concrete,
+                actual,
+                actual_is_concrete,
+            } => (
+                "Type Mismatch",
+                format!(
+                    lines![
+                        "I expected to find an expression here with {expected_intro}:",
+                        "",
+                        "    {expected}",
+                        "",
+                        "Instead, this expression has {actual_intro}:",
+                        "",
+                        "    {actual}",
+                    ],
+                    expected_intro = if *expected_is_concrete {
+                        "the type"
+                    } else {
+                        "a type that looks like"
+                    },
+                    expected = expected,
+                    actual_intro = if *actual_is_concrete {
+                        "the type"
+                    } else {
+                        "a type that looks like"
+                    },
+                    actual = actual,
+                ),
+            ),
+
+            ErrorKind::ExpectedCtorArg { id, variant } => (
+                "Missing Constructor Argument",
+                format!(
+                    "The constructor '{}' for the type '{}' is supposed to take an argument.",
+                    variant, id,
+                ),
+            ),
+
+            ErrorKind::UnexpectedCtorArg { id, variant } => (
+                "Unexpected Constructor Argument",
+                format!(
+                    "The constructor '{}' for the type '{}' is not supposed to take an argument.",
+                    variant, id,
+                ),
+            ),
+        })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Assign {
@@ -84,6 +209,12 @@ struct Context {
     vars: IdVec<TypeVar, RefCell<Assign>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum UnifyError {
+    Recursive,
+    Mismatch,
+}
+
 impl Context {
     fn new() -> Self {
         Context { vars: IdVec::new() }
@@ -93,13 +224,13 @@ impl Context {
         self.vars.push(RefCell::new(assign))
     }
 
-    fn obtain(&self, var: TypeVar) -> Result<RefMut<Assign>, Error> {
+    fn obtain(&self, var: TypeVar) -> Result<RefMut<Assign>, UnifyError> {
         self.vars[var]
             .try_borrow_mut()
-            .map_err(|_| Error::RecursiveType)
+            .map_err(|_| UnifyError::Recursive)
     }
 
-    fn follow(&self, var: TypeVar) -> Result<TypeVar, Error> {
+    fn follow(&self, var: TypeVar) -> Result<TypeVar, UnifyError> {
         let mut assign = self.obtain(var)?;
         if let Assign::Equal(curr_dest) = assign.deref_mut() {
             *curr_dest = self.follow(*curr_dest)?;
@@ -109,7 +240,7 @@ impl Context {
         }
     }
 
-    fn unify_rec(&self, root_var1: TypeVar, root_var2: TypeVar) -> Result<(), Error> {
+    fn unify_rec(&self, root_var1: TypeVar, root_var2: TypeVar) -> Result<(), UnifyError> {
         let var1 = self.follow(root_var1)?;
         let var2 = self.follow(root_var2)?;
 
@@ -136,17 +267,17 @@ impl Context {
 
             (Assign::Param(param1), Assign::Param(param2)) => {
                 if param1 != param2 {
-                    return Err(Error::ParamMismatch(*param1, *param2));
+                    return Err(UnifyError::Mismatch);
                 }
             }
 
             (Assign::App(id1, args1), Assign::App(id2, args2)) => {
                 if id1 != id2 {
-                    return Err(Error::AppMismatch(*id1, *id2));
+                    return Err(UnifyError::Mismatch);
                 }
 
                 if args1.len() != args2.len() {
-                    return Err(Error::ArityMismatch(*id1, args1.len(), args2.len()));
+                    return Err(UnifyError::Mismatch);
                 }
 
                 for (&arg1, &arg2) in args1.iter().zip(args2.iter()) {
@@ -156,7 +287,7 @@ impl Context {
 
             (Assign::Tuple(items1), Assign::Tuple(items2)) => {
                 if items1.len() != items2.len() {
-                    return Err(Error::TupleArityMismatch(items1.len(), items2.len()));
+                    return Err(UnifyError::Mismatch);
                 }
 
                 for (&item1, &item2) in items1.iter().zip(items2.iter()) {
@@ -166,7 +297,7 @@ impl Context {
 
             (Assign::Func(purity1, arg1, ret1), Assign::Func(purity2, arg2, ret2)) => {
                 if purity1 != purity2 {
-                    return Err(Error::PurityMismatch);
+                    return Err(UnifyError::Mismatch);
                 }
 
                 self.unify_rec(*arg1, *arg2)?;
@@ -174,7 +305,7 @@ impl Context {
             }
 
             _ => {
-                return Err(Error::FormMismatch);
+                return Err(UnifyError::Mismatch);
             }
         }
 
@@ -184,35 +315,87 @@ impl Context {
         Ok(())
     }
 
-    fn unify(&mut self, var1: TypeVar, var2: TypeVar) -> Result<(), Error> {
-        self.unify_rec(var1, var2)
+    fn unify(&mut self, expected: TypeVar, actual: TypeVar) -> Result<(), RawError> {
+        self.unify_rec(expected, actual).map_err(|err| match err {
+            UnifyError::Recursive => RawErrorKind::Recursive.into(),
+            UnifyError::Mismatch => RawErrorKind::Mismatch { expected, actual }.into(),
+        })
     }
 
-    fn extract(&self, var: TypeVar) -> res::Type {
-        let assign = self.vars[var].borrow();
+    fn extract(&self, root_var: TypeVar) -> Result<res::Type, RawError> {
+        let var = self.follow(root_var).map_err(|_| RawErrorKind::Recursive)?;
+        let assign = self.obtain(var).map_err(|_| RawErrorKind::Recursive)?;
 
         match assign.deref() {
             Assign::Unknown => {
                 // Unconstrained, so we can choose any type we like
-                res::Type::Tuple(vec![])
+                Ok(res::Type::Tuple(vec![]))
             }
 
-            &Assign::Equal(other) => self.extract(other),
+            &Assign::Equal(_) => unreachable!(),
 
-            &Assign::Param(param) => res::Type::Var(param),
+            &Assign::Param(param) => Ok(res::Type::Var(param)),
 
-            Assign::App(id, args) => {
-                res::Type::App(*id, args.iter().map(|&arg| self.extract(arg)).collect())
-            }
+            Assign::App(id, args) => Ok(res::Type::App(
+                *id,
+                args.iter()
+                    .map(|&arg| self.extract(arg))
+                    .collect::<Result<_, _>>()?,
+            )),
 
-            Assign::Tuple(items) => {
-                res::Type::Tuple(items.iter().map(|&item| self.extract(item)).collect())
-            }
+            Assign::Tuple(items) => Ok(res::Type::Tuple(
+                items
+                    .iter()
+                    .map(|&item| self.extract(item))
+                    .collect::<Result<_, _>>()?,
+            )),
 
-            &Assign::Func(purity, arg, ret) => res::Type::Func(
+            &Assign::Func(purity, arg, ret) => Ok(res::Type::Func(
                 purity,
-                Box::new(self.extract(arg)),
-                Box::new(self.extract(ret)),
+                Box::new(self.extract(arg)?),
+                Box::new(self.extract(ret)?),
+            )),
+        }
+    }
+
+    fn extract_report(&self, root_var: TypeVar) -> report_type::Type {
+        let var = match self.follow(root_var) {
+            Ok(var) => var,
+            Err(_) => {
+                return report_type::Type::RecursiveOccurrence;
+            }
+        };
+
+        let assign = match self.obtain(var) {
+            Ok(assign) => assign,
+            Err(_) => {
+                return report_type::Type::RecursiveOccurrence;
+            }
+        };
+
+        match assign.deref() {
+            Assign::Unknown => report_type::Type::Unknown,
+
+            Assign::Equal(_) => unreachable!(),
+
+            Assign::Param(param) => report_type::Type::Var(*param),
+
+            Assign::App(id, args) => report_type::Type::App(
+                *id,
+                args.iter().map(|&arg| self.extract_report(arg)).collect(),
+            ),
+
+            Assign::Tuple(items) => report_type::Type::Tuple(
+                items
+                    .iter()
+                    .map(|&item| self.extract_report(item))
+                    .collect(),
+            ),
+
+            Assign::Func(purity, arg, ret) => report_type::Type::Func(
+                *purity,
+                Box::new(self.extract_report(*arg)),
+                Box::new(self.extract_report(*ret)),
             ),
         }
     }
@@ -269,6 +452,8 @@ enum AnnotExpr {
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
+
+    Span(usize, usize, Box<AnnotExpr>),
 }
 
 #[derive(Clone, Debug)]
@@ -492,7 +677,7 @@ fn infer_pat(
     ctx: &mut Context,
     scope: &mut Scope,
     pat: &res::Pattern,
-) -> Result<(AnnotPattern, TypeVar), Error> {
+) -> Result<(AnnotPattern, TypeVar), RawError> {
     match pat {
         res::Pattern::Any => {
             let var = ctx.new_var(Assign::Unknown);
@@ -548,9 +733,21 @@ fn infer_pat(
 
                 (None, None) => None,
 
-                (Some(_), None) => return Err(Error::ExpectedCtorArg(*id, *variant)),
+                (Some(_), None) => {
+                    return Err(RawErrorKind::ExpectedCtorArg {
+                        id: *id,
+                        variant: *variant,
+                    }
+                    .into());
+                }
 
-                (None, Some(_)) => return Err(Error::UnexpectedCtorArg(*id, *variant)),
+                (None, Some(_)) => {
+                    return Err(RawErrorKind::UnexpectedCtorArg {
+                        id: *id,
+                        variant: *variant,
+                    }
+                    .into());
+                }
             };
 
             let ctor_annot =
@@ -583,7 +780,7 @@ fn infer_expr(
     ctx: &mut Context,
     scope: &mut Scope,
     expr: &res::Expr,
-) -> Result<(AnnotExpr, TypeVar), Error> {
+) -> Result<(AnnotExpr, TypeVar), RawError> {
     match expr {
         &res::Expr::Global(id) => {
             let scheme = global_scheme(program, id);
@@ -648,7 +845,7 @@ fn infer_expr(
                         Ok((pat_annot, body_annot))
                     })
                 })
-                .collect::<Result<_, _>>()?;
+                .collect::<Result<_, RawError>>()?;
 
             Ok((
                 AnnotExpr::Match(Box::new(discrim_annot), cases_annot, result_var),
@@ -658,11 +855,11 @@ fn infer_expr(
 
         res::Expr::Let(lhs, rhs, body) => {
             let (rhs_annot, rhs_var) = infer_expr(program, ctx, scope, rhs)?;
-            let (lhs_annot, (body_annot, body_var)) = scope.with_subscope(|subscope| {
+            let (lhs_annot, (body_annot, body_var)) = (scope.with_subscope(|subscope| {
                 let (lhs_annot, lhs_var) = infer_pat(program, ctx, subscope, lhs)?;
                 ctx.unify(lhs_var, rhs_var)?;
                 Ok((lhs_annot, infer_expr(program, ctx, subscope, body)?))
-            })?;
+            }) as Result<_, RawError>)?;
 
             let let_annot = AnnotExpr::Let(lhs_annot, Box::new(rhs_annot), Box::new(body_annot));
             Ok((let_annot, body_var))
@@ -678,7 +875,7 @@ fn infer_expr(
                     ctx.unify(item_var, param_var)?;
                     Ok(item_annot)
                 })
-                .collect::<Result<_, _>>()?;
+                .collect::<Result<_, RawError>>()?;
 
             let array_annot = AnnotExpr::ArrayLit(param_var, items_annot);
             let array_var = ctx.new_var(Assign::App(res::TypeId::Array, vec![param_var]));
@@ -700,7 +897,11 @@ fn infer_expr(
             ctx.new_var(Assign::App(res::TypeId::Float, vec![])),
         )),
 
-        res::Expr::Span(_lo, _hi, body) => infer_expr(program, ctx, scope, body),
+        res::Expr::Span(lo, hi, body) => {
+            let (body_annot, body_var) =
+                infer_expr(program, ctx, scope, body).map_err(locate_span(*lo, *hi))?;
+            Ok((AnnotExpr::Span(*lo, *hi, Box::new(body_annot)), body_var))
+        }
     }
 }
 
@@ -714,103 +915,123 @@ fn instantiate_rigid(ctx: &mut Context, scheme: &res::TypeScheme) -> TypeVar {
     instantiate_with(ctx, &rigid_params, &scheme.body)
 }
 
-fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> typed::Pattern {
+fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> Result<typed::Pattern, RawError> {
     match body {
-        AnnotPattern::Any(var) => typed::Pattern::Any(ctx.extract(var)),
+        AnnotPattern::Any(var) => Ok(typed::Pattern::Any(ctx.extract(var)?)),
 
-        AnnotPattern::Var(var) => typed::Pattern::Var(ctx.extract(var)),
+        AnnotPattern::Var(var) => Ok(typed::Pattern::Var(ctx.extract(var)?)),
 
-        AnnotPattern::Tuple(items) => typed::Pattern::Tuple(
+        AnnotPattern::Tuple(items) => Ok(typed::Pattern::Tuple(
             items
                 .into_iter()
                 .map(|item| extract_pat_solution(ctx, item))
-                .collect(),
-        ),
+                .collect::<Result<_, _>>()?,
+        )),
 
-        AnnotPattern::Ctor(id, vars, variant, content) => typed::Pattern::Ctor(
+        AnnotPattern::Ctor(id, vars, variant, content) => Ok(typed::Pattern::Ctor(
             id,
-            vars.into_iter().map(|var| ctx.extract(var)).collect(),
+            vars.into_iter()
+                .map(|var| ctx.extract(var))
+                .collect::<Result<_, _>>()?,
             variant,
-            content.map(|content| Box::new(extract_pat_solution(ctx, *content))),
-        ),
+            content
+                .map::<Result<_, RawError>, _>(|content| {
+                    Ok(Box::new(extract_pat_solution(ctx, *content)?))
+                })
+                .transpose()?,
+        )),
 
-        AnnotPattern::ByteConst(val) => typed::Pattern::ByteConst(val),
-        AnnotPattern::IntConst(val) => typed::Pattern::IntConst(val),
-        AnnotPattern::FloatConst(val) => typed::Pattern::FloatConst(val),
+        AnnotPattern::ByteConst(val) => Ok(typed::Pattern::ByteConst(val)),
+        AnnotPattern::IntConst(val) => Ok(typed::Pattern::IntConst(val)),
+        AnnotPattern::FloatConst(val) => Ok(typed::Pattern::FloatConst(val)),
     }
 }
 
-fn extract_solution(ctx: &Context, body: AnnotExpr) -> typed::Expr {
+fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawError> {
     match body {
-        AnnotExpr::Global(id, vars) => {
-            typed::Expr::Global(id, vars.map(|_param_id, &var| ctx.extract(var)))
-        }
+        AnnotExpr::Global(id, vars) => Ok(typed::Expr::Global(
+            id,
+            vars.try_map(|_param_id, &var| ctx.extract(var))?,
+        )),
 
-        AnnotExpr::Local(id) => typed::Expr::Local(id),
+        AnnotExpr::Local(id) => Ok(typed::Expr::Local(id)),
 
-        AnnotExpr::Tuple(items) => typed::Expr::Tuple(
+        AnnotExpr::Tuple(items) => Ok(typed::Expr::Tuple(
             items
                 .into_iter()
                 .map(|item| extract_solution(ctx, item))
-                .collect(),
-        ),
+                .collect::<Result<_, _>>()?,
+        )),
 
-        AnnotExpr::Lam(purity, arg_type, ret_type, pat, body) => typed::Expr::Lam(
+        AnnotExpr::Lam(purity, arg_type, ret_type, pat, body) => Ok(typed::Expr::Lam(
             purity,
-            ctx.extract(arg_type),
-            ctx.extract(ret_type),
-            extract_pat_solution(ctx, pat),
-            Box::new(extract_solution(ctx, *body)),
-        ),
+            ctx.extract(arg_type)?,
+            ctx.extract(ret_type)?,
+            extract_pat_solution(ctx, pat)?,
+            Box::new(extract_solution(ctx, *body)?),
+        )),
 
-        AnnotExpr::App(purity, func, arg) => typed::Expr::App(
+        AnnotExpr::App(purity, func, arg) => Ok(typed::Expr::App(
             purity,
-            Box::new(extract_solution(ctx, *func)),
-            Box::new(extract_solution(ctx, *arg)),
-        ),
+            Box::new(extract_solution(ctx, *func)?),
+            Box::new(extract_solution(ctx, *arg)?),
+        )),
 
-        AnnotExpr::Match(discrim, cases, result_var) => typed::Expr::Match(
-            Box::new(extract_solution(ctx, *discrim)),
+        AnnotExpr::Match(discrim, cases, result_var) => Ok(typed::Expr::Match(
+            Box::new(extract_solution(ctx, *discrim)?),
             cases
                 .into_iter()
-                .map(|(pat, body)| (extract_pat_solution(ctx, pat), extract_solution(ctx, body)))
-                .collect(),
-            ctx.extract(result_var),
-        ),
+                .map(|(pat, body)| {
+                    Ok((
+                        extract_pat_solution(ctx, pat)?,
+                        extract_solution(ctx, body)?,
+                    ))
+                })
+                .collect::<Result<_, RawError>>()?,
+            ctx.extract(result_var)?,
+        )),
 
-        AnnotExpr::Let(lhs, rhs, body) => typed::Expr::Let(
-            extract_pat_solution(ctx, lhs),
-            Box::new(extract_solution(ctx, *rhs)),
-            Box::new(extract_solution(ctx, *body)),
-        ),
+        AnnotExpr::Let(lhs, rhs, body) => Ok(typed::Expr::Let(
+            extract_pat_solution(ctx, lhs)?,
+            Box::new(extract_solution(ctx, *rhs)?),
+            Box::new(extract_solution(ctx, *body)?),
+        )),
 
-        AnnotExpr::ArrayLit(item_var, items) => typed::Expr::ArrayLit(
-            ctx.extract(item_var),
+        AnnotExpr::ArrayLit(item_var, items) => Ok(typed::Expr::ArrayLit(
+            ctx.extract(item_var)?,
             items
                 .into_iter()
                 .map(|item| extract_solution(ctx, item))
-                .collect(),
-        ),
+                .collect::<Result<_, _>>()?,
+        )),
 
-        AnnotExpr::ByteLit(val) => typed::Expr::ByteLit(val),
+        AnnotExpr::ByteLit(val) => Ok(typed::Expr::ByteLit(val)),
 
-        AnnotExpr::IntLit(val) => typed::Expr::IntLit(val),
+        AnnotExpr::IntLit(val) => Ok(typed::Expr::IntLit(val)),
 
-        AnnotExpr::FloatLit(val) => typed::Expr::FloatLit(val),
+        AnnotExpr::FloatLit(val) => Ok(typed::Expr::FloatLit(val)),
+
+        AnnotExpr::Span(lo, hi, body) => extract_solution(ctx, *body).map_err(locate_span(lo, hi)),
     }
 }
 
-fn infer_def(program: &res::Program, def: &res::ValDef) -> Result<typed::ValDef, Error> {
-    let mut ctx = Context::new();
+// The 'Context' argument provided to this function should always be empty initially.  We take it as
+// an argument rather than constructing it internally so that the caller can consult the context for
+// reporting information if an error occurs.
+fn infer_def(
+    ctx: &mut Context,
+    program: &res::Program,
+    def: &res::ValDef,
+) -> Result<typed::ValDef, RawError> {
     let mut scope = Scope::new();
 
-    let declared_type_var = instantiate_rigid(&mut ctx, &def.scheme);
+    let declared_type_var = instantiate_rigid(ctx, &def.scheme);
 
-    let (body_annot, body_var) = infer_expr(program, &mut ctx, &mut scope, &def.body)?;
+    let (body_annot, body_var) = infer_expr(program, ctx, &mut scope, &def.body)?;
 
     ctx.unify(declared_type_var, body_var)?;
 
-    let body_typed = extract_solution(&ctx, body_annot);
+    let body_typed = extract_solution(ctx, body_annot)?;
 
     Ok(typed::ValDef {
         scheme: def.scheme.clone(),
@@ -818,12 +1039,17 @@ fn infer_def(program: &res::Program, def: &res::ValDef) -> Result<typed::ValDef,
     })
 }
 
-pub fn type_infer(program: res::Program) -> Result<typed::Program, LocatedError> {
+pub fn type_infer(program: res::Program) -> Result<typed::Program, Error> {
     let vals_inferred = program.vals.try_map(|id, def| {
-        infer_def(&program, def).map_err(|error| LocatedError {
-            def: program.val_symbols[id].val_name.0.clone(),
-            error,
-        })
+        let val_symbols = &program.val_symbols[id];
+
+        let mut ctx = Context::new();
+
+        infer_def(&mut ctx, &program, def)
+            .map_err(locate_path(&program.mod_symbols[val_symbols.mod_].file))
+            .map_err(|located| {
+                located.map(|err| err.render(&program, &val_symbols.type_param_names, &ctx))
+            })
     })?;
 
     Ok(typed::Program {

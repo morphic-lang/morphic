@@ -1,5 +1,6 @@
 use lalrpop_util::ParseError;
 use lazy_static::lazy_static;
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -222,7 +223,7 @@ pub struct GlobalContext {
     types: IdVec<res::CustomTypeId, Option<res::TypeDef>>,
     type_symbols: IdVec<res::CustomTypeId, res::TypeSymbols>,
     vals: IdVec<res::CustomGlobalId, Option<res::ValDef>>,
-    val_symbols: IdVec<res::CustomGlobalId, res::ValSymbols>,
+    val_symbols: IdVec<res::CustomGlobalId, Option<res::ValSymbols>>,
 }
 
 pub fn resolve_program(files: &mut FileCache, file_path: &Path) -> Result<res::Program, Error> {
@@ -257,7 +258,9 @@ pub fn resolve_program(files: &mut FileCache, file_path: &Path) -> Result<res::P
         custom_types: ctx.types.into_mapped(|_id, typedef| typedef.unwrap()),
         custom_type_symbols: ctx.type_symbols,
         vals: ctx.vals.into_mapped(|_id, val_def| val_def.unwrap()),
-        val_symbols: ctx.val_symbols,
+        val_symbols: ctx
+            .val_symbols
+            .into_mapped(|_id, val_syms| val_syms.unwrap()),
         main: main_proc,
     })
 }
@@ -292,7 +295,11 @@ fn resolve_mod(
 
     // Generate mappings
     //
-    // This pass also populates `type_symbols` and `val_symbols`
+    // This pass also populates `type_symbols`
+    //
+    // We can't populate 'val_symbols' yet, because we  populate the 'type_param_names' field of
+    // each 'ValSymbols' struct at the same time that we resolve the corresponding value's type
+    // scheme.
 
     let (mod_map, pending_type_defs, pending_val_defs) = {
         let mut mod_map = ModMap {
@@ -349,10 +356,7 @@ fn resolve_mod(
                 raw::Item::ValDef(name, type_, body) => {
                     let val_id = ctx.vals.push(None);
                     {
-                        let val_symbols_id = ctx.val_symbols.push(res::ValSymbols {
-                            mod_: self_mod_id,
-                            val_name: name.clone(),
-                        });
+                        let val_symbols_id = ctx.val_symbols.push(None);
                         debug_assert_eq!(val_id, val_symbols_id);
                     }
 
@@ -364,7 +368,7 @@ fn resolve_mod(
                     .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
 
-                    pending_val_defs.push((val_id, type_, body));
+                    pending_val_defs.push((name, val_id, type_, body));
                 }
 
                 raw::Item::ModDef(name, spec, bindings, expose) => {
@@ -461,8 +465,8 @@ fn resolve_mod(
         });
     }
 
-    for (val_id, type_, body) in pending_val_defs {
-        let res_scheme =
+    for (val_name, val_id, type_, body) in pending_val_defs {
+        let (res_scheme, type_param_names) =
             resolve_scheme(&ctx.mods, &mod_map, &type_).map_err(locate_path(file_path))?;
 
         let res_body = resolve_expr(&ctx.mods, &mod_map, &mut BTreeMap::new(), &body)
@@ -472,6 +476,13 @@ fn resolve_mod(
         ctx.vals[val_id] = Some(res::ValDef {
             scheme: res_scheme,
             body: res_body,
+        });
+
+        debug_assert!(ctx.val_symbols[val_id].is_none());
+        ctx.val_symbols[val_id] = Some(res::ValSymbols {
+            mod_: self_mod_id,
+            type_param_names,
+            val_name,
         });
     }
 
@@ -955,28 +966,35 @@ where
     Ok(result)
 }
 
-fn find_scheme_params(scheme: &raw::Type, params: &mut BTreeMap<raw::TypeParam, res::TypeParamId>) {
+fn find_scheme_params(
+    scheme: &raw::Type,
+    param_names: &mut IdVec<res::TypeParamId, raw::TypeParam>,
+    params: &mut BTreeMap<raw::TypeParam, res::TypeParamId>,
+) {
     match scheme {
         raw::Type::Var(param) => {
-            let id_if_new = res::TypeParamId(params.len());
-            params.entry(param.clone()).or_insert(id_if_new);
+            debug_assert_eq!(param_names.len(), params.len());
+            if let Entry::Vacant(entry) = params.entry(param.clone()) {
+                let id = param_names.push(param.clone());
+                entry.insert(id);
+            }
         }
 
         raw::Type::App(_, _, args) => {
             for arg in args {
-                find_scheme_params(arg, params);
+                find_scheme_params(arg, param_names, params);
             }
         }
 
         raw::Type::Tuple(items) => {
             for item in items {
-                find_scheme_params(item, params);
+                find_scheme_params(item, param_names, params);
             }
         }
 
         raw::Type::Func(_, arg, ret) => {
-            find_scheme_params(&*arg, params);
-            find_scheme_params(&*ret, params);
+            find_scheme_params(&*arg, param_names, params);
+            find_scheme_params(&*ret, param_names, params);
         }
     }
 }
@@ -985,16 +1003,19 @@ fn resolve_scheme(
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
     scheme: &raw::Type,
-) -> Result<res::TypeScheme, Error> {
+) -> Result<(res::TypeScheme, IdVec<res::TypeParamId, raw::TypeParam>), Error> {
+    let mut scheme_param_names = IdVec::new();
     let mut scheme_params = BTreeMap::new();
-    find_scheme_params(scheme, &mut scheme_params);
+    find_scheme_params(scheme, &mut scheme_param_names, &mut scheme_params);
 
     let res_type = resolve_type(global_mods, local_mod_map, &scheme_params, scheme)?;
 
-    Ok(res::TypeScheme {
+    let scheme = res::TypeScheme {
         num_params: scheme_params.len(),
         body: res_type,
-    })
+    };
+
+    Ok((scheme, scheme_param_names))
 }
 
 fn insert_unique<K: Ord, V>(map: &mut BTreeMap<K, V>, key: K, value: V) -> Result<(), ()> {

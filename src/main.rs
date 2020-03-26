@@ -22,6 +22,7 @@ mod resolve;
 
 mod check_purity;
 
+mod report_type;
 mod type_infer;
 
 mod check_exhaustive;
@@ -82,7 +83,7 @@ use std::io;
 enum Error {
     ResolveFailed(resolve::Error),
     PurityCheckFailed(check_purity::Error),
-    TypeInferFailed(type_infer::LocatedError),
+    TypeInferFailed(type_infer::Error),
     CheckExhaustiveFailed(check_exhaustive::Error),
     CheckMainFailed(check_main::Error),
     CreateArtifactsFailed(io::Error),
@@ -99,7 +100,7 @@ impl Error {
         match self {
             ResolveFailed(err) => err.report(dest, files),
             PurityCheckFailed(err) => err.report(dest, files),
-            TypeInferFailed(err) => writeln!(dest, "{}", err),
+            TypeInferFailed(err) => err.report(dest, files),
             CheckExhaustiveFailed(err) => writeln!(dest, "{}", err),
             CheckMainFailed(err) => writeln!(dest, "{}", err),
             CreateArtifactsFailed(err) => {

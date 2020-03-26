@@ -62,7 +62,7 @@ pub struct Program {
     pub main: CustomGlobalId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ModDeclLoc {
     Root,
     ChildOf { parent: ModId, name: raw::ModName },
@@ -101,6 +101,7 @@ pub struct ValDef {
 #[derive(Clone, Debug)]
 pub struct ValSymbols {
     pub mod_: ModId,
+    pub type_param_names: IdVec<TypeParamId, raw::TypeParam>,
     pub val_name: raw::ValName,
 }
 

@@ -320,6 +320,14 @@ pub fn locate_span<E>(lo: usize, hi: usize) -> impl FnOnce(Locate<E>) -> Locate<
 }
 
 impl<E> Locate<E> {
+    pub fn map<E2>(self, f: impl FnOnce(E) -> E2) -> Locate<E2> {
+        Locate {
+            path: self.path,
+            span: self.span,
+            error: f(self.error),
+        }
+    }
+
     pub fn report_with<Title, Msg>(
         &self,
         dest: &mut impl io::Write,
