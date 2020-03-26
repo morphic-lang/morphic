@@ -3,7 +3,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{BasicValueEnum, FunctionValue};
+use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
 use std::convert::TryInto;
 
@@ -29,6 +29,12 @@ impl<'a> Scope<'a> {
             builder,
             func,
         }
+    }
+
+    pub fn str(&self, s: &str) -> BasicValueEnum<'a> {
+        self.builder
+            .build_global_string_ptr(s, "global_str")
+            .as_basic_value_enum()
     }
 
     pub fn arg(&self, idx: u32) -> BasicValueEnum<'a> {

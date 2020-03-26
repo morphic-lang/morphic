@@ -408,51 +408,50 @@ impl<'a> FlatArrayIoImpl<'a> {
     }
 
     pub fn define(&self, context: &'a Context, libc: &LibC<'a>) {
-        self.define_input(context, libc);
-        self.define_output(context, libc);
-    }
+        // define 'input'
+        {
+            let s = scope(self.input, context);
 
-    fn define_input(&self, context: &'a Context, libc: &LibC<'a>) {
-        let s = scope(self.input, context);
+            s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
+            let array = s.call(self.byte_array_type.interface().new, &[]);
 
-        s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
-        let array = s.call(self.byte_array_type.interface().new, &[]);
+            let getchar_result = s.alloca(s.i32_t());
+            s.while_(
+                |s| {
+                    let getchar_result_value = s.call(libc.getchar, &[]);
+                    s.ptr_set(getchar_result, getchar_result_value);
+                    s.not(s.or(
+                        s.eq(getchar_result_value, s.i32(-1i32 as u32)), // EOF
+                        s.eq(getchar_result_value, s.i32('\n' as u32)),
+                    ))
+                },
+                |s| {
+                    let input_bytes = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
+                    s.call(self.byte_array_type.interface().push, &[array, input_bytes]);
+                },
+            );
 
-        let getchar_result = s.alloca(s.i32_t());
-        s.while_(
-            |s| {
-                let getchar_result_value = s.call(libc.getchar, &[]);
-                s.ptr_set(getchar_result, getchar_result_value);
-                s.not(s.or(
-                    s.eq(getchar_result_value, s.i32(-1i32 as u32)), // EOF
-                    s.eq(getchar_result_value, s.i32('\n' as u32)),
-                ))
-            },
-            |s| {
-                let input_bytes = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
-                s.call(self.byte_array_type.interface().push, &[array, input_bytes]);
-            },
-        );
+            s.ret(array);
+        }
 
-        s.ret(array);
-    }
+        // define 'output'
+        {
+            let s = scope(self.output, context);
+            let me = s.arg(0);
 
-    fn define_output(&self, context: &'a Context, libc: &LibC<'a>) {
-        let s = scope(self.output, context);
-        let me = s.arg(0);
+            let stdout_value = s.ptr_get(libc.stdout);
 
-        let stdout_value = s.ptr_get(libc.stdout);
-
-        // TODO: check bytes_written for errors
-        let _bytes_written = s.call(
-            libc.fwrite,
-            &[
-                s.arrow(me, F_ARR_DATA),
-                s.i64(1),
-                s.arrow(me, F_ARR_LEN),
-                stdout_value,
-            ],
-        );
-        s.ret_void();
+            // TODO: check bytes_written for errors
+            let _bytes_written = s.call(
+                libc.fwrite,
+                &[
+                    s.arrow(me, F_ARR_DATA),
+                    s.i64(1),
+                    s.arrow(me, F_ARR_LEN),
+                    stdout_value,
+                ],
+            );
+            s.ret_void();
+        }
     }
 }

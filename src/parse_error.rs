@@ -46,7 +46,7 @@ pub fn report(
         }
 
         UnrecognizedToken {
-            token: Some((lo, token, hi)),
+            token: (lo, token, hi),
             expected,
         } => {
             report_error(
@@ -78,8 +78,8 @@ pub fn report(
             )?;
         }
 
-        UnrecognizedToken {
-            token: None,
+        UnrecognizedEOF {
+            location: _,
             expected,
         } => {
             report_error(

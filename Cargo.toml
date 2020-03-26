@@ -7,10 +7,10 @@ edition = "2018"
 build = "build.rs"
 
 [build-dependencies]
-lalrpop = "0.16.2"
+lalrpop = "0.18.1"
 
 [dependencies]
-lalrpop-util = "0.16.2"
+lalrpop-util = "0.18.1"
 pretty = "0.5.2"
 failure = "0.1.5"
 im-rc = "12.3.3"

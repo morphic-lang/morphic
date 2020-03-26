@@ -701,7 +701,7 @@ fn bounds_check(stderr: &mut dyn Write, len: usize, index: i64) -> Result<(), Ex
 // This "red zone" value depends on the maximum stack space required by `interpret_expr`, which is
 // determined experimentally.  If you make a change to `interpret_expr and` `cargo test` starts
 // segfaulting, bump this value until it works.
-const STACK_RED_ZONE_BYTES: usize = 128 * 1024;
+const STACK_RED_ZONE_BYTES: usize = 256 * 1024;
 const STACK_GROW_BYTES: usize = 1024 * 1024;
 
 fn interpret_expr(
