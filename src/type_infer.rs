@@ -924,9 +924,13 @@ fn infer_expr(
             Ok(AnnotExpr::FloatLit(val))
         }
 
-        res::Expr::Span(lo, hi, body) => {
-            infer_expr(program, ctx, scope, expected, body).map_err(locate_span(*lo, *hi))
-        }
+        res::Expr::Span(lo, hi, body) => Ok(AnnotExpr::Span(
+            *lo,
+            *hi,
+            Box::new(
+                infer_expr(program, ctx, scope, expected, body).map_err(locate_span(*lo, *hi))?,
+            ),
+        )),
     }
 }
 
