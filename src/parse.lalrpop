@@ -341,18 +341,6 @@ AtomicExpr: syntax::Expr = {
   <Spanned<AtomicExpr_>>,
 };
 
-PrefixExpr_: syntax::Expr = {
-  <AtomicExpr>,
-
-  "-&" <PrefixExpr> => syntax::unop(syntax::Op::NegByte, <>),
-  "-" <PrefixExpr> => syntax::unop(syntax::Op::NegInt, <>),
-  "-." <PrefixExpr> => syntax::unop(syntax::Op::NegFloat, <>),
-};
-
-PrefixExpr: syntax::Expr = {
-  <Spanned<PrefixExpr_>>,
-};
-
 MatchExpr_: syntax::Expr = {
   "match" <expr: Expr> "{" <cases: CommaSep<(<Pattern> "->" <Expr>)>> "}" =>
     syntax::Expr::Match(Box::new(expr), cases),
@@ -398,7 +386,7 @@ IfExpr: syntax::Expr = {
 };
 
 PureAppExpr_: syntax::Expr = {
-  <PrefixExpr>,
+  <AtomicExpr>,
 
   <func: PureAppExpr> "(" <args: Exprs> ")" =>
     syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
@@ -411,7 +399,7 @@ PureAppExpr: syntax::Expr = {
 AppExpr_: syntax::Expr = {
   <PureAppExpr>,
 
-  "do" <func: PrefixExpr> "(" <args: Exprs> ")" =>
+  "do" <func: AtomicExpr> "(" <args: Exprs> ")" =>
     syntax::Expr::App(Purity::Impure, Box::new(func), Box::new(args)),
 };
 
@@ -419,8 +407,21 @@ AppExpr: syntax::Expr = {
   <Spanned<AppExpr_>>,
 };
 
-ArithProdExpr_: syntax::Expr = {
+PrefixExpr_: syntax::Expr = {
   <AppExpr>,
+
+  "-&" <PrefixExpr> => syntax::unop(syntax::Op::NegByte, <>),
+  "-" <PrefixExpr> => syntax::unop(syntax::Op::NegInt, <>),
+  "-." <PrefixExpr> => syntax::unop(syntax::Op::NegFloat, <>),
+};
+
+PrefixExpr: syntax::Expr = {
+  <Spanned<PrefixExpr_>>,
+};
+
+
+ArithProdExpr_: syntax::Expr = {
+  <PrefixExpr>,
 
   <left: ArithProdExpr> "*&" <right: AppExpr> => syntax::binop(syntax::Op::MulByte, left, right),
   <left: ArithProdExpr> "/&" <right: AppExpr> => syntax::binop(syntax::Op::DivByte, left, right),
