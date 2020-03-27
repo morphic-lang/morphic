@@ -1,4 +1,5 @@
 use crate::data::purity::Purity;
+use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeName(pub String);
@@ -78,7 +79,7 @@ pub enum Expr {
     Lam(Purity, Pattern, Box<Expr>),
     App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
-    Let(Pattern, Box<Expr>, Box<Expr>),
+    LetMany(VecDeque<(Pattern, Expr)>, Box<Expr>),
 
     ArrayLit(Vec<Expr>),
     ByteLit(u8),

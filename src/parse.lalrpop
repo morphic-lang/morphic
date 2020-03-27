@@ -411,18 +411,18 @@ PureAppExpr: syntax::Expr = {
 AppExpr_: syntax::Expr = {
   <PureAppExpr>,
 
-  "do" <app: PureAppExpr> =>
-  match app {
-    syntax::Expr::Span(left, right, expr) => match *expr {
-      syntax::Expr::App(_, func, arg) => syntax::Expr::Span(
-        left,
-        right,
-        Box::new(syntax::Expr::App(Purity::Impure, func, arg)),
-      ),
-      _ => syntax::Expr::Span(left, right, expr),
-    },
-    _ => unreachable!(),
-  }
+  "do" <app: PureAppExpr> => {
+    if let syntax::Expr::Span(left, right, expr) = app {
+      let new_expr = match *expr {
+        syntax::Expr::App(_, func, arg) => syntax::Expr::App(Purity::Impure, func, arg),
+        _ => *expr,
+      };
+
+      syntax::Expr::Span(left, right, Box::new(new_expr))
+    } else {
+      unreachable!();
+    }
+  },
 };
 
 AppExpr: syntax::Expr = {
@@ -498,19 +498,39 @@ ArithExpr: syntax::Expr = {
 BlockExpr_: syntax::Expr = {
   <ArithExpr>,
 
-  <lhs: ArithExpr> "then" <rhs: LetExpr> =>
-    syntax::Expr::Let(syntax::Pattern::Any, Box::new(lhs), Box::new(rhs)),
-};
+  "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
+    if let syntax::Expr::Span(left, right, body) = body {
+      let new_let_expr = match *body {
+        // if we already have a LetMany, prepend `lhs = rhs` onto bindings
+        syntax::Expr::LetMany(mut bindings, expr) => {
+          bindings.push_front((lhs, rhs));
+          syntax::Expr::LetMany(bindings, expr)
+        },
+        // otherwise create a new LetMany
+        _ => syntax::Expr::LetMany(vec![(lhs, rhs)].into(), body),
+      };
+      syntax::Expr::Span(left, right, Box::new(new_let_expr))
+    } else {
+      unreachable!();
+    }
+  },
 
-LetExpr_: syntax::Expr = {
-  <BlockExpr>,
-
-  "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: LetExpr> =>
-    syntax::Expr::Let(lhs, Box::new(rhs), Box::new(body)),
-};
-
-LetExpr: syntax::Expr = {
-  <Spanned<LetExpr_>>,
+  <rhs: ArithExpr> "then" <body: BlockExpr> => {
+    if let syntax::Expr::Span(left, right, body) = body {
+      let new_let_expr = match *body {
+        // if we already have a LetMany, prepend `_ = rhs` onto bindings
+        syntax::Expr::LetMany(mut bindings, expr) => {
+          bindings.push_front((syntax::Pattern::Any, rhs));
+          syntax::Expr::LetMany(bindings, expr)
+        },
+        // otherwise create a new LetMany
+        _ => syntax::Expr::LetMany(vec![(syntax::Pattern::Any, rhs)].into(), body),
+      };
+      syntax::Expr::Span(left, right, Box::new(new_let_expr))
+    } else {
+      unreachable!();
+    }
+  },
 };
 
 BlockExpr: syntax::Expr = {
@@ -518,7 +538,7 @@ BlockExpr: syntax::Expr = {
 };
 
 LamExpr_: syntax::Expr = {
-  <LetExpr>,
+  <BlockExpr>,
 
   <purity: OptProc> "\\" <param: Pattern> "->" <body: LamExpr> =>
     syntax::Expr::Lam(purity, param, Box::new(body)),

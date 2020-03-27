@@ -838,23 +838,38 @@ fn resolve_expr(
             Ok(res::Expr::Match(Box::new(res_discrim), res_cases))
         }
 
-        raw::Expr::Let(lhs, rhs, body) => {
-            let res_rhs = resolve_expr(global_mods, local_mod_map, local_map, rhs)?;
+        raw::Expr::LetMany(bindings, body) => {
+            let mut vars = Vec::new();
+            let mut new_bindings = Vec::new();
 
-            with_pattern(
-                global_mods,
-                local_mod_map,
-                local_map,
-                &*lhs,
-                |res_lhs, sub_local_map| {
-                    let res_body = resolve_expr(global_mods, local_mod_map, sub_local_map, &*body)?;
-                    Ok(res::Expr::Let(
-                        res_lhs,
-                        Box::new(res_rhs),
-                        Box::new(res_body),
-                    ))
-                },
-            )
+            for (pattern, expr) in bindings {
+                let res_expr = resolve_expr(global_mods, local_mod_map, local_map, expr)?;
+
+                let mut current_vars = Vec::new();
+                let res_pattern =
+                    resolve_pattern(global_mods, local_mod_map, pattern, &mut current_vars)?;
+                vars.extend(current_vars.clone());
+
+                for var in &current_vars {
+                    insert_unique(local_map, var.clone(), res::LocalId(local_map.len()))
+                        .map_err(|()| ErrorKind::DuplicateVarName(var.0.clone()))?;
+                }
+                new_bindings.push((res_pattern, res_expr));
+            }
+
+            let res_body = resolve_expr(global_mods, local_mod_map, local_map, &*body)?;
+
+            for var in &vars {
+                local_map.remove(var);
+            }
+
+            let mut current_let = res_body;
+
+            for (pattern, expr) in new_bindings.into_iter().rev() {
+                current_let = res::Expr::Let(pattern, Box::new(expr), Box::new(current_let));
+            }
+
+            Ok(current_let)
         }
 
         raw::Expr::ArrayLit(items) => Ok(res::Expr::ArrayLit(
