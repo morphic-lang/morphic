@@ -411,18 +411,8 @@ PureAppExpr: syntax::Expr = {
 AppExpr_: syntax::Expr = {
   <PureAppExpr>,
 
-  "do" <app: PureAppExpr> => {
-    if let syntax::Expr::Span(left, right, expr) = app {
-      let new_expr = match *expr {
-        syntax::Expr::App(_, func, arg) => syntax::Expr::App(Purity::Impure, func, arg),
-        _ => *expr,
-      };
-
-      syntax::Expr::Span(left, right, Box::new(new_expr))
-    } else {
-      unreachable!();
-    }
-  },
+  "do" <func: PrefixExpr> "(" <args: Exprs> ")" =>
+    syntax::Expr::App(Purity::Impure, Box::new(func), Box::new(args)),
 };
 
 AppExpr: syntax::Expr = {
