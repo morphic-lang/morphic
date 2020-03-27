@@ -397,11 +397,32 @@ IfExpr: syntax::Expr = {
   <Spanned<IfExpr_>>,
 };
 
-AppExpr_: syntax::Expr = {
+PureAppExpr_: syntax::Expr = {
   <PrefixExpr>,
 
-  <func: AppExpr> "(" <args: Exprs> ")" =>
+  <func: PureAppExpr> "(" <args: Exprs> ")" =>
     syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
+};
+
+PureAppExpr: syntax::Expr = {
+  <Spanned<PureAppExpr_>>,
+};
+
+AppExpr_: syntax::Expr = {
+  <PureAppExpr>,
+
+  "do" <app: PureAppExpr> =>
+  match app {
+    syntax::Expr::Span(left, right, expr) => match *expr {
+      syntax::Expr::App(_, func, arg) => syntax::Expr::Span(
+        left,
+        right,
+        Box::new(syntax::Expr::App(Purity::Impure, func, arg)),
+      ),
+      _ => syntax::Expr::Span(left, right, expr),
+    },
+    _ => unreachable!(),
+  }
 };
 
 AppExpr: syntax::Expr = {
@@ -477,28 +498,39 @@ ArithExpr: syntax::Expr = {
 BlockExpr_: syntax::Expr = {
   <ArithExpr>,
 
-  <purity: OptProc> "\\" <param: Pattern> "->" <body: BlockExpr> =>
-    syntax::Expr::Lam(purity, param, Box::new(body)),
+  <lhs: ArithExpr> "then" <rhs: LetExpr> =>
+    syntax::Expr::Let(syntax::Pattern::Any, Box::new(lhs), Box::new(rhs)),
+};
 
-  "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> =>
+LetExpr_: syntax::Expr = {
+  <BlockExpr>,
+
+  "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: LetExpr> =>
     syntax::Expr::Let(lhs, Box::new(rhs), Box::new(body)),
+};
 
-  "do" <func: AppExpr> "(" <arg: Exprs> ")" <rest: ("then" <BlockExpr>)?> => {
-    let app = syntax::Expr::App(Purity::Impure, Box::new(func), Box::new(arg));
-
-    match rest {
-      Some(rest) => syntax::Expr::Let(syntax::Pattern::Any, Box::new(app), Box::new(rest)),
-      None => app,
-    }
-  }
+LetExpr: syntax::Expr = {
+  <Spanned<LetExpr_>>,
 };
 
 BlockExpr: syntax::Expr = {
   <Spanned<BlockExpr_>>,
 };
 
+LamExpr_: syntax::Expr = {
+  <LetExpr>,
+
+  <purity: OptProc> "\\" <param: Pattern> "->" <body: LamExpr> =>
+    syntax::Expr::Lam(purity, param, Box::new(body)),
+};
+
+LamExpr: syntax::Expr = {
+  <Spanned<LamExpr_>>,
+};
+
+
 Expr: syntax::Expr = {
-  <BlockExpr>,
+  <LamExpr>,
 };
 
 Exprs_: syntax::Expr = {
