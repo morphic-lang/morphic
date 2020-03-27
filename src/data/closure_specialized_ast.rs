@@ -64,7 +64,7 @@ pub enum Expr {
         Type, // Return type
     ),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
-    Let(Pattern, Box<Expr>, Box<Expr>),
+    LetMany(Vec<(Pattern, Expr)>, Box<Expr>),
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),

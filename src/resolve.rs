@@ -863,13 +863,7 @@ fn resolve_expr(
                 local_map.remove(var);
             }
 
-            let mut current_let = res_body;
-
-            for (pattern, expr) in new_bindings.into_iter().rev() {
-                current_let = res::Expr::Let(pattern, Box::new(expr), Box::new(current_let));
-            }
-
-            Ok(current_let)
+            Ok(res::Expr::LetMany(new_bindings, Box::new(res_body)))
         }
 
         raw::Expr::ArrayLit(items) => Ok(res::Expr::ArrayLit(

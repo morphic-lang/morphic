@@ -108,16 +108,19 @@ fn resolve_expr(
             mono::Expr::Match(Box::new(discrim_resolved), cases_resolved, result_resolved)
         }
 
-        typed::Expr::Let(lhs, rhs, body) => {
-            let lhs_resolved = resolve_pattern(type_insts, inst_args, lhs);
-            let rhs_resolved = resolve_expr(val_insts, type_insts, inst_args, rhs);
+        typed::Expr::LetMany(bindings, body) => {
+            let mut new_bindings = Vec::new();
+
+            for (lhs, rhs) in bindings {
+                let lhs_resolved = resolve_pattern(type_insts, inst_args, lhs);
+                let rhs_resolved = resolve_expr(val_insts, type_insts, inst_args, rhs);
+
+                new_bindings.push((lhs_resolved, rhs_resolved));
+            }
+
             let body_resolved = resolve_expr(val_insts, type_insts, inst_args, body);
 
-            mono::Expr::Let(
-                lhs_resolved,
-                Box::new(rhs_resolved),
-                Box::new(body_resolved),
-            )
+            mono::Expr::LetMany(new_bindings, Box::new(body_resolved))
         }
 
         typed::Expr::ArrayLit(type_, items) => {

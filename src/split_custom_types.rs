@@ -174,17 +174,18 @@ fn trans_expr(
                 )
             } else {
                 let (pat, body) = &cases[0];
-                anon::Expr::Let(
-                    trans_pattern(typedefs, pat),
-                    Box::new(trans_expr(typedefs, discrim)),
+                anon::Expr::LetMany(
+                    vec![(trans_pattern(typedefs, pat), trans_expr(typedefs, discrim))],
                     Box::new(trans_expr(typedefs, body)),
                 )
             }
         }
 
-        first_ord::Expr::Let(lhs, rhs, body) => anon::Expr::Let(
-            trans_pattern(typedefs, lhs),
-            Box::new(trans_expr(typedefs, rhs)),
+        first_ord::Expr::LetMany(bindings, body) => anon::Expr::LetMany(
+            bindings
+                .iter()
+                .map(|(lhs, rhs)| (trans_pattern(typedefs, lhs), trans_expr(typedefs, rhs)))
+                .collect(),
             Box::new(trans_expr(typedefs, body)),
         ),
 

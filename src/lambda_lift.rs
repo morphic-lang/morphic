@@ -148,16 +148,21 @@ fn lift_expr<'a>(
             lifted::Expr::Match(Box::new(discrim_lifted), cases_lifted, result_type.clone())
         }
 
-        mono::Expr::Let(lhs, rhs, body) => {
-            let rhs_lifted = lift_expr(lambdas, lam_symbols, ctx, captures, rhs, lifted_from);
+        mono::Expr::LetMany(bindings, body) => ctx.with_scope(|sub_ctx| {
+            let mut new_bindings = Vec::new();
 
-            let body_lifted = ctx.with_scope(|sub_ctx| {
+            for (lhs, rhs) in bindings {
+                let rhs_lifted =
+                    lift_expr(lambdas, lam_symbols, sub_ctx, captures, rhs, lifted_from);
                 add_pattern(sub_ctx, lhs);
-                lift_expr(lambdas, lam_symbols, sub_ctx, captures, body, lifted_from)
-            });
 
-            lifted::Expr::Let(lhs.clone(), Box::new(rhs_lifted), Box::new(body_lifted))
-        }
+                new_bindings.push((lhs.clone(), rhs_lifted));
+            }
+
+            let body_lifted = lift_expr(lambdas, lam_symbols, sub_ctx, captures, body, lifted_from);
+
+            lifted::Expr::LetMany(new_bindings, Box::new(body_lifted))
+        }),
 
         mono::Expr::ArrayLit(type_, items) => lifted::Expr::ArrayLit(
             type_.clone(),

@@ -73,11 +73,7 @@ pub enum Expr {
     Local(first_ord::LocalId),
     Call(Purity, first_ord::CustomFuncId, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
-    Let(
-        Pattern,   // lhs
-        Box<Expr>, // rhs
-        Box<Expr>, // body
-    ),
+    LetMany(Vec<(Pattern, Expr)>, Box<Expr>),
 
     Tuple(Vec<Expr>),
     WrapVariant(

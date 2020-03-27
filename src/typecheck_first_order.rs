@@ -124,9 +124,11 @@ fn typecheck_expr(
             }
             result_type.clone()
         }
-        E::Let(lhs, rhs, body) => with_scope(locals, |sub_locals| {
-            let rhs_type = typecheck_expr(program, sub_locals, rhs);
-            bind_pattern(program, lhs, sub_locals, &rhs_type);
+        E::LetMany(bindings, body) => with_scope(locals, |sub_locals| {
+            for (lhs, rhs) in bindings {
+                let rhs_type = typecheck_expr(program, sub_locals, rhs);
+                bind_pattern(program, lhs, sub_locals, &rhs_type);
+            }
             typecheck_expr(program, sub_locals, body)
         }),
         E::ArrayLit(item_type, items) => {

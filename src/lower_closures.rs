@@ -179,7 +179,7 @@ fn is_atomic(expr: &special::Expr) -> bool {
         | special::Expr::Tuple(_)
         | special::Expr::Lam(_, _, _)
         | special::Expr::Match(_, _, _)
-        | special::Expr::Let(_, _, _)
+        | special::Expr::LetMany(_, _)
         | special::Expr::ArrayLit(_, _) => false,
 
         special::Expr::ArithOp(_, _)
@@ -300,9 +300,13 @@ impl<'a> Context<'a> {
         static ENV_LOCAL: first_ord::Expr = local(2); // For use in match branch bodies; may not exist in all branches
 
         fn with_args(types: Vec<first_ord::Type>, body: first_ord::Expr) -> first_ord::Expr {
-            first_ord::Expr::Let(
-                first_ord::Pattern::Tuple(types.into_iter().map(first_ord::Pattern::Var).collect()),
-                Box::new(ARG_LOCAL.clone()),
+            first_ord::Expr::LetMany(
+                vec![(
+                    first_ord::Pattern::Tuple(
+                        types.into_iter().map(first_ord::Pattern::Var).collect(),
+                    ),
+                    ARG_LOCAL.clone(),
+                )],
                 Box::new(body),
             )
         }
@@ -467,26 +471,28 @@ impl<'a> Context<'a> {
                                                 )),
                                                 first_ord::Type::Num(first_ord::NumType::Int),
                                             ],
-                                            first_ord::Expr::Let(
-                                                first_ord::Pattern::Tuple(vec![
-                                                    // LocalId(4) is the returned item
-                                                    first_ord::Pattern::Var(
-                                                        lowered_item_type.clone(),
-                                                    ),
-                                                    // LocalId(5) is the hole array
-                                                    first_ord::Pattern::Var(
-                                                        first_ord::Type::HoleArray(Box::new(
+                                            first_ord::Expr::LetMany(
+                                                vec![(
+                                                    first_ord::Pattern::Tuple(vec![
+                                                        // LocalId(4) is the returned item
+                                                        first_ord::Pattern::Var(
                                                             lowered_item_type.clone(),
-                                                        )),
+                                                        ),
+                                                        // LocalId(5) is the hole array
+                                                        first_ord::Pattern::Var(
+                                                            first_ord::Type::HoleArray(Box::new(
+                                                                lowered_item_type.clone(),
+                                                            )),
+                                                        ),
+                                                    ]),
+                                                    first_ord::Expr::ArrayOp(
+                                                        first_ord::ArrayOp::Item(
+                                                            lowered_item_type,
+                                                            Box::new(local(2)), // Array
+                                                            Box::new(local(3)), // Index
+                                                        ),
                                                     ),
-                                                ]),
-                                                Box::new(first_ord::Expr::ArrayOp(
-                                                    first_ord::ArrayOp::Item(
-                                                        lowered_item_type,
-                                                        Box::new(local(2)), // Array
-                                                        Box::new(local(3)), // Index
-                                                    ),
-                                                )),
+                                                )],
                                                 Box::new(first_ord::Expr::Tuple(vec![
                                                     local(4),
                                                     first_ord::Expr::Ctor(
@@ -928,9 +934,13 @@ impl<'a> Context<'a> {
                 self.lower_type(result_type),
             ),
 
-            special::Expr::Let(lhs, rhs, body) => first_ord::Expr::Let(
-                self.lower_pattern(lhs),
-                Box::new(self.lower_expr(local_mapping, rhs)),
+            special::Expr::LetMany(bindings, body) => first_ord::Expr::LetMany(
+                bindings
+                    .iter()
+                    .map(|(lhs, rhs)| {
+                        (self.lower_pattern(lhs), self.lower_expr(local_mapping, rhs))
+                    })
+                    .collect(),
                 Box::new(self.lower_expr(local_mapping, body)),
             ),
 

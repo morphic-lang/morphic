@@ -480,18 +480,18 @@ impl<'a> Context<'a> {
                 )
             }
 
-            annot::Expr::Let(lhs, rhs, body) => {
-                let resolved_lhs = self.resolve_pattern(lhs, params);
+            annot::Expr::LetMany(bindings, body) => {
+                let mut new_bindings = Vec::new();
+                for (lhs, rhs) in bindings {
+                    let resolved_lhs = self.resolve_pattern(lhs, params);
 
-                let resolved_rhs = self.resolve_expr(rhs, params);
+                    let resolved_rhs = self.resolve_expr(rhs, params);
+                    new_bindings.push((resolved_lhs, resolved_rhs));
+                }
 
                 let resolved_body = self.resolve_expr(body, params);
 
-                special::Expr::Let(
-                    resolved_lhs,
-                    Box::new(resolved_rhs),
-                    Box::new(resolved_body),
-                )
+                special::Expr::LetMany(new_bindings, Box::new(resolved_body))
             }
 
             annot::Expr::ArrayLit(item_type, items) => {
