@@ -334,8 +334,8 @@ fn count_moves(expr: &special::Expr) -> MoveInfo {
             }
         },
         special::Expr::IoOp(_rep_choice, io_op) => match io_op {
-            flat::IOOp::Input => {}
-            flat::IOOp::Output(local_id) => {
+            flat::IoOp::Input => {}
+            flat::IoOp::Output(local_id) => {
                 move_info.add_borrow(*local_id);
             }
         },
@@ -940,8 +940,8 @@ fn lower_leaf(
             low::Expr::IoOp(
                 *rep,
                 match io_type {
-                    flat::IOOp::Input => low::IoOp::Input,
-                    flat::IOOp::Output(output_id) => {
+                    flat::IoOp::Input => low::IoOp::Input,
+                    flat::IoOp::Output(output_id) => {
                         low::IoOp::Output(output_id.lookup_in(context))
                     }
                 },

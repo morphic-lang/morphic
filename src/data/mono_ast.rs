@@ -1,7 +1,7 @@
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
 id_type!(pub CustomTypeId);
@@ -36,7 +36,7 @@ id_type!(pub CustomGlobalId);
 pub enum Expr {
     ArithOp(Op),
     ArrayOp(ArrayOp, Type),
-    IOOp(IOOp),
+    IoOp(IoOp),
     Ctor(CustomTypeId, res::VariantId),
     Global(CustomGlobalId),
     Local(res::LocalId),

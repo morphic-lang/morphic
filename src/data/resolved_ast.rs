@@ -29,7 +29,7 @@ id_type!(pub TypeParamId);
 pub enum GlobalId {
     ArithOp(Op),
     ArrayOp(ArrayOp),
-    IOOp(IOOp),
+    IoOp(IoOp),
     Ctor(TypeId, VariantId),
     Custom(CustomGlobalId),
 }
@@ -37,7 +37,7 @@ pub enum GlobalId {
 id_type!(pub CustomGlobalId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum IOOp {
+pub enum IoOp {
     Input,
     Output,
 }

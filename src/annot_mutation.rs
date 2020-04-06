@@ -568,8 +568,8 @@ fn annot_expr(
             trivial_info(),
         ),
 
-        alias::Expr::IOOp(alias::IOOp::Input) => (
-            annot::Expr::IOOp(annot::IOOp::Input),
+        alias::Expr::IoOp(alias::IoOp::Input) => (
+            annot::Expr::IoOp(annot::IoOp::Input),
             ExprInfo {
                 mutations: Vec::new(),
                 val_statuses: OrdMap::unit(
@@ -581,8 +581,8 @@ fn annot_expr(
             },
         ),
 
-        alias::Expr::IOOp(alias::IOOp::Output(_bytes_aliases, bytes)) => (
-            annot::Expr::IOOp(annot::IOOp::Output(
+        alias::Expr::IoOp(alias::IoOp::Output(_bytes_aliases, bytes)) => (
+            annot::Expr::IoOp(annot::IoOp::Output(
                 ctx[bytes].statuses[&Vector::new()].clone(),
                 *bytes,
             )),

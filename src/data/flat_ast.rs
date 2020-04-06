@@ -40,7 +40,7 @@ pub enum ArrayOp {
 }
 
 #[derive(Clone, Debug)]
-pub enum IOOp {
+pub enum IoOp {
     Input,           // Returns array of bytes
     Output(LocalId), // Takes array of bytes, returns unit
 }
@@ -68,7 +68,7 @@ pub enum Expr {
 
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
-    IOOp(IOOp),
+    IoOp(IoOp),
 
     ArrayLit(anon::Type, Vec<LocalId>),
     BoolLit(bool),

@@ -30,9 +30,9 @@ fn resolve_expr(
             )
         }
 
-        typed::Expr::Global(res::GlobalId::IOOp(op), args) => {
+        typed::Expr::Global(res::GlobalId::IoOp(op), args) => {
             debug_assert!(args.is_empty());
-            mono::Expr::IOOp(*op)
+            mono::Expr::IoOp(*op)
         }
 
         typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, variant), args) => {

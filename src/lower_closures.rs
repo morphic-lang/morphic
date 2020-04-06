@@ -5,7 +5,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,7 +14,7 @@ enum LeafFuncCase {
     ArithOp(Op),
     ArrayOp(ArrayOp, special::Type),
     ArrayReplace(special::Type),
-    IOOp(IOOp),
+    IoOp(IoOp),
     Ctor(special::CustomTypeId, res::VariantId),
 }
 
@@ -45,8 +45,8 @@ fn add_rep_leaves(
                 leaves.insert(LeafFuncCase::ArrayReplace(item_type.clone()));
             }
 
-            &special::FuncCase::IOOp(op) => {
-                leaves.insert(LeafFuncCase::IOOp(op));
+            &special::FuncCase::IoOp(op) => {
+                leaves.insert(LeafFuncCase::IoOp(op));
             }
 
             &special::FuncCase::Ctor(custom, variant) => {
@@ -184,7 +184,7 @@ fn is_atomic(expr: &special::Expr) -> bool {
 
         special::Expr::ArithOp(_, _)
         | special::Expr::ArrayOp(_, _, _)
-        | special::Expr::IOOp(_, _)
+        | special::Expr::IoOp(_, _)
         | special::Expr::NullaryCtor(_, _)
         | special::Expr::Ctor(_, _, _)
         | special::Expr::Global(_)
@@ -228,7 +228,7 @@ impl<'a> Context<'a> {
             LeafFuncCase::ArrayReplace(item_type) => Some(first_ord::Type::HoleArray(Box::new(
                 self.lower_type(item_type),
             ))),
-            LeafFuncCase::IOOp(_) => None,
+            LeafFuncCase::IoOp(_) => None,
             LeafFuncCase::Ctor(_, _) => None,
         }
     }
@@ -543,13 +543,13 @@ impl<'a> Context<'a> {
                                 ))
                             }
 
-                            LeafFuncCase::IOOp(op) => {
+                            LeafFuncCase::IoOp(op) => {
                                 debug_assert!(env_pat.is_none());
                                 debug_assert_eq!(purity, Purity::Impure);
 
                                 match op {
-                                    IOOp::Input => first_ord::Expr::IOOp(first_ord::IOOp::Input),
-                                    IOOp::Output => first_ord::Expr::IOOp(first_ord::IOOp::Output(
+                                    IoOp::Input => first_ord::Expr::IoOp(first_ord::IoOp::Input),
+                                    IoOp::Output => first_ord::Expr::IoOp(first_ord::IoOp::Output(
                                         Box::new(ARG_LOCAL.clone()),
                                     )),
                                 }
@@ -778,8 +778,8 @@ impl<'a> Context<'a> {
             }
             // TODO: optimize ArrayReplace
             LeafFuncCase::ArrayReplace(_) => {}
-            LeafFuncCase::IOOp(op) => match op {
-                res::IOOp::Input => {
+            LeafFuncCase::IoOp(op) => match op {
+                res::IoOp::Input => {
                     let arg_optimizable = match arg {
                         first_ord::Expr::Tuple(args) => {
                             assert![args.len() == 0];
@@ -792,10 +792,10 @@ impl<'a> Context<'a> {
                     if !arg_optimizable {
                         return None;
                     }
-                    return Some(first_ord::Expr::IOOp(first_ord::IOOp::Input));
+                    return Some(first_ord::Expr::IoOp(first_ord::IoOp::Input));
                 }
-                res::IOOp::Output => {
-                    return Some(first_ord::Expr::IOOp(first_ord::IOOp::Output(Box::new(
+                res::IoOp::Output => {
+                    return Some(first_ord::Expr::IoOp(first_ord::IoOp::Output(Box::new(
                         arg.clone(),
                     ))));
                 }
@@ -831,9 +831,9 @@ impl<'a> Context<'a> {
                 first_ord::Expr::Ctor(self.mapping.map_closure_type(lowered_rep), op_variant, None)
             }
 
-            special::Expr::IOOp(op, rep) => {
+            special::Expr::IoOp(op, rep) => {
                 let lowered_rep = self.lower_closure(rep);
-                let op_variant = self.case_variant(lowered_rep, &LeafFuncCase::IOOp(*op));
+                let op_variant = self.case_variant(lowered_rep, &LeafFuncCase::IoOp(*op));
                 first_ord::Expr::Ctor(self.mapping.map_closure_type(lowered_rep), op_variant, None)
             }
 

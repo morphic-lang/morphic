@@ -320,13 +320,13 @@ fn flatten_expr(
             )
         }
 
-        anon::Expr::IOOp(anon::IOOp::Input) => bind(
+        anon::Expr::IoOp(anon::IoOp::Input) => bind(
             builder,
             anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
-            flat::Expr::IOOp(flat::IOOp::Input),
+            flat::Expr::IoOp(flat::IoOp::Input),
         ),
 
-        anon::Expr::IOOp(anon::IOOp::Output(array)) => {
+        anon::Expr::IoOp(anon::IoOp::Output(array)) => {
             let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
 
             debug_assert_eq!(
@@ -337,7 +337,7 @@ fn flatten_expr(
             bind(
                 builder,
                 anon::Type::Tuple(Vec::new()),
-                flat::Expr::IOOp(flat::IOOp::Output(array_local)),
+                flat::Expr::IoOp(flat::IoOp::Output(array_local)),
             )
         }
 

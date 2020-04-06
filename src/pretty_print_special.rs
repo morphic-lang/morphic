@@ -2,7 +2,7 @@ use crate::data::first_order_ast::BinOp;
 use crate::data::first_order_ast::Comparison;
 use crate::data::first_order_ast::NumType;
 use crate::data::flat_ast::ArithOp;
-use crate::data::flat_ast::IOOp;
+use crate::data::flat_ast::IoOp;
 use crate::data::flat_ast::LocalId;
 use crate::data::repr_constrained_ast::RepChoice;
 use crate::data::repr_specialized_ast::Condition;
@@ -270,8 +270,8 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write_repchoice(w, rep)?;
             write![w, " "]?;
             match ioop {
-                IOOp::Input => write![w, "input"],
-                IOOp::Output(local_id) => write_single(w, "output", local_id),
+                IoOp::Input => write![w, "input"],
+                IoOp::Output(local_id) => write_single(w, "output", local_id),
             }
         }
 

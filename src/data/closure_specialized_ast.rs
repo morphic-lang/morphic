@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
 id_type!(pub CustomTypeId);
@@ -39,7 +39,7 @@ pub enum FuncCase {
     ArithOp(Op),
     ArrayOp(ArrayOp, Type),
     ArrayReplace(Type),
-    IOOp(IOOp),
+    IoOp(IoOp),
     Ctor(CustomTypeId, res::VariantId),
 }
 
@@ -47,7 +47,7 @@ pub enum FuncCase {
 pub enum Expr {
     ArithOp(Op, FuncRep),
     ArrayOp(ArrayOp, Type, FuncRep),
-    IOOp(IOOp, FuncRep),
+    IoOp(IoOp, FuncRep),
     NullaryCtor(CustomTypeId, res::VariantId),
     Ctor(CustomTypeId, res::VariantId, FuncRep),
     Global(CustomGlobalId),

@@ -87,7 +87,7 @@ fn constrain_expr(
         }
 
         unif::Expr::ArrayOp(rep_var, _, status, _)
-        | unif::Expr::IOOp(rep_var, mutation::IOOp::Output(status, _)) => {
+        | unif::Expr::IoOp(rep_var, mutation::IoOp::Output(status, _)) => {
             constrain_var(params, internal, *rep_var, status.mutated_cond.clone())
         }
 
@@ -101,7 +101,7 @@ fn constrain_expr(
         | unif::Expr::WrapCustom(_, _, _)
         | unif::Expr::UnwrapCustom(_, _, _)
         | unif::Expr::ArithOp(_)
-        | unif::Expr::IOOp(_, mutation::IOOp::Input)
+        | unif::Expr::IoOp(_, mutation::IoOp::Input)
         | unif::Expr::ArrayLit(_, _, _)
         | unif::Expr::BoolLit(_)
         | unif::Expr::ByteLit(_)

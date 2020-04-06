@@ -80,7 +80,7 @@ pub enum ArrayOp {
 }
 
 #[derive(Clone, Debug)]
-pub enum IOOp {
+pub enum IoOp {
     Input, // Returns byte array
     Output(
         LocalAliases,  // Byte array aliases
@@ -120,7 +120,7 @@ pub enum Expr {
 
     ArithOp(flat::ArithOp),
     ArrayOp(ArrayOp),
-    IOOp(IOOp),
+    IoOp(IoOp),
 
     ArrayLit(anon::Type, Vec<flat::LocalId>),
     BoolLit(bool),

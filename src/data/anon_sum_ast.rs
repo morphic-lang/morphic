@@ -24,7 +24,7 @@ pub enum Type {
 }
 
 #[derive(Clone, Debug)]
-pub enum IOOp {
+pub enum IoOp {
     Input,
     Output(Box<Expr>),
 }
@@ -89,7 +89,7 @@ pub enum Expr {
 
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
-    IOOp(IOOp),
+    IoOp(IoOp),
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),

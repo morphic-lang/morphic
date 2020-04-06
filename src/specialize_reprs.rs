@@ -228,11 +228,11 @@ fn resolve_expr(
             *op,
         ),
 
-        unif::Expr::IOOp(rep_var, op) => {
+        unif::Expr::IoOp(rep_var, op) => {
             let resolved_var = resolve_solution(params, internal, *rep_var);
             let resolved_op = match op {
-                mutation::IOOp::Input => flat::IOOp::Input,
-                mutation::IOOp::Output(_, array) => flat::IOOp::Output(*array),
+                mutation::IoOp::Input => flat::IoOp::Input,
+                mutation::IoOp::Output(_, array) => flat::IoOp::Output(*array),
             };
             special::Expr::IoOp(resolved_var, resolved_op)
         }

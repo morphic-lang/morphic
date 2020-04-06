@@ -44,8 +44,7 @@ pub enum Expr {
         Type, // Item type
         unif::ArrayOp,
     ),
-    // TODO: Rename IOOp to IoOp!
-    IoOp(constrain::RepChoice, flat::IOOp),
+    IoOp(constrain::RepChoice, flat::IoOp),
 
     ArrayLit(constrain::RepChoice, Type, Vec<flat::LocalId>),
     BoolLit(bool),

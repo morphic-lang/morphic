@@ -122,10 +122,10 @@ fn trans_expr(
             panic!("concat is an illusion")
         }
 
-        first_ord::Expr::IOOp(first_ord::IOOp::Input) => anon::Expr::IOOp(anon::IOOp::Input),
+        first_ord::Expr::IoOp(first_ord::IoOp::Input) => anon::Expr::IoOp(anon::IoOp::Input),
 
-        first_ord::Expr::IOOp(first_ord::IOOp::Output(output)) => {
-            anon::Expr::IOOp(anon::IOOp::Output(Box::new(trans_expr(typedefs, output))))
+        first_ord::Expr::IoOp(first_ord::IoOp::Output(output)) => {
+            anon::Expr::IoOp(anon::IoOp::Output(Box::new(trans_expr(typedefs, output))))
         }
 
         first_ord::Expr::Ctor(type_id, variant, content) => anon::Expr::WrapCustom(

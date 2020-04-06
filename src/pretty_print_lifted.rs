@@ -150,11 +150,11 @@ impl res::ArrayOp {
     }
 }
 
-impl res::IOOp {
+impl res::IoOp {
     fn to_doc(&self) -> Doc<BoxDoc<()>> {
         match self {
-            res::IOOp::Input => Doc::text("input"),
-            res::IOOp::Output => Doc::text("output"),
+            res::IoOp::Input => Doc::text("input"),
+            res::IoOp::Output => Doc::text("output"),
         }
     }
 }
@@ -301,7 +301,7 @@ impl lifted::Expr {
         match self {
             lifted::Expr::ArithOp(op) => op.to_doc(),
             lifted::Expr::ArrayOp(arrayop, _) => arrayop.to_doc(),
-            lifted::Expr::IOOp(ioop) => ioop.to_doc(),
+            lifted::Expr::IoOp(ioop) => ioop.to_doc(),
             lifted::Expr::Ctor(type_id, variant_id) => {
                 type_symbols[*type_id].variant_symbols[variant_id].to_doc()
             }

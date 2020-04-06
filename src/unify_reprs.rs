@@ -747,16 +747,16 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::IOOp(mutation::IOOp::Input) => {
+        mutation::Expr::IoOp(mutation::IoOp::Input) => {
             let rep_var = graph.new_var();
 
             (
-                unif::Expr::IOOp(rep_var, mutation::IOOp::Input),
+                unif::Expr::IoOp(rep_var, mutation::IoOp::Input),
                 unif::Type::Array(rep_var, Box::new(unif::Type::Num(first_ord::NumType::Byte))),
             )
         }
 
-        mutation::Expr::IOOp(mutation::IOOp::Output(array_status, byte_array)) => {
+        mutation::Expr::IoOp(mutation::IoOp::Output(array_status, byte_array)) => {
             let rep_var =
                 if let unif::Type::Array(rep_var, item_type) = locals.local_binding(*byte_array) {
                     debug_assert_eq!(
@@ -769,9 +769,9 @@ fn instantiate_expr(
                 };
 
             (
-                unif::Expr::IOOp(
+                unif::Expr::IoOp(
                     rep_var,
-                    mutation::IOOp::Output(array_status.clone(), *byte_array),
+                    mutation::IoOp::Output(array_status.clone(), *byte_array),
                 ),
                 unif::Type::Tuple(Vec::new()),
             )
@@ -1114,7 +1114,7 @@ fn extract_expr(
             op,
         ),
 
-        unif::Expr::IOOp(rep_var, op) => unif::Expr::IOOp(this_solutions[to_unified[rep_var]], op),
+        unif::Expr::IoOp(rep_var, op) => unif::Expr::IoOp(this_solutions[to_unified[rep_var]], op),
 
         unif::Expr::ArrayLit(rep_var, item_type, items) => unif::Expr::ArrayLit(
             this_solutions[to_unified[rep_var]],

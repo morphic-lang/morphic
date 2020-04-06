@@ -2,7 +2,7 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
 id_type!(pub RepParamId);
@@ -47,7 +47,7 @@ pub enum Requirement {
     ArithOp(Op),
     ArrayOp(ArrayOp, Type<Solution>),
     ArrayReplace(Type<Solution>),
-    IOOp(IOOp),
+    IoOp(IoOp),
     Ctor(
         mono::CustomTypeId,
         IdVec<RepParamId, Solution>,
@@ -72,7 +72,7 @@ pub enum Expr {
         Type<Solution>,
         Solution, // Representation of this function expression
     ),
-    IOOp(IOOp, Solution),
+    IoOp(IoOp, Solution),
     NullaryCtor(
         mono::CustomTypeId,
         IdVec<RepParamId, Solution>,

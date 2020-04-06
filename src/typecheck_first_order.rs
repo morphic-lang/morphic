@@ -84,8 +84,8 @@ fn typecheck_expr(
             // TODO: remove
             unimplemented!()
         }
-        E::IOOp(ast::IOOp::Input) => T::Array(Box::new(T::Num(ast::NumType::Byte))),
-        E::IOOp(ast::IOOp::Output(output)) => {
+        E::IoOp(ast::IoOp::Input) => T::Array(Box::new(T::Num(ast::NumType::Byte))),
+        E::IoOp(ast::IoOp::Output(output)) => {
             assert_eq!(
                 typecheck_expr(program, locals, &**output),
                 T::Array(Box::new(T::Num(ast::NumType::Byte)))

@@ -90,7 +90,7 @@ fn lift_expr<'a>(
 
         mono::Expr::ArrayOp(op, type_) => lifted::Expr::ArrayOp(*op, type_.clone()),
 
-        &mono::Expr::IOOp(op) => lifted::Expr::IOOp(op),
+        &mono::Expr::IoOp(op) => lifted::Expr::IoOp(op),
 
         &mono::Expr::Ctor(id, variant) => lifted::Expr::Ctor(id, variant),
 

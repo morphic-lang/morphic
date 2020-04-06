@@ -23,7 +23,7 @@ pub struct TypeDef {
 }
 
 #[derive(Clone, Debug)]
-pub enum IOOp {
+pub enum IoOp {
     Input,
     Output(Box<Expr>),
 }
@@ -99,7 +99,7 @@ impl LocalId {
 pub enum Expr {
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
-    IOOp(IOOp),
+    IoOp(IoOp),
     Ctor(CustomTypeId, VariantId, Option<Box<Expr>>),
     Local(LocalId),
     Tuple(Vec<Expr>),

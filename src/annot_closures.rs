@@ -5,7 +5,7 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
-use crate::data::resolved_ast::{self as res, ArrayOp, IOOp};
+use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
 use crate::util::graph::{self, Graph};
 use crate::util::id_gen::IdGen;
@@ -209,7 +209,7 @@ enum SolverRequirement {
     ArithOp(Op),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>),
     ArrayReplace(annot::Type<SolverVarId>),
-    IOOp(IOOp),
+    IoOp(IoOp),
     Ctor(
         mono::CustomTypeId,
         IdVec<annot::RepParamId, SolverVarId>,
@@ -221,7 +221,7 @@ enum SolverRequirement {
 enum SolverExpr {
     ArithOp(Op, SolverVarId),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>, SolverVarId),
-    IOOp(IOOp, SolverVarId),
+    IoOp(IoOp, SolverVarId),
     NullaryCtor(
         mono::CustomTypeId,
         IdVec<annot::RepParamId, SolverVarId>,
@@ -694,19 +694,19 @@ fn array_op_type(
 
 fn io_op_type(
     graph: &mut ConstraintGraph<SolverRequirement>,
-    op: IOOp,
+    op: IoOp,
 ) -> (annot::Type<SolverVarId>, SolverVarId) {
     let op_var = graph.new_var();
-    graph.require(op_var, SolverRequirement::IOOp(op));
+    graph.require(op_var, SolverRequirement::IoOp(op));
 
     let op_type = match op {
-        IOOp::Input => annot::Type::Func(
+        IoOp::Input => annot::Type::Func(
             Purity::Impure,
             op_var,
             Box::new(annot::Type::Tuple(vec![])),
             Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
         ),
-        IOOp::Output => annot::Type::Func(
+        IoOp::Output => annot::Type::Func(
             Purity::Impure,
             op_var,
             Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
@@ -770,9 +770,9 @@ fn instantiate_expr(
             )
         }
 
-        &lifted::Expr::IOOp(op) => {
+        &lifted::Expr::IoOp(op) => {
             let (solver_type, op_var) = io_op_type(graph, op);
-            (SolverExpr::IOOp(op, op_var), solver_type)
+            (SolverExpr::IoOp(op, op_var), solver_type)
         }
 
         &lifted::Expr::Ctor(custom, variant) => {
@@ -1275,7 +1275,7 @@ fn add_req_mentioned_classes(
             add_mentioned_classes(equiv_classes, item_type, mentioned);
         }
 
-        SolverRequirement::IOOp(_) => {}
+        SolverRequirement::IoOp(_) => {}
 
         SolverRequirement::Ctor(_, custom_params, _) => {
             mentioned.extend(
@@ -1477,7 +1477,7 @@ fn translate_req_for_template(
             ))
         }
 
-        SolverRequirement::IOOp(op) => annot::Requirement::IOOp(*op),
+        SolverRequirement::IoOp(op) => annot::Requirement::IoOp(*op),
 
         SolverRequirement::Ctor(custom, vars, variant) => annot::Requirement::Ctor(
             *custom,
@@ -1733,8 +1733,8 @@ fn extract_expr(
             class_solutions[equiv_classes.class(*var)].clone(),
         ),
 
-        &SolverExpr::IOOp(op, var) => {
-            annot::Expr::IOOp(op, class_solutions[equiv_classes.class(var)].clone())
+        &SolverExpr::IoOp(op, var) => {
+            annot::Expr::IoOp(op, class_solutions[equiv_classes.class(var)].clone())
         }
 
         SolverExpr::NullaryCtor(custom, vars, variant) => annot::Expr::NullaryCtor(
@@ -1978,7 +1978,7 @@ fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
 
         lifted::Expr::ArrayOp(_, _) => {}
 
-        lifted::Expr::IOOp(_) => {}
+        lifted::Expr::IoOp(_) => {}
 
         lifted::Expr::Ctor(_, _) => {}
 

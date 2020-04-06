@@ -145,8 +145,8 @@ impl<'a> Context<'a> {
                     .insert(special::FuncCase::ArrayReplace(resolved_item_type));
             }
 
-            annot::Requirement::IOOp(op) => {
-                target_cases.0.insert(special::FuncCase::IOOp(*op));
+            annot::Requirement::IoOp(op) => {
+                target_cases.0.insert(special::FuncCase::IoOp(*op));
             }
             annot::Requirement::Ctor(custom, type_params, variant) => {
                 let resolved_type_params =
@@ -368,8 +368,8 @@ impl<'a> Context<'a> {
                 self.resolve_solution(solution, params),
             ),
 
-            annot::Expr::IOOp(op, solution) => {
-                special::Expr::IOOp(*op, self.resolve_solution(solution, params))
+            annot::Expr::IoOp(op, solution) => {
+                special::Expr::IoOp(*op, self.resolve_solution(solution, params))
             }
 
             annot::Expr::NullaryCtor(custom, custom_params, variant) => {

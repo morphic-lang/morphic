@@ -197,11 +197,11 @@ lazy_static! {
         );
         global_map.insert(
             raw::ValName("input".to_owned()),
-            res::GlobalId::IOOp(res::IOOp::Input),
+            res::GlobalId::IoOp(res::IoOp::Input),
         );
         global_map.insert(
             raw::ValName("output".to_owned()),
-            res::GlobalId::IOOp(res::IOOp::Output),
+            res::GlobalId::IoOp(res::IoOp::Output),
         );
 
         global_map

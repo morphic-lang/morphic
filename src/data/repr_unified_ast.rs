@@ -89,7 +89,7 @@ pub enum Expr<Call, Rep> {
         mutation::LocalStatus, // Array status
         ArrayOp,
     ),
-    IOOp(Rep, mutation::IOOp),
+    IoOp(Rep, mutation::IoOp),
 
     ArrayLit(Rep, Type<Rep>, Vec<flat::LocalId>),
     BoolLit(bool),

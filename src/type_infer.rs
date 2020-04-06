@@ -598,9 +598,9 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
             Cow::Owned(result)
         }
 
-        res::GlobalId::IOOp(op) => match op {
-            res::IOOp::Input => Cow::Owned(scheme(0, impure_func(Tuple(vec![]), array(byte())))),
-            res::IOOp::Output => Cow::Owned(scheme(0, impure_func(array(byte()), Tuple(vec![])))),
+        res::GlobalId::IoOp(op) => match op {
+            res::IoOp::Input => Cow::Owned(scheme(0, impure_func(Tuple(vec![]), array(byte())))),
+            res::IoOp::Output => Cow::Owned(scheme(0, impure_func(array(byte()), Tuple(vec![])))),
         },
 
         res::GlobalId::Ctor(Custom(custom), variant) => {
