@@ -30,4 +30,6 @@ pub mod repr_constrained_ast;
 
 pub mod repr_specialized_ast;
 
+pub mod tail_rec_ast;
+
 pub mod low_ast;
