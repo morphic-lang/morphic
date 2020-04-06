@@ -31,7 +31,7 @@ pub enum Expr {
     ),
     App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, res::Type),
-    Let(Pattern, Box<Expr>, Box<Expr>),
+    LetMany(Vec<(Pattern, Expr)>, Box<Expr>),
 
     ArrayLit(res::Type, Vec<Expr>),
     ByteLit(u8),

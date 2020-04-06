@@ -127,7 +127,7 @@ pub enum Expr {
     Lam(Purity, Pattern, Box<Expr>),
     App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
-    Let(Pattern, Box<Expr>, Box<Expr>),
+    LetMany(Vec<(Pattern, Expr)>, Box<Expr>),
 
     ArrayLit(Vec<Expr>),
     ByteLit(u8),

@@ -262,7 +262,7 @@ enum SolverExpr {
         Vec<(SolverPattern, SolverExpr)>,
         annot::Type<SolverVarId>,
     ),
-    Let(SolverPattern, Box<SolverExpr>, Box<SolverExpr>),
+    LetMany(Vec<(SolverPattern, SolverExpr)>, Box<SolverExpr>),
 
     ArrayLit(
         annot::Type<SolverVarId>, // Item type
@@ -1001,24 +1001,25 @@ fn instantiate_expr(
             (solver_expr, solver_result_type)
         }
 
-        lifted::Expr::Let(lhs, rhs, body) => {
-            let (solver_rhs, solver_rhs_type) =
-                instantiate_expr(typedefs, globals, graph, captures, locals, rhs);
+        lifted::Expr::LetMany(bindings, body) => locals.with_scope(|sub_locals| {
+            let mut new_bindings = Vec::new();
 
-            let (solver_lhs, solver_body, solver_body_type) = locals.with_scope(|sub_locals| {
+            for (lhs, rhs) in bindings {
+                let (solver_rhs, solver_rhs_type) =
+                    instantiate_expr(typedefs, globals, graph, captures, sub_locals, rhs);
+
                 let solver_lhs = instantiate_pattern(typedefs, sub_locals, &solver_rhs_type, lhs);
+                new_bindings.push((solver_lhs, solver_rhs));
+            }
 
-                let (solver_body, solver_body_type) =
-                    instantiate_expr(typedefs, globals, graph, captures, sub_locals, body);
+            let (solver_body, solver_body_type) =
+                instantiate_expr(typedefs, globals, graph, captures, sub_locals, body);
 
-                (solver_lhs, solver_body, solver_body_type)
-            });
-
-            let solver_expr =
-                SolverExpr::Let(solver_lhs, Box::new(solver_rhs), Box::new(solver_body));
-
-            (solver_expr, solver_body_type)
-        }
+            (
+                SolverExpr::LetMany(new_bindings, Box::new(solver_body)),
+                solver_body_type,
+            )
+        }),
 
         lifted::Expr::ArrayLit(item_type, items) => {
             let solver_item_type = instantiate_mono(typedefs, graph, item_type);
@@ -1815,9 +1816,16 @@ fn extract_expr(
             extract_type(equiv_classes, class_solutions, result_type),
         ),
 
-        SolverExpr::Let(lhs, rhs, body) => annot::Expr::Let(
-            extract_pattern(equiv_classes, class_solutions, lhs),
-            Box::new(extract_expr(equiv_classes, params, class_solutions, rhs)),
+        SolverExpr::LetMany(bindings, body) => annot::Expr::LetMany(
+            bindings
+                .iter()
+                .map(|(lhs, rhs)| {
+                    (
+                        extract_pattern(equiv_classes, class_solutions, lhs),
+                        extract_expr(equiv_classes, params, class_solutions, rhs),
+                    )
+                })
+                .collect(),
             Box::new(extract_expr(equiv_classes, params, class_solutions, body)),
         ),
 
@@ -2017,8 +2025,10 @@ fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
             }
         }
 
-        lifted::Expr::Let(_lhs, rhs, body) => {
-            add_expr_deps(deps, rhs);
+        lifted::Expr::LetMany(bindings, body) => {
+            for (_lhs, rhs) in bindings {
+                add_expr_deps(deps, rhs);
+            }
             add_expr_deps(deps, body);
         }
 

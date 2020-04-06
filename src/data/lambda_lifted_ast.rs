@@ -27,7 +27,7 @@ pub enum Expr {
     Lam(LamId, IdVec<CaptureId, Expr>),
     App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(mono::Pattern, Expr)>, mono::Type),
-    Let(mono::Pattern, Box<Expr>, Box<Expr>),
+    LetMany(Vec<(mono::Pattern, Expr)>, Box<Expr>),
 
     ArrayLit(mono::Type, Vec<Expr>),
     BoolLit(bool),

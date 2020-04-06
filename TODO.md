@@ -1,8 +1,8 @@
 # To Do
 
 ## LetMany everywhere
-- [ ] modify parser to emit LetManys
-- [ ] modify every other pass to take LetMany
+- [x] modify parser to emit LetManys
+- [x] modify every other pass to take LetMany
 
 ## Tail call elimination
 - [ ] add scc entry point analysis

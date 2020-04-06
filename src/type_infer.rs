@@ -446,7 +446,7 @@ enum AnnotExpr {
     ),
     App(Purity, Box<AnnotExpr>, Box<AnnotExpr>),
     Match(Box<AnnotExpr>, Vec<(AnnotPattern, AnnotExpr)>, TypeVar),
-    Let(AnnotPattern, Box<AnnotExpr>, Box<AnnotExpr>),
+    LetMany(Vec<(AnnotPattern, AnnotExpr)>, Box<AnnotExpr>),
 
     ArrayLit(TypeVar, Vec<AnnotExpr>),
     ByteLit(u8),
@@ -883,21 +883,22 @@ fn infer_expr(
             ))
         }
 
-        res::Expr::Let(lhs, rhs, body) => {
-            let rhs_var = ctx.new_var(Assign::Unknown);
-            let rhs_annot = infer_expr(program, ctx, scope, rhs_var, rhs)?;
+        res::Expr::LetMany(bindings, body) => scope.with_subscope(|subscope| {
+            let mut new_bindings = Vec::new();
 
-            let (lhs_annot, body_annot) = (scope.with_subscope(|subscope| {
+            for (lhs, rhs) in bindings {
+                let rhs_var = ctx.new_var(Assign::Unknown);
+                let rhs_annot = infer_expr(program, ctx, subscope, rhs_var, rhs)?;
+
                 let lhs_annot = infer_pat(program, ctx, subscope, rhs_var, lhs)?;
-                Ok((
-                    lhs_annot,
-                    infer_expr(program, ctx, subscope, expected, body)?,
-                ))
-            }) as Result<_, RawError>)?;
 
-            let let_annot = AnnotExpr::Let(lhs_annot, Box::new(rhs_annot), Box::new(body_annot));
-            Ok(let_annot)
-        }
+                new_bindings.push((lhs_annot, rhs_annot));
+            }
+
+            let body_annot = infer_expr(program, ctx, subscope, expected, body)?;
+
+            Ok(AnnotExpr::LetMany(new_bindings, Box::new(body_annot)))
+        }),
 
         res::Expr::ArrayLit(items) => {
             let param_var = ctx.new_var(Assign::Unknown);
@@ -1032,9 +1033,13 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawEr
             ctx.extract(result_var)?,
         )),
 
-        AnnotExpr::Let(lhs, rhs, body) => Ok(typed::Expr::Let(
-            extract_pat_solution(ctx, lhs)?,
-            Box::new(extract_solution(ctx, *rhs)?),
+        AnnotExpr::LetMany(bindings, body) => Ok(typed::Expr::LetMany(
+            bindings
+                .into_iter()
+                .map(|(lhs, rhs)| {
+                    Ok((extract_pat_solution(ctx, lhs)?, extract_solution(ctx, rhs)?))
+                })
+                .collect::<Result<_, RawError>>()?,
             Box::new(extract_solution(ctx, *body)?),
         )),
 

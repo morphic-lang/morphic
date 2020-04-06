@@ -411,16 +411,18 @@ fn check_expr(
             Ok(())
         }
 
-        typed::Expr::Let(lhs, rhs, body) => {
-            let mut tree = DecisionTree::new();
-            tree.add(lhs);
-            if !tree.is_exhaustive(custom_types) {
-                return Err(());
+        typed::Expr::LetMany(bindings, body) => {
+            for (lhs, rhs) in bindings {
+                let mut tree = DecisionTree::new();
+                tree.add(lhs);
+                if !tree.is_exhaustive(custom_types) {
+                    return Err(());
+                }
+
+                check_expr(custom_types, rhs)?;
             }
 
-            check_expr(custom_types, rhs)?;
             check_expr(custom_types, body)?;
-
             Ok(())
         }
 

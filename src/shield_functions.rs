@@ -43,8 +43,10 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
             }
         }
 
-        mono::Expr::Let(_lhs, rhs, body) => {
-            add_expr_deps(rhs, deps);
+        mono::Expr::LetMany(bindings, body) => {
+            for (_lhs, rhs) in bindings {
+                add_expr_deps(rhs, deps);
+            }
             add_expr_deps(body, deps);
         }
 
@@ -119,8 +121,10 @@ fn rebind_references(
             }
         }
 
-        mono::Expr::Let(_lhs, rhs, body) => {
-            rebind_references(mapping, rhs);
+        mono::Expr::LetMany(bindings, body) => {
+            for (_lhs, rhs) in bindings {
+                rebind_references(mapping, rhs);
+            }
             rebind_references(mapping, body);
         }
 

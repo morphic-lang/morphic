@@ -341,18 +341,6 @@ AtomicExpr: syntax::Expr = {
   <Spanned<AtomicExpr_>>,
 };
 
-PrefixExpr_: syntax::Expr = {
-  <AtomicExpr>,
-
-  "-&" <PrefixExpr> => syntax::unop(syntax::Op::NegByte, <>),
-  "-" <PrefixExpr> => syntax::unop(syntax::Op::NegInt, <>),
-  "-." <PrefixExpr> => syntax::unop(syntax::Op::NegFloat, <>),
-};
-
-PrefixExpr: syntax::Expr = {
-  <Spanned<PrefixExpr_>>,
-};
-
 MatchExpr_: syntax::Expr = {
   "match" <expr: Expr> "{" <cases: CommaSep<(<Pattern> "->" <Expr>)>> "}" =>
     syntax::Expr::Match(Box::new(expr), cases),
@@ -397,19 +385,43 @@ IfExpr: syntax::Expr = {
   <Spanned<IfExpr_>>,
 };
 
-AppExpr_: syntax::Expr = {
-  <PrefixExpr>,
+PureAppExpr_: syntax::Expr = {
+  <AtomicExpr>,
 
-  <func: AppExpr> "(" <args: Exprs> ")" =>
+  <func: PureAppExpr> "(" <args: Exprs> ")" =>
     syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
+};
+
+PureAppExpr: syntax::Expr = {
+  <Spanned<PureAppExpr_>>,
+};
+
+AppExpr_: syntax::Expr = {
+  <PureAppExpr>,
+
+  "do" <func: AtomicExpr> "(" <args: Exprs> ")" =>
+    syntax::Expr::App(Purity::Impure, Box::new(func), Box::new(args)),
 };
 
 AppExpr: syntax::Expr = {
   <Spanned<AppExpr_>>,
 };
 
-ArithProdExpr_: syntax::Expr = {
+PrefixExpr_: syntax::Expr = {
   <AppExpr>,
+
+  "-&" <PrefixExpr> => syntax::unop(syntax::Op::NegByte, <>),
+  "-" <PrefixExpr> => syntax::unop(syntax::Op::NegInt, <>),
+  "-." <PrefixExpr> => syntax::unop(syntax::Op::NegFloat, <>),
+};
+
+PrefixExpr: syntax::Expr = {
+  <Spanned<PrefixExpr_>>,
+};
+
+
+ArithProdExpr_: syntax::Expr = {
+  <PrefixExpr>,
 
   <left: ArithProdExpr> "*&" <right: AppExpr> => syntax::binop(syntax::Op::MulByte, left, right),
   <left: ArithProdExpr> "/&" <right: AppExpr> => syntax::binop(syntax::Op::DivByte, left, right),
@@ -477,28 +489,59 @@ ArithExpr: syntax::Expr = {
 BlockExpr_: syntax::Expr = {
   <ArithExpr>,
 
-  <purity: OptProc> "\\" <param: Pattern> "->" <body: BlockExpr> =>
-    syntax::Expr::Lam(purity, param, Box::new(body)),
-
-  "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> =>
-    syntax::Expr::Let(lhs, Box::new(rhs), Box::new(body)),
-
-  "do" <func: AppExpr> "(" <arg: Exprs> ")" <rest: ("then" <BlockExpr>)?> => {
-    let app = syntax::Expr::App(Purity::Impure, Box::new(func), Box::new(arg));
-
-    match rest {
-      Some(rest) => syntax::Expr::Let(syntax::Pattern::Any, Box::new(app), Box::new(rest)),
-      None => app,
+  "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
+    if let syntax::Expr::Span(left, right, body) = body {
+      let new_let_expr = match *body {
+        // if we already have a LetMany, prepend `lhs = rhs` onto bindings
+        syntax::Expr::LetMany(mut bindings, expr) => {
+          bindings.push_front((lhs, rhs));
+          syntax::Expr::LetMany(bindings, expr)
+        },
+        // otherwise create a new LetMany
+        _ => syntax::Expr::LetMany(vec![(lhs, rhs)].into(), body),
+      };
+      syntax::Expr::Span(left, right, Box::new(new_let_expr))
+    } else {
+      unreachable!();
     }
-  }
+  },
+
+  <rhs: ArithExpr> "then" <body: BlockExpr> => {
+    if let syntax::Expr::Span(left, right, body) = body {
+      let new_let_expr = match *body {
+        // if we already have a LetMany, prepend `_ = rhs` onto bindings
+        syntax::Expr::LetMany(mut bindings, expr) => {
+          bindings.push_front((syntax::Pattern::Any, rhs));
+          syntax::Expr::LetMany(bindings, expr)
+        },
+        // otherwise create a new LetMany
+        _ => syntax::Expr::LetMany(vec![(syntax::Pattern::Any, rhs)].into(), body),
+      };
+      syntax::Expr::Span(left, right, Box::new(new_let_expr))
+    } else {
+      unreachable!();
+    }
+  },
 };
 
 BlockExpr: syntax::Expr = {
   <Spanned<BlockExpr_>>,
 };
 
-Expr: syntax::Expr = {
+LamExpr_: syntax::Expr = {
   <BlockExpr>,
+
+  <purity: OptProc> "\\" <param: Pattern> "->" <body: LamExpr> =>
+    syntax::Expr::Lam(purity, param, Box::new(body)),
+};
+
+LamExpr: syntax::Expr = {
+  <Spanned<LamExpr_>>,
+};
+
+
+Expr: syntax::Expr = {
+  <LamExpr>,
 };
 
 Exprs_: syntax::Expr = {

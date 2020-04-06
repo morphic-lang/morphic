@@ -365,21 +365,29 @@ impl lifted::Expr {
                     .append(Doc::newline())
                     .append(Doc::text("}"))
             }
-            lifted::Expr::Let(pat, value, expr) => {
-                let (pat_doc, pat_bindings) = pat.to_doc(type_symbols, local_count);
+            lifted::Expr::LetMany(bindings, expr) => {
+                let mut local_count = local_count;
 
-                Doc::text("let (")
-                    .append(pat_doc)
-                    .append(Doc::text(") = "))
-                    .append(value.to_doc(type_symbols, val_symbols, local_count))
-                    .append(Doc::text(" in"))
+                let mut pretty_bindings = vec![];
+
+                for (lhs, rhs) in bindings {
+                    let (lhs_doc, lhs_bindings) = lhs.to_doc(type_symbols, local_count);
+                    let binding_doc = lhs_doc.append(Doc::text(" = ")).append(rhs.to_doc(
+                        type_symbols,
+                        val_symbols,
+                        local_count,
+                    ));
+
+                    pretty_bindings.push(binding_doc);
+                    local_count = NumBindings(local_count.0 + lhs_bindings.0);
+                }
+
+                Doc::text("let many")
+                    .append(Doc::newline())
+                    .append(Doc::intersperse(pretty_bindings, Doc::newline()))
                     .append(
                         Doc::newline()
-                            .append(expr.to_doc(
-                                type_symbols,
-                                val_symbols,
-                                NumBindings(local_count.0 + pat_bindings.0),
-                            ))
+                            .append(expr.to_doc(type_symbols, val_symbols, local_count))
                             .nest(2),
                     )
             }

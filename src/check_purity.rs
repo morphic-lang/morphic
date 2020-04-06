@@ -64,8 +64,11 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), Error> {
             Ok(())
         }
 
-        res::Expr::Let(_, rhs, body) => {
-            check_expr(ctx, rhs)?;
+        res::Expr::LetMany(bindings, body) => {
+            for (_lhs, rhs) in bindings {
+                check_expr(ctx, rhs)?;
+            }
+
             check_expr(ctx, body)?;
             Ok(())
         }

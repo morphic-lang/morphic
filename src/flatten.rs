@@ -433,10 +433,10 @@ fn flatten_expr(
             )
         }
 
-        anon::Expr::Let(lhs, rhs, body) => {
-            let (rhs_local, rhs_type) = flatten_expr(orig, ctx, builder, rhs);
+        anon::Expr::LetMany(bindings, body) => ctx.with_scope(|sub_ctx| {
+            for (lhs, rhs) in bindings {
+                let (rhs_local, rhs_type) = flatten_expr(orig, sub_ctx, builder, rhs);
 
-            ctx.with_scope(|sub_ctx| {
                 add_flattened_binding(
                     &orig.custom_types,
                     sub_ctx,
@@ -445,9 +445,9 @@ fn flatten_expr(
                     rhs_local,
                     &rhs_type,
                 );
-                flatten_expr(orig, sub_ctx, builder, body)
-            })
-        }
+            }
+            flatten_expr(orig, sub_ctx, builder, body)
+        }),
 
         anon::Expr::ArrayLit(item_type, items) => {
             let item_locals = items
