@@ -119,10 +119,6 @@ fn trans_expr(
             ))
         }
 
-        first_ord::Expr::ArrayOp(first_ord::ArrayOp::Concat(_, _, _)) => {
-            panic!("concat is an illusion")
-        }
-
         first_ord::Expr::IoOp(first_ord::IoOp::Input) => anon::Expr::IoOp(anon::IoOp::Input),
 
         first_ord::Expr::IoOp(first_ord::IoOp::Output(output)) => {

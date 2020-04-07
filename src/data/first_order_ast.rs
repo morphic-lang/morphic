@@ -83,11 +83,6 @@ pub enum ArrayOp {
         Box<Expr>, // Hole array
         Box<Expr>, // Item
     ), // Returns new array
-    Concat(
-        Type,
-        Box<Expr>, // First Array
-        Box<Expr>, // Second Array
-    ), //Returns new array
 }
 
 id_type!(pub LocalId);

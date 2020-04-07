@@ -80,10 +80,6 @@ fn typecheck_expr(
             assert_eq!(&typecheck_expr(program, locals, &**item), item_type);
             T::Array(Box::new(item_type.clone()))
         }
-        E::ArrayOp(ast::ArrayOp::Concat(..)) => {
-            // TODO: remove
-            unimplemented!()
-        }
         E::IoOp(ast::IoOp::Input) => T::Array(Box::new(T::Num(ast::NumType::Byte))),
         E::IoOp(ast::IoOp::Output(output)) => {
             assert_eq!(
