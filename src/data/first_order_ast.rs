@@ -1,6 +1,11 @@
+use crate::data::closure_specialized_ast as special;
+use crate::data::lambda_lifted_ast as lifted;
+use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
+use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
 use crate::util::id_vec::IdVec;
+use std::collections::BTreeSet;
 
 id_type!(pub CustomTypeId);
 
@@ -14,6 +19,27 @@ pub enum Type {
     HoleArray(Box<Type>),
     Tuple(Vec<Type>),
     Custom(CustomTypeId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LeafFuncCase {
+    Lam(special::LamId),
+    ArithOp(raw::Op),
+    ArrayOp(res::ArrayOp, special::Type),
+    ArrayReplace(special::Type),
+    IoOp(res::IoOp),
+    Ctor(special::CustomTypeId, res::VariantId),
+}
+
+#[derive(Clone, Debug)]
+pub struct ClosureTypeSymbols {
+    pub variant_symbols: IdVec<res::VariantId, LeafFuncCase>,
+}
+
+#[derive(Clone, Debug)]
+pub enum CustomTypeSymbols {
+    CustomType(mono::TypeSymbols),
+    ClosureType(ClosureTypeSymbols),
 }
 
 id_type!(pub VariantId);
@@ -132,9 +158,19 @@ pub struct FuncDef {
 }
 
 #[derive(Clone, Debug)]
+pub enum FuncSymbols {
+    Global(mono::ValSymbols),
+    Lam(lifted::LamSymbols),
+    MainWrapper,
+    Dispatch(BTreeSet<LeafFuncCase>),
+}
+
+#[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
+    pub custom_type_symbols: IdVec<CustomTypeId, CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<CustomFuncId, FuncSymbols>,
     pub main: CustomFuncId,
 }
