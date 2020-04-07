@@ -6,7 +6,6 @@ mod util;
 mod builtins;
 
 mod data;
-mod pretty_print_lifted;
 mod pretty_print_low;
 mod pretty_print_special;
 
