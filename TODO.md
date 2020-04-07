@@ -5,8 +5,8 @@
 - [x] modify every other pass to take LetMany
 
 ## Tail call elimination
-- [ ] add scc entry point analysis
-- [ ] modify `llvm_gen.rs` to compile scc
+- [X] add scc entry point analysis
+- [X] modify `llvm_gen.rs` to compile scc
 
 ## Profiling
 
