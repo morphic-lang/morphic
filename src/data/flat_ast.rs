@@ -39,7 +39,7 @@ pub enum ArrayOp {
     ), // Returns new array
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum IoOp {
     Input,           // Returns array of bytes
     Output(LocalId), // Takes array of bytes, returns unit

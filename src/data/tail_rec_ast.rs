@@ -66,6 +66,7 @@ pub struct FuncDef {
     // For functions which are not tail-recursive, the 'tail_funcs' vector should be empty.
     pub tail_funcs: IdVec<TailFuncId, TailFunc>,
 
+    pub purity: Purity,
     pub arg_type: special::Type,
     pub ret_type: special::Type,
     pub body: Expr,

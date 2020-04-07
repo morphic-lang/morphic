@@ -62,6 +62,8 @@ mod constrain_reprs;
 
 mod specialize_reprs;
 
+mod tail_call_elim;
+
 mod lower_structures;
 
 mod interpreter;
@@ -186,6 +188,9 @@ fn run(
         pretty_print_special::write_program(&mut out_file, &repr_specialized)
             .map_err(Error::WriteIrFailed)?;
     }
+
+    // Currently unused.  The plan is to modify 'lower_structures' to consume this AST.
+    let _tail_rec = tail_call_elim::tail_call_elim(repr_specialized.clone());
 
     let lowered = lower_structures::lower_structures(repr_specialized);
 
