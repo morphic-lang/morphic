@@ -584,12 +584,43 @@ pub fn closure_specialize(program: annot::Program) -> special::Program {
         params: main_param_opaque_reps,
     });
 
+    let mut type_origin = BTreeMap::new();
+    for (request, type_id) in ctx.type_instances {
+        let prev = type_origin.insert(type_id, request.head);
+        debug_assert!(prev.is_none());
+    }
+
+    let mut lam_origin = BTreeMap::new();
+    for (request, lam_id) in ctx.lam_instances {
+        let prev = lam_origin.insert(lam_id, request.head);
+        debug_assert!(prev.is_none());
+    }
+
+    let mut val_origin = BTreeMap::new();
+    for (request, val_id) in ctx.val_instances {
+        let prev = val_origin.insert(val_id, request.head);
+        debug_assert!(prev.is_none());
+    }
+
+    let custom_type_symbols = ctx
+        .custom_types
+        .map(|id, _| program.custom_type_symbols[type_origin.get(&id).unwrap()].clone());
+    let val_symbols = ctx
+        .vals
+        .map(|id, _| program.val_symbols[val_origin.get(&id).unwrap()].clone());
+    let lam_symbols = ctx
+        .lams
+        .map(|id, _| program.lam_symbols[lam_origin.get(&id).unwrap()].clone());
+
     special::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: ctx.custom_types.into_mapped(|_, typedef| typedef.unwrap()),
+        custom_type_symbols,
         opaque_reps: ctx.opaque_reps.into_mapped(|_, rep| rep.unwrap()),
         vals: ctx.vals.into_mapped(|_, val_def| val_def.unwrap()),
+        val_symbols,
         lams: ctx.lams.into_mapped(|_, lam_def| lam_def.unwrap()),
+        lam_symbols,
         main: resolved_main_id,
     }
 }

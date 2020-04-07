@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::data::lambda_lifted_ast as lifted;
+use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
@@ -107,8 +108,11 @@ pub struct LamDef {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
+    pub custom_type_symbols: IdVec<CustomTypeId, mono::TypeSymbols>,
     pub opaque_reps: IdVec<OpaqueFuncRepId, FuncRep>,
     pub vals: IdVec<CustomGlobalId, ValDef>,
+    pub val_symbols: IdVec<CustomGlobalId, mono::ValSymbols>,
     pub lams: IdVec<LamId, LamDef>,
+    pub lam_symbols: IdVec<LamId, lifted::LamSymbols>,
     pub main: CustomGlobalId,
 }
