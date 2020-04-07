@@ -86,6 +86,7 @@ pub struct ValSymbols {
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
     pub custom_type_symbols: IdVec<CustomTypeId, TypeSymbols>,
     pub vals: IdVec<CustomGlobalId, ValDef>,

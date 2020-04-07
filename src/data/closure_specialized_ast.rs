@@ -105,6 +105,7 @@ pub struct LamDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
     pub opaque_reps: IdVec<OpaqueFuncRepId, FuncRep>,
     pub vals: IdVec<CustomGlobalId, ValDef>,

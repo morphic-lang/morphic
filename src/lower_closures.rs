@@ -72,6 +72,7 @@ struct IdMapping {
 
 #[derive(Clone, Debug)]
 struct ProgramParts {
+    mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     custom_types: IdVec<special::CustomTypeId, first_ord::TypeDef>,
     lowered_closures: IdVec<LoweredClosureId, first_ord::TypeDef>,
 
@@ -129,6 +130,7 @@ impl IdMapping {
         funcs.extend(parts.dispatch_funcs.items);
 
         first_ord::Program {
+            mod_symbols: parts.mod_symbols,
             custom_types: IdVec::from_items(custom_types),
             funcs: IdVec::from_items(funcs),
             main: first_ord::CustomFuncId(self.num_orig_globals + self.num_orig_lams),
@@ -1099,6 +1101,7 @@ pub fn lower_closures(program: special::Program) -> first_ord::Program {
     let lowered_main = ctx.lower_main();
 
     let parts = ProgramParts {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: lowered_custom_types,
         lowered_closures: ctx
             .lowered_closures

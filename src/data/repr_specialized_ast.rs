@@ -3,6 +3,7 @@ use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_unified_ast as unif;
+use crate::data::resolved_ast as res;
 use crate::util::id_vec::IdVec;
 
 id_type!(pub CustomTypeId);
@@ -75,6 +76,7 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, Type>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub main: CustomFuncId,

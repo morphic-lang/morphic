@@ -302,6 +302,7 @@ pub fn specialize_reprs(program: constrain::Program) -> special::Program {
     }
 
     special::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: types_resolved,
         funcs: funcs_resolved,
         main: main_new_id,

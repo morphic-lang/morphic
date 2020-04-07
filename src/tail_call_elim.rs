@@ -517,6 +517,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
     };
 
     tail::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: program.custom_types,
         funcs: new_funcs,
         main,

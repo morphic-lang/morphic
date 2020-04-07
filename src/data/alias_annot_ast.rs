@@ -4,6 +4,7 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
+use crate::data::resolved_ast as res;
 use crate::util::disjunction::Disj;
 use crate::util::graph::Scc;
 use crate::util::id_vec::IdVec;
@@ -152,6 +153,7 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub main: first_ord::CustomFuncId,

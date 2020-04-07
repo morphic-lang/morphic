@@ -1290,6 +1290,7 @@ pub fn unify_reprs(program: mutation::Program) -> unif::Program {
     }
 
     unif::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: typedefs,
         funcs: funcs_annot.into_mapped(|_, func| func.unwrap()),
         main: program.main,

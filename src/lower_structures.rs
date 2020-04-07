@@ -1151,6 +1151,7 @@ pub fn lower_structures(program: special::Program) -> low::Program {
         .collect();
 
     low::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: boxed_typedefs,
         funcs: IdVec::from_items(lowered_funcs),
         main: low::CustomFuncId(program.main.0),

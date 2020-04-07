@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::repr_unified_ast as unif;
+use crate::data::resolved_ast as res;
 use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
 
@@ -23,6 +24,7 @@ pub struct FuncRepConstraints {
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<first_ord::CustomTypeId, unif::TypeDef>,
     pub funcs: IdVec<first_ord::CustomFuncId, unif::FuncDef>,
     pub rep_constraints: IdVec<first_ord::CustomFuncId, FuncRepConstraints>,

@@ -1,4 +1,5 @@
 use crate::data::purity::Purity;
+use crate::data::resolved_ast as res;
 use crate::util::id_vec::IdVec;
 
 id_type!(pub CustomTypeId);
@@ -137,6 +138,7 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub main: CustomFuncId,

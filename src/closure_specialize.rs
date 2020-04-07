@@ -585,6 +585,7 @@ pub fn closure_specialize(program: annot::Program) -> special::Program {
     });
 
     special::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: ctx.custom_types.into_mapped(|_, typedef| typedef.unwrap()),
         opaque_reps: ctx.opaque_reps.into_mapped(|_, rep| rep.unwrap()),
         vals: ctx.vals.into_mapped(|_, val_def| val_def.unwrap()),

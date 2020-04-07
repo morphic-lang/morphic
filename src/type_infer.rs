@@ -1097,6 +1097,7 @@ pub fn type_infer(program: res::Program) -> Result<typed::Program, Error> {
     })?;
 
     Ok(typed::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: program.custom_types,
         custom_type_symbols: program.custom_type_symbols,
         vals: vals_inferred,

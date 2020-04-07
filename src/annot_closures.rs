@@ -2139,6 +2139,7 @@ pub fn annot_closures(program: lifted::Program) -> annot::Program {
     }
 
     annot::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: typedefs,
         custom_type_symbols: program.custom_type_symbols,
         templates,

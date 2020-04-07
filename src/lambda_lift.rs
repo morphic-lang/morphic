@@ -282,6 +282,7 @@ pub fn lambda_lift(program: mono::Program) -> lifted::Program {
         .into_mapped(|id, def| lift_def(&mut lambdas, &mut lam_symbols, def, id));
 
     lifted::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: program.custom_types,
         custom_type_symbols: program.custom_type_symbols,
         vals: defs_lifted,

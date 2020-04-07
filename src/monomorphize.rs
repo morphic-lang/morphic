@@ -356,6 +356,7 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
     }
 
     mono::Program {
+        mod_symbols: program.mod_symbols.clone(),
         custom_types: typedefs_resolved,
         custom_type_symbols: typedefs_resolved_symbols,
         vals: val_defs_resolved,

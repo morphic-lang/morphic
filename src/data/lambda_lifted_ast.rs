@@ -59,6 +59,7 @@ pub struct LamSymbols {
 
 #[derive(Clone)]
 pub struct Program {
+    pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<mono::CustomTypeId, mono::TypeDef>,
     pub custom_type_symbols: IdVec<mono::CustomTypeId, mono::TypeSymbols>,
     pub vals: IdVec<mono::CustomGlobalId, ValDef>,
