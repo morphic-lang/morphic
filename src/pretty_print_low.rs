@@ -124,6 +124,9 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
     match expr {
         Expr::Local(local_id) => write![w, "%{}", local_id.0],
         Expr::Call(func_id, local_id) => write![w, "call #{} (%{})", func_id.0, local_id.0],
+        Expr::TailCall(tail_func_id, local_id) => {
+            write![w, "tail call @{} (%{})", tail_func_id.0, local_id.0]
+        }
         Expr::If(local_id, then_branch, else_branch) => {
             write![w, "if %{} {{", local_id.0]?;
             let new_context = context.add_indent();
@@ -252,22 +255,36 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
 }
 
 fn write_func(w: &mut dyn Write, func: &FuncDef, func_id: usize) -> io::Result<()> {
-    let context = Context {
-        indentation: 0,
-        num_locals: 1,
-    };
-
-    let context = context.add_indent();
-
     write![w, "func #{} (%0: ", func_id]?;
     write_type(w, &func.arg_type)?;
     write![w, "): "]?;
     write_type(w, &func.ret_type)?;
     write![w, " ="]?;
-    context.writeln(w)?;
 
+    let context = Context {
+        indentation: 0,
+        num_locals: 1,
+    };
+    let context = context.add_indent();
+
+    context.writeln(w)?;
     write_expr(w, &func.body, context)?;
     writeln![w]?;
+
+    if func.tail_funcs.len() > 0 {
+        write![w, "where"]?;
+        for (tail_func_id, tail_func) in &func.tail_funcs {
+            context.writeln(w)?;
+            write![w, "tail func @{} (%0: ", tail_func_id.0]?;
+            write_type(w, &tail_func.arg_type)?;
+            write![w, ") ="]?;
+            let sub_context = context.add_indent();
+            sub_context.writeln(w)?;
+            write_expr(w, &tail_func.body, sub_context)?;
+        }
+        writeln![w]?;
+    }
+
     writeln![w]?;
     Ok(())
 }

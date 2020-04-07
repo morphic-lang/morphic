@@ -1,25 +1,18 @@
-use crate::data::first_order_ast::BinOp;
-use crate::data::first_order_ast::Comparison;
-use crate::data::first_order_ast::NumType;
-use crate::data::low_ast::ArithOp;
-use crate::data::low_ast::ArrayOp;
-use crate::data::low_ast::CustomTypeId;
-use crate::data::low_ast::Expr;
-use crate::data::low_ast::IoOp;
-use crate::data::low_ast::LocalId;
-use crate::data::low_ast::Program;
-use crate::data::low_ast::Type;
-use crate::data::low_ast::VariantId;
+use crate::data::first_order_ast::{BinOp, Comparison, NumType};
+use crate::data::low_ast::{
+    ArithOp, ArrayOp, CustomFuncId, CustomTypeId, Expr, IoOp, LocalId, Program, Type, VariantId,
+};
 use crate::data::repr_constrained_ast::RepChoice;
+use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_thread, Child, ExitStatus, Stdio};
 use im_rc::Vector;
 use stacker;
+use std::borrow::Borrow;
 use std::convert::TryFrom;
 use std::io::BufRead;
 use std::io::Write;
 use std::num::Wrapping;
-use std::ops::Index;
-use std::ops::IndexMut;
+use std::ops::{Index, IndexMut};
 use std::rc::Rc;
 
 type RefCount = usize;
@@ -126,16 +119,16 @@ impl Locals {
     }
 }
 
-impl Index<LocalId> for Locals {
+impl<T: Borrow<LocalId>> Index<T> for Locals {
     type Output = HeapId;
 
-    fn index(&self, index: LocalId) -> &Self::Output {
-        if index.0 >= self.values.len() {
+    fn index(&self, index: T) -> &Self::Output {
+        if index.borrow().0 >= self.values.len() {
             // this shouldn't happen
             panic!["Accessing undefined local variable"];
         }
 
-        &self.values[index.0]
+        &self.values[index.borrow().0]
     }
 }
 
@@ -704,8 +697,94 @@ fn bounds_check(stderr: &mut dyn Write, len: usize, index: i64) -> Result<(), Ex
 const STACK_RED_ZONE_BYTES: usize = 256 * 1024;
 const STACK_GROW_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone, Debug)]
+enum Interruption {
+    Exit(ExitStatus),
+    TailCall(tail::TailFuncId, HeapId),
+}
+
+impl From<ExitStatus> for Interruption {
+    fn from(status: ExitStatus) -> Interruption {
+        Interruption::Exit(status)
+    }
+}
+
+fn interpret_call(
+    func_id: CustomFuncId,
+    arg_id: HeapId,
+    stdin: &mut dyn BufRead,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    program: &Program,
+    heap: &mut Heap,
+    stacktrace: StackTrace,
+) -> Result<HeapId, ExitStatus> {
+    let func = &program.funcs[func_id];
+
+    typecheck(
+        heap,
+        arg_id,
+        &func.arg_type,
+        stacktrace.add_frame(format!["typecheck function argument {:?}", func_id]),
+    );
+
+    let mut result = interpret_expr(
+        &func.body,
+        stdin,
+        stdout,
+        stderr,
+        program,
+        &Locals::new(arg_id),
+        heap,
+        stacktrace.add_frame(format!["func: {:?} arg: {:?}", func_id, arg_id]),
+    );
+
+    while let Err(Interruption::TailCall(tail_id, tail_arg)) = result {
+        let tail_func = &func.tail_funcs[tail_id];
+
+        typecheck(
+            heap,
+            tail_arg,
+            &tail_func.arg_type,
+            stacktrace.add_frame(format![
+                "typecheck tail function argument {:?} {:?}",
+                func_id, tail_id
+            ]),
+        );
+
+        result = interpret_expr(
+            &tail_func.body,
+            stdin,
+            stdout,
+            stderr,
+            program,
+            &Locals::new(tail_arg),
+            heap,
+            stacktrace.add_frame(format![
+                "tail func: {:?} {:?} arg: {:?}",
+                func_id, tail_id, arg_id
+            ]),
+        );
+    }
+
+    match result {
+        Ok(ret_id) => {
+            typecheck(
+                heap,
+                ret_id,
+                &func.ret_type,
+                stacktrace.add_frame(format!["typecheck function return: {:?}", func_id]),
+            );
+
+            Ok(ret_id)
+        }
+        Err(Interruption::Exit(status)) => Err(status),
+        Err(Interruption::TailCall(_, _)) => unreachable!(),
+    }
+}
+
 fn interpret_expr(
-    expr: Expr,
+    expr: &Expr,
     stdin: &mut dyn BufRead,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -713,36 +792,24 @@ fn interpret_expr(
     locals: &Locals,
     heap: &mut Heap,
     stacktrace: StackTrace,
-) -> Result<HeapId, ExitStatus> {
+) -> Result<HeapId, Interruption> {
     stacker::maybe_grow(STACK_RED_ZONE_BYTES, STACK_GROW_BYTES, move || {
         Ok(match expr {
             Expr::Local(local_id) => locals[local_id],
-            Expr::Call(func_id, arg_id) => {
-                typecheck(
-                    heap,
-                    locals[arg_id],
-                    &program.funcs[func_id].arg_type.clone(),
-                    stacktrace.add_frame(format!["typecheck function argument {:?}", func_id]),
-                );
 
-                let ret_value = interpret_expr(
-                    program.funcs[func_id].body.clone(),
-                    stdin,
-                    stdout,
-                    stderr,
-                    program,
-                    &Locals::new(locals[arg_id]),
-                    heap,
-                    stacktrace.add_frame(format!["func: {:?} arg: {:?}", func_id, locals[arg_id]]),
-                )?;
+            Expr::Call(func_id, arg_id) => interpret_call(
+                *func_id,
+                locals[arg_id],
+                stdin,
+                stdout,
+                stderr,
+                program,
+                heap,
+                stacktrace,
+            )?,
 
-                typecheck(
-                    heap,
-                    ret_value,
-                    &program.funcs[func_id].ret_type.clone(),
-                    stacktrace.add_frame(format!["typecheck function return {:?}", func_id]),
-                );
-                ret_value
+            Expr::TailCall(tail_func_id, arg_id) => {
+                return Err(Interruption::TailCall(*tail_func_id, locals[*arg_id]));
             }
 
             Expr::If(discrim_id, then_branch, else_branch) => {
@@ -754,7 +821,7 @@ fn interpret_expr(
 
                 if discrim_value {
                     interpret_expr(
-                        *then_branch,
+                        then_branch,
                         stdin,
                         stdout,
                         stderr,
@@ -765,7 +832,7 @@ fn interpret_expr(
                     )?
                 } else {
                     interpret_expr(
-                        *else_branch,
+                        else_branch,
                         stdin,
                         stdout,
                         stderr,
@@ -822,7 +889,7 @@ fn interpret_expr(
                     locals[tuple_id],
                     stacktrace.add_frame("tuple_field".into()),
                 );
-                match tuple.get(index) {
+                match tuple.get(*index) {
                     Some(heap_id) => *heap_id,
                     None => {
                         stacktrace.panic(format![
@@ -842,7 +909,7 @@ fn interpret_expr(
                     stacktrace.add_frame("wrap variant".into()),
                 );
 
-                heap.add(Value::Variant(variant_id, heap_id))
+                heap.add(Value::Variant(*variant_id, heap_id))
             }
 
             Expr::UnwrapVariant(variants, variant_id, local_id) => {
@@ -850,13 +917,13 @@ fn interpret_expr(
                 typecheck(
                     heap,
                     heap_id,
-                    &Type::Variants(variants),
+                    &Type::Variants(variants.clone()),
                     stacktrace.add_frame("unwrap variant".into()),
                 );
                 let (runtime_variant_id, local_variant_id) =
                     unwrap_variant(heap, heap_id, stacktrace.add_frame("unwrap variant".into()));
 
-                if variant_id != runtime_variant_id {
+                if *variant_id != runtime_variant_id {
                     stacktrace.panic(format![
                         "unwrap variant ids not equal {:?} != {:?}",
                         variant_id, runtime_variant_id
@@ -869,7 +936,7 @@ fn interpret_expr(
             Expr::WrapCustom(type_id, local_id) => {
                 let heap_id = locals[local_id];
 
-                heap.add(Value::Custom(type_id, heap_id))
+                heap.add(Value::Custom(*type_id, heap_id))
             }
 
             Expr::UnwrapCustom(custom_id, local_id) => {
@@ -877,7 +944,7 @@ fn interpret_expr(
                 let (runtime_custom_id, local_custom_id) =
                     unwrap_custom(heap, heap_id, stacktrace.add_frame("unwrap custom".into()));
 
-                if runtime_custom_id != custom_id {
+                if runtime_custom_id != *custom_id {
                     stacktrace.panic(format![
                         "unwrap custom ids not equal, expected {:?} got {:?}",
                         custom_id, runtime_custom_id
@@ -944,7 +1011,7 @@ fn interpret_expr(
                 let (local_variant_id, _local_heap_id) =
                     unwrap_variant(heap, heap_id, stacktrace.add_frame("check variant".into()));
 
-                heap.add(Value::Bool(variant_id == local_variant_id))
+                heap.add(Value::Bool(*variant_id == local_variant_id))
             }
 
             Expr::ArithOp(ArithOp::Op(NumType::Byte, BinOp::Add, local_id1, local_id2)) => heap
@@ -1271,14 +1338,18 @@ fn interpret_expr(
             }
 
             Expr::ArrayOp(rep, _item_type, ArrayOp::New()) => {
-                heap.add(Value::Array(rep, ArrayStatus::Valid, 1, vec![]))
+                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, vec![]))
             }
 
             Expr::ArrayOp(rep, _item_type, ArrayOp::Len(array_id)) => {
                 let array_heap_id = locals[array_id];
 
-                let array =
-                    unwrap_array(heap, array_heap_id, rep, stacktrace.add_frame("len".into()));
+                let array = unwrap_array(
+                    heap,
+                    array_heap_id,
+                    *rep,
+                    stacktrace.add_frame("len".into()),
+                );
 
                 heap.add(Value::Num(NumValue::Int(Wrapping(array.len() as i64))))
             }
@@ -1290,7 +1361,7 @@ fn interpret_expr(
                 let mut array = unwrap_array_retain(
                     heap,
                     array_heap_id,
-                    rep,
+                    *rep,
                     stacktrace.add_frame("push".into()),
                 );
 
@@ -1304,7 +1375,7 @@ fn interpret_expr(
 
                 array.push(item_heap_id);
 
-                heap.add(Value::Array(rep, ArrayStatus::Valid, 1, array))
+                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array))
             }
 
             Expr::ArrayOp(rep, _item_type, ArrayOp::Pop(array_id)) => {
@@ -1313,7 +1384,7 @@ fn interpret_expr(
                 let mut array = unwrap_array_retain(
                     heap,
                     array_heap_id,
-                    rep,
+                    *rep,
                     stacktrace.add_frame("pop".into()),
                 );
 
@@ -1328,12 +1399,12 @@ fn interpret_expr(
                 let item_heap_id = match array.pop() {
                     None => {
                         writeln!(stderr, "pop: empty array").unwrap();
-                        return Err(ExitStatus::Failure(Some(1)));
+                        return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
                     }
                     Some(id) => id,
                 };
 
-                let new_array = heap.add(Value::Array(rep, ArrayStatus::Valid, 1, array));
+                let new_array = heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array));
                 heap.add(Value::Tuple(vec![new_array, item_heap_id]))
             }
 
@@ -1344,7 +1415,7 @@ fn interpret_expr(
                 let array = unwrap_array_retain(
                     heap,
                     array_heap_id,
-                    rep,
+                    *rep,
                     stacktrace.add_frame("item array".into()),
                 );
                 let index = unwrap_int(
@@ -1354,7 +1425,7 @@ fn interpret_expr(
                 );
 
                 let hole_array_id = heap.add(Value::HoleArray(
-                    rep,
+                    *rep,
                     ArrayStatus::Valid,
                     1,
                     index.0,
@@ -1375,7 +1446,7 @@ fn interpret_expr(
                 let (index, mut array) = unwrap_hole_array_retain(
                     heap,
                     array_heap_id,
-                    rep,
+                    *rep,
                     stacktrace.add_frame("replace array".into()),
                 );
 
@@ -1396,7 +1467,7 @@ fn interpret_expr(
                     stacktrace.add_frame("replace release item".into()),
                 );
                 array[index as usize] = item_heap_id;
-                heap.add(Value::Array(rep, ArrayStatus::Valid, 1, array))
+                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array))
             }
 
             Expr::IoOp(rep, IoOp::Input) => {
@@ -1414,7 +1485,7 @@ fn interpret_expr(
                     heap_ids.push(heap.add(Value::Num(NumValue::Byte(Wrapping(byte)))));
                 }
 
-                heap.add(Value::Array(rep, ArrayStatus::Valid, 1, heap_ids))
+                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, heap_ids))
             }
 
             Expr::IoOp(rep, IoOp::Output(array_id)) => {
@@ -1423,7 +1494,7 @@ fn interpret_expr(
                 let array = unwrap_array(
                     heap,
                     array_heap_id,
-                    rep,
+                    *rep,
                     stacktrace.add_frame("output".into()),
                 );
 
@@ -1447,13 +1518,13 @@ fn interpret_expr(
                 HeapId(0)
             }
 
-            Expr::BoolLit(val) => heap.add(Value::Bool(val)),
+            Expr::BoolLit(val) => heap.add(Value::Bool(*val)),
 
-            Expr::ByteLit(val) => heap.add(Value::Num(NumValue::Byte(Wrapping(val)))),
+            Expr::ByteLit(val) => heap.add(Value::Num(NumValue::Byte(Wrapping(*val)))),
 
-            Expr::IntLit(val) => heap.add(Value::Num(NumValue::Int(Wrapping(val)))),
+            Expr::IntLit(val) => heap.add(Value::Num(NumValue::Int(Wrapping(*val)))),
 
-            Expr::FloatLit(val) => heap.add(Value::Num(NumValue::Float(val))),
+            Expr::FloatLit(val) => heap.add(Value::Num(NumValue::Float(*val))),
         })
     })
 }
@@ -1461,13 +1532,13 @@ fn interpret_expr(
 pub fn interpret(stdio: Stdio, program: Program) -> Child {
     spawn_thread(stdio, move |stdin, stdout, stderr| {
         let mut heap = Heap::new(&program);
-        match interpret_expr(
-            program.funcs[program.main].body.clone(),
+        match interpret_call(
+            program.main,
+            HeapId(0),
             stdin,
             stdout,
             stderr,
             &program,
-            &Locals::new(HeapId(0)),
             &mut heap,
             StackTrace::new(),
         ) {

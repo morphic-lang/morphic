@@ -189,10 +189,9 @@ fn run(
             .map_err(Error::WriteIrFailed)?;
     }
 
-    // Currently unused.  The plan is to modify 'lower_structures' to consume this AST.
-    let _tail_rec = tail_call_elim::tail_call_elim(repr_specialized.clone());
+    let tail_rec = tail_call_elim::tail_call_elim(repr_specialized.clone());
 
-    let lowered = lower_structures::lower_structures(repr_specialized);
+    let lowered = lower_structures::lower_structures(tail_rec);
 
     if let Some(artifact_dir) = config.artifact_dir() {
         let mut out_file =
