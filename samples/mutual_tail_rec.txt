@@ -1,0 +1,37 @@
+fix2(
+  f: ((a -> c, b -> c), a) -> c,
+  g: ((a -> c, b -> c), b) -> c,
+): (a -> c, b -> c) =
+  (
+    \x -> f(fix2(f, g), x),
+    \y -> g(fix2(f, g), y),
+  )
+
+proc main(): () =
+  let (even, odd) = fix2(
+    // even
+    \((_, odd), x) ->
+      if x = 0 {
+        True
+      } else {
+        odd(x - 1)
+      }
+    ,
+    // odd
+    \((even, _), x) ->
+      if x = 0 {
+        False
+      } else {
+        even(x - 1)
+      }
+  ) in
+  if even(1000) {
+    do output("1000 is even\n")
+  } else {
+    do output("test failed!\n")
+  } then
+  if odd(1000) {
+    do output("test failed!\n")
+  } else {
+    do output("1000 is not odd\n")
+  }

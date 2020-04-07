@@ -108,6 +108,14 @@ sample! { nested "samples/nested.txt";
     ];
 }
 
+sample! { mutual_tail_rec "samples/mutual_tail_rec.txt";
+    stdin = "";
+    stdout = lines! [
+        "1000 is even",
+        "1000 is not odd",
+    ];
+}
+
 sample! { item_oob1 "samples/run-fail/item_oob1.txt";
     stdin = "";
     stdout = "";

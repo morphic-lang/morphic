@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
+use crate::data::tail_rec_ast as tail;
 use crate::util::id_vec::IdVec;
 
 // Second pass:
@@ -78,6 +79,7 @@ pub enum IoOp {
 pub enum Expr {
     Local(LocalId),
     Call(CustomFuncId, LocalId),
+    TailCall(tail::TailFuncId, LocalId),
     If(LocalId, Box<Expr>, Box<Expr>),
     LetMany(
         Vec<(Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
@@ -112,7 +114,15 @@ pub enum Expr {
 pub const ARG_LOCAL: LocalId = LocalId(0);
 
 #[derive(Clone, Debug)]
+pub struct TailFunc {
+    pub arg_type: Type,
+    pub body: Expr,
+}
+
+#[derive(Clone, Debug)]
 pub struct FuncDef {
+    pub tail_funcs: IdVec<tail::TailFuncId, TailFunc>,
+
     pub arg_type: Type,
     pub ret_type: Type,
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding

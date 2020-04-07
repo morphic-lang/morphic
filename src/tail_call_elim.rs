@@ -81,12 +81,13 @@ fn mark_call_modes(
 
         special::Expr::LetMany(bindings, final_local) => {
             for (i, (_type, binding)) in bindings.iter().enumerate() {
-                let sub_pos =
-                    if i == bindings.len() && final_local == &flat::LocalId(vars_in_scope + i) {
-                        pos
-                    } else {
-                        Position::NotTail
-                    };
+                let sub_pos = if i + 1 == bindings.len()
+                    && final_local == &flat::LocalId(vars_in_scope + i)
+                {
+                    pos
+                } else {
+                    Position::NotTail
+                };
 
                 mark_call_modes(modes, curr_scc, sub_pos, vars_in_scope + i, binding);
             }
@@ -183,7 +184,7 @@ fn trans_expr(
                 .enumerate()
                 .map(|(i, (type_, binding))| {
                     let is_final_binding =
-                        i == bindings.len() && final_local == &flat::LocalId(vars_in_scope + i);
+                        i + 1 == bindings.len() && final_local == &flat::LocalId(vars_in_scope + i);
 
                     let sub_pos = if is_final_binding {
                         pos

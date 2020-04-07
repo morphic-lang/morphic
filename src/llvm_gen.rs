@@ -8,9 +8,11 @@ use crate::cli;
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::repr_constrained_ast as constrain;
+use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_process, Child, Stdio};
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
@@ -803,11 +805,29 @@ fn gen_unwrap_variant<'a, 'b>(
     content
 }
 
+#[derive(Clone, Debug)]
+struct TailCallTarget<'a> {
+    arg_var: PointerValue<'a>,
+    block: BasicBlock<'a>,
+}
+
+fn get_undef<'a>(ty: &BasicTypeEnum<'a>) -> BasicValueEnum<'a> {
+    match ty {
+        BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
+        BasicTypeEnum::FloatType(t) => t.get_undef().into(),
+        BasicTypeEnum::IntType(t) => t.get_undef().into(),
+        BasicTypeEnum::PointerType(t) => t.get_undef().into(),
+        BasicTypeEnum::StructType(t) => t.get_undef().into(),
+        BasicTypeEnum::VectorType(t) => t.get_undef().into(),
+    }
+}
+
 fn gen_expr<'a, 'b>(
     builder: &Builder<'a>,
     instances: &Instances<'a>,
     globals: &Globals<'a, 'b>,
     func: FunctionValue<'a>,
+    tail_targets: &IdVec<tail::TailFuncId, TailCallTarget>,
     expr: &low::Expr,
     funcs: &IdVec<low::CustomFuncId, FunctionValue<'a>>,
     locals: &mut IdVec<low::LocalId, BasicValueEnum<'a>>,
@@ -821,6 +841,16 @@ fn gen_expr<'a, 'b>(
             .try_as_basic_value()
             .left()
             .unwrap(),
+        E::TailCall(tail_id, local_id) => {
+            builder.build_store(tail_targets[tail_id].arg_var, locals[local_id]);
+            builder.build_unconditional_branch(tail_targets[tail_id].block);
+            let unreachable_block = context.append_basic_block(func, "after_tail_call");
+            builder.position_at_end(unreachable_block);
+            // The return type of the tail call (which is somewhat theoretical, as a tail call never
+            // actually returns to its original caller) is necessarily that of the function
+            // currently being generated.
+            get_undef(&func.get_type().get_return_type().unwrap())
+        }
         E::If(local_id, then_expr, else_expr) => {
             let then_block = context.append_basic_block(func, "then_block");
             let else_block = context.append_basic_block(func, "else_block");
@@ -830,12 +860,30 @@ fn gen_expr<'a, 'b>(
             builder.build_conditional_branch(cond, then_block, else_block);
 
             builder.position_at_end(then_block);
-            let result_then = gen_expr(builder, instances, globals, func, then_expr, funcs, locals);
+            let result_then = gen_expr(
+                builder,
+                instances,
+                globals,
+                func,
+                tail_targets,
+                then_expr,
+                funcs,
+                locals,
+            );
             let last_then_expr_block = builder.get_insert_block().unwrap();
             builder.build_unconditional_branch(next_block);
 
             builder.position_at_end(else_block);
-            let result_else = gen_expr(builder, instances, globals, func, else_expr, funcs, locals);
+            let result_else = gen_expr(
+                builder,
+                instances,
+                globals,
+                func,
+                tail_targets,
+                else_expr,
+                funcs,
+                locals,
+            );
             let last_else_expr_block = builder.get_insert_block().unwrap();
             builder.build_unconditional_branch(next_block);
 
@@ -855,6 +903,7 @@ fn gen_expr<'a, 'b>(
                     instances,
                     globals,
                     func,
+                    tail_targets,
                     &*binding_expr,
                     funcs,
                     locals,
@@ -1376,6 +1425,68 @@ fn gen_expr<'a, 'b>(
     }
 }
 
+fn gen_function<'a, 'b>(
+    context: &'a Context,
+    instances: &Instances<'a>,
+    globals: &Globals<'a, 'b>,
+    func_decl: FunctionValue<'a>,
+    funcs: &IdVec<low::CustomFuncId, FunctionValue<'a>>,
+    func: &low::FuncDef,
+) {
+    let builder = context.create_builder();
+
+    let entry = context.append_basic_block(func_decl, "entry");
+
+    // Declare tail call targets, but don't populate their bodies yet. Tail functions are
+    // implemented via blocks which may be jumped to, and their arguments are implemented as mutable
+    // variables.
+    builder.position_at_end(entry);
+    let tail_targets = func.tail_funcs.map(|tail_id, tail_func| {
+        let arg_var = builder.build_alloca(
+            get_llvm_type(globals, instances, &tail_func.arg_type),
+            &format!("tail_{}_arg", tail_id.0),
+        );
+
+        let block = context.append_basic_block(func_decl, &format!("tail_{}", tail_id.0));
+
+        TailCallTarget { arg_var, block }
+    });
+
+    // Generate main body
+    {
+        let mut locals = IdVec::from_items(vec![func_decl.get_nth_param(0).unwrap()]);
+        let ret_value = gen_expr(
+            &builder,
+            instances,
+            globals,
+            func_decl,
+            &tail_targets,
+            &func.body,
+            funcs,
+            &mut locals,
+        );
+        builder.build_return(Some(&ret_value));
+    }
+
+    // Generate tail function bodies
+    for (tail_id, tail_target) in &tail_targets {
+        builder.position_at_end(tail_target.block);
+        let tail_arg_val = builder.build_load(tail_target.arg_var, "tail_arg_val");
+        let mut locals = IdVec::from_items(vec![tail_arg_val]);
+        let ret_value = gen_expr(
+            &builder,
+            instances,
+            globals,
+            func_decl,
+            &tail_targets,
+            &func.tail_funcs[tail_id].body,
+            funcs,
+            &mut locals,
+        );
+        builder.build_return(Some(&ret_value));
+    }
+}
+
 fn get_target_machine(target: &cli::TargetConfig) -> TargetMachine {
     Target::initialize_all(&InitializationConfig::default());
     let llvm_target = Target::from_triple(&target.target).unwrap();
@@ -1461,6 +1572,11 @@ fn gen_program<'a>(
 
     let instances = Instances::new(&globals);
 
+    for type_id in custom_type_dep_order(&program.custom_types) {
+        let type_decls = &globals.custom_types[type_id];
+        type_decls.define_type(&globals, &instances, &program.custom_types[type_id]);
+    }
+
     let funcs = program.funcs.map(|func_id, func_def| {
         let return_type = get_llvm_type(&globals, &instances, &func_def.ret_type);
         let arg_type = get_llvm_type(&globals, &instances, &func_def.arg_type);
@@ -1472,27 +1588,15 @@ fn gen_program<'a>(
         )
     });
 
-    for type_id in custom_type_dep_order(&program.custom_types) {
-        let type_decls = &globals.custom_types[type_id];
-        type_decls.define_type(&globals, &instances, &program.custom_types[type_id]);
-    }
-
     for (func_id, func) in &funcs {
-        let mut locals = IdVec::from_items(vec![func.get_nth_param(0).unwrap()]);
-        let builder = context.create_builder();
-        let entry = context.append_basic_block(*func, "entry");
-
-        builder.position_at_end(entry);
-        let ret_value = gen_expr(
-            &builder,
+        gen_function(
+            context,
             &instances,
             &globals,
             *func,
-            &program.funcs[func_id].body,
             &funcs,
-            &mut locals,
+            &program.funcs[func_id],
         );
-        builder.build_return(Some(&ret_value));
     }
 
     instances.define(&globals);

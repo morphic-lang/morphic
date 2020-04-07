@@ -3,6 +3,7 @@ use crate::data::flat_ast as flat;
 use crate::data::low_ast as low;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
+use crate::data::tail_rec_ast as tail;
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
@@ -172,16 +173,16 @@ enum AnnotExprKind {
         Vec<(special::Type, AnnotExpr, FutureUsageInfo)>,
         flat::LocalId,
     ),
-    Leaf(special::Expr),
+    Leaf(tail::Expr),
 }
 
 fn annotate_expr(
-    expr: special::Expr,
+    expr: tail::Expr,
     future_usages: &FutureUsageInfo,
     ids_in_scope: usize,
 ) -> AnnotExpr {
     match expr {
-        special::Expr::LetMany(exprs, final_local) => {
+        tail::Expr::LetMany(exprs, final_local) => {
             let mut current_future_usages = future_usages.clone();
             current_future_usages.future_usages.insert(final_local);
 
@@ -234,7 +235,7 @@ fn annotate_expr(
             }
         }
 
-        special::Expr::Branch(discrim, cases, res_type) => {
+        tail::Expr::Branch(discrim, cases, res_type) => {
             let mut branch_move_info = MoveInfo {
                 move_info: OrdMap::unit(discrim, 0),
             };
@@ -280,30 +281,33 @@ impl MoveInfo {
     }
 }
 
-fn count_moves(expr: &special::Expr) -> MoveInfo {
+fn count_moves(expr: &tail::Expr) -> MoveInfo {
     let mut move_info = MoveInfo {
         move_info: OrdMap::new(),
     };
 
     match expr {
-        special::Expr::Local(local_id) => move_info.add_move(*local_id),
-        special::Expr::Call(_purity, _func_id, local_id) => move_info.add_move(*local_id),
+        tail::Expr::Local(local_id) => move_info.add_move(*local_id),
 
-        special::Expr::Tuple(local_ids) => {
+        tail::Expr::Call(_, _, local_id) | tail::Expr::TailCall(_, local_id) => {
+            move_info.add_move(*local_id)
+        }
+
+        tail::Expr::Tuple(local_ids) => {
             for local_id in local_ids {
                 move_info.add_move(*local_id);
             }
         }
-        special::Expr::TupleField(local_id, _index) => move_info.add_borrow(*local_id),
-        special::Expr::WrapVariant(_variants, _variant_id, local_id) => {
+        tail::Expr::TupleField(local_id, _index) => move_info.add_borrow(*local_id),
+        tail::Expr::WrapVariant(_variants, _variant_id, local_id) => {
             move_info.add_move(*local_id);
         }
 
-        special::Expr::UnwrapVariant(_variant_id, local_id) => move_info.add_move(*local_id),
-        special::Expr::WrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
-        special::Expr::UnwrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
+        tail::Expr::UnwrapVariant(_variant_id, local_id) => move_info.add_move(*local_id),
+        tail::Expr::WrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
+        tail::Expr::UnwrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
 
-        special::Expr::ArithOp(arith_op) => match arith_op {
+        tail::Expr::ArithOp(arith_op) => match arith_op {
             flat::ArithOp::Op(_, _, local_id1, local_id2)
             | flat::ArithOp::Cmp(_, _, local_id1, local_id2) => {
                 move_info.add_move(*local_id1);
@@ -313,7 +317,7 @@ fn count_moves(expr: &special::Expr) -> MoveInfo {
                 move_info.add_move(*local_id);
             }
         },
-        special::Expr::ArrayOp(_rep_choice, _item_type, array_op) => match array_op {
+        tail::Expr::ArrayOp(_rep_choice, _item_type, array_op) => match array_op {
             unif::ArrayOp::Item(array_id, index_id) => {
                 move_info.add_borrow(*array_id);
                 move_info.add_move(*index_id);
@@ -333,25 +337,25 @@ fn count_moves(expr: &special::Expr) -> MoveInfo {
                 move_info.add_move(*item_id);
             }
         },
-        special::Expr::IoOp(_rep_choice, io_op) => match io_op {
+        tail::Expr::IoOp(_rep_choice, io_op) => match io_op {
             flat::IoOp::Input => {}
             flat::IoOp::Output(local_id) => {
                 move_info.add_borrow(*local_id);
             }
         },
 
-        special::Expr::ArrayLit(_rep_choice, _item_type, elem_ids) => {
+        tail::Expr::ArrayLit(_rep_choice, _item_type, elem_ids) => {
             for elem_id in elem_ids {
                 move_info.add_move(*elem_id);
             }
         }
-        special::Expr::BoolLit(_)
-        | special::Expr::ByteLit(_)
-        | special::Expr::IntLit(_)
-        | special::Expr::FloatLit(_) => {}
+        tail::Expr::BoolLit(_)
+        | tail::Expr::ByteLit(_)
+        | tail::Expr::IntLit(_)
+        | tail::Expr::FloatLit(_) => {}
 
-        special::Expr::LetMany(_, _) => unreachable![],
-        special::Expr::Branch(_, _, _) => unreachable![],
+        tail::Expr::LetMany(_, _) => unreachable![],
+        tail::Expr::Branch(_, _, _) => unreachable![],
     }
 
     move_info
@@ -381,6 +385,18 @@ impl LowAstBuilder {
     }
 
     fn add_expr(&mut self, type_: low::Type, expr: low::Expr) -> low::LocalId {
+        #[cfg(debug_assertions)]
+        {
+            // TODO: Use 'matches' macro
+            if let Some((_, low::Expr::TailCall(_, _))) = self.exprs.last() {
+                panic!(
+                    "The pass 'lower_strucures' tried to generate an expression immediately after \
+                     a tail call, which violates the invariant that a tail call must be the last \
+                     expression in its block."
+                );
+            }
+        }
+
         let new_id = low::LocalId(self.offset.0 + self.exprs.len());
         self.exprs.push((type_, expr));
         new_id
@@ -792,7 +808,7 @@ fn unbox_content(
 }
 
 fn lower_leaf(
-    expr: &special::Expr,
+    expr: &tail::Expr,
     result_type: &low::Type,
     context: &LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
@@ -800,12 +816,16 @@ fn lower_leaf(
     boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::LocalId {
     match expr {
-        special::Expr::Local(local_id) => local_id.lookup_in(context),
-        special::Expr::Call(_purity, func_id, arg_id) => builder.add_expr(
+        tail::Expr::Local(local_id) => local_id.lookup_in(context),
+        tail::Expr::Call(_purity, func_id, arg_id) => builder.add_expr(
             result_type.clone(),
             low::Expr::Call(low::CustomFuncId(func_id.0), arg_id.lookup_in(context)),
         ),
-        special::Expr::Tuple(elem_ids) => builder.add_expr(
+        tail::Expr::TailCall(tail_func_id, arg_id) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::TailCall(*tail_func_id, arg_id.lookup_in(context)),
+        ),
+        tail::Expr::Tuple(elem_ids) => builder.add_expr(
             result_type.clone(),
             low::Expr::Tuple(
                 elem_ids
@@ -814,7 +834,7 @@ fn lower_leaf(
                     .collect(),
             ),
         ),
-        special::Expr::TupleField(tuple_id, index) => {
+        tail::Expr::TupleField(tuple_id, index) => {
             let tuple_elem_id = builder.add_expr(
                 result_type.clone(),
                 low::Expr::TupleField(tuple_id.lookup_in(context), *index),
@@ -825,7 +845,7 @@ fn lower_leaf(
             );
             tuple_elem_id
         }
-        special::Expr::WrapVariant(variants, variant_id, content_id) => builder.add_expr(
+        tail::Expr::WrapVariant(variants, variant_id, content_id) => builder.add_expr(
             result_type.clone(),
             low::Expr::WrapVariant(
                 IdVec::from_items(
@@ -838,7 +858,7 @@ fn lower_leaf(
                 content_id.lookup_in(context),
             ),
         ),
-        special::Expr::UnwrapVariant(variant_id, content_id) => {
+        tail::Expr::UnwrapVariant(variant_id, content_id) => {
             builder.add_expr(result_type.clone(), {
                 let variant_type = &context.local_binding(*content_id).0;
                 let variants = if let special::Type::Variants(variants) = variant_type {
@@ -860,7 +880,7 @@ fn lower_leaf(
                 )
             })
         }
-        special::Expr::WrapCustom(type_id, content_id) => {
+        tail::Expr::WrapCustom(type_id, content_id) => {
             let unboxed_type = lower_type(&typedefs[type_id]);
             let boxed_type = &boxed_typedefs[type_id];
 
@@ -880,7 +900,7 @@ fn lower_leaf(
                 low::Expr::WrapCustom(*type_id, boxed_content_id),
             )
         }
-        special::Expr::UnwrapCustom(type_id, content_id) => {
+        tail::Expr::UnwrapCustom(type_id, content_id) => {
             let unboxed_type = lower_type(&typedefs[type_id]);
             let boxed_type = &boxed_typedefs[type_id];
 
@@ -895,7 +915,7 @@ fn lower_leaf(
                 unwrapped_id
             }
         }
-        special::Expr::ArithOp(arith_op) => {
+        tail::Expr::ArithOp(arith_op) => {
             let arith_expr = match arith_op {
                 flat::ArithOp::Op(num_type, bin_op, local_id1, local_id2) => low::ArithOp::Op(
                     *num_type,
@@ -916,7 +936,7 @@ fn lower_leaf(
             builder.add_expr(result_type.clone(), low::Expr::ArithOp(arith_expr))
         }
 
-        special::Expr::ArrayOp(rep, item_type, array_op) => {
+        tail::Expr::ArrayOp(rep, item_type, array_op) => {
             let array_expr = match array_op {
                 unif::ArrayOp::Item(array_id, index_id) => {
                     low::ArrayOp::Item(array_id.lookup_in(context), index_id.lookup_in(context))
@@ -935,7 +955,7 @@ fn lower_leaf(
                 low::Expr::ArrayOp(*rep, lower_type(item_type), array_expr),
             )
         }
-        special::Expr::IoOp(rep, io_type) => builder.add_expr(
+        tail::Expr::IoOp(rep, io_type) => builder.add_expr(
             result_type.clone(),
             low::Expr::IoOp(
                 *rep,
@@ -947,7 +967,7 @@ fn lower_leaf(
                 },
             ),
         ),
-        special::Expr::ArrayLit(rep, elem_type, elems) => {
+        tail::Expr::ArrayLit(rep, elem_type, elems) => {
             let mut result_id = builder.add_expr(
                 result_type.clone(),
                 low::Expr::ArrayOp(*rep, lower_type(elem_type), low::ArrayOp::New()),
@@ -966,20 +986,14 @@ fn lower_leaf(
 
             result_id
         }
-        special::Expr::BoolLit(val) => {
-            builder.add_expr(result_type.clone(), low::Expr::BoolLit(*val))
-        }
-        special::Expr::ByteLit(val) => {
-            builder.add_expr(result_type.clone(), low::Expr::ByteLit(*val))
-        }
-        special::Expr::IntLit(val) => {
-            builder.add_expr(result_type.clone(), low::Expr::IntLit(*val))
-        }
-        special::Expr::FloatLit(val) => {
+        tail::Expr::BoolLit(val) => builder.add_expr(result_type.clone(), low::Expr::BoolLit(*val)),
+        tail::Expr::ByteLit(val) => builder.add_expr(result_type.clone(), low::Expr::ByteLit(*val)),
+        tail::Expr::IntLit(val) => builder.add_expr(result_type.clone(), low::Expr::IntLit(*val)),
+        tail::Expr::FloatLit(val) => {
             builder.add_expr(result_type.clone(), low::Expr::FloatLit(*val))
         }
 
-        special::Expr::Branch(_, _, _) | special::Expr::LetMany(_, _) => {
+        tail::Expr::Branch(_, _, _) | tail::Expr::LetMany(_, _) => {
             unreachable![];
         }
     }
@@ -1082,64 +1096,104 @@ fn lower_expr(
     }
 }
 
-fn lower_function(
-    func: special::FuncDef,
+fn lower_function_body(
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
     boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
-) -> low::FuncDef {
+    arg_type: &special::Type,
+    ret_type: &special::Type,
+    body: tail::Expr,
+) -> low::Expr {
     let future_usages = FutureUsageInfo {
         future_usages: OrdSet::new(),
     };
-    let annotated_body = annotate_expr(func.body, &future_usages, 1);
+    let annotated_body = annotate_expr(body, &future_usages, 1);
 
     let mut builder = LowAstBuilder::new(low::LocalId(1));
 
     for _ in 1..*annotated_body
         .move_info
         .move_info
-        .get(&flat::LocalId(0))
+        .get(&flat::ARG_LOCAL)
         .unwrap_or(&0)
     {
         builder.add_expr(
             low::Type::Tuple(vec![]),
-            low::Expr::Retain(low::LocalId(0), lower_type(&func.arg_type)),
+            low::Expr::Retain(low::ARG_LOCAL, lower_type(arg_type)),
         );
     }
 
     let mut context = LocalContext::new();
 
-    context.add_local((func.arg_type.clone(), low::LocalId(0)));
+    context.add_local((arg_type.clone(), low::ARG_LOCAL));
+
+    if !annotated_body
+        .move_info
+        .move_info
+        .contains_key(&flat::ARG_LOCAL)
+    {
+        // If the argument is unused, it is important that we release it *before* the main body of
+        // the function, so as to not interfere with tail calls.
+        builder.add_expr(
+            low::Type::Tuple(vec![]),
+            low::Expr::Release(low::ARG_LOCAL, lower_type(arg_type)),
+        );
+    }
 
     let final_local_id = lower_expr(
         &annotated_body,
-        &lower_type(&func.ret_type),
+        &lower_type(ret_type),
         &mut context,
         &mut builder,
         typedefs,
         boxed_typedefs,
     );
 
-    if annotated_body
-        .move_info
-        .move_info
-        .get(&flat::LocalId(0))
-        .unwrap_or(&0)
-        == &0
-    {
+    if annotated_body.move_info.move_info.get(&flat::ARG_LOCAL) == Some(&0) {
         builder.add_expr(
             low::Type::Tuple(vec![]),
-            low::Expr::Release(low::LocalId(0), lower_type(&func.arg_type)),
+            low::Expr::Release(low::ARG_LOCAL, lower_type(arg_type)),
         );
     }
 
+    builder.build(final_local_id)
+}
+
+fn lower_function(
+    func: tail::FuncDef,
+    typedefs: &IdVec<special::CustomTypeId, special::Type>,
+    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
+) -> low::FuncDef {
+    // Appease the borrow checker
+    let ret_type = &func.ret_type;
+
+    let tail_funcs = func.tail_funcs.into_mapped(|_, tail_func| low::TailFunc {
+        arg_type: lower_type(&tail_func.arg_type),
+        body: lower_function_body(
+            typedefs,
+            boxed_typedefs,
+            &tail_func.arg_type,
+            ret_type,
+            tail_func.body,
+        ),
+    });
+
+    let body = lower_function_body(
+        typedefs,
+        boxed_typedefs,
+        &func.arg_type,
+        &func.ret_type,
+        func.body,
+    );
+
     low::FuncDef {
+        tail_funcs,
         arg_type: lower_type(&func.arg_type),
         ret_type: lower_type(&func.ret_type),
-        body: builder.build(final_local_id),
+        body,
     }
 }
 
-pub fn lower_structures(program: special::Program) -> low::Program {
+pub fn lower_structures(program: tail::Program) -> low::Program {
     let typedefs = program.custom_types;
     let boxed_typedefs = find_boxed_types(&typedefs);
 
