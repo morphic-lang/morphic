@@ -5,8 +5,8 @@
 - [x] modify every other pass to take LetMany
 
 ## Tail call elimination
-- [X] add scc entry point analysis
-- [X] modify `llvm_gen.rs` to compile scc
+- [x] add scc entry point analysis
+- [x] modify `llvm_gen.rs` to compile scc
 
 ## Profiling
 
@@ -34,13 +34,11 @@
 - [x] inline calls to primitve functions when possible
 
 ## `shield_funcs.rs`
-
 - [x] modify shield funcs to not shield non-recursive funtions
 
-
 ## thread debug symbols through more passes
-- [ ] function monomorphization
-- [ ] lower closures
+- [x] function monomorphization
+- [x] lower closures
 - [ ] alias analysis
 - [ ] lower structures
 - [ ] thread variable names through
@@ -66,7 +64,7 @@
 - [ ] do notation
 
 ## persistent arrays
-- [X] actually implement them
+- [x] actually implement them
 
 ## `core.rs`
 - [ ] support wasm
