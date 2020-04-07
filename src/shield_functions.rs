@@ -176,10 +176,14 @@ pub fn shield_functions(mut program: mono::Program) -> mono::Program {
                             ),
                         };
 
-                        let wrapper_symbols = mono::ValSymbols {
-                            is_wrapper: true,
-                            ..program.val_symbols[id].clone()
-                        };
+                        let wrapped_symbols =
+                            if let mono::ValSymbols::Normal(symbols) = &program.val_symbols[id] {
+                                symbols.clone()
+                            } else {
+                                panic!("should not be wrapping a wrapper function");
+                            };
+
+                        let wrapper_symbols = mono::ValSymbols::Wrapper(wrapped_symbols);
 
                         let wrapper_id = program.vals.push(wrapper_def);
                         let wrapper_symbols_id = program.val_symbols.push(wrapper_symbols);

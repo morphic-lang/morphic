@@ -317,11 +317,10 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
         let def = &program.vals[orig_id];
 
         let def_resolved = resolve_val_def(&mut val_insts, &mut type_insts, &inst_args, def);
-        let def_resolved_symbols = mono::ValSymbols {
+        let def_resolved_symbols = mono::ValSymbols::Normal(mono::ValSymbolsKind {
             val_name: program.val_symbols[orig_id].val_name.clone(),
-            mono_with: inst_args,
-            is_wrapper: false,
-        };
+            type_mono: inst_args,
+        });
 
         let pushed_val_id = val_defs_resolved.push(def_resolved);
         let pushed_val_symbols_id = val_defs_resolved_symbols.push(def_resolved_symbols);
@@ -343,7 +342,7 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
 
         let typedef_resolved_symbols = mono::TypeSymbols {
             type_name: program.custom_type_symbols[orig_id].type_name.clone(),
-            mono_with: inst_args.items,
+            type_mono: IdVec::from_items(inst_args.items),
             variant_symbols: program.custom_type_symbols[orig_id].variant_symbols.clone(),
         };
 
