@@ -983,9 +983,11 @@ fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> Result<typed::Patt
         AnnotPattern::IntConst(val) => Ok(typed::Pattern::IntConst(val)),
         AnnotPattern::FloatConst(val) => Ok(typed::Pattern::FloatConst(val)),
 
-        AnnotPattern::Span(lo, hi, content) => {
-            extract_pat_solution(ctx, *content).map_err(locate_span(lo, hi))
-        }
+        AnnotPattern::Span(lo, hi, content) => Ok(typed::Pattern::Span(
+            lo,
+            hi,
+            Box::new(extract_pat_solution(ctx, *content).map_err(locate_span(lo, hi))?),
+        )),
     }
 }
 
@@ -1057,7 +1059,11 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawEr
 
         AnnotExpr::FloatLit(val) => Ok(typed::Expr::FloatLit(val)),
 
-        AnnotExpr::Span(lo, hi, body) => extract_solution(ctx, *body).map_err(locate_span(lo, hi)),
+        AnnotExpr::Span(lo, hi, body) => Ok(typed::Expr::Span(
+            lo,
+            hi,
+            Box::new(extract_solution(ctx, *body).map_err(locate_span(lo, hi))?),
+        )),
     }
 }
 

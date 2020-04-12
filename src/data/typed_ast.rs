@@ -38,6 +38,8 @@ pub enum Expr {
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
+
+    Span(usize, usize, Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
@@ -54,4 +56,6 @@ pub enum Pattern {
     ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),
+
+    Span(usize, usize, Box<Pattern>),
 }
