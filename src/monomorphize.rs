@@ -136,6 +136,8 @@ fn resolve_expr(
         &typed::Expr::ByteLit(val) => mono::Expr::ByteLit(val),
         &typed::Expr::IntLit(val) => mono::Expr::IntLit(val),
         &typed::Expr::FloatLit(val) => mono::Expr::FloatLit(val),
+
+        typed::Expr::Span(_, _, content) => resolve_expr(val_insts, type_insts, inst_args, content),
     }
 }
 
@@ -260,6 +262,8 @@ fn resolve_pattern(
         &typed::Pattern::ByteConst(val) => mono::Pattern::ByteConst(val),
         &typed::Pattern::IntConst(val) => mono::Pattern::IntConst(val),
         &typed::Pattern::FloatConst(val) => mono::Pattern::FloatConst(val),
+
+        typed::Pattern::Span(_, _, content) => resolve_pattern(type_insts, inst_args, content),
     }
 }
 

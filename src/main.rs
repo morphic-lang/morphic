@@ -25,6 +25,7 @@ mod report_type;
 mod type_infer;
 
 mod check_exhaustive;
+mod report_pattern;
 
 mod check_main;
 
@@ -102,7 +103,7 @@ impl Error {
             ResolveFailed(err) => err.report(dest, files),
             PurityCheckFailed(err) => err.report(dest, files),
             TypeInferFailed(err) => err.report(dest, files),
-            CheckExhaustiveFailed(err) => writeln!(dest, "{}", err),
+            CheckExhaustiveFailed(err) => err.report(dest, files),
             CheckMainFailed(err) => writeln!(dest, "{}", err),
             CreateArtifactsFailed(err) => {
                 writeln!(dest, "Could not create artifacts directory: {}", err)
