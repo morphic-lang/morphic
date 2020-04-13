@@ -92,6 +92,9 @@ fn line_digits(src: &Lines) -> usize {
     digits
 }
 
+const MULTILINE_HEAD_TAIL_LINES: usize = 5;
+const ACCEPTABLE_MIDDLE_LINES_BEFORE_TRUNCATE: usize = 5;
+
 fn format_snippet(
     dest: &mut impl io::Write,
     src: &Lines,
@@ -168,19 +171,38 @@ fn format_snippet(
             )),
         )?;
 
+        let should_truncate = hi_line.0 + 1 - lo_line.0
+            > 2 * MULTILINE_HEAD_TAIL_LINES + ACCEPTABLE_MIDDLE_LINES_BEFORE_TRUNCATE;
+
         for line_idx in lo_line.0..=hi_line.0 {
             let content = src.line(LineIdx(line_idx));
 
-            writeln!(
-                dest,
-                "{runner} {content}",
-                runner = line_num_style.paint(format!(
-                    " {num:>digits$} |",
-                    num = line_idx + 1,
-                    digits = digits
-                )),
-                content = content
-            )?;
+            let is_visible = !should_truncate
+                || line_idx < lo_line.0 + MULTILINE_HEAD_TAIL_LINES
+                || line_idx + MULTILINE_HEAD_TAIL_LINES > hi_line.0;
+
+            if is_visible {
+                writeln!(
+                    dest,
+                    "{runner} {content}",
+                    runner = line_num_style.paint(format!(
+                        " {num:>digits$} |",
+                        num = line_idx + 1,
+                        digits = digits
+                    )),
+                    content = content
+                )?;
+            } else if line_idx == lo_line.0 + MULTILINE_HEAD_TAIL_LINES {
+                writeln!(
+                    dest,
+                    "{}",
+                    line_num_style.paint(format!(
+                        "{ellipsis:>spacing$}",
+                        ellipsis = "...",
+                        spacing = digits + 3
+                    ))
+                )?;
+            }
         }
 
         writeln!(
