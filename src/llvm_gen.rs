@@ -16,6 +16,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
+use inkwell::passes::{PassManager, PassManagerBuilder};
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
     TargetTriple,
@@ -1560,7 +1561,7 @@ fn gen_function<'a, 'b>(
     }
 }
 
-fn get_target_machine(target: &cli::TargetConfig) -> TargetMachine {
+fn get_target_machine(target: &cli::TargetConfig, opt_level: OptimizationLevel) -> TargetMachine {
     Target::initialize_all(&InitializationConfig::default());
     let llvm_target = Target::from_triple(&target.target).unwrap();
 
@@ -1570,7 +1571,7 @@ fn get_target_machine(target: &cli::TargetConfig) -> TargetMachine {
             &target.target,
             &target.target_cpu,
             &target.target_features,
-            OptimizationLevel::None,
+            opt_level,
             RelocMode::PIC,
             // https://stackoverflow.com/questions/40493448/what-does-the-codemodel-in-clang-llvm-refer-to
             CodeModel::Small,
@@ -1771,71 +1772,127 @@ fn verify_llvm(module: &Module) {
     }
 }
 
-pub fn run(stdio: Stdio, program: low::Program, use_valgrind: bool) -> Child {
-    let target = cli::native_target_config();
+#[derive(Clone, Copy, Debug)]
+struct ArtifactPaths<'a> {
+    ll: Option<&'a Path>,
+    opt_ll: Option<&'a Path>,
+    asm: Option<&'a Path>,
+    obj: &'a Path,
+    exe: &'a Path,
+}
 
-    let target_machine = get_target_machine(&target);
-
+fn compile_to_executable(
+    program: low::Program,
+    target: &cli::TargetConfig,
+    opt_level: OptimizationLevel,
+    artifact_paths: ArtifactPaths,
+) {
+    let target_machine = get_target_machine(&target, opt_level);
     let context = Context::create();
+
     let module = gen_program(program, &target_machine, &context);
+
+    // We output the ll file before verifying so that it can be inspected even if verification
+    // fails.
+    if let Some(ll_path) = artifact_paths.ll {
+        module.print_to_file(ll_path).unwrap();
+    }
 
     verify_llvm(&module);
 
-    let obj_file = tempfile::Builder::new()
+    let pass_manager_builder = PassManagerBuilder::create();
+    pass_manager_builder.set_optimization_level(opt_level);
+    let pass_manager = PassManager::create(());
+    pass_manager_builder.populate_module_pass_manager(&pass_manager);
+    pass_manager.run_on(&module);
+
+    if let Some(opt_ll_path) = artifact_paths.opt_ll {
+        module.print_to_file(opt_ll_path).unwrap();
+    }
+
+    // Optimization should produce a well-formed module, but if it doesn't, we want to know about
+    // it!
+    verify_llvm(&module);
+
+    if let Some(asm_path) = artifact_paths.asm {
+        target_machine
+            .write_to_file(&module, FileType::Assembly, &asm_path)
+            .unwrap();
+    }
+
+    target_machine
+        .write_to_file(&module, FileType::Object, artifact_paths.obj)
+        .unwrap();
+
+    run_cc(&target.target, artifact_paths.obj, artifact_paths.exe);
+}
+
+pub fn run(stdio: Stdio, program: low::Program, use_valgrind: bool) -> Child {
+    let target = cli::native_target_config();
+    let opt_level = cli::default_llvm_opt_level();
+
+    let obj_path = tempfile::Builder::new()
         .suffix(".o")
         .tempfile_in("")
-        .unwrap();
-    target_machine
-        .write_to_file(&module, FileType::Object, obj_file.path())
-        .unwrap();
+        .unwrap()
+        .into_temp_path();
 
     let output_path = tempfile::Builder::new()
         .prefix(".tmp-exe-")
         .tempfile_in("")
         .unwrap()
         .into_temp_path();
-    run_cc(&target.target, obj_file.path(), &output_path);
-    std::mem::drop(obj_file);
+
+    compile_to_executable(
+        program,
+        &target,
+        opt_level,
+        ArtifactPaths {
+            ll: None,
+            opt_ll: None,
+            asm: None,
+            obj: &obj_path,
+            exe: &output_path,
+        },
+    );
+
+    std::mem::drop(obj_path);
 
     spawn_process(stdio, output_path, use_valgrind).unwrap()
 }
 
 pub fn build(program: low::Program, config: &cli::BuildConfig) {
-    let target_machine = get_target_machine(&config.target);
-
-    let context = Context::create();
-    let module = gen_program(program, &target_machine, &context);
-
     if let Some(artifact_dir) = &config.artifact_dir {
-        let ll_path = artifact_dir.artifact_path("ll");
-        module.print_to_file(ll_path).unwrap();
-
-        // We output the ll file before verifying so that it can be
-        // inspected even if verification fails.
-        verify_llvm(&module);
-
-        let asm_path = artifact_dir.artifact_path("s");
-        target_machine
-            .write_to_file(&module, FileType::Assembly, &asm_path)
-            .unwrap();
-
-        let obj_path = artifact_dir.artifact_path("o");
-        target_machine
-            .write_to_file(&module, FileType::Object, &obj_path)
-            .unwrap();
-
-        run_cc(&config.target.target, &obj_path, &config.output_path);
+        compile_to_executable(
+            program,
+            &config.target,
+            config.llvm_opt_level,
+            ArtifactPaths {
+                ll: Some(&artifact_dir.artifact_path("ll")),
+                opt_ll: Some(&artifact_dir.artifact_path("opt.ll")),
+                asm: Some(&artifact_dir.artifact_path("s")),
+                obj: &artifact_dir.artifact_path("o"),
+                exe: &config.output_path,
+            },
+        );
     } else {
-        verify_llvm(&module);
-
-        let obj_file = tempfile::Builder::new()
+        let obj_path = tempfile::Builder::new()
             .suffix(".o")
             .tempfile_in("")
-            .unwrap();
-        target_machine
-            .write_to_file(&module, FileType::Object, obj_file.path())
-            .unwrap();
+            .unwrap()
+            .into_temp_path();
 
-        run_cc(&config.target.target, obj_file.path(), &config.output_path)
+        compile_to_executable(
+            program,
+            &config.target,
+            config.llvm_opt_level,
+            ArtifactPaths {
+                ll: None,
+                opt_ll: None,
+                asm: None,
+                obj: &obj_path,
+                exe: &config.output_path,
+            },
+        )
     }
 }

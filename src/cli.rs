@@ -1,5 +1,6 @@
 use clap::{App, AppSettings, Arg, SubCommand};
 use inkwell::targets::{TargetMachine, TargetTriple};
+use inkwell::OptimizationLevel;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +42,7 @@ pub struct TargetConfig {
 pub struct BuildConfig {
     pub src_path: PathBuf,
     pub target: TargetConfig,
+    pub llvm_opt_level: OptimizationLevel,
 
     pub output_path: PathBuf,
     pub artifact_dir: Option<ArtifactDir>,
@@ -60,8 +62,18 @@ pub fn native_target_config() -> TargetConfig {
     }
 }
 
+pub fn default_llvm_opt_level() -> OptimizationLevel {
+    // TODO: Set this to 'Aggressive' once we fix the undefined behavior revealed by compiling with
+    // full optimizations.
+    OptimizationLevel::None
+}
+
 impl Config {
     pub fn from_args() -> Self {
+        // We need to create this string at the top of this function because clap's cli builder
+        // can't take ownership of strings.
+        let default_opt_level_string = (default_llvm_opt_level() as u32).to_string();
+
         let matches = App::new(clap::crate_name!())
             .version(clap::crate_version!())
             .about(clap::crate_description!())
@@ -111,6 +123,14 @@ impl Config {
                             ),
                     )
                     .arg(
+                        Arg::with_name("llvm-opt-level")
+                            .long("llvm-opt-level")
+                            .help("Set the optimization level used by the LLVM backend.")
+                            .takes_value(true)
+                            .possible_values(&["0", "1", "2", "3"])
+                            .default_value(&default_opt_level_string),
+                    )
+                    .arg(
                         Arg::with_name("wasm")
                             .long("wasm")
                             .help("Compile to wasm instead of a native binary."),
@@ -158,6 +178,14 @@ impl Config {
                 native_target_config()
             };
 
+            let llvm_opt_level = match matches.value_of("llvm-opt-level").unwrap() {
+                "0" => OptimizationLevel::None,
+                "1" => OptimizationLevel::Less,
+                "2" => OptimizationLevel::Default,
+                "3" => OptimizationLevel::Aggressive,
+                _ => unreachable!(),
+            };
+
             let output_path = matches
                 .value_of_os("output-path")
                 .map(|s| s.to_owned().into())
@@ -183,6 +211,7 @@ impl Config {
             let build_config = BuildConfig {
                 src_path,
                 target,
+                llvm_opt_level,
                 output_path: output_path.into(),
                 artifact_dir,
             };
