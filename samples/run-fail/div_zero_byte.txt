@@ -1,0 +1,3 @@
+proc main(): () =
+  1b /& 0b then
+  do output("Successfully divided by zero (!)")

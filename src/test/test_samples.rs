@@ -137,5 +137,19 @@ sample! { pop_empty "samples/run-fail/pop_empty.txt";
     status = Failure(Some(1));
 }
 
+sample! { div_zero_byte "samples/run-fail/div_zero_byte.txt";
+    stdin = "";
+    stdout = "";
+    stderr = "panicked due to division by zero\n";
+    status = Failure(Some(1));
+}
+
+sample! { div_zero_int "samples/run-fail/div_zero_int.txt";
+    stdin = "";
+    stdout = "";
+    stderr = "panicked due to division by zero\n";
+    status = Failure(Some(1));
+}
+
 // TODO: Carefully review 'samples/mutate.txt' to determine by hand what the stdouted output should
 // be, then add a test for it.

@@ -1134,30 +1134,45 @@ fn interpret_expr(
                     ),
                 ))),
 
-            Expr::ArithOp(ArithOp::Op(NumType::Byte, BinOp::Div, local_id1, local_id2)) => heap
-                .add(Value::Num(NumValue::Byte(
+            Expr::ArithOp(ArithOp::Op(NumType::Byte, BinOp::Div, local_id1, local_id2)) => {
+                let divisor = unwrap_byte(
+                    heap,
+                    locals[local_id2],
+                    stacktrace.add_frame("arith".into()),
+                );
+
+                if divisor.0 == 0 {
+                    writeln!(stderr, "panicked due to division by zero").unwrap();
+                    return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
+                }
+
+                heap.add(Value::Num(NumValue::Byte(
                     unwrap_byte(
                         heap,
                         locals[local_id1],
                         stacktrace.add_frame("arith".into()),
-                    ) / unwrap_byte(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))),
+                    ) / divisor,
+                )))
+            }
 
             Expr::ArithOp(ArithOp::Op(NumType::Int, BinOp::Div, local_id1, local_id2)) => {
+                let divisor = unwrap_int(
+                    heap,
+                    locals[local_id2],
+                    stacktrace.add_frame("arith".into()),
+                );
+
+                if divisor.0 == 0 {
+                    writeln!(stderr, "panicked due to division by zero").unwrap();
+                    return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
+                }
+
                 heap.add(Value::Num(NumValue::Int(
                     unwrap_int(
                         heap,
                         locals[local_id1],
                         stacktrace.add_frame("arith".into()),
-                    ) / unwrap_int(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
+                    ) / divisor,
                 )))
             }
 

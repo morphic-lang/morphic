@@ -21,7 +21,7 @@ use inkwell::targets::{
     TargetTriple,
 };
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -38,9 +38,15 @@ const VARIANT_ALIGN_IDX: u32 = 1;
 const VARIANT_BYTES_IDX: u32 = 2;
 
 #[derive(Clone, Debug)]
+struct Intrinsics<'a> {
+    expect_i1: FunctionValue<'a>,
+}
+
+#[derive(Clone, Debug)]
 struct Globals<'a, 'b> {
     context: &'a Context,
     module: &'b Module<'a>,
+    intrinsics: Intrinsics<'a>,
     target: &'b TargetData,
     libc: LibC<'a>,
     custom_types: IdVec<low::CustomTypeId, CustomTypeDecls<'a>>,
@@ -822,6 +828,67 @@ fn get_undef<'a>(ty: &BasicTypeEnum<'a>) -> BasicValueEnum<'a> {
     }
 }
 
+fn build_check_divisor_nonzero<'a, 'b>(
+    globals: &Globals<'a, 'b>,
+    builder: &Builder<'a>,
+    val: IntValue<'a>,
+) {
+    let is_nonzero = builder.build_int_compare(
+        IntPredicate::NE,
+        val,
+        val.get_type().const_int(0 as u64, false),
+        "is_nonzero",
+    );
+
+    builder.build_call(
+        globals.intrinsics.expect_i1,
+        &[
+            is_nonzero.into(),
+            globals
+                .context
+                .bool_type()
+                .const_int(1 as u64, false)
+                .into(),
+        ],
+        "expect_nonzero",
+    );
+
+    let curr_block = builder.get_insert_block().unwrap();
+
+    let panic_if_zero = globals
+        .context
+        .insert_basic_block_after(curr_block, "panic_if_zero");
+
+    let continue_if_nonzero = globals
+        .context
+        .insert_basic_block_after(curr_block, "continue_if_nonzero");
+
+    builder.build_conditional_branch(is_nonzero, continue_if_nonzero, panic_if_zero);
+
+    builder.position_at_end(panic_if_zero);
+
+    let panic_message =
+        builder.build_global_string_ptr("panicked due to division by zero\n", "panic_message");
+
+    let stderr_val = builder.build_load(globals.libc.stderr.into_pointer_value(), "stderr");
+
+    builder.build_call(
+        globals.libc.fprintf,
+        &[stderr_val, panic_message.as_pointer_value().into()],
+        "fprintf_call",
+    );
+
+    builder.build_call(
+        globals.libc.exit,
+        &[globals.context.i32_type().const_int(1 as u64, false).into()],
+        "exit_call",
+    );
+
+    builder.build_unreachable();
+
+    builder.position_at_end(continue_if_nonzero);
+}
+
 fn gen_expr<'a, 'b>(
     builder: &Builder<'a>,
     instances: &Instances<'a>,
@@ -1143,20 +1210,26 @@ fn gen_expr<'a, 'b>(
                         .into(),
                 },
                 first_ord::BinOp::Div => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_unsigned_div(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "byte_div",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_signed_div(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_div",
-                        )
-                        .into(),
+                    first_ord::NumType::Byte => {
+                        build_check_divisor_nonzero(globals, builder, locals[rhs].into_int_value());
+                        builder
+                            .build_int_unsigned_div(
+                                locals[lhs].into_int_value(),
+                                locals[rhs].into_int_value(),
+                                "byte_div",
+                            )
+                            .into()
+                    }
+                    first_ord::NumType::Int => {
+                        build_check_divisor_nonzero(globals, builder, locals[rhs].into_int_value());
+                        builder
+                            .build_int_signed_div(
+                                locals[lhs].into_int_value(),
+                                locals[rhs].into_int_value(),
+                                "int_div",
+                            )
+                            .into()
+                    }
                     first_ord::NumType::Float => builder
                         .build_float_div(
                             locals[lhs].into_float_value(),
@@ -1548,6 +1621,19 @@ fn custom_type_dep_order(typedefs: &IdVec<low::CustomTypeId, low::Type>) -> Vec<
         .collect()
 }
 
+fn get_intrinsics<'a>(context: &'a Context, module: &Module<'a>) -> Intrinsics<'a> {
+    Intrinsics {
+        expect_i1: module.add_function(
+            "llvm.expect.i1",
+            context.bool_type().fn_type(
+                &[context.bool_type().into(), context.bool_type().into()],
+                false,
+            ),
+            Some(Linkage::External),
+        ),
+    }
+}
+
 fn gen_program<'a>(
     program: low::Program,
     target_machine: &TargetMachine,
@@ -1555,6 +1641,8 @@ fn gen_program<'a>(
 ) -> Module<'a> {
     let module = context.create_module("module");
     module.set_triple(&target_machine.get_triple());
+
+    let intrinsics = get_intrinsics(context, &module);
 
     let libc = LibC::declare(&context, &module);
 
@@ -1565,6 +1653,7 @@ fn gen_program<'a>(
     let globals = Globals {
         context: &context,
         module: &module,
+        intrinsics,
         target: &target_machine.get_target_data(),
         libc,
         custom_types,
