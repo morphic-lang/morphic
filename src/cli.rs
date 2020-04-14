@@ -63,9 +63,7 @@ pub fn native_target_config() -> TargetConfig {
 }
 
 pub fn default_llvm_opt_level() -> OptimizationLevel {
-    // TODO: Set this to 'Aggressive' once we fix the undefined behavior revealed by compiling with
-    // full optimizations.
-    OptimizationLevel::None
+    OptimizationLevel::Aggressive
 }
 
 impl Config {

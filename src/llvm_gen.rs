@@ -1642,6 +1642,7 @@ fn gen_program<'a>(
 ) -> Module<'a> {
     let module = context.create_module("module");
     module.set_triple(&target_machine.get_triple());
+    module.set_data_layout(&target_machine.get_target_data().get_data_layout());
 
     let intrinsics = get_intrinsics(context, &module);
 
