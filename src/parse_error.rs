@@ -96,7 +96,7 @@ pub fn report(
                               instead:\n\n",
                         );
                         for name in expected {
-                            msg.push_str(&format!("    {}\n", name));
+                            msg.push_str(&format!("    {}\n", format_token_name(&name)));
                         }
                         msg
                     }),
