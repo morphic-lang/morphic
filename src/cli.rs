@@ -52,7 +52,7 @@ pub enum Config {
     BuildConfig(BuildConfig),
 }
 
-pub fn default_target_config() -> TargetConfig {
+pub fn native_target_config() -> TargetConfig {
     TargetConfig {
         target: TargetMachine::get_default_triple(),
         target_cpu: TargetMachine::get_host_cpu_name().to_string(),
@@ -111,35 +111,9 @@ impl Config {
                             ),
                     )
                     .arg(
-                        Arg::with_name("target")
-                            .long("target")
-                            .help(
-                                "Specify the architecture to compile for as a target triple. The \
-                                 target should have the format '<arch><sub>-<vendor>-<sys>-<abi>'. \
-                                 If 'unknown' is specified for a component for the target, default \
-                                 values will be selected. If a 'target' is specified, a \
-                                 'target-cpu' and 'target-features' should also be specified for \
-                                 performant generated code, since, in this case, they cannot be \
-                                 determined automatically",
-                            )
-                            .takes_value(true),
-                    )
-                    .arg(
-                        Arg::with_name("target-cpu")
-                            .long("target-cpu")
-                            .help("Specify a cpu for the target.")
-                            .takes_value(true),
-                    )
-                    .arg(
-                        Arg::with_name("target-features")
-                            .long("target-features")
-                            .help(
-                                "Specify a list of features for the target. The list should have \
-                                 the format '(+|-)<feature>,...', where '+' specifies that a \
-                                 feature should be enabled and '-' specifies that a feature should \
-                                 be disabled.",
-                            )
-                            .takes_value(true),
+                        Arg::with_name("wasm")
+                            .long("wasm")
+                            .help("Compile to wasm instead of a native binary."),
                     )
                     .arg(
                         Arg::with_name("output-path")
@@ -173,38 +147,26 @@ impl Config {
         if let Some(matches) = matches.subcommand_matches("build") {
             let src_path: PathBuf = matches.value_of_os("src-path").unwrap().to_owned().into();
 
-            let specified_output_path = matches
-                .value_of_os("output-path")
-                .map(|s| s.to_owned().into());
-
-            let specified_target = matches.value_of("target").map(TargetTriple::create);
-            let specified_target_cpu = matches.value_of("target-cpu").map(|s| s.to_owned());
-            let specified_target_features =
-                matches.value_of("target-features").map(|s| s.to_owned());
-
-            let target = if let Some(target) = specified_target {
-                TargetConfig {
-                    target,
-                    target_cpu: specified_target_cpu.unwrap_or("".to_owned()),
-                    target_features: specified_target_features.unwrap_or("".to_owned()),
-                }
+            let target = if matches.is_present("wasm") {
+                // TargetConfig {
+                //     target: TargetTriple::create("wasm32-unknown-unknown-wasm"),
+                //     target_cpu: "".to_owned(),
+                //     target_features: "".to_owned(),
+                // }
+                unimplemented!("wasm support is an illusion")
             } else {
-                let mut target = default_target_config();
-                if let Some(cpu) = specified_target_cpu {
-                    target.target_cpu = cpu;
-                }
-                if let Some(features) = specified_target_features {
-                    target.target_features = features;
-                }
-                target
+                native_target_config()
             };
 
-            let output_path = specified_output_path.unwrap_or(
-                std::env::current_dir()
-                    .unwrap()
-                    .join(src_path.file_name().unwrap())
-                    .with_extension(""),
-            );
+            let output_path = matches
+                .value_of_os("output-path")
+                .map(|s| s.to_owned().into())
+                .unwrap_or(
+                    std::env::current_dir()
+                        .unwrap()
+                        .join(src_path.file_name().unwrap())
+                        .with_extension(""),
+                );
 
             let artifact_dir = if matches.is_present("emit-artifacts") {
                 let mut artifact_dir = output_path.clone().into_os_string();

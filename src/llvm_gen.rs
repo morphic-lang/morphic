@@ -1772,7 +1772,7 @@ fn verify_llvm(module: &Module) {
 }
 
 pub fn run(stdio: Stdio, program: low::Program, use_valgrind: bool) -> Child {
-    let target = cli::default_target_config();
+    let target = cli::native_target_config();
 
     let target_machine = get_target_machine(&target);
 
