@@ -1,12 +1,5 @@
 **/*.rs.bk
 
-# ignore everything without an extension
-*
-!/**/
-!*.*
-
-# exceptions
-!Dockerfile
 /target
 
 # opt-proto artifacts
