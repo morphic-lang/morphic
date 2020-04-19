@@ -1728,7 +1728,7 @@ fn gen_program<'a>(
     return module;
 }
 
-fn run_cc(_target_triple: &TargetTriple, obj_path: &Path, _exe_path: &Path) {
+fn run_cc(_target_triple: &TargetTriple, obj_path: &Path, exe_path: &Path) {
     // TODO: handle different platforms!!!
     let clang = find_clang(10).unwrap();
     std::process::Command::new(clang.path)
@@ -1738,6 +1738,8 @@ fn run_cc(_target_triple: &TargetTriple, obj_path: &Path, _exe_path: &Path) {
         .arg("-fPIC")
         .arg("-m64")
         .arg("-Wl,--gc-sections")
+        .arg("-o")
+        .arg(exe_path)
         .arg(obj_path)
         .status()
         .unwrap();
