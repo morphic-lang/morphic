@@ -9,6 +9,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::tail_rec_ast as tail;
+use crate::find_clang::find_clang;
 use crate::pseudoprocess::{spawn_process, Child, Stdio};
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
@@ -29,7 +30,6 @@ use inkwell::{FloatPredicate, IntPredicate};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
-use std::ffi::OsStr;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -1728,43 +1728,19 @@ fn gen_program<'a>(
     return module;
 }
 
-fn run_cc(target_triple: &TargetTriple, obj_path: &Path, exe_path: &Path) {
-    let compiler = cc::Build::new()
-        .cargo_metadata(false)
-        .warnings(false)
-        .debug(false)
-        .opt_level(3)
-        .pic(true)
-        .target(target_triple.as_str().to_str().unwrap())
-        .host(&TargetMachine::get_default_triple().to_string())
-        .get_compiler();
-    let mut command = compiler.to_command();
-
-    if compiler.is_like_gnu() {
-        command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
-
-        let mut o_arg = OsStr::new("-o").to_owned();
-        o_arg.push(exe_path);
-        command.arg(&o_arg);
-    } else if compiler.is_like_clang() {
-        command.arg("-Wl,--gc-sections"); // performs link time dead code elimination
-
-        let mut o_arg = OsStr::new("-o").to_owned();
-        o_arg.push(exe_path);
-        command.arg(&o_arg);
-    } else if compiler.is_like_msvc() {
-        // TODO: are there any additional flags we should pass to msvc?
-
-        let mut o_arg = OsStr::new("/Fe").to_owned();
-        o_arg.push(exe_path);
-        command.arg(&o_arg); // TODO: actually test this on Windows
-    } else {
-        // Looking at the 1.0.50 source code for cc, this will never actually
-        // happen. But there's no guarantee that will remain true.
-        panic!("Unrecognized compiler. CC must be like gnu, clang, or msvc");
-    }
-
-    command.arg(obj_path).status().unwrap();
+fn run_cc(_target_triple: &TargetTriple, obj_path: &Path, _exe_path: &Path) {
+    // TODO: handle different platforms!!!
+    let clang = find_clang(10).unwrap();
+    std::process::Command::new(clang.path)
+        .arg("-O3")
+        .arg("-ffunction-sections")
+        .arg("-fdata-sections")
+        .arg("-fPIC")
+        .arg("-m64")
+        .arg("-Wl,--gc-sections")
+        .arg(obj_path)
+        .status()
+        .unwrap();
 }
 
 fn verify_llvm(module: &Module) {

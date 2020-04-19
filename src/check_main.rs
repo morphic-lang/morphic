@@ -1,11 +1,10 @@
-use failure::Fail;
-
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
+use thiserror::Error;
 
-#[derive(Clone, Debug, Fail)]
-#[fail(display = "`main` procedure must have type `proc () -> ()`")]
+#[derive(Clone, Debug, Error)]
+#[error("`main` procedure must have type `proc () -> ()`")]
 pub struct Error;
 
 pub fn check_main(program: &typed::Program) -> Result<(), Error> {

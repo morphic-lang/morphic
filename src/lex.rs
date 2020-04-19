@@ -1,8 +1,8 @@
-use failure::Fail;
 use std::fmt;
+use thiserror::Error;
 
-#[derive(Clone, Copy, Debug, Fail)]
-#[fail(display = "Unrecognized token at position {}", _0)]
+#[derive(Clone, Copy, Debug, Error)]
+#[error("Unrecognized token at position {0}")]
 pub struct Error(pub usize);
 
 #[derive(Clone, Debug)]
