@@ -3,6 +3,7 @@
 
 typedef unsigned long size_t;
 typedef long ptrdiff_t;
+
 void* memset(void* ptr, int value, size_t num); /* Used by dlmalloc implementation */
 void* memcpy(void* dst, const void* src, size_t num); /* Used by dlmalloc implementation */
 void* malloc(size_t size);
