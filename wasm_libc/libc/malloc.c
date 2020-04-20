@@ -1,13 +1,14 @@
+#include "builtins.h"
 #include "libc.h"
 
-/* dlmalloc configuration for WebAssembly (based on wasi-libc): */
+/* Configuration of dlmalloc for WebAssembly (based on wasi-libc): */
 
 #define PAGESIZE 65536
 
-/* TODO: figure out how to abort */
-static void abort(void) {}
+/* Provided by javascript as an import. */
+extern void abort(void);
 
-/* dlmalloc will use sbrk to allocate memory */
+/* dlmalloc will use sbrk to allocate memory. */
 static void* sbrk(ptrdiff_t increment) {
   if (increment < 0 || increment % PAGESIZE != 0) {
     abort();
@@ -17,7 +18,7 @@ static void* sbrk(ptrdiff_t increment) {
     return (void*)(__wasm_builtin_memory_size() * PAGESIZE);
   }
 
-  return (void*)(__wasm__builtin_memory_grow(increment / PAGESIZE));
+  return (void*)(__wasm_builtin_memory_grow(increment / PAGESIZE));
 }
 
 /* We define the error codes to be the same values as on unix. */

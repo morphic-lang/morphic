@@ -1,5 +1,9 @@
 #include "libc.h"
 
+void _start(void) {
+  // TODO
+}
+
 void* memset(void* ptr, int value, size_t num) {
   char* p = (char*)ptr;
   while (num-- != 0) {
