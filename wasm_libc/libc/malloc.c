@@ -4,10 +4,8 @@
 
 #define PAGESIZE 65536
 
-/* TODO: is this the right way to abort? */
-static void abort(void) {
-  __wasm_builtin_unreachable();
-}
+/* TODO: figure out how to abort */
+static void abort(void) {}
 
 /* dlmalloc will use sbrk to allocate memory */
 static void* sbrk(ptrdiff_t increment) {
