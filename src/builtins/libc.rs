@@ -4,6 +4,11 @@ use inkwell::module::{Linkage, Module};
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
 
+mod wasm {
+    const LIBC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libc.o"));
+    const MALLOC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/malloc.o"));
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct LibC<'a> {
     pub stderr: BasicValueEnum<'a>,
