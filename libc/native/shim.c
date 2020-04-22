@@ -4,19 +4,17 @@
 
 void print(const char *str, ...) {
     va_list arg;
+
     va_start(arg, str);
-
     vfprintf(stdout, str, arg);
-
     va_end(arg);
 }
 
 void print_error(const char *str, ...) {
     va_list arg;
+
     va_start(arg, str);
-
     vfprintf(stderr, str, arg);
-
     va_end(arg);
 }
 

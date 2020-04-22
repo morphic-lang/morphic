@@ -1560,16 +1560,30 @@ fn gen_function<'a, 'b>(
     }
 }
 
-fn get_target_machine(target: &cli::TargetConfig, opt_level: OptimizationLevel) -> TargetMachine {
+fn get_target_machine(target: cli::TargetConfig, opt_level: OptimizationLevel) -> TargetMachine {
     Target::initialize_all(&InitializationConfig::default());
-    let llvm_target = Target::from_triple(&target.target).unwrap();
 
-    // RelocMode and CodeModel can affect the options we need to pass cc::Build in get_cc
+    let (target_triple, target_cpu, target_features) = match target {
+        cli::TargetConfig::Native => (
+            TargetMachine::get_default_triple(),
+            TargetMachine::get_host_cpu_name().to_string(),
+            TargetMachine::get_host_cpu_features().to_string(),
+        ),
+        cli::TargetConfig::Wasm => (
+            TargetTriple::create("wasm32-unknown-unknown"),
+            "".to_owned(),
+            "".to_owned(),
+        ),
+    };
+
+    let llvm_target = Target::from_triple(&target_triple).unwrap();
+
+    // RelocMode and CodeModel can affect the options we need to pass clang in run_cc
     llvm_target
         .create_target_machine(
-            &target.target,
-            &target.target_cpu,
-            &target.target_features,
+            &target_triple,
+            &target_cpu,
+            &target_features,
             opt_level,
             RelocMode::PIC,
             // https://stackoverflow.com/questions/40493448/what-does-the-codemodel-in-clang-llvm-refer-to
@@ -1721,28 +1735,66 @@ fn gen_program<'a>(
     return module;
 }
 
-fn run_cc(_target_triple: &TargetTriple, obj_path: &Path, exe_path: &Path) {
-    // materialize shim file to link with
-    let mut shim_file = tempfile::Builder::new()
-        .suffix(".o")
-        .tempfile_in("")
-        .unwrap();
-    shim_file.write_all(libc::native::SHIM_O).unwrap();
+fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
+    match target {
+        cli::TargetConfig::Native => {
+            // materialize shim file to link with
+            let mut shim_file = tempfile::Builder::new()
+                .suffix(".o")
+                .tempfile_in("")
+                .unwrap();
+            shim_file.write_all(libc::native::SHIM_O).unwrap();
 
-    let clang = find_clang(10).unwrap();
-    std::process::Command::new(clang.path)
-        .arg("-O3")
-        .arg("-ffunction-sections")
-        .arg("-fdata-sections")
-        .arg("-fPIC")
-        .arg("-m64")
-        .arg("-Wl,--gc-sections")
-        .arg("-o")
-        .arg(exe_path)
-        .arg(obj_path)
-        .arg(shim_file.path())
-        .status()
-        .unwrap();
+            let clang = find_clang(10).unwrap();
+            std::process::Command::new(clang.path)
+                .arg("-O3")
+                .arg("-ffunction-sections")
+                .arg("-fdata-sections")
+                .arg("-fPIC")
+                .arg("-Wl,--gc-sections")
+                .arg("-o")
+                .arg(exe_path)
+                .arg(obj_path)
+                .arg(shim_file.path())
+                .status()
+                .unwrap();
+        }
+        cli::TargetConfig::Wasm => {
+            // materialize libc implementation to link with
+
+            let mut libc_file = tempfile::Builder::new()
+                .suffix(".o")
+                .tempfile_in("")
+                .unwrap();
+            libc_file.write_all(libc::wasm::LIBC_O).unwrap();
+
+            let mut malloc_file = tempfile::Builder::new()
+                .suffix(".o")
+                .tempfile_in("")
+                .unwrap();
+            malloc_file.write_all(libc::wasm::MALLOC_O).unwrap();
+
+            let clang = find_clang(10).unwrap();
+            std::process::Command::new(clang.path)
+                .arg("-O3")
+                .arg("-ffunction-sections")
+                .arg("-fdata-sections")
+                .arg("-fPIC")
+                .arg("-Wl,--gc-sections")
+                // WASM only options:
+                .arg("--target=wasm32")
+                .arg("-nostdlib")
+                .arg("-Wl,--no-entry")
+                /////////////////////
+                .arg("-o")
+                .arg(exe_path)
+                .arg(obj_path)
+                .arg(libc_file.path())
+                .arg(malloc_file.path())
+                .status()
+                .unwrap();
+        }
+    }
 }
 
 fn verify_llvm(module: &Module) {
@@ -1762,11 +1814,11 @@ struct ArtifactPaths<'a> {
 
 fn compile_to_executable(
     program: low::Program,
-    target: &cli::TargetConfig,
+    target: cli::TargetConfig,
     opt_level: OptimizationLevel,
     artifact_paths: ArtifactPaths,
 ) {
-    let target_machine = get_target_machine(&target, opt_level);
+    let target_machine = get_target_machine(target, opt_level);
     let context = Context::create();
 
     let module = gen_program(program, &target_machine, &context);
@@ -1803,11 +1855,11 @@ fn compile_to_executable(
         .write_to_file(&module, FileType::Object, artifact_paths.obj)
         .unwrap();
 
-    run_cc(&target.target, artifact_paths.obj, artifact_paths.exe);
+    run_cc(target, artifact_paths.obj, artifact_paths.exe);
 }
 
 pub fn run(stdio: Stdio, program: low::Program, use_valgrind: bool) -> Child {
-    let target = cli::native_target_config();
+    let target = cli::TargetConfig::Native;
     let opt_level = cli::default_llvm_opt_level();
 
     let obj_path = tempfile::Builder::new()
@@ -1824,7 +1876,7 @@ pub fn run(stdio: Stdio, program: low::Program, use_valgrind: bool) -> Child {
 
     compile_to_executable(
         program,
-        &target,
+        target,
         opt_level,
         ArtifactPaths {
             ll: None,
@@ -1844,7 +1896,7 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) {
     if let Some(artifact_dir) = &config.artifact_dir {
         compile_to_executable(
             program,
-            &config.target,
+            config.target,
             config.llvm_opt_level,
             ArtifactPaths {
                 ll: Some(&artifact_dir.artifact_path("ll")),
@@ -1863,7 +1915,7 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) {
 
         compile_to_executable(
             program,
-            &config.target,
+            config.target,
             config.llvm_opt_level,
             ArtifactPaths {
                 ll: None,

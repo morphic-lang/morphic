@@ -1,5 +1,4 @@
 use clap::{App, AppSettings, Arg, SubCommand};
-use inkwell::targets::{TargetMachine, TargetTriple};
 use inkwell::OptimizationLevel;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -31,11 +30,10 @@ pub struct RunConfig {
     pub stdio: Stdio,
 }
 
-#[derive(Debug)]
-pub struct TargetConfig {
-    pub target: TargetTriple,
-    pub target_cpu: String,
-    pub target_features: String,
+#[derive(Clone, Copy, Debug)]
+pub enum TargetConfig {
+    Native,
+    Wasm,
 }
 
 #[derive(Debug)]
@@ -52,14 +50,6 @@ pub struct BuildConfig {
 pub enum Config {
     RunConfig(RunConfig),
     BuildConfig(BuildConfig),
-}
-
-pub fn native_target_config() -> TargetConfig {
-    TargetConfig {
-        target: TargetMachine::get_default_triple(),
-        target_cpu: TargetMachine::get_host_cpu_name().to_string(),
-        target_features: TargetMachine::get_host_cpu_features().to_string(),
-    }
 }
 
 pub fn default_llvm_opt_level() -> OptimizationLevel {
@@ -166,14 +156,9 @@ impl Config {
             let src_path: PathBuf = matches.value_of_os("src-path").unwrap().to_owned().into();
 
             let target = if matches.is_present("wasm") {
-                // TargetConfig {
-                //     target: TargetTriple::create("wasm32-unknown-unknown-wasm"),
-                //     target_cpu: "".to_owned(),
-                //     target_features: "".to_owned(),
-                // }
-                unimplemented!("wasm support is an illusion")
+                TargetConfig::Wasm
             } else {
-                native_target_config()
+                TargetConfig::Native
             };
 
             let llvm_opt_level = match matches.value_of("llvm-opt-level").unwrap() {
