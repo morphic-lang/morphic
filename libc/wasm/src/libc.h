@@ -1,10 +1,17 @@
 #ifndef _264b892f_09af_4c8c_85c3_102a473fbe29
 #define _264b892f_09af_4c8c_85c3_102a473fbe29
 
+#define NULL 0
+
 #define EOF -1
 
 typedef unsigned long size_t;
 typedef long ptrdiff_t;
+
+/* Javascript needs an entry point to the wasm program. This wrapper will
+   provide the necessary arguments to the opt-proto main function and allow
+   Javascript to easily start execution. */
+void opt_proto_start(void);
 
 void *memset(void *ptr, int value, size_t num); /* Used by dlmalloc implementation. */
 void *memcpy(void *restrict dst, const void *restrict src, size_t num); /* Used by dlmalloc implementation. */

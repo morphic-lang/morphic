@@ -1,6 +1,14 @@
 #include "libc.h"
 #include "js_ffi.h"
 
+/* Provided by the opt-proto program we will be linked against. */
+extern int main(int argc, char **argv);
+
+void opt_proto_start(void) {
+  char *argv = NULL;
+  main(0, &argv);
+}
+
 void *memset(void *ptr, int value, size_t num) {
   char *p = (char *) ptr;
   while (num-- != 0) {

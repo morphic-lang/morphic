@@ -47,8 +47,9 @@
             }
         };
 
-        const { instance } = await WebAssembly.instantiateStreaming(fetch('a.wasm'), importObject);
-        instance.exports.main();
+        WebAssembly.instantiateStreaming(fetch('a.wasm'), importObject).then(results => {
+            results.instance.exports.opt_proto_start();
+        });
     } else {
         alert('This browser does not support WebAssembly!');
     }
