@@ -30,9 +30,7 @@ static void *sbrk(ptrdiff_t increment) {
 #define MORECORE_CANNOT_TRIM 1
 
 /* Removing sanity checks reduces code size. */
-#ifdef DEBUG
-#define ABORT opt_proto_js_exit(1)
-#else
+#ifndef DEBUG
 #define ABORT __builtin_unreachable()
 #endif
 
