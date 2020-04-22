@@ -8,7 +8,7 @@ use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
 use std::convert::TryInto;
 
-pub fn size_t<'a>(context: &'a Context, target: &TargetData) -> IntType<'a> {
+pub fn usize_t<'a>(context: &'a Context, target: &TargetData) -> IntType<'a> {
     let bits_per_byte = 8;
     let ptr_size = target.get_pointer_byte_size(Some(AddressSpace::Generic)) * bits_per_byte;
     return context.custom_width_int_type(ptr_size);
@@ -267,6 +267,20 @@ impl<'a, 'b> Scope<'a, 'b> {
         self.builder.build_bitcast(ptr, ptr_type, "ptr_cast")
     }
 
+    pub fn int_cast(
+        &self,
+        result_type: BasicTypeEnum<'a>,
+        int: BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
+        self.builder
+            .build_int_cast(
+                int.into_int_value(),
+                result_type.into_int_type(),
+                "int_cast",
+            )
+            .into()
+    }
+
     pub fn make_struct(
         &self,
         ty: BasicTypeEnum<'a>,
@@ -441,7 +455,10 @@ impl<'a, 'b> Scope<'a, 'b> {
         ty: BasicTypeEnum<'a>,
         libc: &LibC<'a>,
     ) -> BasicValueEnum<'a> {
-        let ptr = self.call(libc.malloc, &[self.mul(num, self.size(ty))]);
+        let ptr = self.call(
+            libc.malloc,
+            &[self.mul(num, self.int_cast(self.usize_t(), self.size(ty)))],
+        );
         self.if_(self.is_null(ptr), |s| {
             s.panic("malloc failed", &[], libc);
         });
@@ -454,7 +471,13 @@ impl<'a, 'b> Scope<'a, 'b> {
         ty: BasicTypeEnum<'a>,
         libc: &LibC<'a>,
     ) -> BasicValueEnum<'a> {
-        let ptr = self.call(libc.calloc, &[num.into_int_value().into(), self.size(ty)]);
+        let ptr = self.call(
+            libc.calloc,
+            &[
+                num.into_int_value().into(),
+                self.int_cast(self.usize_t(), self.size(ty)),
+            ],
+        );
         self.if_(self.is_null(ptr), |s| {
             s.panic("calloc failed", &[], libc);
         });
@@ -622,6 +645,10 @@ impl<'a, 'b> Scope<'a, 'b> {
         self.context.i64_type().into()
     }
 
+    pub fn usize_t(&self) -> BasicTypeEnum<'a> {
+        usize_t(self.context, self.target).into()
+    }
+
     pub fn i1(&self, val: bool) -> BasicValueEnum<'a> {
         self.context.bool_type().const_int(val as u64, false).into()
     }
@@ -636,6 +663,12 @@ impl<'a, 'b> Scope<'a, 'b> {
 
     pub fn i64(&self, val: u64) -> BasicValueEnum<'a> {
         self.context.i64_type().const_int(val as u64, false).into()
+    }
+
+    pub fn usize(&self, val: u64) -> BasicValueEnum<'a> {
+        usize_t(self.context, self.target)
+            .const_int(val as u64, false)
+            .into()
     }
 
     pub fn ret_void(&self) {

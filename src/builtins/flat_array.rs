@@ -167,7 +167,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let s = scope(self.interface.new, context, target);
             let me = s.ptr_cast(
                 self.array_deref_type,
-                s.malloc(s.i64(1), self.array_deref_type, libc),
+                s.malloc(s.usize(1), self.array_deref_type, libc),
             );
 
             s.arrow_set(me, F_ARR_DATA, s.null(self.interface.item_type));
@@ -331,7 +331,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                     self.interface.item_type,
                     s.call(
                         libc.realloc,
-                        &[s.ptr_cast(s.i8_t(), s.arrow(me, F_ARR_DATA)), alloc_size],
+                        &[
+                            s.ptr_cast(s.i8_t(), s.arrow(me, F_ARR_DATA)),
+                            s.int_cast(s.usize_t(), alloc_size),
+                        ],
                     ),
                 );
 
@@ -442,7 +445,11 @@ impl<'a> FlatArrayIoImpl<'a> {
             // TODO: check bytes_written for errors
             let _bytes_written = s.call_void(
                 libc.write,
-                &[s.arrow(me, F_ARR_DATA), s.i64(1), s.arrow(me, F_ARR_LEN)],
+                &[
+                    s.arrow(me, F_ARR_DATA),
+                    s.usize(1),
+                    s.int_cast(s.usize_t(), s.arrow(me, F_ARR_LEN)),
+                ],
             );
             s.ret_void();
         }

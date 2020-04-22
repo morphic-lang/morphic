@@ -85,7 +85,7 @@ impl<'a> RcBoxBuiltin<'a> {
             let s = scope(self.new, context, target);
             let item = s.arg(0);
 
-            let rc = s.ptr_cast(self.rc_type, s.malloc(s.i64(1), self.rc_type, libc));
+            let rc = s.ptr_cast(self.rc_type, s.malloc(s.usize(1), self.rc_type, libc));
             s.arrow_set(rc, F_REFCOUNT, s.i64(1));
             s.arrow_set(rc, F_ITEM, item);
             s.ret(rc);

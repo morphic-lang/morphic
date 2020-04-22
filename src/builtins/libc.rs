@@ -34,7 +34,7 @@ pub struct LibC<'a> {
 
 impl<'a> LibC<'a> {
     pub fn declare(context: &'a Context, module: &Module<'a>, target: &TargetData) -> Self {
-        let size_t = fountain_pen::size_t(context, target);
+        let usize_t = fountain_pen::usize_t(context, target);
         let void_t = context.void_type();
         let i8_t = context.i8_type();
         let i8_ptr_t = i8_t.ptr_type(AddressSpace::Generic);
@@ -42,7 +42,7 @@ impl<'a> LibC<'a> {
 
         let memcpy = module.add_function(
             "memcpy",
-            i8_ptr_t.fn_type(&[i8_ptr_t.into(), i8_ptr_t.into(), size_t.into()], false),
+            i8_ptr_t.fn_type(&[i8_ptr_t.into(), i8_ptr_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let exit = module.add_function(
@@ -58,17 +58,17 @@ impl<'a> LibC<'a> {
 
         let malloc = module.add_function(
             "malloc",
-            i8_ptr_t.fn_type(&[size_t.into()], false),
+            i8_ptr_t.fn_type(&[usize_t.into()], false),
             Some(Linkage::External),
         );
         let calloc = module.add_function(
             "calloc",
-            i8_ptr_t.fn_type(&[size_t.into(), size_t.into()], false),
+            i8_ptr_t.fn_type(&[usize_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let realloc = module.add_function(
             "realloc",
-            i8_ptr_t.fn_type(&[i8_ptr_t.into(), size_t.into()], false),
+            i8_ptr_t.fn_type(&[i8_ptr_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let free = module.add_function(
@@ -89,7 +89,7 @@ impl<'a> LibC<'a> {
         );
         let write = module.add_function(
             "write",
-            void_t.fn_type(&[i8_ptr_t.into(), size_t.into(), size_t.into()], false),
+            void_t.fn_type(&[i8_ptr_t.into(), usize_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let flush =
