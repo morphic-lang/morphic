@@ -9,6 +9,7 @@ build = "build.rs"
 [build-dependencies]
 find_clang = { path = "./find_clang" }
 lalrpop = "0.18.1"
+walkdir = "2.3.1"
 
 [dependencies]
 find_clang = { path = "./find_clang" }

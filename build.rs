@@ -1,6 +1,7 @@
 use find_clang::find_clang;
 use std::process::Command;
 use std::{env, fs};
+use walkdir::WalkDir;
 
 fn compile_libc() {
     let cwd = env::current_dir().unwrap();
@@ -38,4 +39,10 @@ fn compile_libc() {
 fn main() {
     compile_libc();
     lalrpop::process_root().unwrap();
+
+    println!("cargo:rerun-if-changed=build.rs");
+    for entry in WalkDir::new("libc") {
+        let entry = entry.unwrap();
+        println!("cargo:rerun-if-changed={}", entry.path().display());
+    }
 }
