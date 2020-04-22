@@ -1552,7 +1552,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
 
             let items = s.gep(tail, F_LEAF_ITEMS);
             // TODO: check bytes_written for errors
-            let _bytes_written = s.call(
+            let _bytes_written = s.call_void(
                 libc.write,
                 &[s.ptr_cast(s.i8_t(), items), s.i64(1), tail_len],
             );
@@ -1573,7 +1573,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
                 let items_per_leaf = get_items_per_leaf(1);
 
                 // TODO: check bytes_written for errors
-                let _bytes_written = s.call(
+                let _bytes_written = s.call_void(
                     libc.write,
                     &[
                         s.ptr_cast(s.i8_t(), branch),

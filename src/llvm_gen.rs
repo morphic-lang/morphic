@@ -1,6 +1,6 @@
 use crate::builtins::array::ArrayImpl;
 use crate::builtins::flat_array::{FlatArrayImpl, FlatArrayIoImpl};
-use crate::builtins::libc::LibC;
+use crate::builtins::libc::{self, LibC};
 use crate::builtins::persistent_array::{PersistentArrayImpl, PersistentArrayIoImpl};
 use crate::builtins::rc::RcBoxBuiltin;
 use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
@@ -30,6 +30,7 @@ use inkwell::{FloatPredicate, IntPredicate};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
+use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -1721,7 +1722,13 @@ fn gen_program<'a>(
 }
 
 fn run_cc(_target_triple: &TargetTriple, obj_path: &Path, exe_path: &Path) {
-    // TODO: handle different platforms!!!
+    // materialize shim file to link with
+    let mut shim_file = tempfile::Builder::new()
+        .suffix(".o")
+        .tempfile_in("")
+        .unwrap();
+    shim_file.write_all(libc::native::SHIM_O).unwrap();
+
     let clang = find_clang(10).unwrap();
     std::process::Command::new(clang.path)
         .arg("-O3")
@@ -1733,6 +1740,7 @@ fn run_cc(_target_triple: &TargetTriple, obj_path: &Path, exe_path: &Path) {
         .arg("-o")
         .arg(exe_path)
         .arg(obj_path)
+        .arg(shim_file.path())
         .status()
         .unwrap();
 }

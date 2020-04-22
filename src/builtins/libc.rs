@@ -4,13 +4,13 @@ use inkwell::targets::TargetData;
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 
-mod native {
-    const SHIM_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shim.o"));
+pub mod native {
+    pub const SHIM_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shim.o"));
 }
 
-mod wasm {
-    const LIBC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libc.o"));
-    const MALLOC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/malloc.o"));
+pub mod wasm {
+    pub const LIBC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libc.o"));
+    pub const MALLOC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/malloc.o"));
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -33,7 +33,8 @@ pub struct LibC<'a> {
 
 impl<'a> LibC<'a> {
     pub fn declare(context: &'a Context, module: &Module<'a>, target: &TargetData) -> Self {
-        let ptr_size = target.get_pointer_byte_size(Some(AddressSpace::Generic));
+        let bits_per_byte = 8;
+        let ptr_size = target.get_pointer_byte_size(Some(AddressSpace::Generic)) * bits_per_byte;
         let size_t = context.custom_width_int_type(ptr_size);
 
         let void_t = context.void_type();

@@ -440,7 +440,7 @@ impl<'a> FlatArrayIoImpl<'a> {
             let me = s.arg(0);
 
             // TODO: check bytes_written for errors
-            let _bytes_written = s.call(
+            let _bytes_written = s.call_void(
                 libc.write,
                 &[s.arrow(me, F_ARR_DATA), s.i64(1), s.arrow(me, F_ARR_LEN)],
             );
