@@ -10,6 +10,7 @@ build = "build.rs"
 lalrpop = "0.18.1"
 
 [dependencies]
+find_clang = { path = "./find_clang" }
 lalrpop-util = "0.18.1"
 im-rc = "12.3.3"
 itertools = "0.8.0"

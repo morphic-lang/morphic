@@ -74,8 +74,6 @@ mod cli;
 
 mod pseudoprocess;
 
-mod find_clang;
-
 #[cfg(test)]
 mod test;
 
