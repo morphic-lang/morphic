@@ -1,1 +1,1 @@
-wasm_libc/libc/dlmalloc.c linguist-vendored
+/wasm_libc/libc/dlmalloc.inc linguist-vendored

@@ -72,8 +72,8 @@ static size_t dlmalloc_usable_size(void *);
    also set it to a no-op since we don't provide errno to the implementation. */
 #define MALLOC_FAILURE_ACTION
 
-/* INCLUDE THE MALLOC IMPLEMENTATION C FILE! */
-#include "dlmalloc.c"
+/* INCLUDE THE MALLOC IMPLEMENTATION FILE! */
+#include "dlmalloc.inc"
 
 /* Expose the correct functions */
 
