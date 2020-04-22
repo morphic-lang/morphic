@@ -412,7 +412,7 @@ impl<'a> FlatArrayIoImpl<'a> {
         {
             let s = scope(self.input, context);
 
-            s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
+            s.call(libc.flush, &[]);
             let array = s.call(self.byte_array_type.interface().new, &[]);
 
             let getchar_result = s.alloca(s.i32_t());
@@ -439,17 +439,10 @@ impl<'a> FlatArrayIoImpl<'a> {
             let s = scope(self.output, context);
             let me = s.arg(0);
 
-            let stdout_value = s.ptr_get(libc.stdout);
-
             // TODO: check bytes_written for errors
             let _bytes_written = s.call(
-                libc.fwrite,
-                &[
-                    s.arrow(me, F_ARR_DATA),
-                    s.i64(1),
-                    s.arrow(me, F_ARR_LEN),
-                    stdout_value,
-                ],
+                libc.write,
+                &[s.arrow(me, F_ARR_DATA), s.i64(1), s.arrow(me, F_ARR_LEN)],
             );
             s.ret_void();
         }

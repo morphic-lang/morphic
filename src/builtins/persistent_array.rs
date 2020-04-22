@@ -1492,7 +1492,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
         {
             let s = scope(self.input, context);
 
-            s.call(libc.fflush, &[s.ptr_get(libc.stdout)]);
+            s.call(libc.flush, &[]);
 
             let array = s.alloca(self.byte_array_type.interface().array_type.into());
 
@@ -1550,18 +1550,11 @@ impl<'a> PersistentArrayIoImpl<'a> {
             let tail = s.arg(0);
             let tail_len = s.arg(1);
 
-            let stdout_value = s.ptr_get(libc.stdout);
-
             let items = s.gep(tail, F_LEAF_ITEMS);
             // TODO: check bytes_written for errors
             let _bytes_written = s.call(
-                libc.fwrite,
-                &[
-                    s.ptr_cast(s.i8_t(), items),
-                    s.i64(1),
-                    tail_len,
-                    stdout_value,
-                ],
+                libc.write,
+                &[s.ptr_cast(s.i8_t(), items), s.i64(1), tail_len],
             );
 
             s.ret_void();
@@ -1573,8 +1566,6 @@ impl<'a> PersistentArrayIoImpl<'a> {
             let branch = s.arg(0);
             let height = s.arg(1);
 
-            let stdout_value = s.ptr_get(libc.stdout);
-
             let i = s.alloca(s.i64_t());
             s.ptr_set(i, s.i64(0));
 
@@ -1583,12 +1574,11 @@ impl<'a> PersistentArrayIoImpl<'a> {
 
                 // TODO: check bytes_written for errors
                 let _bytes_written = s.call(
-                    libc.fwrite,
+                    libc.write,
                     &[
                         s.ptr_cast(s.i8_t(), branch),
                         s.i64(1),
                         s.i64(items_per_leaf),
-                        stdout_value,
                     ],
                 );
 

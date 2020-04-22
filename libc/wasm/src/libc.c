@@ -34,20 +34,26 @@ _Noreturn void abort(void) {
   exit(1);
 }
 
-int get_char(void) {
+int getchar(void) {
   /* Implemented entirely on the Javascript side because dealing with variable
      length console input is annoying. */
   return opt_proto_js_get_char();
 }
 
-void print(const char *str) {
+void print(const char *str, ...) {
   opt_proto_js_print(str, strlen(str));
 }
 
-void print_error(const char *str) {
+void print_error(const char *str, ...) {
   opt_proto_js_print_error(str, strlen(str));
 }
 
 void write(const void *ptr, size_t size, size_t count) {
   opt_proto_js_print((const char *) ptr, size * count);
+}
+
+int flush(void) {
+  /* There is no analogous function to flush for Javascript's console. So, we
+     do nothing and return 0 (indicating success). */
+  return 0;
 }

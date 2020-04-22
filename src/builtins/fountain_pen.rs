@@ -385,15 +385,11 @@ impl<'a> Scope<'a> {
             .builder
             .build_global_string_ptr(panic_string, "panic_str");
 
-        let stderr_value = self
-            .builder
-            .build_load(libc.stderr.into_pointer_value(), "stderr_value");
-
-        let mut fprintf_args = vec![stderr_value, panic_global.as_pointer_value().into()];
-        fprintf_args.extend_from_slice(panic_args);
+        let mut print_error_args = vec![panic_global.as_pointer_value().into()];
+        print_error_args.extend_from_slice(panic_args);
 
         self.builder
-            .build_call(libc.fprintf, &fprintf_args, "fprintf_output");
+            .build_call(libc.print_error, &print_error_args, "print_error_output");
 
         self.builder
             .build_call(libc.exit, &[i32_type.const_int(1, true).into()], "");
@@ -401,32 +397,24 @@ impl<'a> Scope<'a> {
         self.builder.build_unreachable();
     }
 
-    pub fn printf(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
-        let message_global = self.builder.build_global_string_ptr(message, "printf_str");
+    pub fn print(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
+        let message_global = self.builder.build_global_string_ptr(message, "print_str");
 
-        let stdout_value = self
-            .builder
-            .build_load(libc.stdout.into_pointer_value(), "stdout_value");
-
-        let mut fprintf_args = vec![stdout_value, message_global.as_pointer_value().into()];
-        fprintf_args.extend_from_slice(message_args);
+        let mut print_args = vec![message_global.as_pointer_value().into()];
+        print_args.extend_from_slice(message_args);
 
         self.builder
-            .build_call(libc.fprintf, &fprintf_args, "fprintf_output");
+            .build_call(libc.print, &print_args, "print_output");
     }
 
     pub fn debug(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
         let message_global = self.builder.build_global_string_ptr(message, "debug_str");
 
-        let stderr_value = self
-            .builder
-            .build_load(libc.stderr.into_pointer_value(), "stderr_value");
-
-        let mut fprintf_args = vec![stderr_value, message_global.as_pointer_value().into()];
-        fprintf_args.extend_from_slice(message_args);
+        let mut print_error_args = vec![message_global.as_pointer_value().into()];
+        print_error_args.extend_from_slice(message_args);
 
         self.builder
-            .build_call(libc.fprintf, &fprintf_args, "fprintf_output");
+            .build_call(libc.print_error, &print_error_args, "print_error__output");
     }
 
     pub fn malloc(

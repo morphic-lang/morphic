@@ -2,36 +2,40 @@ use find_clang::find_clang;
 use std::process::Command;
 use std::{env, fs};
 
-fn wasm_libc_path(filename: &str) -> String {
-    fs::canonicalize(format!("./wasm_libc/libc/{}", filename))
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned()
-}
-
-fn compile_wasm_libc() {
+fn compile_libc() {
     let cwd = env::current_dir().unwrap();
     let out_dir = env::var("OUT_DIR").unwrap();
     let clang = find_clang(10).unwrap();
 
-    let libc_c = wasm_libc_path("libc.c");
-    let malloc_c = wasm_libc_path("malloc.c");
+    let shim_c = fs::canonicalize("./libc/native/shim.c").unwrap();
+    let libc_c = fs::canonicalize("./libc/wasm/src/libc.c").unwrap();
+    let malloc_c = fs::canonicalize("./libc/wasm/src/malloc.c").unwrap();
 
-    // Change the cwd so that clang outputs artifacts to the right location.
+    // Change the CWD so that clang outputs artifacts to the right location.
     env::set_current_dir(out_dir).unwrap();
 
-    let status = Command::new(clang.path)
-        .args(&["--target=wasm32", "-nostdlib", "-c", &libc_c, &malloc_c])
+    let status = Command::new(&clang.path)
+        .arg("-c")
+        .arg(shim_c)
         .status()
         .unwrap();
     assert!(status.success());
 
-    // Make sure to reset cwd since lalrpop depends on it.
+    let status = Command::new(&clang.path)
+        .arg("--target=wasm32")
+        .arg("-nostdlib")
+        .arg("-c")
+        .arg(libc_c)
+        .arg(malloc_c)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    // Make sure to reset the CWD since lalrpop depends on it being the root.
     env::set_current_dir(cwd).unwrap();
 }
 
 fn main() {
-    compile_wasm_libc();
+    compile_libc();
     lalrpop::process_root().unwrap();
 }

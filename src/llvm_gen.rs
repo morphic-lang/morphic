@@ -871,12 +871,10 @@ fn build_check_divisor_nonzero<'a, 'b>(
     let panic_message =
         builder.build_global_string_ptr("panicked due to division by zero\n", "panic_message");
 
-    let stderr_val = builder.build_load(globals.libc.stderr.into_pointer_value(), "stderr");
-
     builder.build_call(
-        globals.libc.fprintf,
-        &[stderr_val, panic_message.as_pointer_value().into()],
-        "fprintf_call",
+        globals.libc.print_error,
+        &[panic_message.as_pointer_value().into()],
+        "print_error__call",
     );
 
     builder.build_call(
@@ -1646,7 +1644,7 @@ fn gen_program<'a>(
 
     let intrinsics = get_intrinsics(context, &module);
 
-    let libc = LibC::declare(&context, &module);
+    let libc = LibC::declare(&context, &module, &target_machine.get_target_data());
 
     let custom_types = program
         .custom_types
@@ -1696,8 +1694,6 @@ fn gen_program<'a>(
         type_decls.define(&globals, &instances, &program.custom_types[type_id]);
     }
 
-    libc.define(&context);
-
     let i32_type = context.i32_type();
     let unit_type = context.struct_type(&[], false);
     let i8_ptr_ptr_type = context
@@ -1712,17 +1708,13 @@ fn gen_program<'a>(
 
     let builder = context.create_builder();
     let main_block = context.append_basic_block(main, "main_block");
-
     builder.position_at_end(main_block);
-    builder.build_call(libc.initialize, &[], "libc_initialize");
 
     builder.build_call(
         funcs[program.main],
         &[unit_type.get_undef().into()],
         "main_result",
     );
-
-    builder.build_call(libc.cleanup, &[], "libc_cleanup");
     builder.build_return(Some(&i32_type.const_int(0, false)));
 
     return module;
