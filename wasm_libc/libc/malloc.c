@@ -1,24 +1,22 @@
-#include "builtins.h"
 #include "libc.h"
+#include "js_ffi.h"
 
-/* Configuration of dlmalloc for WebAssembly (based on wasi-libc): */
+/* The following configuration of dlmalloc for WebAssembly is adapted from
+   wasi-libc and emscripten-core. */
 
 #define PAGESIZE 65536
 
-/* Provided by javascript as an import. */
-extern void abort(void);
-
-/* dlmalloc will use sbrk to allocate memory. */
-static void* sbrk(ptrdiff_t increment) {
+/* The MORECORE macro in dlmalloc will use sbrk to allocate memory. */
+static void *sbrk(ptrdiff_t increment) {
   if (increment < 0 || increment % PAGESIZE != 0) {
     abort();
   }
   
   if (increment == 0) {
-    return (void*)(__wasm_builtin_memory_size() * PAGESIZE);
+    return (void *) (opt_proto_js_memory_size() * PAGESIZE);
   }
 
-  return (void*)(__wasm_builtin_memory_grow(increment / PAGESIZE));
+  return (void *) opt_proto_js_memory_grow(increment / PAGESIZE);
 }
 
 /* We define the error codes to be the same values as on unix. */
@@ -32,7 +30,9 @@ static void* sbrk(ptrdiff_t increment) {
 #define MORECORE_CANNOT_TRIM 1
 
 /* Removing sanity checks reduces code size. */
-#ifndef DEBUG
+#ifdef DEBUG
+#define ABORT opt_proto_js_exit(1)
+#else
 #define ABORT __builtin_unreachable()
 #endif
 
@@ -68,7 +68,7 @@ static void* sbrk(ptrdiff_t increment) {
 #define DLMALLOC_EXPORT static inline
 
 /* This isn't declared DLMALLOC_EXPORT, so it must be made static explicitly. */
-static size_t dlmalloc_usable_size(void*);
+static size_t dlmalloc_usable_size(void *);
 
 /* By default this is a no-op on Windows and sets errno on other platforms. We
    also set it to a no-op since we don't provide errno to the implementation. */
@@ -79,18 +79,18 @@ static size_t dlmalloc_usable_size(void*);
 
 /* Expose the correct functions */
 
-void* malloc(size_t size) {
+void *malloc(size_t size) {
   return dlmalloc(size);
 }
 
-void* calloc(size_t num, size_t size) {
+void *calloc(size_t num, size_t size) {
   return dlcalloc(num, size);
 }
 
-void* realloc(void* ptr, size_t new_size) {
+void *realloc(void *ptr, size_t new_size) {
   return dlrealloc(ptr, new_size);
 }
 
-void free(void* ptr) {
+void free(void *ptr) {
   dlfree(ptr);
 }

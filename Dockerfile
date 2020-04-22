@@ -12,10 +12,6 @@ RUN apt-get update \
   zlib1g-dev \
   valgrind \
   vim \
-  && curl -LO https://github.com/WebAssembly/wabt/releases/download/1.0.13/wabt-1.0.13-linux.tar.gz \
-  && tar xvf wabt-1.0.13-linux.tar.gz \
-  && rm wabt-1.0.13-linux.tar.gz \
-  && ln -s /wabt-1.0.13/wat2wasm /usr/bin/wat2wasm \
   && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 
 ENV PATH="/root/.cargo/bin:${PATH}"
