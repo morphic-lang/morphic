@@ -2,6 +2,7 @@ use crate::builtins::fountain_pen::scope;
 use crate::builtins::libc::LibC;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
+use inkwell::targets::TargetData;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
@@ -71,6 +72,7 @@ impl<'a> RcBoxBuiltin<'a> {
     pub fn define(
         &self,
         context: &'a Context,
+        target: &TargetData,
         libc: &LibC<'a>,
         item_release: Option<FunctionValue<'a>>,
     ) {
@@ -80,7 +82,7 @@ impl<'a> RcBoxBuiltin<'a> {
 
         // define 'new'
         {
-            let s = scope(self.new, context);
+            let s = scope(self.new, context, target);
             let item = s.arg(0);
 
             let rc = s.ptr_cast(self.rc_type, s.malloc(s.i64(1), self.rc_type, libc));
@@ -91,14 +93,14 @@ impl<'a> RcBoxBuiltin<'a> {
 
         // define 'get'
         {
-            let s = scope(self.get, context);
+            let s = scope(self.get, context, target);
             let rc = s.arg(0);
             s.ret(s.gep(rc, F_ITEM));
         }
 
         // define 'retain'
         {
-            let s = scope(self.retain, context);
+            let s = scope(self.retain, context, target);
             let rc = s.arg(0);
 
             let new_refcount = s.add(s.arrow(rc, F_REFCOUNT), s.i64(1));
@@ -108,7 +110,7 @@ impl<'a> RcBoxBuiltin<'a> {
 
         // define 'release'
         {
-            let s = scope(self.release, context);
+            let s = scope(self.release, context, target);
             let rc = s.arg(0);
 
             let new_refcount = s.sub(s.arrow(rc, F_REFCOUNT), s.i64(1));

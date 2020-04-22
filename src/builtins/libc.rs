@@ -1,3 +1,4 @@
+use crate::builtins::fountain_pen;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -33,10 +34,7 @@ pub struct LibC<'a> {
 
 impl<'a> LibC<'a> {
     pub fn declare(context: &'a Context, module: &Module<'a>, target: &TargetData) -> Self {
-        let bits_per_byte = 8;
-        let ptr_size = target.get_pointer_byte_size(Some(AddressSpace::Generic)) * bits_per_byte;
-        let size_t = context.custom_width_int_type(ptr_size);
-
+        let size_t = fountain_pen::size_t(context, target);
         let void_t = context.void_type();
         let i8_t = context.i8_type();
         let i8_ptr_t = i8_t.ptr_type(AddressSpace::Generic);

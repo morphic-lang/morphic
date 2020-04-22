@@ -299,7 +299,12 @@ impl<'a> Instances<'a> {
 
             builder.build_return(None);
 
-            rc_builtin.define(globals.context, &globals.libc, Some(release_func));
+            rc_builtin.define(
+                globals.context,
+                globals.target,
+                &globals.libc,
+                Some(release_func),
+            );
         }
 
         // flat arrays
@@ -386,7 +391,8 @@ impl<'a> Instances<'a> {
             }
         }
 
-        self.flat_array_io.define(globals.context, &globals.libc);
+        self.flat_array_io
+            .define(globals.context, globals.target, &globals.libc);
 
         // persistent arrays
         for (i, (inner_type, persistent_array_builtin)) in
@@ -475,7 +481,7 @@ impl<'a> Instances<'a> {
         }
 
         self.persistent_array_io
-            .define(globals.context, &globals.libc);
+            .define(globals.context, globals.target, &globals.libc);
     }
 }
 

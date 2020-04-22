@@ -106,7 +106,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
     fn define(
         &self,
         context: &'a Context,
-        _target: &TargetData,
+        target: &TargetData,
         libc: &LibC<'a>,
         item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
@@ -116,13 +116,13 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'new'
         {
-            let s = scope(self.interface.new, context);
+            let s = scope(self.interface.new, context, target);
             s.ret(s.i64(0));
         }
 
         // define 'item'
         {
-            let s = scope(self.interface.item, context);
+            let s = scope(self.interface.item, context, target);
             let array = s.arg(0);
             let idx = s.arg(1);
 
@@ -139,21 +139,21 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'len'
         {
-            let s = scope(self.interface.len, context);
+            let s = scope(self.interface.len, context, target);
             let array = s.arg(0);
             s.ret(array);
         }
 
         // define 'push'
         {
-            let s = scope(self.interface.push, context);
+            let s = scope(self.interface.push, context, target);
             let array = s.arg(0);
             s.ret(s.add(array, s.i64(1)));
         }
 
         // define 'pop'
         {
-            let s = scope(self.interface.pop, context);
+            let s = scope(self.interface.pop, context, target);
             let array = s.arg(0);
 
             s.if_(s.eq(array, s.i64(0)), |s| {
@@ -165,7 +165,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'replace'
         {
-            let s = scope(self.interface.replace, context);
+            let s = scope(self.interface.replace, context, target);
             let hole = s.arg(0);
             // let item = s.arg(1); UNUSED ARGUMENT
             s.ret(hole);
@@ -173,28 +173,28 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'retain_array'
         {
-            let s = scope(self.interface.retain_array, context);
+            let s = scope(self.interface.retain_array, context, target);
             // let array = s.arg(0); UNUSED ARGUMENT
             s.ret_void();
         }
 
         // define 'release_array'
         {
-            let s = scope(self.interface.release_array, context);
+            let s = scope(self.interface.release_array, context, target);
             // let array = s.arg(0); UNUSED ARGUMENT
             s.ret_void();
         }
 
         // define 'retain_hole'
         {
-            let s = scope(self.interface.retain_hole, context);
+            let s = scope(self.interface.retain_hole, context, target);
             // let hole = s.arg(0); UNUSED ARGUMENT
             s.ret_void();
         }
 
         // define 'release_hole'
         {
-            let s = scope(self.interface.release_hole, context);
+            let s = scope(self.interface.release_hole, context, target);
             // let hole = s.arg(0); UNUSED ARGUMENT
             s.ret_void();
         }

@@ -412,7 +412,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'new'
         {
-            let s = scope(self.interface.new, context);
+            let s = scope(self.interface.new, context, target);
             s.ret(s.make_struct(
                 self.interface.array_type,
                 &[
@@ -426,7 +426,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'item'
         {
-            let s = scope(self.interface.item, context);
+            let s = scope(self.interface.item, context, target);
             let arr = s.arg(0);
             let idx = s.arg(1);
 
@@ -460,14 +460,14 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'len'
         {
-            let s = scope(self.interface.len, context);
+            let s = scope(self.interface.len, context, target);
             let array = s.arg(0);
             s.ret(s.field(array, F_ARR_LEN));
         }
 
         // define 'push'
         {
-            let s = scope(self.interface.push, context);
+            let s = scope(self.interface.push, context, target);
             let array = s.arg(0);
             let item = s.arg(1);
 
@@ -602,7 +602,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'pop'
         {
-            let s = scope(self.interface.pop, context);
+            let s = scope(self.interface.pop, context, target);
             let array = s.arg(0);
             let len = s.field(s.arg(0), F_ARR_LEN);
 
@@ -713,7 +713,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'replace'
         {
-            let s = scope(self.interface.replace, context);
+            let s = scope(self.interface.replace, context, target);
             let hole = s.arg(0);
             let item = s.arg(1);
 
@@ -724,7 +724,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'retain_array'
         {
-            let s = scope(self.interface.retain_array, context);
+            let s = scope(self.interface.retain_array, context, target);
             let array = s.arg(0);
 
             s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
@@ -746,7 +746,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'release_array'
         {
-            let s = scope(self.interface.release_array, context);
+            let s = scope(self.interface.release_array, context, target);
             let array = s.arg(0);
 
             s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
@@ -774,7 +774,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'retain_hole'
         {
-            let s = scope(self.interface.retain_hole, context);
+            let s = scope(self.interface.retain_hole, context, target);
             let hole = s.arg(0);
 
             let array = s.field(hole, F_HOLE_ARRAY);
@@ -784,7 +784,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'release_hole'
         {
-            let s = scope(self.interface.release_hole, context);
+            let s = scope(self.interface.release_hole, context, target);
             let hole = s.arg(0);
 
             let array = s.field(hole, F_HOLE_ARRAY);
@@ -794,7 +794,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'set_next_path'
         {
-            let s = scope(self.set_next_path, context);
+            let s = scope(self.set_next_path, context, target);
             let node_height = s.arg(0);
             let node_number = s.arg(1);
 
@@ -811,7 +811,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'get'
         {
-            let s = scope(self.get, context);
+            let s = scope(self.get, context, target);
             let array = s.arg(0);
             let index = s.arg(1);
 
@@ -886,7 +886,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'retain_node'
         {
-            let s = scope(self.retain_node, context);
+            let s = scope(self.retain_node, context, target);
             let leaf_or_branch_ptr = s.arg(0);
             let height = s.arg(1);
 
@@ -909,7 +909,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'release_node'
         {
-            let s = scope(self.release_node, context);
+            let s = scope(self.release_node, context, target);
             let leaf_or_branch_ptr = s.arg(0);
             let height = s.arg(1);
 
@@ -974,7 +974,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'retain_tail'
         {
-            let s = scope(self.retain_tail, context);
+            let s = scope(self.retain_tail, context, target);
             let tail = s.arg(0);
 
             let refcount = s.arrow(tail, F_LEAF_REFCOUNT);
@@ -985,7 +985,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'release_tail'
         {
-            let s = scope(self.release_tail, context);
+            let s = scope(self.release_tail, context, target);
             let tail = s.arg(0);
             let tail_len = s.arg(1);
 
@@ -1006,7 +1006,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'tail_len'
         {
-            let s = scope(self.tail_len, context);
+            let s = scope(self.tail_len, context, target);
             let len = s.arg(0);
 
             s.ret(s.add(
@@ -1017,7 +1017,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'obtain_unique_leaf'
         {
-            let s = scope(self.obtain_unique_leaf, context);
+            let s = scope(self.obtain_unique_leaf, context, target);
             let leaf = s.arg(0);
 
             s.if_(s.eq(s.arrow(leaf, F_LEAF_REFCOUNT), s.i64(1)), |s| {
@@ -1046,7 +1046,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'obtain_unique_branch'
         {
-            let s = scope(self.obtain_unique_branch, context);
+            let s = scope(self.obtain_unique_branch, context, target);
             let branch = s.arg(0);
             let height = s.arg(1);
 
@@ -1092,7 +1092,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'obtain_unique_tail'
         {
-            let s = scope(self.obtain_unique_tail, context);
+            let s = scope(self.obtain_unique_tail, context, target);
             let tail = s.arg(0);
             let tail_len = s.arg(1);
 
@@ -1126,7 +1126,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'set_tail'
         {
-            let s = scope(self.set_tail, context);
+            let s = scope(self.set_tail, context, target);
             let tail = s.arg(0);
             let tail_len = s.arg(1);
             let index_in_tail = s.arg(2);
@@ -1147,7 +1147,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'set_node'
         {
-            let s = scope(self.set_node, context);
+            let s = scope(self.set_node, context, target);
             let node = s.arg(0);
             let node_height = s.arg(1);
             let node_number = s.arg(2);
@@ -1201,7 +1201,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'set'
         {
-            let s = scope(self.set, context);
+            let s = scope(self.set, context, target);
             let array = s.arg(0);
             let index = s.arg(1);
             let item = s.arg(2);
@@ -1266,7 +1266,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'push_tail'
         {
-            let s = scope(self.push_tail, context);
+            let s = scope(self.push_tail, context, target);
 
             let tail = s.arg(0);
             let tail_len = s.arg(1);
@@ -1281,7 +1281,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'put_tail'
         {
-            let s = scope(self.put_tail, context);
+            let s = scope(self.put_tail, context, target);
 
             let branch = s.arg(0);
             let node_height = s.arg(1);
@@ -1334,7 +1334,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'pop_tail'
         {
-            let s = scope(self.pop_tail, context);
+            let s = scope(self.pop_tail, context, target);
             let tail = s.arg(0);
             let tail_len = s.arg(1);
 
@@ -1347,7 +1347,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
         // define 'pop_node'
         {
-            let s = scope(self.pop_node, context);
+            let s = scope(self.pop_node, context, target);
             let branch = s.arg(0);
             let node_height = s.arg(1);
             let node_number = s.arg(2);
@@ -1487,10 +1487,10 @@ impl<'a> PersistentArrayIoImpl<'a> {
         }
     }
 
-    pub fn define(&self, context: &'a Context, libc: &LibC<'a>) {
+    pub fn define(&self, context: &'a Context, target: &TargetData, libc: &LibC<'a>) {
         // define 'input'
         {
-            let s = scope(self.input, context);
+            let s = scope(self.input, context, target);
 
             s.call(libc.flush, &[]);
 
@@ -1523,7 +1523,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
 
         // define 'output'
         {
-            let s = scope(self.output, context);
+            let s = scope(self.output, context, target);
             let array = s.arg(0);
 
             let tail = s.field(array, F_ARR_TAIL);
@@ -1546,7 +1546,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
 
         // define 'output_tail'
         {
-            let s = scope(self.output_tail, context);
+            let s = scope(self.output_tail, context, target);
             let tail = s.arg(0);
             let tail_len = s.arg(1);
 
@@ -1562,7 +1562,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
 
         // define 'output_node'
         {
-            let s = scope(self.output_node, context);
+            let s = scope(self.output_node, context, target);
             let branch = s.arg(0);
             let height = s.arg(1);
 

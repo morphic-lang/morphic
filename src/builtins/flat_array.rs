@@ -144,7 +144,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
     fn define(
         &self,
         context: &'a Context,
-        _target: &TargetData,
+        target: &TargetData,
         libc: &LibC<'a>,
         item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
@@ -164,7 +164,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'new'
         {
-            let s = scope(self.interface.new, context);
+            let s = scope(self.interface.new, context, target);
             let me = s.ptr_cast(
                 self.array_deref_type,
                 s.malloc(s.i64(1), self.array_deref_type, libc),
@@ -180,7 +180,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'item'
         {
-            let s = scope(self.interface.item, context);
+            let s = scope(self.interface.item, context, target);
             let me = s.arg(0);
             let idx = s.arg(1);
 
@@ -203,14 +203,14 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'len'
         {
-            let s = scope(self.interface.len, context);
+            let s = scope(self.interface.len, context, target);
             let me = s.arg(0);
             s.ret(s.arrow(me, F_ARR_LEN));
         }
 
         // define 'push'
         {
-            let s = scope(self.interface.push, context);
+            let s = scope(self.interface.push, context, target);
 
             let me = s.arg(0);
             let old_len = s.arrow(me, F_ARR_LEN);
@@ -225,7 +225,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'pop'
         {
-            let s = scope(self.interface.pop, context);
+            let s = scope(self.interface.pop, context, target);
             let me = s.arg(0);
 
             s.if_(s.eq(s.arrow(me, F_ARR_LEN), s.i64(0)), |s| {
@@ -243,7 +243,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'replace'
         {
-            let s = scope(self.interface.replace, context);
+            let s = scope(self.interface.replace, context, target);
 
             let hole = s.arg(0);
             let item = s.arg(1);
@@ -261,7 +261,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'retain_array'
         {
-            let s = scope(self.interface.retain_array, context);
+            let s = scope(self.interface.retain_array, context, target);
             let me = s.arg(0);
 
             s.arrow_set(
@@ -274,7 +274,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'release_array'
         {
-            let s = scope(self.interface.release_array, context);
+            let s = scope(self.interface.release_array, context, target);
             let me = s.arg(0);
 
             let new_refcount = s.sub(s.arrow(me, F_ARR_REFCOUNT), s.i64(1));
@@ -296,7 +296,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'retain_hole'
         {
-            let s = scope(self.interface.retain_hole, context);
+            let s = scope(self.interface.retain_hole, context, target);
             let hole = s.arg(0);
 
             s.call_void(self.interface.retain_array, &[s.field(hole, F_HOLE_ARR)]);
@@ -305,7 +305,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'release_hole'
         {
-            let s = scope(self.interface.release_hole, context);
+            let s = scope(self.interface.release_hole, context, target);
             let hole = s.arg(0);
 
             s.call_void(self.interface.release_array, &[s.field(hole, F_HOLE_ARR)]);
@@ -314,7 +314,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'ensure_cap'
         {
-            let s = scope(self.ensure_cap, context);
+            let s = scope(self.ensure_cap, context, target);
             let me = s.arg(0);
 
             let min_cap = s.arg(1);
@@ -351,7 +351,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
         // define 'bounds_check'
         {
-            let s = scope(self.bounds_check, context);
+            let s = scope(self.bounds_check, context, target);
             let me = s.arg(0);
             let idx = s.arg(1);
 
@@ -407,10 +407,10 @@ impl<'a> FlatArrayIoImpl<'a> {
         }
     }
 
-    pub fn define(&self, context: &'a Context, libc: &LibC<'a>) {
+    pub fn define(&self, context: &'a Context, target: &TargetData, libc: &LibC<'a>) {
         // define 'input'
         {
-            let s = scope(self.input, context);
+            let s = scope(self.input, context, target);
 
             s.call(libc.flush, &[]);
             let array = s.call(self.byte_array_type.interface().new, &[]);
@@ -436,7 +436,7 @@ impl<'a> FlatArrayIoImpl<'a> {
 
         // define 'output'
         {
-            let s = scope(self.output, context);
+            let s = scope(self.output, context, target);
             let me = s.arg(0);
 
             // TODO: check bytes_written for errors
