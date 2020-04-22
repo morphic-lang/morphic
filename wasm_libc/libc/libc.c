@@ -1,10 +1,6 @@
 #include "libc.h"
 #include "js_ffi.h"
 
-void _start(void) {
-  // TODO: write this function
-}
-
 void *memset(void *ptr, int value, size_t num) {
   char *p = (char *) ptr;
   while (num-- != 0) {
@@ -30,12 +26,18 @@ size_t strlen(const char *str) {
   return s - str;
 }
 
-void exit(int code) {
+_Noreturn void exit(int code) {
   opt_proto_js_exit(code);
 }
 
-void abort(void) {
+_Noreturn void abort(void) {
   exit(1);
+}
+
+int get_char(void) {
+  /* Implemented entirely on the Javascript side because dealing with variable
+     length console input is annoying. */
+  return opt_proto_js_get_char();
 }
 
 void print(const char *str) {
@@ -44,4 +46,8 @@ void print(const char *str) {
 
 void print_error(const char *str) {
   opt_proto_js_print_error(str, strlen(str));
+}
+
+void write(const void *ptr, size_t size, size_t count) {
+  opt_proto_js_print((const char *) ptr, size * count);
 }
