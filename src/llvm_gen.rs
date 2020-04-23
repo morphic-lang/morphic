@@ -1790,7 +1790,7 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 // WASM only options:
                 .arg("--target=wasm32")
                 .arg("-nostdlib")
-                .arg("-Wl,--no-entry")
+                .arg("-Wl,--allow-undefined")
                 /////////////////////
                 .arg("-o")
                 .arg(exe_path)

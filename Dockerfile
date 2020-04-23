@@ -8,15 +8,20 @@ RUN apt-get update \
   git \
   gpg \
   gpg-agent \
+  openssl \
+  pkg-config \
   ssh \
-  zlib1g-dev \
   valgrind \
   vim \
+  zlib1g-dev \
   && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN gpg-agent --daemon \
+RUN curl -LO https://github.com/thecoshman/http/releases/download/v1.9.1/http_1.9.1_amd64.deb \
+  && apt install ./http_1.9.1_amd64.deb \
+  && rm ./http_1.9.1_amd64.deb \
+  && gpg-agent --daemon \
   && curl -L https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - \
   && echo "deb http://apt.llvm.org/buster/ llvm-toolchain-buster-10 main" >> /etc/apt/sources.list \
   && echo "deb-src http://apt.llvm.org/buster/ llvm-toolchain-buster-10 main" >> /etc/apt/sources.list \

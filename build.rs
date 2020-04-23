@@ -23,8 +23,16 @@ fn compile_libc() {
     assert!(status.success());
 
     let status = Command::new(&clang.path)
+        .arg("-O3")
+        .arg("-ffunction-sections")
+        .arg("-fdata-sections")
+        .arg("-fPIC")
+        .arg("-Wl,--gc-sections")
+        // WASM only options:
         .arg("--target=wasm32")
         .arg("-nostdlib")
+        .arg("-Wl,--allow-undefined")
+        /////////////////////
         .arg("-c")
         .arg(libc_c)
         .arg(malloc_c)

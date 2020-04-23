@@ -4,7 +4,7 @@
 /* Provided by the opt-proto program we will be linked against. */
 extern int main(int argc, char **argv);
 
-void opt_proto_start(void) {
+void _start(void) {
   char *argv = NULL;
   main(0, &argv);
 }

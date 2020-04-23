@@ -11,7 +11,7 @@ typedef long ptrdiff_t;
 /* Javascript needs an entry point to the wasm program. This wrapper will
    provide the necessary arguments to the opt-proto main function and allow
    Javascript to easily start execution. */
-void opt_proto_start(void);
+void _start(void);
 
 void *memset(void *ptr, int value, size_t num); /* Used by dlmalloc implementation. */
 void *memcpy(void *restrict dst, const void *restrict src, size_t num); /* Used by dlmalloc implementation. */
