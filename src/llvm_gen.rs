@@ -1780,13 +1780,23 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .unwrap();
             malloc_file.write_all(libc::wasm::MALLOC_O).unwrap();
 
-            std::fs::create_dir(exe_path).unwrap();
+            // TODO: improve error handling and make more user friendly
+            if exe_path.is_file() {
+                panic!(
+                    "Trying to create dir {:#?}, but there is already a file with that path",
+                    exe_path
+                );
+            }
+            if !exe_path.exists() {
+                std::fs::create_dir(exe_path).unwrap();
+            }
 
-            let mut index_file = std::fs::File::create(exe_path.join("/index.html")).unwrap();
+            let index_path = exe_path.join("index.html");
+            let mut index_file = std::fs::File::create(index_path).unwrap();
             index_file.write_all(libc::wasm::INDEX_HTML).unwrap();
 
-            let mut wasm_loader_file =
-                std::fs::File::create(exe_path.join("/wasm_loader.js")).unwrap();
+            let wasm_loader_path = exe_path.join("wasm_loader.js");
+            let mut wasm_loader_file = std::fs::File::create(wasm_loader_path).unwrap();
             wasm_loader_file
                 .write_all(libc::wasm::WASM_LOADER_JS)
                 .unwrap();
@@ -1804,7 +1814,7 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .arg("-Wl,--allow-undefined")
                 /////////////////////
                 .arg("-o")
-                .arg(exe_path.join("/a.wasm"))
+                .arg(exe_path.join("a.wasm"))
                 .arg(obj_path)
                 .arg(libc_file.path())
                 .arg(malloc_file.path())
