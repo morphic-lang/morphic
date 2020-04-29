@@ -1780,6 +1780,17 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .unwrap();
             malloc_file.write_all(libc::wasm::MALLOC_O).unwrap();
 
+            std::fs::create_dir(exe_path).unwrap();
+
+            let mut index_file = std::fs::File::create(exe_path.join("/index.html")).unwrap();
+            index_file.write_all(libc::wasm::INDEX_HTML).unwrap();
+
+            let mut wasm_loader_file =
+                std::fs::File::create(exe_path.join("/wasm_loader.js")).unwrap();
+            wasm_loader_file
+                .write_all(libc::wasm::WASM_LOADER_JS)
+                .unwrap();
+
             let clang = find_clang(10).unwrap();
             std::process::Command::new(clang.path)
                 .arg("-O3")
@@ -1793,7 +1804,7 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .arg("-Wl,--allow-undefined")
                 /////////////////////
                 .arg("-o")
-                .arg(exe_path)
+                .arg(exe_path.join("/a.wasm"))
                 .arg(obj_path)
                 .arg(libc_file.path())
                 .arg(malloc_file.path())

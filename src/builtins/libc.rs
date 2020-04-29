@@ -12,6 +12,15 @@ pub mod native {
 pub mod wasm {
     pub const LIBC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libc.o"));
     pub const MALLOC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/malloc.o"));
+
+    pub const INDEX_HTML: &'static [u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/libc/wasm/dist/index.html"
+    ));
+    pub const WASM_LOADER_JS: &'static [u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/libc/wasm/dist/wasm_loader.js"
+    ));
 }
 
 #[derive(Clone, Copy, Debug)]
