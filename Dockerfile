@@ -8,8 +8,6 @@ RUN apt-get update \
   git \
   gpg \
   gpg-agent \
-  openssl \
-  pkg-config \
   ssh \
   valgrind \
   vim \
@@ -18,10 +16,7 @@ RUN apt-get update \
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN curl -LO https://github.com/thecoshman/http/releases/download/v1.9.1/http_1.9.1_amd64.deb \
-  && apt install ./http_1.9.1_amd64.deb \
-  && rm ./http_1.9.1_amd64.deb \
-  && gpg-agent --daemon \
+RUN gpg-agent --daemon \
   && curl -L https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - \
   && echo "deb http://apt.llvm.org/buster/ llvm-toolchain-buster-10 main" >> /etc/apt/sources.list \
   && echo "deb-src http://apt.llvm.org/buster/ llvm-toolchain-buster-10 main" >> /etc/apt/sources.list \
