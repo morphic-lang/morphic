@@ -6,25 +6,26 @@ use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 
 pub mod native {
-    pub const SHIM_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shim.o"));
+    pub const TAL_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native/tal.o"));
 }
 
 pub mod wasm {
-    pub const LIBC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libc.o"));
-    pub const MALLOC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/malloc.o"));
+    pub const MALLOC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wasm/malloc.o"));
+
+    pub const TAL_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wasm/tal.o"));
 
     pub const INDEX_HTML: &'static [u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/libc/wasm/dist/index.html"
+        "/tal/wasm/dist/index.html"
     ));
     pub const WASM_LOADER_JS: &'static [u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/libc/wasm/dist/wasm_loader.js"
+        "/tal/wasm/dist/wasm_loader.js"
     ));
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct LibC<'a> {
+pub struct Tal<'a> {
     pub memcpy: FunctionValue<'a>,
     pub exit: FunctionValue<'a>,
     pub getchar: FunctionValue<'a>,
@@ -41,7 +42,7 @@ pub struct LibC<'a> {
     pub flush: FunctionValue<'a>,
 }
 
-impl<'a> LibC<'a> {
+impl<'a> Tal<'a> {
     pub fn declare(context: &'a Context, module: &Module<'a>, target: &TargetData) -> Self {
         let usize_t = fountain_pen::usize_t(context, target);
         let void_t = context.void_type();

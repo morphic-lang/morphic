@@ -1,6 +1,6 @@
 use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::libc::LibC;
+use crate::builtins::tal::Tal;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -145,7 +145,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         &self,
         context: &'a Context,
         target: &TargetData,
-        libc: &LibC<'a>,
+        tal: &Tal<'a>,
         item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
@@ -167,7 +167,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let s = scope(self.interface.new, context, target);
             let me = s.ptr_cast(
                 self.array_deref_type,
-                s.malloc(s.usize(1), self.array_deref_type, libc),
+                s.malloc(s.usize(1), self.array_deref_type, tal),
             );
 
             s.arrow_set(me, F_ARR_DATA, s.null(self.interface.item_type));
@@ -229,7 +229,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let me = s.arg(0);
 
             s.if_(s.eq(s.arrow(me, F_ARR_LEN), s.i64(0)), |s| {
-                s.panic("pop: empty array\n", &[], libc);
+                s.panic("pop: empty array\n", &[], tal);
             });
 
             let len = s.arrow(me, F_ARR_LEN);
@@ -287,8 +287,8 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                         s.call_void(item_release, &[s.buf_addr(data, i)]);
                     });
                 }
-                s.call_void(libc.free, &[s.ptr_cast(s.i8_t(), data)]);
-                s.call_void(libc.free, &[s.ptr_cast(s.i8_t(), me)]);
+                s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), data)]);
+                s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), me)]);
             });
 
             s.ret_void();
@@ -330,7 +330,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                 let new_data = s.ptr_cast(
                     self.interface.item_type,
                     s.call(
-                        libc.realloc,
+                        tal.realloc,
                         &[
                             s.ptr_cast(s.i8_t(), s.arrow(me, F_ARR_DATA)),
                             s.int_cast(s.usize_t(), alloc_size),
@@ -342,7 +342,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                     s.panic(
                         "ensure_capacity: failed to allocate %zu bytes\n",
                         &[alloc_size],
-                        libc,
+                        tal,
                     );
                 });
                 s.arrow_set(me, F_ARR_DATA, new_data);
@@ -364,7 +364,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             s.if_(out_of_bounds, |s| {
                 let error_str =
                     "index out of bounds: attempt to access item %lld of array with length %llu\n";
-                s.panic(error_str, &[idx, len], libc);
+                s.panic(error_str, &[idx, len], tal);
             });
 
             s.ret_void();
@@ -410,18 +410,18 @@ impl<'a> FlatArrayIoImpl<'a> {
         }
     }
 
-    pub fn define(&self, context: &'a Context, target: &TargetData, libc: &LibC<'a>) {
+    pub fn define(&self, context: &'a Context, target: &TargetData, tal: &Tal<'a>) {
         // define 'input'
         {
             let s = scope(self.input, context, target);
 
-            s.call(libc.flush, &[]);
+            s.call(tal.flush, &[]);
             let array = s.call(self.byte_array_type.interface().new, &[]);
 
             let getchar_result = s.alloca(s.i32_t());
             s.while_(
                 |s| {
-                    let getchar_result_value = s.call(libc.getchar, &[]);
+                    let getchar_result_value = s.call(tal.getchar, &[]);
                     s.ptr_set(getchar_result, getchar_result_value);
                     s.not(s.or(
                         s.eq(getchar_result_value, s.i32(-1i32 as u32)), // EOF
@@ -444,7 +444,7 @@ impl<'a> FlatArrayIoImpl<'a> {
 
             // TODO: check bytes_written for errors
             let _bytes_written = s.call_void(
-                libc.write,
+                tal.write,
                 &[
                     s.arrow(me, F_ARR_DATA),
                     s.usize(1),

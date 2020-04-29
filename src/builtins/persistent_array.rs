@@ -1,6 +1,6 @@
 use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::libc::LibC;
+use crate::builtins::tal::Tal;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -371,7 +371,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
         &self,
         context: &'a Context,
         target: &TargetData,
-        libc: &LibC<'a>,
+        tal: &Tal<'a>,
         item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
@@ -435,7 +435,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 s.panic(
                     "idx %d is out of bounds for persistent array of length %d",
                     &[idx, len],
-                    libc,
+                    tal,
                 )
             });
 
@@ -475,7 +475,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             let height = s.field(array, F_ARR_HEIGHT);
 
             s.if_(s.eq(len, s.i64(0)), |s| {
-                let tail = s.calloc(s.usize(1), self.leaf_type.into(), libc);
+                let tail = s.calloc(s.usize(1), self.leaf_type.into(), tal);
                 s.arrow_set(tail, F_LEAF_REFCOUNT, s.i64(1));
                 s.arr_set(s.gep(tail, F_LEAF_ITEMS), s.i32(0), item);
 
@@ -510,7 +510,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             });
 
             s.if_(s.eq(len, s.i64(items_per_leaf)), |s| {
-                let new_tail = s.calloc(s.usize(1), self.leaf_type.into(), libc);
+                let new_tail = s.calloc(s.usize(1), self.leaf_type.into(), tal);
 
                 s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
                 s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), s.i64(0), item);
@@ -532,7 +532,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 s.udiv(s.sub(len, s.i64(items_per_leaf)), s.i64(items_per_leaf));
 
             s.if_(s.eq(next_missing_node_number, target_node_number), |s| {
-                let new_body = s.calloc(s.usize(1), self.branch_type.into(), libc);
+                let new_body = s.calloc(s.usize(1), self.branch_type.into(), tal);
                 s.arrow_set(new_body, F_BRANCH_REFCOUNT, s.i64(1));
                 s.arr_set(
                     s.gep(new_body, F_BRANCH_CHILDREN),
@@ -550,7 +550,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                     ],
                 );
 
-                let new_tail = s.calloc(s.usize(1), self.leaf_type.into(), libc);
+                let new_tail = s.calloc(s.usize(1), self.leaf_type.into(), tal);
                 s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
                 s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), s.i64(0), item);
 
@@ -583,7 +583,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 ],
             );
 
-            let new_tail = s.calloc(s.usize(1), self.leaf_type.into(), libc);
+            let new_tail = s.calloc(s.usize(1), self.leaf_type.into(), tal);
             s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
             s.arr_set(s.gep(new_tail, F_LEAF_ITEMS), s.i64(0), item);
             s.arrow_set(new_tail, F_LEAF_REFCOUNT, s.i64(1));
@@ -607,13 +607,13 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             let len = s.field(s.arg(0), F_ARR_LEN);
 
             s.if_(s.eq(len, s.i64(0)), |s| {
-                s.panic("pop: empty array", &[], libc)
+                s.panic("pop: empty array", &[], tal)
             });
 
             s.if_(s.eq(len, s.i64(1)), |s| {
                 let item = s.arr_get(s.gep(s.field(array, F_ARR_TAIL), F_LEAF_ITEMS), s.i64(0));
 
-                s.free(s.field(array, F_ARR_TAIL), libc);
+                s.free(s.field(array, F_ARR_TAIL), tal);
 
                 let empty_arr = s.call(self.interface.new, &[]);
 
@@ -645,7 +645,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
             let item = s.arr_get(s.gep(result_tail, F_LEAF_ITEMS), s.i64(0));
 
-            s.free(result_tail, libc);
+            s.free(result_tail, tal);
 
             s.if_(s.eq(len, s.i64(items_per_leaf + 1)), |s| {
                 let new_array = s.make_struct(
@@ -692,7 +692,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                         ],
                     );
 
-                    s.free(s.field(pop_node_ret, 1), libc);
+                    s.free(s.field(pop_node_ret, 1), tal);
 
                     s.ret(s.make_tup(&[new_array, item]));
                 },
@@ -819,7 +819,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 s.panic(
                     "index out of bounds: attempt to access item %lld of array with length %llu",
                     &[index, s.field(array, F_ARR_LEN)],
-                    libc,
+                    tal,
                 );
             });
 
@@ -929,7 +929,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                                 );
                             });
                         }
-                        s.free(leaf_ptr, libc);
+                        s.free(leaf_ptr, tal);
                     });
                 },
                 |s| {
@@ -964,7 +964,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                                 s.ptr_set(i, s.add(s.ptr_get(i), s.i64(1)));
                             },
                         );
-                        s.free(branch_ptr, libc);
+                        s.free(branch_ptr, tal);
                     });
                 },
             );
@@ -998,7 +998,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                         s.call_void(item_release, &[s.arr_addr(s.gep(tail, F_LEAF_ITEMS), i)]);
                     })
                 }
-                s.free(tail, libc);
+                s.free(tail, tal);
             });
 
             s.ret_void();
@@ -1024,7 +1024,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 s.ret(leaf);
             });
 
-            let result = s.calloc(s.usize(1), self.leaf_type.into(), libc);
+            let result = s.calloc(s.usize(1), self.leaf_type.into(), tal);
             s.arrow_set(result, F_LEAF_REFCOUNT, s.i64(1));
 
             s.ptr_set(
@@ -1054,7 +1054,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 s.ret(branch);
             });
 
-            let result = s.calloc(s.usize(1), self.branch_type.into(), libc);
+            let result = s.calloc(s.usize(1), self.branch_type.into(), tal);
             s.arrow_set(result, F_BRANCH_REFCOUNT, s.i64(1));
             s.arrow_set(
                 result,
@@ -1102,10 +1102,10 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 s.ret(tail);
             });
 
-            let result = s.calloc(s.usize(1), self.leaf_type.into(), libc);
+            let result = s.calloc(s.usize(1), self.leaf_type.into(), tal);
             s.arrow_set(result, F_LEAF_REFCOUNT, s.i64(1));
             s.call(
-                libc.memcpy,
+                tal.memcpy,
                 &[
                     s.ptr_cast(s.i8_t(), s.gep(result, F_LEAF_ITEMS)),
                     s.ptr_cast(s.i8_t(), s.gep(tail, F_LEAF_ITEMS)),
@@ -1216,7 +1216,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 s.panic(
                     "index out of bounds: attempt to set item %lld of array with length %llu",
                     &[index, len],
-                    libc,
+                    tal,
                 );
             });
 
@@ -1312,7 +1312,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             let children = s.gep(result, F_BRANCH_CHILDREN);
 
             s.if_(s.is_null(s.arr_get(children, child_index)), |s| {
-                let sub_child = s.calloc(s.usize(1), self.branch_type.into(), libc);
+                let sub_child = s.calloc(s.usize(1), self.branch_type.into(), tal);
                 s.arrow_set(sub_child, F_BRANCH_REFCOUNT, s.i64(1));
 
                 s.arr_set(children, child_index, s.ptr_cast(s.i8_t(), sub_child));
@@ -1370,7 +1370,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 );
 
                 s.if_(s.eq(node_number, s.i64(0)), |s| {
-                    s.free(result, libc);
+                    s.free(result, tal);
 
                     s.ret(s.make_tup(&[new_tail, s.null(self.branch_type.into())]));
                 });
@@ -1395,7 +1395,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             );
 
             s.if_(s.eq(node_number, s.i64(0)), |s| {
-                s.free(result, libc);
+                s.free(result, tal);
 
                 s.ret(s.make_tup(&[s.field(popnode_ret, 0), s.null(self.branch_type.into())]));
             });
@@ -1490,12 +1490,12 @@ impl<'a> PersistentArrayIoImpl<'a> {
         }
     }
 
-    pub fn define(&self, context: &'a Context, target: &TargetData, libc: &LibC<'a>) {
+    pub fn define(&self, context: &'a Context, target: &TargetData, tal: &Tal<'a>) {
         // define 'input'
         {
             let s = scope(self.input, context, target);
 
-            s.call(libc.flush, &[]);
+            s.call(tal.flush, &[]);
 
             let array = s.alloca(self.byte_array_type.interface().array_type.into());
 
@@ -1504,7 +1504,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
             let getchar_result = s.alloca(s.i32_t());
             s.while_(
                 |s| {
-                    let getchar_result_value = s.call(libc.getchar, &[]);
+                    let getchar_result_value = s.call(tal.getchar, &[]);
                     s.ptr_set(getchar_result, getchar_result_value);
                     s.not(s.or(
                         s.eq(getchar_result_value, s.i32(-1i32 as u32)), // EOF
@@ -1556,7 +1556,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
             let items = s.gep(tail, F_LEAF_ITEMS);
             // TODO: check bytes_written for errors
             let _bytes_written = s.call_void(
-                libc.write,
+                tal.write,
                 &[
                     s.ptr_cast(s.i8_t(), items),
                     s.usize(1),
@@ -1581,7 +1581,7 @@ impl<'a> PersistentArrayIoImpl<'a> {
 
                 // TODO: check bytes_written for errors
                 let _bytes_written = s.call_void(
-                    libc.write,
+                    tal.write,
                     &[
                         s.ptr_cast(s.i8_t(), branch),
                         s.usize(1),

@@ -1,4 +1,4 @@
-#include "libc.h"
+#include "tal.h"
 #include "js_ffi.h"
 
 /* Provided by the opt-proto program we will be linked against. */
@@ -61,7 +61,6 @@ void write(const void *ptr, size_t size, size_t count) {
 }
 
 int flush(void) {
-  /* There is no analogous function to flush for Javascript's console. So, we
-     do nothing and return 0 (indicating success). */
+  /* There is no analogous function to flush for Javascript. */
   return 0;
 }

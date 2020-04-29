@@ -4,10 +4,8 @@
 #include <stddef.h>
 
 /* Because of various constraints when compiling for WebAssembly (for instance,
-   the lack of a filesystem), some of the "libc" functions called by the
-   opt-proto builtins are lightweight wrappers over actual libc functions. The
-   easiest way to provide a compatible API on native platforms in a small shim
-   library. */
+   the lack of a filesystem), some of the opt-proto builtins rely on what
+   amount to lightweight wrappers over libc functions. */
 
 void print(const char *str, ...);
 void print_error(const char *str, ...);

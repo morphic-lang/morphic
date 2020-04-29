@@ -1,6 +1,6 @@
 use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::libc::LibC;
+use crate::builtins::tal::Tal;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -107,7 +107,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         &self,
         context: &'a Context,
         target: &TargetData,
-        libc: &LibC<'a>,
+        tal: &Tal<'a>,
         item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
@@ -130,7 +130,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
                 s.panic(
                     "idx %d is out of bounds for array of length %d",
                     &[idx, array],
-                    libc,
+                    tal,
                 )
             });
 
@@ -157,7 +157,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
             let array = s.arg(0);
 
             s.if_(s.eq(array, s.i64(0)), |s| {
-                s.panic("cannot pop array of length 0", &[], libc);
+                s.panic("cannot pop array of length 0", &[], tal);
             });
 
             s.ret(s.make_tup(&[s.sub(array, s.i64(1)), s.undef(self.interface.item_type)]));

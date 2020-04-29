@@ -1,5 +1,5 @@
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::libc::LibC;
+use crate::builtins::tal::Tal;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -73,7 +73,7 @@ impl<'a> RcBoxBuiltin<'a> {
         &self,
         context: &'a Context,
         target: &TargetData,
-        libc: &LibC<'a>,
+        tal: &Tal<'a>,
         item_release: Option<FunctionValue<'a>>,
     ) {
         self.rc_type
@@ -85,7 +85,7 @@ impl<'a> RcBoxBuiltin<'a> {
             let s = scope(self.new, context, target);
             let item = s.arg(0);
 
-            let rc = s.ptr_cast(self.rc_type, s.malloc(s.usize(1), self.rc_type, libc));
+            let rc = s.ptr_cast(self.rc_type, s.malloc(s.usize(1), self.rc_type, tal));
             s.arrow_set(rc, F_REFCOUNT, s.i64(1));
             s.arrow_set(rc, F_ITEM, item);
             s.ret(rc);
@@ -120,7 +120,7 @@ impl<'a> RcBoxBuiltin<'a> {
                 if let Some(item_release) = item_release {
                     s.call_void(item_release, &[s.gep(rc, F_ITEM)]);
                 }
-                s.free(s.ptr_cast(s.i8_t(), rc), libc);
+                s.free(s.ptr_cast(s.i8_t(), rc), tal);
             });
 
             s.ret_void();

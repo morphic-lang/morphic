@@ -1,8 +1,8 @@
 use crate::builtins::array::ArrayImpl;
 use crate::builtins::flat_array::{FlatArrayImpl, FlatArrayIoImpl};
-use crate::builtins::libc::{self, LibC};
 use crate::builtins::persistent_array::{PersistentArrayImpl, PersistentArrayIoImpl};
 use crate::builtins::rc::RcBoxBuiltin;
+use crate::builtins::tal::{self, Tal};
 use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
 use crate::cli;
 use crate::data::first_order_ast as first_ord;
@@ -50,7 +50,7 @@ struct Globals<'a, 'b> {
     module: &'b Module<'a>,
     intrinsics: Intrinsics<'a>,
     target: &'b TargetData,
-    libc: LibC<'a>,
+    tal: Tal<'a>,
     custom_types: IdVec<low::CustomTypeId, CustomTypeDecls<'a>>,
 }
 
@@ -302,7 +302,7 @@ impl<'a> Instances<'a> {
             rc_builtin.define(
                 globals.context,
                 globals.target,
-                &globals.libc,
+                &globals.tal,
                 Some(release_func),
             );
         }
@@ -376,7 +376,7 @@ impl<'a> Instances<'a> {
                 flat_array_builtin.define(
                     globals.context,
                     globals.target,
-                    &globals.libc,
+                    &globals.tal,
                     None,
                     None,
                 );
@@ -384,7 +384,7 @@ impl<'a> Instances<'a> {
                 flat_array_builtin.define(
                     globals.context,
                     globals.target,
-                    &globals.libc,
+                    &globals.tal,
                     Some(retain_func),
                     Some(release_func),
                 );
@@ -392,7 +392,7 @@ impl<'a> Instances<'a> {
         }
 
         self.flat_array_io
-            .define(globals.context, globals.target, &globals.libc);
+            .define(globals.context, globals.target, &globals.tal);
 
         // persistent arrays
         for (i, (inner_type, persistent_array_builtin)) in
@@ -465,7 +465,7 @@ impl<'a> Instances<'a> {
                 persistent_array_builtin.define(
                     globals.context,
                     globals.target,
-                    &globals.libc,
+                    &globals.tal,
                     None,
                     None,
                 );
@@ -473,7 +473,7 @@ impl<'a> Instances<'a> {
                 persistent_array_builtin.define(
                     globals.context,
                     globals.target,
-                    &globals.libc,
+                    &globals.tal,
                     Some(retain_func),
                     Some(release_func),
                 );
@@ -481,7 +481,7 @@ impl<'a> Instances<'a> {
         }
 
         self.persistent_array_io
-            .define(globals.context, globals.target, &globals.libc);
+            .define(globals.context, globals.target, &globals.tal);
     }
 }
 
@@ -879,13 +879,13 @@ fn build_check_divisor_nonzero<'a, 'b>(
         builder.build_global_string_ptr("panicked due to division by zero\n", "panic_message");
 
     builder.build_call(
-        globals.libc.print_error,
+        globals.tal.print_error,
         &[panic_message.as_pointer_value().into()],
         "print_error__call",
     );
 
     builder.build_call(
-        globals.libc.exit,
+        globals.tal.exit,
         &[globals.context.i32_type().const_int(1 as u64, false).into()],
         "exit_call",
     );
@@ -1665,7 +1665,7 @@ fn gen_program<'a>(
 
     let intrinsics = get_intrinsics(context, &module);
 
-    let libc = LibC::declare(&context, &module, &target_machine.get_target_data());
+    let tal = Tal::declare(&context, &module, &target_machine.get_target_data());
 
     let custom_types = program
         .custom_types
@@ -1676,7 +1676,7 @@ fn gen_program<'a>(
         module: &module,
         intrinsics,
         target: &target_machine.get_target_data(),
-        libc,
+        tal,
         custom_types,
     };
 
@@ -1744,12 +1744,12 @@ fn gen_program<'a>(
 fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
     match target {
         cli::TargetConfig::Native => {
-            // materialize shim file to link with
-            let mut shim_file = tempfile::Builder::new()
+            // materialize files to link with
+            let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
                 .unwrap();
-            shim_file.write_all(libc::native::SHIM_O).unwrap();
+            tal_file.write_all(tal::native::TAL_O).unwrap();
 
             let clang = find_clang(10).unwrap();
             std::process::Command::new(clang.path)
@@ -1761,24 +1761,22 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .arg("-o")
                 .arg(exe_path)
                 .arg(obj_path)
-                .arg(shim_file.path())
+                .arg(tal_file.path())
                 .status()
                 .unwrap();
         }
         cli::TargetConfig::Wasm => {
-            // materialize libc implementation to link with
-
-            let mut libc_file = tempfile::Builder::new()
+            // materialize files to link with
+            let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
                 .unwrap();
-            libc_file.write_all(libc::wasm::LIBC_O).unwrap();
-
+            tal_file.write_all(tal::wasm::TAL_O).unwrap();
             let mut malloc_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
                 .unwrap();
-            malloc_file.write_all(libc::wasm::MALLOC_O).unwrap();
+            malloc_file.write_all(tal::wasm::MALLOC_O).unwrap();
 
             // TODO: improve error handling and make more user friendly
             if exe_path.is_file() {
@@ -1793,12 +1791,12 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
 
             let index_path = exe_path.join("index.html");
             let mut index_file = std::fs::File::create(index_path).unwrap();
-            index_file.write_all(libc::wasm::INDEX_HTML).unwrap();
+            index_file.write_all(tal::wasm::INDEX_HTML).unwrap();
 
             let wasm_loader_path = exe_path.join("wasm_loader.js");
             let mut wasm_loader_file = std::fs::File::create(wasm_loader_path).unwrap();
             wasm_loader_file
-                .write_all(libc::wasm::WASM_LOADER_JS)
+                .write_all(tal::wasm::WASM_LOADER_JS)
                 .unwrap();
 
             let clang = find_clang(10).unwrap();
@@ -1816,7 +1814,7 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .arg("-o")
                 .arg(exe_path.join("a.wasm"))
                 .arg(obj_path)
-                .arg(libc_file.path())
+                .arg(tal_file.path())
                 .arg(malloc_file.path())
                 .status()
                 .unwrap();

@@ -1,4 +1,4 @@
-#include "libc.h"
+#include "tal.h"
 #include "js_ffi.h"
 
 /* The following configuration of dlmalloc for WebAssembly is adapted from

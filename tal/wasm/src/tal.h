@@ -26,7 +26,7 @@ void *calloc(size_t num, size_t size);
 void *realloc(void *ptr, size_t new_size);
 void free(void *ptr);
 
-/* Modified versions of libc functions for wasm portability */
+/* Modified versions of libc functions for wasm portability: */
 void print(const char *str, ...); /* Currently, does not do proper string formatting. */
 void print_error(const char *str, ...); /* Currently, does not do proper string formatting. */
 void write(const void *ptr, size_t size, size_t count);

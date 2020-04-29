@@ -55,7 +55,7 @@
         })();
 
         /* `opt_proto_js_memory_size` and `opt_proto_js_memory_grow` are
-            provided to the libc implementation via JavaScript rather than
+            provided to the tal implementation via JavaScript rather than
             WebAssembly intrinsics to avoid needing to compile any WAT files. */
         const imports = {
             env: {

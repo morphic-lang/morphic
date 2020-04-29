@@ -1,4 +1,4 @@
-use crate::builtins::libc::LibC;
+use crate::builtins::tal::Tal;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -410,7 +410,7 @@ impl<'a, 'b> Scope<'a, 'b> {
         self.builder.build_load(ptr.into_pointer_value(), "get")
     }
 
-    pub fn panic(&self, panic_string: &str, panic_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
+    pub fn panic(&self, panic_string: &str, panic_args: &[BasicValueEnum<'a>], tal: &Tal<'a>) {
         let i32_type = self.context.i32_type();
 
         let panic_global = self
@@ -421,46 +421,46 @@ impl<'a, 'b> Scope<'a, 'b> {
         print_error_args.extend_from_slice(panic_args);
 
         self.builder
-            .build_call(libc.print_error, &print_error_args, "print_error_output");
+            .build_call(tal.print_error, &print_error_args, "print_error_output");
 
         self.builder
-            .build_call(libc.exit, &[i32_type.const_int(1, true).into()], "");
+            .build_call(tal.exit, &[i32_type.const_int(1, true).into()], "");
 
         self.builder.build_unreachable();
     }
 
-    pub fn print(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
+    pub fn print(&self, message: &str, message_args: &[BasicValueEnum<'a>], tal: &Tal<'a>) {
         let message_global = self.builder.build_global_string_ptr(message, "print_str");
 
         let mut print_args = vec![message_global.as_pointer_value().into()];
         print_args.extend_from_slice(message_args);
 
         self.builder
-            .build_call(libc.print, &print_args, "print_output");
+            .build_call(tal.print, &print_args, "print_output");
     }
 
-    pub fn debug(&self, message: &str, message_args: &[BasicValueEnum<'a>], libc: &LibC<'a>) {
+    pub fn debug(&self, message: &str, message_args: &[BasicValueEnum<'a>], tal: &Tal<'a>) {
         let message_global = self.builder.build_global_string_ptr(message, "debug_str");
 
         let mut print_error_args = vec![message_global.as_pointer_value().into()];
         print_error_args.extend_from_slice(message_args);
 
         self.builder
-            .build_call(libc.print_error, &print_error_args, "print_error__output");
+            .build_call(tal.print_error, &print_error_args, "print_error__output");
     }
 
     pub fn malloc(
         &self,
         num: BasicValueEnum<'a>,
         ty: BasicTypeEnum<'a>,
-        libc: &LibC<'a>,
+        tal: &Tal<'a>,
     ) -> BasicValueEnum<'a> {
         let ptr = self.call(
-            libc.malloc,
+            tal.malloc,
             &[self.mul(num, self.int_cast(self.usize_t(), self.size(ty)))],
         );
         self.if_(self.is_null(ptr), |s| {
-            s.panic("malloc failed", &[], libc);
+            s.panic("malloc failed", &[], tal);
         });
         return ptr;
     }
@@ -469,24 +469,24 @@ impl<'a, 'b> Scope<'a, 'b> {
         &self,
         num: BasicValueEnum<'a>,
         ty: BasicTypeEnum<'a>,
-        libc: &LibC<'a>,
+        tal: &Tal<'a>,
     ) -> BasicValueEnum<'a> {
         let ptr = self.call(
-            libc.calloc,
+            tal.calloc,
             &[
                 num.into_int_value().into(),
                 self.int_cast(self.usize_t(), self.size(ty)),
             ],
         );
         self.if_(self.is_null(ptr), |s| {
-            s.panic("calloc failed", &[], libc);
+            s.panic("calloc failed", &[], tal);
         });
 
         return self.ptr_cast(ty, ptr);
     }
 
-    pub fn free(&self, ptr: BasicValueEnum<'a>, libc: &LibC<'a>) {
-        self.call_void(libc.free, &[self.ptr_cast(self.i8_t(), ptr)]);
+    pub fn free(&self, ptr: BasicValueEnum<'a>, tal: &Tal<'a>) {
+        self.call_void(tal.free, &[self.ptr_cast(self.i8_t(), ptr)]);
     }
 
     pub fn is_null(&self, ptr: BasicValueEnum<'a>) -> BasicValueEnum<'a> {

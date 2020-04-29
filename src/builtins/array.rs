@@ -1,4 +1,4 @@
-use crate::builtins::libc::LibC;
+use crate::builtins::tal::Tal;
 use inkwell::context::Context;
 use inkwell::targets::TargetData;
 use inkwell::types::BasicTypeEnum;
@@ -27,7 +27,7 @@ pub trait ArrayImpl<'a> {
         &self,
         context: &'a Context,
         target: &TargetData,
-        libc: &LibC<'a>,
+        tal: &Tal<'a>,
         item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     );
