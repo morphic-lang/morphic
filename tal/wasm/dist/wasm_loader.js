@@ -34,25 +34,34 @@
         }
 
         let getChar = (function () {
-            /* Make sure that this value matches on the C side. */
-            const EOF = -1;
             let strBuffer = "";
             let curChar = 1;
 
             return function () {
                 if (curChar > strBuffer.length) {
                     strBuffer = prompt('Input requested:');
+                    // 'prompt()' returns 'null' when the user clicks 'cancel'.
+                    if (strBuffer == null) {
+                        strBuffer = "";
+                    }
                     curChar = 0;
                 }
                 /* This check has to come after the (curChar > strBuffer.length)
                    check in case prompt() returns a length 0 string. */
                 if (curChar == strBuffer.length) {
                     curChar += 1;
-                    return EOF;
+                    return "\n".charCodeAt(0);
                 }
-                return strBuffer[curChar++];
+
+                const char = strBuffer.charCodeAt(curChar++);
+                if (char < 0x100) {
+                    return char;
+                } else {
+                    return '?'.charCodeAt(0);
+                }
             };
         })();
+
 
         /* `opt_proto_js_memory_size` and `opt_proto_js_memory_grow` are
             provided to the tal implementation via JavaScript rather than
