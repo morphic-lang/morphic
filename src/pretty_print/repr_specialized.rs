@@ -206,7 +206,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                     binding_expr,
                     Context {
                         num_locals: context.num_locals + index,
-                        ..context
+                        ..new_context
                     },
                 )?;
             }
