@@ -6,8 +6,7 @@ mod util;
 mod builtins;
 
 mod data;
-mod pretty_print_low;
-mod pretty_print_special;
+mod pretty_print;
 
 mod lex;
 
@@ -185,7 +184,7 @@ fn run(
         let mut out_file = fs::File::create(artifact_dir.artifact_path("repr-spec-ir"))
             .map_err(Error::WriteIrFailed)?;
 
-        pretty_print_special::write_program(&mut out_file, &repr_specialized)
+        pretty_print::repr_specialized::write_program(&mut out_file, &repr_specialized)
             .map_err(Error::WriteIrFailed)?;
     }
 
@@ -197,7 +196,7 @@ fn run(
         let mut out_file =
             fs::File::create(artifact_dir.artifact_path("low-ir")).map_err(Error::WriteIrFailed)?;
 
-        pretty_print_low::write_program(&mut out_file, &lowered).map_err(Error::WriteIrFailed)?;
+        pretty_print::low::write_program(&mut out_file, &lowered).map_err(Error::WriteIrFailed)?;
     }
 
     let child = match config {

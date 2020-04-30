@@ -259,6 +259,7 @@ pub fn specialize_reprs(program: constrain::Program) -> special::Program {
     let main_new_id = func_insts.resolve((program.main, IdVec::new()));
 
     let mut funcs_resolved = IdVec::new();
+    let mut func_symbols = IdVec::new();
     while let Some((new_id, (orig_id, inst_args))) = func_insts.pop_pending() {
         let orig_def = &program.funcs[orig_id];
 
@@ -282,29 +283,36 @@ pub fn specialize_reprs(program: constrain::Program) -> special::Program {
         };
 
         let pushed_func_id = funcs_resolved.push(def_resolved);
+        let pushed_symbols_id = func_symbols.push(program.func_symbols[orig_id].clone());
 
         // We enqueue pending function defs to resolve in the order in which their ids are
         // generated, so this should always hold.  This allows us to insert resolved val defs at the
         // appropriate index simply by pushing them onto the end of the vector.
         assert_eq!(new_id, pushed_func_id);
+        assert_eq!(new_id, pushed_symbols_id);
     }
 
     let mut types_resolved = IdVec::new();
+    let mut type_symbols = IdVec::new();
     while let Some((new_id, (orig_id, inst_args))) = type_insts.pop_pending() {
         let orig_typedef = &program.custom_types[orig_id];
 
         let type_resolved = resolve_sig_type(&mut type_insts, &inst_args, &orig_typedef.content);
 
         let pushed_type_id = types_resolved.push(type_resolved);
+        let pushed_symbols_id = type_symbols.push(program.custom_type_symbols[orig_id].clone());
 
         // See above comment in the function instance queue loop
         assert_eq!(new_id, pushed_type_id);
+        assert_eq!(new_id, pushed_symbols_id);
     }
 
     special::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: types_resolved,
+        custom_type_symbols: type_symbols,
         funcs: funcs_resolved,
+        func_symbols,
         main: main_new_id,
     }
 }

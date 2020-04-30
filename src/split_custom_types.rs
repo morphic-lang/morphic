@@ -25,7 +25,9 @@ pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
     anon::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types,
+        custom_type_symbols: program.custom_type_symbols.clone(),
         funcs,
+        func_symbols: program.func_symbols.clone(),
         main: program.main,
     }
 }

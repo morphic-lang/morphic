@@ -9,9 +9,11 @@ pub fn flatten(program: anon::Program) -> flat::Program {
         .map(|_, func_def| flatten_func_def(&program, func_def));
 
     flat::Program {
-        mod_symbols: program.mod_symbols.clone(),
+        mod_symbols: program.mod_symbols,
         custom_types: program.custom_types,
+        custom_type_symbols: program.custom_type_symbols,
         funcs: flat_funcs,
+        func_symbols: program.func_symbols,
         main: program.main,
     }
 }

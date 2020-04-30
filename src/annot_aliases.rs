@@ -35,9 +35,11 @@ pub fn annot_aliases(program: flat::Program) -> annot::Program {
     );
 
     annot::Program {
-        mod_symbols: program.mod_symbols.clone(),
+        mod_symbols: program.mod_symbols,
         custom_types: program.custom_types,
+        custom_type_symbols: program.custom_type_symbols,
         funcs,
+        func_symbols: program.func_symbols,
         main: program.main,
         sccs,
     }

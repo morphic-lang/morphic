@@ -6,27 +6,32 @@ use crate::data::flat_ast::IoOp;
 use crate::data::flat_ast::LocalId;
 use crate::data::repr_constrained_ast::RepChoice;
 use crate::data::repr_specialized_ast::Condition;
+use crate::data::repr_specialized_ast::CustomFuncId;
+use crate::data::repr_specialized_ast::CustomTypeId;
 use crate::data::repr_specialized_ast::Expr;
 use crate::data::repr_specialized_ast::FuncDef;
 use crate::data::repr_specialized_ast::Program;
 use crate::data::repr_specialized_ast::Type;
 use crate::data::repr_unified_ast::ArrayOp;
+use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
 use std::io;
 use std::io::Write;
 
 const TAB_SIZE: usize = 2;
 
 #[derive(Clone, Debug, Copy)]
-struct Context {
+struct Context<'a> {
+    type_renderer: &'a CustomTypeRenderer,
+    func_renderer: &'a FuncRenderer<CustomFuncId>,
     indentation: usize,
     num_locals: usize,
 }
 
-impl Context {
+impl<'a> Context<'a> {
     fn add_indent(&self) -> Context {
         Context {
             indentation: self.indentation + TAB_SIZE,
-            num_locals: self.num_locals,
+            ..*self
         }
     }
 
@@ -36,7 +41,11 @@ impl Context {
     }
 }
 
-fn write_condition(w: &mut dyn Write, condition: &Condition) -> io::Result<()> {
+fn write_condition(
+    w: &mut dyn Write,
+    type_renderer: &CustomTypeRenderer,
+    condition: &Condition,
+) -> io::Result<()> {
     match condition {
         Condition::Any => write![w, "_",],
         Condition::Tuple(conditions) => {
@@ -44,28 +53,28 @@ fn write_condition(w: &mut dyn Write, condition: &Condition) -> io::Result<()> {
                 write![w, "()"]?;
             } else if conditions.len() == 1 {
                 write![w, "("]?;
-                write_condition(w, &conditions[0])?;
+                write_condition(w, type_renderer, &conditions[0])?;
                 write![w, ",)"]?
             } else {
                 write![w, "("]?;
                 for condition in &conditions[..conditions.len() - 1] {
-                    write_condition(w, condition)?;
+                    write_condition(w, type_renderer, condition)?;
                     write![w, ", "]?;
                 }
-                write_condition(w, &conditions[conditions.len() - 1])?;
+                write_condition(w, type_renderer, &conditions[conditions.len() - 1])?;
                 write![w, ")"]?;
             }
             Ok(())
         }
         Condition::Variant(variant_id, subcondition) => {
             write![w, "variant {} (", variant_id.0]?;
-            write_condition(w, subcondition)?;
+            write_condition(w, type_renderer, subcondition)?;
             write![w, ")"]?;
             Ok(())
         }
         Condition::Custom(type_id, subcondition) => {
-            write![w, "custom ~{} (", type_id.0]?;
-            write_condition(w, subcondition)?;
+            write![w, "custom {} (", type_renderer.render(type_id)]?;
+            write_condition(w, type_renderer, subcondition)?;
             write![w, ")"]?;
             Ok(())
         }
@@ -84,7 +93,11 @@ fn write_repchoice(w: &mut dyn Write, rep: &RepChoice) -> io::Result<()> {
     write![w, "{}", s]
 }
 
-fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
+fn write_type(
+    w: &mut dyn Write,
+    type_renderer: &CustomTypeRenderer,
+    type_: &Type,
+) -> io::Result<()> {
     match type_ {
         Type::Bool => write![w, "Bool"],
         Type::Num(NumType::Byte) => write![w, "Byte"],
@@ -93,13 +106,13 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
         Type::Array(rep, item_type) => {
             write_repchoice(w, rep)?;
             write![w, " Array ("]?;
-            write_type(w, item_type)?;
+            write_type(w, type_renderer, item_type)?;
             write![w, ")"]
         }
         Type::HoleArray(rep, item_type) => {
             write_repchoice(w, rep)?;
             write![w, " HoleArray ("]?;
-            write_type(w, item_type)?;
+            write_type(w, type_renderer, item_type)?;
             write![w, ")"]
         }
         Type::Tuple(types) => {
@@ -107,15 +120,15 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
                 write![w, "()"]?;
             } else if types.len() == 1 {
                 write![w, "("]?;
-                write_type(w, &types[0])?;
+                write_type(w, type_renderer, &types[0])?;
                 write![w, ",)"]?
             } else {
                 write![w, "("]?;
                 for item_type in &types[..types.len() - 1] {
-                    write_type(w, item_type)?;
+                    write_type(w, type_renderer, item_type)?;
                     write![w, ", "]?;
                 }
-                write_type(w, &types[types.len() - 1])?;
+                write_type(w, type_renderer, &types[types.len() - 1])?;
                 write![w, ")"]?;
             }
             Ok(())
@@ -126,20 +139,20 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
                 write![w, "{{}}"]?
             } else if types.len() == 1 {
                 write![w, "{{"]?;
-                write_type(w, &types[0])?;
+                write_type(w, type_renderer, &types[0])?;
                 write![w, ",}}"]?
             } else {
                 write![w, "{{"]?;
                 for item_type in &types[..types.len() - 1] {
-                    write_type(w, item_type)?;
+                    write_type(w, type_renderer, item_type)?;
                     write![w, ", "]?;
                 }
-                write_type(w, &types[types.len() - 1])?;
+                write_type(w, type_renderer, &types[types.len() - 1])?;
                 write![w, "}}"]?;
             }
             Ok(())
         }
-        Type::Custom(type_id) => write![w, "~{}", type_id.0],
+        Type::Custom(type_id) => write![w, "{}", type_renderer.render(type_id)],
     }
 }
 
@@ -159,16 +172,19 @@ fn write_double(
 fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
     match expr {
         Expr::Local(local_id) => write![w, "%{}", local_id.0],
-        Expr::Call(_purity, func_id, local_id) => {
-            write![w, "call #{} (%{})", func_id.0, local_id.0]
-        }
+        Expr::Call(_purity, func_id, local_id) => write![
+            w,
+            "call {} (%{})",
+            context.func_renderer.render(func_id),
+            local_id.0
+        ],
         Expr::Branch(local_id, conditions, _return_type) => {
             write![w, "branch %{} {{", local_id.0]?;
             let new_context = context.add_indent();
             for (condition, sub_expr) in conditions {
                 let newer_context = new_context.add_indent();
                 new_context.writeln(w)?;
-                write_condition(w, condition)?;
+                write_condition(w, context.type_renderer, condition)?;
                 write![w, " ->"]?;
                 newer_context.writeln(w)?;
                 write_expr(w, sub_expr, newer_context)?;
@@ -183,14 +199,14 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             for (index, (binding_type, binding_expr)) in bindings.iter().enumerate() {
                 new_context.writeln(w)?;
                 write![w, "%{}: ", context.num_locals + index]?;
-                write_type(w, binding_type)?;
+                write_type(w, context.type_renderer, binding_type)?;
                 write![w, " = "]?;
                 write_expr(
                     w,
                     binding_expr,
                     Context {
                         num_locals: context.num_locals + index,
-                        indentation: new_context.indentation,
+                        ..context
                     },
                 )?;
             }
@@ -219,12 +235,18 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::UnwrapVariant(variant_id, local_id) => {
             write![w, "unwrap variant {} %{}", variant_id.0, local_id.0]
         }
-        Expr::WrapCustom(type_id, local_id) => {
-            write![w, "wrap custom ~{} %{}", type_id.0, local_id.0]
-        }
-        Expr::UnwrapCustom(type_id, local_id) => {
-            write![w, "unwrap custom ~{} %{}", type_id.0, local_id.0]
-        }
+        Expr::WrapCustom(type_id, local_id) => write![
+            w,
+            "wrap custom {} %{}",
+            context.type_renderer.render(type_id),
+            local_id.0
+        ],
+        Expr::UnwrapCustom(type_id, local_id) => write![
+            w,
+            "unwrap custom {} %{}",
+            context.type_renderer.render(type_id),
+            local_id.0
+        ],
         Expr::ArithOp(ArithOp::Op(_, BinOp::Add, local_id1, local_id2)) => {
             write![w, "%{} + %{}", local_id1.0, local_id2.0]
         }
@@ -297,18 +319,26 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
     }
 }
 
-fn write_func(w: &mut dyn Write, func: &FuncDef, func_id: usize) -> io::Result<()> {
+fn write_func(
+    w: &mut dyn Write,
+    type_renderer: &CustomTypeRenderer,
+    func_renderer: &FuncRenderer<CustomFuncId>,
+    func: &FuncDef,
+    func_id: CustomFuncId,
+) -> io::Result<()> {
     let context = Context {
+        type_renderer,
+        func_renderer,
         indentation: 0,
         num_locals: 1,
     };
 
     let context = context.add_indent();
 
-    write![w, "func #{} (%0: ", func_id]?;
-    write_type(w, &func.arg_type)?;
+    write![w, "func {} (%0: ", func_renderer.render(func_id)]?;
+    write_type(w, type_renderer, &func.arg_type)?;
     write![w, "): "]?;
-    write_type(w, &func.ret_type)?;
+    write_type(w, type_renderer, &func.ret_type)?;
     write![w, " ="]?;
     context.writeln(w)?;
 
@@ -318,20 +348,28 @@ fn write_func(w: &mut dyn Write, func: &FuncDef, func_id: usize) -> io::Result<(
     Ok(())
 }
 
-fn write_custom_type(w: &mut dyn Write, type_: &Type, type_id: usize) -> io::Result<()> {
-    write![w, "custom type ~{} = ", type_id]?;
-    write_type(w, type_)?;
+fn write_custom_type(
+    w: &mut dyn Write,
+    type_renderer: &CustomTypeRenderer,
+    type_: &Type,
+    type_id: CustomTypeId,
+) -> io::Result<()> {
+    write![w, "custom type {} = ", type_renderer.render(type_id)]?;
+    write_type(w, type_renderer, type_)?;
     writeln![w]?;
     Ok(())
 }
 
 pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
-    for (i, type_) in program.custom_types.items.iter().enumerate() {
-        write_custom_type(w, type_, i)?;
+    let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
+    let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
+
+    for (i, type_) in &program.custom_types {
+        write_custom_type(w, &type_renderer, type_, i)?;
     }
     writeln![w]?;
-    for (i, func) in program.funcs.items.iter().enumerate() {
-        write_func(w, func, i)?;
+    for (i, func) in &program.funcs {
+        write_func(w, &type_renderer, &func_renderer, func, i)?;
     }
     Ok(())
 }

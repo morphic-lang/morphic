@@ -54,7 +54,7 @@ pub struct LamDef {
 
 #[derive(Clone, Debug)]
 pub struct LamSymbols {
-    pub lifted_from: mono::CustomGlobalId,
+    pub lifted_from: mono::ValSymbols,
 }
 
 #[derive(Clone)]

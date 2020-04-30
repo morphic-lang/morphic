@@ -21,7 +21,6 @@ pub enum Type {
 #[derive(Clone, Debug)]
 pub struct TypeSymbols {
     pub type_name: raw::TypeName,
-    pub type_mono: IdVec<res::TypeParamId, Type>,
     pub variant_symbols: IdVec<res::VariantId, res::VariantSymbols>,
 }
 
@@ -79,14 +78,13 @@ pub struct ValDef {
 
 #[derive(Clone, Debug)]
 pub enum ValSymbols {
-    Wrapper(ValSymbolsKind),
-    Normal(ValSymbolsKind),
+    Wrapper(ValSymbolsInner),
+    Normal(ValSymbolsInner),
 }
 
 #[derive(Clone, Debug)]
-pub struct ValSymbolsKind {
+pub struct ValSymbolsInner {
     pub val_name: raw::ValName,
-    pub type_mono: IdVec<res::TypeParamId, Type>,
 }
 
 #[derive(Clone, Debug)]

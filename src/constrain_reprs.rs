@@ -147,9 +147,11 @@ pub fn constrain_reprs(program: unif::Program) -> constrain::Program {
     );
 
     constrain::Program {
-        mod_symbols: program.mod_symbols.clone(),
+        mod_symbols: program.mod_symbols,
         custom_types: program.custom_types,
+        custom_type_symbols: program.custom_type_symbols,
         funcs: program.funcs,
+        func_symbols: program.func_symbols,
         rep_constraints,
         main: program.main,
     }

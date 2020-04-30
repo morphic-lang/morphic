@@ -1,13 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::iter::repeat_with;
 
 use crate::data::closure_specialized_ast as special;
-use crate::data::first_order_ast::{self as first_ord, LeafFuncCase};
+use crate::data::first_order_ast::{self as first_ord};
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
+use crate::data::raw_ast as raw;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LeafFuncCase {
+    Lam(special::LamId),
+    ArithOp(raw::Op),
+    ArrayOp(res::ArrayOp, special::Type),
+    ArrayReplace(special::Type),
+    IoOp(res::IoOp),
+    Ctor(special::CustomTypeId, res::VariantId),
+}
 
 fn add_rep_leaves(
     opaque_reps: &IdVec<special::OpaqueFuncRepId, special::FuncRep>,
@@ -64,11 +76,11 @@ struct IdMapping {
 #[derive(Clone, Debug)]
 struct ProgramParts {
     mod_symbols: IdVec<res::ModId, res::ModSymbols>,
+
     custom_types: IdVec<special::CustomTypeId, first_ord::TypeDef>,
     closures: IdVec<LoweredClosureId, first_ord::TypeDef>,
 
     custom_type_symbols: IdVec<special::CustomTypeId, mono::TypeSymbols>,
-    closure_symbols: IdVec<LoweredClosureId, first_ord::ClosureTypeSymbols>,
 
     globals: IdVec<special::CustomGlobalId, first_ord::FuncDef>,
     lam_bodies: IdVec<special::LamId, first_ord::FuncDef>,
@@ -77,7 +89,6 @@ struct ProgramParts {
 
     global_symbols: IdVec<special::CustomGlobalId, mono::ValSymbols>,
     lam_body_symbols: IdVec<special::LamId, lifted::LamSymbols>,
-    dispatch_func_symbols: IdVec<DispatchFuncId, BTreeSet<LeafFuncCase>>,
 }
 
 impl IdMapping {
@@ -119,6 +130,8 @@ impl IdMapping {
         debug_assert_eq!(parts.globals.len(), self.num_orig_globals);
         debug_assert_eq!(parts.lam_bodies.len(), self.num_orig_lams);
 
+        let num_closures = parts.closures.items.len();
+
         let mut custom_types = parts.custom_types.items;
         custom_types.extend(parts.closures.items);
 
@@ -126,12 +139,10 @@ impl IdMapping {
             .custom_type_symbols
             .into_mapped(|_, symbols| first_ord::CustomTypeSymbols::CustomType(symbols))
             .items;
-        custom_type_symbols.extend(
-            parts
-                .closure_symbols
-                .into_mapped(|_, symbols| first_ord::CustomTypeSymbols::ClosureType(symbols))
-                .items,
-        );
+        custom_type_symbols
+            .extend(repeat_with(|| first_ord::CustomTypeSymbols::ClosureType).take(num_closures));
+
+        let num_dispatch_funcs = parts.dispatch_funcs.len();
 
         let mut funcs = parts.globals.items;
         funcs.extend(parts.lam_bodies.items);
@@ -149,12 +160,8 @@ impl IdMapping {
                 .items,
         );
         func_symbols.push(first_ord::FuncSymbols::MainWrapper);
-        func_symbols.extend(
-            parts
-                .dispatch_func_symbols
-                .into_mapped(|_, symbols| first_ord::FuncSymbols::Dispatch(symbols))
-                .items,
-        );
+        func_symbols
+            .extend(repeat_with(|| first_ord::FuncSymbols::Dispatch).take(num_dispatch_funcs));
 
         first_ord::Program {
             mod_symbols: parts.mod_symbols,
@@ -1149,31 +1156,16 @@ pub fn lower_closures(program: special::Program) -> first_ord::Program {
         .lowered_closures
         .map(|_, closure| closure.as_ref().unwrap().typedef.clone());
 
-    let lowered_closure_symbols = ctx.lowered_closures.map(|_, closure| {
-        let mut variants = vec![None; closure.as_ref().unwrap().case_variants.len()];
-        for (case, variant_id) in &closure.as_ref().unwrap().case_variants {
-            debug_assert!(variants[variant_id.0].is_none());
-            variants[variant_id.0] = Some(case);
-        }
-        first_ord::ClosureTypeSymbols {
-            variant_symbols: IdVec::from_items(
-                variants.iter().map(|case| case.unwrap().clone()).collect(),
-            ),
-        }
-    });
-
     let parts = ProgramParts {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: lowered_custom_types,
         custom_type_symbols: program.custom_type_symbols.clone(),
         closures: lowered_closures,
-        closure_symbols: lowered_closure_symbols,
         globals: lowered_globals,
         global_symbols: lowered_global_symbols,
         lam_bodies: lowered_lam_bodies,
         lam_body_symbols: lowered_lam_symbols,
         dispatch_funcs: ctx.dispatch_funcs,
-        dispatch_func_symbols: ctx.dispatch_func_symbols,
 
         main: lowered_main,
     };

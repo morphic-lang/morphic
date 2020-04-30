@@ -26,7 +26,9 @@ pub struct FuncRepConstraints {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<first_ord::CustomTypeId, unif::TypeDef>,
+    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, unif::FuncDef>,
+    pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
     pub rep_constraints: IdVec<first_ord::CustomFuncId, FuncRepConstraints>,
     pub main: first_ord::CustomFuncId,
 }
