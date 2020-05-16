@@ -485,6 +485,23 @@ impl<'a> Instances<'a> {
     }
 }
 
+fn ceil_div(num: i64, den: i64) -> i64 {
+    // When num == 0, we need to round towards +infinity
+    (num - 1).div_euclid(den) + 1
+}
+
+// Fiddly arithmetic may be the hardest part of programming.
+// There's no harm in a simple correctness check.
+#[test]
+fn ceil_div_test() {
+    assert_eq!(ceil_div(0, 3), 0);
+    assert_eq!(ceil_div(1, 3), 1);
+    assert_eq!(ceil_div(2, 3), 1);
+    assert_eq!(ceil_div(3, 3), 1);
+    assert_eq!(ceil_div(4, 3), 2);
+    assert_eq!(ceil_div(9, 3), 3);
+}
+
 fn get_llvm_variant_type<'a, 'b>(
     globals: &Globals<'a, 'b>,
     instances: &Instances<'a>,
@@ -518,21 +535,32 @@ fn get_llvm_variant_type<'a, 'b>(
         (max_alignment, max_size)
     };
 
-    let alignment_array = {
-        let alignment_type = match max_alignment {
-            1 => globals.context.i8_type(),
-            2 => globals.context.i16_type(),
-            4 => globals.context.i32_type(),
-            8 => globals.context.i64_type(),
-            _ => panic!["Unsupported alignment {}", max_alignment],
-        };
-        alignment_type.array_type(0)
+    let alignment_type = match max_alignment {
+        1 => globals.context.i8_type(),
+        2 => globals.context.i16_type(),
+        4 => globals.context.i32_type(),
+        8 => globals.context.i64_type(),
+        _ => panic!["Unsupported alignment {}", max_alignment],
     };
 
-    let bytes = globals
-        .context
-        .i8_type()
-        .array_type(max_size.try_into().unwrap());
+    let alignment_array = alignment_type.array_type(0);
+
+    // The payload is represented by an array of "chunks", each an integer.
+    //
+    // Originally we always used an array of 'i8's here (i.e. the chunk size was always 1 byte), but
+    // it turns out that when trying to bitcast byte arrays stored in SSA registers into other
+    // types, LLVM generates huge sequences of bit operations to assemble the resulting structure
+    // byte-by-byte.  Constructing our payload array out of larger chunks mitigates this problem
+    // somewhat.
+    //
+    // Currently, we use the maximum alignment to determine the chunk size (which, incidentally,
+    // makes the zero-size alignment array redundant). This is only a heuristic, and we may want to
+    // change it later, or even use a heterogenous struct of chunks.  Other code in this module
+    // should *not* rely on assumptions about the particular chunking strategy used here.
+    let num_chunks: u32 = ceil_div(max_size as i64, max_alignment as i64)
+        .try_into()
+        .unwrap();
+    let bytes = alignment_type.array_type(num_chunks);
 
     let field_types = &[discrim_type.into(), alignment_array.into(), bytes.into()];
     globals.context.struct_type(field_types, false)
