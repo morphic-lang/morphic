@@ -116,6 +116,40 @@ sample! { mutual_tail_rec "samples/mutual_tail_rec.txt";
     ];
 }
 
+sample! { mutate "samples/mutate.txt";
+    stdin = "";
+    stdout = lines! [
+        "vvvvvvv",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "^^^^^^^",
+        "vvvvvvv",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "^^^^^^^",
+        "vvvvvvv",
+        "4",
+        "9",
+        "16",
+        "25",
+        "36",
+        "^^^^^^^",
+        "vvvvvvv",
+        "36",
+        "25",
+        "16",
+        "9",
+        "4",
+        "^^^^^^^",
+    ];
+}
+
 sample! { item_oob1 "samples/run-fail/item_oob1.txt";
     stdin = "";
     stdout = "";
@@ -150,6 +184,3 @@ sample! { div_zero_int "samples/run-fail/div_zero_int.txt";
     stderr = "panicked due to division by zero\n";
     status = Failure(Some(1));
 }
-
-// TODO: Carefully review 'samples/mutate.txt' to determine by hand what the stdouted output should
-// be, then add a test for it.
