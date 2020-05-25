@@ -36,9 +36,14 @@ pub enum TargetConfig {
     Wasm,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SymbolName(pub String);
+
 #[derive(Debug)]
 pub struct BuildConfig {
     pub src_path: PathBuf,
+    pub profile_syms: Vec<SymbolName>,
+
     pub target: TargetConfig,
     pub llvm_opt_level: OptimizationLevel,
 
@@ -129,6 +134,19 @@ impl Config {
                             .long("output-path")
                             .help("Place the output executable at this path.")
                             .takes_value(true),
+                    )
+                    .arg(
+                        Arg::with_name("profile")
+                            .long("profile")
+                            .help(
+                                "Instrument a function to measure performance statistics. To use \
+                                 this instrumentation, run the compiled program with the \
+                                 environment variable OPT_PROTO_PROFILE_PATH set. When the \
+                                 program exits, it will write a JSON file to this path containing \
+                                 performance data for every '--profile'd function.",
+                            )
+                            .multiple(true)
+                            .number_of_values(1),
                     ),
             )
             .get_matches();
@@ -191,8 +209,14 @@ impl Config {
                 None
             };
 
+            let profile_syms = match matches.values_of("profile") {
+                Some(values) => values.map(|val| SymbolName(val.to_owned())).collect(),
+                None => Vec::new(),
+            };
+
             let build_config = BuildConfig {
                 src_path,
+                profile_syms,
                 target,
                 llvm_opt_level,
                 output_path: output_path.into(),
@@ -217,6 +241,13 @@ impl Config {
         match self {
             Self::RunConfig(_) => None,
             Self::BuildConfig(build_config) => build_config.artifact_dir.as_ref(),
+        }
+    }
+
+    pub fn profile_syms(&self) -> &[SymbolName] {
+        match self {
+            Self::RunConfig(_) => &[],
+            Self::BuildConfig(build_config) => &build_config.profile_syms,
         }
     }
 }
