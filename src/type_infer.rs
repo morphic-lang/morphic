@@ -3,6 +3,7 @@ use std::cell::{RefCell, RefMut};
 use std::io;
 use std::ops::{Deref, DerefMut};
 
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
@@ -443,6 +444,7 @@ enum AnnotExpr {
         TypeVar, // Return type
         AnnotPattern,
         Box<AnnotExpr>,
+        Option<prof::ProfilePointId>,
     ),
     App(Purity, Box<AnnotExpr>, Box<AnnotExpr>),
     Match(Box<AnnotExpr>, Vec<(AnnotPattern, AnnotExpr)>, TypeVar),
@@ -825,7 +827,7 @@ fn infer_expr(
             Ok(AnnotExpr::Tuple(items_annot))
         }
 
-        res::Expr::Lam(purity, pat, body, _prof_id) => scope.with_subscope(|subscope| {
+        res::Expr::Lam(purity, pat, body, prof_id) => scope.with_subscope(|subscope| {
             let arg_var = ctx.new_var(Assign::Unknown);
             let ret_var = ctx.new_var(Assign::Unknown);
             let lam_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
@@ -836,8 +838,14 @@ fn infer_expr(
 
             let body_annot = infer_expr(program, ctx, subscope, ret_var, &body)?;
 
-            let lam_annot =
-                AnnotExpr::Lam(*purity, arg_var, ret_var, pat_annot, Box::new(body_annot));
+            let lam_annot = AnnotExpr::Lam(
+                *purity,
+                arg_var,
+                ret_var,
+                pat_annot,
+                Box::new(body_annot),
+                *prof_id,
+            );
 
             Ok(lam_annot)
         }),
@@ -1007,12 +1015,13 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawEr
                 .collect::<Result<_, _>>()?,
         )),
 
-        AnnotExpr::Lam(purity, arg_type, ret_type, pat, body) => Ok(typed::Expr::Lam(
+        AnnotExpr::Lam(purity, arg_type, ret_type, pat, body, prof_id) => Ok(typed::Expr::Lam(
             purity,
             ctx.extract(arg_type)?,
             ctx.extract(ret_type)?,
             extract_pat_solution(ctx, pat)?,
             Box::new(extract_solution(ctx, *body)?),
+            prof_id,
         )),
 
         AnnotExpr::App(purity, func, arg) => Ok(typed::Expr::App(
@@ -1106,6 +1115,7 @@ pub fn type_infer(program: res::Program) -> Result<typed::Program, Error> {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: program.custom_types,
         custom_type_symbols: program.custom_type_symbols,
+        profile_points: program.profile_points,
         vals: vals_inferred,
         val_symbols: program.val_symbols,
         main: program.main,

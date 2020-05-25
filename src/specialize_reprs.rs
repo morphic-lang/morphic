@@ -280,6 +280,7 @@ pub fn specialize_reprs(program: constrain::Program) -> special::Program {
             arg_type: arg_resolved,
             ret_type: ret_resolved,
             body: body_resolved,
+            profile_point: orig_def.profile_point,
         };
 
         let pushed_func_id = funcs_resolved.push(def_resolved);
@@ -313,6 +314,7 @@ pub fn specialize_reprs(program: constrain::Program) -> special::Program {
         custom_type_symbols: type_symbols,
         funcs: funcs_resolved,
         func_symbols,
+        profile_points: program.profile_points,
         main: main_new_id,
     }
 }

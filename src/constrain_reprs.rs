@@ -153,6 +153,7 @@ pub fn constrain_reprs(program: unif::Program) -> constrain::Program {
         funcs: program.funcs,
         func_symbols: program.func_symbols,
         rep_constraints,
+        profile_points: program.profile_points,
         main: program.main,
     }
 }

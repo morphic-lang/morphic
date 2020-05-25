@@ -1190,6 +1190,7 @@ fn lower_function(
         arg_type: lower_type(&func.arg_type),
         ret_type: lower_type(&func.ret_type),
         body,
+        profile_point: func.profile_point,
     }
 }
 
@@ -1208,6 +1209,7 @@ pub fn lower_structures(program: tail::Program) -> low::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: boxed_typedefs,
         funcs: IdVec::from_items(lowered_funcs),
+        profile_points: program.profile_points,
         main: low::CustomFuncId(program.main.0),
     }
 }

@@ -4,6 +4,7 @@ use crate::data::alias_annot_ast as alias;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as mutation;
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::graph::Scc;
@@ -146,6 +147,7 @@ pub struct FuncDef {
     pub arg_type: Type<RepParamId>,
     pub ret_type: Type<RepParamId>,
     pub body: Expr<SolvedCall<RepSolution>, RepSolution>,
+    pub profile_point: Option<prof::ProfilePointId>,
 }
 
 #[derive(Clone, Debug)]
@@ -155,6 +157,7 @@ pub struct Program {
     pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
+    pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: first_ord::CustomFuncId,
 
     pub sccs: Vec<Scc<first_ord::CustomFuncId>>,

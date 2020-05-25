@@ -14,6 +14,7 @@ pub fn flatten(program: anon::Program) -> flat::Program {
         custom_type_symbols: program.custom_type_symbols,
         funcs: flat_funcs,
         func_symbols: program.func_symbols,
+        profile_points: program.profile_points,
         main: program.main,
     }
 }
@@ -513,5 +514,6 @@ fn flatten_func_def(orig: &anon::Program, func_def: &anon::FuncDef) -> flat::Fun
         arg_type: func_def.arg_type.clone(),
         ret_type: func_def.ret_type.clone(),
         body: root_builder.to_expr(ret_local),
+        profile_point: func_def.profile_point,
     }
 }

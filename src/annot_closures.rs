@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::data::closure_annot_ast as annot;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
@@ -1078,7 +1079,7 @@ struct SolverScc {
     lam_sigs: BTreeMap<lifted::LamId, SolverLamSig>,
 
     solver_vals: BTreeMap<mono::CustomGlobalId, SolverExpr>,
-    solver_lams: BTreeMap<lifted::LamId, (SolverPattern, SolverExpr)>,
+    solver_lams: BTreeMap<lifted::LamId, (SolverPattern, SolverExpr, Option<prof::ProfilePointId>)>,
 
     constraints: ConstraintGraph<SolverRequirement>,
 }
@@ -1172,7 +1173,7 @@ fn instantiate_scc(
 
             debug_assert_eq!(local_ctx.len(), 0);
 
-            (lam_id, (solver_arg, solver_body))
+            (lam_id, (solver_arg, solver_body, lam_def.profile_point))
         })
         .collect();
 
@@ -1948,7 +1949,7 @@ fn solve_scc(
     for lam_id in scc_lams {
         let solver_sig = &instantiated.lam_sigs[lam_id];
 
-        let (solver_pat, solver_body) = &instantiated.solver_lams[lam_id];
+        let (solver_pat, solver_body, prof_id) = &instantiated.solver_lams[lam_id];
 
         let annot_lam = annot::LamDef {
             purity: solver_sig.purity,
@@ -1967,6 +1968,7 @@ fn solve_scc(
                 &solutions.class_solutions,
                 solver_body,
             ),
+            profile_point: *prof_id,
         };
 
         debug_assert!(annot_lams[lam_id].is_none());
@@ -2147,6 +2149,7 @@ pub fn annot_closures(program: lifted::Program) -> annot::Program {
         val_symbols: program.val_symbols,
         lams: annot_lams.into_mapped(|_id, lam| lam.unwrap()),
         lam_symbols: program.lam_symbols,
+        profile_points: program.profile_points,
         main: program.main,
     }
 }

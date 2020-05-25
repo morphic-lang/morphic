@@ -20,6 +20,7 @@ pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
         ret_type: trans_type(&func_def.ret_type),
         arg: trans_pattern(&program.custom_types, &func_def.arg),
         body: trans_expr(&program.custom_types, &func_def.body),
+        profile_point: func_def.profile_point,
     });
 
     anon::Program {
@@ -28,6 +29,7 @@ pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
         custom_type_symbols: program.custom_type_symbols.clone(),
         funcs,
         func_symbols: program.func_symbols.clone(),
+        profile_points: program.profile_points.clone(),
         main: program.main,
     }
 }

@@ -5,6 +5,7 @@ use crate::data::closure_specialized_ast as special;
 use crate::data::first_order_ast::{self as first_ord};
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::raw_ast::Op;
@@ -89,6 +90,8 @@ struct ProgramParts {
 
     global_symbols: IdVec<special::CustomGlobalId, mono::ValSymbols>,
     lam_body_symbols: IdVec<special::LamId, lifted::LamSymbols>,
+
+    profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
 }
 
 impl IdMapping {
@@ -169,6 +172,7 @@ impl IdMapping {
             custom_type_symbols: IdVec::from_items(custom_type_symbols),
             funcs: IdVec::from_items(funcs),
             func_symbols: IdVec::from_items(func_symbols),
+            profile_points: parts.profile_points,
             main: first_ord::CustomFuncId(self.num_orig_globals + self.num_orig_lams),
         }
     }
@@ -627,6 +631,7 @@ impl<'a> Context<'a> {
                     .collect(),
                 ret_type,
             ),
+            profile_point: None,
         };
 
         let func_id = self.dispatch_funcs.push(func);
@@ -1020,6 +1025,7 @@ impl<'a> Context<'a> {
             ret_type: lowered_type,
             arg: first_ord::Pattern::Tuple(vec![]),
             body: lowered_body,
+            profile_point: None,
         }
     }
 
@@ -1050,6 +1056,7 @@ impl<'a> Context<'a> {
                 ret_type: lowered_ret,
                 arg: lowered_arg_pat,
                 body: lowered_body,
+                profile_point: lam_def.profile_point,
             }
         } else {
             let (captures_type, captures_pat) = (
@@ -1068,6 +1075,7 @@ impl<'a> Context<'a> {
                 ret_type: lowered_ret,
                 arg: first_ord::Pattern::Tuple(vec![captures_pat, lowered_arg_pat]),
                 body: lowered_body,
+                profile_point: lam_def.profile_point,
             }
         }
     }
@@ -1125,6 +1133,7 @@ impl<'a> Context<'a> {
             ret_type: first_ord::Type::Tuple(vec![]),
             arg: first_ord::Pattern::Tuple(vec![]),
             body: main_wrapper_body,
+            profile_point: None,
         }
     }
 }
@@ -1158,16 +1167,21 @@ pub fn lower_closures(program: special::Program) -> first_ord::Program {
 
     let parts = ProgramParts {
         mod_symbols: program.mod_symbols.clone(),
+
         custom_types: lowered_custom_types,
-        custom_type_symbols: program.custom_type_symbols.clone(),
         closures: lowered_closures,
+
+        custom_type_symbols: program.custom_type_symbols.clone(),
+
         globals: lowered_globals,
-        global_symbols: lowered_global_symbols,
         lam_bodies: lowered_lam_bodies,
-        lam_body_symbols: lowered_lam_symbols,
+        main: lowered_main,
         dispatch_funcs: ctx.dispatch_funcs,
 
-        main: lowered_main,
+        global_symbols: lowered_global_symbols,
+        lam_body_symbols: lowered_lam_symbols,
+
+        profile_points: program.profile_points,
     };
 
     mapping.assemble_program(parts)

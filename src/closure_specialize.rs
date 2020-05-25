@@ -211,6 +211,7 @@ impl<'a> Context<'a> {
             arg: resolved_arg,
             ret: resolved_ret,
             arg_pat: resolved_arg_pat,
+            profile_point: lam.profile_point,
             body: resolved_body,
         };
 
@@ -621,6 +622,7 @@ pub fn closure_specialize(program: annot::Program) -> special::Program {
         val_symbols,
         lams: ctx.lams.into_mapped(|_, lam_def| lam_def.unwrap()),
         lam_symbols,
+        profile_points: program.profile_points,
         main: resolved_main_id,
     }
 }

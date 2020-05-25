@@ -1,4 +1,5 @@
 use crate::data::mono_ast as mono;
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
@@ -50,6 +51,7 @@ pub struct LamDef {
     pub ret_type: mono::Type,
     pub arg: mono::Pattern,
     pub body: Expr,
+    pub profile_point: Option<prof::ProfilePointId>,
 }
 
 #[derive(Clone, Debug)]
@@ -66,5 +68,6 @@ pub struct Program {
     pub val_symbols: IdVec<mono::CustomGlobalId, mono::ValSymbols>,
     pub lams: IdVec<LamId, LamDef>,
     pub lam_symbols: IdVec<LamId, LamSymbols>,
+    pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: mono::CustomGlobalId,
 }

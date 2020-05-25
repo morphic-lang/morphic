@@ -26,7 +26,7 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
             }
         }
 
-        mono::Expr::Lam(_purity, _arg, _ret, _arg_pat, body) => {
+        mono::Expr::Lam(_purity, _arg, _ret, _arg_pat, body, _prof_id) => {
             add_expr_deps(body, deps);
         }
 
@@ -105,7 +105,7 @@ fn rebind_references(
             }
         }
 
-        mono::Expr::Lam(_purity, _arg, _ret, _arg_pat, body) => {
+        mono::Expr::Lam(_purity, _arg, _ret, _arg_pat, body, _prof_id) => {
             rebind_references(mapping, body);
         }
 
@@ -173,6 +173,7 @@ pub fn shield_functions(mut program: mono::Program) -> mono::Program {
                                     Box::new(mono::Expr::Global(id)),
                                     Box::new(mono::Expr::Local(res::LocalId(0))),
                                 )),
+                                None,
                             ),
                         };
 

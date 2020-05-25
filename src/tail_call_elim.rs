@@ -384,6 +384,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
                     1,
                     &orig_def.body,
                 ),
+                profile_point: orig_def.profile_point,
             }
         }
 
@@ -420,6 +421,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
                                 1,
                                 &orig_def.body,
                             ),
+                            profile_point: orig_def.profile_point,
                         }
                     })
                     .collect(),
@@ -487,6 +489,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
                 arg_type: entry_arg_type,
                 ret_type,
                 body: entry_body,
+                profile_point: None,
             }
         }
     });
@@ -511,6 +514,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
                     1,
                     &special::Expr::Call(Purity::Impure, program.main, flat::ARG_LOCAL),
                 ),
+                profile_point: None,
             };
 
             new_funcs.push(main_wrapper)
@@ -521,6 +525,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: program.custom_types,
         funcs: new_funcs,
+        profile_points: program.profile_points,
         main,
     }
 }

@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
@@ -53,6 +54,7 @@ pub enum Expr {
 pub struct TailFunc {
     pub arg_type: special::Type,
     pub body: Expr,
+    pub profile_point: Option<prof::ProfilePointId>,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +73,7 @@ pub struct FuncDef {
     pub arg_type: special::Type,
     pub ret_type: special::Type,
     pub body: Expr,
+    pub profile_point: Option<prof::ProfilePointId>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,5 +81,6 @@ pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<special::CustomTypeId, special::Type>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

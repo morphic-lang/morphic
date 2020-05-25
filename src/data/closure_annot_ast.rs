@@ -1,5 +1,6 @@
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
@@ -160,6 +161,7 @@ pub struct LamDef {
     pub ret: Type<RepParamId>,
     pub arg_pat: Pattern,
     pub body: Expr,
+    pub profile_point: Option<prof::ProfilePointId>,
 }
 
 #[derive(Clone, Debug)]
@@ -172,5 +174,6 @@ pub struct Program {
     pub val_symbols: IdVec<mono::CustomGlobalId, mono::ValSymbols>,
     pub lams: IdVec<lifted::LamId, LamDef>,
     pub lam_symbols: IdVec<lifted::LamId, lifted::LamSymbols>,
+    pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: mono::CustomGlobalId,
 }

@@ -40,6 +40,7 @@ pub fn annot_aliases(program: flat::Program) -> annot::Program {
         custom_type_symbols: program.custom_type_symbols,
         funcs,
         func_symbols: program.func_symbols,
+        profile_points: program.profile_points,
         main: program.main,
         sccs,
     }
@@ -1569,5 +1570,6 @@ fn annot_func(
         ret_type: func_def.ret_type.clone(),
         alias_sig,
         body: annot_body,
+        profile_point: func_def.profile_point,
     }
 }

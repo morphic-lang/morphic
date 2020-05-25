@@ -1,5 +1,6 @@
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::id_vec::IdVec;
@@ -137,6 +138,7 @@ pub struct FuncDef {
     pub ret_type: Type,
     pub arg: Pattern,
     pub body: Expr,
+    pub profile_point: Option<prof::ProfilePointId>,
 }
 
 #[derive(Clone, Debug)]
@@ -154,5 +156,6 @@ pub struct Program {
     pub custom_type_symbols: IdVec<CustomTypeId, CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<CustomFuncId, FuncSymbols>,
+    pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

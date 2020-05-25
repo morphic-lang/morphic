@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::mutation_annot_ast as mutation;
+use crate::data::profile as prof;
 use crate::data::repr_unified_ast as unif;
 use crate::data::resolved_ast as res;
 use crate::util::disjunction::Disj;
@@ -30,5 +31,6 @@ pub struct Program {
     pub funcs: IdVec<first_ord::CustomFuncId, unif::FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
     pub rep_constraints: IdVec<first_ord::CustomFuncId, FuncRepConstraints>,
+    pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: first_ord::CustomFuncId,
 }

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::id_vec::IdVec;
@@ -114,7 +115,7 @@ fn lift_expr<'a>(
                 .collect(),
         ),
 
-        mono::Expr::Lam(purity, arg_type, ret_type, arg, body) => {
+        mono::Expr::Lam(purity, arg_type, ret_type, arg, body, prof_id) => {
             let (id, captured) = lift_lam(
                 lambdas,
                 lam_symbol_sources,
@@ -124,6 +125,7 @@ fn lift_expr<'a>(
                 ret_type,
                 arg,
                 body,
+                *prof_id,
                 lifted_from,
             );
             let captures_translated =
@@ -243,6 +245,7 @@ fn lift_lam<'a>(
     ret_type: &'a mono::Type,
     arg: &'a mono::Pattern,
     body: &'a mono::Expr,
+    prof_id: Option<prof::ProfilePointId>,
     lifted_from: mono::CustomGlobalId,
 ) -> (lifted::LamId, IdVec<lifted::CaptureId, res::LocalId>) {
     let mut sub_captures = CaptureMap {
@@ -277,6 +280,7 @@ fn lift_lam<'a>(
         ret_type: ret_type.clone(),
         arg: arg.clone(),
         body: body_lifted,
+        profile_point: prof_id,
     };
 
     let lam_id = lambdas.push(lam_def);
@@ -345,6 +349,7 @@ pub fn lambda_lift(program: mono::Program) -> lifted::Program {
         val_symbols,
         lams: lambdas,
         lam_symbols,
+        profile_points: program.profile_points,
         main: program.main,
     }
 }

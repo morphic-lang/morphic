@@ -1265,6 +1265,7 @@ fn unify_func_scc(
             arg_type,
             ret_type,
             body,
+            profile_point: orig_def.profile_point,
         };
 
         solved_funcs.insert(*func, solved_def);
@@ -1295,6 +1296,7 @@ pub fn unify_reprs(program: mutation::Program) -> unif::Program {
         custom_type_symbols: program.custom_type_symbols,
         funcs: funcs_annot.into_mapped(|_, func| func.unwrap()),
         func_symbols: program.func_symbols,
+        profile_points: program.profile_points,
         main: program.main,
 
         sccs: program.sccs,

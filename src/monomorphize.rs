@@ -71,7 +71,7 @@ fn resolve_expr(
                 .collect(),
         ),
 
-        typed::Expr::Lam(purity, arg_type, ret_type, pat, body) => {
+        typed::Expr::Lam(purity, arg_type, ret_type, pat, body, prof_id) => {
             let pat_resolved = resolve_pattern(type_insts, inst_args, pat);
             let arg_type_resolved = resolve_type(type_insts, inst_args, arg_type);
             let ret_type_resolved = resolve_type(type_insts, inst_args, ret_type);
@@ -82,6 +82,7 @@ fn resolve_expr(
                 ret_type_resolved,
                 pat_resolved,
                 Box::new(body_resolved),
+                *prof_id,
             )
         }
 
@@ -360,6 +361,7 @@ pub fn monomorphize(program: typed::Program) -> mono::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: typedefs_resolved,
         custom_type_symbols: typedefs_resolved_symbols,
+        profile_points: program.profile_points,
         vals: val_defs_resolved,
         val_symbols: val_defs_resolved_symbols,
         main: main_new_id,

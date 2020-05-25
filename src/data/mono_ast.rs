@@ -1,3 +1,4 @@
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::raw_ast::Op;
@@ -46,6 +47,7 @@ pub enum Expr {
         Type, // Return type
         Pattern,
         Box<Expr>,
+        Option<prof::ProfilePointId>,
     ),
     App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Type),
@@ -92,6 +94,7 @@ pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
     pub custom_type_symbols: IdVec<CustomTypeId, TypeSymbols>,
+    pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub vals: IdVec<CustomGlobalId, ValDef>,
     pub val_symbols: IdVec<CustomGlobalId, ValSymbols>,
     pub main: CustomGlobalId,

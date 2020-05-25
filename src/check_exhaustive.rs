@@ -582,7 +582,7 @@ fn check_expr(
             Ok(())
         }
 
-        typed::Expr::Lam(_purity, _arg_type, _ret_type, lhs, body) => {
+        typed::Expr::Lam(_purity, _arg_type, _ret_type, lhs, body, _prof_id) => {
             check_irrefutable_pattern(custom_types, lhs)?;
             check_expr(custom_types, body)?;
             Ok(())
