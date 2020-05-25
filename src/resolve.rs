@@ -1,10 +1,12 @@
 use lalrpop_util::ParseError;
 use lazy_static::lazy_static;
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::cli;
+use crate::data::profile as prof;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
 use crate::file_cache::FileCache;
@@ -18,6 +20,9 @@ use crate::util::id_vec::IdVec;
 pub enum ErrorKind {
     ReadFailed(PathBuf, io::Error),
     ParseFailed(ParseError<usize, lex::Token, lex::Error>),
+    ParseProfileSymFailed(cli::SymbolName),
+    ResolveProfileSymFailed(cli::SymbolName),
+    ProfileSymNotFunction,
     IllegalFilePath(String),
     DuplicateModName(String),
     DuplicateTypeName(String),
@@ -53,6 +58,13 @@ impl Error {
             _ => {}
         }
 
+        // This is repeated in two different error messages, so we factor it out.
+        let profile_explanation =
+            "Arguments to '--profile' must be function names relative to the root \
+             module. For example, you could profile a function 'foo' in the root \
+             module by just passing '--profile foo', or you could profile a function \
+             'bar' in the module 'Baz' by passing '--profile Baz.bar'.";
+
         self.report_with(dest, files, |kind| match kind {
             ReadFailed(path, err) => {
                 // Other cases are handled above
@@ -69,6 +81,40 @@ impl Error {
                 // Handled above
                 unreachable!()
             }
+            ParseProfileSymFailed(sym_name) => (
+                "Incorrect Syntax in '--profile' Argument",
+                format!(
+                    lines![
+                        "I couldn't parse this '--profile' argument:",
+                        "",
+                        "    --profile {}",
+                        "",
+                        "{explanation}",
+                    ],
+                    sym = sym_name.0,
+                    explanation = profile_explanation,
+                ),
+            ),
+            ResolveProfileSymFailed(sym_name) => (
+                "Function Not Found in '--profile' Argument",
+                format!(
+                    lines![
+                        "I couldn't find the function mentioned in this '--profile' argument:",
+                        "",
+                        "    --profile {sym}",
+                        "",
+                        "{explanation}"
+                    ],
+                    sym = sym_name.0,
+                    explanation = profile_explanation,
+                ),
+            ),
+            ProfileSymNotFunction => (
+                "Unsupported '--profile' Argument",
+                "I can't add profiling instrumentation to this expression. I can only \
+                 profile top-level function definitions."
+                    .to_owned(),
+            ),
             IllegalFilePath(path) => (
                 "Invalid File Path",
                 format!(
@@ -226,7 +272,11 @@ pub struct GlobalContext {
     val_symbols: IdVec<res::CustomGlobalId, Option<res::ValSymbols>>,
 }
 
-pub fn resolve_program(files: &mut FileCache, file_path: &Path) -> Result<res::Program, Error> {
+pub fn resolve_program(
+    files: &mut FileCache,
+    file_path: &Path,
+    profile_syms: &[cli::SymbolName],
+) -> Result<res::Program, Error> {
     let mut ctx = GlobalContext {
         mods: IdVec::new(),
         mod_symbols: IdVec::new(),
@@ -253,14 +303,28 @@ pub fn resolve_program(files: &mut FileCache, file_path: &Path) -> Result<res::P
         return Err(locate_path(file_path)(ErrorKind::MainNotFound.into()));
     };
 
+    let val_symbols = ctx
+        .val_symbols
+        .into_mapped(|_id, val_syms| val_syms.unwrap());
+
+    let mut vals = ctx.vals.into_mapped(|_id, val_def| val_def.unwrap());
+
+    let profile_points = resolve_profile_points(
+        &ctx.mod_symbols,
+        &val_symbols,
+        &ctx.mods,
+        main_mod,
+        &mut vals,
+        profile_syms,
+    )?;
+
     Ok(res::Program {
         mod_symbols: ctx.mod_symbols,
         custom_types: ctx.types.into_mapped(|_id, typedef| typedef.unwrap()),
         custom_type_symbols: ctx.type_symbols,
-        vals: ctx.vals.into_mapped(|_id, val_def| val_def.unwrap()),
-        val_symbols: ctx
-            .val_symbols
-            .into_mapped(|_id, val_syms| val_syms.unwrap()),
+        profile_points,
+        vals,
+        val_symbols,
         main: main_proc,
     })
 }
@@ -801,7 +865,12 @@ fn resolve_expr(
             pattern,
             |res_pattern, sub_local_map| {
                 let res_body = resolve_expr(global_mods, local_mod_map, sub_local_map, body)?;
-                Ok(res::Expr::Lam(*purity, res_pattern, Box::new(res_body)))
+                Ok(res::Expr::Lam(
+                    *purity,
+                    res_pattern,
+                    Box::new(res_body),
+                    None,
+                ))
             },
         ),
 
@@ -1034,6 +1103,77 @@ fn resolve_scheme(
     };
 
     Ok((scheme, scheme_param_names))
+}
+
+fn resolve_profile_points(
+    mod_symbols: &IdVec<res::ModId, res::ModSymbols>, // For error reporting only
+    val_symbols: &IdVec<res::CustomGlobalId, res::ValSymbols>, // For error reporting only
+    global_mods: &IdVec<res::ModId, ModMap>,
+    main_mod: res::ModId,
+    vals: &mut IdVec<res::CustomGlobalId, res::ValDef>,
+    profile_syms: &[cli::SymbolName],
+) -> Result<IdVec<prof::ProfilePointId, prof::ProfilePoint>, Error> {
+    let mut profile_points = IdVec::new();
+
+    for sym_name in profile_syms {
+        let (path, val_name) = parse::QualNameParser::new()
+            .parse(lex::Lexer::new(&sym_name.0))
+            .map_err(|_| ErrorKind::ParseProfileSymFailed(sym_name.clone()))?;
+
+        let sym_mod_id = if path.0.len() > 0 {
+            resolve_mod_path(global_mods, &global_mods[main_mod].mods, &path)
+                .map_err(|_| ErrorKind::ResolveProfileSymFailed(sym_name.clone()))?
+        } else {
+            main_mod
+        };
+
+        let sym_val_id = match resolve_mod_val(global_mods, sym_mod_id, &val_name)
+            .map_err(|_| ErrorKind::ResolveProfileSymFailed(sym_name.clone()))?
+        {
+            res::GlobalId::Custom(custom) => custom,
+            _ => return Err(ErrorKind::ResolveProfileSymFailed(sym_name.clone()).into()),
+        };
+
+        annotate_profile_point(
+            &mut profile_points,
+            &mut vals[sym_val_id].body,
+            path,
+            val_name,
+        )
+        .map_err(locate_path(&mod_symbols[val_symbols[sym_val_id].mod_].file))?;
+    }
+
+    Ok(profile_points)
+}
+
+fn annotate_profile_point(
+    profile_points: &mut IdVec<prof::ProfilePointId, prof::ProfilePoint>,
+    body: &mut res::Expr,
+    path: raw::ModPath,
+    val_name: raw::ValName,
+) -> Result<(), Error> {
+    match body {
+        res::Expr::Span(lo, hi, content) => {
+            annotate_profile_point(profile_points, content, path, val_name)
+                .map_err(locate_span(*lo, *hi))
+        }
+
+        res::Expr::Lam(_, _, _, opt_prof_id) => {
+            let prof_id = opt_prof_id.get_or_insert_with(|| {
+                profile_points.push(prof::ProfilePoint {
+                    reporting_names: BTreeSet::new(),
+                })
+            });
+
+            profile_points[prof_id]
+                .reporting_names
+                .insert((path, val_name));
+
+            Ok(())
+        }
+
+        _ => Err(ErrorKind::ProfileSymNotFunction.into()),
+    }
 }
 
 fn insert_unique<K: Ord, V>(map: &mut BTreeMap<K, V>, key: K, value: V) -> Result<(), ()> {

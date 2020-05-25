@@ -136,8 +136,8 @@ fn run(
     config: cli::Config,
     files: &mut file_cache::FileCache,
 ) -> Result<Option<pseudoprocess::Child>, Error> {
-    let resolved =
-        resolve::resolve_program(files, config.src_path()).map_err(Error::ResolveFailed)?;
+    let resolved = resolve::resolve_program(files, config.src_path(), config.profile_syms())
+        .map_err(Error::ResolveFailed)?;
 
     // Check obvious errors and infer types
     check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;

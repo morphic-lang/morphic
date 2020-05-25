@@ -246,6 +246,12 @@ QualPath: syntax::ModPath = {
     syntax::ModPath(<>),
 };
 
+// Public for use in parsing '--profile' arguments
+pub QualName: (syntax::ModPath, syntax::ValName) = {
+  <path: QualPath> <name: ValName> =>
+    (path, name),
+};
+
 ExposeSpec: syntax::ExposeSpec = {
   // TODO: Add support for glob imports
 
@@ -312,7 +318,8 @@ Types: syntax::Type = {
 AtomicExpr_: syntax::Expr = {
   "(" <Exprs> ")",
 
-  <path: QualPath> <name: ValName> => {
+  <qual_name: QualName> => {
+    let (path, name) = qual_name;
     if path.0.is_empty() {
       syntax::Expr::Var(name)
     } else {

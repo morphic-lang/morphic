@@ -41,7 +41,7 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), Error> {
             Ok(())
         }
 
-        res::Expr::Lam(purity, _, body) => {
+        res::Expr::Lam(purity, _, body, _) => {
             check_expr(*purity, body)?;
             Ok(())
         }

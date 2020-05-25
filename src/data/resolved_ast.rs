@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast::{self as raw, Op};
 use crate::util::id_vec::IdVec;
@@ -57,6 +58,7 @@ pub struct Program {
     pub mod_symbols: IdVec<ModId, ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, TypeDef>,
     pub custom_type_symbols: IdVec<CustomTypeId, TypeSymbols>,
+    pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub vals: IdVec<CustomGlobalId, ValDef>,
     pub val_symbols: IdVec<CustomGlobalId, ValSymbols>,
     pub main: CustomGlobalId,
@@ -124,7 +126,7 @@ pub enum Expr {
     Global(GlobalId),
     Local(LocalId),
     Tuple(Vec<Expr>),
-    Lam(Purity, Pattern, Box<Expr>),
+    Lam(Purity, Pattern, Box<Expr>, Option<prof::ProfilePointId>),
     App(Purity, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     LetMany(Vec<(Pattern, Expr)>, Box<Expr>),

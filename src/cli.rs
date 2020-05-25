@@ -136,6 +136,10 @@ impl Config {
                             .takes_value(true),
                     )
                     .arg(
+                        // If you ever change the CLI syntax for profiling, you need to grep for
+                        // "--profile" elsewhere in the project and adjust things as necessary,
+                        // because several error message strings in other modules mention the
+                        // argument syntax.
                         Arg::with_name("profile")
                             .long("profile")
                             .help(

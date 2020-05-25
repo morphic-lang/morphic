@@ -825,7 +825,7 @@ fn infer_expr(
             Ok(AnnotExpr::Tuple(items_annot))
         }
 
-        res::Expr::Lam(purity, pat, body) => scope.with_subscope(|subscope| {
+        res::Expr::Lam(purity, pat, body, _prof_id) => scope.with_subscope(|subscope| {
             let arg_var = ctx.new_var(Assign::Unknown);
             let ret_var = ctx.new_var(Assign::Unknown);
             let lam_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
