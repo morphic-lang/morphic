@@ -1,4 +1,6 @@
 import Array
+import Option expose { Option { Some, None } }
+import Iter
 
 nat_to_string(i: Int): Array Byte =
   let digit_to_string = \d ->
@@ -29,3 +31,31 @@ int_to_string(i: Int): Array Byte =
   } else {
     nat_to_string(i)
   }
+
+digit_ascii_base: Byte = 48b
+
+digit_to_nat(char: Byte): Option Int =
+  match char {
+    // 0 is ascii code 48
+    48b -> Some(0),
+    49b -> Some(1),
+    50b -> Some(2),
+    51b -> Some(3),
+    52b -> Some(4),
+    53b -> Some(5),
+    54b -> Some(6),
+    55b -> Some(7),
+    56b -> Some(8),
+    57b -> Some(9),
+    _ -> None,
+  }
+
+string_to_nat(str: Array Byte): Option Int =
+  Iter.foldl(
+    Iter.items(str),
+    Some(0),
+    \(acc_opt, char) -> Option.and_then(
+      acc_opt,
+      \acc -> Option.map(digit_to_nat(char), \digit -> acc * 10 + digit),
+    )
+  )

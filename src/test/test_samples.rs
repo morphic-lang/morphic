@@ -150,6 +150,11 @@ sample! { mutate "samples/mutate.txt";
     ];
 }
 
+sample! { primes "samples/primes.txt";
+    stdin = "100\n";
+    stdout = "There are 25 primes <= 100\n";
+}
+
 sample! { item_oob1 "samples/run-fail/item_oob1.txt";
     stdin = "";
     stdout = "";
