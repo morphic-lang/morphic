@@ -6,6 +6,7 @@
 #define EOF -1
 
 typedef unsigned long size_t;
+typedef unsigned long long uint64_t;
 typedef long ptrdiff_t;
 
 /* Javascript needs an entry point to the wasm program. This wrapper will
@@ -31,5 +32,13 @@ void print(const char *str, ...); /* Currently, does not do proper string format
 void print_error(const char *str, ...); /* Currently, does not do proper string formatting. */
 void write(const void *ptr, size_t size, size_t count);
 int flush(void);
+
+/* Profiling primitives: */
+uint64_t prof_clock_res_nanos(void);
+uint64_t prof_clock_nanos(void);
+void prof_report_init(void);
+void prof_report_write_string(const char *str);
+void prof_report_write_u64(uint64_t val);
+void prof_report_done(void);
 
 #endif

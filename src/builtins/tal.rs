@@ -40,6 +40,14 @@ pub struct Tal<'a> {
     pub print_error: FunctionValue<'a>,
     pub write: FunctionValue<'a>,
     pub flush: FunctionValue<'a>,
+
+    // Profiling primitives
+    pub prof_clock_res_nanos: FunctionValue<'a>,
+    pub prof_clock_nanos: FunctionValue<'a>,
+    pub prof_report_init: FunctionValue<'a>,
+    pub prof_report_write_string: FunctionValue<'a>,
+    pub prof_report_write_u64: FunctionValue<'a>,
+    pub prof_report_done: FunctionValue<'a>,
 }
 
 impl<'a> Tal<'a> {
@@ -49,6 +57,7 @@ impl<'a> Tal<'a> {
         let i8_t = context.i8_type();
         let i8_ptr_t = i8_t.ptr_type(AddressSpace::Generic);
         let i32_t = context.i32_type();
+        let i64_t = context.i64_type();
 
         let memcpy = module.add_function(
             "memcpy",
@@ -105,6 +114,39 @@ impl<'a> Tal<'a> {
         let flush =
             module.add_function("flush", i32_t.fn_type(&[], false), Some(Linkage::External));
 
+        // Profiling primitives:
+
+        let prof_clock_res_nanos = module.add_function(
+            "prof_clock_res_nanos",
+            i64_t.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+        let prof_clock_nanos = module.add_function(
+            "prof_clock_nanos",
+            i64_t.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+        let prof_report_init = module.add_function(
+            "prof_report_init",
+            void_t.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+        let prof_report_write_string = module.add_function(
+            "prof_report_write_string",
+            void_t.fn_type(&[i8_ptr_t.into()], false),
+            Some(Linkage::External),
+        );
+        let prof_report_write_u64 = module.add_function(
+            "prof_report_write_u64",
+            void_t.fn_type(&[i64_t.into()], false),
+            Some(Linkage::External),
+        );
+        let prof_report_done = module.add_function(
+            "prof_report_done",
+            void_t.fn_type(&[], false),
+            Some(Linkage::External),
+        );
+
         Self {
             memcpy,
             exit,
@@ -119,6 +161,13 @@ impl<'a> Tal<'a> {
             print_error,
             write,
             flush,
+
+            prof_clock_res_nanos,
+            prof_clock_nanos,
+            prof_report_init,
+            prof_report_write_string,
+            prof_report_write_u64,
+            prof_report_done,
         }
     }
 }

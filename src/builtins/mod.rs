@@ -13,3 +13,5 @@ pub mod persistent_array;
 pub mod rc;
 
 pub mod zero_sized_array;
+
+pub mod prof_report;

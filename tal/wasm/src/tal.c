@@ -64,3 +64,32 @@ int flush(void) {
   /* There is no analogous function to flush for Javascript. */
   return 0;
 }
+
+static _Noreturn void prof_not_supported_error(void) {
+  print_error("Profiling on the webassembly target is not yet supported");
+  opt_proto_js_exit(1);
+}
+
+uint64_t prof_clock_res_nanos(void) {
+  prof_not_supported_error();
+}
+
+uint64_t prof_clock_nanos(void) {
+  prof_not_supported_error();
+}
+
+void prof_report_init(void) {
+  prof_not_supported_error();
+}
+
+void prof_report_write_string(const char *str) {
+  prof_not_supported_error();
+}
+
+void prof_report_write_u64(uint64_t val) {
+  prof_not_supported_error();
+}
+
+void prof_report_done(void) {
+  prof_not_supported_error();
+}

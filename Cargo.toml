@@ -26,6 +26,7 @@ crossbeam-channel = "0.4.2"
 inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "41b9624", features = ["llvm10-0"] }
 ansi_term = "0.12.1"
 textwrap = "0.11.0"
+json = "0.12.4" # used for string escaping in profile report generation
 
 # Error handling
 anyhow = "1.0.28"

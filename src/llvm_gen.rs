@@ -1,12 +1,16 @@
 use crate::builtins::array::ArrayImpl;
 use crate::builtins::flat_array::{FlatArrayImpl, FlatArrayIoImpl};
 use crate::builtins::persistent_array::{PersistentArrayImpl, PersistentArrayIoImpl};
+use crate::builtins::prof_report::{
+    define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
+};
 use crate::builtins::rc::RcBoxBuiltin;
 use crate::builtins::tal::{self, Tal};
 use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
 use crate::cli;
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
+use crate::data::profile as prof;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_process, Child, Stdio};
@@ -52,6 +56,7 @@ struct Globals<'a, 'b> {
     target: &'b TargetData,
     tal: Tal<'a>,
     custom_types: IdVec<low::CustomTypeId, CustomTypeDecls<'a>>,
+    profile_points: IdVec<prof::ProfilePointId, ProfilePointDecls<'a>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +139,54 @@ impl<'a> CustomTypeDecls<'a> {
 
         builder.build_return(None);
     }
+}
+
+fn declare_profile_points<'a>(
+    context: &'a Context,
+    module: &Module<'a>,
+    program: &low::Program,
+) -> IdVec<prof::ProfilePointId, ProfilePointDecls<'a>> {
+    let mut decls = program.profile_points.map(|_, _| ProfilePointDecls {
+        counters: BTreeMap::new(),
+        skipped_tail_rec: BTreeSet::new(),
+    });
+
+    for (func_id, def) in &program.funcs {
+        if let Some(prof_id) = def.profile_point {
+            let total_calls = module.add_global(
+                context.i64_type(),
+                None, // TODO: Is this the correct address space annotation?
+                &format!("total_calls_{}", func_id.0),
+            );
+            total_calls.set_initializer(&context.i64_type().const_zero());
+
+            let total_clock_nanos = module.add_global(
+                context.i64_type(),
+                None, // TODO: Is this the correct address space annotation?
+                &format!("total_clock_nanos_{}", func_id.0),
+            );
+            total_clock_nanos.set_initializer(&context.i64_type().const_zero());
+
+            let existing = decls[prof_id].counters.insert(
+                func_id,
+                ProfilePointCounters {
+                    total_calls,
+                    total_clock_nanos,
+                },
+            );
+            debug_assert!(existing.is_none());
+        }
+
+        for (tail_id, tail_def) in &def.tail_funcs {
+            // We don't currently attempt to profile tail-recursive functions
+            if let Some(prof_id) = tail_def.profile_point {
+                let is_new = decls[prof_id].skipped_tail_rec.insert((func_id, tail_id));
+                debug_assert!(is_new);
+            }
+        }
+    }
+
+    decls
 }
 
 struct Instances<'a> {
@@ -1538,16 +1591,31 @@ fn gen_function<'a, 'b>(
     globals: &Globals<'a, 'b>,
     func_decl: FunctionValue<'a>,
     funcs: &IdVec<low::CustomFuncId, FunctionValue<'a>>,
+    func_id: low::CustomFuncId,
     func: &low::FuncDef,
 ) {
     let builder = context.create_builder();
 
     let entry = context.append_basic_block(func_decl, "entry");
 
+    builder.position_at_end(entry);
+
+    let start_clock_nanos = if func.profile_point.is_some() {
+        Some(
+            builder
+                .build_call(globals.tal.prof_clock_nanos, &[], "start_clock_nanos")
+                .try_as_basic_value()
+                .left()
+                .unwrap()
+                .into_int_value(),
+        )
+    } else {
+        None
+    };
+
     // Declare tail call targets, but don't populate their bodies yet. Tail functions are
     // implemented via blocks which may be jumped to, and their arguments are implemented as mutable
     // variables.
-    builder.position_at_end(entry);
     let tail_targets = func.tail_funcs.map(|tail_id, tail_func| {
         let arg_var = builder.build_alloca(
             get_llvm_type(globals, instances, &tail_func.arg_type),
@@ -1558,6 +1626,52 @@ fn gen_function<'a, 'b>(
 
         TailCallTarget { arg_var, block }
     });
+
+    let gen_prof_epilogue = || {
+        if let Some(prof_id) = func.profile_point {
+            let end_clock_nanos = builder
+                .build_call(globals.tal.prof_clock_nanos, &[], "end_clock_nanos")
+                .try_as_basic_value()
+                .left()
+                .unwrap()
+                .into_int_value();
+
+            let diff_clock_nanos = builder.build_int_sub(
+                end_clock_nanos,
+                start_clock_nanos.unwrap(),
+                "diff_clock_nanos",
+            );
+
+            let counters = &globals.profile_points[prof_id].counters[&func_id];
+
+            let old_clock_nanos = builder
+                .build_load(
+                    counters.total_clock_nanos.as_pointer_value(),
+                    "old_clock_nanos",
+                )
+                .into_int_value();
+
+            let new_clock_nanos =
+                builder.build_int_add(old_clock_nanos, diff_clock_nanos, "new_clock_nanos");
+
+            builder.build_store(
+                counters.total_clock_nanos.as_pointer_value(),
+                new_clock_nanos,
+            );
+
+            let old_calls = builder
+                .build_load(counters.total_calls.as_pointer_value(), "old_calls")
+                .into_int_value();
+
+            let new_calls = builder.build_int_add(
+                old_calls,
+                context.i64_type().const_int(1, false),
+                "new_calls",
+            );
+
+            builder.build_store(counters.total_calls.as_pointer_value(), new_calls);
+        }
+    };
 
     // Generate main body
     {
@@ -1572,6 +1686,7 @@ fn gen_function<'a, 'b>(
             funcs,
             &mut locals,
         );
+        gen_prof_epilogue();
         builder.build_return(Some(&ret_value));
     }
 
@@ -1590,6 +1705,7 @@ fn gen_function<'a, 'b>(
             funcs,
             &mut locals,
         );
+        gen_prof_epilogue();
         builder.build_return(Some(&ret_value));
     }
 }
@@ -1699,6 +1815,8 @@ fn gen_program<'a>(
         .custom_types
         .map(|type_id, _type| CustomTypeDecls::declare(&context, &module, type_id));
 
+    let profile_points = declare_profile_points(&context, &module, &program);
+
     let globals = Globals {
         context: &context,
         module: &module,
@@ -1706,6 +1824,7 @@ fn gen_program<'a>(
         target: &target_machine.get_target_data(),
         tal,
         custom_types,
+        profile_points,
     };
 
     let instances = Instances::new(&globals);
@@ -1733,6 +1852,7 @@ fn gen_program<'a>(
             &globals,
             *func,
             &funcs,
+            func_id,
             &program.funcs[func_id],
         );
     }
@@ -1764,6 +1884,20 @@ fn gen_program<'a>(
         &[unit_type.get_undef().into()],
         "main_result",
     );
+
+    if program.profile_points.len() > 0 {
+        let prof_report_fn = define_prof_report_fn(
+            context,
+            &target_machine.get_target_data(),
+            &module,
+            &tal,
+            &program.profile_points,
+            &globals.profile_points,
+        );
+
+        builder.build_call(prof_report_fn, &[], "prof_report_call");
+    }
+
     builder.build_return(Some(&i32_type.const_int(0, false)));
 
     return module;

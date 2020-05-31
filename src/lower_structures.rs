@@ -1175,6 +1175,7 @@ fn lower_function(
             ret_type,
             tail_func.body,
         ),
+        profile_point: tail_func.profile_point,
     });
 
     let body = lower_function_body(

@@ -119,6 +119,7 @@ pub const ARG_LOCAL: LocalId = LocalId(0);
 pub struct TailFunc {
     pub arg_type: Type,
     pub body: Expr,
+    pub profile_point: Option<prof::ProfilePointId>,
 }
 
 #[derive(Clone, Debug)]
