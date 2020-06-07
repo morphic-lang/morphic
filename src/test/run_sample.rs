@@ -15,15 +15,13 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
     expected_err: Err,
     expected_status: ExitStatus,
 ) {
-    let config = cli::Config::RunConfig(cli::RunConfig {
+    let config = cli::RunConfig {
         src_path: path.as_ref().to_owned(),
         mode,
         stdio: Stdio::Piped,
-    });
+    };
 
-    let mut child = crate::run(config, &mut FileCache::new())
-        .expect("Compilation failed")
-        .expect("'run' should return a child process/thread");
+    let mut child = crate::run(config, &mut FileCache::new()).expect("Compilation failed");
 
     let mut stdin = child
         .stdin

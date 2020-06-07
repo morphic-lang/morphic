@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+pub mod cli;
+pub mod file_cache;
+pub mod pseudoprocess;
+
 #[macro_use]
 mod util;
 
@@ -10,9 +14,8 @@ mod pretty_print;
 
 mod lex;
 
-lalrpop_mod!(pub parse);
+lalrpop_mod!(parse);
 
-mod file_cache;
 mod parse_error;
 mod report_error;
 
@@ -69,19 +72,16 @@ mod interpreter;
 
 mod llvm_gen;
 
-mod cli;
-
-mod pseudoprocess;
-
 #[cfg(test)]
 mod test;
 
 use lalrpop_util::lalrpop_mod;
 use std::fs;
 use std::io;
+use std::path::Path;
 
 #[derive(Debug)]
-enum Error {
+enum ErrorKind {
     ResolveFailed(resolve::Error),
     PurityCheckFailed(check_purity::Error),
     TypeInferFailed(type_infer::Error),
@@ -89,6 +89,21 @@ enum Error {
     CheckMainFailed(check_main::Error),
     CreateArtifactsFailed(io::Error),
     WriteIrFailed(io::Error),
+    WaitChildFailed(io::Error),
+    ChildFailed { exit_status: Option<i32> },
+}
+
+// This type is separate from 'ErrorKind' because enums cannot have private variants, and we don't
+// want to expose the internal compiler error types appearing in the variants of 'ErrorKind'.
+#[derive(Debug)]
+pub struct Error {
+    kind: ErrorKind,
+}
+
+impl From<ErrorKind> for Error {
+    fn from(kind: ErrorKind) -> Self {
+        Error { kind }
+    }
 }
 
 impl Error {
@@ -97,8 +112,8 @@ impl Error {
         dest: &mut impl io::Write,
         files: &file_cache::FileCache,
     ) -> io::Result<()> {
-        use Error::*;
-        match self {
+        use ErrorKind::*;
+        match &self.kind {
             ResolveFailed(err) => err.report(dest, files),
             PurityCheckFailed(err) => err.report(dest, files),
             TypeInferFailed(err) => err.report(dest, files),
@@ -112,6 +127,27 @@ impl Error {
                 "Could not write intermediate representation artifacts: {}",
                 err
             ),
+            WaitChildFailed(err) => writeln!(dest, "Could not execute compiled program: {}", err),
+            ChildFailed {
+                exit_status: Some(_),
+            } => {
+                // When the child program fails with an exit code, it presumably displays its own
+                // error message.
+                Ok(())
+            }
+            ChildFailed { exit_status: None } => writeln!(
+                dest,
+                "Program terminated due to signal.  This probably indicates a SIGTERM or segfault."
+            ),
+        }
+    }
+
+    pub fn exit_status(&self) -> i32 {
+        match &self.kind {
+            &ErrorKind::ChildFailed {
+                exit_status: Some(status),
+            } => status,
+            _ => 1,
         }
     }
 }
@@ -121,34 +157,75 @@ fn main() {
 
     let config = cli::Config::from_args();
     let mut files = file_cache::FileCache::new();
-    let result = run(config, &mut files);
-    match result {
-        Ok(Some(spawned_child)) => wait_child(spawned_child),
-        Ok(None) => {}
-        Err(err) => {
-            let _ = err.report(&mut io::stderr().lock(), &files);
-            std::process::exit(1);
-        }
+    let result = handle_config(config, &mut files);
+    if let Err(err) = result {
+        let _ = err.report(&mut io::stderr().lock(), &files);
+        std::process::exit(err.exit_status());
     }
 }
 
-fn run(
-    config: cli::Config,
+pub fn handle_config(config: cli::Config, files: &mut file_cache::FileCache) -> Result<(), Error> {
+    match config {
+        cli::Config::RunConfig(run_config) => {
+            let child = run(run_config, files)?;
+            let exit_status = child.wait().map_err(ErrorKind::WaitChildFailed)?;
+            match exit_status {
+                pseudoprocess::ExitStatus::Success => Ok(()),
+                pseudoprocess::ExitStatus::Failure(exit_status) => {
+                    Err(ErrorKind::ChildFailed { exit_status }.into())
+                }
+            }
+        }
+
+        cli::Config::BuildConfig(build_config) => build(build_config, files),
+    }
+}
+
+pub fn run(
+    config: cli::RunConfig,
     files: &mut file_cache::FileCache,
-) -> Result<Option<pseudoprocess::Child>, Error> {
-    let resolved = resolve::resolve_program(files, config.src_path(), config.profile_syms())
-        .map_err(Error::ResolveFailed)?;
+) -> Result<pseudoprocess::Child, Error> {
+    let lowered = compile(&config.src_path, &[], None, files)?;
+
+    match config.mode {
+        cli::RunMode::Compile { use_valgrind } => {
+            Ok(llvm_gen::run(config.stdio, lowered, use_valgrind))
+        }
+        cli::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
+    }
+}
+
+pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Result<(), Error> {
+    let lowered = compile(
+        &config.src_path,
+        &config.profile_syms,
+        config.artifact_dir.as_ref(),
+        files,
+    )?;
+
+    llvm_gen::build(lowered, &config);
+    Ok(())
+}
+
+fn compile(
+    src_path: &Path,
+    profile_syms: &[cli::SymbolName],
+    artifact_dir: Option<&cli::ArtifactDir>,
+    files: &mut file_cache::FileCache,
+) -> Result<data::low_ast::Program, Error> {
+    let resolved = resolve::resolve_program(files, src_path, profile_syms)
+        .map_err(ErrorKind::ResolveFailed)?;
 
     // Check obvious errors and infer types
-    check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;
-    let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
-    check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;
-    check_main::check_main(&typed).map_err(Error::CheckMainFailed)?;
+    check_purity::check_purity(&resolved).map_err(ErrorKind::PurityCheckFailed)?;
+    let typed = type_infer::type_infer(resolved).map_err(ErrorKind::TypeInferFailed)?;
+    check_exhaustive::check_exhaustive(&typed).map_err(ErrorKind::CheckExhaustiveFailed)?;
+    check_main::check_main(&typed).map_err(ErrorKind::CheckMainFailed)?;
 
     // Ensure clean artifacts directory, if applicable
-    if let Some(artifact_dir) = config.artifact_dir() {
-        fs::remove_dir_all(&artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
-        fs::create_dir(&artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
+    if let Some(artifact_dir) = artifact_dir {
+        fs::remove_dir_all(&artifact_dir.dir_path).map_err(ErrorKind::CreateArtifactsFailed)?;
+        fs::create_dir(&artifact_dir.dir_path).map_err(ErrorKind::CreateArtifactsFailed)?;
     }
 
     let mono = monomorphize::monomorphize(typed);
@@ -180,57 +257,25 @@ fn run(
 
     let repr_specialized = specialize_reprs::specialize_reprs(repr_constrained);
 
-    if let Some(artifact_dir) = config.artifact_dir() {
+    if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("repr-spec-ir"))
-            .map_err(Error::WriteIrFailed)?;
+            .map_err(ErrorKind::WriteIrFailed)?;
 
         pretty_print::repr_specialized::write_program(&mut out_file, &repr_specialized)
-            .map_err(Error::WriteIrFailed)?;
+            .map_err(ErrorKind::WriteIrFailed)?;
     }
 
     let tail_rec = tail_call_elim::tail_call_elim(repr_specialized.clone());
 
     let lowered = lower_structures::lower_structures(tail_rec);
 
-    if let Some(artifact_dir) = config.artifact_dir() {
-        let mut out_file =
-            fs::File::create(artifact_dir.artifact_path("low-ir")).map_err(Error::WriteIrFailed)?;
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("low-ir"))
+            .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::low::write_program(&mut out_file, &lowered).map_err(Error::WriteIrFailed)?;
+        pretty_print::low::write_program(&mut out_file, &lowered)
+            .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    let child = match config {
-        cli::Config::RunConfig(cli::RunConfig { mode, stdio, .. }) => match mode {
-            cli::RunMode::Compile { use_valgrind } => {
-                Some(llvm_gen::run(stdio, lowered, use_valgrind))
-            }
-            cli::RunMode::Interpret => Some(interpreter::interpret(stdio, lowered)),
-        },
-
-        cli::Config::BuildConfig(build_config) => {
-            llvm_gen::build(lowered, &build_config);
-            None
-        }
-    };
-
-    Ok(child)
-}
-
-fn wait_child(child: pseudoprocess::Child) {
-    let exit_status = child.wait();
-    match exit_status {
-        Ok(pseudoprocess::ExitStatus::Success) => {}
-        Ok(pseudoprocess::ExitStatus::Failure(Some(code))) => std::process::exit(code),
-        Ok(pseudoprocess::ExitStatus::Failure(None)) => {
-            eprintln!(
-                "Program terminated due to signal.  This probably indicates a SIGTERM or \
-                 segfault."
-            );
-            std::process::exit(1)
-        }
-        Err(err) => {
-            eprintln!("Could not execute compiled program: {}", err);
-            std::process::exit(1);
-        }
-    }
+    Ok(lowered)
 }
