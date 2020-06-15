@@ -38,5 +38,3 @@ either(fst: Option a, snd: Option a): Option a =
     (_, Some(y)) -> Some(y),
     (None, None) -> None,
   }
-
-proc main(): () = ()
