@@ -144,10 +144,10 @@ impl Config {
                             .long("profile")
                             .help(
                                 "Instrument a function to measure performance statistics. To use \
-                                 this instrumentation, run the compiled program with the \
-                                 environment variable OPT_PROTO_PROFILE_PATH set. When the \
-                                 program exits, it will write a JSON file to this path containing \
-                                 performance data for every '--profile'd function.",
+                                this instrumentation, run the compiled program with the \
+                                environment variable MORPHIC_PROFILE_PATH set. When the program \
+                                exits, it will write a JSON file to this path containing \
+                                performance data for every '--profile'd function.",
                             )
                             .multiple(true)
                             .number_of_values(1),

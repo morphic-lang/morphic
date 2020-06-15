@@ -1,5 +1,5 @@
 [package]
-name = "opt-proto"
+name = "morphic"
 version = "0.1.0"
 authors = ["William Brandon", "Wilson Berkow", "Frank Dai", "Benjamin Driscoll"]
 description = "Pure functional programming with whole-program memory management inference"

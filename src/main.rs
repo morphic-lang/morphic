@@ -1,7 +1,7 @@
 // When 'lib.rs' exists, cargo treats 'main.rs' as a separate crate
-use opt_proto::cli::Config;
-use opt_proto::file_cache::FileCache;
-use opt_proto::handle_config;
+use morphic::cli::Config;
+use morphic::file_cache::FileCache;
+use morphic::handle_config;
 
 use std::io;
 

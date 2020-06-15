@@ -1,16 +1,16 @@
 use crate::pseudoprocess::ExitStatus::Failure;
 
-sample! { io "samples/io.txt";
+sample! { io "samples/io.mor";
     stdin = "hello\n";
     stdout = "hello\n";
 }
 
-sample! { zero_sized_array "samples/zero_sized_array.txt";
+sample! { zero_sized_array "samples/zero_sized_array.mor";
     stdin = "";
     stdout = "Completed all tests\n";
 }
 
-sample! { iter "samples/iter.txt";
+sample! { iter "samples/iter.mor";
     stdin = "";
     stdout = lines! [
         "it worked",
@@ -18,12 +18,12 @@ sample! { iter "samples/iter.txt";
     ];
 }
 
-sample! { difference_lists "samples/difference_lists.txt";
+sample! { difference_lists "samples/difference_lists.mor";
     stdin = "";
     stdout = "123";
 }
 
-sample! { increment "samples/increment.txt";
+sample! { increment "samples/increment.mor";
     stdin = "";
     stdout = lines! [
         "The following should both be 5:",
@@ -32,12 +32,12 @@ sample! { increment "samples/increment.txt";
     ];
 }
 
-sample! { arith "samples/arith.txt";
+sample! { arith "samples/arith.mor";
     stdin = "";
     stdout = "Completed all tests\n";
 }
 
-sample! { concat_persistent "samples/concat_persistent.txt";
+sample! { concat_persistent "samples/concat_persistent.mor";
     stdin = "";
     stdout = lines! [
         "hello",
@@ -45,7 +45,7 @@ sample! { concat_persistent "samples/concat_persistent.txt";
     ];
 }
 
-sample! { index_tree "samples/index_tree.txt";
+sample! { index_tree "samples/index_tree.mor";
     stdin = "";
     stdout = lines! [
         "Original tree:",
@@ -96,7 +96,7 @@ sample! { index_tree "samples/index_tree.txt";
     ];
 }
 
-sample! { nested "samples/nested.txt";
+sample! { nested "samples/nested.mor";
     stdin = "";
     stdout = lines! [
         "hello",
@@ -108,7 +108,7 @@ sample! { nested "samples/nested.txt";
     ];
 }
 
-sample! { mutual_tail_rec "samples/mutual_tail_rec.txt";
+sample! { mutual_tail_rec "samples/mutual_tail_rec.mor";
     stdin = "";
     stdout = lines! [
         "1000 is even",
@@ -116,7 +116,7 @@ sample! { mutual_tail_rec "samples/mutual_tail_rec.txt";
     ];
 }
 
-sample! { mutate "samples/mutate.txt";
+sample! { mutate "samples/mutate.mor";
     stdin = "";
     stdout = lines! [
         "vvvvvvv",
@@ -150,40 +150,40 @@ sample! { mutate "samples/mutate.txt";
     ];
 }
 
-sample! { primes "samples/primes.txt";
+sample! { primes "samples/primes.mor";
     stdin = "100\n";
     stdout = "There are 25 primes <= 100\n";
 }
 
-sample! { item_oob1 "samples/run-fail/item_oob1.txt";
+sample! { item_oob1 "samples/run-fail/item_oob1.mor";
     stdin = "";
     stdout = "";
     stderr = "index out of bounds: attempt to access item 3 of array with length 3\n";
     status = Failure(Some(1));
 }
 
-sample! { item_oob2 "samples/run-fail/item_oob2.txt";
+sample! { item_oob2 "samples/run-fail/item_oob2.mor";
     stdin = "";
     stdout = "";
     stderr = "index out of bounds: attempt to access item -1 of array with length 3\n";
     status = Failure(Some(1));
 }
 
-sample! { pop_empty "samples/run-fail/pop_empty.txt";
+sample! { pop_empty "samples/run-fail/pop_empty.mor";
     stdin = "";
     stdout = "";
     stderr = "pop: empty array\n";
     status = Failure(Some(1));
 }
 
-sample! { div_zero_byte "samples/run-fail/div_zero_byte.txt";
+sample! { div_zero_byte "samples/run-fail/div_zero_byte.mor";
     stdin = "";
     stdout = "";
     stderr = "panicked due to division by zero\n";
     status = Failure(Some(1));
 }
 
-sample! { div_zero_int "samples/run-fail/div_zero_int.txt";
+sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
     stdin = "";
     stdout = "";
     stderr = "panicked due to division by zero\n";

@@ -1,7 +1,7 @@
-module Core = file "lib/core/core.txt"
+module Core = file "lib/core/core.mor"
   expose { module String }
 
-module Diff = file "lib/diff_list.txt"
+module Diff = file "lib/diff_list.mor"
   with { Core }
   expose { Diff }
 

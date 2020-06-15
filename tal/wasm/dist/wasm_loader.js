@@ -63,17 +63,17 @@
         })();
 
 
-        /* `opt_proto_js_memory_size` and `opt_proto_js_memory_grow` are
-            provided to the tal implementation via JavaScript rather than
-            WebAssembly intrinsics to avoid needing to compile any WAT files. */
+        /* `morphic_js_memory_size` and `morphic_js_memory_grow` are provided
+           to the tal implementation via JavaScript rather than WebAssembly
+           intrinsics to avoid needing to compile any WAT files. */
         const imports = {
             env: {
-                opt_proto_js_exit: code => { throw new Error('exit(' + code + ')') },
-                opt_proto_js_get_char: getChar,
-                opt_proto_js_print: print,
-                opt_proto_js_print_error: printError,
-                opt_proto_js_memory_size: () => memory.buffer.byteLength,
-                opt_proto_js_memory_grow: delta => memory.grow(delta)
+                morphic_js_exit: code => { throw new Error('exit(' + code + ')') },
+                morphic_js_get_char: getChar,
+                morphic_js_print: print,
+                morphic_js_print_error: printError,
+                morphic_js_memory_size: () => memory.buffer.byteLength,
+                morphic_js_memory_grow: delta => memory.grow(delta)
             }
         };
 

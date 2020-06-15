@@ -35,7 +35,7 @@ size_t strlen(const char *str) {
 }
 
 _Noreturn void exit(int code) {
-  opt_proto_js_exit(code);
+  morphic_js_exit(code);
 }
 
 _Noreturn void abort(void) {
@@ -45,19 +45,19 @@ _Noreturn void abort(void) {
 int getchar(void) {
   /* Implemented entirely on the Javascript side because dealing with variable
      length console input is annoying. */
-  return opt_proto_js_get_char();
+  return morphic_js_get_char();
 }
 
 void print(const char *str, ...) {
-  opt_proto_js_print(str, strlen(str));
+  morphic_js_print(str, strlen(str));
 }
 
 void print_error(const char *str, ...) {
-  opt_proto_js_print_error(str, strlen(str));
+  morphic_js_print_error(str, strlen(str));
 }
 
 void write(const void *ptr, size_t size, size_t count) {
-  opt_proto_js_print((const char *) ptr, size * count);
+  morphic_js_print((const char *) ptr, size * count);
 }
 
 int flush(void) {
@@ -67,7 +67,7 @@ int flush(void) {
 
 static _Noreturn void prof_not_supported_error(void) {
   print_error("Profiling on the webassembly target is not yet supported");
-  opt_proto_js_exit(1);
+  morphic_js_exit(1);
 }
 
 uint64_t prof_clock_res_nanos(void) {

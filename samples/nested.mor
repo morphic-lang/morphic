@@ -1,4 +1,4 @@
-module Core = file "lib/core/core.txt"
+module Core = file "lib/core/core.mor"
   expose {
     module Array expose { get, set },
     module Io expose { writeln },

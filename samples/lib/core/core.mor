@@ -1,0 +1,13 @@
+module Option = file "option.mor"
+
+module Iter = file "iter.mor" with { Option }
+
+module Array = file "array.mor"
+
+module String = file "string.mor" with { Array, Option, Iter }
+
+module Func = file "func.mor"
+
+module Bool = file "bool.mor"
+
+module Io = file "io.mor"

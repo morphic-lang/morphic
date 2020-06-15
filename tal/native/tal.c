@@ -55,7 +55,7 @@ uint64_t prof_clock_nanos(void) {
 static FILE *prof_report_file = NULL;
 
 void prof_report_init(void) {
-    const char *report_path = getenv("OPT_PROTO_PROFILE_PATH");
+    const char *report_path = getenv("MORPHIC_PROFILE_PATH");
     if (report_path == NULL) {
         return;
     }

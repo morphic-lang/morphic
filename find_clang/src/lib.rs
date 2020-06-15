@@ -67,7 +67,7 @@ pub fn find_clang(version: u32) -> Result<Clang> {
     llvm_config_suffix.arg("--bindir");
     llvm_config.arg("--bindir");
 
-    std::env::var("OPT_PROTO_CLANG_PATH")
+    std::env::var("MORPHIC_CLANG_PATH")
         .map_err(|err| err.into())
         .and_then(|path| check_clang(&path, version))
         .or_else(|_| check_clang(&clang_suffix, version))

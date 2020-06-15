@@ -1,4 +1,4 @@
-module Core = file "lib/core/core.txt"
+module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
     module String expose { string_to_nat, int_to_string },

@@ -1,10 +1,10 @@
-module Core = file "lib/core/core.txt"
+module Core = file "lib/core/core.mor"
   expose {
     module String expose { int_to_string },
     module Io expose { writeln },
   }
 
-module State = file "lib/state.txt"
+module State = file "lib/state.mor"
   expose { State, bind, pure, seq, get, set }
 
 inc: State Int Int =

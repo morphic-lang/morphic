@@ -13,10 +13,10 @@ static void *sbrk(ptrdiff_t increment) {
   }
   
   if (increment == 0) {
-    return (void *) (opt_proto_js_memory_size() * PAGESIZE);
+    return (void *) (morphic_js_memory_size() * PAGESIZE);
   }
 
-  return (void *) opt_proto_js_memory_grow(increment / PAGESIZE);
+  return (void *) morphic_js_memory_grow(increment / PAGESIZE);
 }
 
 /* We define the error codes to be the same values as on unix. */

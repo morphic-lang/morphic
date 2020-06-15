@@ -1,4 +1,4 @@
-module Core = file "lib/core/core.txt"
+module Core = file "lib/core/core.mor"
   expose { module Iter }
 
 proc main(): () =
