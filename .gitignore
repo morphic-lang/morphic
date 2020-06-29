@@ -8,6 +8,7 @@
 **/*.out
 **/*-artifacts
 **/.tmp-exe-*
+**/.tmp-report-*
 
 # Editor/system files
 *.swp

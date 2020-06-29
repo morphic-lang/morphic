@@ -35,3 +35,6 @@ thiserror = "1.0.15"
 # RNG used for procedurally (but deterministically) generating test inputs
 rand = "0.6.5"
 rand_pcg = "0.1.1"
+
+[workspace]
+members = ["benchmark"]
