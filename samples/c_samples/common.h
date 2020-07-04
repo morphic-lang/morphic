@@ -13,7 +13,7 @@ struct profile_info {
 
 static uint64_t clock_nanos(void) {
     struct timespec tp;
-    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tp)) {
+    if (clock_gettime(CLOCK_MONOTONIC, &tp)) {
         perror("Could not get clock");
         exit(1);
     }

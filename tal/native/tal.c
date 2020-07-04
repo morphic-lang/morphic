@@ -28,7 +28,7 @@ int flush(void) {
     return fflush(stdout);
 }
 
-#define PROF_CLOCK_ID (CLOCK_PROCESS_CPUTIME_ID)
+#define PROF_CLOCK_ID (CLOCK_MONOTONIC)
 
 /* TODO: Is this advisable?  Is there some reason the POSIX clock API doesn't natively work entirely
    with nanoseconds? */
