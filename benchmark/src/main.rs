@@ -159,7 +159,7 @@ const CLANG_VERSION: u32 = 10;
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CProfReport {
+struct BasicProfReport {
     total_calls: u64,
     total_clock_nanos: u64,
 }
@@ -198,7 +198,48 @@ fn bench_c_sample(
 
     g.bench_function(bench_name, |b| {
         b.iter_custom(|iters| {
-            let report: CProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
+            let report: BasicProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
+
+            assert_eq!(report.total_calls, iters);
+
+            Duration::from_nanos(report.total_clock_nanos)
+        })
+    });
+}
+
+fn bench_rust_sample(
+    g: &mut BenchmarkGroup<WallTime>,
+    bench_name: &str,
+    src_path: impl AsRef<Path>,
+    extra_stdin: &str,
+    expected_stdout: &str,
+) {
+    let exe_path = tempfile::Builder::new()
+        .prefix(".tmp-exe")
+        .tempfile_in("")
+        .expect("Could not create temp file")
+        .into_temp_path();
+
+    let rustc_output = process::Command::new("rustc")
+        .arg(format!("-o{}", exe_path.to_str().unwrap()))
+        .arg("-Ctarget-cpu=native")
+        .arg("-Copt-level=3")
+        .arg("--edition=2018")
+        .arg("--deny=warnings")
+        .arg("--")
+        .arg(src_path.as_ref())
+        .output()
+        .expect("Compilation failed");
+
+    assert!(
+        rustc_output.status.success(),
+        "Compilation failed:\n{}",
+        String::from_utf8_lossy(&rustc_output.stderr)
+    );
+
+    g.bench_function(bench_name, |b| {
+        b.iter_custom(|iters| {
+            let report: BasicProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
 
             assert_eq!(report.total_calls, iters);
 
@@ -216,7 +257,7 @@ fn sample_primes(c: &mut Criterion) {
 
     bench_sample(
         &mut g,
-        "primes",
+        "bench_primes.mor",
         "samples/bench_primes.mor",
         &[],
         "count_primes",
@@ -226,8 +267,16 @@ fn sample_primes(c: &mut Criterion) {
 
     bench_c_sample(
         &mut g,
-        "primes C",
+        "bench_primes.c",
         "samples/c_samples/bench_primes.c",
+        stdin,
+        stdout,
+    );
+
+    bench_rust_sample(
+        &mut g,
+        "bench_primes.rs",
+        "samples/rust_samples/bench_primes.rs",
         stdin,
         stdout,
     );
