@@ -280,6 +280,14 @@ fn sample_primes(c: &mut Criterion) {
         stdin,
         stdout,
     );
+
+    bench_rust_sample(
+        &mut g,
+        "bench_primes_iter.rs",
+        "samples/rust_samples/bench_primes_iter.rs",
+        stdin,
+        stdout,
+    );
 }
 
 fn main() {
