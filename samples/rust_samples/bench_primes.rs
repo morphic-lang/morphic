@@ -7,7 +7,7 @@ static COUNT_PRIMES_INFO: ProfileInfo = ProfileInfo::new();
 fn count_primes(limit: u64) -> u64 {
     COUNT_PRIMES_INFO.record_call(|| {
         let mut accum = 0;
-        for n in (2..limit).rev() {
+        for n in (2..=limit).rev() {
             let mut composite = false;
             let mut i = 2;
             while i * i <= n {
