@@ -150,11 +150,6 @@ sample! { mutate "samples/mutate.mor";
     ];
 }
 
-sample! { primes "samples/primes.mor";
-    stdin = "100\n";
-    stdout = "There are 25 primes <= 100\n";
-}
-
 sample! { item_oob1 "samples/run-fail/item_oob1.mor";
     stdin = "";
     stdout = "";
@@ -188,4 +183,18 @@ sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
     stdout = "";
     stderr = "panicked due to division by zero\n";
     status = Failure(Some(1));
+}
+
+// Test correctness of benchmarking samples
+
+sample! { bench_primes "samples/bench_primes.mor";
+    // first number is iteration count
+    stdin = "5\n100\n";
+    stdout = "There are 25 primes <= 100\n";
+}
+
+sample! { bench_primes_iter "samples/bench_primes_iter.mor";
+    // first number is iteration count
+    stdin = "5\n100\n";
+    stdout = "There are 25 primes <= 100\n";
 }

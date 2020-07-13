@@ -1,0 +1,13 @@
+import Core
+  expose {
+    module Option expose { Option { Some, None } },
+  }
+
+repeat(count: Int, body: () -> a): Option a =
+  if count < 1 {
+    None
+  } else if count = 1 {
+    Some(body())
+  } else {
+    body() then repeat(count - 1, body)
+  }

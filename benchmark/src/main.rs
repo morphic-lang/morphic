@@ -265,6 +265,16 @@ fn sample_primes(c: &mut Criterion) {
         stdout,
     );
 
+    bench_sample(
+        &mut g,
+        "bench_primes_iter.mor",
+        "samples/bench_primes_iter.mor",
+        &[],
+        "count_primes",
+        stdin,
+        stdout,
+    );
+
     bench_c_sample(
         &mut g,
         "bench_primes.c",

@@ -73,6 +73,18 @@ take(it: Iter a, count: Int): Iter a =
     empty
   }
 
+take_while(it: Iter a, f: a -> Bool): Iter a =
+  Iter(\() ->
+    match next(it) {
+      Some(x, xs) -> if f(x) {
+        Some(x, take_while(xs, f))
+      } else {
+        None
+      },
+      None -> None,
+    }
+  )
+
 zip(it1: Iter a, it2: Iter b): Iter (a, b) =
   Iter(\() ->
     match (next(it1), next(it2)) {
@@ -103,3 +115,18 @@ foldr(it: Iter a, init: b, combine: (a, b) -> b): b =
 
 sum(it: Iter Int): Int =
   foldl(it, 0, \(x, y) -> x + y)
+
+count(it: Iter a): Int =
+  sum(map(it, \_ -> 1))
+
+any(it: Iter a, f: a -> Bool): Bool =
+  match next(it) {
+    Some(x, xs) -> if f(x) { True } else { any(xs, f) },
+    None -> False,
+  }
+
+all(it: Iter a, f: a -> Bool): Bool =
+  match next(it) {
+    Some(x, xs) -> if f(x) { all(xs, f) } else { False },
+    None -> True,
+  }

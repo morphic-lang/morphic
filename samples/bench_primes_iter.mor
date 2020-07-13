@@ -4,52 +4,37 @@ module Core = file "lib/core/core.mor"
     module String expose { string_to_nat, int_to_string },
     module Option expose { Option { Some, None } },
     module Bool expose { not },
+    module Iter expose { Iter },
   }
 
 module Bench = file "lib/bench_common.mor" with { Core }
   expose { repeat }
 
-// Trial division is inefficient, but it's a simple test of the performance of basic arithmetic and
-// control flow operations.
-has_divisor_above(n: Int, i: Int): Bool =
-  if i * i > n {
-    False
-  } else if (n / i) * i = n {
-    True
-  } else {
-    has_divisor_above(n, i + 1)
-  }
-
 is_prime(n: Int): Bool =
-  not(has_divisor_above(n, 2))
+  not(Iter.any(
+    Iter.take_while(Iter.ints(2), \i -> i * i <= n),
+    \i -> (n / i) * i = n,
+  ))
 
-count_primes_rec(n: Int, accum: Int): Int =
-  if n <= 1 {
-    accum
-  } else if is_prime(n) {
-    count_primes_rec(n - 1, accum + 1)
-  } else {
-    count_primes_rec(n - 1, accum)
-  }
+primes_to(limit: Int): Iter Int =
+  Iter.filter(Iter.range(2, limit + 1), is_prime)
 
-count_primes(n: Int): Int =
-  count_primes_rec(n, 0)
+count_primes(limit: Int): Int =
+  Iter.count(primes_to(limit))
 
 proc main(): () =
   match (string_to_nat(do input()), string_to_nat(do input())) {
     (Some(iters), Some(limit)) ->
-      let result = repeat(iters, \() -> count_primes(limit)) in
-      match result {
+      match repeat(iters, \() -> count_primes(limit)) {
         Some(count) ->
           do output("There are ") then
           do output(int_to_string(count)) then
           do output(" primes <= ") then
           do output(int_to_string(limit)) then
           do output("\n"),
-
         None -> (),
       },
 
     (_, _) ->
-      do writeln("Please enter two positive integer (an iteration count and a limit)"),
+      do writeln("Please enter two positive integers (an iteration count and a limit)"),
   }
