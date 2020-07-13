@@ -2020,6 +2020,18 @@ fn compile_to_executable(
 
     let pass_manager_builder = PassManagerBuilder::create();
     pass_manager_builder.set_optimization_level(opt_level);
+    // These inliner thresholds are based on those used by rustc (at the time of this writing).
+    // See https://doc.rust-lang.org/rustc/codegen-options/index.html#inline-threshold
+    match opt_level {
+        OptimizationLevel::None | OptimizationLevel::Less => {}
+        OptimizationLevel::Default => {
+            pass_manager_builder.set_inliner_with_threshold(225);
+        }
+        OptimizationLevel::Aggressive => {
+            pass_manager_builder.set_inliner_with_threshold(275);
+        }
+    }
+
     let pass_manager = PassManager::create(());
     pass_manager_builder.populate_module_pass_manager(&pass_manager);
     pass_manager.run_on(&module);
