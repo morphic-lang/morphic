@@ -48,6 +48,12 @@ struct Intrinsics<'a> {
     expect_i1: FunctionValue<'a>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum IsZeroSized {
+    NonZeroSized,
+    ZeroSized,
+}
+
 #[derive(Clone, Debug)]
 struct Globals<'a, 'b> {
     context: &'a Context,
@@ -55,6 +61,7 @@ struct Globals<'a, 'b> {
     intrinsics: Intrinsics<'a>,
     target: &'b TargetData,
     tal: Tal<'a>,
+    custom_types_zero_sized: IdVec<low::CustomTypeId, IsZeroSized>,
     custom_types: IdVec<low::CustomTypeId, CustomTypeDecls<'a>>,
     profile_points: IdVec<prof::ProfilePointId, ProfilePointDecls<'a>>,
 }
@@ -250,7 +257,7 @@ impl<'a> Instances<'a> {
             return existing.clone();
         }
         let ty = get_llvm_type(globals, self, item_type);
-        let new_builtin = if globals.target.get_abi_size(&ty) == 0 {
+        let new_builtin = if is_zero_sized(globals, item_type) {
             Rc::new(ZeroSizedArrayImpl::declare(
                 globals.context,
                 globals.target,
@@ -280,7 +287,7 @@ impl<'a> Instances<'a> {
             return existing.clone();
         }
         let ty = get_llvm_type(globals, self, item_type);
-        let new_builtin = if globals.target.get_abi_size(&ty) == 0 {
+        let new_builtin = if is_zero_sized(globals, item_type) {
             Rc::new(ZeroSizedArrayImpl::declare(
                 globals.context,
                 globals.target,
@@ -425,7 +432,7 @@ impl<'a> Instances<'a> {
             builder.build_return(None);
 
             // TODO: dont generate retains/releases that aren't used
-            if globals.target.get_abi_size(&llvm_inner_type) == 0 {
+            if is_zero_sized(globals, inner_type) {
                 flat_array_builtin.define(
                     globals.context,
                     globals.target,
@@ -514,7 +521,7 @@ impl<'a> Instances<'a> {
             builder.build_return(None);
 
             // TODO: dont generate retains/releases that aren't used
-            if globals.target.get_abi_size(&llvm_inner_type) == 0 {
+            if is_zero_sized(globals, inner_type) {
                 persistent_array_builtin.define(
                     globals.context,
                     globals.target,
@@ -1798,6 +1805,71 @@ fn get_intrinsics<'a>(context: &'a Context, module: &Module<'a>) -> Intrinsics<'
     }
 }
 
+// We use this function both when computing initial zero-sizedness flags, and when processing types
+// during the main phase of code generation.  These cases use different underlying data structures
+// to store the zero-sizedness of custom types (in particular, during initial flag computation,
+// flags not yet computed are `None`), so we abstract over the particular data structure with a
+// closure.
+fn is_zero_sized_with(
+    type_: &low::Type,
+    custom_is_zero_sized: &impl Fn(low::CustomTypeId) -> IsZeroSized,
+) -> bool {
+    match type_ {
+        low::Type::Bool
+        | low::Type::Num(_)
+        | low::Type::Array(_, _)
+        | low::Type::HoleArray(_, _)
+        | low::Type::Boxed(_) => false,
+
+        low::Type::Tuple(items) => items
+            .iter()
+            .all(|item| is_zero_sized_with(item, custom_is_zero_sized)),
+
+        low::Type::Variants(variants) => {
+            variants.len() <= 1
+                && variants
+                    .iter()
+                    .all(|(_, variant)| is_zero_sized_with(variant, custom_is_zero_sized))
+        }
+
+        &low::Type::Custom(custom) => custom_is_zero_sized(custom) == IsZeroSized::ZeroSized,
+    }
+}
+
+fn is_zero_sized(globals: &Globals, type_: &low::Type) -> bool {
+    is_zero_sized_with(type_, &|custom| globals.custom_types_zero_sized[custom])
+}
+
+fn find_zero_sized(
+    custom_types: &IdVec<low::CustomTypeId, low::Type>,
+    type_dep_order: &[low::CustomTypeId],
+) -> IdVec<low::CustomTypeId, IsZeroSized> {
+    // We only pass `type_dep_order` as an argument because the caller will need to use it again
+    // later.  Otherwise we would compute it inside this function; it is fully determined by
+    // `custom_types`.
+    debug_assert_eq!(type_dep_order, &custom_type_dep_order(custom_types) as &[_]);
+
+    let mut custom_types_zero_sized = IdVec::from_items(vec![None; custom_types.len()]);
+
+    for &type_id in type_dep_order {
+        debug_assert!(custom_types_zero_sized[type_id].is_none());
+
+        let zero_sized = is_zero_sized_with(&custom_types[type_id], &|other| {
+            custom_types_zero_sized[other].expect(
+                "the zero-sizedness of custom types should be determined in dependency order",
+            )
+        });
+
+        custom_types_zero_sized[type_id] = Some(if zero_sized {
+            IsZeroSized::ZeroSized
+        } else {
+            IsZeroSized::NonZeroSized
+        });
+    }
+
+    custom_types_zero_sized.into_mapped(|_, zero_sized| zero_sized.unwrap())
+}
+
 fn gen_program<'a>(
     program: low::Program,
     target_machine: &TargetMachine,
@@ -1817,21 +1889,36 @@ fn gen_program<'a>(
 
     let profile_points = declare_profile_points(&context, &module, &program);
 
+    let type_dep_order = custom_type_dep_order(&program.custom_types);
+
+    let custom_types_zero_sized = find_zero_sized(&program.custom_types, &type_dep_order);
+
     let globals = Globals {
         context: &context,
         module: &module,
         intrinsics,
         target: &target_machine.get_target_data(),
         tal,
+        custom_types_zero_sized,
         custom_types,
         profile_points,
     };
 
     let instances = Instances::new(&globals);
 
-    for type_id in custom_type_dep_order(&program.custom_types) {
+    for type_id in type_dep_order {
         let type_decls = &globals.custom_types[type_id];
         type_decls.define_type(&globals, &instances, &program.custom_types[type_id]);
+
+        debug_assert!(type_decls.ty.is_sized());
+
+        // Note: the following assertion is checking an *equality of booleans* to check that types
+        // have zero size iff they are marked as having zero size.  We're not asserting that all
+        // types have zero size!
+        debug_assert_eq!(
+            globals.target.get_abi_size(&type_decls.ty) == 0,
+            globals.custom_types_zero_sized[type_id] == IsZeroSized::ZeroSized
+        );
     }
 
     let funcs = program.funcs.map(|func_id, func_def| {
