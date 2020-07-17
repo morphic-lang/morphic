@@ -156,16 +156,30 @@ fn check_valgrind() -> io::Result<()> {
     }
 }
 
-pub fn spawn_process(stdio: Stdio, path: TempPath, use_valgrind: bool) -> io::Result<Child> {
-    let mut command = if use_valgrind {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ValgrindConfig {
+    /// It is sometimes useful to disable leak checking, such as when you expect the program under
+    /// test to exit prematurely due to a runtime error.
+    pub leak_check: bool,
+}
+
+pub fn spawn_process(
+    stdio: Stdio,
+    path: TempPath,
+    valgrind: Option<ValgrindConfig>,
+) -> io::Result<Child> {
+    let mut command = if let Some(ValgrindConfig { leak_check }) = valgrind {
         check_valgrind()?;
 
         let mut command = process::Command::new("valgrind");
-        command
-            .arg("--leak-check=full")
-            .arg("--quiet")
-            .arg("--error-exitcode=1")
-            .arg(&path);
+        command.arg("--quiet");
+        command.arg("--error-exitcode=2");
+        if leak_check {
+            command.arg("--leak-check=full");
+        } else {
+            command.arg("--leak-check=no");
+        }
+        command.arg("--").arg(&path);
         command
     } else {
         process::Command::new(&path)

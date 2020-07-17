@@ -176,9 +176,7 @@ pub fn run(
     let lowered = compile(&config.src_path, &[], None, files)?;
 
     match config.mode {
-        cli::RunMode::Compile { use_valgrind } => {
-            Ok(llvm_gen::run(config.stdio, lowered, use_valgrind))
-        }
+        cli::RunMode::Compile { valgrind } => Ok(llvm_gen::run(config.stdio, lowered, valgrind)),
         cli::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
     }
 }

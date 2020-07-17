@@ -87,6 +87,7 @@ macro_rules! sample {
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
         $( status = $status:expr; )?
+        $( leak_check = $leak_check:expr; )?
     ) => {
         mod $name {
             #[allow(unused_imports)]
@@ -132,8 +133,15 @@ macro_rules! sample {
                     status = $status;
                 )?
 
+                #[allow(unused_mut)]
+                let mut valgrind = crate::pseudoprocess::ValgrindConfig { leak_check: true };
+
+                $(
+                    valgrind.leak_check = $leak_check;
+                )?
+
                 crate::test::run_sample::run_sample(
-                    crate::cli::RunMode::Compile{ use_valgrind: true },
+                    crate::cli::RunMode::Compile { valgrind: Some(valgrind) },
                     $path,
                     $stdin,
                     $stdout,

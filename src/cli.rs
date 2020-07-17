@@ -3,7 +3,7 @@ use inkwell::OptimizationLevel;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::pseudoprocess::Stdio;
+use crate::pseudoprocess::{Stdio, ValgrindConfig};
 
 #[derive(Clone, Debug)]
 pub struct ArtifactDir {
@@ -11,9 +11,9 @@ pub struct ArtifactDir {
     pub filename_prefix: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum RunMode {
-    Compile { use_valgrind: bool },
+    Compile { valgrind: Option<ValgrindConfig> },
     Interpret,
 }
 
@@ -89,6 +89,12 @@ impl Config {
                             .conflicts_with("interpret")
                             .help("Run the compiler output program inside of valgrind."),
                     )
+                    .arg(
+                        Arg::with_name("valgrind-ignore-leaks")
+                            .long("valgrind-ignore-leaks")
+                            .requires("valgrind")
+                            .help("Ignore memory leaks when running under valgrind."),
+                    )
                     .arg(Arg::with_name("interpret").long("interpret").help(
                         "Run the program using the reference interpreter instead of generating \
                          LLVM and running a fully compiled executable.",
@@ -162,7 +168,13 @@ impl Config {
                 RunMode::Interpret
             } else {
                 RunMode::Compile {
-                    use_valgrind: matches.is_present("valgrind"),
+                    valgrind: if matches.is_present("valgrind") {
+                        Some(ValgrindConfig {
+                            leak_check: !matches.is_present("valgrind-ignore-leaks"),
+                        })
+                    } else {
+                        None
+                    },
                 }
             };
 

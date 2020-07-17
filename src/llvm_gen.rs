@@ -13,7 +13,7 @@ use crate::data::low_ast as low;
 use crate::data::profile as prof;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::tail_rec_ast as tail;
-use crate::pseudoprocess::{spawn_process, Child, Stdio};
+use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 use find_clang::find_clang;
@@ -2057,7 +2057,7 @@ fn compile_to_executable(
     run_cc(target, artifact_paths.obj, artifact_paths.exe);
 }
 
-pub fn run(stdio: Stdio, program: low::Program, use_valgrind: bool) -> Child {
+pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>) -> Child {
     let target = cli::TargetConfig::Native;
     let opt_level = cli::default_llvm_opt_level();
 
@@ -2088,7 +2088,7 @@ pub fn run(stdio: Stdio, program: low::Program, use_valgrind: bool) -> Child {
 
     std::mem::drop(obj_path);
 
-    spawn_process(stdio, output_path, use_valgrind).unwrap()
+    spawn_process(stdio, output_path, valgrind).unwrap()
 }
 
 pub fn build(program: low::Program, config: &cli::BuildConfig) {

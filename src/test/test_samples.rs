@@ -150,11 +150,14 @@ sample! { mutate "samples/mutate.mor";
     ];
 }
 
+// Samples expected to fail at runtime:
+
 sample! { item_oob1 "samples/run-fail/item_oob1.mor";
     stdin = "";
     stdout = "";
     stderr = "index out of bounds: attempt to access item 3 of array with length 3\n";
     status = Failure(Some(1));
+    leak_check = false;
 }
 
 sample! { item_oob2 "samples/run-fail/item_oob2.mor";
@@ -162,6 +165,7 @@ sample! { item_oob2 "samples/run-fail/item_oob2.mor";
     stdout = "";
     stderr = "index out of bounds: attempt to access item -1 of array with length 3\n";
     status = Failure(Some(1));
+    leak_check = false;
 }
 
 sample! { pop_empty "samples/run-fail/pop_empty.mor";
@@ -169,6 +173,7 @@ sample! { pop_empty "samples/run-fail/pop_empty.mor";
     stdout = "";
     stderr = "pop: empty array\n";
     status = Failure(Some(1));
+    leak_check = false;
 }
 
 sample! { div_zero_byte "samples/run-fail/div_zero_byte.mor";
@@ -176,6 +181,7 @@ sample! { div_zero_byte "samples/run-fail/div_zero_byte.mor";
     stdout = "";
     stderr = "panicked due to division by zero\n";
     status = Failure(Some(1));
+    leak_check = false;
 }
 
 sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
@@ -183,6 +189,7 @@ sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
     stdout = "";
     stderr = "panicked due to division by zero\n";
     status = Failure(Some(1));
+    leak_check = false;
 }
 
 // Test correctness of benchmarking samples
