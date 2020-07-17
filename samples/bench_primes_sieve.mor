@@ -1,0 +1,52 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Iter expose { Iter },
+    module Array,
+    module String expose { int_to_string, string_to_nat },
+    module Io expose { writeln },
+    module Option expose { Option { Some, None } },
+  }
+
+module Bench = file "lib/bench_common.mor" with { Core }
+  expose { repeat }
+
+type Primality {
+  Prime,
+  Composite,
+}
+
+sieve(limit: Int): Array Primality =
+  let init_arr = Array.set(Array.set(Array.fill(limit, Prime), 0, Composite), 1, Composite) in
+  let mark_multiples = \(arr, n) ->
+    match Array.get(arr, n) {
+      Prime ->
+        let multiples = Iter.take_while(
+          Iter.map(Iter.ints(2), \i -> i * n),
+          \i -> i < limit,
+        ) in
+        Iter.foldl(multiples, arr, \(new, i) -> Array.set(new, i, Composite)),
+
+      Composite -> arr,
+    } in
+  Iter.foldl(Iter.range(2, limit), init_arr, mark_multiples)
+
+proc main(): () =
+  match (string_to_nat(do input()), string_to_nat(do input())) {
+    (Some(iters), Some(limit)) ->
+      match repeat(iters, \() -> sieve(limit)) {
+        Some(primes) ->
+          do Iter.for_each(
+            Iter.enumerate(Iter.items(primes)),
+            proc \(i, status) ->
+              match status {
+                Prime -> do writeln(int_to_string(i)),
+                Composite -> (),
+              }
+          ),
+
+        None -> (),
+      },
+
+    (_, _) ->
+      do writeln("Please enter two positive integers (an iteration count and a limit)"),
+  }

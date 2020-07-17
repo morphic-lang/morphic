@@ -130,3 +130,12 @@ all(it: Iter a, f: a -> Bool): Bool =
     Some(x, xs) -> if f(x) { all(xs, f) } else { False },
     None -> True,
   }
+
+proc for_each(it: Iter a, f: proc a -> ()): () =
+  match next(it) {
+    Some(x, xs) ->
+      do f(x) then
+      do for_each(xs, f),
+
+    None -> (),
+  }

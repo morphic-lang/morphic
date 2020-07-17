@@ -80,6 +80,84 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
     );
 }
 
+macro_rules! sample_interpret {
+    (
+        $name:ident $path:expr ;
+        stdin = $stdin:expr ;
+        stdout = $stdout:expr ;
+        $( stderr = $stderr:expr; )?
+        $( status = $status:expr; )?
+    ) => {
+        #[test]
+        fn interpret() {
+            #[allow(unused_mut, unused_assignments)]
+            let mut stderr: String = "".into();
+            #[allow(unused_mut, unused_assignments)]
+            let mut status = crate::pseudoprocess::ExitStatus::Success;
+
+            $(
+                stderr = $stderr.into();
+            )?
+
+            $(
+                status = $status;
+            )?
+
+            crate::test::run_sample::run_sample(
+                crate::cli::RunMode::Interpret,
+                $path,
+                $stdin,
+                $stdout,
+                stderr,
+                status,
+            );
+        }
+    };
+}
+
+macro_rules! sample_compile {
+    (
+        $name:ident $path:expr ;
+        stdin = $stdin:expr ;
+        stdout = $stdout:expr ;
+        $( stderr = $stderr:expr; )?
+        $( status = $status:expr; )?
+        $( leak_check = $leak_check:expr; )?
+    ) => {
+        #[test]
+        fn compile() {
+            #[allow(unused_mut, unused_assignments)]
+            let mut stderr: String = "".into();
+            #[allow(unused_mut, unused_assignments)]
+            let mut status = crate::pseudoprocess::ExitStatus::Success;
+
+            $(
+                stderr = $stderr.into();
+            )?
+
+            $(
+                status = $status;
+            )?
+
+            #[allow(unused_mut)]
+            let mut valgrind = crate::pseudoprocess::ValgrindConfig { leak_check: true };
+
+            $(
+                valgrind.leak_check = $leak_check;
+            )?
+
+            crate::test::run_sample::run_sample(
+                crate::cli::RunMode::Compile { valgrind: Some(valgrind) },
+                $path,
+                $stdin,
+                $stdout,
+                stderr,
+                status,
+            );
+        }
+    };
+}
+
 macro_rules! sample {
     (
         $name:ident $path:expr ;
@@ -93,61 +171,45 @@ macro_rules! sample {
             #[allow(unused_imports)]
             use super::*;
 
-            #[test]
-            fn interpret() {
-                #[allow(unused_mut, unused_assignments)]
-                let mut stderr: String = "".into();
-                #[allow(unused_mut, unused_assignments)]
-                let mut status = crate::pseudoprocess::ExitStatus::Success;
-
-                $(
-                    stderr = $stderr.into();
-                )?
-
-                $(
-                    status = $status;
-                )?
-
-                crate::test::run_sample::run_sample(
-                    crate::cli::RunMode::Interpret,
-                    $path,
-                    $stdin,
-                    $stdout,
-                    stderr,
-                    status,
-                );
+            sample_interpret! {
+                $name $path ;
+                stdin = $stdin ;
+                stdout = $stdout ;
+                $( stderr = $stderr ; )?
+                $( status = $status ; )?
             }
 
-            #[test]
-            fn compile() {
-                #[allow(unused_mut, unused_assignments)]
-                let mut stderr: String = "".into();
-                #[allow(unused_mut, unused_assignments)]
-                let mut status = crate::pseudoprocess::ExitStatus::Success;
+            sample_compile! {
+                $name $path ;
+                stdin = $stdin ;
+                stdout = $stdout ;
+                $( stderr = $stderr ; )?
+                $( status = $status ; )?
+                $( leak_check = $leak_check ; )?
+            }
+        }
+    };
 
-                $(
-                    stderr = $stderr.into();
-                )?
+    (
+        $name:ident $path:expr ;
+        compile_only = true ;
+        stdin = $stdin:expr ;
+        stdout = $stdout:expr ;
+        $( stderr = $stderr:expr; )?
+        $( status = $status:expr; )?
+        $( leak_check = $leak_check:expr; )?
+    ) => {
+        mod $name {
+            #[allow(unused_imports)]
+            use super::*;
 
-                $(
-                    status = $status;
-                )?
-
-                #[allow(unused_mut)]
-                let mut valgrind = crate::pseudoprocess::ValgrindConfig { leak_check: true };
-
-                $(
-                    valgrind.leak_check = $leak_check;
-                )?
-
-                crate::test::run_sample::run_sample(
-                    crate::cli::RunMode::Compile { valgrind: Some(valgrind) },
-                    $path,
-                    $stdin,
-                    $stdout,
-                    stderr,
-                    status,
-                );
+            sample_compile! {
+                $name $path ;
+                stdin = $stdin ;
+                stdout = $stdout ;
+                $( stderr = $stderr ; )?
+                $( status = $status ; )?
+                $( leak_check = $leak_check ; )?
             }
         }
     };

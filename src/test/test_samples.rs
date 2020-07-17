@@ -195,13 +195,22 @@ sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
 // Test correctness of benchmarking samples
 
 sample! { bench_primes "samples/bench_primes.mor";
+    compile_only = true;
     // first number is iteration count
     stdin = "5\n100\n";
     stdout = "There are 25 primes <= 100\n";
 }
 
 sample! { bench_primes_iter "samples/bench_primes_iter.mor";
+    compile_only = true;
     // first number is iteration count
     stdin = "5\n100\n";
     stdout = "There are 25 primes <= 100\n";
+}
+
+sample! { bench_primes_sieve "samples/bench_primes_sieve.mor";
+    compile_only = true;
+    // first number is iteration count
+    stdin = "5\n10000\n";
+    stdout = include_str!("../../samples/expected-output/primes_10000.txt");
 }

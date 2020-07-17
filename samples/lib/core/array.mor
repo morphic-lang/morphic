@@ -15,3 +15,16 @@ concat_from(a: Array t, b: Array t, i: Int): Array t =
 
 concat(a: Array t, b: Array t): Array t =
   concat_from(a, b, 0)
+
+fill_with_rec(arr: Array t, count: Int, mk_val: () -> t): Array t =
+  if count > 0 {
+    fill_with_rec(push(arr, mk_val()), count - 1, mk_val)
+  } else {
+    arr
+  }
+
+fill_with(count: Int, mk_val: () -> t): Array t =
+  fill_with_rec([], count, mk_val)
+
+fill(count: Int, val: t): Array t =
+  fill_with(count, \() -> val)

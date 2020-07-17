@@ -300,6 +300,24 @@ fn sample_primes(c: &mut Criterion) {
     );
 }
 
+fn sample_primes_sieve(c: &mut Criterion) {
+    let mut g = c.benchmark_group("primes_sieve");
+    g.sample_size(20);
+
+    let stdin = "10000";
+    let stdout = include_str!("../../samples/expected-output/primes_10000.txt");
+
+    bench_sample(
+        &mut g,
+        "bench_primes_sieve.mor",
+        "samples/bench_primes_sieve.mor",
+        &[],
+        "sieve",
+        stdin,
+        stdout,
+    );
+}
+
 fn main() {
     if !Path::new("samples").exists() {
         eprintln!();
@@ -317,4 +335,6 @@ fn main() {
         .configure_from_args();
 
     sample_primes(&mut c);
+
+    sample_primes_sieve(&mut c);
 }
