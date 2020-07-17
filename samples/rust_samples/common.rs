@@ -53,7 +53,9 @@ pub fn write_report(info: &ProfileInfo) {
 pub fn read_line() -> String {
     let mut input = String::new();
     stdin().lock().read_line(&mut input).unwrap();
-    input.pop();
+    if input.ends_with('\n') {
+        input.pop();
+    }
     input
 }
 

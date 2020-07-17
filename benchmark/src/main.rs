@@ -304,7 +304,7 @@ fn sample_primes_sieve(c: &mut Criterion) {
     let mut g = c.benchmark_group("primes_sieve");
     g.sample_size(20);
 
-    let stdin = "10000";
+    let stdin = "10000\n";
     let stdout = include_str!("../../samples/expected-output/primes_10000.txt");
 
     bench_sample(
@@ -321,6 +321,14 @@ fn sample_primes_sieve(c: &mut Criterion) {
         &mut g,
         "bench_primes_sieve.c",
         "samples/c_samples/bench_primes_sieve.c",
+        stdin,
+        stdout,
+    );
+
+    bench_rust_sample(
+        &mut g,
+        "bench_primes_sieve.rs",
+        "samples/rust_samples/bench_primes_sieve.rs",
         stdin,
         stdout,
     );
