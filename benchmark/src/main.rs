@@ -316,6 +316,14 @@ fn sample_primes_sieve(c: &mut Criterion) {
         stdin,
         stdout,
     );
+
+    bench_c_sample(
+        &mut g,
+        "bench_primes_sieve.c",
+        "samples/c_samples/bench_primes_sieve.c",
+        stdin,
+        stdout,
+    );
 }
 
 fn main() {
