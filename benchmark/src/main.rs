@@ -325,6 +325,14 @@ fn sample_primes_sieve(c: &mut Criterion) {
         stdout,
     );
 
+    bench_c_sample(
+        &mut g,
+        "bench_primes_sieve_boxed.c",
+        "samples/c_samples/bench_primes_sieve_boxed.c",
+        stdin,
+        stdout,
+    );
+
     bench_rust_sample(
         &mut g,
         "bench_primes_sieve.rs",
