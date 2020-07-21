@@ -25,32 +25,37 @@ pub struct LocalStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
     Item(
-        anon::Type,    // Item type
-        LocalStatus,   // Array status
-        flat::LocalId, // Array
-        flat::LocalId, // Index
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        LocalStatus,         // Array status
+        flat::LocalId,       // Array
+        flat::LocalId,       // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        anon::Type,    // Item type
-        LocalStatus,   // Array status
-        flat::LocalId, // Array
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        LocalStatus,         // Array status
+        flat::LocalId,       // Array
     ),
     Push(
-        anon::Type,    // Item type
-        LocalStatus,   // Array status
-        flat::LocalId, // array
-        flat::LocalId, // Item
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        LocalStatus,         // Array status
+        flat::LocalId,       // array
+        flat::LocalId,       // Item
     ),
     Pop(
-        anon::Type,    // Item type
-        LocalStatus,   // Array status
-        flat::LocalId, // Array
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        LocalStatus,         // Array status
+        flat::LocalId,       // Array
     ), // Returns tuple of (array, item)
     Replace(
-        anon::Type,    // Item type
-        LocalStatus,   // Hole array status
-        flat::LocalId, // Hole array
-        flat::LocalId, // Item
+        anon::Type,          // Item type
+        alias::LocalAliases, // Hole array aliases
+        LocalStatus,         // Hole array status
+        flat::LocalId,       // Hole array
+        flat::LocalId,       // Item
     ), // Returns new array
 }
 
@@ -58,8 +63,9 @@ pub enum ArrayOp {
 pub enum IoOp {
     Input, // Returns byte array
     Output(
-        LocalStatus,   // Byte array aliases
-        flat::LocalId, // Byte array
+        alias::LocalAliases, // Byte array aliases
+        LocalStatus,         // Byte array statuses
+        flat::LocalId,       // Byte array
     ), // Returns unit
 }
 

@@ -232,7 +232,7 @@ fn resolve_expr(
             let resolved_var = resolve_solution(params, internal, *rep_var);
             let resolved_op = match op {
                 mutation::IoOp::Input => flat::IoOp::Input,
-                mutation::IoOp::Output(_, array) => flat::IoOp::Output(*array),
+                mutation::IoOp::Output(_, _, array) => flat::IoOp::Output(*array),
             };
             special::Expr::IoOp(resolved_var, resolved_op)
         }

@@ -492,9 +492,10 @@ fn annot_expr(
 
         alias::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), trivial_info()),
 
-        alias::Expr::ArrayOp(alias::ArrayOp::Item(item_type, _array_aliases, array, index)) => (
+        alias::Expr::ArrayOp(alias::ArrayOp::Item(item_type, array_aliases, array, index)) => (
             annot::Expr::ArrayOp(annot::ArrayOp::Item(
                 item_type.clone(),
+                array_aliases.clone(),
                 ctx[array].statuses[&Vector::new()].clone(),
                 *array,
                 *index,
@@ -516,6 +517,7 @@ fn annot_expr(
         alias::Expr::ArrayOp(alias::ArrayOp::Pop(item_type, array_aliases, array)) => (
             annot::Expr::ArrayOp(annot::ArrayOp::Pop(
                 item_type.clone(),
+                array_aliases.clone(),
                 ctx[array].statuses[&Vector::new()].clone(),
                 *array,
             )),
@@ -540,6 +542,7 @@ fn annot_expr(
         )) => (
             annot::Expr::ArrayOp(annot::ArrayOp::Replace(
                 item_type.clone(),
+                array_aliases.clone(),
                 ctx[hole_array].statuses[&Vector::new()].clone(),
                 *hole_array,
                 *item,
@@ -553,6 +556,7 @@ fn annot_expr(
         alias::Expr::ArrayOp(alias::ArrayOp::Push(item_type, array_aliases, array, item)) => (
             annot::Expr::ArrayOp(annot::ArrayOp::Push(
                 item_type.clone(),
+                array_aliases.clone(),
                 ctx[array].statuses[&Vector::new()].clone(),
                 *array,
                 *item,
@@ -563,9 +567,10 @@ fn annot_expr(
             },
         ),
 
-        alias::Expr::ArrayOp(alias::ArrayOp::Len(item_type, _array_aliases, array)) => (
+        alias::Expr::ArrayOp(alias::ArrayOp::Len(item_type, array_aliases, array)) => (
             annot::Expr::ArrayOp(annot::ArrayOp::Len(
                 item_type.clone(),
+                array_aliases.clone(),
                 ctx[array].statuses[&Vector::new()].clone(),
                 *array,
             )),
@@ -585,8 +590,9 @@ fn annot_expr(
             },
         ),
 
-        alias::Expr::IoOp(alias::IoOp::Output(_bytes_aliases, bytes)) => (
+        alias::Expr::IoOp(alias::IoOp::Output(bytes_aliases, bytes)) => (
             annot::Expr::IoOp(annot::IoOp::Output(
+                bytes_aliases.clone(),
                 ctx[bytes].statuses[&Vector::new()].clone(),
                 *bytes,
             )),

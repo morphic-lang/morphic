@@ -628,6 +628,7 @@ fn instantiate_expr(
 
         mutation::Expr::ArrayOp(mutation::ArrayOp::Item(
             _item_type,
+            _array_aliases,
             array_status,
             array,
             index,
@@ -653,7 +654,12 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Len(_item_type, array_status, array)) => {
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Len(
+            _item_type,
+            _array_aliases,
+            array_status,
+            array,
+        )) => {
             let (rep_var, item_type_inst) =
                 if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
@@ -672,7 +678,13 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Push(_item_type, array_status, array, item)) => {
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Push(
+            _item_type,
+            _array_aliases,
+            array_status,
+            array,
+            item,
+        )) => {
             let (rep_var, array_item_type) =
                 if let unif::Type::Array(rep_var, array_item_type) = locals.local_binding(*array) {
                     (*rep_var, array_item_type as &unif::Type<_>)
@@ -695,7 +707,12 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Pop(_item_type, array_status, array)) => {
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Pop(
+            _item_type,
+            _array_aliases,
+            array_status,
+            array,
+        )) => {
             let (rep_var, item_type_inst) =
                 if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
@@ -719,6 +736,7 @@ fn instantiate_expr(
 
         mutation::Expr::ArrayOp(mutation::ArrayOp::Replace(
             _item_type,
+            _array_aliases,
             hole_array_status,
             hole_array,
             item,
@@ -756,7 +774,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::IoOp(mutation::IoOp::Output(array_status, byte_array)) => {
+        mutation::Expr::IoOp(mutation::IoOp::Output(array_aliases, array_status, byte_array)) => {
             let rep_var =
                 if let unif::Type::Array(rep_var, item_type) = locals.local_binding(*byte_array) {
                     debug_assert_eq!(
@@ -771,7 +789,11 @@ fn instantiate_expr(
             (
                 unif::Expr::IoOp(
                     rep_var,
-                    mutation::IoOp::Output(array_status.clone(), *byte_array),
+                    mutation::IoOp::Output(
+                        array_aliases.clone(),
+                        array_status.clone(),
+                        *byte_array,
+                    ),
                 ),
                 unif::Type::Tuple(Vec::new()),
             )
