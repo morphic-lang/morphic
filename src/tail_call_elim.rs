@@ -220,6 +220,14 @@ fn trans_expr(
             tail::Expr::UnwrapVariant(*variant, *wrapped)
         }
 
+        special::Expr::WrapBoxed(content, content_type) => {
+            tail::Expr::WrapBoxed(*content, content_type.clone())
+        }
+
+        special::Expr::UnwrapBoxed(content, content_type) => {
+            tail::Expr::UnwrapBoxed(*content, content_type.clone())
+        }
+
         special::Expr::WrapCustom(custom, content) => tail::Expr::WrapCustom(*custom, *content),
 
         special::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),

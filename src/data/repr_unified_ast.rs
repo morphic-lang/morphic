@@ -26,6 +26,7 @@ pub enum Type<Rep> {
     HoleArray(Rep, Box<Type<Rep>>),
     Tuple(Vec<Type<Rep>>),
     Variants(IdVec<first_ord::VariantId, Type<Rep>>),
+    Boxed(Box<Type<Rep>>),
     Custom(first_ord::CustomTypeId, IdVec<RepParamId, Rep>),
 }
 
@@ -73,6 +74,14 @@ pub enum Expr<Call, Rep> {
         flat::LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, flat::LocalId),
+    WrapBoxed(
+        flat::LocalId,
+        Type<Rep>, // Inner type
+    ),
+    UnwrapBoxed(
+        flat::LocalId,
+        Type<Rep>, // Inner type
+    ),
     WrapCustom(
         first_ord::CustomTypeId,
         IdVec<RepParamId, Rep>,
@@ -105,6 +114,10 @@ pub enum Condition<Rep> {
     Any,
     Tuple(Vec<Condition<Rep>>),
     Variant(first_ord::VariantId, Box<Condition<Rep>>),
+    Boxed(
+        Box<Condition<Rep>>,
+        Type<Rep>, // Inner type
+    ),
     Custom(
         first_ord::CustomTypeId,
         IdVec<RepParamId, Rep>,

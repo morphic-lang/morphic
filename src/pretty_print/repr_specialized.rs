@@ -72,6 +72,12 @@ fn write_condition(
             write![w, ")"]?;
             Ok(())
         }
+        Condition::Boxed(subcondition, _content_type) => {
+            write![w, "boxed ("]?;
+            write_condition(w, type_renderer, subcondition)?;
+            write![w, ")"]?;
+            Ok(())
+        }
         Condition::Custom(type_id, subcondition) => {
             write![w, "custom {} (", type_renderer.render(type_id)]?;
             write_condition(w, type_renderer, subcondition)?;
@@ -131,6 +137,12 @@ fn write_type(
                 write_type(w, type_renderer, &types[types.len() - 1])?;
                 write![w, ")"]?;
             }
+            Ok(())
+        }
+        Type::Boxed(content_type) => {
+            write![w, "Box ("]?;
+            write_type(w, type_renderer, content_type)?;
+            write![w, ")"]?;
             Ok(())
         }
         Type::Variants(types) => {
@@ -235,6 +247,8 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::UnwrapVariant(variant_id, local_id) => {
             write![w, "unwrap variant {} %{}", variant_id.0, local_id.0]
         }
+        Expr::WrapBoxed(content_id, _content_type) => write![w, "wrap boxed %{}", content_id.0],
+        Expr::UnwrapBoxed(content_id, _content_type) => write![w, "unwrap boxed %{}", content_id.0],
         Expr::WrapCustom(type_id, local_id) => write![
             w,
             "wrap custom {} %{}",

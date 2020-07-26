@@ -1,6 +1,6 @@
-use crate::data::first_order_ast::{BinOp, Comparison, NumType};
+use crate::data::first_order_ast::{BinOp, Comparison, NumType, VariantId};
 use crate::data::low_ast::{
-    ArithOp, ArrayOp, CustomFuncId, CustomTypeId, Expr, IoOp, LocalId, Program, Type, VariantId,
+    ArithOp, ArrayOp, CustomFuncId, CustomTypeId, Expr, IoOp, LocalId, Program, Type,
 };
 use crate::data::repr_constrained_ast::RepChoice;
 use crate::data::tail_rec_ast as tail;

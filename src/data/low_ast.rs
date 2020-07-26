@@ -10,21 +10,10 @@ use crate::util::id_vec::IdVec;
 // (1) flatten sum types over sum types
 
 id_type!(pub LocalId);
-id_type!(pub VariantId);
 id_type!(pub CustomFuncId);
 pub type CustomTypeId = special::CustomTypeId;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Type {
-    Bool,
-    Num(first_ord::NumType),
-    Array(constrain::RepChoice, Box<Type>),
-    HoleArray(constrain::RepChoice, Box<Type>),
-    Tuple(Vec<Type>),
-    Variants(IdVec<VariantId, Type>),
-    Boxed(Box<Type>),
-    Custom(CustomTypeId),
-}
+pub type Type = special::Type;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ArithOp {
@@ -91,17 +80,31 @@ pub enum Expr {
 
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),
-    WrapVariant(IdVec<VariantId, Type>, VariantId, LocalId),
-    UnwrapVariant(IdVec<VariantId, Type>, VariantId, LocalId),
+    WrapVariant(
+        IdVec<first_ord::VariantId, Type>,
+        first_ord::VariantId,
+        LocalId,
+    ),
+    UnwrapVariant(
+        IdVec<first_ord::VariantId, Type>,
+        first_ord::VariantId,
+        LocalId,
+    ),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
-    WrapBoxed(LocalId, Type),   // Inner type
-    UnwrapBoxed(LocalId, Type), // Inner type, does not touch refcount
+    WrapBoxed(
+        LocalId,
+        Type, // Inner type
+    ),
+    UnwrapBoxed(
+        LocalId,
+        Type, // Inner type
+    ), // Does not touch refcount
 
     Retain(LocalId, Type),  // Takes any type, returns unit
     Release(LocalId, Type), // Takes any type, returns unit
 
-    CheckVariant(VariantId, LocalId), // Returns a bool
+    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
 
     ArithOp(ArithOp),
     ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type

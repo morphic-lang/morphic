@@ -28,6 +28,9 @@ fn add_type_deps(type_: &anon::Type, deps: &mut BTreeSet<first_ord::CustomTypeId
                 add_type_deps(variant, deps);
             }
         }
+        anon::Type::Boxed(content) => {
+            add_type_deps(content, deps);
+        }
         anon::Type::Custom(custom) => {
             deps.insert(*custom);
         }
@@ -50,6 +53,7 @@ fn count_params(
             .iter()
             .map(|(_, variant)| count_params(parameterized, variant))
             .sum(),
+        anon::Type::Boxed(content) => count_params(parameterized, content),
         anon::Type::Custom(custom) => match &parameterized[custom] {
             Some(typedef) => typedef.num_params,
             // This is a typedef in the same SCC; the reference to it here contributes no additional
@@ -99,6 +103,13 @@ fn parameterize(
         anon::Type::Variants(variants) => unif::Type::Variants(
             variants.map(|_, variant| parameterize(parameterized, scc_num_params, id_gen, variant)),
         ),
+
+        anon::Type::Boxed(content) => unif::Type::Boxed(Box::new(parameterize(
+            parameterized,
+            scc_num_params,
+            id_gen,
+            content,
+        ))),
 
         anon::Type::Custom(custom) => match &parameterized[custom] {
             Some(typedef) => unif::Type::Custom(
@@ -266,6 +277,10 @@ fn instantiate_type(
             variants.map(|_, variant| instantiate_type(typedefs, graph, variant)),
         ),
 
+        anon::Type::Boxed(content) => {
+            unif::Type::Boxed(Box::new(instantiate_type(typedefs, graph, content)))
+        }
+
         anon::Type::Custom(custom) => unif::Type::Custom(
             *custom,
             IdVec::from_items(
@@ -311,6 +326,10 @@ fn equate_types(graph: &mut ConstraintGraph, type1: &SolverType, type2: &SolverT
             }
         }
 
+        (unif::Type::Boxed(content1), unif::Type::Boxed(content2)) => {
+            equate_types(graph, content1, content2);
+        }
+
         (unif::Type::Custom(custom1, args1), unif::Type::Custom(custom2, args2)) => {
             debug_assert_eq!(custom1, custom2);
             for (_, arg1, arg2) in args1
@@ -352,6 +371,8 @@ fn instantiate_subst(
             unif::Type::Variants(variants.map(|_, variant| instantiate_subst(vars, variant)))
         }
 
+        unif::Type::Boxed(content) => unif::Type::Boxed(Box::new(instantiate_subst(vars, content))),
+
         unif::Type::Custom(custom, args) => {
             unif::Type::Custom(*custom, args.map(|_, arg| vars[arg]))
         }
@@ -386,6 +407,13 @@ fn instantate_condition(
             unif::Condition::Variant(
                 *variant,
                 Box::new(instantate_condition(typedefs, content_type, content_cond)),
+            )
+        }
+
+        (flat::Condition::Boxed(content_cond, _), unif::Type::Boxed(content_type)) => {
+            unif::Condition::Boxed(
+                Box::new(instantate_condition(typedefs, content_type, content_cond)),
+                (**content_type).clone(),
             )
         }
 
@@ -578,6 +606,28 @@ fn instantiate_expr(
                 };
 
             (unif::Expr::UnwrapVariant(*variant, *wrapped), variant_type)
+        }
+
+        mutation::Expr::WrapBoxed(content, _content_type) => {
+            let content_type = locals.local_binding(*content);
+
+            (
+                unif::Expr::WrapBoxed(*content, content_type.clone()),
+                unif::Type::Boxed(Box::new(content_type.clone())),
+            )
+        }
+
+        mutation::Expr::UnwrapBoxed(boxed, _content_type) => {
+            let content_type = if let unif::Type::Boxed(content) = locals.local_binding(*boxed) {
+                content
+            } else {
+                unreachable!()
+            };
+
+            (
+                unif::Expr::UnwrapBoxed(*boxed, (**content_type).clone()),
+                (**content_type).clone(),
+            )
         }
 
         mutation::Expr::WrapCustom(custom, content) => {
@@ -888,6 +938,10 @@ fn extract_sig_type(
             variants.map(|_, variant| extract_sig_type(to_unified, to_params, variant)),
         ),
 
+        unif::Type::Boxed(content) => {
+            unif::Type::Boxed(Box::new(extract_sig_type(to_unified, to_params, content)))
+        }
+
         unif::Type::Custom(custom, args) => {
             let arg_params = args.map(|_, arg_var| get_param(to_params, to_unified[arg_var]));
             unif::Type::Custom(*custom, arg_params)
@@ -971,6 +1025,10 @@ fn extract_type(
             variants.into_mapped(|_, variant| extract_type(to_unified, this_solutions, variant)),
         ),
 
+        unif::Type::Boxed(content) => {
+            unif::Type::Boxed(Box::new(extract_type(to_unified, this_solutions, *content)))
+        }
+
         unif::Type::Custom(custom, arg_vars) => unif::Type::Custom(
             custom,
             arg_vars.into_mapped(|_, arg_var| this_solutions[to_unified[arg_var]]),
@@ -996,6 +1054,11 @@ fn extract_condition(
         unif::Condition::Variant(variant, content_cond) => unif::Condition::Variant(
             variant,
             Box::new(extract_condition(to_unified, this_solutions, *content_cond)),
+        ),
+
+        unif::Condition::Boxed(content_cond, content_type) => unif::Condition::Boxed(
+            Box::new(extract_condition(to_unified, this_solutions, *content_cond)),
+            extract_type(to_unified, this_solutions, content_type),
         ),
 
         unif::Condition::Custom(custom, rep_vars, content_cond) => unif::Condition::Custom(
@@ -1112,6 +1175,16 @@ fn extract_expr(
         }
 
         unif::Expr::UnwrapVariant(variant, wrapped) => unif::Expr::UnwrapVariant(variant, wrapped),
+
+        unif::Expr::WrapBoxed(content, content_type) => unif::Expr::WrapBoxed(
+            content,
+            extract_type(to_unified, this_solutions, content_type),
+        ),
+
+        unif::Expr::UnwrapBoxed(boxed, content_type) => unif::Expr::UnwrapBoxed(
+            boxed,
+            extract_type(to_unified, this_solutions, content_type),
+        ),
 
         unif::Expr::WrapCustom(custom, rep_args, content) => {
             let rep_args_extracted =

@@ -4,147 +4,10 @@ use crate::data::low_ast as low;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
 use crate::data::tail_rec_ast as tail;
-use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
 use im_rc::OrdMap;
 use im_rc::OrdSet;
-use std::collections::BTreeSet;
-
-fn contains_boxes(type_: &low::Type) -> bool {
-    match type_ {
-        low::Type::Variants(variants) => {
-            variants.iter().any(|(_i, variant)| contains_boxes(variant))
-        }
-        low::Type::Boxed(_) => true,
-        _ => false,
-    }
-}
-
-fn lower_type(type_: &special::Type) -> low::Type {
-    match type_ {
-        special::Type::Bool => low::Type::Bool,
-        special::Type::Num(num) => low::Type::Num(*num),
-        special::Type::Array(rep, item_type) => {
-            low::Type::Array(*rep, Box::new(lower_type(item_type)))
-        }
-        special::Type::HoleArray(rep, item_type) => {
-            low::Type::HoleArray(*rep, Box::new(lower_type(item_type)))
-        }
-        special::Type::Tuple(types) => low::Type::Tuple(
-            types
-                .iter()
-                .map(|item_type| lower_type(item_type))
-                .collect(),
-        ),
-        special::Type::Variants(variants) => low::Type::Variants(IdVec::from_items(
-            variants
-                .items
-                .iter()
-                .map(|item_type| lower_type(item_type))
-                .collect(),
-        )),
-        special::Type::Custom(id) => low::Type::Custom(*id),
-    }
-}
-
-fn add_size_deps(type_: &special::Type, deps: &mut BTreeSet<special::CustomTypeId>) {
-    match type_ {
-        special::Type::Bool | special::Type::Num(_) => {}
-
-        special::Type::Array(_, _) | special::Type::HoleArray(_, _) => {}
-
-        special::Type::Tuple(items) => {
-            for item in items {
-                add_size_deps(item, deps)
-            }
-        }
-
-        special::Type::Variants(variants) => {
-            for (_, variant) in variants {
-                add_size_deps(variant, deps)
-            }
-        }
-
-        special::Type::Custom(custom) => {
-            deps.insert(*custom);
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct BoxInfo {
-    scc: BTreeSet<special::CustomTypeId>,
-}
-
-fn find_box_infos(
-    typedefs: &IdVec<special::CustomTypeId, special::Type>,
-) -> IdVec<special::CustomTypeId, BoxInfo> {
-    let size_deps = Graph {
-        edges_out: typedefs.map(|_, def| {
-            let mut deps = BTreeSet::new();
-            add_size_deps(def, &mut deps);
-            deps.into_iter().collect()
-        }),
-    };
-
-    let sccs = graph::strongly_connected(&size_deps);
-
-    let mut maybe_box_infos = IdVec::from_items(vec![None; typedefs.len()]);
-
-    for scc_vec in sccs {
-        let scc: BTreeSet<_> = scc_vec.iter().cloned().collect();
-
-        for custom_type in &scc {
-            maybe_box_infos[custom_type] = Some(BoxInfo { scc: scc.clone() });
-        }
-    }
-
-    maybe_box_infos.into_mapped(|_, value| value.unwrap())
-}
-
-fn needs_boxing(boxinfo: &BoxInfo, type_: &special::Type) -> bool {
-    match type_ {
-        special::Type::Bool => false,
-        special::Type::Num(_num_type) => false,
-        special::Type::Array(_rep, _item_type) => false,
-        special::Type::HoleArray(_rep, _item_type) => false,
-        special::Type::Tuple(types) => types
-            .iter()
-            .any(|item_type| needs_boxing(boxinfo, item_type)),
-        special::Type::Variants(variants) => variants
-            .iter()
-            .any(|(_, item_type)| needs_boxing(boxinfo, item_type)),
-        special::Type::Custom(id) => boxinfo.scc.contains(id),
-    }
-}
-
-fn box_type(boxinfo: &BoxInfo, type_: &special::Type) -> low::Type {
-    match type_ {
-        special::Type::Variants(variants) => low::Type::Variants(IdVec::from_items(
-            variants
-                .items
-                .iter()
-                .map(|variant_type| box_type(boxinfo, variant_type))
-                .collect(),
-        )),
-        _ => {
-            if needs_boxing(boxinfo, type_) {
-                low::Type::Boxed(Box::new(lower_type(type_)))
-            } else {
-                lower_type(type_)
-            }
-        }
-    }
-}
-
-fn find_boxed_types(
-    typedefs: &IdVec<special::CustomTypeId, special::Type>,
-) -> IdVec<special::CustomTypeId, low::Type> {
-    let box_infos = find_box_infos(typedefs);
-
-    typedefs.map(|id, typedef| box_type(&box_infos[id], typedef))
-}
 
 #[derive(Clone, Debug)]
 struct MoveInfo {
@@ -299,11 +162,15 @@ fn count_moves(expr: &tail::Expr) -> MoveInfo {
             }
         }
         tail::Expr::TupleField(local_id, _index) => move_info.add_borrow(*local_id),
+
         tail::Expr::WrapVariant(_variants, _variant_id, local_id) => {
             move_info.add_move(*local_id);
         }
-
         tail::Expr::UnwrapVariant(_variant_id, local_id) => move_info.add_move(*local_id),
+
+        tail::Expr::WrapBoxed(local_id, _content_type) => move_info.add_move(*local_id),
+        tail::Expr::UnwrapBoxed(local_id, _content_type) => move_info.add_borrow(*local_id),
+
         tail::Expr::WrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
         tail::Expr::UnwrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
 
@@ -365,7 +232,6 @@ fn count_moves(expr: &tail::Expr) -> MoveInfo {
 // every time we have a syntactic occurence of a variable, we need to add a retain
 // we need to change branches to ifs
 // we need to unwrap array literals
-// we need to add boxing/unboxing in places
 
 struct LowAstBuilder {
     offset: low::LocalId,
@@ -412,16 +278,8 @@ fn lower_condition(
     condition: &special::Condition,
     builder: &mut LowAstBuilder,
     match_type: &low::Type,
-    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
+    typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::LocalId {
-    if let low::Type::Boxed(boxed_type) = match_type {
-        let unboxed_id = builder.add_expr(
-            (**boxed_type).clone(),
-            low::Expr::UnwrapBoxed(discrim, (**boxed_type).clone()),
-        );
-        return lower_condition(unboxed_id, condition, builder, boxed_type, boxed_typedefs);
-    }
-
     match condition {
         special::Condition::Any => builder.add_expr(low::Type::Bool, low::Expr::BoolLit(true)),
         special::Condition::Tuple(subconditions) => {
@@ -438,7 +296,7 @@ fn lower_condition(
                 .map(|(index, (item_type, subcondition))| {
                     let item_id =
                         builder.add_expr(item_type.clone(), low::Expr::TupleField(discrim, index));
-                    lower_condition(item_id, subcondition, builder, item_type, boxed_typedefs)
+                    lower_condition(item_id, subcondition, builder, item_type, typedefs)
                 })
                 .collect::<Vec<low::LocalId>>();
             let if_expr =
@@ -450,9 +308,8 @@ fn lower_condition(
 
             builder.add_expr(low::Type::Bool, if_expr)
         }
-
         special::Condition::Variant(variant_id, subcondition) => {
-            let variant_id = low::VariantId(variant_id.0);
+            let variant_id = first_ord::VariantId(variant_id.0);
 
             let variant_check = builder.add_expr(
                 low::Type::Bool,
@@ -472,7 +329,7 @@ fn lower_condition(
                 variant_type.clone(),
                 low::Expr::UnwrapVariant(
                     variant_types.clone(),
-                    low::VariantId(variant_id.0),
+                    first_ord::VariantId(variant_id.0),
                     discrim,
                 ),
             );
@@ -482,7 +339,7 @@ fn lower_condition(
                 subcondition,
                 &mut new_builder,
                 variant_type,
-                boxed_typedefs,
+                typedefs,
             );
 
             builder.add_expr(
@@ -494,15 +351,23 @@ fn lower_condition(
                 ),
             )
         }
+        special::Condition::Boxed(subcondition, content_type) => {
+            let content = builder.add_expr(
+                content_type.clone(),
+                low::Expr::UnwrapBoxed(discrim, content_type.clone()),
+            );
+
+            lower_condition(content, subcondition, builder, content_type, typedefs)
+        }
         special::Condition::Custom(custom_type_id, subcondition) => {
-            let content_type = &boxed_typedefs[custom_type_id];
+            let content_type = &typedefs[custom_type_id];
 
             let content = builder.add_expr(
                 content_type.clone(),
                 low::Expr::UnwrapCustom(*custom_type_id, discrim),
             );
 
-            lower_condition(content, subcondition, builder, content_type, boxed_typedefs)
+            lower_condition(content, subcondition, builder, content_type, typedefs)
         }
         special::Condition::BoolConst(val) => {
             if *val {
@@ -578,7 +443,6 @@ fn lower_branch(
     context: &mut LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
-    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::LocalId {
     match cases.first() {
         None => builder.add_expr(
@@ -590,8 +454,8 @@ fn lower_branch(
                 context.local_binding(discrim).1,
                 cond,
                 builder,
-                &lower_type(&context.local_binding(discrim).0),
-                boxed_typedefs,
+                &context.local_binding(discrim).0,
+                typedefs,
             );
 
             let mut then_builder = builder.child();
@@ -600,7 +464,7 @@ fn lower_branch(
                 for _ in move_info.move_info[var]..*move_count {
                     then_builder.add_expr(
                         low::Type::Tuple(vec![]),
-                        low::Expr::Retain(context_info.1, lower_type(&context_info.0)),
+                        low::Expr::Retain(context_info.1, context_info.0.clone()),
                     );
                 }
             }
@@ -611,19 +475,12 @@ fn lower_branch(
                 if *move_count == 1 && !body.move_info.move_info.contains_key(&var) {
                     then_builder.add_expr(
                         low::Type::Tuple(vec![]),
-                        low::Expr::Release(context_info.1, lower_type(&context_info.0)),
+                        low::Expr::Release(context_info.1, context_info.0.clone()),
                     );
                 }
             }
 
-            let then_final_id = lower_expr(
-                body,
-                result_type,
-                context,
-                &mut then_builder,
-                typedefs,
-                boxed_typedefs,
-            );
+            let then_final_id = lower_expr(body, result_type, context, &mut then_builder, typedefs);
 
             for (var, move_count) in &body.move_info.move_info {
                 let branch_move_count = move_info.move_info[var];
@@ -634,7 +491,7 @@ fn lower_branch(
                 if branch_move_count == 1 && *move_count == 0 {
                     then_builder.add_expr(
                         low::Type::Tuple(vec![]),
-                        low::Expr::Release(context_info.1, lower_type(&context_info.0)),
+                        low::Expr::Release(context_info.1, context_info.0.clone()),
                     );
                 }
             }
@@ -649,7 +506,6 @@ fn lower_branch(
                 context,
                 &mut else_builder,
                 typedefs,
-                boxed_typedefs,
             );
 
             let else_branch = else_builder.build(else_local_id);
@@ -671,149 +527,12 @@ impl flat::LocalId {
     }
 }
 
-fn coerce_variants(
-    local_id: low::LocalId,
-    original_variants: &IdVec<low::VariantId, low::Type>,
-    target_variants: &IdVec<low::VariantId, low::Type>,
-    offset: usize,
-    builder: &mut LowAstBuilder,
-    coerce: impl for<'a> Fn(
-        low::LocalId,
-        &'a low::Type,
-        &'a low::Type,
-        &'a mut LowAstBuilder,
-    ) -> low::LocalId,
-) -> low::LocalId {
-    debug_assert!(offset <= target_variants.len());
-
-    let result_type = low::Type::Variants(target_variants.clone());
-    if offset == target_variants.len() {
-        builder.add_expr(result_type.clone(), low::Expr::Unreachable(result_type))
-    } else {
-        let variant_id = low::VariantId(offset);
-        let target_variant_type = &target_variants[variant_id];
-        let original_variant_type = &original_variants[variant_id];
-
-        let is_this_variant = builder.add_expr(
-            low::Type::Bool,
-            low::Expr::CheckVariant(variant_id, local_id),
-        );
-
-        let mut then_builder = builder.child();
-
-        let unwrapped_variant_id = then_builder.add_expr(
-            original_variant_type.clone(),
-            low::Expr::UnwrapVariant(original_variants.clone(), variant_id, local_id),
-        );
-
-        let boxed_content_unwrapped = coerce(
-            unwrapped_variant_id,
-            original_variant_type,
-            target_variant_type,
-            &mut then_builder,
-        );
-
-        let boxed_then_id = then_builder.add_expr(
-            result_type.clone(),
-            low::Expr::WrapVariant(target_variants.clone(), variant_id, boxed_content_unwrapped),
-        );
-
-        let mut else_builder = builder.child();
-        let boxed_else_id = coerce_variants(
-            local_id,
-            original_variants,
-            target_variants,
-            offset + 1,
-            &mut else_builder,
-            coerce,
-        );
-        builder.add_expr(
-            result_type,
-            low::Expr::If(
-                is_this_variant,
-                Box::new(then_builder.build(boxed_then_id)),
-                Box::new(else_builder.build(boxed_else_id)),
-            ),
-        )
-    }
-}
-
-fn box_content(
-    local_id: low::LocalId,
-    original_type: &low::Type,
-    target_type: &low::Type,
-    builder: &mut LowAstBuilder,
-) -> low::LocalId {
-    match target_type {
-        low::Type::Boxed(inner_type) => builder.add_expr(
-            target_type.clone(),
-            low::Expr::WrapBoxed(local_id, (**inner_type).clone()),
-        ),
-        low::Type::Variants(target_variants) => {
-            if let low::Type::Variants(original_variants) = original_type {
-                coerce_variants(
-                    local_id,
-                    original_variants,
-                    target_variants,
-                    0,
-                    builder,
-                    box_content,
-                )
-            } else {
-                unreachable![];
-            }
-        }
-        _ => local_id,
-    }
-}
-
-fn unbox_content(
-    local_id: low::LocalId,
-    original_type: &low::Type,
-    target_type: &low::Type,
-    builder: &mut LowAstBuilder,
-) -> low::LocalId {
-    match original_type {
-        low::Type::Boxed(inner_type) => {
-            let inner_id = builder.add_expr(
-                (**inner_type).clone(),
-                low::Expr::UnwrapBoxed(local_id, (**inner_type).clone()),
-            );
-            builder.add_expr(
-                low::Type::Tuple(vec![]),
-                low::Expr::Retain(inner_id, (**inner_type).clone()),
-            );
-            builder.add_expr(
-                low::Type::Tuple(vec![]),
-                low::Expr::Release(local_id, original_type.clone()),
-            );
-            inner_id
-        }
-        low::Type::Variants(original_variants) => {
-            if let low::Type::Variants(target_variants) = target_type {
-                coerce_variants(
-                    local_id,
-                    original_variants,
-                    target_variants,
-                    0,
-                    builder,
-                    unbox_content,
-                )
-            } else {
-                unreachable![];
-            }
-        }
-        _ => local_id,
-    }
-}
-
 fn lower_leaf(
     expr: &tail::Expr,
     result_type: &low::Type,
     context: &LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
-    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::LocalId {
     match expr {
         tail::Expr::Local(local_id) => local_id.lookup_in(context),
@@ -845,16 +564,26 @@ fn lower_leaf(
             );
             tuple_elem_id
         }
+        tail::Expr::WrapBoxed(content_id, content_type) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::WrapBoxed(content_id.lookup_in(context), content_type.clone()),
+        ),
+        tail::Expr::UnwrapBoxed(boxed_id, content_type) => {
+            let content_id = builder.add_expr(
+                result_type.clone(),
+                low::Expr::UnwrapBoxed(boxed_id.lookup_in(context), content_type.clone()),
+            );
+            builder.add_expr(
+                low::Type::Tuple(vec![]),
+                low::Expr::Retain(content_id, result_type.clone()),
+            );
+            content_id
+        }
         tail::Expr::WrapVariant(variants, variant_id, content_id) => builder.add_expr(
             result_type.clone(),
             low::Expr::WrapVariant(
-                IdVec::from_items(
-                    variants
-                        .iter()
-                        .map(|(_index, variant)| lower_type(variant))
-                        .collect(),
-                ),
-                low::VariantId(variant_id.0),
+                variants.clone(),
+                first_ord::VariantId(variant_id.0),
                 content_id.lookup_in(context),
             ),
         ),
@@ -862,59 +591,26 @@ fn lower_leaf(
             builder.add_expr(result_type.clone(), {
                 let variant_type = &context.local_binding(*content_id).0;
                 let variants = if let special::Type::Variants(variants) = variant_type {
-                    IdVec::from_items(
-                        variants
-                            .items
-                            .iter()
-                            .map(|variant| lower_type(variant))
-                            .collect(),
-                    )
+                    variants
                 } else {
                     panic![];
                 };
 
                 low::Expr::UnwrapVariant(
-                    variants,
-                    low::VariantId(variant_id.0),
+                    variants.clone(),
+                    first_ord::VariantId(variant_id.0),
                     content_id.lookup_in(context),
                 )
             })
         }
-        tail::Expr::WrapCustom(type_id, content_id) => {
-            let unboxed_type = lower_type(&typedefs[type_id]);
-            let boxed_type = &boxed_typedefs[type_id];
-
-            let boxed_content_id = if contains_boxes(boxed_type) {
-                box_content(
-                    content_id.lookup_in(context),
-                    &unboxed_type,
-                    boxed_type,
-                    builder,
-                )
-            } else {
-                content_id.lookup_in(context)
-            };
-
-            builder.add_expr(
-                low::Type::Custom(*type_id),
-                low::Expr::WrapCustom(*type_id, boxed_content_id),
-            )
-        }
-        tail::Expr::UnwrapCustom(type_id, content_id) => {
-            let unboxed_type = lower_type(&typedefs[type_id]);
-            let boxed_type = &boxed_typedefs[type_id];
-
-            let unwrapped_id = builder.add_expr(
-                boxed_type.clone(),
-                low::Expr::UnwrapCustom(*type_id, content_id.lookup_in(context)),
-            );
-
-            if contains_boxes(boxed_type) {
-                unbox_content(unwrapped_id, boxed_type, &unboxed_type, builder)
-            } else {
-                unwrapped_id
-            }
-        }
+        tail::Expr::WrapCustom(type_id, content_id) => builder.add_expr(
+            low::Type::Custom(*type_id),
+            low::Expr::WrapCustom(*type_id, content_id.lookup_in(context)),
+        ),
+        tail::Expr::UnwrapCustom(type_id, wrapped_id) => builder.add_expr(
+            typedefs[type_id].clone(),
+            low::Expr::UnwrapCustom(*type_id, wrapped_id.lookup_in(context)),
+        ),
         tail::Expr::ArithOp(arith_op) => {
             let arith_expr = match arith_op {
                 flat::ArithOp::Op(num_type, bin_op, local_id1, local_id2) => low::ArithOp::Op(
@@ -952,7 +648,7 @@ fn lower_leaf(
             };
             builder.add_expr(
                 result_type.clone(),
-                low::Expr::ArrayOp(*rep, lower_type(item_type), array_expr),
+                low::Expr::ArrayOp(*rep, item_type.clone(), array_expr),
             )
         }
         tail::Expr::IoOp(rep, io_type) => builder.add_expr(
@@ -970,7 +666,7 @@ fn lower_leaf(
         tail::Expr::ArrayLit(rep, elem_type, elems) => {
             let mut result_id = builder.add_expr(
                 result_type.clone(),
-                low::Expr::ArrayOp(*rep, lower_type(elem_type), low::ArrayOp::New()),
+                low::Expr::ArrayOp(*rep, elem_type.clone(), low::ArrayOp::New()),
             );
 
             for elem_id in elems {
@@ -978,7 +674,7 @@ fn lower_leaf(
                     result_type.clone(),
                     low::Expr::ArrayOp(
                         *rep,
-                        lower_type(elem_type),
+                        elem_type.clone(),
                         low::ArrayOp::Push(result_id, elem_id.lookup_in(context)),
                     ),
                 );
@@ -1005,7 +701,6 @@ fn lower_expr(
     context: &mut LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
-    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::LocalId {
     match &expr.kind {
         AnnotExprKind::LetMany(bindings, final_local_id) => {
@@ -1025,21 +720,14 @@ fn lower_expr(
                             for _retain in 0..retain_count {
                                 builder.add_expr(
                                     low::Type::Tuple(vec![]),
-                                    low::Expr::Retain(var_info.1, lower_type(&var_info.0)),
+                                    low::Expr::Retain(var_info.1, var_info.0.clone()),
                                 );
                             }
                         }
                     }
 
                     // emit expressions
-                    let low_binding_id = lower_expr(
-                        binding,
-                        &lower_type(type_),
-                        subcontext,
-                        builder,
-                        typedefs,
-                        boxed_typedefs,
-                    );
+                    let low_binding_id = lower_expr(binding, &type_, subcontext, builder, typedefs);
                     let flat_binding_id = subcontext.add_local((type_.clone(), low_binding_id));
 
                     // emit releases
@@ -1048,7 +736,7 @@ fn lower_expr(
                         if *move_count == 0 && !future_usages.future_usages.contains(var) {
                             builder.add_expr(
                                 low::Type::Tuple(vec![]),
-                                low::Expr::Release(var_info.1, lower_type(&var_info.0)),
+                                low::Expr::Release(var_info.1, var_info.0.clone()),
                             );
                         }
                     }
@@ -1058,7 +746,7 @@ fn lower_expr(
                             low::Type::Tuple(vec![]),
                             low::Expr::Release(
                                 subcontext.local_binding(flat_binding_id).1,
-                                lower_type(&type_),
+                                type_.clone(),
                             ),
                         );
                     }
@@ -1068,7 +756,7 @@ fn lower_expr(
                     let var_info = subcontext.local_binding(*final_local_id);
                     builder.add_expr(
                         low::Type::Tuple(vec![]),
-                        low::Expr::Retain(var_info.1, lower_type(&var_info.0)),
+                        low::Expr::Retain(var_info.1, var_info.0.clone()),
                     );
                 }
 
@@ -1078,27 +766,18 @@ fn lower_expr(
         AnnotExprKind::Branch(discrim, cases, result_type) => lower_branch(
             *discrim,
             cases,
-            &lower_type(result_type),
+            result_type,
             &expr.move_info,
             context,
             builder,
             typedefs,
-            boxed_typedefs,
         ),
-        AnnotExprKind::Leaf(leaf) => lower_leaf(
-            leaf,
-            result_type,
-            context,
-            builder,
-            typedefs,
-            boxed_typedefs,
-        ),
+        AnnotExprKind::Leaf(leaf) => lower_leaf(leaf, result_type, context, builder, typedefs),
     }
 }
 
 fn lower_function_body(
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
-    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
     arg_type: &special::Type,
     ret_type: &special::Type,
     body: tail::Expr,
@@ -1118,7 +797,7 @@ fn lower_function_body(
     {
         builder.add_expr(
             low::Type::Tuple(vec![]),
-            low::Expr::Retain(low::ARG_LOCAL, lower_type(arg_type)),
+            low::Expr::Retain(low::ARG_LOCAL, arg_type.clone()),
         );
     }
 
@@ -1135,23 +814,22 @@ fn lower_function_body(
         // the function, so as to not interfere with tail calls.
         builder.add_expr(
             low::Type::Tuple(vec![]),
-            low::Expr::Release(low::ARG_LOCAL, lower_type(arg_type)),
+            low::Expr::Release(low::ARG_LOCAL, arg_type.clone()),
         );
     }
 
     let final_local_id = lower_expr(
         &annotated_body,
-        &lower_type(ret_type),
+        ret_type,
         &mut context,
         &mut builder,
         typedefs,
-        boxed_typedefs,
     );
 
     if annotated_body.move_info.move_info.get(&flat::ARG_LOCAL) == Some(&0) {
         builder.add_expr(
             low::Type::Tuple(vec![]),
-            low::Expr::Release(low::ARG_LOCAL, lower_type(arg_type)),
+            low::Expr::Release(low::ARG_LOCAL, arg_type.clone()),
         );
     }
 
@@ -1161,35 +839,22 @@ fn lower_function_body(
 fn lower_function(
     func: tail::FuncDef,
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
-    boxed_typedefs: &IdVec<special::CustomTypeId, low::Type>,
 ) -> low::FuncDef {
     // Appease the borrow checker
     let ret_type = &func.ret_type;
 
     let tail_funcs = func.tail_funcs.into_mapped(|_, tail_func| low::TailFunc {
-        arg_type: lower_type(&tail_func.arg_type),
-        body: lower_function_body(
-            typedefs,
-            boxed_typedefs,
-            &tail_func.arg_type,
-            ret_type,
-            tail_func.body,
-        ),
+        arg_type: tail_func.arg_type.clone(),
+        body: lower_function_body(typedefs, &tail_func.arg_type, ret_type, tail_func.body),
         profile_point: tail_func.profile_point,
     });
 
-    let body = lower_function_body(
-        typedefs,
-        boxed_typedefs,
-        &func.arg_type,
-        &func.ret_type,
-        func.body,
-    );
+    let body = lower_function_body(typedefs, &func.arg_type, &func.ret_type, func.body);
 
     low::FuncDef {
         tail_funcs,
-        arg_type: lower_type(&func.arg_type),
-        ret_type: lower_type(&func.ret_type),
+        arg_type: func.arg_type,
+        ret_type: func.ret_type,
         body,
         profile_point: func.profile_point,
     }
@@ -1197,18 +862,17 @@ fn lower_function(
 
 pub fn lower_structures(program: tail::Program) -> low::Program {
     let typedefs = program.custom_types;
-    let boxed_typedefs = find_boxed_types(&typedefs);
 
     let lowered_funcs = program
         .funcs
         .items
         .into_iter()
-        .map(|func| lower_function(func, &typedefs, &boxed_typedefs))
+        .map(|func| lower_function(func, &typedefs))
         .collect();
 
     low::Program {
         mod_symbols: program.mod_symbols.clone(),
-        custom_types: boxed_typedefs,
+        custom_types: typedefs,
         funcs: IdVec::from_items(lowered_funcs),
         profile_points: program.profile_points,
         main: low::CustomFuncId(program.main.0),

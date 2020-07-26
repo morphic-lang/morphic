@@ -565,7 +565,7 @@ fn ceil_div_test() {
 fn get_llvm_variant_type<'a, 'b>(
     globals: &Globals<'a, 'b>,
     instances: &Instances<'a>,
-    variants: &IdVec<low::VariantId, low::Type>,
+    variants: &IdVec<first_ord::VariantId, low::Type>,
 ) -> StructType<'a> {
     if variants.len() == 0 {
         return globals.context.struct_type(&[], false).into();
@@ -806,7 +806,7 @@ fn gen_rc_op<'a, 'b>(
             builder.build_unreachable();
             for (i, variant_block) in variant_blocks.iter().enumerate() {
                 builder.position_at_end(*variant_block);
-                let variant_id = low::VariantId(i);
+                let variant_id = first_ord::VariantId(i);
 
                 let unwrapped_variant =
                     gen_unwrap_variant(builder, instances, globals, arg, variant_types, variant_id);
@@ -875,8 +875,8 @@ fn gen_unwrap_variant<'a, 'b>(
     instances: &Instances<'a>,
     globals: &Globals<'a, 'b>,
     variant_value: BasicValueEnum<'a>,
-    variants: &IdVec<low::VariantId, low::Type>,
-    variant_id: low::VariantId,
+    variants: &IdVec<first_ord::VariantId, low::Type>,
+    variant_id: first_ord::VariantId,
 ) -> BasicValueEnum<'a> {
     let variant_type = get_llvm_variant_type(globals, instances, &variants);
 

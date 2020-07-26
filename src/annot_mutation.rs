@@ -436,6 +436,48 @@ fn annot_expr(
             )
         }
 
+        alias::Expr::WrapBoxed(content, content_type) => {
+            let content_info = &ctx[content];
+
+            debug_assert_eq!(&content_info.type_, content_type);
+
+            let mut boxed_statuses = OrdMap::new();
+            for (content_path, _) in get_names_in(&orig.custom_types, content_type) {
+                let mut boxed_path = content_path.clone();
+                boxed_path.push_front(alias::Field::Boxed);
+
+                boxed_statuses.insert(boxed_path, content_info.statuses[&content_path].clone());
+            }
+
+            (
+                annot::Expr::WrapBoxed(*content, content_type.clone()),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: boxed_statuses,
+                },
+            )
+        }
+
+        alias::Expr::UnwrapBoxed(boxed, content_type) => {
+            let boxed_info = &ctx[boxed];
+
+            let mut content_statuses = OrdMap::new();
+            for (content_path, _) in get_names_in(&orig.custom_types, content_type) {
+                let mut boxed_path = content_path.clone();
+                boxed_path.push_front(alias::Field::Boxed);
+
+                content_statuses.insert(content_path, boxed_info.statuses[&boxed_path].clone());
+            }
+
+            (
+                annot::Expr::UnwrapBoxed(*boxed, content_type.clone()),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: content_statuses,
+                },
+            )
+        }
+
         alias::Expr::WrapCustom(custom_id, content) => {
             let content_info = &ctx[content];
 

@@ -65,6 +65,14 @@ pub enum Expr {
         LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, LocalId),
+    WrapBoxed(
+        LocalId,
+        anon::Type, // Inner type
+    ),
+    UnwrapBoxed(
+        LocalId,
+        anon::Type, // Inner type
+    ),
     WrapCustom(first_ord::CustomTypeId, LocalId),
     UnwrapCustom(first_ord::CustomTypeId, LocalId),
 
@@ -84,6 +92,10 @@ pub enum Condition {
     Any,
     Tuple(Vec<Condition>),
     Variant(first_ord::VariantId, Box<Condition>),
+    Boxed(
+        Box<Condition>,
+        anon::Type, // Inner type
+    ),
     Custom(first_ord::CustomTypeId, Box<Condition>),
     BoolConst(bool),
     ByteConst(u8),

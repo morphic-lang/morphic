@@ -32,6 +32,14 @@ pub enum Expr {
         flat::LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, flat::LocalId),
+    WrapBoxed(
+        flat::LocalId,
+        special::Type, // Inner type
+    ),
+    UnwrapBoxed(
+        flat::LocalId,
+        special::Type, // Inner type
+    ),
     WrapCustom(special::CustomTypeId, flat::LocalId),
     UnwrapCustom(special::CustomTypeId, flat::LocalId),
 

@@ -53,6 +53,10 @@ fn resolve_type<Rep>(
             variants.map(|_, variant| resolve_type(type_insts, resolve_var, variant)),
         ),
 
+        unif::Type::Boxed(content) => {
+            special::Type::Boxed(Box::new(resolve_type(type_insts, resolve_var, content)))
+        }
+
         unif::Type::Custom(custom, rep_vars) => special::Type::Custom(
             type_insts.resolve((*custom, rep_vars.map(|_, var| resolve_var(var)))),
         ),
@@ -115,6 +119,16 @@ fn resolve_condition(
                 internal,
                 content_cond,
             )),
+        ),
+
+        unif::Condition::Boxed(content_cond, content_type) => special::Condition::Boxed(
+            Box::new(resolve_condition(
+                type_insts,
+                params,
+                internal,
+                content_cond,
+            )),
+            resolve_body_type(type_insts, params, internal, content_type),
         ),
 
         unif::Condition::Custom(custom, rep_vars, content_cond) => special::Condition::Custom(
@@ -203,6 +217,16 @@ fn resolve_expr(
         unif::Expr::UnwrapVariant(variant, wrapped) => {
             special::Expr::UnwrapVariant(*variant, *wrapped)
         }
+
+        unif::Expr::WrapBoxed(content, content_type) => special::Expr::WrapBoxed(
+            *content,
+            resolve_body_type(type_insts, params, internal, content_type),
+        ),
+
+        unif::Expr::UnwrapBoxed(boxed, content_type) => special::Expr::UnwrapBoxed(
+            *boxed,
+            resolve_body_type(type_insts, params, internal, content_type),
+        ),
 
         unif::Expr::WrapCustom(custom, rep_vars, content) => special::Expr::WrapCustom(
             type_insts.resolve((

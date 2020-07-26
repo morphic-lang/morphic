@@ -56,6 +56,11 @@ pub fn get_names_in_excluding<'a>(
                     );
                 }
             }
+            anon::Type::Boxed(content_type) => {
+                let mut new_prefix = prefix.clone();
+                new_prefix.push_back(annot::Field::Boxed);
+                add_names_from_type(type_defs, names, typedefs_on_path, content_type, new_prefix);
+            }
             anon::Type::Custom(id) => {
                 if !typedefs_on_path.contains(id) {
                     typedefs_on_path.insert(*id);
@@ -139,6 +144,17 @@ pub fn get_fold_points_in<'a>(
                         new_prefix,
                     );
                 }
+            }
+            anon::Type::Boxed(content_type) => {
+                let mut new_prefix = prefix.clone();
+                new_prefix.push_back(annot::Field::Boxed);
+                add_points_from_type(
+                    type_defs,
+                    points,
+                    typedefs_on_path,
+                    content_type,
+                    new_prefix,
+                )
             }
             anon::Type::Custom(id) => {
                 if !typedefs_on_path.contains(id) {

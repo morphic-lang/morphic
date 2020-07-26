@@ -11,7 +11,7 @@ id_type!(pub CustomTypeId);
 
 id_type!(pub CustomFuncId);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bool,
     Num(first_ord::NumType),
@@ -19,6 +19,7 @@ pub enum Type {
     HoleArray(constrain::RepChoice, Box<Type>),
     Tuple(Vec<Type>),
     Variants(IdVec<first_ord::VariantId, Type>),
+    Boxed(Box<Type>),
     Custom(CustomTypeId),
 }
 
@@ -37,6 +38,14 @@ pub enum Expr {
         flat::LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, flat::LocalId),
+    WrapBoxed(
+        flat::LocalId,
+        Type, // Inner type
+    ),
+    UnwrapBoxed(
+        flat::LocalId,
+        Type, // Inner type
+    ),
     WrapCustom(CustomTypeId, flat::LocalId),
     UnwrapCustom(CustomTypeId, flat::LocalId),
 
@@ -60,6 +69,10 @@ pub enum Condition {
     Any,
     Tuple(Vec<Condition>),
     Variant(first_ord::VariantId, Box<Condition>),
+    Boxed(
+        Box<Condition>,
+        Type, // Inner type
+    ),
     Custom(CustomTypeId, Box<Condition>),
     BoolConst(bool),
     ByteConst(u8),

@@ -4,6 +4,9 @@
 // analysis, because it separates handling of sum types from handling of recursive types (via custom
 // types).
 //
+// This AST is also the first to include explicit "boxing" (pointer indirection) constructs where
+// necessary to prevent recursive types from having infinite size.
+//
 // Note that even in the presence of anonymous sum types, custom types are still absolutely
 // necessary, because they provide the only mechanism for expressing recursive types.
 
@@ -22,6 +25,7 @@ pub enum Type {
     // TODO: If sum type fields are indexed by typed ids, should products types be as well?
     Tuple(Vec<Type>),
     Variants(IdVec<first_ord::VariantId, Type>),
+    Boxed(Box<Type>),
     Custom(first_ord::CustomTypeId),
 }
 
@@ -83,6 +87,10 @@ pub enum Expr {
         first_ord::VariantId,
         Box<Expr>,
     ),
+    WrapBoxed(
+        Box<Expr>,
+        Type, // Inner type
+    ),
     WrapCustom(first_ord::CustomTypeId, Box<Expr>),
 
     ArithOp(ArithOp),
@@ -105,6 +113,10 @@ pub enum Pattern {
         IdVec<first_ord::VariantId, Type>,
         first_ord::VariantId,
         Box<Pattern>,
+    ),
+    Boxed(
+        Box<Pattern>,
+        Type, // Inner type
     ),
     Custom(first_ord::CustomTypeId, Box<Pattern>),
     BoolConst(bool),

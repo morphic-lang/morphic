@@ -98,6 +98,8 @@ fn constrain_expr(
         | unif::Expr::TupleField(_, _)
         | unif::Expr::WrapVariant(_, _, _)
         | unif::Expr::UnwrapVariant(_, _)
+        | unif::Expr::WrapBoxed(_, _)
+        | unif::Expr::UnwrapBoxed(_, _)
         | unif::Expr::WrapCustom(_, _, _)
         | unif::Expr::UnwrapCustom(_, _, _)
         | unif::Expr::ArithOp(_)

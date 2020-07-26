@@ -1017,6 +1017,78 @@ fn annot_expr(
             (annot::Expr::UnwrapVariant(*variant_id, *variant), expr_info)
         }
 
+        flat::Expr::WrapBoxed(content, content_type) => {
+            let content_info = &ctx[content];
+
+            debug_assert_eq!(&content_info.type_, content_type);
+
+            let mut expr_info = ValInfo::new();
+
+            for (path_in_content, _) in get_names_in(&orig.custom_types, content_type) {
+                let mut path_in_boxed = path_in_content.clone();
+                path_in_boxed.push_front(annot::Field::Boxed);
+
+                expr_info.create_path(path_in_boxed.clone());
+                copy_aliases(
+                    &mut expr_info,
+                    &path_in_boxed,
+                    content_info,
+                    *content,
+                    &path_in_content,
+                );
+            }
+
+            for (fold_point_in_content, _) in get_fold_points_in(&orig.custom_types, content_type) {
+                let mut fold_point_in_boxed = fold_point_in_content.clone();
+                fold_point_in_boxed.push_front(annot::Field::Boxed);
+
+                expr_info.create_folded_aliases(
+                    fold_point_in_boxed,
+                    content_info.folded_aliases[&fold_point_in_content].clone(),
+                );
+            }
+
+            (
+                annot::Expr::WrapBoxed(*content, content_type.clone()),
+                expr_info,
+            )
+        }
+
+        flat::Expr::UnwrapBoxed(boxed, content_type) => {
+            let boxed_info = &ctx[boxed];
+
+            let mut expr_info = ValInfo::new();
+
+            for (path_in_content, _) in get_names_in(&orig.custom_types, content_type) {
+                let mut path_in_boxed = path_in_content.clone();
+                path_in_boxed.push_front(annot::Field::Boxed);
+
+                expr_info.create_path(path_in_content.clone());
+                copy_aliases(
+                    &mut expr_info,
+                    &path_in_content,
+                    boxed_info,
+                    *boxed,
+                    &path_in_boxed,
+                );
+            }
+
+            for (fold_point_in_content, _) in get_fold_points_in(&orig.custom_types, content_type) {
+                let mut fold_point_in_boxed = fold_point_in_content.clone();
+                fold_point_in_boxed.push_front(annot::Field::Boxed);
+
+                expr_info.create_folded_aliases(
+                    fold_point_in_content,
+                    boxed_info.folded_aliases[&fold_point_in_boxed].clone(),
+                );
+            }
+
+            (
+                annot::Expr::UnwrapBoxed(*boxed, content_type.clone()),
+                expr_info,
+            )
+        }
+
         flat::Expr::WrapCustom(custom_id, content) => {
             let mut expr_info = empty_info(&orig.custom_types, &anon::Type::Custom(*custom_id));
 

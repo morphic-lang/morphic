@@ -120,6 +120,22 @@ fn add_flattened_binding(
             );
         }
 
+        anon::Pattern::Boxed(content, content_type) => {
+            let content_flat_local = builder.add_binding(
+                content_type.clone(),
+                flat::Expr::UnwrapBoxed(rhs_flat, content_type.clone()),
+            );
+
+            add_flattened_binding(
+                typedefs,
+                ctx,
+                builder,
+                content,
+                content_flat_local,
+                content_type,
+            )
+        }
+
         anon::Pattern::Custom(type_id, content) => {
             debug_assert_eq!(&anon::Type::Custom(*type_id), rhs_type);
 
@@ -167,6 +183,9 @@ fn to_condition(pat: &anon::Pattern) -> flat::Condition {
         anon::Pattern::Variant(_variant_types, variant, content) => {
             flat::Condition::Variant(*variant, Box::new(to_condition(content)))
         }
+        anon::Pattern::Boxed(content, content_type) => {
+            flat::Condition::Boxed(Box::new(to_condition(content)), content_type.clone())
+        }
         anon::Pattern::Custom(type_id, content) => {
             flat::Condition::Custom(*type_id, Box::new(to_condition(content)))
         }
@@ -177,7 +196,6 @@ fn to_condition(pat: &anon::Pattern) -> flat::Condition {
     }
 }
 
-#[allow(unconditional_recursion)]
 fn flatten_expr(
     orig: &anon::Program,
     ctx: &mut LocalsContext,
@@ -354,6 +372,18 @@ fn flatten_expr(
                 builder,
                 anon::Type::Variants(variant_types.clone()),
                 flat::Expr::WrapVariant(variant_types.clone(), *variant, content_local),
+            )
+        }
+
+        anon::Expr::WrapBoxed(content, content_type) => {
+            let (content_local, child_content_type) = flatten_expr(orig, ctx, builder, content);
+
+            debug_assert_eq!(&child_content_type, content_type);
+
+            bind(
+                builder,
+                anon::Type::Boxed(Box::new(child_content_type)),
+                flat::Expr::WrapBoxed(content_local, content_type.clone()),
             )
         }
 
