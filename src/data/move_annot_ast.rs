@@ -10,7 +10,6 @@ use crate::data::mutation_annot_ast as mutation;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::disjunction::Disj;
 use crate::util::graph::Scc;
 use crate::util::id_vec::IdVec;
 
@@ -103,6 +102,8 @@ pub enum Expr {
         Local,
     ),
     UnwrapVariant(first_ord::VariantId, Local),
+    WrapBoxed(Local, anon::Type),
+    UnwrapBoxed(Local, anon::Type),
     WrapCustom(first_ord::CustomTypeId, Local),
     UnwrapCustom(first_ord::CustomTypeId, Local),
 
@@ -115,16 +116,6 @@ pub enum Expr {
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-
-    Drop(Local),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MutationSig {
-    // Conditions under which each argument field may be mutated during the call
-    pub arg_mutation_conds: OrdMap<alias::ArgName, Disj<alias::AliasCondition>>,
-    // Conditions under which each return value field may be mutated at the end of the call
-    pub ret_statuses: OrdMap<alias::RetName, mutation::LocalStatus>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -149,7 +140,7 @@ pub struct FuncDef {
     pub purity: Purity,
     pub arg_type: anon::Type,
     pub ret_type: anon::Type,
-    pub mutation_sig: MutationSig,
+    pub mutation_sig: mutation::MutationSig,
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument.
     pub body: Expr,
