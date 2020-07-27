@@ -150,6 +150,11 @@ sample! { mutate "samples/mutate.mor";
     ];
 }
 
+sample! { recursive_array "samples/recursive_array.mor";
+    stdin = "";
+    stdout = "";
+}
+
 // Samples expected to fail at runtime:
 
 sample! { item_oob1 "samples/run-fail/item_oob1.mor";

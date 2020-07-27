@@ -425,10 +425,19 @@ fn array_extraction_aliases(
 
             // Wire up transitive edges
             for ((other, other_path), cond) in &array_info.aliases[&array_path].aliases {
-                if *other == array {
-                    // It should not be possible for an array to (transitively) contain itself, so
-                    // we can assume that any self-edge within the array is a self edge within its
-                    // members.
+                // Check for self-edges within the item being extracted.
+                //
+                // We need to check for '!other_path.is_empty()' here because it is possible for an
+                // array to transitively contain itself (!), in which case 'other_path' might be a
+                // zero-element path pointing to the root of the array, rather than to one of its
+                // members.
+                //
+                // We don't need to do anything special when we extract an array from itself; the
+                // necessary edges are added after this 'if' statement.
+                if *other == array && !other_path.is_empty() {
+                    // The only names in the array, other than the name of the array itself, are the
+                    // names of its members. Hence this is an edge within each member of the array,
+                    // and we need to add a self-edge to the extracted item.
                     debug_assert_eq!(other_path[0], annot::Field::ArrayMembers);
 
                     let other_item_path = other_path.skip(1);
@@ -554,10 +563,19 @@ fn array_insertion_aliases(
                     );
                 }
 
-                if *other == array {
-                    // It should not be possible for an array to (transitively) contain itself, so
-                    // we can assume that any edge between the array and the item is an edge between
-                    // the *members* of the array and the item.
+                // Check for edges between the item being added and existing items.
+                //
+                // We need to check for '!other_path.is_empty()' here because it is possible for an
+                // array to transitively contain itself (!), in which case 'other_path' might be a
+                // zero-element path pointing to the root of the array, rather than to one of its
+                // members.
+                //
+                // We don't need to do anything special when we add an array to itself; the
+                // necessary edges are added after this 'if' statement.
+                if *other == array && !other_path.is_empty() {
+                    // The only names in the array, other than the name of the array itself, are the
+                    // names of its members. Hence this is an edge between the *members* of the
+                    // array and the item, and we need to add an internal cross-edge.
                     debug_assert_eq!(other_path[0], annot::Field::ArrayMembers);
 
                     let other_subpath = annot::SubPath(other_path.skip(1));
