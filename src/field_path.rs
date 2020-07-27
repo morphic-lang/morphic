@@ -7,8 +7,12 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
+use crate::util::im_rc_ext::VectorExtensions;
 
 // Computes the fields in `type_` at which there is a name
+//
+// Currently, a 'name' means a field containing a heap structure participating in mutation
+// optimization (which includes arrays and hole arrays, but excludes boxes).
 pub fn get_names_in_excluding<'a>(
     type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
@@ -32,46 +36,54 @@ pub fn get_names_in_excluding<'a>(
                 // The array itself:
                 names.push((prefix.clone(), type_));
                 // The names in elements of the array:
-                let mut new_prefix = prefix.clone();
-                new_prefix.push_back(annot::Field::ArrayMembers);
-                add_names_from_type(type_defs, names, typedefs_on_path, item_type, new_prefix);
+                add_names_from_type(
+                    type_defs,
+                    names,
+                    typedefs_on_path,
+                    item_type,
+                    prefix.add_back(annot::Field::ArrayMembers),
+                );
             }
             anon::Type::Tuple(item_types) => {
                 for (i, item_type) in item_types.iter().enumerate() {
-                    let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(annot::Field::Field(i));
-                    add_names_from_type(type_defs, names, typedefs_on_path, item_type, new_prefix);
+                    add_names_from_type(
+                        type_defs,
+                        names,
+                        typedefs_on_path,
+                        item_type,
+                        prefix.clone().add_back(annot::Field::Field(i)),
+                    );
                 }
             }
             anon::Type::Variants(variant_types) => {
                 for (variant, variant_type) in variant_types {
-                    let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(annot::Field::Variant(variant));
                     add_names_from_type(
                         type_defs,
                         names,
                         typedefs_on_path,
                         variant_type,
-                        new_prefix,
+                        prefix.clone().add_back(annot::Field::Variant(variant)),
                     );
                 }
             }
             anon::Type::Boxed(content_type) => {
-                let mut new_prefix = prefix.clone();
-                new_prefix.push_back(annot::Field::Boxed);
-                add_names_from_type(type_defs, names, typedefs_on_path, content_type, new_prefix);
+                add_names_from_type(
+                    type_defs,
+                    names,
+                    typedefs_on_path,
+                    content_type,
+                    prefix.add_back(annot::Field::Boxed),
+                );
             }
             anon::Type::Custom(id) => {
                 if !typedefs_on_path.contains(id) {
                     typedefs_on_path.insert(*id);
-                    let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(annot::Field::Custom(*id));
                     add_names_from_type(
                         type_defs,
                         names,
                         typedefs_on_path,
                         &type_defs[id],
-                        new_prefix,
+                        prefix.add_back(annot::Field::Custom(*id)),
                     );
                     // Remove if we added it
                     typedefs_on_path.remove(id);
@@ -121,41 +133,33 @@ pub fn get_fold_points_in<'a>(
             }
             anon::Type::Tuple(item_types) => {
                 for (i, item_type) in item_types.iter().enumerate() {
-                    let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(annot::Field::Field(i));
                     add_points_from_type(
                         type_defs,
                         points,
                         typedefs_on_path,
                         item_type,
-                        new_prefix,
+                        prefix.clone().add_back(annot::Field::Field(i)),
                     );
                 }
             }
             anon::Type::Variants(variant_types) => {
                 for (variant, variant_type) in variant_types {
-                    let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(annot::Field::Variant(variant));
                     add_points_from_type(
                         type_defs,
                         points,
                         typedefs_on_path,
                         variant_type,
-                        new_prefix,
+                        prefix.clone().add_back(annot::Field::Variant(variant)),
                     );
                 }
             }
-            anon::Type::Boxed(content_type) => {
-                let mut new_prefix = prefix.clone();
-                new_prefix.push_back(annot::Field::Boxed);
-                add_points_from_type(
-                    type_defs,
-                    points,
-                    typedefs_on_path,
-                    content_type,
-                    new_prefix,
-                )
-            }
+            anon::Type::Boxed(content_type) => add_points_from_type(
+                type_defs,
+                points,
+                typedefs_on_path,
+                content_type,
+                prefix.add_back(annot::Field::Boxed),
+            ),
             anon::Type::Custom(id) => {
                 if !typedefs_on_path.contains(id) {
                     typedefs_on_path.insert(*id);
@@ -187,6 +191,66 @@ pub fn get_names_in<'a>(
     type_: &'a anon::Type,
 ) -> Vec<(annot::FieldPath, &'a anon::Type)> {
     get_names_in_excluding(type_defs, type_, BTreeSet::new())
+}
+
+// Compute the fields in `type_` at which there is a heap reference participating in RC elision.
+//
+// Currently, this only considers top-level references (i.e., those that would be placed directly on
+// the stack if a value of type `type_` were placed on the stack), but we intend to find a way to
+// handle nested references in the future.
+fn get_refs_in<'a>(
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &'a anon::Type,
+) -> Vec<annot::FieldPath> {
+    let mut refs = Vec::new();
+    add_refs_from_type(type_defs, &mut refs, type_, Vector::new());
+    return refs;
+
+    fn add_refs_from_type<'a>(
+        type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+        refs: &mut Vec<annot::FieldPath>,
+        type_: &'a anon::Type,
+        prefix: annot::FieldPath,
+    ) {
+        match type_ {
+            anon::Type::Bool | anon::Type::Num(_) => {}
+
+            anon::Type::Array(_) | anon::Type::HoleArray(_) | anon::Type::Boxed(_) => {
+                refs.push(prefix);
+            }
+
+            anon::Type::Tuple(item_types) => {
+                for (i, item_type) in item_types.iter().enumerate() {
+                    add_refs_from_type(
+                        type_defs,
+                        refs,
+                        item_type,
+                        prefix.clone().add_back(annot::Field::Field(i)),
+                    );
+                }
+            }
+
+            anon::Type::Variants(variants) => {
+                for (variant, variant_type) in variants {
+                    add_refs_from_type(
+                        type_defs,
+                        refs,
+                        variant_type,
+                        prefix.clone().add_back(annot::Field::Variant(variant)),
+                    );
+                }
+            }
+
+            anon::Type::Custom(id) => {
+                add_refs_from_type(
+                    type_defs,
+                    refs,
+                    &type_defs[id],
+                    prefix.add_back(annot::Field::Custom(*id)),
+                );
+            }
+        }
+    }
 }
 
 pub fn split_at_fold(
