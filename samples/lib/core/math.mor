@@ -1,0 +1,25 @@
+byte_is_even(byte: Byte): Bool =
+  byte =& (byte /& 2b) *& 2b
+
+int_is_even(int: Int): Bool =
+  int = (int / 2) * 2
+
+byte_to_int(byte: Byte): Int =
+  if byte_is_even(byte        ) { 0 } else {   1 } +
+  if byte_is_even(byte /&   2b) { 0 } else {   2 } +
+  if byte_is_even(byte /&   4b) { 0 } else {   4 } +
+  if byte_is_even(byte /&   8b) { 0 } else {   8 } +
+  if byte_is_even(byte /&  16b) { 0 } else {  16 } +
+  if byte_is_even(byte /&  32b) { 0 } else {  32 } +
+  if byte_is_even(byte /&  64b) { 0 } else {  64 } +
+  if byte_is_even(byte /& 128b) { 0 } else { 128 }
+
+int_to_byte(int: Int): Byte =
+  if int_is_even(int      ) { 0b } else {   1b } +&
+  if int_is_even(int /   2) { 0b } else {   2b } +&
+  if int_is_even(int /   4) { 0b } else {   4b } +&
+  if int_is_even(int /   8) { 0b } else {   8b } +&
+  if int_is_even(int /  16) { 0b } else {  16b } +&
+  if int_is_even(int /  32) { 0b } else {  32b } +&
+  if int_is_even(int /  64) { 0b } else {  64b } +&
+  if int_is_even(int / 128) { 0b } else { 128b }

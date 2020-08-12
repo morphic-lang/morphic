@@ -3,6 +3,18 @@ type Option a {
   None,
 }
 
+is_some(opt: Option a): Bool =
+  match opt {
+    Some(x) -> True,
+    None -> False,
+  }
+
+is_none(opt: Option a): Bool =
+  match opt {
+    Some(x) -> False,
+    None -> True,
+  }
+
 or_default(opt: Option a, def: a): a =
   match opt {
     Some(x) -> x,

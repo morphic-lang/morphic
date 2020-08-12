@@ -131,6 +131,18 @@ all(it: Iter a, f: a -> Bool): Bool =
     None -> True,
   }
 
+equal(it1: Iter a, it2: Iter a, eq: (a, a) -> Bool): Bool =
+  match (next(it1), next(it2)) {
+    (None, None) -> True,
+    (Some(x, xs), Some(y, ys)) ->
+      if eq(x, y) {
+        equal(xs, ys, eq)
+      } else {
+        False
+      },
+    (_, _) -> False,
+  }
+
 proc for_each(it: Iter a, f: proc a -> ()): () =
   match next(it) {
     Some(x, xs) ->
