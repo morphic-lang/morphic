@@ -2,7 +2,7 @@ module Option = file "option.mor"
 
 module Iter = file "iter.mor" with { Option }
 
-module Array = file "array.mor"
+module Array = file "array.mor" with { Iter }
 
 module String = file "string.mor" with { Array, Option, Iter }
 
@@ -12,4 +12,6 @@ module Bool = file "bool.mor"
 
 module Io = file "io.mor"
 
-module Math = file "math.mor"
+module Math = file "math.mor" with { Bool }
+
+module Control = file "control.mor"

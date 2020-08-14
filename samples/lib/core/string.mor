@@ -59,3 +59,10 @@ string_to_nat(str: Array Byte): Option Int =
       \acc -> Option.map(digit_to_nat(char), \digit -> acc * 10 + digit),
     )
   )
+
+equals(a: Array Byte, b: Array Byte): Bool =
+  if len(a) = len(b) {
+    Iter.all(Iter.zip(Iter.items(a), Iter.items(b)), \(x, y) -> x =& y)
+  } else {
+    False
+  }

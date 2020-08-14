@@ -1,0 +1,18 @@
+proc do_while(cond: a -> Bool, f: proc () -> a): () =
+    if cond(do f()) {
+        do do_while(cond, f)
+    } else {
+        ()
+    }
+
+proc while(init: a, cond: a -> Bool, f: proc () -> a): () =
+    if cond(init) {
+        do do_while(cond, f)
+    }
+    else {
+        ()
+    }
+
+proc forever(f: proc () -> ()): () =
+    do f() then
+    do forever(f)

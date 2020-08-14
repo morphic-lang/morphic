@@ -1,3 +1,5 @@
+import Iter expose { Iter }
+
 get(arr: Array a, i: Int): a =
   let (x, _) = item(arr, i) in
   x
@@ -5,6 +7,10 @@ get(arr: Array a, i: Int): a =
 set(arr: Array a, i: Int, val: a): Array a =
   let (_, hole) = item(arr, i) in
   hole(val)
+
+update(arr: Array a, i: Int, f: a -> a): Array a =
+  let (x, hole) = item(arr, i) in
+  hole(f(x))
 
 concat_from(a: Array t, b: Array t, i: Int): Array t =
   if i = len(b) {
@@ -28,3 +34,6 @@ fill_with(count: Int, mk_val: () -> t): Array t =
 
 fill(count: Int, val: t): Array t =
   fill_with(count, \() -> val)
+
+from_iter(iter: Iter a): Array a =
+  Iter.foldr(iter, [], \(x, arr) -> push(arr, x))
