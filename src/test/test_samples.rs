@@ -197,6 +197,22 @@ sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
     leak_check = false;
 }
 
+sample! { panic "samples/run-fail/panic.mor";
+    stdin = "";
+    stdout = "";
+    stderr = "Goodbye!\n";
+    status = Failure(Some(1));
+    leak_check = false;
+}
+
+sample! { panic_persistent "samples/run-fail/panic_persistent.mor";
+    stdin = "";
+    stdout = "";
+    stderr = "Goodbye";
+    status = Failure(Some(1));
+    leak_check = false;
+}
+
 // Test correctness of benchmarking samples
 
 sample! { bench_primes "samples/bench_primes.mor";

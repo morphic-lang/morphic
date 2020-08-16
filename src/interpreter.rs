@@ -1533,6 +1533,36 @@ fn interpret_expr(
                 HeapId(0)
             }
 
+            Expr::Panic(_ret_type, rep, array_id) => {
+                let array_heap_id = locals[array_id];
+
+                let array = unwrap_array(
+                    heap,
+                    array_heap_id,
+                    *rep,
+                    stacktrace.add_frame("panic".into()),
+                );
+
+                let mut bytes = vec![];
+                for heap_id in array {
+                    bytes.push(unwrap_byte(
+                        heap,
+                        heap_id,
+                        stacktrace.add_frame("panic byte".into()),
+                    ));
+                }
+
+                write!(
+                    stderr,
+                    "{}",
+                    String::from_utf8(bytes.iter().map(|&Wrapping(byte)| byte).collect())
+                        .expect("UTF-8 output error")
+                )
+                .expect("write failed");
+
+                return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
+            }
+
             Expr::BoolLit(val) => heap.add(Value::Bool(*val)),
 
             Expr::ByteLit(val) => heap.add(Value::Num(NumValue::Byte(Wrapping(*val)))),

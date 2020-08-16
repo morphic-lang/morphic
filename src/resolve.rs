@@ -249,6 +249,7 @@ lazy_static! {
             raw::ValName("output".to_owned()),
             res::GlobalId::IoOp(res::IoOp::Output),
         );
+        global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
 
         global_map
     };

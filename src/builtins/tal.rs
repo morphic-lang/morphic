@@ -39,6 +39,7 @@ pub struct Tal<'a> {
     pub print: FunctionValue<'a>,
     pub print_error: FunctionValue<'a>,
     pub write: FunctionValue<'a>,
+    pub write_error: FunctionValue<'a>,
     pub flush: FunctionValue<'a>,
 
     // Profiling primitives
@@ -111,6 +112,11 @@ impl<'a> Tal<'a> {
             void_t.fn_type(&[i8_ptr_t.into(), usize_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
+        let write_error = module.add_function(
+            "write_error",
+            void_t.fn_type(&[i8_ptr_t.into(), usize_t.into(), usize_t.into()], false),
+            Some(Linkage::External),
+        );
         let flush =
             module.add_function("flush", i32_t.fn_type(&[], false), Some(Linkage::External));
 
@@ -160,6 +166,7 @@ impl<'a> Tal<'a> {
             print,
             print_error,
             write,
+            write_error,
             flush,
 
             prof_clock_res_nanos,

@@ -593,6 +593,18 @@ fn annot_expr(
             trivial_info(),
         ),
 
+        alias::Expr::Panic(ret_type, _bytes_aliases, bytes) => (
+            annot::Expr::Panic(
+                ret_type.clone(),
+                ctx[bytes].statuses[&Vector::new()].clone(),
+                *bytes,
+            ),
+            ExprInfo {
+                mutations: Vec::new(),
+                val_statuses: empty_statuses(&orig.custom_types, ret_type),
+            },
+        ),
+
         alias::Expr::ArrayLit(item_type, items) => {
             let mut array_statuses = empty_statuses(
                 &orig.custom_types,

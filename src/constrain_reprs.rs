@@ -87,7 +87,8 @@ fn constrain_expr(
         }
 
         unif::Expr::ArrayOp(rep_var, _, status, _)
-        | unif::Expr::IoOp(rep_var, mutation::IoOp::Output(status, _)) => {
+        | unif::Expr::IoOp(rep_var, mutation::IoOp::Output(status, _))
+        | unif::Expr::Panic(_, rep_var, status, _) => {
             constrain_var(params, internal, *rep_var, status.mutated_cond.clone())
         }
 

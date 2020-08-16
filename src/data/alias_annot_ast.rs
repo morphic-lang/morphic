@@ -123,6 +123,11 @@ pub enum Expr {
     ArithOp(flat::ArithOp),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(
+        anon::Type,    // return type
+        LocalAliases,  // message aliases
+        flat::LocalId, // message
+    ),
 
     ArrayLit(anon::Type, Vec<flat::LocalId>),
     BoolLit(bool),

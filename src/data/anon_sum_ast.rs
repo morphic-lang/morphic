@@ -88,6 +88,7 @@ pub enum Expr {
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(Type, Box<Expr>),
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),

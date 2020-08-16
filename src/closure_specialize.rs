@@ -148,6 +148,15 @@ impl<'a> Context<'a> {
             annot::Requirement::IoOp(op) => {
                 target_cases.0.insert(special::FuncCase::IoOp(*op));
             }
+
+            annot::Requirement::Panic(ret_type) => {
+                let resolved_ret_type = self.resolve_type(ret_type, params);
+
+                target_cases
+                    .0
+                    .insert(special::FuncCase::Panic(resolved_ret_type));
+            }
+
             annot::Requirement::Ctor(custom, type_params, variant) => {
                 let resolved_type_params =
                     type_params.map(|_, solution| self.resolve_solution(solution, params));
@@ -372,6 +381,11 @@ impl<'a> Context<'a> {
             annot::Expr::IoOp(op, solution) => {
                 special::Expr::IoOp(*op, self.resolve_solution(solution, params))
             }
+
+            annot::Expr::Panic(ret_type, solution) => special::Expr::Panic(
+                self.resolve_type(ret_type, params),
+                self.resolve_solution(solution, params),
+            ),
 
             annot::Expr::NullaryCtor(custom, custom_params, variant) => {
                 let resolved_custom_params =

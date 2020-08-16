@@ -777,6 +777,31 @@ fn instantiate_expr(
             )
         }
 
+        mutation::Expr::Panic(ret_type, array_status, byte_array) => {
+            let rep_var =
+                if let unif::Type::Array(rep_var, item_type) = locals.local_binding(*byte_array) {
+                    debug_assert_eq!(
+                        item_type as &unif::Type<_>,
+                        &unif::Type::Num(first_ord::NumType::Byte)
+                    );
+                    *rep_var
+                } else {
+                    unreachable!();
+                };
+
+            let ret_type_inst = instantiate_type(typedefs, graph, ret_type);
+
+            (
+                unif::Expr::Panic(
+                    ret_type_inst.clone(),
+                    rep_var,
+                    array_status.clone(),
+                    *byte_array,
+                ),
+                ret_type_inst,
+            )
+        }
+
         mutation::Expr::ArrayLit(item_type, items) => {
             let rep_var = graph.new_var();
 
@@ -1115,6 +1140,13 @@ fn extract_expr(
         ),
 
         unif::Expr::IoOp(rep_var, op) => unif::Expr::IoOp(this_solutions[to_unified[rep_var]], op),
+
+        unif::Expr::Panic(ret_type, rep_var, message_status, message) => unif::Expr::Panic(
+            extract_type(to_unified, this_solutions, ret_type),
+            this_solutions[to_unified[rep_var]],
+            message_status,
+            message,
+        ),
 
         unif::Expr::ArrayLit(rep_var, item_type, items) => unif::Expr::ArrayLit(
             this_solutions[to_unified[rep_var]],

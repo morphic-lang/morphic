@@ -129,6 +129,11 @@ fn trans_expr(
             anon::Expr::IoOp(anon::IoOp::Output(Box::new(trans_expr(typedefs, output))))
         }
 
+        first_ord::Expr::Panic(ret_type, message) => anon::Expr::Panic(
+            trans_type(ret_type),
+            Box::new(trans_expr(typedefs, message)),
+        ),
+
         first_ord::Expr::Ctor(type_id, variant, content) => anon::Expr::WrapCustom(
             *type_id,
             if typedefs[type_id].variants.len() != 1 {

@@ -1329,6 +1329,15 @@ fn annot_expr(
             )
         }
 
+        flat::Expr::Panic(ret_type, array) => {
+            let array_aliases = ctx[array].aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::Panic(ret_type.clone(), array_aliases, *array),
+                empty_info(&orig.custom_types, ret_type),
+            )
+        }
+
         flat::Expr::ArrayLit(item_type, items) => {
             let mut expr_info = empty_info(
                 &orig.custom_types,

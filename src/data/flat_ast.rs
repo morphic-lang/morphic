@@ -71,6 +71,7 @@ pub enum Expr {
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(anon::Type, LocalId),
 
     ArrayLit(anon::Type, Vec<LocalId>),
     BoolLit(bool),

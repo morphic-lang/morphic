@@ -1423,10 +1423,13 @@ pub struct PersistentArrayIoImpl<'a> {
     // public API
     pub input: FunctionValue<'a>,
     pub output: FunctionValue<'a>,
+    pub output_error: FunctionValue<'a>,
 
     // helper functions
     pub output_tail: FunctionValue<'a>,
     pub output_node: FunctionValue<'a>,
+    pub output_tail_error: FunctionValue<'a>,
+    pub output_node_error: FunctionValue<'a>,
 }
 
 impl<'a> PersistentArrayIoImpl<'a> {
@@ -1443,38 +1446,46 @@ impl<'a> PersistentArrayIoImpl<'a> {
             Some(Linkage::Internal),
         );
 
-        let output = module.add_function(
-            "builtin_pers_array_output",
-            void_type.fn_type(&[byte_array_type.interface().array_type.into()], false),
-            Some(Linkage::Internal),
-        );
+        // Used to declare both 'output' and 'output_error'
+        let declare_output_with = |suffix| {
+            let this_output = module.add_function(
+                &format!("builtin_pers_array_output{}", suffix),
+                void_type.fn_type(&[byte_array_type.interface().array_type.into()], false),
+                Some(Linkage::Internal),
+            );
 
-        let output_tail = module.add_function(
-            "builtin_pers_array_output_tail",
-            void_type.fn_type(
-                &[
-                    byte_array_type
-                        .leaf_type
-                        .ptr_type(AddressSpace::Generic)
-                        .into(),
-                    context.i64_type().into(),
-                ],
-                false,
-            ),
-            Some(Linkage::Internal),
-        );
+            let this_output_tail = module.add_function(
+                &format!("builtin_pers_array_output_tail{}", suffix),
+                void_type.fn_type(
+                    &[
+                        byte_array_type
+                            .leaf_type
+                            .ptr_type(AddressSpace::Generic)
+                            .into(),
+                        context.i64_type().into(),
+                    ],
+                    false,
+                ),
+                Some(Linkage::Internal),
+            );
 
-        let output_node = module.add_function(
-            "builtin_pers_array_output_node",
-            void_type.fn_type(
-                &[
-                    context.i8_type().ptr_type(AddressSpace::Generic).into(),
-                    context.i64_type().into(),
-                ],
-                false,
-            ),
-            Some(Linkage::Internal),
-        );
+            let this_output_node = module.add_function(
+                &format!("builtin_pers_array_output_node{}", suffix),
+                void_type.fn_type(
+                    &[
+                        context.i8_type().ptr_type(AddressSpace::Generic).into(),
+                        context.i64_type().into(),
+                    ],
+                    false,
+                ),
+                Some(Linkage::Internal),
+            );
+
+            (this_output, this_output_tail, this_output_node)
+        };
+
+        let (output, output_tail, output_node) = declare_output_with("");
+        let (output_error, output_tail_error, output_node_error) = declare_output_with("_error");
 
         Self {
             // related types
@@ -1483,10 +1494,13 @@ impl<'a> PersistentArrayIoImpl<'a> {
             // public API
             input,
             output,
+            output_error,
 
             // helper functions
             output_tail,
             output_node,
+            output_tail_error,
+            output_node_error,
         }
     }
 
@@ -1524,95 +1538,109 @@ impl<'a> PersistentArrayIoImpl<'a> {
             s.ret(s.ptr_get(array));
         }
 
-        // define 'output'
-        {
-            let s = scope(self.output, context, target);
-            let array = s.arg(0);
+        // Used to define both 'output' and 'output_error'
+        let define_output_with =
+            |this_output, this_output_tail, this_output_node, tal_write| {
+                // define 'output' / 'output_error'
+                {
+                    let s = scope(this_output, context, target);
+                    let array = s.arg(0);
 
-            let tail = s.field(array, F_ARR_TAIL);
-            let body = s.field(array, F_ARR_BODY);
-            let height = s.field(array, F_ARR_HEIGHT);
-            let len = s.field(array, F_ARR_LEN);
+                    let tail = s.field(array, F_ARR_TAIL);
+                    let body = s.field(array, F_ARR_BODY);
+                    let height = s.field(array, F_ARR_HEIGHT);
+                    let len = s.field(array, F_ARR_LEN);
 
-            s.if_(s.not(s.is_null(body)), |s| {
-                s.call_void(self.output_node, &[body, height]);
-            });
+                    s.if_(s.not(s.is_null(body)), |s| {
+                        s.call_void(this_output_node, &[body, height]);
+                    });
 
-            let tail_len = s.call(self.byte_array_type.tail_len, &[len]);
+                    let tail_len = s.call(self.byte_array_type.tail_len, &[len]);
 
-            s.if_(s.not(s.is_null(tail)), |s| {
-                s.call_void(self.output_tail, &[tail, tail_len]);
-            });
+                    s.if_(s.not(s.is_null(tail)), |s| {
+                        s.call_void(this_output_tail, &[tail, tail_len]);
+                    });
 
-            s.ret_void();
-        }
+                    s.ret_void();
+                }
 
-        // define 'output_tail'
-        {
-            let s = scope(self.output_tail, context, target);
-            let tail = s.arg(0);
-            let tail_len = s.arg(1);
+                // define 'output_tail' / 'output_tail_error'
+                {
+                    let s = scope(this_output_tail, context, target);
+                    let tail = s.arg(0);
+                    let tail_len = s.arg(1);
 
-            let items = s.gep(tail, F_LEAF_ITEMS);
-            // TODO: check bytes_written for errors
-            let _bytes_written = s.call_void(
-                tal.write,
-                &[
-                    s.ptr_cast(s.i8_t(), items),
-                    s.usize(1),
-                    s.int_cast(s.usize_t(), tail_len),
-                ],
-            );
-
-            s.ret_void();
-        }
-
-        // define 'output_node'
-        {
-            let s = scope(self.output_node, context, target);
-            let branch = s.arg(0);
-            let height = s.arg(1);
-
-            let i = s.alloca(s.i64_t());
-            s.ptr_set(i, s.i64(0));
-
-            s.if_(s.eq(height, s.i64(0)), |s| {
-                let items_per_leaf = get_items_per_leaf(1);
-
-                // TODO: check bytes_written for errors
-                let _bytes_written = s.call_void(
-                    tal.write,
-                    &[
-                        s.ptr_cast(s.i8_t(), branch),
-                        s.usize(1),
-                        s.usize(items_per_leaf),
-                    ],
-                );
-
-                s.ret_void();
-            });
-
-            let branch = s.ptr_cast(self.byte_array_type.branch_type.into(), branch);
-
-            s.while_(
-                |s| {
-                    s.and_lazy(s.ult(s.ptr_get(i), s.i64(BRANCHING_FACTOR)), |s| {
-                        s.not(s.is_null(s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i))))
-                    })
-                },
-                |s| {
-                    s.call_void(
-                        self.output_node,
+                    let items = s.gep(tail, F_LEAF_ITEMS);
+                    // TODO: check bytes_written for errors
+                    let _bytes_written = s.call_void(
+                        tal_write,
                         &[
-                            s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
-                            s.sub(height, s.i64(1)),
+                            s.ptr_cast(s.i8_t(), items),
+                            s.usize(1),
+                            s.int_cast(s.usize_t(), tail_len),
                         ],
                     );
-                    s.ptr_set(i, s.add(s.ptr_get(i), s.i64(1)));
-                },
-            );
 
-            s.ret_void();
-        }
+                    s.ret_void();
+                }
+
+                // define 'output_node' / 'output_node_error'
+                {
+                    let s = scope(this_output_node, context, target);
+                    let branch = s.arg(0);
+                    let height = s.arg(1);
+
+                    let i = s.alloca(s.i64_t());
+                    s.ptr_set(i, s.i64(0));
+
+                    s.if_(s.eq(height, s.i64(0)), |s| {
+                        let items_per_leaf = get_items_per_leaf(1);
+
+                        // TODO: check bytes_written for errors
+                        let _bytes_written = s.call_void(
+                            tal_write,
+                            &[
+                                s.ptr_cast(s.i8_t(), branch),
+                                s.usize(1),
+                                s.usize(items_per_leaf),
+                            ],
+                        );
+
+                        s.ret_void();
+                    });
+
+                    let branch = s.ptr_cast(self.byte_array_type.branch_type.into(), branch);
+
+                    s.while_(
+                        |s| {
+                            s.and_lazy(s.ult(s.ptr_get(i), s.i64(BRANCHING_FACTOR)), |s| {
+                                s.not(s.is_null(
+                                    s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
+                                ))
+                            })
+                        },
+                        |s| {
+                            s.call_void(
+                                this_output_node,
+                                &[
+                                    s.arr_get(s.gep(branch, F_BRANCH_CHILDREN), s.ptr_get(i)),
+                                    s.sub(height, s.i64(1)),
+                                ],
+                            );
+                            s.ptr_set(i, s.add(s.ptr_get(i), s.i64(1)));
+                        },
+                    );
+
+                    s.ret_void();
+                }
+            };
+
+        define_output_with(self.output, self.output_tail, self.output_node, tal.write);
+        define_output_with(
+            self.output_error,
+            self.output_tail_error,
+            self.output_node_error,
+            tal.write_error,
+        );
     }
 }

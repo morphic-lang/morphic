@@ -42,6 +42,7 @@ pub enum FuncCase {
     ArrayOp(ArrayOp, Type),
     ArrayReplace(Type),
     IoOp(IoOp),
+    Panic(Type),
     Ctor(CustomTypeId, res::VariantId),
 }
 
@@ -50,6 +51,7 @@ pub enum Expr {
     ArithOp(Op, FuncRep),
     ArrayOp(ArrayOp, Type, FuncRep),
     IoOp(IoOp, FuncRep),
+    Panic(Type, FuncRep),
     NullaryCtor(CustomTypeId, res::VariantId),
     Ctor(CustomTypeId, res::VariantId, FuncRep),
     Global(CustomGlobalId),

@@ -93,6 +93,8 @@ fn lift_expr<'a>(
 
         &mono::Expr::IoOp(op) => lifted::Expr::IoOp(op),
 
+        mono::Expr::Panic(type_) => lifted::Expr::Panic(type_.clone()),
+
         &mono::Expr::Ctor(id, variant) => lifted::Expr::Ctor(id, variant),
 
         &mono::Expr::Global(id) => lifted::Expr::Global(id),

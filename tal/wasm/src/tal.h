@@ -31,6 +31,7 @@ void free(void *ptr);
 void print(const char *str, ...); /* Currently, does not do proper string formatting. */
 void print_error(const char *str, ...); /* Currently, does not do proper string formatting. */
 void write(const void *ptr, size_t size, size_t count);
+void write_error(const void *ptr, size_t size, size_t count);
 int flush(void);
 
 /* Profiling primitives: */

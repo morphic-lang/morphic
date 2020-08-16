@@ -92,6 +92,12 @@ pub enum Expr<Call, Rep> {
         ArrayOp,
     ),
     IoOp(Rep, mutation::IoOp),
+    Panic(
+        Type<Rep>,             // Return type
+        Rep,                   // Message representation
+        mutation::LocalStatus, // Message status
+        flat::LocalId,         // Message
+    ),
 
     ArrayLit(Rep, Type<Rep>, Vec<flat::LocalId>),
     BoolLit(bool),

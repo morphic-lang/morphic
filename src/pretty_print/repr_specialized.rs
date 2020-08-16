@@ -297,6 +297,12 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             }
         }
 
+        Expr::Panic(_ret_type, rep, local_id) => {
+            write_repchoice(w, rep)?;
+            write![w, " "]?;
+            write_single(w, "panic", local_id)
+        }
+
         Expr::ArrayLit(rep, _type, elem_ids) => {
             write_repchoice(w, rep)?;
             write![w, " "]?;

@@ -106,6 +106,12 @@ pub enum Expr {
     ArithOp(ArithOp),
     ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
     IoOp(constrain::RepChoice, IoOp),
+    // Takes message by borrow (not that it matters when the program is about to end anyway...)
+    Panic(
+        Type,                 // Return type
+        constrain::RepChoice, // Message representation
+        LocalId,              // Message
+    ),
 
     BoolLit(bool),
     ByteLit(u8),

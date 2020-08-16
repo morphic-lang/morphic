@@ -1079,14 +1079,7 @@ fn gen_expr<'a, 'b>(
             builder.build_unreachable();
             let unreachable_block = context.append_basic_block(func, "after_unreachable");
             builder.position_at_end(unreachable_block);
-            match get_llvm_type(globals, instances, type_) {
-                BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
-                BasicTypeEnum::FloatType(t) => t.get_undef().into(),
-                BasicTypeEnum::IntType(t) => t.get_undef().into(),
-                BasicTypeEnum::PointerType(t) => t.get_undef().into(),
-                BasicTypeEnum::StructType(t) => t.get_undef().into(),
-                BasicTypeEnum::VectorType(t) => t.get_undef().into(),
-            }
+            get_undef(&get_llvm_type(globals, instances, type_))
         }
         E::Tuple(fields) => {
             let field_types: Vec<_> = fields.iter().map(|id| locals[id].get_type()).collect();
@@ -1577,6 +1570,38 @@ fn gen_expr<'a, 'b>(
                 }
             }
         },
+        E::Panic(ret_type, rep, message_id) => {
+            match rep {
+                constrain::RepChoice::OptimizedMut => {
+                    let builtin_io = instances.flat_array_io;
+                    builder.build_call(
+                        builtin_io.output_error,
+                        &[locals[message_id]],
+                        "flat_array_panic",
+                    );
+                }
+
+                constrain::RepChoice::FallbackImmut => {
+                    let builtin_io = instances.persistent_array_io;
+                    builder.build_call(
+                        builtin_io.output_error,
+                        &[locals[message_id]],
+                        "pers_array_panic",
+                    );
+                }
+            }
+
+            builder.build_call(
+                globals.tal.exit,
+                &[globals.context.i32_type().const_int(1 as u64, false).into()],
+                "exit_call",
+            );
+
+            builder.build_unreachable();
+            let unreachable_block = context.append_basic_block(func, "after_panic");
+            builder.position_at_end(unreachable_block);
+            get_undef(&get_llvm_type(globals, instances, ret_type))
+        }
         E::BoolLit(val) => {
             BasicValueEnum::from(context.bool_type().const_int(*val as u64, false)).into()
         }

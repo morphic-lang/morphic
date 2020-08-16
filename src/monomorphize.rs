@@ -35,6 +35,15 @@ fn resolve_expr(
             mono::Expr::IoOp(*op)
         }
 
+        typed::Expr::Global(res::GlobalId::Panic, args) => {
+            debug_assert_eq!(args.len(), 1);
+            mono::Expr::Panic(resolve_type(
+                type_insts,
+                inst_args,
+                &args[res::TypeParamId(0)],
+            ))
+        }
+
         typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, variant), args) => {
             debug_assert!(args.is_empty());
 

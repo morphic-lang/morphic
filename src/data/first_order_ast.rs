@@ -105,6 +105,7 @@ pub enum Expr {
     ArithOp(ArithOp),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(Type, Box<Expr>),
     Ctor(CustomTypeId, VariantId, Option<Box<Expr>>),
     Local(LocalId),
     Tuple(Vec<Expr>),

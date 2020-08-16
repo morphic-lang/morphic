@@ -247,6 +247,12 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             }
         }
 
+        Expr::Panic(_ret_type, rep, local_id) => {
+            write_repchoice(w, rep)?;
+            write![w, " "]?;
+            write_single(w, "panic", local_id)
+        }
+
         Expr::BoolLit(val) => write![w, "{}", if *val { "True" } else { "False" }],
         Expr::ByteLit(val) => write![w, "{:?}", (*val as char)],
         Expr::IntLit(val) => write![w, "{}", val],

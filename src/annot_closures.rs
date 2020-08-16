@@ -211,6 +211,7 @@ enum SolverRequirement {
     ArrayOp(ArrayOp, annot::Type<SolverVarId>),
     ArrayReplace(annot::Type<SolverVarId>),
     IoOp(IoOp),
+    Panic(annot::Type<SolverVarId>),
     Ctor(
         mono::CustomTypeId,
         IdVec<annot::RepParamId, SolverVarId>,
@@ -223,6 +224,7 @@ enum SolverExpr {
     ArithOp(Op, SolverVarId),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>, SolverVarId),
     IoOp(IoOp, SolverVarId),
+    Panic(annot::Type<SolverVarId>, SolverVarId),
     NullaryCtor(
         mono::CustomTypeId,
         IdVec<annot::RepParamId, SolverVarId>,
@@ -718,6 +720,23 @@ fn io_op_type(
     (op_type, op_var)
 }
 
+fn panic_type(
+    graph: &mut ConstraintGraph<SolverRequirement>,
+    ret_type: annot::Type<SolverVarId>,
+) -> (annot::Type<SolverVarId>, SolverVarId) {
+    let op_var = graph.new_var();
+    graph.require(op_var, SolverRequirement::Panic(ret_type.clone()));
+
+    let op_type = annot::Type::Func(
+        Purity::Pure,
+        op_var,
+        Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
+        Box::new(ret_type),
+    );
+
+    (op_type, op_var)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct GlobalContext<'a> {
     annot_vals: &'a IdVec<mono::CustomGlobalId, Option<annot::ValDef>>,
@@ -774,6 +793,12 @@ fn instantiate_expr(
         &lifted::Expr::IoOp(op) => {
             let (solver_type, op_var) = io_op_type(graph, op);
             (SolverExpr::IoOp(op, op_var), solver_type)
+        }
+
+        lifted::Expr::Panic(ret_type) => {
+            let solver_ret_type = instantiate_mono(typedefs, graph, ret_type);
+            let (solver_type, op_var) = panic_type(graph, solver_ret_type.clone());
+            (SolverExpr::Panic(solver_ret_type, op_var), solver_type)
         }
 
         &lifted::Expr::Ctor(custom, variant) => {
@@ -1279,6 +1304,10 @@ fn add_req_mentioned_classes(
 
         SolverRequirement::IoOp(_) => {}
 
+        SolverRequirement::Panic(ret_type) => {
+            add_mentioned_classes(equiv_classes, ret_type, mentioned);
+        }
+
         SolverRequirement::Ctor(_, custom_params, _) => {
             mentioned.extend(
                 custom_params
@@ -1480,6 +1509,15 @@ fn translate_req_for_template(
         }
 
         SolverRequirement::IoOp(op) => annot::Requirement::IoOp(*op),
+
+        SolverRequirement::Panic(ret_type) => {
+            annot::Requirement::Panic(translate_type_for_template(
+                equiv_classes,
+                class_solutions,
+                solver_to_template,
+                ret_type,
+            ))
+        }
 
         SolverRequirement::Ctor(custom, vars, variant) => annot::Requirement::Ctor(
             *custom,
@@ -1739,6 +1777,11 @@ fn extract_expr(
             annot::Expr::IoOp(op, class_solutions[equiv_classes.class(var)].clone())
         }
 
+        SolverExpr::Panic(ret_type, var) => annot::Expr::Panic(
+            extract_type(equiv_classes, class_solutions, ret_type),
+            class_solutions[equiv_classes.class(*var)].clone(),
+        ),
+
         SolverExpr::NullaryCtor(custom, vars, variant) => annot::Expr::NullaryCtor(
             *custom,
             vars.map(|_, &var| class_solutions[equiv_classes.class(var)].clone()),
@@ -1989,6 +2032,8 @@ fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
         lifted::Expr::ArrayOp(_, _) => {}
 
         lifted::Expr::IoOp(_) => {}
+
+        lifted::Expr::Panic(_) => {}
 
         lifted::Expr::Ctor(_, _) => {}
 

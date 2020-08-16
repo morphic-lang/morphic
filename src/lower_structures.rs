@@ -343,6 +343,9 @@ fn count_moves(expr: &tail::Expr) -> MoveInfo {
                 move_info.add_borrow(*local_id);
             }
         },
+        tail::Expr::Panic(_ret_type, _rep_choice, message) => {
+            move_info.add_borrow(*message);
+        }
 
         tail::Expr::ArrayLit(_rep_choice, _item_type, elem_ids) => {
             for elem_id in elem_ids {
@@ -966,6 +969,10 @@ fn lower_leaf(
                     }
                 },
             ),
+        ),
+        tail::Expr::Panic(ret_type, rep, message) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::Panic(lower_type(ret_type), *rep, message.lookup_in(context)),
         ),
         tail::Expr::ArrayLit(rep, elem_type, elems) => {
             let mut result_id = builder.add_expr(

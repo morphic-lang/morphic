@@ -19,6 +19,7 @@ enum LeafFuncCase {
     ArrayOp(res::ArrayOp, special::Type),
     ArrayReplace(special::Type),
     IoOp(res::IoOp),
+    Panic(special::Type),
     Ctor(special::CustomTypeId, res::VariantId),
 }
 
@@ -51,6 +52,10 @@ fn add_rep_leaves(
 
             &special::FuncCase::IoOp(op) => {
                 leaves.insert(LeafFuncCase::IoOp(op));
+            }
+
+            special::FuncCase::Panic(ret_type) => {
+                leaves.insert(LeafFuncCase::Panic(ret_type.clone()));
             }
 
             &special::FuncCase::Ctor(custom, variant) => {
@@ -229,6 +234,7 @@ fn is_atomic(expr: &special::Expr) -> bool {
         special::Expr::ArithOp(_, _)
         | special::Expr::ArrayOp(_, _, _)
         | special::Expr::IoOp(_, _)
+        | special::Expr::Panic(_, _)
         | special::Expr::NullaryCtor(_, _)
         | special::Expr::Ctor(_, _, _)
         | special::Expr::Global(_)
@@ -275,6 +281,7 @@ impl<'a> Context<'a> {
                 self.lower_type(item_type),
             ))),
             LeafFuncCase::IoOp(_) => None,
+            LeafFuncCase::Panic(_) => None,
             LeafFuncCase::Ctor(_, _) => None,
         }
     }
@@ -607,6 +614,18 @@ impl<'a> Context<'a> {
                                 }
                             }
 
+                            LeafFuncCase::Panic(ret_type) => {
+                                debug_assert!(env_pat.is_none());
+                                debug_assert_eq!(purity, Purity::Pure);
+
+                                let lowered_ret_type = self.lower_type(ret_type);
+
+                                first_ord::Expr::Panic(
+                                    lowered_ret_type,
+                                    Box::new(ARG_LOCAL.clone()),
+                                )
+                            }
+
                             LeafFuncCase::Ctor(custom, variant) => {
                                 debug_assert!(env_pat.is_none());
 
@@ -861,6 +880,12 @@ impl<'a> Context<'a> {
                     ))));
                 }
             },
+            LeafFuncCase::Panic(ret_type) => {
+                return Some(first_ord::Expr::Panic(
+                    self.lower_type(&ret_type),
+                    Box::new(arg.clone()),
+                ));
+            }
             LeafFuncCase::Ctor(type_id, variant_id) => {
                 return Some(first_ord::Expr::Ctor(
                     self.mapping.map_custom_type(type_id),
@@ -895,6 +920,13 @@ impl<'a> Context<'a> {
             special::Expr::IoOp(op, rep) => {
                 let lowered_rep = self.lower_closure(rep);
                 let op_variant = self.case_variant(lowered_rep, &LeafFuncCase::IoOp(*op));
+                first_ord::Expr::Ctor(self.mapping.map_closure_type(lowered_rep), op_variant, None)
+            }
+
+            special::Expr::Panic(ret_type, rep) => {
+                let lowered_rep = self.lower_closure(rep);
+                let op_variant =
+                    self.case_variant(lowered_rep, &LeafFuncCase::Panic(ret_type.clone()));
                 first_ord::Expr::Ctor(self.mapping.map_closure_type(lowered_rep), op_variant, None)
             }
 

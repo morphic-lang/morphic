@@ -47,6 +47,11 @@ pub enum Expr {
         unif::ArrayOp,
     ),
     IoOp(constrain::RepChoice, flat::IoOp),
+    Panic(
+        Type,                 // Return type
+        constrain::RepChoice, // Message representation
+        flat::LocalId,        // Message
+    ),
 
     ArrayLit(constrain::RepChoice, Type, Vec<flat::LocalId>),
     BoolLit(bool),

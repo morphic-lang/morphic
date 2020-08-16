@@ -31,6 +31,7 @@ pub enum GlobalId {
     ArithOp(Op),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic,
     Ctor(TypeId, VariantId),
     Custom(CustomGlobalId),
 }

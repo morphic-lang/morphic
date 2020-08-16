@@ -232,6 +232,10 @@ fn trans_expr(
 
         special::Expr::IoOp(rep, op) => tail::Expr::IoOp(*rep, *op),
 
+        special::Expr::Panic(ret_type, rep, message) => {
+            tail::Expr::Panic(ret_type.clone(), *rep, *message)
+        }
+
         special::Expr::ArrayLit(rep, item_type, items) => {
             tail::Expr::ArrayLit(*rep, item_type.clone(), items.clone())
         }

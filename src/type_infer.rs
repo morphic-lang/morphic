@@ -605,6 +605,8 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
             res::IoOp::Output => Cow::Owned(scheme(0, impure_func(array(byte()), Tuple(vec![])))),
         },
 
+        res::GlobalId::Panic => Cow::Owned(scheme(1, func(array(byte()), param(0)))),
+
         res::GlobalId::Ctor(Custom(custom), variant) => {
             let typedef = &program.custom_types[custom];
             let ret = App(Custom(custom), (0..typedef.num_params).map(param).collect());

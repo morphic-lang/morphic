@@ -98,6 +98,11 @@ pub enum Expr {
     ArithOp(flat::ArithOp),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(
+        anon::Type,    // Return type
+        LocalStatus,   // Message status
+        flat::LocalId, // Message
+    ),
 
     ArrayLit(anon::Type, Vec<flat::LocalId>),
     BoolLit(bool),

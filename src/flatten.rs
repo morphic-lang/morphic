@@ -345,6 +345,21 @@ fn flatten_expr(
             )
         }
 
+        anon::Expr::Panic(ret_type, array) => {
+            let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
+
+            debug_assert_eq!(
+                &anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+                &array_type
+            );
+
+            bind(
+                builder,
+                ret_type.clone(),
+                flat::Expr::Panic(ret_type.clone(), array_local),
+            )
+        }
+
         anon::Expr::WrapVariant(variant_types, variant, content) => {
             let (content_local, content_type) = flatten_expr(orig, ctx, builder, content);
 

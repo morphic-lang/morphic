@@ -37,6 +37,7 @@ pub enum Expr {
     ArithOp(Op),
     ArrayOp(ArrayOp, Type),
     IoOp(IoOp),
+    Panic(Type),
     Ctor(CustomTypeId, res::VariantId),
     Global(CustomGlobalId),
     Local(res::LocalId),

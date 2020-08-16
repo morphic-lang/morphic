@@ -49,6 +49,7 @@ pub enum Requirement {
     ArrayOp(ArrayOp, Type<Solution>),
     ArrayReplace(Type<Solution>),
     IoOp(IoOp),
+    Panic(Type<Solution>),
     Ctor(
         mono::CustomTypeId,
         IdVec<RepParamId, Solution>,
@@ -74,6 +75,7 @@ pub enum Expr {
         Solution, // Representation of this function expression
     ),
     IoOp(IoOp, Solution),
+    Panic(Type<Solution>, Solution),
     NullaryCtor(
         mono::CustomTypeId,
         IdVec<RepParamId, Solution>,
