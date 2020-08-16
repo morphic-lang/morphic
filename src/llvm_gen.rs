@@ -567,10 +567,6 @@ fn get_llvm_variant_type<'a, 'b>(
     instances: &Instances<'a>,
     variants: &IdVec<low::VariantId, low::Type>,
 ) -> StructType<'a> {
-    if variants.len() == 0 {
-        return globals.context.struct_type(&[], false).into();
-    }
-
     let discrim_type = if variants.len() <= 1 << 8 {
         globals.context.i8_type()
     } else if variants.len() <= 1 << 16 {
@@ -1850,12 +1846,8 @@ fn is_zero_sized_with(
             .iter()
             .all(|item| is_zero_sized_with(item, custom_is_zero_sized)),
 
-        low::Type::Variants(variants) => {
-            variants.len() <= 1
-                && variants
-                    .iter()
-                    .all(|(_, variant)| is_zero_sized_with(variant, custom_is_zero_sized))
-        }
+        // All variants have a non-zero-sized discriminant
+        low::Type::Variants(_) => false,
 
         &low::Type::Custom(custom) => custom_is_zero_sized(custom) == IsZeroSized::ZeroSized,
     }

@@ -6,13 +6,16 @@ use crate::data::first_order_ast as first_ord;
 use crate::util::id_vec::IdVec;
 
 pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
-    let custom_types = program.custom_types.map(|_, typedef| {
-        if typedef.variants.len() == 1 {
-            trans_content_type(&typedef.variants[first_ord::VariantId(0)])
-        } else {
-            anon::Type::Variants(trans_variants(&typedef.variants))
-        }
-    });
+    let custom_types = program
+        .custom_types
+        .map(|_, typedef| match typedef.variants.len() {
+            // Past this pass, variant/sum types will always be compiled to include a discriminant
+            // tag, even if they have 0 or 1 cases.  To avoid introducing spurious discriminant
+            // tags, we avoid creating variant types with 0 or 1 cases.
+            0 => anon::Type::Tuple(vec![]),
+            1 => trans_content_type(&typedef.variants[first_ord::VariantId(0)]),
+            _ => anon::Type::Variants(trans_variants(&typedef.variants)),
+        });
 
     let funcs = program.funcs.map(|_, func_def| anon::FuncDef {
         purity: func_def.purity,
@@ -136,6 +139,8 @@ fn trans_expr(
 
         first_ord::Expr::Ctor(type_id, variant, content) => anon::Expr::WrapCustom(
             *type_id,
+            // It's impossible to construct a variant with 0 cases, so we don't need to handle that
+            // case even though it uses a different type representation in the transformed AST.
             if typedefs[type_id].variants.len() != 1 {
                 Box::new(anon::Expr::WrapVariant(
                     trans_variants(&typedefs[type_id].variants),
@@ -225,6 +230,8 @@ fn trans_pattern(
         ),
         first_ord::Pattern::Ctor(type_id, variant, content) => anon::Pattern::Custom(
             *type_id,
+            // It's impossible to match on a variant with 0 cases, so we don't need to handle that
+            // case even though it uses a different type representation in the transformed AST.
             if typedefs[type_id].variants.len() != 1 {
                 Box::new(anon::Pattern::Variant(
                     trans_variants(&typedefs[type_id].variants),

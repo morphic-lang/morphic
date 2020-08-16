@@ -1,0 +1,6 @@
+type Never {}
+
+expect_never(n: Never): () = ()
+
+proc main(): () =
+  if False { expect_never(panic("(╯°□°）╯︵ ┻━┻")) } else { () }

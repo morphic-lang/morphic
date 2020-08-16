@@ -155,6 +155,11 @@ sample! { recursive_array "samples/recursive_array.mor";
     stdout = "";
 }
 
+sample! { zero_case_variant "samples/zero_case_variant.mor";
+    stdin = "";
+    stdout = "";
+}
+
 // Samples expected to fail at runtime:
 
 sample! { item_oob1 "samples/run-fail/item_oob1.mor";
