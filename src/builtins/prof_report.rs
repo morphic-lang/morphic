@@ -154,7 +154,6 @@ impl<'a> Json<'a> {
     }
 }
 
-#[rustfmt::config(max_width = 200)]
 pub fn define_prof_report_fn<'a>(
     context: &'a Context,
     target: &TargetData,
