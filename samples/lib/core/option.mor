@@ -51,9 +51,8 @@ either(fst: Option a, snd: Option a): Option a =
     (None, None) -> None,
   }
 
-// TODO: don't divide by 0
 unwrap(opt: Option a): a =
   match opt {
     Some(x) -> x,
-    None -> 1 / 0 then unwrap(opt),
+    None -> panic("Cannot call 'Option.unwrap' on a 'None' value\n"),
   }
