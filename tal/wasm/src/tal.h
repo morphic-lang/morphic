@@ -1,13 +1,11 @@
 #ifndef _264b892f_09af_4c8c_85c3_102a473fbe29
 #define _264b892f_09af_4c8c_85c3_102a473fbe29
 
+#include "int.h"
+
 #define NULL 0
 
 #define EOF -1
-
-typedef unsigned long size_t;
-typedef unsigned long long uint64_t;
-typedef long ptrdiff_t;
 
 /* Javascript needs an entry point to the wasm program. This wrapper will
    provide the necessary arguments to the opt-proto main function and allow
@@ -33,6 +31,7 @@ void print_error(const char *str, ...); /* Currently, does not do proper string 
 void write(const void *ptr, size_t size, size_t count);
 void write_error(const void *ptr, size_t size, size_t count);
 int flush(void);
+int64_t rand_int64(void);
 
 /* Profiling primitives: */
 uint64_t prof_clock_res_nanos(void);

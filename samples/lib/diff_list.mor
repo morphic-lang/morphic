@@ -3,6 +3,7 @@ import Core expose { module Array }
 type Diff {
     Diff(Array Byte -> Array Byte),
 }
+
 string_to_diff(string: Array Byte): Diff =
     Diff(\prefix -> Array.concat(prefix, string))
 

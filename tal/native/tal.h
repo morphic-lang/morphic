@@ -5,14 +5,15 @@
 #include <stdint.h>
 
 /* Because of various constraints when compiling for WebAssembly (for instance,
-   the lack of a filesystem), some of the opt-proto builtins rely on what
-   amount to lightweight wrappers over libc functions. */
+   the lack of a filesystem), some of the morphic builtins rely on what amount
+   to lightweight wrappers over libc functions. */
 
 void print(const char *str, ...);
 void print_error(const char *str, ...);
 void write(const void *ptr, size_t size, size_t count);
 void write_error(const void *ptr, size_t size, size_t count);
 int flush(void);
+int64_t rand_int64(void);
 
 /* Profiling primitives: */
 uint64_t prof_clock_res_nanos(void);

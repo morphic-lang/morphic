@@ -109,5 +109,6 @@ proc main(): () =
 
   do test("int_bit_and", int_bit_and(42, 98) = 34) then
   do test("int_bit_or", int_bit_or(42, 98) = 106) then
+  do test("int_bit_xor", int_bit_xor(42, 98) = 72) then
 
   do output("Completed all tests\n")

@@ -1524,6 +1524,22 @@ fn gen_expr<'a, 'b>(
                     .into_int_value();
                 builder.build_or(lhs, rhs, "int_bit_or").into()
             }
+            Intrinsic::IntBitXor => {
+                let lhs = builder
+                    .build_extract_value(locals[local_id].into_struct_value(), 0, "int_bit_xor_lhs")
+                    .unwrap()
+                    .into_int_value();
+                let rhs = builder
+                    .build_extract_value(locals[local_id].into_struct_value(), 1, "int_bit_xor_rhs")
+                    .unwrap()
+                    .into_int_value();
+                builder.build_xor(lhs, rhs, "int_bit_xor").into()
+            }
+            Intrinsic::RandInt => builder
+                .build_call(globals.tal.rand_int64, &[], "rand_int64")
+                .try_as_basic_value()
+                .left()
+                .unwrap(),
         },
         E::ArrayOp(rep, item_type, array_op) => match rep {
             constrain::RepChoice::OptimizedMut => {

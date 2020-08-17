@@ -50,6 +50,8 @@ define_intrinsic_names![
     (IntShiftRight, "int_shift_right"),
     (IntBitAnd, "int_bit_and"),
     (IntBitOr, "int_bit_or"),
+    (IntBitXor, "int_bit_xor"),
+    (RandInt, "rand_int"),
 ];
 
 // Signatures:
@@ -80,6 +82,14 @@ fn pure(arg: Type, ret: Type) -> Signature {
     }
 }
 
+fn impure(arg: Type, ret: Type) -> Signature {
+    Signature {
+        purity: Purity::Impure,
+        arg,
+        ret,
+    }
+}
+
 pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
     use Intrinsic::*;
     match intr {
@@ -90,5 +100,7 @@ pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
         IntShiftRight => pure(tuple!(int(), int()), int()),
         IntBitAnd => pure(tuple!(int(), int()), int()),
         IntBitOr => pure(tuple!(int(), int()), int()),
+        IntBitXor => pure(tuple!(int(), int()), int()),
+        RandInt => impure(tuple!(), int()),
     }
 }

@@ -1,0 +1,22 @@
+module Core = file "lib/core/core.mor"
+  expose { module Array, module Iter, module String expose { int_to_string } }
+
+// TODO: find some way to test rand as part of the automatic test suite
+
+proc rand_arr_rec(count: Int, accum: Array Int): Array Int =
+    if count <= 0 {
+        accum
+    } else {
+        do rand_arr_rec(count - 1, push(accum, do rand_int()))
+    }
+
+proc rand_arr(count: Int): Array Int =
+    do rand_arr_rec(count, [])
+
+proc main(): () =
+    do output("generating random integers: [") then
+    do Iter.for_each(
+        Iter.items(do rand_arr(10)),
+        proc \i -> do output(push(int_to_string(i), 44b)) // 44b is ','
+    ) then
+    do output("]\n")
