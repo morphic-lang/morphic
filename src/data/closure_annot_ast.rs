@@ -1,3 +1,4 @@
+use crate::data::intrinsics::Intrinsic;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
@@ -46,6 +47,7 @@ pub enum Requirement {
     Lam(lifted::LamId, IdVec<RepParamId, Solution>),
     Template(TemplateId, IdVec<RepParamId, Solution>),
     ArithOp(Op),
+    Intrinsic(Intrinsic),
     ArrayOp(ArrayOp, Type<Solution>),
     ArrayReplace(Type<Solution>),
     IoOp(IoOp),
@@ -67,6 +69,10 @@ pub enum Solution {
 pub enum Expr {
     ArithOp(
         Op,
+        Solution, // Representation of this function expression
+    ),
+    Intrinsic(
+        Intrinsic,
         Solution, // Representation of this function expression
     ),
     ArrayOp(

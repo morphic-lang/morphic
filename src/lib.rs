@@ -10,6 +10,7 @@ mod util;
 mod builtins;
 
 mod data;
+mod intrinsic_config;
 mod pretty_print;
 
 mod lex;

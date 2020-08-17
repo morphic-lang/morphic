@@ -1,6 +1,8 @@
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::intrinsics as intrs;
+use crate::intrinsic_config::intrinsic_sig;
 use crate::util::id_vec::IdVec;
 
 pub fn flatten(program: anon::Program) -> flat::Program {
@@ -234,6 +236,29 @@ fn flatten_expr(
                 builder,
                 type_.clone(),
                 flat::Expr::ArithOp(flat::ArithOp::Negate(*num_type, val_local)),
+            )
+        }
+
+        anon::Expr::Intrinsic(intr, arg) => {
+            let (arg_local, arg_type) = flatten_expr(orig, ctx, builder, arg);
+
+            fn trans_type(type_: &intrs::Type) -> anon::Type {
+                match type_ {
+                    intrs::Type::Num(num_type) => anon::Type::Num(*num_type),
+                    intrs::Type::Tuple(items) => {
+                        anon::Type::Tuple(items.iter().map(trans_type).collect())
+                    }
+                }
+            }
+
+            let sig = intrinsic_sig(*intr);
+
+            debug_assert_eq!(&arg_type, &trans_type(&sig.arg));
+
+            bind(
+                builder,
+                trans_type(&sig.ret),
+                flat::Expr::Intrinsic(*intr, arg_local),
             )
         }
 

@@ -22,6 +22,11 @@ fn resolve_expr(
             mono::Expr::ArithOp(*op)
         }
 
+        typed::Expr::Global(res::GlobalId::Intrinsic(intr), args) => {
+            debug_assert!(args.is_empty());
+            mono::Expr::Intrinsic(*intr)
+        }
+
         typed::Expr::Global(res::GlobalId::ArrayOp(op), args) => {
             debug_assert_eq!(args.len(), 1);
             mono::Expr::ArrayOp(

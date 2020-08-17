@@ -1,4 +1,6 @@
 use crate::data::first_order_ast as ast;
+use crate::data::intrinsics as intrs;
+use crate::intrinsic_config::intrinsic_sig;
 use crate::util::with_scope;
 
 pub fn typecheck(program: &ast::Program) {
@@ -38,6 +40,18 @@ fn typecheck_expr(
         E::ArithOp(ast::ArithOp::Negate(num_type, v)) => {
             assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
             T::Num(*num_type)
+        }
+        E::Intrinsic(intr, v) => {
+            fn trans_type(type_: &intrs::Type) -> ast::Type {
+                match type_ {
+                    intrs::Type::Num(num_type) => T::Num(*num_type),
+                    intrs::Type::Tuple(items) => T::Tuple(items.iter().map(trans_type).collect()),
+                }
+            }
+
+            let sig = intrinsic_sig(*intr);
+            assert_eq!(typecheck_expr(program, locals, v), trans_type(&sig.arg));
+            trans_type(&sig.ret)
         }
         E::ArrayOp(ast::ArrayOp::Item(item_type, array, index)) => {
             assert_eq!(

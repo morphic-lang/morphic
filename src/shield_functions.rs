@@ -8,6 +8,8 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
     match expr {
         mono::Expr::ArithOp(_) => {}
 
+        mono::Expr::Intrinsic(_) => {}
+
         mono::Expr::ArrayOp(_, _) => {}
 
         mono::Expr::IoOp(_) => {}
@@ -86,6 +88,8 @@ fn rebind_references(
 ) {
     match expr {
         mono::Expr::ArithOp(_) => {}
+
+        mono::Expr::Intrinsic(_) => {}
 
         mono::Expr::ArrayOp(_, _) => {}
 

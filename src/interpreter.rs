@@ -1,4 +1,5 @@
 use crate::data::first_order_ast::{BinOp, Comparison, NumType};
+use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast::{
     ArithOp, ArrayOp, CustomFuncId, CustomTypeId, Expr, IoOp, LocalId, Program, Type, VariantId,
 };
@@ -1349,6 +1350,76 @@ fn interpret_expr(
                     heap,
                     locals[local_id],
                     stacktrace.add_frame("arith".into()),
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::ByteToInt, local_id) => {
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    unwrap_byte(
+                        heap,
+                        locals[local_id],
+                        stacktrace.add_frame("byte_to_int".into()),
+                    )
+                    .0 as i64,
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::ByteToIntSigned, local_id) => {
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    unwrap_byte(
+                        heap,
+                        locals[local_id],
+                        stacktrace.add_frame("byte_to_int".into()),
+                    )
+                    .0 as i8 as i64,
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntToByte, local_id) => {
+                heap.add(Value::Num(NumValue::Byte(Wrapping(
+                    unwrap_int(
+                        heap,
+                        locals[local_id],
+                        stacktrace.add_frame("int_to_byte".into()),
+                    )
+                    .0 as u8,
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntShiftLeft, local_id) => {
+                let args = unwrap_tuple(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_shift_left".into()),
+                );
+                assert_eq!(args.len(), 2);
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_shift_left".into()));
+                let right =
+                    unwrap_int(heap, args[1], stacktrace.add_frame("int_shift_left".into()));
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    left.0 << (right.0 as u64 % 64),
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntShiftRight, local_id) => {
+                let args = unwrap_tuple(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_shift_right".into()),
+                );
+                assert_eq!(args.len(), 2);
+                let left = unwrap_int(
+                    heap,
+                    args[0],
+                    stacktrace.add_frame("int_shift_right".into()),
+                );
+                let right = unwrap_int(
+                    heap,
+                    args[1],
+                    stacktrace.add_frame("int_shift_right".into()),
+                );
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    ((left.0 as u64) >> (right.0 as u64 % 64)) as i64,
                 ))))
             }
 

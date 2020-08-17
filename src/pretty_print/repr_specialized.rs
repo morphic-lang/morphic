@@ -13,6 +13,7 @@ use crate::data::repr_specialized_ast::FuncDef;
 use crate::data::repr_specialized_ast::Program;
 use crate::data::repr_specialized_ast::Type;
 use crate::data::repr_unified_ast::ArrayOp;
+use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
 use std::io;
 use std::io::Write;
@@ -269,6 +270,10 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write![w, "%{} = %{}", local_id1.0, local_id2.0]
         }
         Expr::ArithOp(ArithOp::Negate(_, local_id)) => write![w, "-%{}", local_id.0],
+
+        Expr::Intrinsic(intr, local_id) => {
+            write![w, "{} %{}", intrinsic_to_name(*intr), local_id.0]
+        }
 
         Expr::ArrayOp(rep, _item_type, array_op) => {
             write_repchoice(w, rep)?;

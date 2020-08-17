@@ -94,6 +94,10 @@ fn trans_expr(
             ))
         }
 
+        first_ord::Expr::Intrinsic(intr, arg) => {
+            anon::Expr::Intrinsic(*intr, Box::new(trans_expr(typedefs, arg)))
+        }
+
         first_ord::Expr::ArrayOp(first_ord::ArrayOp::Item(item_type, array, index)) => {
             anon::Expr::ArrayOp(anon::ArrayOp::Item(
                 trans_type(item_type),

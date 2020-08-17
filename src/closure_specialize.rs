@@ -129,6 +129,10 @@ impl<'a> Context<'a> {
                 target_cases.0.insert(special::FuncCase::ArithOp(*op));
             }
 
+            annot::Requirement::Intrinsic(intr) => {
+                target_cases.0.insert(special::FuncCase::Intrinsic(*intr));
+            }
+
             annot::Requirement::ArrayOp(op, item_type) => {
                 let resolved_item_type = self.resolve_type(item_type, params);
 
@@ -370,6 +374,10 @@ impl<'a> Context<'a> {
         match expr {
             annot::Expr::ArithOp(op, solution) => {
                 special::Expr::ArithOp(*op, self.resolve_solution(solution, params))
+            }
+
+            annot::Expr::Intrinsic(intr, solution) => {
+                special::Expr::Intrinsic(*intr, self.resolve_solution(solution, params))
             }
 
             annot::Expr::ArrayOp(op, item_type, solution) => special::Expr::ArrayOp(

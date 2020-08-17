@@ -10,6 +10,7 @@ use crate::data::profile as prof;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
 use crate::file_cache::FileCache;
+use crate::intrinsic_config::INTRINSIC_NAMES;
 use crate::lex;
 use crate::parse;
 use crate::parse_error;
@@ -250,6 +251,13 @@ lazy_static! {
             res::GlobalId::IoOp(res::IoOp::Output),
         );
         global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
+
+        for &(intrinsic, name) in INTRINSIC_NAMES {
+            global_map.insert(
+                raw::ValName(name.to_owned()),
+                res::GlobalId::Intrinsic(intrinsic),
+            );
+        }
 
         global_map
     };

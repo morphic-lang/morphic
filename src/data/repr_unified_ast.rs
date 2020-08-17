@@ -3,6 +3,7 @@ use im_rc::OrdMap;
 use crate::data::alias_annot_ast as alias;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -85,6 +86,7 @@ pub enum Expr<Call, Rep> {
     ),
 
     ArithOp(flat::ArithOp),
+    Intrinsic(Intrinsic, flat::LocalId),
     ArrayOp(
         Rep,                   // Array representation
         Type<Rep>,             // Item type

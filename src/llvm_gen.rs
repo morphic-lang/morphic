@@ -9,6 +9,7 @@ use crate::builtins::tal::{self, Tal};
 use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
 use crate::cli;
 use crate::data::first_order_ast as first_ord;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
 use crate::data::profile as prof;
 use crate::data::repr_constrained_ast as constrain;
@@ -1413,6 +1414,94 @@ fn gen_expr<'a, 'b>(
                     .build_float_neg(locals[local_id].into_float_value(), "float_neg")
                     .into(),
             },
+        },
+        E::Intrinsic(intr, local_id) => match intr {
+            Intrinsic::ByteToInt => builder
+                .build_int_z_extend(
+                    locals[local_id].into_int_value(),
+                    context.i64_type(),
+                    "byte_to_int",
+                )
+                .into(),
+            Intrinsic::ByteToIntSigned => builder
+                .build_int_s_extend(
+                    locals[local_id].into_int_value(),
+                    context.i64_type(),
+                    "byte_to_int_signed",
+                )
+                .into(),
+            Intrinsic::IntToByte => builder
+                .build_int_truncate(
+                    locals[local_id].into_int_value(),
+                    context.i8_type(),
+                    "int_to_byte",
+                )
+                .into(),
+            Intrinsic::IntShiftLeft => {
+                let lhs = builder
+                    .build_extract_value(
+                        locals[local_id].into_struct_value(),
+                        0,
+                        "int_shift_left_lhs",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                let rhs = builder
+                    .build_extract_value(
+                        locals[local_id].into_struct_value(),
+                        1,
+                        "int_shift_left_rhs",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
+                // 1 (which is the same as taking the rhs mod 64). This appears to be what rustc
+                // does.
+                builder
+                    .build_left_shift(
+                        lhs,
+                        builder.build_and(
+                            rhs,
+                            context.i64_type().const_int(64 - 1, false),
+                            "int_shift_left_rhs_mask",
+                        ),
+                        "int_shift_left",
+                    )
+                    .into()
+            }
+            Intrinsic::IntShiftRight => {
+                let lhs = builder
+                    .build_extract_value(
+                        locals[local_id].into_struct_value(),
+                        0,
+                        "int_shift_right_lhs",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                let rhs = builder
+                    .build_extract_value(
+                        locals[local_id].into_struct_value(),
+                        1,
+                        "int_shift_right_rhs",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
+                // 1 (which is the same as taking the rhs mod 64). This appears to be what rustc
+                // does.
+                builder
+                    .build_right_shift(
+                        lhs,
+                        builder.build_and(
+                            rhs,
+                            context.i64_type().const_int(64 - 1, false),
+                            "int_shift_right_rhs_mask",
+                        ),
+                        false, // this is a logical shift
+                        "int_shift_right",
+                    )
+                    .into()
+            }
         },
         E::ArrayOp(rep, item_type, array_op) => match rep {
             constrain::RepChoice::OptimizedMut => {

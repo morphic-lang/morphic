@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::repr_constrained_ast as constrain;
@@ -36,6 +37,7 @@ pub enum Expr {
     UnwrapCustom(special::CustomTypeId, flat::LocalId),
 
     ArithOp(flat::ArithOp),
+    Intrinsic(Intrinsic, flat::LocalId),
     ArrayOp(
         constrain::RepChoice,
         special::Type, // Item type

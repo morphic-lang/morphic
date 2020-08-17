@@ -1,5 +1,7 @@
+use crate::data::intrinsics::Intrinsic;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+pub use crate::data::num_type::NumType;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -36,13 +38,6 @@ pub struct TypeDef {
 pub enum IoOp {
     Input,
     Output(Box<Expr>),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NumType {
-    Byte,
-    Int,
-    Float,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -103,6 +98,7 @@ impl LocalId {
 #[derive(Clone, Debug)]
 pub enum Expr {
     ArithOp(ArithOp),
+    Intrinsic(Intrinsic, Box<Expr>),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
     Panic(Type, Box<Expr>),

@@ -1,5 +1,9 @@
 pub mod purity;
 
+pub mod num_type;
+
+pub mod intrinsics;
+
 pub mod raw_ast;
 
 pub mod profile;

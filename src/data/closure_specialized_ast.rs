@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use crate::data::intrinsics::Intrinsic;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
@@ -39,6 +40,7 @@ pub enum FuncCase {
     Lam(LamId),
     Opaque(OpaqueFuncRepId),
     ArithOp(Op),
+    Intrinsic(Intrinsic),
     ArrayOp(ArrayOp, Type),
     ArrayReplace(Type),
     IoOp(IoOp),
@@ -49,6 +51,7 @@ pub enum FuncCase {
 #[derive(Clone, Debug)]
 pub enum Expr {
     ArithOp(Op, FuncRep),
+    Intrinsic(Intrinsic, FuncRep),
     ArrayOp(ArrayOp, Type, FuncRep),
     IoOp(IoOp, FuncRep),
     Panic(Type, FuncRep),

@@ -8,6 +8,7 @@
 // necessary, because they provide the only mechanism for expressing recursive types.
 
 use crate::data::first_order_ast as first_ord;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -86,6 +87,7 @@ pub enum Expr {
     WrapCustom(first_ord::CustomTypeId, Box<Expr>),
 
     ArithOp(ArithOp),
+    Intrinsic(Intrinsic, Box<Expr>),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
     Panic(Type, Box<Expr>),

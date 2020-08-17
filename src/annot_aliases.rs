@@ -1201,6 +1201,10 @@ fn annot_expr(
 
         flat::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), ValInfo::new()),
 
+        // NOTE [intrinsics]: If we add array intrinsics in the future, this will need to be
+        // modified.
+        flat::Expr::Intrinsic(intr, arg) => (annot::Expr::Intrinsic(*intr, *arg), ValInfo::new()),
+
         flat::Expr::ArrayOp(flat::ArrayOp::Item(item_type, array, index)) => {
             debug_assert_eq!(
                 get_names_in(

@@ -317,6 +317,9 @@ fn count_moves(expr: &tail::Expr) -> MoveInfo {
                 move_info.add_move(*local_id);
             }
         },
+        // NOTE [intrinsics]: If we ever add intrinsics which can take heap values as arguments, we
+        // may need to modify this.
+        tail::Expr::Intrinsic(_intr, local_id) => move_info.add_move(*local_id),
         tail::Expr::ArrayOp(_rep_choice, _item_type, array_op) => match array_op {
             unif::ArrayOp::Item(array_id, index_id) => {
                 move_info.add_borrow(*array_id);
@@ -938,6 +941,11 @@ fn lower_leaf(
             };
             builder.add_expr(result_type.clone(), low::Expr::ArithOp(arith_expr))
         }
+
+        tail::Expr::Intrinsic(intr, local_id) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::Intrinsic(*intr, local_id.lookup_in(context)),
+        ),
 
         tail::Expr::ArrayOp(rep, item_type, array_op) => {
             let array_expr = match array_op {

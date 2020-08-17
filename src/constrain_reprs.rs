@@ -108,6 +108,10 @@ fn constrain_expr(
         | unif::Expr::ByteLit(_)
         | unif::Expr::IntLit(_)
         | unif::Expr::FloatLit(_) => {}
+
+        // NOTE [intrinsics]: If we ever add array intrinsics in the future, this will need to be
+        // modified.
+        unif::Expr::Intrinsic(_, _) => {}
     }
 }
 

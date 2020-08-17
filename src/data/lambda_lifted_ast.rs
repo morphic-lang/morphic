@@ -1,3 +1,4 @@
+use crate::data::intrinsics::Intrinsic;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -18,6 +19,7 @@ id_type!(pub CaptureId);
 #[derive(Clone, Debug)]
 pub enum Expr {
     ArithOp(Op),
+    Intrinsic(Intrinsic),
     ArrayOp(ArrayOp, mono::Type),
     IoOp(IoOp),
     Panic(mono::Type),

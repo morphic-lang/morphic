@@ -226,6 +226,8 @@ fn trans_expr(
 
         special::Expr::ArithOp(op) => tail::Expr::ArithOp(*op),
 
+        special::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
+
         special::Expr::ArrayOp(rep, item_type, op) => {
             tail::Expr::ArrayOp(*rep, item_type.clone(), *op)
         }

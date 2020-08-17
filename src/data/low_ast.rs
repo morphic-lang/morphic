@@ -1,4 +1,5 @@
 use crate::data::first_order_ast as first_ord;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
@@ -104,6 +105,7 @@ pub enum Expr {
     CheckVariant(VariantId, LocalId), // Returns a bool
 
     ArithOp(ArithOp),
+    Intrinsic(Intrinsic, LocalId),
     ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
     IoOp(constrain::RepChoice, IoOp),
     // Takes message by borrow (not that it matters when the program is about to end anyway...)

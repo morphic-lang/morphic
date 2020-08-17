@@ -10,6 +10,7 @@ use crate::data::low_ast::LocalId;
 use crate::data::low_ast::Program;
 use crate::data::low_ast::Type;
 use crate::data::repr_constrained_ast::RepChoice;
+use crate::intrinsic_config::intrinsic_to_name;
 use std::io;
 use std::io::Write;
 
@@ -218,6 +219,10 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write![w, "%{} = %{}", local_id1.0, local_id2.0]
         }
         Expr::ArithOp(ArithOp::Negate(_, local_id)) => write![w, "-%{}", local_id.0],
+
+        Expr::Intrinsic(intr, local_id) => {
+            write![w, "{} %{}", intrinsic_to_name(*intr), local_id.0]
+        }
 
         Expr::ArrayOp(rep, _item_type, array_op) => {
             write_repchoice(w, rep)?;

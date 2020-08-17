@@ -222,6 +222,8 @@ fn resolve_expr(
 
         &unif::Expr::ArithOp(op) => special::Expr::ArithOp(op),
 
+        &unif::Expr::Intrinsic(intr, arg) => special::Expr::Intrinsic(intr, arg),
+
         unif::Expr::ArrayOp(rep_var, item_type, _array_status, op) => special::Expr::ArrayOp(
             resolve_solution(params, internal, *rep_var),
             resolve_body_type(type_insts, params, internal, item_type),

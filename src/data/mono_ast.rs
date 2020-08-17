@@ -1,3 +1,4 @@
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
@@ -35,6 +36,7 @@ id_type!(pub CustomGlobalId);
 #[derive(Clone, Debug)]
 pub enum Expr {
     ArithOp(Op),
+    Intrinsic(Intrinsic),
     ArrayOp(ArrayOp, Type),
     IoOp(IoOp),
     Panic(Type),

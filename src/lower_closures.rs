@@ -3,6 +3,7 @@ use std::iter::repeat_with;
 
 use crate::data::closure_specialized_ast as special;
 use crate::data::first_order_ast::{self as first_ord};
+use crate::data::intrinsics as intrs;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
@@ -16,6 +17,7 @@ use crate::util::id_vec::IdVec;
 enum LeafFuncCase {
     Lam(special::LamId),
     ArithOp(raw::Op),
+    Intrinsic(intrs::Intrinsic),
     ArrayOp(res::ArrayOp, special::Type),
     ArrayReplace(special::Type),
     IoOp(res::IoOp),
@@ -40,6 +42,10 @@ fn add_rep_leaves(
 
             &special::FuncCase::ArithOp(op) => {
                 leaves.insert(LeafFuncCase::ArithOp(op));
+            }
+
+            &special::FuncCase::Intrinsic(intr) => {
+                leaves.insert(LeafFuncCase::Intrinsic(intr));
             }
 
             special::FuncCase::ArrayOp(op, item_type) => {
@@ -232,6 +238,7 @@ fn is_atomic(expr: &special::Expr) -> bool {
         | special::Expr::ArrayLit(_, _) => false,
 
         special::Expr::ArithOp(_, _)
+        | special::Expr::Intrinsic(_, _)
         | special::Expr::ArrayOp(_, _, _)
         | special::Expr::IoOp(_, _)
         | special::Expr::Panic(_, _)
@@ -276,6 +283,7 @@ impl<'a> Context<'a> {
                 Some(first_ord::Type::Tuple(lowered_captures))
             }
             LeafFuncCase::ArithOp(_) => None,
+            LeafFuncCase::Intrinsic(_) => None,
             LeafFuncCase::ArrayOp(_, _) => None,
             LeafFuncCase::ArrayReplace(item_type) => Some(first_ord::Type::HoleArray(Box::new(
                 self.lower_type(item_type),
@@ -490,6 +498,12 @@ impl<'a> Context<'a> {
                                 }
                             }
 
+                            LeafFuncCase::Intrinsic(intr) => {
+                                debug_assert!(env_pat.is_none());
+
+                                first_ord::Expr::Intrinsic(*intr, Box::new(ARG_LOCAL.clone()))
+                            }
+
                             LeafFuncCase::ArrayOp(op, item_type) => {
                                 let lowered_item_type = self.lower_type(item_type);
 
@@ -616,7 +630,6 @@ impl<'a> Context<'a> {
 
                             LeafFuncCase::Panic(ret_type) => {
                                 debug_assert!(env_pat.is_none());
-                                debug_assert_eq!(purity, Purity::Pure);
 
                                 let lowered_ret_type = self.lower_type(ret_type);
 
@@ -830,6 +843,9 @@ impl<'a> Context<'a> {
                     Op::LteFloat => cmp(Float, first_ord::Comparison::LessEqual),
                 };
             }
+            LeafFuncCase::Intrinsic(intr) => {
+                return Some(first_ord::Expr::Intrinsic(intr, Box::new(arg.clone())));
+            }
             LeafFuncCase::ArrayOp(op, item_type) => {
                 return match op {
                     // TODO: optimize Item
@@ -908,6 +924,16 @@ impl<'a> Context<'a> {
                 let lowered_rep = self.lower_closure(rep);
                 let op_variant = self.case_variant(lowered_rep, &LeafFuncCase::ArithOp(*op));
                 first_ord::Expr::Ctor(self.mapping.map_closure_type(lowered_rep), op_variant, None)
+            }
+
+            special::Expr::Intrinsic(intr, rep) => {
+                let lowered_rep = self.lower_closure(rep);
+                let intr_variant = self.case_variant(lowered_rep, &LeafFuncCase::Intrinsic(*intr));
+                first_ord::Expr::Ctor(
+                    self.mapping.map_closure_type(lowered_rep),
+                    intr_variant,
+                    None,
+                )
             }
 
             special::Expr::ArrayOp(op, item_type, rep) => {
