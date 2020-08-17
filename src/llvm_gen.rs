@@ -1502,6 +1502,28 @@ fn gen_expr<'a, 'b>(
                     )
                     .into()
             }
+            Intrinsic::IntBitAnd => {
+                let lhs = builder
+                    .build_extract_value(locals[local_id].into_struct_value(), 0, "int_bit_and_lhs")
+                    .unwrap()
+                    .into_int_value();
+                let rhs = builder
+                    .build_extract_value(locals[local_id].into_struct_value(), 1, "int_bit_and_rhs")
+                    .unwrap()
+                    .into_int_value();
+                builder.build_and(lhs, rhs, "int_bit_and").into()
+            }
+            Intrinsic::IntBitOr => {
+                let lhs = builder
+                    .build_extract_value(locals[local_id].into_struct_value(), 0, "int_bit_or_lhs")
+                    .unwrap()
+                    .into_int_value();
+                let rhs = builder
+                    .build_extract_value(locals[local_id].into_struct_value(), 1, "int_bit_or_rhs")
+                    .unwrap()
+                    .into_int_value();
+                builder.build_or(lhs, rhs, "int_bit_or").into()
+            }
         },
         E::ArrayOp(rep, item_type, array_op) => match rep {
             constrain::RepChoice::OptimizedMut => {

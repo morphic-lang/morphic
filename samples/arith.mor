@@ -107,4 +107,7 @@ proc main(): () =
   // int_shift_right is a logical shift, not an arithmetic shift
   do test("int_shift_right negative", int_shift_right(-1, 1) = 9223372036854775807) then
 
+  do test("int_bit_and", int_bit_and(42, 98) = 34) then
+  do test("int_bit_or", int_bit_or(42, 98) = 106) then
+
   do output("Completed all tests\n")

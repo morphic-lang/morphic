@@ -48,6 +48,8 @@ define_intrinsic_names![
     (IntToByte, "int_to_byte"),
     (IntShiftLeft, "int_shift_left"),
     (IntShiftRight, "int_shift_right"),
+    (IntBitAnd, "int_bit_and"),
+    (IntBitOr, "int_bit_or"),
 ];
 
 // Signatures:
@@ -86,5 +88,7 @@ pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
         IntToByte => pure(int(), byte()),
         IntShiftLeft => pure(tuple!(int(), int()), int()),
         IntShiftRight => pure(tuple!(int(), int()), int()),
+        IntBitAnd => pure(tuple!(int(), int()), int()),
+        IntBitOr => pure(tuple!(int(), int()), int()),
     }
 }

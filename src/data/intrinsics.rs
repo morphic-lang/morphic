@@ -3,7 +3,7 @@ use crate::data::purity::Purity;
 
 // To add an arithmetic intrinsic:
 // 1. Add it to this file
-// 2. Add its user-facing name and type signature to src/intrinsics_config.rs
+// 2. Add its user-facing name and type signature to src/intrinsic_config.rs
 // 3. Add support for it in src/interpreter.rs
 // 4. Add support for it in src/llvm_gen.rs
 
@@ -17,6 +17,8 @@ pub enum Intrinsic {
     IntToByte,
     IntShiftLeft,
     IntShiftRight,
+    IntBitAnd,
+    IntBitOr,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
