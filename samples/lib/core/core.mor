@@ -15,3 +15,5 @@ module Io = file "io.mor"
 module Math = file "math.mor" with { Bool }
 
 module Control = file "control.mor"
+
+module Rand = file "rand.mor" with { Array, Math }

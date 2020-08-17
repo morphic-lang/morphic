@@ -10,6 +10,9 @@ mod(a: Int, b: Int): Int =
     rem(a, b)
   }
 
+int_bit_not(a: Int): Int =
+  -a - 1
+
 pow(a: Int, b: Int): Int =
   pow_rec(1, a, b)
 
