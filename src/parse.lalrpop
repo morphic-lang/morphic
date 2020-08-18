@@ -494,8 +494,28 @@ ArithExpr: syntax::Expr = {
   <ArithCompExpr>,
 };
 
-BlockExpr_: syntax::Expr = {
+PipeLeftExpr_: syntax::Expr = {
   <ArithExpr>,
+
+  <left: PipeLeftExpr> "<|" <right: ArithExpr> => syntax::Expr::PipeLeft(Box::new(left), Box::new(right)),
+}
+
+PipeLeftExpr: syntax::Expr = {
+  <Spanned<PipeLeftExpr_>>,
+};
+
+PipeRightExpr_: syntax::Expr = {
+  <PipeLeftExpr>,
+
+  <left: PipeLeftExpr> "|>" <right: PipeRightExpr> => syntax::Expr::PipeRight(Box::new(left), Box::new(right)),
+}
+
+PipeRightExpr: syntax::Expr = {
+  <Spanned<PipeRightExpr_>>,
+}
+
+BlockExpr_: syntax::Expr = {
+  <PipeRightExpr>,
 
   "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
     if let syntax::Expr::Span(left, right, body) = body {
@@ -547,28 +567,8 @@ LamExpr: syntax::Expr = {
   <Spanned<LamExpr_>>,
 };
 
-PipeLeftExpr_: syntax::Expr = {
-  <LamExpr>,
-
-  <left: LamExpr> "<|" <right: PipeLeftExpr> => syntax::Expr::PipeLeft(Box::new(left), Box::new(right)),
-}
-
-PipeLeftExpr: syntax::Expr = {
-  <Spanned<PipeLeftExpr_>>,
-};
-
-PipeRightExpr_: syntax::Expr = {
-  <PipeLeftExpr>,
-
-  <left: PipeRightExpr> "|>" <right: PipeLeftExpr> => syntax::Expr::PipeRight(Box::new(left), Box::new(right)),
-}
-
-PipeRightExpr: syntax::Expr = {
-  <Spanned<PipeRightExpr_>>,
-}
-
 Expr: syntax::Expr = {
-  <PipeRightExpr>,
+  <LamExpr>,
 };
 
 Exprs_: syntax::Expr = {
