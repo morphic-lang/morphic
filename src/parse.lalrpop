@@ -48,6 +48,8 @@ extern {
     "\\" => lex::Token::BackSlash,
     "_" => lex::Token::Underscore,
     "." => lex::Token::Dot,
+    "<|" => lex::Token::PipeLeft,
+    "|>" => lex::Token::PipeRight,
 
     "+&" => lex::Token::AddAmp,
     "-&" => lex::Token::SubAmp,
@@ -426,7 +428,6 @@ PrefixExpr: syntax::Expr = {
   <Spanned<PrefixExpr_>>,
 };
 
-
 ArithProdExpr_: syntax::Expr = {
   <PrefixExpr>,
 
@@ -493,8 +494,28 @@ ArithExpr: syntax::Expr = {
   <ArithCompExpr>,
 };
 
-BlockExpr_: syntax::Expr = {
+PipeLeftExpr_: syntax::Expr = {
   <ArithExpr>,
+
+  <left: PipeLeftExpr> "<|" <right: ArithExpr> => syntax::Expr::PipeLeft(Box::new(left), Box::new(right)),
+}
+
+PipeLeftExpr: syntax::Expr = {
+  <Spanned<PipeLeftExpr_>>,
+};
+
+PipeRightExpr_: syntax::Expr = {
+  <PipeLeftExpr>,
+
+  <left: PipeLeftExpr> "|>" <right: PipeRightExpr> => syntax::Expr::PipeRight(Box::new(left), Box::new(right)),
+}
+
+PipeRightExpr: syntax::Expr = {
+  <Spanned<PipeRightExpr_>>,
+}
+
+BlockExpr_: syntax::Expr = {
+  <PipeRightExpr>,
 
   "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
     if let syntax::Expr::Span(left, right, body) = body {
@@ -545,7 +566,6 @@ LamExpr_: syntax::Expr = {
 LamExpr: syntax::Expr = {
   <Spanned<LamExpr_>>,
 };
-
 
 Expr: syntax::Expr = {
   <LamExpr>,

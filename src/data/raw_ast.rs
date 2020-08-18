@@ -81,6 +81,9 @@ pub enum Expr {
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     LetMany(VecDeque<(Pattern, Expr)>, Box<Expr>),
 
+    PipeLeft(Box<Expr>, Box<Expr>),
+    PipeRight(Box<Expr>, Box<Expr>),
+
     ArrayLit(Vec<Expr>),
     ByteLit(u8),
     IntLit(i64),

@@ -202,7 +202,6 @@ fn compile(
 ) -> Result<data::low_ast::Program, Error> {
     let resolved = resolve::resolve_program(files, src_path, profile_syms)
         .map_err(ErrorKind::ResolveFailed)?;
-
     // Check obvious errors and infer types
     check_purity::check_purity(&resolved).map_err(ErrorKind::PurityCheckFailed)?;
     let typed = type_infer::type_infer(resolved).map_err(ErrorKind::TypeInferFailed)?;

@@ -21,6 +21,7 @@ use crate::util::id_vec::IdVec;
 pub enum ErrorKind {
     ReadFailed(PathBuf, io::Error),
     ParseFailed(ParseError<usize, lex::Token, lex::Error>),
+    PipePrecedenceError,
     ParseProfileSymFailed(cli::SymbolName),
     ResolveProfileSymFailed(cli::SymbolName),
     ProfileSymNotFunction,
@@ -82,6 +83,12 @@ impl Error {
                 // Handled above
                 unreachable!()
             }
+            PipePrecedenceError => (
+                "Pipe Precedence Error",
+                "<| and |> have to same precedence. Try using parentheses to disambiguate your \
+                 expression."
+                    .to_owned(),
+            ),
             ParseProfileSymFailed(sym_name) => (
                 "Incorrect Syntax in '--profile' Argument",
                 format!(
@@ -279,6 +286,75 @@ pub struct GlobalContext {
     type_symbols: IdVec<res::CustomTypeId, res::TypeSymbols>,
     vals: IdVec<res::CustomGlobalId, Option<res::ValDef>>,
     val_symbols: IdVec<res::CustomGlobalId, Option<res::ValSymbols>>,
+}
+
+#[derive(Clone, Debug)]
+struct LocalScope {
+    names: Vec<raw::ValName>,
+    next_id: res::LocalId,
+}
+
+impl LocalScope {
+    fn new(next_id: res::LocalId) -> Self {
+        Self {
+            names: Vec::new(),
+            next_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LocalContext {
+    scopes: Vec<LocalScope>,
+    locals: BTreeMap<raw::ValName, res::LocalId>,
+}
+
+impl LocalContext {
+    fn new() -> Self {
+        Self {
+            scopes: vec![LocalScope::new(res::LocalId(0))],
+            locals: BTreeMap::new(),
+        }
+    }
+
+    fn get(&self, name: &raw::ValName) -> Option<res::LocalId> {
+        self.locals.get(name).cloned()
+    }
+
+    fn insert(&mut self, name: raw::ValName) -> Result<(), Error> {
+        let local_id = self.next_local_id();
+        insert_unique(&mut self.locals, name.clone(), local_id)
+            .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()))?;
+
+        let scope = self.scopes.last_mut().unwrap();
+        scope.names.push(name);
+        scope.next_id.0 += 1;
+
+        Ok(())
+    }
+
+    fn insert_anon(&mut self) {
+        self.scopes.last_mut().unwrap().next_id.0 += 1;
+    }
+
+    fn next_local_id(&self) -> res::LocalId {
+        self.scopes.last().unwrap().next_id
+    }
+
+    fn new_scope<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.scopes.push(LocalScope::new(self.next_local_id()));
+        let ret = f(self);
+
+        let scope = self.scopes.pop().unwrap();
+        for name in &scope.names {
+            self.locals.remove(name);
+        }
+
+        ret
+    }
 }
 
 pub fn resolve_program(
@@ -542,7 +618,7 @@ fn resolve_mod(
         let (res_scheme, type_param_names) =
             resolve_scheme(&ctx.mods, &mod_map, &type_).map_err(locate_path(file_path))?;
 
-        let res_body = resolve_expr(&ctx.mods, &mod_map, &mut BTreeMap::new(), &body)
+        let res_body = resolve_expr(&ctx.mods, &mod_map, &mut LocalContext::new(), &body)
             .map_err(locate_path(file_path))?;
 
         debug_assert!(ctx.vals[val_id].is_none());
@@ -825,16 +901,16 @@ fn resolve_ctor_with_builtins(
     Err(ErrorKind::CtorNotFound(name.0.clone()).into())
 }
 
-// Invariant: always leaves `local_map` exactly how it found it!
+// Invariant: always leaves `local_ctx` exactly how it found it!
 fn resolve_expr(
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
-    local_map: &mut BTreeMap<raw::ValName, res::LocalId>,
+    local_ctx: &mut LocalContext,
     expr: &raw::Expr,
 ) -> Result<res::Expr, Error> {
     match expr {
         raw::Expr::Var(name) => {
-            if let Some(&local_id) = local_map.get(name) {
+            if let Some(local_id) = local_ctx.get(name) {
                 Ok(res::Expr::Local(local_id))
             } else if let Some(&global_id) = local_mod_map.vals.get(name) {
                 Ok(res::Expr::Global(global_id))
@@ -863,29 +939,29 @@ fn resolve_expr(
         raw::Expr::Tuple(items) => Ok(res::Expr::Tuple(
             items
                 .iter()
-                .map(|item| resolve_expr(global_mods, local_mod_map, local_map, item))
+                .map(|item| resolve_expr(global_mods, local_mod_map, local_ctx, item))
                 .collect::<Result<_, _>>()?,
         )),
 
-        raw::Expr::Lam(purity, pattern, body) => with_pattern(
-            global_mods,
-            local_mod_map,
-            local_map,
-            pattern,
-            |res_pattern, sub_local_map| {
-                let res_body = resolve_expr(global_mods, local_mod_map, sub_local_map, body)?;
-                Ok(res::Expr::Lam(
-                    *purity,
-                    res_pattern,
-                    Box::new(res_body),
-                    None,
-                ))
-            },
-        ),
+        raw::Expr::Lam(purity, pattern, body) => local_ctx.new_scope(|local_ctx| {
+            let mut vars = Vec::new();
+            let res_pattern = resolve_pattern(global_mods, local_mod_map, pattern, &mut vars)?;
+            for var in vars {
+                local_ctx.insert(var.clone())?;
+            }
+
+            let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, body)?;
+            Ok(res::Expr::Lam(
+                *purity,
+                res_pattern,
+                Box::new(res_body),
+                None,
+            ))
+        }),
 
         raw::Expr::App(purity, func, arg) => {
-            let res_func = resolve_expr(global_mods, local_mod_map, local_map, &*func)?;
-            let res_arg = resolve_expr(global_mods, local_mod_map, local_map, &*arg)?;
+            let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, &*func)?;
+            let res_arg = resolve_expr(global_mods, local_mod_map, local_ctx, &*arg)?;
             Ok(res::Expr::App(
                 *purity,
                 Box::new(res_func),
@@ -894,34 +970,34 @@ fn resolve_expr(
         }
 
         raw::Expr::Match(discrim, cases) => {
-            let res_discrim = resolve_expr(global_mods, local_mod_map, local_map, discrim)?;
+            let res_discrim = resolve_expr(global_mods, local_mod_map, local_ctx, discrim)?;
 
             let res_cases = cases
                 .iter()
                 .map(|(pattern, body)| {
-                    with_pattern(
-                        global_mods,
-                        local_mod_map,
-                        local_map,
-                        pattern,
-                        |res_pattern, sub_local_map| {
-                            let res_body =
-                                resolve_expr(global_mods, local_mod_map, sub_local_map, body)?;
-                            Ok((res_pattern, res_body))
-                        },
-                    )
+                    local_ctx.new_scope(|local_ctx| {
+                        let mut vars = Vec::new();
+                        let res_pattern =
+                            resolve_pattern(global_mods, local_mod_map, pattern, &mut vars)?;
+                        for var in vars {
+                            local_ctx.insert(var.clone())?;
+                        }
+
+                        let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, body)?;
+                        Ok((res_pattern, res_body))
+                    })
                 })
-                .collect::<Result<_, _>>()?;
+                .collect::<Result<_, Error>>()?;
 
             Ok(res::Expr::Match(Box::new(res_discrim), res_cases))
         }
 
-        raw::Expr::LetMany(bindings, body) => {
+        raw::Expr::LetMany(bindings, body) => local_ctx.new_scope(|local_ctx| {
             let mut vars = Vec::new();
             let mut new_bindings = Vec::new();
 
             for (pattern, expr) in bindings {
-                let res_expr = resolve_expr(global_mods, local_mod_map, local_map, expr)?;
+                let res_expr = resolve_expr(global_mods, local_mod_map, local_ctx, expr)?;
 
                 let mut current_vars = Vec::new();
                 let res_pattern =
@@ -929,25 +1005,36 @@ fn resolve_expr(
                 vars.extend(current_vars.clone());
 
                 for var in &current_vars {
-                    insert_unique(local_map, var.clone(), res::LocalId(local_map.len()))
-                        .map_err(|()| ErrorKind::DuplicateVarName(var.0.clone()))?;
+                    local_ctx.insert(var.clone())?;
                 }
                 new_bindings.push((res_pattern, res_expr));
             }
 
-            let res_body = resolve_expr(global_mods, local_mod_map, local_map, &*body)?;
-
-            for var in &vars {
-                local_map.remove(var);
-            }
+            let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, &*body)?;
 
             Ok(res::Expr::LetMany(new_bindings, Box::new(res_body)))
+        }),
+
+        raw::Expr::PipeLeft(left, right) => {
+            todo!();
+        }
+
+        raw::Expr::PipeRight(left, right) => {
+            todo!();
+            // error if left/right is a PipeLeft
+            // if let raw::Expr::Span(_, _, raw::Expr::PipeLeft(_)) = left {
+            //     Err(ErrorKind::PipePrecedence)
+            // } else if let raw::Expr::Span(_, _, raw::Expr::PipeLeft(_)) = right {
+            //     Err(ErrorKind::PipePrecedence)
+            // } else {
+            //     todo!();
+            // }
         }
 
         raw::Expr::ArrayLit(items) => Ok(res::Expr::ArrayLit(
             items
                 .iter()
-                .map(|item| resolve_expr(global_mods, local_mod_map, local_map, item))
+                .map(|item| resolve_expr(global_mods, local_mod_map, local_ctx, item))
                 .collect::<Result<_, _>>()?,
         )),
 
@@ -969,7 +1056,7 @@ fn resolve_expr(
             *lo,
             *hi,
             Box::new(
-                resolve_expr(global_mods, local_mod_map, local_map, body)
+                resolve_expr(global_mods, local_mod_map, local_ctx, body)
                     .map_err(locate_span(*lo, *hi))?,
             ),
         )),
@@ -1030,36 +1117,6 @@ fn resolve_pattern(
             ),
         )),
     }
-}
-
-fn with_pattern<R, F>(
-    global_mods: &IdVec<res::ModId, ModMap>,
-    local_mod_map: &ModMap,
-    local_map: &mut BTreeMap<raw::ValName, res::LocalId>,
-    pattern: &raw::Pattern,
-    body: F,
-) -> Result<R, Error>
-where
-    F: for<'a> FnOnce(
-        res::Pattern,
-        &'a mut BTreeMap<raw::ValName, res::LocalId>,
-    ) -> Result<R, Error>,
-{
-    let mut vars = Vec::new();
-    let res_pattern = resolve_pattern(global_mods, local_mod_map, pattern, &mut vars)?;
-
-    for var in &vars {
-        insert_unique(local_map, var.clone(), res::LocalId(local_map.len()))
-            .map_err(|()| ErrorKind::DuplicateVarName(var.0.clone()))?;
-    }
-
-    let result = body(res_pattern, local_map)?;
-
-    for var in &vars {
-        local_map.remove(var);
-    }
-
-    Ok(result)
 }
 
 fn find_scheme_params(

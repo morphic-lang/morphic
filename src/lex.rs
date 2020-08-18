@@ -44,6 +44,8 @@ pub enum Token {
     BackSlash,
     Underscore,
     Dot,
+    PipeLeft,
+    PipeRight,
 
     AddAmp,
     SubAmp,
@@ -136,6 +138,8 @@ impl fmt::Display for Token {
             Token::LteDot => write!(f, "<=."),
             Token::GtDot => write!(f, ">."),
             Token::GteDot => write!(f, ">=."),
+            Token::PipeLeft => write!(f, "<|"),
+            Token::PipeRight => write!(f, "|>"),
         }
     }
 }
@@ -435,6 +439,8 @@ impl<'a> Iterator for Lexer<'a> {
                 ("\\", Token::BackSlash),
                 ("_", Token::Underscore),
                 (".", Token::Dot),
+                ("<|", Token::PipeLeft),
+                ("|>", Token::PipeRight),
                 // Byte arithmetic
                 ("+&", Token::AddAmp),
                 ("-&", Token::SubAmp),
