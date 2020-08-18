@@ -87,7 +87,7 @@ impl Error {
             }
             PipePrecedence => (
                 "Pipe Precedence Error",
-                "<| and |> have to same precedence. Try using parentheses to disambiguate your \
+                "<| and |> have the same precedence. Try using parentheses to disambiguate your \
                  expression."
                     .to_owned(),
             ),
@@ -1049,6 +1049,11 @@ fn resolve_expr(
                         _ => unreachable!("Function argument should be a tuple"),
                     }
                 }
+                raw::Expr::Lam(purity, _, _) => {
+                    // We make the right side an application, reducing to the previous case
+                    let app = raw::Expr::PipeLeft(Box::new(raw::Expr::App(purity, left.clone(), Box::new(raw::Expr::Tuple(vec![])))), right.clone());
+                    resolve_expr(global_mods, local_mod_map, local_ctx, &app)
+                }
                 _ => Err(ErrorKind::PipeNotAppLeft.into()),
             }
         }
@@ -1098,6 +1103,11 @@ fn resolve_expr(
                         }),
                         _ => unreachable!("Function argument should be a tuple"),
                     }
+                }
+                raw::Expr::Lam(purity, _, _) => {
+                    // We make the right side an application, reducing to the previous case
+                    let app = raw::Expr::PipeRight(left.clone(), Box::new(raw::Expr::App(purity, right.clone(), Box::new(raw::Expr::Tuple(vec![])))));
+                    resolve_expr(global_mods, local_mod_map, local_ctx, &app)
                 }
                 _ => Err(ErrorKind::PipeNotAppRight.into()),
             }
