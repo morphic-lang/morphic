@@ -16,11 +16,11 @@ pub mod wasm {
 
     pub const INDEX_HTML: &'static [u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tal/wasm/dist/index.html"
+        "/src/tal/wasm/dist/index.html"
     ));
     pub const WASM_LOADER_JS: &'static [u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tal/wasm/dist/wasm_loader.js"
+        "/src/tal/wasm/dist/wasm_loader.js"
     ));
 }
 

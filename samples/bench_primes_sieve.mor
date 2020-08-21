@@ -1,4 +1,4 @@
-module Core = file "lib/core/core.mor"
+module Core = file "../morphic/stdlib/core/core.mor"
   expose {
     module Iter expose { Iter },
     module Array,
@@ -7,7 +7,7 @@ module Core = file "lib/core/core.mor"
     module Option expose { Option { Some, None } },
   }
 
-module Bench = file "lib/bench_common.mor" with { Core }
+module Bench = file "bench_common.mor" with { Core }
   expose { repeat }
 
 type Primality {

@@ -1,5 +1,5 @@
 [package]
-name = "find_clang"
+name = "lib_find_clang"
 version = "0.1.0"
 authors = ["William Brandon", "Wilson Berkow", "Frank Dai", "Benjamin Driscoll"]
 description = "Locate system clang install"

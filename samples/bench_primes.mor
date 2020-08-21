@@ -1,4 +1,4 @@
-module Core = file "lib/core/core.mor"
+module Core = file "../morphic/stdlib/core/core.mor"
   expose {
     module Io expose { writeln },
     module String expose { string_to_nat, int_to_string },
@@ -6,7 +6,7 @@ module Core = file "lib/core/core.mor"
     module Bool expose { not },
   }
 
-module Bench = file "lib/bench_common.mor" with { Core }
+module Bench = file "bench_common.mor" with { Core }
   expose { repeat }
 
 // Trial division is inefficient, but it's a simple test of the performance of basic arithmetic and

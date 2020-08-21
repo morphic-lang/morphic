@@ -1,4 +1,4 @@
-use find_clang::find_clang;
+use lib_find_clang::find_clang;
 use morphic::build;
 use morphic::cli;
 use morphic::file_cache::FileCache;
@@ -305,7 +305,7 @@ fn sample_primes_sieve(c: &mut Criterion) {
     g.sample_size(20);
 
     let stdin = "10000\n";
-    let stdout = include_str!("../../samples/expected-output/primes_10000.txt");
+    let stdout = include_str!("../../samples/expected_output/primes_10000.txt");
 
     bench_sample(
         &mut g,

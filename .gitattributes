@@ -1,2 +1,2 @@
-/tal/wasm/src/dlmalloc.inc linguist-vendored
-/samples/expected-output/* linguist-generated
+/morphic/src/tal/wasm/src/dlmalloc.inc linguist-vendored
+/samples/expected_output/* linguist-generated

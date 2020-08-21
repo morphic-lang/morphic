@@ -1,4 +1,4 @@
-module Core = file "lib/core/core.mor"
+module Core = file "../morphic/stdlib/core/core.mor"
   expose {
     module Io expose { writeln },
     module String expose { string_to_nat, int_to_string },
@@ -7,7 +7,7 @@ module Core = file "lib/core/core.mor"
     module Iter expose { Iter },
   }
 
-module Bench = file "lib/bench_common.mor" with { Core }
+module Bench = file "bench_common.mor" with { Core }
   expose { repeat }
 
 is_prime(n: Int): Bool =

@@ -1,4 +1,4 @@
-use find_clang::find_clang;
+use lib_find_clang::find_clang;
 use std::path::Path;
 use std::process::Command;
 use std::{env, fs};
@@ -18,9 +18,9 @@ fn compile_tal() {
         fs::create_dir(&native_out_dir).unwrap();
     }
 
-    let native_tal_c = fs::canonicalize("./tal/native/tal.c").unwrap();
-    let wasm_tal_c = fs::canonicalize("./tal/wasm/src/tal.c").unwrap();
-    let wasm_malloc_c = fs::canonicalize("./tal/wasm/src/malloc.c").unwrap();
+    let native_tal_c = fs::canonicalize("./src/tal/native/tal.c").unwrap();
+    let wasm_tal_c = fs::canonicalize("./src/tal/wasm/src/tal.c").unwrap();
+    let wasm_malloc_c = fs::canonicalize("./src/tal/wasm/src/malloc.c").unwrap();
 
     // Change the CWD so that clang outputs artifacts to the right location.
     env::set_current_dir(native_out_dir).unwrap();
@@ -64,7 +64,7 @@ fn main() {
         .unwrap();
 
     println!("cargo:rerun-if-changed=build.rs");
-    for entry in WalkDir::new("tal") {
+    for entry in WalkDir::new("./src/tal") {
         let entry = entry.unwrap();
         println!("cargo:rerun-if-changed={}", entry.path().display());
     }

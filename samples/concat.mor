@@ -1,4 +1,4 @@
-module Core = file "lib/core/core.mor"
+module Core = file "../morphic/stdlib/core/core.mor"
   expose {
     module Array expose { concat },
   }
