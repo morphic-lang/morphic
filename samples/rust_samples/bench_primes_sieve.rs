@@ -4,13 +4,18 @@ use common::{read_line, repeat, write_report, ProfileInfo};
 
 static SIEVE_INFO: ProfileInfo = ProfileInfo::new();
 
+enum Wrapper {
+    Value(u64),
+    Dummy(u64, u64, u64),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Primality {
     Prime,
     Composite,
 }
 
-fn sieve(limit: u64) -> Vec<Primality> {
+fn sieve(limit: Wrapper) -> Vec<Primality> {
     SIEVE_INFO.record_call(|| {
         let mut arr = vec![Primality::Prime; limit as usize];
         arr[0] = Primality::Composite;

@@ -68,6 +68,7 @@ mod tail_call_elim;
 
 mod lower_structures;
 
+//mod fast_interpreter;
 mod interpreter;
 
 mod llvm_gen;

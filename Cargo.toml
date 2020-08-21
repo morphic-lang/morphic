@@ -27,6 +27,8 @@ inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "41b9624", featur
 ansi_term = "0.12.1"
 textwrap = "0.11.0"
 json = "0.12.4" # used for string escaping in profile report generation
+generational-arena = "0.2.8" # used for simulating the heap in interpreter
+smallvec = "1.4.1"
 
 # Error handling
 anyhow = "1.0.28"
