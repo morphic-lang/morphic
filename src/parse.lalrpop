@@ -573,11 +573,7 @@ Expr: syntax::Expr = {
 
 Exprs_: syntax::Expr = {
   <exprs: CommaSep<Expr>> => {
-    if exprs.len() == 1 {
-      exprs.into_iter().next().unwrap()
-    } else {
-      syntax::Expr::Tuple(exprs)
-    }
+    syntax::Expr::Tuple(exprs)
   },
 };
 
