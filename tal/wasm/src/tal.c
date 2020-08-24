@@ -69,10 +69,6 @@ int flush(void) {
   return 0;
 }
 
-int64_t rand_int64(void) {
-  return morphic_js_rand_int64();
-}
-
 static _Noreturn void prof_not_supported_error(void) {
   print_error("Profiling on the webassembly target is not yet supported");
   morphic_js_exit(1);

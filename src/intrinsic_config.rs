@@ -51,7 +51,6 @@ define_intrinsic_names![
     (IntBitAnd, "int_bit_and"),
     (IntBitOr, "int_bit_or"),
     (IntBitXor, "int_bit_xor"),
-    (RandInt, "rand_int"),
 ];
 
 // Signatures:
@@ -101,6 +100,5 @@ pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
         IntBitAnd => pure(tuple!(int(), int()), int()),
         IntBitOr => pure(tuple!(int(), int()), int()),
         IntBitXor => pure(tuple!(int(), int()), int()),
-        RandInt => impure(tuple!(), int()),
     }
 }

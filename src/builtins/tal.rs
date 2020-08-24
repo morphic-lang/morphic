@@ -35,8 +35,6 @@ pub struct Tal<'a> {
     pub realloc: FunctionValue<'a>,
     pub free: FunctionValue<'a>,
 
-    pub rand_int64: FunctionValue<'a>,
-
     // Modified versions of libc functions for wasm portability.
     pub print: FunctionValue<'a>,
     pub print_error: FunctionValue<'a>,
@@ -96,12 +94,6 @@ impl<'a> Tal<'a> {
         let free = module.add_function(
             "free",
             void_t.fn_type(&[i8_ptr_t.into()], false),
-            Some(Linkage::External),
-        );
-
-        let rand_int64 = module.add_function(
-            "rand_int64",
-            i64_t.fn_type(&[], false),
             Some(Linkage::External),
         );
 
@@ -170,8 +162,6 @@ impl<'a> Tal<'a> {
             calloc,
             realloc,
             free,
-
-            rand_int64,
 
             print,
             print_error,

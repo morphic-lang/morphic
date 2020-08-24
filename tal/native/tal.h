@@ -13,7 +13,6 @@ void print_error(const char *str, ...);
 void write(const void *ptr, size_t size, size_t count);
 void write_error(const void *ptr, size_t size, size_t count);
 int flush(void);
-int64_t rand_int64(void);
 
 /* Profiling primitives: */
 uint64_t prof_clock_res_nanos(void);

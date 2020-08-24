@@ -3,8 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <sys/syscall.h>
-#include <linux/random.h>
 
 void print(const char *str, ...) {
     va_list arg;
@@ -32,12 +30,6 @@ void write_error(const void *ptr, size_t size, size_t count) {
 
 int flush(void) {
     return fflush(stdout);
-}
-
-int64_t rand_int64(void) {
-    int64_t i;
-    syscall(SYS_getrandom, &i, sizeof(i), 0);
-    return i;
 }
 
 #define PROF_CLOCK_ID (CLOCK_MONOTONIC)

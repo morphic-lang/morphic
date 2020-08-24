@@ -1459,16 +1459,6 @@ fn interpret_expr(
                 heap.add(Value::Num(NumValue::Int(left ^ right)))
             }
 
-            Expr::Intrinsic(Intrinsic::RandInt, local_id) => {
-                let args = unwrap_tuple(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("rand_int".into()),
-                );
-                assert_eq!(args.len(), 0);
-                heap.add(Value::Num(NumValue::Int(rand::random())))
-            }
-
             Expr::ArrayOp(rep, _item_type, ArrayOp::New()) => {
                 heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, vec![]))
             }

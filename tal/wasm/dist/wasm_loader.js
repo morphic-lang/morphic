@@ -62,13 +62,6 @@
             };
         })();
 
-        function rand() {
-            const POW = Math.pow(2, 63);
-            const MAX = POW - 1;
-            const MIN = -POW;
-            return Math.floor(Math.random() * (MAX - MIN) + MIN);
-        }
-
         /* `morphic_js_memory_size` and `morphic_js_memory_grow` are provided
            to the tal implementation via JavaScript rather than WebAssembly
            intrinsics to avoid needing to compile any WAT files. */
@@ -76,7 +69,6 @@
             env: {
                 morphic_js_exit: code => { throw new Error('exit(' + code + ')') },
                 morphic_js_get_char: getChar,
-                morphic_js_rand: rand,
                 morphic_js_print: print,
                 morphic_js_print_error: printError,
                 morphic_js_memory_size: () => memory.buffer.byteLength,

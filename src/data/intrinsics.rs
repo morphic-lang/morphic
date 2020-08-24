@@ -20,7 +20,6 @@ pub enum Intrinsic {
     IntBitAnd,
     IntBitOr,
     IntBitXor,
-    RandInt,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
