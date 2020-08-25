@@ -108,6 +108,11 @@ sample! { nested "samples/nested.mor";
     ];
 }
 
+sample! { pipe "samples/pipe.mor";
+    stdin = "";
+    stdout = "Completed all tests\n";
+}
+
 sample! { mutual_tail_rec "samples/mutual_tail_rec.mor";
     stdin = "";
     stdout = lines! [

@@ -1,8 +1,10 @@
+use crate::data::purity::Purity;
 use lalrpop_util::ParseError;
 use lazy_static::lazy_static;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
+use std::iter;
 use std::path::{Path, PathBuf};
 
 use crate::cli;
@@ -21,7 +23,6 @@ use crate::util::id_vec::IdVec;
 pub enum ErrorKind {
     ReadFailed(PathBuf, io::Error),
     ParseFailed(ParseError<usize, lex::Token, lex::Error>),
-    PipePrecedence,
     PipeNotAppLeft,
     PipeNotAppRight,
     ParseProfileSymFailed(cli::SymbolName),
@@ -85,12 +86,6 @@ impl Error {
                 // Handled above
                 unreachable!()
             }
-            PipePrecedence => (
-                "Pipe Precedence Error",
-                "<| and |> have to same precedence. Try using parentheses to disambiguate your \
-                 expression."
-                    .to_owned(),
-            ),
             PipeNotAppLeft => ("Invalid Left Pipe Syntax", "".to_owned()),
             PipeNotAppRight => ("Invalid Right Pipe Syntax", "".to_owned()),
             ParseProfileSymFailed(sym_name) => (
@@ -908,6 +903,15 @@ fn resolve_ctor_with_builtins(
     Err(ErrorKind::CtorNotFound(name.0.clone()).into())
 }
 
+fn args_to_expr(args_lo: usize, args_hi: usize, args: Vec<res::Expr>) -> res::Expr {
+    let args_expr = if args.len() == 1 {
+        args.into_iter().next().unwrap()
+    } else {
+        res::Expr::Tuple(args)
+    };
+    res::Expr::Span(args_lo, args_hi, Box::new(args_expr))
+}
+
 // Invariant: always leaves `local_ctx` exactly how it found it!
 fn resolve_expr(
     global_mods: &IdVec<res::ModId, ModMap>,
@@ -966,12 +970,27 @@ fn resolve_expr(
             ))
         }),
 
-        raw::Expr::App(purity, func, arg) => {
+        raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
             let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, &*func)?;
-            let res_arg = resolve_expr(global_mods, local_mod_map, local_ctx, &*arg)?;
+            let res_arg = args_to_expr(
+                *args_lo,
+                *args_hi,
+                args.iter()
+                    .map(|arg| resolve_expr(global_mods, local_mod_map, local_ctx, arg))
+                    .collect::<Result<_, _>>()?,
+            );
             Ok(res::Expr::App(
                 *purity,
                 Box::new(res_func),
+                Box::new(res_arg),
+            ))
+        }
+
+        raw::Expr::OpApp(op, arg) => {
+            let res_arg = resolve_expr(global_mods, local_mod_map, local_ctx, arg)?;
+            Ok(res::Expr::App(
+                Purity::Pure,
+                Box::new(res::Expr::Global(res::GlobalId::ArithOp(*op))),
                 Box::new(res_arg),
             ))
         }
@@ -1025,29 +1044,23 @@ fn resolve_expr(
         raw::Expr::PipeLeft(left, right) => {
             // `f(a) <| b` gets converted to `f(a, b)`
 
-            let (app, _) = unspan((**left).clone());
+            let (app, respan_app) = unspan(&**left);
             match app {
-                raw::Expr::App(purity, func, arg) => {
-                    let (arg, respan_arg) = unspan(*arg);
-                    match arg {
-                        raw::Expr::Tuple(mut args) => {
-                            args.push((**right).clone());
-                            let resolved_func =
-                                resolve_expr(global_mods, local_mod_map, local_ctx, &*func)?;
-                            let resolved_args = resolve_expr(
-                                global_mods,
-                                local_mod_map,
-                                local_ctx,
-                                &raw::Expr::Tuple(args),
-                            )?;
-                            Ok(res::Expr::App(
-                                purity,
-                                Box::new(resolved_func),
-                                Box::new(respan_arg(resolved_args)),
-                            ))
-                        }
-                        _ => unreachable!("Function argument should be a tuple"),
-                    }
+                raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
+                    let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, func)?;
+                    let res_arg = args_to_expr(
+                        *args_lo,
+                        *args_hi,
+                        args.iter()
+                            .chain(iter::once(&**right))
+                            .map(|arg| resolve_expr(global_mods, local_mod_map, local_ctx, arg))
+                            .collect::<Result<_, _>>()?,
+                    );
+                    Ok(respan_app(res::Expr::App(
+                        *purity,
+                        Box::new(res_func),
+                        Box::new(res_arg),
+                    )))
                 }
                 _ => Err(ErrorKind::PipeNotAppLeft.into()),
             }
@@ -1056,48 +1069,38 @@ fn resolve_expr(
         raw::Expr::PipeRight(left, right) => {
             // `a |> f(b)` gets converted to `let tmp = a in f(tmp, b)`
 
-            let (app, _) = unspan((**right).clone());
+            let (app, respan_app) = unspan(&**right);
             match app {
-                raw::Expr::App(purity, func, arg) => {
-                    let (arg, respan_arg) = unspan(*arg);
-                    match arg {
-                        raw::Expr::Tuple(args) => local_ctx.new_scope(|local_ctx| {
-                            let (left, respan_left) = unspan((**left).clone());
-                            if let raw::Expr::PipeLeft(_, _) = left {
-                                return Err(ErrorKind::PipePrecedence.into());
-                            }
+                raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
+                    local_ctx.new_scope(|local_ctx| {
+                        let res_left = resolve_expr(global_mods, local_mod_map, local_ctx, left)?;
 
-                            let left_resolved =
-                                resolve_expr(global_mods, local_mod_map, local_ctx, &left)?;
-                            let anon_var = res::Expr::Local(local_ctx.insert_anon());
-                            let binding = vec![(res::Pattern::Var, respan_left(left_resolved))];
+                        let anon_var = res::Expr::Local(local_ctx.insert_anon());
+                        let binding = vec![(res::Pattern::Var, res_left)];
 
-                            let (func, respan_func) = unspan(*func);
-                            let func_resolved =
-                                resolve_expr(global_mods, local_mod_map, local_ctx, &func)?;
+                        let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, func)?;
 
-                            let args_resolved = resolve_expr(
+                        let mut res_args = vec![anon_var];
+                        for arg in args {
+                            res_args.push(resolve_expr(
                                 global_mods,
                                 local_mod_map,
                                 local_ctx,
-                                &raw::Expr::Tuple(args),
-                            )?;
-                            if let res::Expr::Tuple(mut args) = args_resolved {
-                                args.insert(0, anon_var);
-                                Ok(res::Expr::LetMany(
-                                    binding,
-                                    Box::new(res::Expr::App(
-                                        purity,
-                                        Box::new(respan_func(func_resolved)),
-                                        Box::new(respan_arg(res::Expr::Tuple(args))),
-                                    )),
-                                ))
-                            } else {
-                                unreachable!("We just wrapped a tuple, we should get a tuple");
-                            }
-                        }),
-                        _ => unreachable!("Function argument should be a tuple"),
-                    }
+                                arg,
+                            )?);
+                        }
+
+                        let res_app_arg = args_to_expr(*args_lo, *args_hi, res_args);
+
+                        Ok(res::Expr::LetMany(
+                            binding,
+                            Box::new(respan_app(res::Expr::App(
+                                *purity,
+                                Box::new(res_func),
+                                Box::new(res_app_arg),
+                            ))),
+                        ))
+                    })
                 }
                 _ => Err(ErrorKind::PipeNotAppRight.into()),
             }
@@ -1346,10 +1349,12 @@ fn sibling_path_from(self_path: &Path, components: Vec<String>) -> Result<PathBu
     Ok(result)
 }
 
-fn unspan(expr: raw::Expr) -> (raw::Expr, Box<dyn Fn(res::Expr) -> res::Expr>) {
+fn unspan<'a>(expr: &'a raw::Expr) -> (&'a raw::Expr, Box<dyn Fn(res::Expr) -> res::Expr>) {
     if let raw::Expr::Span(lo, hi, inner_expr) = expr {
+        let lo = *lo;
+        let hi = *hi;
         (
-            *inner_expr,
+            inner_expr,
             Box::new(move |x| res::Expr::Span(lo, hi, Box::new(x))),
         )
     } else {

@@ -838,11 +838,6 @@ fn infer_expr(
         }
 
         res::Expr::Tuple(items) => {
-            // Unwrap one element tuples
-            if items.len() == 1 {
-                return infer_expr(program, ctx, scope, expected, &items[0]);
-            }
-
             let item_vars: Vec<TypeVar> = (0..items.len())
                 .map(|_| ctx.new_var(Assign::Unknown))
                 .collect();

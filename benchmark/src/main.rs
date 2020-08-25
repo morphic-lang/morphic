@@ -175,7 +175,7 @@ fn bench_c_sample(
         .expect("Could not create temp file")
         .into_temp_path();
 
-    let clang = find_default_clang()?;
+    let clang = find_default_clang().expect("clang must be present to run benchmarks");
 
     let clang_output = process::Command::new(&clang.path)
         .arg(src_path.as_ref())

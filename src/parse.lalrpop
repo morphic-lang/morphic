@@ -397,8 +397,8 @@ IfExpr: syntax::Expr = {
 PureAppExpr_: syntax::Expr = {
   <AtomicExpr>,
 
-  <func: PureAppExpr> "(" <args: Exprs> ")" =>
-    syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
+  <func: PureAppExpr> <lo: @L> "(" <args: CommaSep<Expr>> ")" <hi: @R> =>
+    syntax::Expr::App(Purity::Pure, Box::new(func), (lo, hi, args)),
 };
 
 PureAppExpr: syntax::Expr = {
@@ -408,8 +408,8 @@ PureAppExpr: syntax::Expr = {
 AppExpr_: syntax::Expr = {
   <PureAppExpr>,
 
-  "do" <func: AtomicExpr> "(" <args: Exprs> ")" =>
-    syntax::Expr::App(Purity::Impure, Box::new(func), Box::new(args)),
+  "do" <func: AtomicExpr> <lo: @L> "(" <args: CommaSep<Expr>> ")" <hi: @R> =>
+    syntax::Expr::App(Purity::Impure, Box::new(func), (lo, hi, args)),
 };
 
 AppExpr: syntax::Expr = {
@@ -494,20 +494,10 @@ ArithExpr: syntax::Expr = {
   <ArithCompExpr>,
 };
 
-PipeLeftExpr_: syntax::Expr = {
+PipeRightExpr_: syntax::Expr = {
   <ArithExpr>,
 
-  <left: PipeLeftExpr> "<|" <right: ArithExpr> => syntax::Expr::PipeLeft(Box::new(left), Box::new(right)),
-}
-
-PipeLeftExpr: syntax::Expr = {
-  <Spanned<PipeLeftExpr_>>,
-};
-
-PipeRightExpr_: syntax::Expr = {
-  <PipeLeftExpr>,
-
-  <left: PipeLeftExpr> "|>" <right: PipeRightExpr> => syntax::Expr::PipeRight(Box::new(left), Box::new(right)),
+  <left: PipeRightExpr> "|>" <right: AppExpr> => syntax::Expr::PipeRight(Box::new(left), Box::new(right)),
 }
 
 PipeRightExpr: syntax::Expr = {
@@ -516,6 +506,8 @@ PipeRightExpr: syntax::Expr = {
 
 BlockExpr_: syntax::Expr = {
   <PipeRightExpr>,
+
+  <left: PipeRightExpr> "<|" <right: BlockExpr> => syntax::Expr::PipeLeft(Box::new(left), Box::new(right)),
 
   "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
     if let syntax::Expr::Span(left, right, body) = body {
@@ -550,30 +542,26 @@ BlockExpr_: syntax::Expr = {
       unreachable!();
     }
   },
+
+  <purity: OptProc> "\\" <param: Pattern> "->" <body: BlockExpr> =>
+    syntax::Expr::Lam(purity, param, Box::new(body)),
 };
 
 BlockExpr: syntax::Expr = {
   <Spanned<BlockExpr_>>,
 };
 
-LamExpr_: syntax::Expr = {
-  <BlockExpr>,
-
-  <purity: OptProc> "\\" <param: Pattern> "->" <body: LamExpr> =>
-    syntax::Expr::Lam(purity, param, Box::new(body)),
-};
-
-LamExpr: syntax::Expr = {
-  <Spanned<LamExpr_>>,
-};
-
 Expr: syntax::Expr = {
-  <LamExpr>,
+  <BlockExpr>,
 };
 
 Exprs_: syntax::Expr = {
   <exprs: CommaSep<Expr>> => {
-    syntax::Expr::Tuple(exprs)
+    if exprs.len() == 1 {
+      exprs.into_iter().next().unwrap()
+    } else {
+      syntax::Expr::Tuple(exprs)
+    }
   },
 };
 

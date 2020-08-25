@@ -77,7 +77,14 @@ pub enum Expr {
     Ctor(ModPath, CtorName),
     Tuple(Vec<Expr>),
     Lam(Purity, Pattern, Box<Expr>),
-    App(Purity, Box<Expr>, Box<Expr>),
+    // App expressions in the raw AST need to explicitly distinguish between taking "multiple
+    // arguments" and taking a single tuple as an argument, because this distinction is relevant for
+    // pipe desugaring.  Subsequent passes in the compiler do not make this distinction.
+    //
+    // The `usize`s denote the span of the argument list.
+    App(Purity, Box<Expr>, (usize, usize, Vec<Expr>)),
+    // Without this variant, error messages for `(a + b) <| c` would be horrible
+    OpApp(Op, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     LetMany(VecDeque<(Pattern, Expr)>, Box<Expr>),
 
@@ -127,15 +134,11 @@ pub enum Op {
 }
 
 pub fn binop(op: Op, left: Expr, right: Expr) -> Expr {
-    Expr::App(
-        Purity::Pure,
-        Box::new(Expr::Op(op)),
-        Box::new(Expr::Tuple(vec![left, right])),
-    )
+    Expr::OpApp(op, Box::new(Expr::Tuple(vec![left, right])))
 }
 
 pub fn unop(op: Op, arg: Expr) -> Expr {
-    Expr::App(Purity::Pure, Box::new(Expr::Op(op)), Box::new(arg))
+    Expr::OpApp(op, Box::new(arg))
 }
 
 #[derive(Clone, Debug)]

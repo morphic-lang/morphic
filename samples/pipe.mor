@@ -1,0 +1,22 @@
+module Core = file "lib/core/core.mor" expose {
+  module Iter,
+  module Option expose { Option { Some, None } }
+}
+module Test = file "lib/test.mor" with { Core } expose { test }
+
+proc main(): () =
+  let fold =
+    Iter.items([2, 3, 5, 7, 11, 13])
+    |> Iter.map(\x -> x * 2)
+    |> Iter.foldl(0, \(x, y) -> x + y)
+  in
+  do test("test basic pipe right", fold = 82) then
+
+  let opt =
+    Option.and_then(Some(42)) <| \x ->
+    Option.and_then(Some(int_bit_and(x, 70))) <| \y ->
+    Some(y + 1792)
+  in
+  do test("test basic pipe left", Option.unwrap(opt) = 1794) then
+
+  do output("Completed all tests\n")
