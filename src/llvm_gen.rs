@@ -17,7 +17,7 @@ use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
-use find_clang::find_clang;
+use find_clang::find_default_clang;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -37,7 +37,42 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("directory {0:?} does not exist")]
+    DirectoryDoesNotExist(PathBuf),
+    #[error("expected a file but was provided directory {0:?} instead")]
+    GivenDirExpectedFile(PathBuf),
+    #[error("expected a directory but was provided file {0:?} instead")]
+    GivenFileExpectedDir(PathBuf),
+    #[error("could not create directory, IO error: {0}")]
+    CouldNotCreateOutputDir(std::io::Error),
+    #[error("could not create temporary file, IO error: {0}")]
+    CouldNotCreateTempFile(std::io::Error),
+    #[error("could not create object file, IO error: {0}")]
+    CouldNotWriteObjFile(std::io::Error),
+    #[error("could not create output file, {0}")]
+    CouldNotWriteOutputFile(std::io::Error),
+    #[error("could not locate valid clang install: {0}")]
+    CouldNotFindClang(anyhow::Error),
+    #[error("clang exited unsuccessfully, IO error: {0}")]
+    ClangFailed(std::io::Error),
+    #[error("selected LLVM target triple is not supported on your system, {0}")]
+    TargetTripleNotSupported(inkwell::support::LLVMString),
+    #[error("could not configure LLVM for target")]
+    CouldNotCreateTargetMachine,
+    #[error("compilation of generated LLVM-IR failed, {0}")]
+    LlvmCompilationFailed(inkwell::support::LLVMString),
+    #[error("could not dump IR from LLVM, {0}")]
+    CouldNotDumpIrFromLlvm(inkwell::support::LLVMString),
+    #[error("could not spawn child process, IO error: {0}")]
+    CouldNotSpawnChild(std::io::Error),
+}
+
+type Result<T> = std::result::Result<T, Error>;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
 // we use a zero sized array to enforce proper alignment on `bytes`
@@ -1860,7 +1895,10 @@ fn gen_function<'a, 'b>(
     }
 }
 
-fn get_target_machine(target: cli::TargetConfig, opt_level: OptimizationLevel) -> TargetMachine {
+fn get_target_machine(
+    target: cli::TargetConfig,
+    opt_level: OptimizationLevel,
+) -> Result<TargetMachine> {
     Target::initialize_all(&InitializationConfig::default());
 
     let (target_triple, target_cpu, target_features) = match target {
@@ -1876,7 +1914,8 @@ fn get_target_machine(target: cli::TargetConfig, opt_level: OptimizationLevel) -
         ),
     };
 
-    let llvm_target = Target::from_triple(&target_triple).unwrap();
+    let llvm_target =
+        Target::from_triple(&target_triple).map_err(Error::TargetTripleNotSupported)?;
 
     // RelocMode and CodeModel can affect the options we need to pass clang in run_cc
     llvm_target
@@ -1889,7 +1928,7 @@ fn get_target_machine(target: cli::TargetConfig, opt_level: OptimizationLevel) -
             // https://stackoverflow.com/questions/40493448/what-does-the-codemodel-in-clang-llvm-refer-to
             CodeModel::Small,
         )
-        .unwrap()
+        .ok_or_else(|| Error::CouldNotCreateTargetMachine)
 }
 
 fn add_size_deps(type_: &low::Type, deps: &mut BTreeSet<low::CustomTypeId>) {
@@ -2129,17 +2168,56 @@ fn gen_program<'a>(
     return module;
 }
 
-fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
+fn check_valid_file_path(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        return Err(Error::GivenDirExpectedFile(path.to_owned()));
+    }
+
+    match path.parent() {
+        None => return Err(Error::GivenDirExpectedFile(path.to_owned())),
+        Some(parent) => {
+            if !parent.exists() {
+                return Err(Error::DirectoryDoesNotExist(parent.to_owned()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn check_valid_dir_path(path: &Path) -> Result<()> {
+    if path.is_file() {
+        return Err(Error::GivenFileExpectedDir(path.to_owned()));
+    }
+
+    match path.parent() {
+        None => {}
+        Some(parent) => {
+            if !parent.exists() {
+                return Err(Error::DirectoryDoesNotExist(parent.to_owned()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) -> Result<()> {
     match target {
         cli::TargetConfig::Native => {
+            check_valid_file_path(obj_path)?;
+            check_valid_file_path(exe_path)?;
+
             // materialize files to link with
             let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
-                .unwrap();
-            tal_file.write_all(tal::native::TAL_O).unwrap();
+                .map_err(Error::CouldNotCreateTempFile)?;
+            tal_file
+                .write_all(tal::native::TAL_O)
+                .map_err(Error::CouldNotWriteObjFile)?;
 
-            let clang = find_clang(10).unwrap();
+            let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
             std::process::Command::new(clang.path)
                 .arg("-O3")
                 .arg("-ffunction-sections")
@@ -2151,43 +2229,45 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .arg(obj_path)
                 .arg(tal_file.path())
                 .status()
-                .unwrap();
+                .map_err(Error::ClangFailed)?;
         }
         cli::TargetConfig::Wasm => {
             // materialize files to link with
             let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
-                .unwrap();
-            tal_file.write_all(tal::wasm::TAL_O).unwrap();
+                .map_err(Error::CouldNotCreateTempFile)?;
+            tal_file
+                .write_all(tal::wasm::TAL_O)
+                .map_err(Error::CouldNotWriteObjFile)?;
             let mut malloc_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
-                .unwrap();
-            malloc_file.write_all(tal::wasm::MALLOC_O).unwrap();
+                .map_err(Error::CouldNotCreateTempFile)?;
+            malloc_file
+                .write_all(tal::wasm::MALLOC_O)
+                .map_err(Error::CouldNotWriteObjFile)?;
 
-            // TODO: improve error handling and make more user friendly
-            if exe_path.is_file() {
-                panic!(
-                    "Trying to create dir {:#?}, but there is already a file with that path",
-                    exe_path
-                );
-            }
+            check_valid_dir_path(exe_path)?;
             if !exe_path.exists() {
-                std::fs::create_dir(exe_path).unwrap();
+                std::fs::create_dir(exe_path).map_err(Error::CouldNotCreateOutputDir)?;
             }
 
             let index_path = exe_path.join("index.html");
-            let mut index_file = std::fs::File::create(index_path).unwrap();
-            index_file.write_all(tal::wasm::INDEX_HTML).unwrap();
+            let mut index_file =
+                std::fs::File::create(index_path).map_err(Error::CouldNotWriteOutputFile)?;
+            index_file
+                .write_all(tal::wasm::INDEX_HTML)
+                .map_err(Error::CouldNotWriteOutputFile)?;
 
             let wasm_loader_path = exe_path.join("wasm_loader.js");
-            let mut wasm_loader_file = std::fs::File::create(wasm_loader_path).unwrap();
+            let mut wasm_loader_file =
+                std::fs::File::create(wasm_loader_path).map_err(Error::CouldNotWriteOutputFile)?;
             wasm_loader_file
                 .write_all(tal::wasm::WASM_LOADER_JS)
-                .unwrap();
+                .map_err(Error::CouldNotWriteOutputFile)?;
 
-            let clang = find_clang(10).unwrap();
+            let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
             std::process::Command::new(clang.path)
                 .arg("-O3")
                 .arg("-ffunction-sections")
@@ -2205,9 +2285,10 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .arg(tal_file.path())
                 .arg(malloc_file.path())
                 .status()
-                .unwrap();
+                .map_err(Error::ClangFailed)?;
         }
     }
+    Ok(())
 }
 
 fn verify_llvm(module: &Module) {
@@ -2230,8 +2311,8 @@ fn compile_to_executable(
     target: cli::TargetConfig,
     opt_level: OptimizationLevel,
     artifact_paths: ArtifactPaths,
-) {
-    let target_machine = get_target_machine(target, opt_level);
+) -> Result<()> {
+    let target_machine = get_target_machine(target, opt_level)?;
     let context = Context::create();
 
     let module = gen_program(program, &target_machine, &context);
@@ -2239,7 +2320,9 @@ fn compile_to_executable(
     // We output the ll file before verifying so that it can be inspected even if verification
     // fails.
     if let Some(ll_path) = artifact_paths.ll {
-        module.print_to_file(ll_path).unwrap();
+        module
+            .print_to_file(ll_path)
+            .map_err(Error::CouldNotDumpIrFromLlvm)?;
     }
 
     verify_llvm(&module);
@@ -2263,7 +2346,9 @@ fn compile_to_executable(
     pass_manager.run_on(&module);
 
     if let Some(opt_ll_path) = artifact_paths.opt_ll {
-        module.print_to_file(opt_ll_path).unwrap();
+        module
+            .print_to_file(opt_ll_path)
+            .map_err(Error::CouldNotDumpIrFromLlvm)?;
     }
 
     // Optimization should produce a well-formed module, but if it doesn't, we want to know about
@@ -2273,30 +2358,30 @@ fn compile_to_executable(
     if let Some(asm_path) = artifact_paths.asm {
         target_machine
             .write_to_file(&module, FileType::Assembly, &asm_path)
-            .unwrap();
+            .map_err(Error::LlvmCompilationFailed)?;
     }
 
     target_machine
         .write_to_file(&module, FileType::Object, artifact_paths.obj)
-        .unwrap();
+        .map_err(Error::LlvmCompilationFailed)?;
 
-    run_cc(target, artifact_paths.obj, artifact_paths.exe);
+    run_cc(target, artifact_paths.obj, artifact_paths.exe)
 }
 
-pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>) -> Child {
+pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>) -> Result<Child> {
     let target = cli::TargetConfig::Native;
     let opt_level = cli::default_llvm_opt_level();
 
     let obj_path = tempfile::Builder::new()
         .suffix(".o")
         .tempfile_in("")
-        .unwrap()
+        .map_err(Error::CouldNotCreateTempFile)?
         .into_temp_path();
 
     let output_path = tempfile::Builder::new()
         .prefix(".tmp-exe-")
         .tempfile_in("")
-        .unwrap()
+        .map_err(Error::CouldNotCreateTempFile)?
         .into_temp_path();
 
     compile_to_executable(
@@ -2310,14 +2395,14 @@ pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>
             obj: &obj_path,
             exe: &output_path,
         },
-    );
+    )?;
 
     std::mem::drop(obj_path);
 
-    spawn_process(stdio, output_path, valgrind).unwrap()
+    spawn_process(stdio, output_path, valgrind).map_err(Error::CouldNotSpawnChild)
 }
 
-pub fn build(program: low::Program, config: &cli::BuildConfig) {
+pub fn build(program: low::Program, config: &cli::BuildConfig) -> Result<()> {
     if let Some(artifact_dir) = &config.artifact_dir {
         compile_to_executable(
             program,
@@ -2330,12 +2415,12 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) {
                 obj: &artifact_dir.artifact_path("o"),
                 exe: &config.output_path,
             },
-        );
+        )
     } else {
         let obj_path = tempfile::Builder::new()
             .suffix(".o")
             .tempfile_in("")
-            .unwrap()
+            .map_err(Error::CouldNotCreateTempFile)?
             .into_temp_path();
 
         compile_to_executable(

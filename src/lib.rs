@@ -90,6 +90,7 @@ enum ErrorKind {
     CheckMainFailed(check_main::Error),
     CreateArtifactsFailed(io::Error),
     WriteIrFailed(io::Error),
+    LlvmGenFailed(llvm_gen::Error),
     WaitChildFailed(io::Error),
     ChildFailed { exit_status: Option<i32> },
 }
@@ -128,6 +129,7 @@ impl Error {
                 "Could not write intermediate representation artifacts: {}",
                 err
             ),
+            LlvmGenFailed(err) => writeln!(dest, "{}", err),
             WaitChildFailed(err) => writeln!(dest, "Could not execute compiled program: {}", err),
             ChildFailed {
                 exit_status: Some(_),
@@ -177,7 +179,9 @@ pub fn run(
     let lowered = compile(&config.src_path, &[], None, files)?;
 
     match config.mode {
-        cli::RunMode::Compile { valgrind } => Ok(llvm_gen::run(config.stdio, lowered, valgrind)),
+        cli::RunMode::Compile { valgrind } => {
+            Ok(llvm_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::LlvmGenFailed)?)
+        }
         cli::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
     }
 }
@@ -190,8 +194,7 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
         files,
     )?;
 
-    llvm_gen::build(lowered, &config);
-    Ok(())
+    Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
 }
 
 fn compile(

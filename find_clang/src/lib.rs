@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use std::process::Command as Cmd;
 
+pub const DEFAULT_CLANG_VERSION: u32 = 10;
+
 pub struct Clang {
     pub path: String,
 }
@@ -17,14 +19,14 @@ fn trim_newline(s: &mut String) {
 fn get_cmd_out(cmd: &mut Cmd) -> Result<String> {
     let out = cmd
         .output()
-        .context(format!("Failed to run command {:#?}.", cmd))?;
+        .context(format!("failed to run command {:#?}.", cmd))?;
     if out.status.success() {
         let mut s = String::from_utf8(out.stdout)?;
         trim_newline(&mut s);
         Ok(s)
     } else {
         Err(anyhow!(
-            "Command {:#?} exited unsuccessfully with status {}.",
+            "command {:#?} exited unsuccessfully with status {}.",
             cmd,
             out.status
         ))
@@ -54,7 +56,7 @@ fn check_clang(clang: &str, version: u32) -> Result<Clang> {
         }
     }
     return Err(anyhow!(format!(
-        "Cannot determine __clang_major__ for {}.",
+        "cannot determine __clang_major__ for {}.",
         clang
     )));
 }
@@ -84,4 +86,8 @@ pub fn find_clang(version: u32) -> Result<Clang> {
                     .or_else(|_| check_clang(&format!("{}/{}", bindir, clang), version))
             })
         })
+}
+
+pub fn find_default_clang() -> Result<Clang> {
+    find_clang(DEFAULT_CLANG_VERSION)
 }
