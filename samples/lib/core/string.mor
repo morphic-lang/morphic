@@ -60,7 +60,7 @@ string_to_nat(str: Array Byte): Option Int =
     )
   )
 
-equals(a: Array Byte, b: Array Byte): Bool =
+equal(a: Array Byte, b: Array Byte): Bool =
   if len(a) = len(b) {
     Iter.all(Iter.zip(Iter.items(a), Iter.items(b)), \(x, y) -> x =& y)
   } else {
