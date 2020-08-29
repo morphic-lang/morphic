@@ -29,6 +29,8 @@ pub enum Token {
     From,
     Expose,
     With,
+    As,
+    Pub,
 
     LParen,
     RParen,
@@ -99,6 +101,8 @@ impl fmt::Display for Token {
             Token::From => write!(f, "from"),
             Token::Expose => write!(f, "expose"),
             Token::With => write!(f, "with"),
+            Token::As => write!(f, "as"),
+            Token::Pub => write!(f, "pub"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
             Token::LSquare => write!(f, "["),
@@ -359,6 +363,8 @@ impl<'a> Iterator for Lexer<'a> {
                 "from" => Some(Ok((name_start, Token::From, name_end))),
                 "expose" => Some(Ok((name_start, Token::Expose, name_end))),
                 "with" => Some(Ok((name_start, Token::With, name_end))),
+                "as" => Some(Ok((name_start, Token::As, name_end))),
+                "pub" => Some(Ok((name_start, Token::Pub, name_end))),
                 name => {
                     if char_at(name, 0).unwrap().is_uppercase() {
                         Some(Ok((

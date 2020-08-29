@@ -1,5 +1,6 @@
 use crate::data::raw_ast as syntax;
 use crate::data::purity::Purity;
+use crate::data::visibility::Visibility;
 use crate::lex;
 
 grammar;
@@ -33,6 +34,8 @@ extern {
     "from" => lex::Token::From,
     "expose" => lex::Token::Expose,
     "with" => lex::Token::With,
+    "as" => lex::Token::As,
+    "pub" => lex::Token::Pub,
 
     "(" => lex::Token::LParen,
     ")" => lex::Token::RParen,
@@ -136,6 +139,12 @@ OptProc: Purity = {
   () => Purity::Pure,
 };
 
+#[inline]
+OptPub: Visibility {
+  "pub" => Visibility::Public,
+  () => Visibility::Private,
+}
+
 // Top-Level Items
 
 pub Program: syntax::Program = {
@@ -165,6 +174,7 @@ TypeCase: (syntax::CtorName, Option<syntax::Type>) = {
 // Value Definitions
 
 ValDef: syntax::Item = {
+  <visibility: OptPub>
   <purity: OptProc>
   <name: ValName>
   "(" <args: CommaSep<(<ValName> ":" <Type>)>> ")"
@@ -191,7 +201,7 @@ ValDef: syntax::Item = {
     syntax::Item::ValDef(name, def_type, def_body)
   },
 
-  <name: ValName> ":" <def_type: Type> "=" <val: Expr> => {
+  <visibility: OptPub> <name: ValName> ":" <def_type: Type> "=" <val: Expr> => {
     syntax::Item::ValDef(name, def_type, val)
   },
 };
