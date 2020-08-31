@@ -5,7 +5,6 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
@@ -39,7 +38,6 @@ id_type!(pub LamId);
 pub enum FuncCase {
     Lam(LamId),
     Opaque(OpaqueFuncRepId),
-    ArithOp(Op),
     Intrinsic(Intrinsic),
     ArrayOp(ArrayOp, Type),
     ArrayReplace(Type),
@@ -50,7 +48,6 @@ pub enum FuncCase {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    ArithOp(Op, FuncRep),
     Intrinsic(Intrinsic, FuncRep),
     ArrayOp(ArrayOp, Type, FuncRep),
     IoOp(IoOp, FuncRep),

@@ -1199,8 +1199,6 @@ fn annot_expr(
             (annot::Expr::UnwrapCustom(*custom_id, *wrapped), expr_info)
         }
 
-        flat::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), ValInfo::new()),
-
         // NOTE [intrinsics]: If we add array intrinsics in the future, this will need to be
         // modified.
         flat::Expr::Intrinsic(intr, arg) => (annot::Expr::Intrinsic(*intr, *arg), ValInfo::new()),

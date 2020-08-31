@@ -85,7 +85,6 @@ pub enum Expr<Call, Rep> {
         flat::LocalId,
     ),
 
-    ArithOp(flat::ArithOp),
     Intrinsic(Intrinsic, flat::LocalId),
     ArrayOp(
         Rep,                   // Array representation

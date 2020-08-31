@@ -28,7 +28,7 @@ use inkwell::targets::{
     TargetTriple,
 };
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
-use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -1015,6 +1015,40 @@ fn build_check_divisor_nonzero<'a, 'b>(
     builder.position_at_end(continue_if_nonzero);
 }
 
+fn build_binop_int_args<'a>(
+    builder: &Builder<'a>,
+    args: BasicValueEnum<'a>,
+) -> (IntValue<'a>, IntValue<'a>) {
+    let args_struct = args.into_struct_value();
+    debug_assert_eq!(args_struct.get_type().count_fields(), 2);
+    let lhs = builder
+        .build_extract_value(args_struct, 0, "binop_lhs")
+        .unwrap()
+        .into_int_value();
+    let rhs = builder
+        .build_extract_value(args_struct, 1, "binop_rhs")
+        .unwrap()
+        .into_int_value();
+    (lhs, rhs)
+}
+
+fn build_binop_float_args<'a>(
+    builder: &Builder<'a>,
+    args: BasicValueEnum<'a>,
+) -> (FloatValue<'a>, FloatValue<'a>) {
+    let args_struct = args.into_struct_value();
+    debug_assert_eq!(args_struct.get_type().count_fields(), 2);
+    let lhs = builder
+        .build_extract_value(args_struct, 0, "binop_lhs")
+        .unwrap()
+        .into_float_value();
+    let rhs = builder
+        .build_extract_value(args_struct, 1, "binop_rhs")
+        .unwrap()
+        .into_float_value();
+    (lhs, rhs)
+}
+
 fn gen_expr<'a, 'b>(
     builder: &Builder<'a>,
     instances: &Instances<'a>,
@@ -1257,200 +1291,120 @@ fn gen_expr<'a, 'b>(
             );
             context.struct_type(&[], false).get_undef().into()
         }
-        E::ArithOp(op) => match op {
-            low::ArithOp::Op(type_, bin_op, lhs, rhs) => match bin_op {
-                first_ord::BinOp::Add => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_add(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "byte_add",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_add(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_add",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_add(
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_add",
-                        )
-                        .into(),
-                },
-                first_ord::BinOp::Sub => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_sub(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "byte_sub",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_sub(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_sub",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_sub(
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_sub",
-                        )
-                        .into(),
-                },
-                first_ord::BinOp::Mul => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_mul(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "byte_mul",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_mul(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_mul",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_mul(
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_mul",
-                        )
-                        .into(),
-                },
-                first_ord::BinOp::Div => match type_ {
-                    first_ord::NumType::Byte => {
-                        build_check_divisor_nonzero(globals, builder, locals[rhs].into_int_value());
-                        builder
-                            .build_int_unsigned_div(
-                                locals[lhs].into_int_value(),
-                                locals[rhs].into_int_value(),
-                                "byte_div",
-                            )
-                            .into()
-                    }
-                    first_ord::NumType::Int => {
-                        build_check_divisor_nonzero(globals, builder, locals[rhs].into_int_value());
-                        builder
-                            .build_int_signed_div(
-                                locals[lhs].into_int_value(),
-                                locals[rhs].into_int_value(),
-                                "int_div",
-                            )
-                            .into()
-                    }
-                    first_ord::NumType::Float => builder
-                        .build_float_div(
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_div",
-                        )
-                        .into(),
-                },
-            },
-            low::ArithOp::Cmp(type_, cmp, lhs, rhs) => match cmp {
-                first_ord::Comparison::Less => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_compare(
-                            IntPredicate::ULT,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "bytes_less",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_compare(
-                            IntPredicate::SLT,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_less",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_compare(
-                            FloatPredicate::OLT,
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_less",
-                        )
-                        .into(),
-                },
-                first_ord::Comparison::LessEqual => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_compare(
-                            IntPredicate::ULE,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "bytes_less_equal",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_compare(
-                            IntPredicate::SLE,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_less_equal",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_compare(
-                            FloatPredicate::OLE,
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_less_equal",
-                        )
-                        .into(),
-                },
-                first_ord::Comparison::Equal => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_compare(
-                            IntPredicate::EQ,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "bytes_equal",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_compare(
-                            IntPredicate::EQ,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_equal",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_compare(
-                            FloatPredicate::OEQ,
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_equal",
-                        )
-                        .into(),
-                },
-            },
-            low::ArithOp::Negate(type_, local_id) => match type_ {
-                first_ord::NumType::Byte => builder
-                    .build_int_neg(locals[local_id].into_int_value(), "byte_neg")
-                    .into(),
-                first_ord::NumType::Int => builder
-                    .build_int_neg(locals[local_id].into_int_value(), "int_neg")
-                    .into(),
-                first_ord::NumType::Float => builder
-                    .build_float_neg(locals[local_id].into_float_value(), "float_neg")
-                    .into(),
-            },
-        },
         E::Intrinsic(intr, local_id) => match intr {
+            Intrinsic::AddByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_add(lhs, rhs, "add_byte").into()
+            }
+            Intrinsic::AddInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_add(lhs, rhs, "add_int").into()
+            }
+            Intrinsic::AddFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder.build_float_add(lhs, rhs, "add_float").into()
+            }
+            Intrinsic::SubByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_sub(lhs, rhs, "sub_byte").into()
+            }
+            Intrinsic::SubInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_sub(lhs, rhs, "sub_int").into()
+            }
+            Intrinsic::SubFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder.build_float_sub(lhs, rhs, "sub_float").into()
+            }
+            Intrinsic::MulByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_mul(lhs, rhs, "mul_byte").into()
+            }
+            Intrinsic::MulInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_mul(lhs, rhs, "mul_int").into()
+            }
+            Intrinsic::MulFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder.build_float_mul(lhs, rhs, "mul_float").into()
+            }
+            Intrinsic::DivByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                build_check_divisor_nonzero(globals, builder, rhs);
+                builder.build_int_unsigned_div(lhs, rhs, "div_byte").into()
+            }
+            Intrinsic::DivInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                build_check_divisor_nonzero(globals, builder, rhs);
+                builder.build_int_signed_div(lhs, rhs, "div_int").into()
+            }
+            Intrinsic::DivFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder.build_float_div(lhs, rhs, "div_float").into()
+            }
+            Intrinsic::LtByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::ULT, lhs, rhs, "lt_byte")
+                    .into()
+            }
+            Intrinsic::LtInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::SLT, lhs, rhs, "lt_int")
+                    .into()
+            }
+            Intrinsic::LtFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OLT, lhs, rhs, "lt_float")
+                    .into()
+            }
+            Intrinsic::LteByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::ULE, lhs, rhs, "lte_byte")
+                    .into()
+            }
+            Intrinsic::LteInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::SLE, lhs, rhs, "lte_int")
+                    .into()
+            }
+            Intrinsic::LteFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OLE, lhs, rhs, "lte_float")
+                    .into()
+            }
+            Intrinsic::EqByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq_byte")
+                    .into()
+            }
+            Intrinsic::EqInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq_int")
+                    .into()
+            }
+            Intrinsic::EqFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OEQ, lhs, rhs, "eq_float")
+                    .into()
+            }
+            Intrinsic::NegByte => builder
+                .build_int_neg(locals[local_id].into_int_value(), "neg_byte")
+                .into(),
+            Intrinsic::NegInt => builder
+                .build_int_neg(locals[local_id].into_int_value(), "neg_int")
+                .into(),
+            Intrinsic::NegFloat => builder
+                .build_float_neg(locals[local_id].into_float_value(), "neg_float")
+                .into(),
             Intrinsic::ByteToInt => builder
                 .build_int_z_extend(
                     locals[local_id].into_int_value(),
@@ -1473,22 +1427,7 @@ fn gen_expr<'a, 'b>(
                 )
                 .into(),
             Intrinsic::IntShiftLeft => {
-                let lhs = builder
-                    .build_extract_value(
-                        locals[local_id].into_struct_value(),
-                        0,
-                        "int_shift_left_lhs",
-                    )
-                    .unwrap()
-                    .into_int_value();
-                let rhs = builder
-                    .build_extract_value(
-                        locals[local_id].into_struct_value(),
-                        1,
-                        "int_shift_left_rhs",
-                    )
-                    .unwrap()
-                    .into_int_value();
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
                 // 1 (which is the same as taking the rhs mod 64). This appears to be what rustc
                 // does.
@@ -1505,22 +1444,7 @@ fn gen_expr<'a, 'b>(
                     .into()
             }
             Intrinsic::IntShiftRight => {
-                let lhs = builder
-                    .build_extract_value(
-                        locals[local_id].into_struct_value(),
-                        0,
-                        "int_shift_right_lhs",
-                    )
-                    .unwrap()
-                    .into_int_value();
-                let rhs = builder
-                    .build_extract_value(
-                        locals[local_id].into_struct_value(),
-                        1,
-                        "int_shift_right_rhs",
-                    )
-                    .unwrap()
-                    .into_int_value();
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
                 // 1 (which is the same as taking the rhs mod 64). This appears to be what rustc
                 // does.
@@ -1538,36 +1462,15 @@ fn gen_expr<'a, 'b>(
                     .into()
             }
             Intrinsic::IntBitAnd => {
-                let lhs = builder
-                    .build_extract_value(locals[local_id].into_struct_value(), 0, "int_bit_and_lhs")
-                    .unwrap()
-                    .into_int_value();
-                let rhs = builder
-                    .build_extract_value(locals[local_id].into_struct_value(), 1, "int_bit_and_rhs")
-                    .unwrap()
-                    .into_int_value();
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder.build_and(lhs, rhs, "int_bit_and").into()
             }
             Intrinsic::IntBitOr => {
-                let lhs = builder
-                    .build_extract_value(locals[local_id].into_struct_value(), 0, "int_bit_or_lhs")
-                    .unwrap()
-                    .into_int_value();
-                let rhs = builder
-                    .build_extract_value(locals[local_id].into_struct_value(), 1, "int_bit_or_rhs")
-                    .unwrap()
-                    .into_int_value();
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder.build_or(lhs, rhs, "int_bit_or").into()
             }
             Intrinsic::IntBitXor => {
-                let lhs = builder
-                    .build_extract_value(locals[local_id].into_struct_value(), 0, "int_bit_xor_lhs")
-                    .unwrap()
-                    .into_int_value();
-                let rhs = builder
-                    .build_extract_value(locals[local_id].into_struct_value(), 1, "int_bit_xor_rhs")
-                    .unwrap()
-                    .into_int_value();
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder.build_xor(lhs, rhs, "int_bit_xor").into()
             }
         },

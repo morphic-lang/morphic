@@ -1,3 +1,4 @@
+use crate::data::intrinsics::Intrinsic;
 use crate::data::purity::Purity;
 use std::collections::VecDeque;
 
@@ -73,7 +74,6 @@ pub enum Expr {
     // are special in that they may refer to local variables as well as module-scoped values.
     Var(ValName),
     QualName(ModPath, ValName),
-    Op(Op),
     Ctor(ModPath, CtorName),
     Tuple(Vec<Expr>),
     Lam(Purity, Pattern, Box<Expr>),
@@ -83,8 +83,10 @@ pub enum Expr {
     //
     // The `usize`s denote the span of the argument list.
     App(Purity, Box<Expr>, (usize, usize, Vec<Expr>)),
-    // Without this variant, error messages for `(a + b) <| c` would be horrible
-    OpApp(Op, Box<Expr>),
+    // This distinguishes function applications arising from operator expressions from all other
+    // function applications. Without this variant, error messages for `(a + b) <| c` would be
+    // horrible.
+    OpApp(Intrinsic, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     LetMany(VecDeque<(Pattern, Expr)>, Box<Expr>),
 
@@ -100,44 +102,11 @@ pub enum Expr {
     Span(usize, usize, Box<Expr>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Op {
-    AddByte,
-    SubByte,
-    MulByte,
-    DivByte,
-    NegByte,
-
-    EqByte,
-    LtByte,
-    LteByte,
-
-    AddInt,
-    SubInt,
-    MulInt,
-    DivInt,
-    NegInt,
-
-    EqInt,
-    LtInt,
-    LteInt,
-
-    AddFloat,
-    SubFloat,
-    MulFloat,
-    DivFloat,
-    NegFloat,
-
-    EqFloat,
-    LtFloat,
-    LteFloat,
-}
-
-pub fn binop(op: Op, left: Expr, right: Expr) -> Expr {
+pub fn binop(op: Intrinsic, left: Expr, right: Expr) -> Expr {
     Expr::OpApp(op, Box::new(Expr::Tuple(vec![left, right])))
 }
 
-pub fn unop(op: Op, arg: Expr) -> Expr {
+pub fn unop(op: Intrinsic, arg: Expr) -> Expr {
     Expr::OpApp(op, Box::new(arg))
 }
 

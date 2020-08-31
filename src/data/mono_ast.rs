@@ -2,7 +2,6 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
-use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
@@ -35,7 +34,6 @@ id_type!(pub CustomGlobalId);
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    ArithOp(Op),
     Intrinsic(Intrinsic),
     ArrayOp(ArrayOp, Type),
     IoOp(IoOp),

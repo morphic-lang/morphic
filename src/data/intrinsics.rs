@@ -12,6 +12,38 @@ use crate::data::purity::Purity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Intrinsic {
+    // Basic arithmetic ops
+    AddByte,
+    SubByte,
+    MulByte,
+    DivByte,
+    NegByte,
+
+    EqByte,
+    LtByte,
+    LteByte,
+
+    AddInt,
+    SubInt,
+    MulInt,
+    DivInt,
+    NegInt,
+
+    EqInt,
+    LtInt,
+    LteInt,
+
+    AddFloat,
+    SubFloat,
+    MulFloat,
+    DivFloat,
+    NegFloat,
+
+    EqFloat,
+    LtFloat,
+    LteFloat,
+
+    // Intrinsic numeric functions
     ByteToInt,
     ByteToIntSigned,
     IntToByte,
@@ -24,6 +56,7 @@ pub enum Intrinsic {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
+    Bool,
     Num(NumType),
     Tuple(Vec<Type>),
 }
@@ -33,4 +66,19 @@ pub struct Signature {
     pub purity: Purity,
     pub arg: Type,
     pub ret: Type,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Name {
+    Op { debug_name: &'static str },
+    Func { source_name: &'static str },
+}
+
+impl Name {
+    pub fn debug_name(&self) -> &'static str {
+        match self {
+            Name::Op { debug_name } => debug_name,
+            Name::Func { source_name } => source_name,
+        }
+    }
 }

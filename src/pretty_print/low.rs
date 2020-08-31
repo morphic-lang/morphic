@@ -1,7 +1,4 @@
-use crate::data::first_order_ast::BinOp;
-use crate::data::first_order_ast::Comparison;
 use crate::data::first_order_ast::NumType;
-use crate::data::low_ast::ArithOp;
 use crate::data::low_ast::ArrayOp;
 use crate::data::low_ast::Expr;
 use crate::data::low_ast::FuncDef;
@@ -197,32 +194,13 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::CheckVariant(variant_id, local_id) => {
             write![w, "check variant {} %{}", variant_id.0, local_id.0]
         }
-        Expr::ArithOp(ArithOp::Op(_, BinOp::Add, local_id1, local_id2)) => {
-            write![w, "%{} + %{}", local_id1.0, local_id2.0]
-        }
-        Expr::ArithOp(ArithOp::Op(_, BinOp::Sub, local_id1, local_id2)) => {
-            write![w, "%{} - %{}", local_id1.0, local_id2.0]
-        }
-        Expr::ArithOp(ArithOp::Op(_, BinOp::Mul, local_id1, local_id2)) => {
-            write![w, "%{} * %{}", local_id1.0, local_id2.0]
-        }
-        Expr::ArithOp(ArithOp::Op(_, BinOp::Div, local_id1, local_id2)) => {
-            write![w, "%{} / %{}", local_id1.0, local_id2.0]
-        }
-        Expr::ArithOp(ArithOp::Cmp(_, Comparison::Less, local_id1, local_id2)) => {
-            write![w, "%{} < %{}", local_id1.0, local_id2.0]
-        }
-        Expr::ArithOp(ArithOp::Cmp(_, Comparison::LessEqual, local_id1, local_id2)) => {
-            write![w, "%{} <= %{}", local_id1.0, local_id2.0]
-        }
-        Expr::ArithOp(ArithOp::Cmp(_, Comparison::Equal, local_id1, local_id2)) => {
-            write![w, "%{} = %{}", local_id1.0, local_id2.0]
-        }
-        Expr::ArithOp(ArithOp::Negate(_, local_id)) => write![w, "-%{}", local_id.0],
 
-        Expr::Intrinsic(intr, local_id) => {
-            write![w, "{} %{}", intrinsic_to_name(*intr), local_id.0]
-        }
+        Expr::Intrinsic(intr, local_id) => write![
+            w,
+            "{} %{}",
+            intrinsic_to_name(*intr).debug_name(),
+            local_id.0
+        ],
 
         Expr::ArrayOp(rep, _item_type, array_op) => {
             write_repchoice(w, rep)?;

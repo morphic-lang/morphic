@@ -33,18 +33,6 @@ pub enum IoOp {
 }
 
 #[derive(Clone, Debug)]
-pub enum ArithOp {
-    Op(first_ord::NumType, first_ord::BinOp, Box<Expr>, Box<Expr>),
-    Cmp(
-        first_ord::NumType,
-        first_ord::Comparison,
-        Box<Expr>,
-        Box<Expr>,
-    ),
-    Negate(first_ord::NumType, Box<Expr>),
-}
-
-#[derive(Clone, Debug)]
 pub enum ArrayOp {
     Item(
         Type,      // Item type
@@ -86,7 +74,6 @@ pub enum Expr {
     ),
     WrapCustom(first_ord::CustomTypeId, Box<Expr>),
 
-    ArithOp(ArithOp),
     Intrinsic(Intrinsic, Box<Expr>),
     ArrayOp(ArrayOp),
     IoOp(IoOp),

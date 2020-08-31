@@ -3,7 +3,6 @@ use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
@@ -46,7 +45,6 @@ pub struct Template {
 pub enum Requirement {
     Lam(lifted::LamId, IdVec<RepParamId, Solution>),
     Template(TemplateId, IdVec<RepParamId, Solution>),
-    ArithOp(Op),
     Intrinsic(Intrinsic),
     ArrayOp(ArrayOp, Type<Solution>),
     ArrayReplace(Type<Solution>),
@@ -67,10 +65,6 @@ pub enum Solution {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    ArithOp(
-        Op,
-        Solution, // Representation of this function expression
-    ),
     Intrinsic(
         Intrinsic,
         Solution, // Representation of this function expression

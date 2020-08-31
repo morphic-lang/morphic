@@ -490,8 +490,6 @@ fn annot_expr(
             )
         }
 
-        alias::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), trivial_info()),
-
         // NOTE [intrinsics]: If we add array intrinsics in the future, this will need to be
         // modified.
         alias::Expr::Intrinsic(intr, arg) => (annot::Expr::Intrinsic(*intr, *arg), trivial_info()),

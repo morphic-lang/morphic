@@ -27,13 +27,6 @@ pub enum Type {
     Custom(CustomTypeId),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum ArithOp {
-    Op(first_ord::NumType, first_ord::BinOp, LocalId, LocalId),
-    Cmp(first_ord::NumType, first_ord::Comparison, LocalId, LocalId),
-    Negate(first_ord::NumType, LocalId),
-}
-
 // Mutable operations on persistent arrays with refcount 1 should mutate
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
@@ -104,7 +97,6 @@ pub enum Expr {
 
     CheckVariant(VariantId, LocalId), // Returns a bool
 
-    ArithOp(ArithOp),
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
     IoOp(constrain::RepChoice, IoOp),

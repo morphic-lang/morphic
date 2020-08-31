@@ -27,23 +27,10 @@ fn typecheck_expr(
     use ast::Type as T;
 
     match expr {
-        E::ArithOp(ast::ArithOp::Op(num_type, _, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Num(*num_type));
-            T::Num(*num_type)
-        }
-        E::ArithOp(ast::ArithOp::Cmp(num_type, _, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Num(*num_type));
-            T::Bool
-        }
-        E::ArithOp(ast::ArithOp::Negate(num_type, v)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
-            T::Num(*num_type)
-        }
         E::Intrinsic(intr, v) => {
             fn trans_type(type_: &intrs::Type) -> ast::Type {
                 match type_ {
+                    intrs::Type::Bool => T::Bool,
                     intrs::Type::Num(num_type) => T::Num(*num_type),
                     intrs::Type::Tuple(items) => T::Tuple(items.iter().map(trans_type).collect()),
                 }

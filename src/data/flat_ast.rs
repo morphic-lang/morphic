@@ -8,13 +8,6 @@ use crate::util::id_vec::IdVec;
 
 id_type!(pub LocalId);
 
-#[derive(Clone, Copy, Debug)]
-pub enum ArithOp {
-    Op(first_ord::NumType, first_ord::BinOp, LocalId, LocalId),
-    Cmp(first_ord::NumType, first_ord::Comparison, LocalId, LocalId),
-    Negate(first_ord::NumType, LocalId),
-}
-
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Item(
@@ -69,7 +62,6 @@ pub enum Expr {
     WrapCustom(first_ord::CustomTypeId, LocalId),
     UnwrapCustom(first_ord::CustomTypeId, LocalId),
 
-    ArithOp(ArithOp),
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),
     IoOp(IoOp),

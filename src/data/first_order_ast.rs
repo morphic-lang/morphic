@@ -40,28 +40,6 @@ pub enum IoOp {
     Output(Box<Expr>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Comparison {
-    Less,
-    LessEqual,
-    Equal,
-}
-
-#[derive(Clone, Debug)]
-pub enum ArithOp {
-    Op(NumType, BinOp, Box<Expr>, Box<Expr>),
-    Cmp(NumType, Comparison, Box<Expr>, Box<Expr>),
-    Negate(NumType, Box<Expr>),
-}
-
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Item(
@@ -97,7 +75,6 @@ impl LocalId {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    ArithOp(ArithOp),
     Intrinsic(Intrinsic, Box<Expr>),
     ArrayOp(ArrayOp),
     IoOp(IoOp),

@@ -36,7 +36,6 @@ pub enum Expr {
     WrapCustom(special::CustomTypeId, flat::LocalId),
     UnwrapCustom(special::CustomTypeId, flat::LocalId),
 
-    ArithOp(flat::ArithOp),
     Intrinsic(Intrinsic, flat::LocalId),
     ArrayOp(
         constrain::RepChoice,

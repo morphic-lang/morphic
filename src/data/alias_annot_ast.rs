@@ -121,7 +121,6 @@ pub enum Expr {
     WrapCustom(first_ord::CustomTypeId, flat::LocalId),
     UnwrapCustom(first_ord::CustomTypeId, flat::LocalId),
 
-    ArithOp(flat::ArithOp),
     Intrinsic(Intrinsic, flat::LocalId),
     ArrayOp(ArrayOp),
     IoOp(IoOp),

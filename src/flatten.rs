@@ -196,54 +196,12 @@ fn flatten_expr(
     }
 
     match expr {
-        anon::Expr::ArithOp(anon::ArithOp::Op(num_type, op, left, right)) => {
-            let (left_local, left_type) = flatten_expr(orig, ctx, builder, left);
-            let (right_local, right_type) = flatten_expr(orig, ctx, builder, right);
-
-            let type_ = anon::Type::Num(*num_type);
-            debug_assert_eq!(&left_type, &type_);
-            debug_assert_eq!(&right_type, &type_);
-
-            bind(
-                builder,
-                type_,
-                flat::Expr::ArithOp(flat::ArithOp::Op(*num_type, *op, left_local, right_local)),
-            )
-        }
-
-        anon::Expr::ArithOp(anon::ArithOp::Cmp(num_type, cmp, left, right)) => {
-            let (left_local, left_type) = flatten_expr(orig, ctx, builder, left);
-            let (right_local, right_type) = flatten_expr(orig, ctx, builder, right);
-
-            let operand_type = anon::Type::Num(*num_type);
-            debug_assert_eq!(&left_type, &operand_type);
-            debug_assert_eq!(&right_type, &operand_type);
-
-            bind(
-                builder,
-                anon::Type::Bool,
-                flat::Expr::ArithOp(flat::ArithOp::Cmp(*num_type, *cmp, left_local, right_local)),
-            )
-        }
-
-        anon::Expr::ArithOp(anon::ArithOp::Negate(num_type, val)) => {
-            let (val_local, val_type) = flatten_expr(orig, ctx, builder, val);
-
-            let type_ = anon::Type::Num(*num_type);
-            debug_assert_eq!(&val_type, &type_);
-
-            bind(
-                builder,
-                type_.clone(),
-                flat::Expr::ArithOp(flat::ArithOp::Negate(*num_type, val_local)),
-            )
-        }
-
         anon::Expr::Intrinsic(intr, arg) => {
             let (arg_local, arg_type) = flatten_expr(orig, ctx, builder, arg);
 
             fn trans_type(type_: &intrs::Type) -> anon::Type {
                 match type_ {
+                    intrs::Type::Bool => anon::Type::Bool,
                     intrs::Type::Num(num_type) => anon::Type::Num(*num_type),
                     intrs::Type::Tuple(items) => {
                         anon::Type::Tuple(items.iter().map(trans_type).collect())

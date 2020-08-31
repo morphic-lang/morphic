@@ -224,8 +224,6 @@ fn trans_expr(
 
         special::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
 
-        special::Expr::ArithOp(op) => tail::Expr::ArithOp(*op),
-
         special::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
 
         special::Expr::ArrayOp(rep, item_type, op) => {

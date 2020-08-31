@@ -8,6 +8,7 @@ use std::iter;
 use std::path::{Path, PathBuf};
 
 use crate::cli;
+use crate::data::intrinsics as intrs;
 use crate::data::profile as prof;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
@@ -259,10 +260,15 @@ lazy_static! {
         global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
 
         for &(intrinsic, name) in INTRINSIC_NAMES {
-            global_map.insert(
-                raw::ValName(name.to_owned()),
-                res::GlobalId::Intrinsic(intrinsic),
-            );
+            match name {
+                intrs::Name::Op { debug_name: _ } => {}
+                intrs::Name::Func { source_name } => {
+                    global_map.insert(
+                        raw::ValName(source_name.to_owned()),
+                        res::GlobalId::Intrinsic(intrinsic),
+                    );
+                }
+            }
         }
 
         global_map
@@ -938,8 +944,6 @@ fn resolve_expr(
             Ok(res::Expr::Global(global_id))
         }
 
-        &raw::Expr::Op(arith_op) => Ok(res::Expr::Global(res::GlobalId::ArithOp(arith_op))),
-
         raw::Expr::Ctor(path, name) => {
             let (type_, variant) =
                 resolve_ctor_with_builtins(global_mods, local_mod_map, path, name)?;
@@ -990,7 +994,7 @@ fn resolve_expr(
             let res_arg = resolve_expr(global_mods, local_mod_map, local_ctx, arg)?;
             Ok(res::Expr::App(
                 Purity::Pure,
-                Box::new(res::Expr::Global(res::GlobalId::ArithOp(*op))),
+                Box::new(res::Expr::Global(res::GlobalId::Intrinsic(*op))),
                 Box::new(res_arg),
             ))
         }

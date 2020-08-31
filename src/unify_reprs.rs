@@ -433,6 +433,7 @@ fn instantate_condition(
 fn instantiate_intrinsic_sig(sig: &intrs::Signature) -> (SolverType, SolverType) {
     fn trans_type(type_: &intrs::Type) -> SolverType {
         match type_ {
+            intrs::Type::Bool => unif::Type::Bool,
             intrs::Type::Num(num_type) => unif::Type::Num(*num_type),
             intrs::Type::Tuple(items) => unif::Type::Tuple(items.iter().map(trans_type).collect()),
         }
@@ -626,16 +627,6 @@ fn instantiate_expr(
                 unif::Expr::UnwrapCustom(*custom, rep_vars.clone(), *wrapped),
                 content_type_inst,
             )
-        }
-
-        mutation::Expr::ArithOp(op) => {
-            let ret_type = match op {
-                flat::ArithOp::Op(num_type, _, _, _) => unif::Type::Num(*num_type),
-                flat::ArithOp::Cmp(_, _, _, _) => unif::Type::Bool,
-                flat::ArithOp::Negate(num_type, _) => unif::Type::Num(*num_type),
-            };
-
-            (unif::Expr::ArithOp(*op), ret_type)
         }
 
         mutation::Expr::Intrinsic(intr, arg) => {
@@ -1152,8 +1143,6 @@ fn extract_expr(
 
             unif::Expr::UnwrapCustom(custom, rep_args_extracted, wrapped)
         }
-
-        unif::Expr::ArithOp(op) => unif::Expr::ArithOp(op),
 
         unif::Expr::Intrinsic(intr, arg) => unif::Expr::Intrinsic(intr, arg),
 

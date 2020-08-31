@@ -101,7 +101,6 @@ fn constrain_expr(
         | unif::Expr::UnwrapVariant(_, _)
         | unif::Expr::WrapCustom(_, _, _)
         | unif::Expr::UnwrapCustom(_, _, _)
-        | unif::Expr::ArithOp(_)
         | unif::Expr::IoOp(_, mutation::IoOp::Input)
         | unif::Expr::ArrayLit(_, _, _)
         | unif::Expr::BoolLit(_)

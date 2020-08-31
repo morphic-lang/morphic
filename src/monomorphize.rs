@@ -17,11 +17,6 @@ fn resolve_expr(
     expr: &typed::Expr,
 ) -> mono::Expr {
     match expr {
-        typed::Expr::Global(res::GlobalId::ArithOp(op), args) => {
-            debug_assert!(args.is_empty());
-            mono::Expr::ArithOp(*op)
-        }
-
         typed::Expr::Global(res::GlobalId::Intrinsic(intr), args) => {
             debug_assert!(args.is_empty());
             mono::Expr::Intrinsic(*intr)

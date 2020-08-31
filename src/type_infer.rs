@@ -483,6 +483,7 @@ enum AnnotPattern {
 fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> res::TypeScheme {
     fn trans_type(type_: &intrs::Type) -> res::Type {
         match type_ {
+            intrs::Type::Bool => res::Type::App(res::TypeId::Bool, vec![]),
             intrs::Type::Num(NumType::Byte) => res::Type::App(res::TypeId::Byte, vec![]),
             intrs::Type::Num(NumType::Int) => res::Type::App(res::TypeId::Int, vec![]),
             intrs::Type::Num(NumType::Float) => res::Type::App(res::TypeId::Float, vec![]),
@@ -517,10 +518,6 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         App(Int, vec![])
     }
 
-    fn float() -> res::Type {
-        App(Float, vec![])
-    }
-
     fn array(arg: res::Type) -> res::Type {
         App(Array, vec![arg])
     }
@@ -537,30 +534,6 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         Tuple(vec![fst, snd])
     }
 
-    fn byte_binop() -> res::Type {
-        func(pair(byte(), byte()), byte())
-    }
-
-    fn byte_comp() -> res::Type {
-        func(pair(byte(), byte()), bool_())
-    }
-
-    fn int_binop() -> res::Type {
-        func(pair(int(), int()), int())
-    }
-
-    fn int_comp() -> res::Type {
-        func(pair(int(), int()), bool_())
-    }
-
-    fn float_binop() -> res::Type {
-        func(pair(float(), float()), float())
-    }
-
-    fn float_comp() -> res::Type {
-        func(pair(float(), float()), bool_())
-    }
-
     fn scheme(num_params: usize, body: res::Type) -> res::TypeScheme {
         res::TypeScheme { num_params, body }
     }
@@ -570,42 +543,6 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
     }
 
     match global {
-        res::GlobalId::ArithOp(op) => {
-            use crate::data::raw_ast::Op::*;
-            let body = match op {
-                AddByte => byte_binop(),
-                SubByte => byte_binop(),
-                MulByte => byte_binop(),
-                DivByte => byte_binop(),
-                NegByte => func(byte(), byte()),
-
-                EqByte => byte_comp(),
-                LtByte => byte_comp(),
-                LteByte => byte_comp(),
-
-                AddInt => int_binop(),
-                SubInt => int_binop(),
-                MulInt => int_binop(),
-                DivInt => int_binop(),
-                NegInt => func(int(), int()),
-
-                EqInt => int_comp(),
-                LtInt => int_comp(),
-                LteInt => int_comp(),
-
-                AddFloat => float_binop(),
-                SubFloat => float_binop(),
-                MulFloat => float_binop(),
-                DivFloat => float_binop(),
-                NegFloat => func(float(), float()),
-
-                EqFloat => float_comp(),
-                LtFloat => float_comp(),
-                LteFloat => float_comp(),
-            };
-            Cow::Owned(scheme(0, body))
-        }
-
         res::GlobalId::Intrinsic(intr) => Cow::Owned(intrinsic_sig_to_scheme(&intrinsic_sig(intr))),
 
         res::GlobalId::ArrayOp(op) => {

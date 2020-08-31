@@ -69,31 +69,6 @@ fn trans_expr(
     expr: &first_ord::Expr,
 ) -> anon::Expr {
     match expr {
-        first_ord::Expr::ArithOp(first_ord::ArithOp::Op(num_type, op, left, right)) => {
-            anon::Expr::ArithOp(anon::ArithOp::Op(
-                *num_type,
-                *op,
-                Box::new(trans_expr(typedefs, left)),
-                Box::new(trans_expr(typedefs, right)),
-            ))
-        }
-
-        first_ord::Expr::ArithOp(first_ord::ArithOp::Cmp(num_type, cmp, left, right)) => {
-            anon::Expr::ArithOp(anon::ArithOp::Cmp(
-                *num_type,
-                *cmp,
-                Box::new(trans_expr(typedefs, left)),
-                Box::new(trans_expr(typedefs, right)),
-            ))
-        }
-
-        first_ord::Expr::ArithOp(first_ord::ArithOp::Negate(num_type, body)) => {
-            anon::Expr::ArithOp(anon::ArithOp::Negate(
-                *num_type,
-                Box::new(trans_expr(typedefs, body)),
-            ))
-        }
-
         first_ord::Expr::Intrinsic(intr, arg) => {
             anon::Expr::Intrinsic(*intr, Box::new(trans_expr(typedefs, arg)))
         }

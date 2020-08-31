@@ -220,8 +220,6 @@ fn resolve_expr(
             *wrapped,
         ),
 
-        &unif::Expr::ArithOp(op) => special::Expr::ArithOp(op),
-
         &unif::Expr::Intrinsic(intr, arg) => special::Expr::Intrinsic(intr, arg),
 
         unif::Expr::ArrayOp(rep_var, item_type, _array_status, op) => special::Expr::ArrayOp(

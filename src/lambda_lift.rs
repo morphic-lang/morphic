@@ -87,8 +87,6 @@ fn lift_expr<'a>(
     lifted_from: mono::CustomGlobalId,
 ) -> lifted::Expr {
     match expr {
-        &mono::Expr::ArithOp(op) => lifted::Expr::ArithOp(op),
-
         &mono::Expr::Intrinsic(intr) => lifted::Expr::Intrinsic(intr),
 
         mono::Expr::ArrayOp(op, type_) => lifted::Expr::ArrayOp(*op, type_.clone()),

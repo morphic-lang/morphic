@@ -125,10 +125,6 @@ impl<'a> Context<'a> {
                 target_cases.0.extend(resolved_template.0);
             }
 
-            annot::Requirement::ArithOp(op) => {
-                target_cases.0.insert(special::FuncCase::ArithOp(*op));
-            }
-
             annot::Requirement::Intrinsic(intr) => {
                 target_cases.0.insert(special::FuncCase::Intrinsic(*intr));
             }
@@ -372,10 +368,6 @@ impl<'a> Context<'a> {
         params: &IdVec<annot::RepParamId, special::FuncRep>,
     ) -> special::Expr {
         match expr {
-            annot::Expr::ArithOp(op, solution) => {
-                special::Expr::ArithOp(*op, self.resolve_solution(solution, params))
-            }
-
             annot::Expr::Intrinsic(intr, solution) => {
                 special::Expr::Intrinsic(*intr, self.resolve_solution(solution, params))
             }
