@@ -1,12 +1,12 @@
-id(x: a): a = x
+pub id(x: a): a = x
 
-compose(f: a -> b, g: b -> c): (a -> c) =
+pub compose(f: a -> b, g: b -> c): (a -> c) =
   \x -> g(f(x))
 
-const(x: a): b -> a =
+pub const(x: a): b -> a =
   \_ -> x
 
-iterate(func: a -> a, n: Int): (a -> a) =
+pub iterate(func: a -> a, n: Int): (a -> a) =
   if n <= 0 {
     id
   } else {

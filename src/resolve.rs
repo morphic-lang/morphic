@@ -1,4 +1,5 @@
 use crate::data::purity::Purity;
+use crate::data::visibility::Visibility;
 use lalrpop_util::ParseError;
 use lazy_static::lazy_static;
 use std::collections::btree_map::Entry;
@@ -38,6 +39,10 @@ pub enum ErrorKind {
     VarNotFound(String),
     CtorNotFound(String),
     ModNotFound(String),
+    TypeNotVisible(String),
+    VarNotVisible(String),
+    CtorNotVisible(String),
+    ModNotVisible(String),
     MainNotFound,
 }
 
@@ -194,6 +199,34 @@ impl Error {
                     name
                 ),
             ),
+            TypeNotVisible(name) => (
+                "Type Not Visible",
+                format!(
+                    "Type '{}' is private and therefore not available in the current scope.",
+                    name
+                ),
+            ),
+            VarNotVisible(name) => (
+                "Variable Not Visible",
+                format!(
+                    "Variable '{}' is private and therefore not available in the current scope.",
+                    name
+                ),
+            ),
+            CtorNotVisible(name) => (
+                "Constructor Not Visible",
+                format!(
+                    "Constructor '{}' is private and therefore not available in the current scope.",
+                    name
+                ),
+            ),
+            ModNotVisible(name) => (
+                "Module Not Visible",
+                format!(
+                    "Module '{}' is private and therefore not available in the current scope.",
+                    name
+                ),
+            ),
             MainNotFound => (
                 "Main Not Found",
                 format!(
@@ -277,10 +310,10 @@ lazy_static! {
 
 #[derive(Clone, Debug)]
 struct ModMap {
-    mods: BTreeMap<raw::ModName, res::ModId>,
-    types: BTreeMap<raw::TypeName, res::TypeId>,
-    ctors: BTreeMap<raw::CtorName, (res::CustomTypeId, res::VariantId)>,
-    vals: BTreeMap<raw::ValName, res::GlobalId>,
+    mods: BTreeMap<raw::ModName, (Visibility, res::ModId)>,
+    types: BTreeMap<raw::TypeName, (Visibility, res::TypeId)>,
+    ctors: BTreeMap<raw::CtorName, (Visibility, res::CustomTypeId, res::VariantId)>,
+    vals: BTreeMap<raw::ValName, (Visibility, res::GlobalId)>,
 }
 
 #[derive(Clone, Debug)]
@@ -387,7 +420,7 @@ pub fn resolve_program(
         res::ModDeclLoc::Root,
     )?;
 
-    let main_proc = if let Some(&res::GlobalId::Custom(id)) = ctx.mods[main_mod]
+    let main_proc = if let Some(&(_, res::GlobalId::Custom(id))) = ctx.mods[main_mod]
         .vals
         .get(&raw::ValName("main".to_owned()))
     {
@@ -471,7 +504,7 @@ fn resolve_mod(
 
         for item in content.0 {
             match item {
-                raw::Item::TypeDef(name, params, variants) => {
+                raw::Item::TypeDef(visibility, name, params, variants) => {
                     let type_id = ctx.types.push(None);
                     {
                         let type_symbols_id = ctx.type_symbols.push(res::TypeSymbols {
@@ -480,7 +513,7 @@ fn resolve_mod(
                             variant_symbols: IdVec::from_items(
                                 variants
                                     .iter()
-                                    .map(|(variant_name, _)| res::VariantSymbols {
+                                    .map(|(_, variant_name, _)| res::VariantSymbols {
                                         variant_name: variant_name.clone(),
                                     })
                                     .collect(),
@@ -492,16 +525,16 @@ fn resolve_mod(
                     insert_unique(
                         &mut mod_map.types,
                         name.clone(),
-                        res::TypeId::Custom(type_id),
+                        (visibility, res::TypeId::Custom(type_id)),
                     )
                     .map_err(|()| ErrorKind::DuplicateTypeName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
 
-                    for (idx, (ctor_name, _)) in variants.iter().enumerate() {
+                    for (idx, (ctor_visibility, ctor_name, _)) in variants.iter().enumerate() {
                         insert_unique(
                             &mut mod_map.ctors,
                             ctor_name.clone(),
-                            (type_id, res::VariantId(idx)),
+                            (*ctor_visibility, type_id, res::VariantId(idx)),
                         )
                         .map_err(|()| ErrorKind::DuplicateCtorName(name.0.clone()).into())
                         .map_err(locate_path(file_path))?;
@@ -510,7 +543,7 @@ fn resolve_mod(
                     pending_type_defs.push((type_id, params, variants));
                 }
 
-                raw::Item::ValDef(name, type_, body) => {
+                raw::Item::ValDef(visibility, name, type_, body) => {
                     let val_id = ctx.vals.push(None);
                     {
                         let val_symbols_id = ctx.val_symbols.push(None);
@@ -520,7 +553,7 @@ fn resolve_mod(
                     insert_unique(
                         &mut mod_map.vals,
                         name.clone(),
-                        res::GlobalId::Custom(val_id),
+                        (visibility, res::GlobalId::Custom(val_id)),
                     )
                     .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
@@ -528,7 +561,7 @@ fn resolve_mod(
                     pending_val_defs.push((name, val_id, type_, body));
                 }
 
-                raw::Item::ModDef(name, spec, bindings, expose) => {
+                raw::Item::ModDef(visibility, name, spec, bindings, expose) => {
                     let sub_mod_bindings: BTreeMap<_, _> = bindings
                         .into_iter()
                         .map(|binding| {
@@ -554,7 +587,7 @@ fn resolve_mod(
                         spec,
                     )?;
 
-                    insert_unique(&mut mod_map.mods, name.clone(), sub_mod_id)
+                    insert_unique(&mut mod_map.mods, name.clone(), (visibility, sub_mod_id))
                         .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()).into())
                         .map_err(locate_path(file_path))?;
 
@@ -568,9 +601,13 @@ fn resolve_mod(
                         .ok_or_else(|| ErrorKind::ModNotFound(name.0.clone()).into())
                         .map_err(locate_path(file_path))?;
 
-                    insert_unique(&mut mod_map.mods, name.clone(), bound_mod_id)
-                        .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()).into())
-                        .map_err(locate_path(file_path))?;
+                    insert_unique(
+                        &mut mod_map.mods,
+                        name.clone(),
+                        (Visibility::Private, bound_mod_id),
+                    )
+                    .map_err(|()| ErrorKind::DuplicateModName(name.0.clone()).into())
+                    .map_err(locate_path(file_path))?;
 
                     resolve_exposures(&ctx.mods, &mut mod_map, bound_mod_id, expose)
                         .map_err(locate_path(file_path))?;
@@ -602,7 +639,7 @@ fn resolve_mod(
         let resolved_variants = IdVec::from_items(
             variants
                 .iter()
-                .map(|(_, variant_type)| match variant_type {
+                .map(|(_, _, variant_type)| match variant_type {
                     None => Ok(None),
                     Some(variant_type) => Ok(Some(resolve_type(
                         &ctx.mods,
@@ -695,12 +732,12 @@ fn resolve_mod_from_file(
 
 fn resolve_mod_path(
     global_mods: &IdVec<res::ModId, ModMap>,
-    local_mods: &BTreeMap<raw::ModName, res::ModId>,
+    local_mods: &BTreeMap<raw::ModName, (Visibility, res::ModId)>,
     path: &raw::ModPath,
 ) -> Result<res::ModId, Error> {
     let local_mod_name = path.0.first().expect("ModPath should not be empty");
 
-    let mut result = *local_mods
+    let (_, mut result) = *local_mods
         .get(&local_mod_name)
         .ok_or_else(|| ErrorKind::ModNotFound(local_mod_name.0.clone()))?;
 
@@ -716,10 +753,14 @@ fn resolve_sub_mod(
     mod_id: res::ModId,
     sub_mod_name: &raw::ModName,
 ) -> Result<res::ModId, Error> {
-    Ok(*global_mods[mod_id]
+    let (visibility, id) = *global_mods[mod_id]
         .mods
         .get(sub_mod_name)
-        .ok_or_else(|| ErrorKind::ModNotFound(sub_mod_name.0.clone()))?)
+        .ok_or_else(|| ErrorKind::ModNotFound(sub_mod_name.0.clone()))?;
+    match visibility {
+        Visibility::Public => Ok(id),
+        Visibility::Private => Err(ErrorKind::ModNotVisible(sub_mod_name.0.clone()).into()),
+    }
 }
 
 fn resolve_mod_val(
@@ -727,10 +768,14 @@ fn resolve_mod_val(
     mod_id: res::ModId,
     val_name: &raw::ValName,
 ) -> Result<res::GlobalId, Error> {
-    Ok(*global_mods[mod_id]
+    let (visibility, id) = *global_mods[mod_id]
         .vals
         .get(val_name)
-        .ok_or_else(|| ErrorKind::VarNotFound(val_name.0.clone()))?)
+        .ok_or_else(|| ErrorKind::VarNotFound(val_name.0.clone()))?;
+    match visibility {
+        Visibility::Public => Ok(id),
+        Visibility::Private => Err(ErrorKind::VarNotVisible(val_name.0.clone()).into()),
+    }
 }
 
 fn resolve_mod_type(
@@ -738,10 +783,14 @@ fn resolve_mod_type(
     mod_id: res::ModId,
     type_name: &raw::TypeName,
 ) -> Result<res::TypeId, Error> {
-    Ok(*global_mods[mod_id]
+    let (visibility, id) = *global_mods[mod_id]
         .types
         .get(type_name)
-        .ok_or_else(|| ErrorKind::TypeNotFound(type_name.0.clone()))?)
+        .ok_or_else(|| ErrorKind::TypeNotFound(type_name.0.clone()))?;
+    match visibility {
+        Visibility::Public => Ok(id),
+        Visibility::Private => Err(ErrorKind::TypeNotVisible(type_name.0.clone()).into()),
+    }
 }
 
 fn resolve_mod_ctor(
@@ -749,10 +798,14 @@ fn resolve_mod_ctor(
     mod_id: res::ModId,
     ctor_name: &raw::CtorName,
 ) -> Result<(res::CustomTypeId, res::VariantId), Error> {
-    Ok(*global_mods[mod_id]
+    let (visibility, custom_id, variant_id) = *global_mods[mod_id]
         .ctors
         .get(ctor_name)
-        .ok_or_else(|| ErrorKind::CtorNotFound(ctor_name.0.clone()))?)
+        .ok_or_else(|| ErrorKind::CtorNotFound(ctor_name.0.clone()))?;
+    match visibility {
+        Visibility::Public => Ok((custom_id, variant_id)),
+        Visibility::Private => Err(ErrorKind::CtorNotVisible(ctor_name.0.clone()).into()),
+    }
 }
 
 fn resolve_exposures(
@@ -765,20 +818,28 @@ fn resolve_exposures(
         raw::ExposeSpec::Specific(items) => {
             for item in items {
                 match item {
-                    raw::ExposeItem::Val(name) => {
+                    raw::ExposeItem::Val(visibility, name) => {
                         let resolved_val = resolve_mod_val(global_mods, exposed_id, &name)?;
 
-                        insert_unique(&mut local_mod_map.vals, name.clone(), resolved_val)
-                            .map_err(|()| ErrorKind::DuplicateVarName(name.0))?;
+                        insert_unique(
+                            &mut local_mod_map.vals,
+                            name.clone(),
+                            (visibility, resolved_val),
+                        )
+                        .map_err(|()| ErrorKind::DuplicateVarName(name.0))?;
                     }
 
-                    raw::ExposeItem::Type(name, variants) => {
+                    raw::ExposeItem::Type(visibility, name, variants) => {
                         let resolved_type = resolve_mod_type(global_mods, exposed_id, &name)?;
 
-                        insert_unique(&mut local_mod_map.types, name.clone(), resolved_type)
-                            .map_err(|()| ErrorKind::DuplicateTypeName(name.0))?;
+                        insert_unique(
+                            &mut local_mod_map.types,
+                            name.clone(),
+                            (visibility, resolved_type),
+                        )
+                        .map_err(|()| ErrorKind::DuplicateTypeName(name.0))?;
 
-                        for ctor_name in variants {
+                        for (ctor_visibility, ctor_name) in variants {
                             let (ctor_type, resolved_ctor) =
                                 resolve_mod_ctor(global_mods, exposed_id, &ctor_name)?;
 
@@ -789,17 +850,21 @@ fn resolve_exposures(
                             insert_unique(
                                 &mut local_mod_map.ctors,
                                 ctor_name.clone(),
-                                (ctor_type, resolved_ctor),
+                                (ctor_visibility, ctor_type, resolved_ctor),
                             )
                             .map_err(|()| ErrorKind::DuplicateCtorName(ctor_name.0))?;
                         }
                     }
 
-                    raw::ExposeItem::Mod(name, sub_expose) => {
+                    raw::ExposeItem::Mod(visibility, name, sub_expose) => {
                         let resolved_sub_mod = resolve_sub_mod(global_mods, exposed_id, &name)?;
 
-                        insert_unique(&mut local_mod_map.mods, name.clone(), resolved_sub_mod)
-                            .map_err(|()| ErrorKind::DuplicateModName(name.0))?;
+                        insert_unique(
+                            &mut local_mod_map.mods,
+                            name.clone(),
+                            (visibility, resolved_sub_mod),
+                        )
+                        .map_err(|()| ErrorKind::DuplicateModName(name.0))?;
 
                         resolve_exposures(
                             global_mods,
@@ -816,36 +881,30 @@ fn resolve_exposures(
     Ok(())
 }
 
-fn resolve_mod_map<'a>(
-    global_mods: &'a IdVec<res::ModId, ModMap>,
-    local_mod_map: &'a ModMap,
-    path: &raw::ModPath,
-) -> Result<&'a ModMap, Error> {
-    if path.0.is_empty() {
-        Ok(local_mod_map)
-    } else {
-        Ok(&global_mods[resolve_mod_path(global_mods, &local_mod_map.mods, path)?])
-    }
-}
-
 fn resolve_type_with_builtins(
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
     path: &raw::ModPath,
     name: &raw::TypeName,
 ) -> Result<res::TypeId, Error> {
-    if let Some(&id) = resolve_mod_map(global_mods, local_mod_map, path)?
-        .types
-        .get(name)
-    {
-        return Ok(id);
-    }
     if path.0.is_empty() {
-        if let Some(&id) = BUILTIN_TYPES.get(name) {
-            return Ok(id);
-        }
+        local_mod_map
+            .types
+            .get(name)
+            .map(|(_, id)| id)
+            .or_else(|| BUILTIN_TYPES.get(name))
+            .cloned()
+            .ok_or_else(|| ErrorKind::TypeNotFound(name.0.clone()).into())
+    } else {
+        global_mods[resolve_mod_path(global_mods, &local_mod_map.mods, path)?]
+            .types
+            .get(name)
+            .ok_or_else(|| ErrorKind::TypeNotFound(name.0.clone()).into())
+            .and_then(|(visibility, id)| match visibility {
+                Visibility::Public => Ok(*id),
+                Visibility::Private => Err(ErrorKind::TypeNotVisible(name.0.clone()).into()),
+            })
     }
-    Err(ErrorKind::TypeNotFound(name.0.clone()).into())
 }
 
 fn resolve_type(
@@ -895,18 +954,23 @@ fn resolve_ctor_with_builtins(
     path: &raw::ModPath,
     name: &raw::CtorName,
 ) -> Result<(res::TypeId, res::VariantId), Error> {
-    if let Some(&(type_id, variant_id)) = resolve_mod_map(global_mods, local_mod_map, path)?
-        .ctors
-        .get(name)
-    {
-        return Ok((res::TypeId::Custom(type_id), variant_id));
-    }
     if path.0.is_empty() {
-        if let Some(&ids) = BUILTIN_CTORS.get(name) {
-            return Ok(ids);
-        }
+        local_mod_map
+            .ctors
+            .get(name)
+            .map(|(_, custom_id, variant_id)| (res::TypeId::Custom(*custom_id), *variant_id))
+            .or_else(|| BUILTIN_CTORS.get(name).cloned())
+            .ok_or_else(|| ErrorKind::CtorNotFound(name.0.clone()).into())
+    } else {
+        global_mods[resolve_mod_path(global_mods, &local_mod_map.mods, path)?]
+            .ctors
+            .get(name)
+            .ok_or_else(|| ErrorKind::CtorNotFound(name.0.clone()).into())
+            .and_then(|(visibility, custom_id, variant_id)| match visibility {
+                Visibility::Public => Ok((res::TypeId::Custom(*custom_id), *variant_id)),
+                Visibility::Private => Err(ErrorKind::CtorNotVisible(name.0.clone()).into()),
+            })
     }
-    Err(ErrorKind::CtorNotFound(name.0.clone()).into())
 }
 
 fn args_to_expr(args_lo: usize, args_hi: usize, args: Vec<res::Expr>) -> res::Expr {
@@ -929,7 +993,7 @@ fn resolve_expr(
         raw::Expr::Var(name) => {
             if let Some(local_id) = local_ctx.get(name) {
                 Ok(res::Expr::Local(local_id))
-            } else if let Some(&global_id) = local_mod_map.vals.get(name) {
+            } else if let Some(&(_, global_id)) = local_mod_map.vals.get(name) {
                 Ok(res::Expr::Global(global_id))
             } else if let Some(&global_id) = BUILTIN_GLOBALS.get(name) {
                 Ok(res::Expr::Global(global_id))
