@@ -414,7 +414,7 @@ pub fn resolve_program(
         res::ModDeclLoc::Root,
     )?;
 
-    let main_proc = if let Some((_, res::GlobalId::Custom(id))) = ctx.mods[main_mod]
+    let main_proc = if let Some(&(_, res::GlobalId::Custom(id))) = ctx.mods[main_mod]
         .vals
         .get(&raw::ValName("main".to_owned()))
     {
@@ -445,7 +445,7 @@ pub fn resolve_program(
         profile_points,
         vals,
         val_symbols,
-        main: *main_proc,
+        main: main_proc,
     })
 }
 
@@ -875,43 +875,29 @@ fn resolve_exposures(
     Ok(())
 }
 
-fn resolve_mod_map<'a>(
-    global_mods: &'a IdVec<res::ModId, ModMap>,
-    local_mod_map: &'a ModMap,
-    path: &raw::ModPath,
-) -> Result<&'a ModMap, Error> {
-    if path.0.is_empty() {
-        Ok(local_mod_map)
-    } else {
-        Ok(&global_mods[resolve_mod_path(global_mods, &local_mod_map.mods, path)?])
-    }
-}
-
 fn resolve_type_with_builtins(
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
     path: &raw::ModPath,
     name: &raw::TypeName,
 ) -> Result<res::TypeId, Error> {
-    let type_not_found = match resolve_mod_map(global_mods, local_mod_map, path)?
-        .types
-        .get(name)
-    {
-        Some(&(Visibility::Public, id)) => return Ok(id),
-        Some(&(Visibility::Private, _)) => false,
-        None => true,
-    };
-
     if path.0.is_empty() {
-        if let Some(&id) = BUILTIN_TYPES.get(name) {
-            return Ok(id);
-        }
-    }
-
-    if type_not_found {
-        Err(ErrorKind::TypeNotFound(name.0.clone()).into())
+        local_mod_map
+            .types
+            .get(name)
+            .map(|(_, id)| id)
+            .or_else(|| BUILTIN_TYPES.get(name))
+            .cloned()
+            .ok_or_else(|| ErrorKind::TypeNotFound(name.0.clone()).into())
     } else {
-        Err(ErrorKind::TypeNotVisible(name.0.clone()).into())
+        global_mods[resolve_mod_path(global_mods, &local_mod_map.mods, path)?]
+            .types
+            .get(name)
+            .ok_or_else(|| ErrorKind::TypeNotFound(name.0.clone()).into())
+            .and_then(|(visibility, id)| match visibility {
+                Visibility::Public => Ok(*id),
+                Visibility::Private => Err(ErrorKind::TypeNotVisible(name.0.clone()).into()),
+            })
     }
 }
 
@@ -962,27 +948,22 @@ fn resolve_ctor_with_builtins(
     path: &raw::ModPath,
     name: &raw::CtorName,
 ) -> Result<(res::TypeId, res::VariantId), Error> {
-    let type_not_found = match resolve_mod_map(global_mods, local_mod_map, path)?
-        .ctors
-        .get(name)
-    {
-        Some(&(Visibility::Public, type_id, variant_id)) => {
-            return Ok((res::TypeId::Custom(type_id), variant_id))
-        }
-        Some(&(Visibility::Private, _, _)) => true,
-        None => false,
-    };
-
     if path.0.is_empty() {
-        if let Some(&ids) = BUILTIN_CTORS.get(name) {
-            return Ok(ids);
-        }
-    }
-
-    if type_not_found {
-        Err(ErrorKind::CtorNotFound(name.0.clone()).into())
+        local_mod_map
+            .ctors
+            .get(name)
+            .map(|(_, custom_id, variant_id)| (res::TypeId::Custom(*custom_id), *variant_id))
+            .or_else(|| BUILTIN_CTORS.get(name).cloned())
+            .ok_or_else(|| ErrorKind::CtorNotFound(name.0.clone()).into())
     } else {
-        Err(ErrorKind::CtorNotVisible(name.0.clone()).into())
+        global_mods[resolve_mod_path(global_mods, &local_mod_map.mods, path)?]
+            .ctors
+            .get(name)
+            .ok_or_else(|| ErrorKind::CtorNotFound(name.0.clone()).into())
+            .and_then(|(visibility, custom_id, variant_id)| match visibility {
+                Visibility::Public => Ok((res::TypeId::Custom(*custom_id), *variant_id)),
+                Visibility::Private => Err(ErrorKind::CtorNotVisible(name.0.clone()).into()),
+            })
     }
 }
 
