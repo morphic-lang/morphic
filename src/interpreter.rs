@@ -1248,6 +1248,54 @@ fn interpret_expr(
                 heap.add(Value::Bool(lhs <= rhs))
             }
 
+            Expr::Intrinsic(Intrinsic::GtByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs > rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GtInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Bool(lhs > rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GtFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs > rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GteByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs >= rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GteInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Bool(lhs >= rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GteFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs >= rhs))
+            }
+
             Expr::Intrinsic(Intrinsic::EqByte, local_id) => {
                 let (lhs, rhs) = unwrap_binop_bytes(
                     heap,

@@ -482,20 +482,20 @@ ArithCompExpr_: syntax::Expr = {
   <left: ArithSumExpr> "=&" <right: ArithSumExpr> => syntax::binop(Intr::EqByte, left, right),
   <left: ArithSumExpr> "<&" <right: ArithSumExpr> => syntax::binop(Intr::LtByte, left, right),
   <left: ArithSumExpr> "<=&" <right: ArithSumExpr> => syntax::binop(Intr::LteByte, left, right),
-  <left: ArithSumExpr> ">&" <right: ArithSumExpr> => syntax::binop(Intr::LtByte, right, left),
-  <left: ArithSumExpr> ">=&" <right: ArithSumExpr> => syntax::binop(Intr::LteByte, right, left),
+  <left: ArithSumExpr> ">&" <right: ArithSumExpr> => syntax::binop(Intr::GtByte, left, right),
+  <left: ArithSumExpr> ">=&" <right: ArithSumExpr> => syntax::binop(Intr::GteByte, left, right),
 
   <left: ArithSumExpr> "=" <right: ArithSumExpr> => syntax::binop(Intr::EqInt, left, right),
   <left: ArithSumExpr> "<" <right: ArithSumExpr> => syntax::binop(Intr::LtInt, left, right),
   <left: ArithSumExpr> "<=" <right: ArithSumExpr> => syntax::binop(Intr::LteInt, left, right),
-  <left: ArithSumExpr> ">" <right: ArithSumExpr> => syntax::binop(Intr::LtInt, right, left),
-  <left: ArithSumExpr> ">=" <right: ArithSumExpr> => syntax::binop(Intr::LteInt, right, left),
+  <left: ArithSumExpr> ">" <right: ArithSumExpr> => syntax::binop(Intr::GtInt, left, right),
+  <left: ArithSumExpr> ">=" <right: ArithSumExpr> => syntax::binop(Intr::GteInt, left, right),
 
   <left: ArithSumExpr> "=." <right: ArithSumExpr> => syntax::binop(Intr::EqFloat, left, right),
   <left: ArithSumExpr> "<." <right: ArithSumExpr> => syntax::binop(Intr::LtFloat, left, right),
   <left: ArithSumExpr> "<=." <right: ArithSumExpr> => syntax::binop(Intr::LteFloat, left, right),
-  <left: ArithSumExpr> ">." <right: ArithSumExpr> => syntax::binop(Intr::LtFloat, right, left),
-  <left: ArithSumExpr> ">=." <right: ArithSumExpr> => syntax::binop(Intr::LteFloat, right, left),
+  <left: ArithSumExpr> ">." <right: ArithSumExpr> => syntax::binop(Intr::GtFloat, left, right),
+  <left: ArithSumExpr> ">=." <right: ArithSumExpr> => syntax::binop(Intr::GteFloat, left, right),
 };
 
 ArithCompExpr: syntax::Expr = {

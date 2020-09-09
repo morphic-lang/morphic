@@ -1378,6 +1378,42 @@ fn gen_expr<'a, 'b>(
                     .build_float_compare(FloatPredicate::OLE, lhs, rhs, "lte_float")
                     .into()
             }
+            Intrinsic::GtByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::UGT, lhs, rhs, "gt_byte")
+                    .into()
+            }
+            Intrinsic::GtInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::SGT, lhs, rhs, "gt_int")
+                    .into()
+            }
+            Intrinsic::GtFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OGT, lhs, rhs, "gt_float")
+                    .into()
+            }
+            Intrinsic::GteByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::UGE, lhs, rhs, "gte_byte")
+                    .into()
+            }
+            Intrinsic::GteInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::SGE, lhs, rhs, "gte_int")
+                    .into()
+            }
+            Intrinsic::GteFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OGE, lhs, rhs, "gte_float")
+                    .into()
+            }
             Intrinsic::EqByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder

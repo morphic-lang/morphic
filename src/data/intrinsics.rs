@@ -22,6 +22,8 @@ pub enum Intrinsic {
     EqByte,
     LtByte,
     LteByte,
+    GtByte,
+    GteByte,
 
     AddInt,
     SubInt,
@@ -32,6 +34,8 @@ pub enum Intrinsic {
     EqInt,
     LtInt,
     LteInt,
+    GtInt,
+    GteInt,
 
     AddFloat,
     SubFloat,
@@ -42,6 +46,8 @@ pub enum Intrinsic {
     EqFloat,
     LtFloat,
     LteFloat,
+    GtFloat,
+    GteFloat,
 
     // Intrinsic numeric functions
     ByteToInt,
