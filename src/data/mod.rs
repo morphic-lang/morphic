@@ -1,5 +1,7 @@
 pub mod purity;
 
+pub mod visibility;
+
 pub mod num_type;
 
 pub mod intrinsics;

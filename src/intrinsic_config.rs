@@ -49,6 +49,8 @@ define_intrinsic_names![
     (EqByte, op_name("eq_byte")),
     (LtByte, op_name("lt_byte")),
     (LteByte, op_name("lte_byte")),
+    (GtByte, op_name("gt_byte")),
+    (GteByte, op_name("gte_byte")),
     (AddInt, op_name("add_int")),
     (SubInt, op_name("sub_int")),
     (MulInt, op_name("mul_int")),
@@ -57,6 +59,8 @@ define_intrinsic_names![
     (EqInt, op_name("eq_int")),
     (LtInt, op_name("lt_int")),
     (LteInt, op_name("lte_int")),
+    (GtInt, op_name("gt_int")),
+    (GteInt, op_name("gte_int")),
     (AddFloat, op_name("add_float")),
     (SubFloat, op_name("sub_float")),
     (MulFloat, op_name("mul_float")),
@@ -65,6 +69,8 @@ define_intrinsic_names![
     (EqFloat, op_name("eq_float")),
     (LtFloat, op_name("lt_float")),
     (LteFloat, op_name("lte_float")),
+    (GtFloat, op_name("gt_float")),
+    (GteFloat, op_name("gte_float")),
     // Intrinsic numeric functions
     // These names are used in the source language
     (ByteToInt, name("byte_to_int")),
@@ -128,9 +134,9 @@ pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
         NegByte => pure(byte(), byte()),
         NegFloat => pure(float(), float()),
 
-        EqByte | LtByte | LteByte => pure(tuple!(byte(), byte()), bool()),
-        EqInt | LtInt | LteInt => pure(tuple!(int(), int()), bool()),
-        EqFloat | LtFloat | LteFloat => pure(tuple!(float(), float()), bool()),
+        EqByte | LtByte | LteByte | GtByte | GteByte => pure(tuple!(byte(), byte()), bool()),
+        EqInt | LtInt | LteInt | GtInt | GteInt => pure(tuple!(int(), int()), bool()),
+        EqFloat | LtFloat | LteFloat | GtFloat | GteFloat => pure(tuple!(float(), float()), bool()),
 
         ByteToInt => pure(byte(), int()),
         ByteToIntSigned => pure(byte(), int()),

@@ -108,6 +108,52 @@ sample! { nested "samples/nested.mor";
     ];
 }
 
+sample! { order_of_eval "samples/order_of_eval.mor";
+    stdin = "";
+    stdout = lines! [
+        // <&
+        "left",
+        "right",
+        // <=&
+        "left",
+        "right",
+        // >&
+        "left",
+        "right",
+        // >=&
+        "left",
+        "right",
+
+        // <
+        "left",
+        "right",
+        // <=
+        "left",
+        "right",
+        // >
+        "left",
+        "right",
+        // >=
+        "left",
+        "right",
+
+        // <.
+        "left",
+        "right",
+        // <=.
+        "left",
+        "right",
+        // >.
+        "left",
+        "right",
+        // >=.
+        "left",
+        "right",
+
+        "done",
+    ];
+}
+
 sample! { pipe "samples/pipe.mor";
     stdin = "";
     stdout = "Completed all tests\n";

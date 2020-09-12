@@ -1,5 +1,6 @@
 use crate::data::intrinsics::Intrinsic;
 use crate::data::purity::Purity;
+use crate::data::visibility::Visibility;
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,9 +27,14 @@ pub struct Program(pub Vec<Item>);
 
 #[derive(Clone, Debug)]
 pub enum Item {
-    TypeDef(TypeName, Vec<TypeParam>, Vec<(CtorName, Option<Type>)>),
-    ValDef(ValName, Type, Expr),
-    ModDef(ModName, ModSpec, Vec<ModBinding>, ExposeSpec),
+    TypeDef(
+        Visibility,
+        TypeName,
+        Vec<TypeParam>,
+        Vec<(Visibility, CtorName, Option<Type>)>,
+    ),
+    ValDef(Visibility, ValName, Type, Expr),
+    ModDef(Visibility, ModName, ModSpec, Vec<ModBinding>, ExposeSpec),
     ModImport(ModName, ExposeSpec),
     ModExpose(ModPath, ExposeSpec),
 }
@@ -47,9 +53,9 @@ pub enum ModSpec {
 
 #[derive(Clone, Debug)]
 pub enum ExposeItem {
-    Val(ValName),
-    Type(TypeName, Vec<CtorName>),
-    Mod(ModName, Box<ExposeSpec>),
+    Val(Visibility, ValName),
+    Type(Visibility, TypeName, Vec<(Visibility, CtorName)>),
+    Mod(Visibility, ModName, Box<ExposeSpec>),
 }
 
 #[derive(Clone, Debug)]

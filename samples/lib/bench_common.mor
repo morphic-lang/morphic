@@ -3,7 +3,7 @@ import Core
     module Option expose { Option { Some, None } },
   }
 
-repeat(count: Int, body: () -> a): Option a =
+pub repeat(count: Int, body: () -> a): Option a =
   if count < 1 {
     None
   } else if count = 1 {

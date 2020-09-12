@@ -1,0 +1,17 @@
+proc main(): () =
+  let lt_b = do (proc \() -> do output("left\n") then 1b)() <& do (proc \() -> do output("right\n") then 0b)() in
+  let lte_b = do (proc \() -> do output("left\n") then 1b)() <=& do (proc \() -> do output("right\n") then 0b)() in
+  let gt_b = do (proc \() -> do output("left\n") then 1b)() >& do (proc \() -> do output("right\n") then 0b)() in
+  let gte_b = do (proc \() -> do output("left\n") then 1b)() >=& do (proc \() -> do output("right\n") then 0b)() in
+
+  let lt_i = do (proc \() -> do output("left\n") then 1)() < do (proc \() -> do output("right\n") then 0)() in
+  let lte_i = do (proc \() -> do output("left\n") then 1)() <= do (proc \() -> do output("right\n") then 0)() in
+  let gt_i = do (proc \() -> do output("left\n") then 1)() > do (proc \() -> do output("right\n") then 0)() in
+  let gte_i = do (proc \() -> do output("left\n") then 1)() >= do (proc \() -> do output("right\n") then 0)() in
+
+  let lt_f = do (proc \() -> do output("left\n") then 1.0)() <. do (proc \() -> do output("right\n") then 0.0)() in
+  let lte_f = do (proc \() -> do output("left\n") then 1.0)() <=. do (proc \() -> do output("right\n") then 0.0)() in
+  let gt_f = do (proc \() -> do output("left\n") then 1.0)() >. do (proc \() -> do output("right\n") then 0.0)() in
+  let gte_f = do (proc \() -> do output("left\n") then 1.0)() >=. do (proc \() -> do output("right\n") then 0.0)() in
+
+  do output("done\n")

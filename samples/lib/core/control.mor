@@ -1,11 +1,11 @@
-proc do_while(cond: a -> Bool, f: proc () -> a): () =
+pub proc do_while(cond: a -> Bool, f: proc () -> a): () =
     if cond(do f()) {
         do do_while(cond, f)
     } else {
         ()
     }
 
-proc while(init: a, cond: a -> Bool, f: proc () -> a): () =
+pub proc while(init: a, cond: a -> Bool, f: proc () -> a): () =
     if cond(init) {
         do do_while(cond, f)
     }
@@ -13,6 +13,6 @@ proc while(init: a, cond: a -> Bool, f: proc () -> a): () =
         ()
     }
 
-proc forever(f: proc () -> ()): () =
+pub proc forever(f: proc () -> ()): () =
     do f() then
     do forever(f)
