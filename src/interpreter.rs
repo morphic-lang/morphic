@@ -1,6 +1,7 @@
-use crate::data::first_order_ast::{BinOp, Comparison, NumType, VariantId};
+use crate::data::first_order_ast::{NumType, VariantId};
+use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast::{
-    ArithOp, ArrayOp, CustomFuncId, CustomTypeId, Expr, IoOp, LocalId, Program, Type,
+    ArrayOp, CustomFuncId, CustomTypeId, Expr, IoOp, LocalId, Program, Type,
 };
 use crate::data::repr_constrained_ast::RepChoice;
 use crate::data::tail_rec_ast as tail;
@@ -565,6 +566,82 @@ fn unwrap_float(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> f64 {
     }
 }
 
+fn unwrap_pair(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (HeapId, HeapId) {
+    let pair = unwrap_tuple(heap, heap_id, stacktrace.add_frame("unwrap pair".into()));
+    if pair.len() != 2 {
+        stacktrace.panic(format!["expected a pair, received {:?}", pair]);
+    }
+    (pair[0], pair[1])
+}
+
+fn unwrap_binop_bytes(
+    heap: &Heap,
+    heap_id: HeapId,
+    stacktrace: StackTrace,
+) -> (Wrapping<u8>, Wrapping<u8>) {
+    let (lhs_id, rhs_id) = unwrap_pair(
+        heap,
+        heap_id,
+        stacktrace.add_frame("unwrap binop bytes".into()),
+    );
+    (
+        unwrap_byte(
+            heap,
+            lhs_id,
+            stacktrace.add_frame("unwrap binop bytes".into()),
+        ),
+        unwrap_byte(
+            heap,
+            rhs_id,
+            stacktrace.add_frame("unwrap binop bytes".into()),
+        ),
+    )
+}
+
+fn unwrap_binop_ints(
+    heap: &Heap,
+    heap_id: HeapId,
+    stacktrace: StackTrace,
+) -> (Wrapping<i64>, Wrapping<i64>) {
+    let (lhs_id, rhs_id) = unwrap_pair(
+        heap,
+        heap_id,
+        stacktrace.add_frame("unwrap binop ints".into()),
+    );
+    (
+        unwrap_int(
+            heap,
+            lhs_id,
+            stacktrace.add_frame("unwrap binop ints".into()),
+        ),
+        unwrap_int(
+            heap,
+            rhs_id,
+            stacktrace.add_frame("unwrap binop ints".into()),
+        ),
+    )
+}
+
+fn unwrap_binop_floats(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (f64, f64) {
+    let (lhs_id, rhs_id) = unwrap_pair(
+        heap,
+        heap_id,
+        stacktrace.add_frame("unwrap binop floats".into()),
+    );
+    (
+        unwrap_float(
+            heap,
+            lhs_id,
+            stacktrace.add_frame("unwrap binop floats".into()),
+        ),
+        unwrap_float(
+            heap,
+            rhs_id,
+            stacktrace.add_frame("unwrap binop floats".into()),
+        ),
+    )
+}
+
 fn unwrap_array(
     heap: &Heap,
     heap_id: HeapId,
@@ -1014,130 +1091,82 @@ fn interpret_expr(
                 heap.add(Value::Bool(*variant_id == local_variant_id))
             }
 
-            Expr::ArithOp(ArithOp::Op(NumType::Byte, BinOp::Add, local_id1, local_id2)) => heap
-                .add(Value::Num(NumValue::Byte(
-                    unwrap_byte(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) + unwrap_byte(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))),
-
-            Expr::ArithOp(ArithOp::Op(NumType::Int, BinOp::Add, local_id1, local_id2)) => {
-                heap.add(Value::Num(NumValue::Int(
-                    unwrap_int(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) + unwrap_int(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                )))
-            }
-
-            Expr::ArithOp(ArithOp::Op(NumType::Float, BinOp::Add, local_id1, local_id2)) => heap
-                .add(Value::Num(NumValue::Float(
-                    unwrap_float(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) + unwrap_float(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))),
-
-            Expr::ArithOp(ArithOp::Op(NumType::Byte, BinOp::Sub, local_id1, local_id2)) => heap
-                .add(Value::Num(NumValue::Byte(
-                    unwrap_byte(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) - unwrap_byte(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))),
-
-            Expr::ArithOp(ArithOp::Op(NumType::Int, BinOp::Sub, local_id1, local_id2)) => {
-                heap.add(Value::Num(NumValue::Int(
-                    unwrap_int(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) - unwrap_int(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                )))
-            }
-
-            Expr::ArithOp(ArithOp::Op(NumType::Float, BinOp::Sub, local_id1, local_id2)) => heap
-                .add(Value::Num(NumValue::Float(
-                    unwrap_float(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) - unwrap_float(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))),
-
-            Expr::ArithOp(ArithOp::Op(NumType::Byte, BinOp::Mul, local_id1, local_id2)) => heap
-                .add(Value::Num(NumValue::Byte(
-                    unwrap_byte(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) * unwrap_byte(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))),
-
-            Expr::ArithOp(ArithOp::Op(NumType::Int, BinOp::Mul, local_id1, local_id2)) => {
-                heap.add(Value::Num(NumValue::Int(
-                    unwrap_int(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) * unwrap_int(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                )))
-            }
-
-            Expr::ArithOp(ArithOp::Op(NumType::Float, BinOp::Mul, local_id1, local_id2)) => heap
-                .add(Value::Num(NumValue::Float(
-                    unwrap_float(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) * unwrap_float(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))),
-
-            Expr::ArithOp(ArithOp::Op(NumType::Byte, BinOp::Div, local_id1, local_id2)) => {
-                let divisor = unwrap_byte(
+            Expr::Intrinsic(Intrinsic::AddByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
                     heap,
-                    locals[local_id2],
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Num(NumValue::Byte(lhs + rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::AddInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Num(NumValue::Int(lhs + rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::AddFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Num(NumValue::Float(lhs + rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::SubByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Num(NumValue::Byte(lhs - rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::SubInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Num(NumValue::Int(lhs - rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::SubFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Num(NumValue::Float(lhs - rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::MulByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Num(NumValue::Byte(lhs * rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::MulInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Num(NumValue::Int(lhs * rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::MulFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Num(NumValue::Float(lhs * rhs)))
+            }
+
+            Expr::Intrinsic(Intrinsic::DivByte, local_id) => {
+                let (numerator, divisor) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
                     stacktrace.add_frame("arith".into()),
                 );
 
@@ -1146,210 +1175,272 @@ fn interpret_expr(
                     return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
                 }
 
-                heap.add(Value::Num(NumValue::Byte(
-                    unwrap_byte(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) / divisor,
-                )))
+                heap.add(Value::Num(NumValue::Byte(numerator / divisor)))
             }
 
-            Expr::ArithOp(ArithOp::Op(NumType::Int, BinOp::Div, local_id1, local_id2)) => {
-                let divisor = unwrap_int(
-                    heap,
-                    locals[local_id2],
-                    stacktrace.add_frame("arith".into()),
-                );
+            Expr::Intrinsic(Intrinsic::DivInt, local_id) => {
+                let (numerator, divisor) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
 
                 if divisor.0 == 0 {
                     writeln!(stderr, "panicked due to division by zero").unwrap();
                     return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
                 }
 
-                heap.add(Value::Num(NumValue::Int(
-                    unwrap_int(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) / divisor,
-                )))
+                heap.add(Value::Num(NumValue::Int(numerator / divisor)))
             }
 
-            Expr::ArithOp(ArithOp::Op(NumType::Float, BinOp::Div, local_id1, local_id2)) => heap
-                .add(Value::Num(NumValue::Float(
-                    unwrap_float(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) / unwrap_float(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))),
+            Expr::Intrinsic(Intrinsic::DivFloat, local_id) => {
+                let (numerator, divisor) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
 
-            Expr::ArithOp(ArithOp::Cmp(NumType::Byte, Comparison::Less, local_id1, local_id2)) => {
-                heap.add(Value::Bool(
-                    unwrap_byte(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) < unwrap_byte(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))
+                heap.add(Value::Num(NumValue::Float(numerator / divisor)))
             }
 
-            Expr::ArithOp(ArithOp::Cmp(NumType::Int, Comparison::Less, local_id1, local_id2)) => {
-                heap.add(Value::Bool(
-                    unwrap_int(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) < unwrap_int(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))
+            Expr::Intrinsic(Intrinsic::LtByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs < rhs))
             }
 
-            Expr::ArithOp(ArithOp::Cmp(NumType::Float, Comparison::Less, local_id1, local_id2)) => {
-                heap.add(Value::Bool(
-                    unwrap_float(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) < unwrap_float(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))
+            Expr::Intrinsic(Intrinsic::LtInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Bool(lhs < rhs))
             }
 
-            Expr::ArithOp(ArithOp::Cmp(
-                NumType::Byte,
-                Comparison::LessEqual,
-                local_id1,
-                local_id2,
-            )) => heap.add(Value::Bool(
-                unwrap_byte(
+            Expr::Intrinsic(Intrinsic::LtFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
                     heap,
-                    locals[local_id1],
+                    locals[local_id],
                     stacktrace.add_frame("arith".into()),
-                ) <= unwrap_byte(
-                    heap,
-                    locals[local_id2],
-                    stacktrace.add_frame("arith".into()),
-                ),
-            )),
-
-            Expr::ArithOp(ArithOp::Cmp(
-                NumType::Int,
-                Comparison::LessEqual,
-                local_id1,
-                local_id2,
-            )) => heap.add(Value::Bool(
-                unwrap_int(
-                    heap,
-                    locals[local_id1],
-                    stacktrace.add_frame("arith".into()),
-                ) <= unwrap_int(
-                    heap,
-                    locals[local_id2],
-                    stacktrace.add_frame("arith".into()),
-                ),
-            )),
-
-            Expr::ArithOp(ArithOp::Cmp(
-                NumType::Float,
-                Comparison::LessEqual,
-                local_id1,
-                local_id2,
-            )) => heap.add(Value::Bool(
-                unwrap_float(
-                    heap,
-                    locals[local_id1],
-                    stacktrace.add_frame("arith".into()),
-                ) <= unwrap_float(
-                    heap,
-                    locals[local_id2],
-                    stacktrace.add_frame("arith".into()),
-                ),
-            )),
-
-            Expr::ArithOp(ArithOp::Cmp(NumType::Byte, Comparison::Equal, local_id1, local_id2)) => {
-                heap.add(Value::Bool(
-                    unwrap_byte(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) == unwrap_byte(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))
+                );
+                heap.add(Value::Bool(lhs < rhs))
             }
 
-            Expr::ArithOp(ArithOp::Cmp(NumType::Int, Comparison::Equal, local_id1, local_id2)) => {
-                heap.add(Value::Bool(
-                    unwrap_int(
-                        heap,
-                        locals[local_id1],
-                        stacktrace.add_frame("arith".into()),
-                    ) == unwrap_int(
-                        heap,
-                        locals[local_id2],
-                        stacktrace.add_frame("arith".into()),
-                    ),
-                ))
+            Expr::Intrinsic(Intrinsic::LteByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs <= rhs))
             }
 
-            Expr::ArithOp(ArithOp::Cmp(
-                NumType::Float,
-                Comparison::Equal,
-                local_id1,
-                local_id2,
-            )) => heap.add(Value::Bool(
-                unwrap_float(
+            Expr::Intrinsic(Intrinsic::LteInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Bool(lhs <= rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::LteFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
                     heap,
-                    locals[local_id1],
+                    locals[local_id],
                     stacktrace.add_frame("arith".into()),
-                ) == unwrap_float(
+                );
+                heap.add(Value::Bool(lhs <= rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GtByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
                     heap,
-                    locals[local_id2],
+                    locals[local_id],
                     stacktrace.add_frame("arith".into()),
-                ),
-            )),
+                );
+                heap.add(Value::Bool(lhs > rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GtInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Bool(lhs > rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GtFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs > rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GteByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs >= rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GteInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Bool(lhs >= rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::GteFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs >= rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::EqByte, local_id) => {
+                let (lhs, rhs) = unwrap_binop_bytes(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs == rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::EqInt, local_id) => {
+                let (lhs, rhs) =
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                heap.add(Value::Bool(lhs == rhs))
+            }
+
+            Expr::Intrinsic(Intrinsic::EqFloat, local_id) => {
+                let (lhs, rhs) = unwrap_binop_floats(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("arith".into()),
+                );
+                heap.add(Value::Bool(lhs == rhs))
+            }
 
             // Don't negate a byte u dummy
-            Expr::ArithOp(ArithOp::Negate(NumType::Byte, local_id)) => {
-                heap.add(Value::Num(NumValue::Byte(-unwrap_byte(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                ))))
-            }
+            Expr::Intrinsic(Intrinsic::NegByte, local_id) => heap.add(Value::Num(NumValue::Byte(
+                -unwrap_byte(heap, locals[local_id], stacktrace.add_frame("arith".into())),
+            ))),
 
-            Expr::ArithOp(ArithOp::Negate(NumType::Int, local_id)) => {
-                heap.add(Value::Num(NumValue::Int(-unwrap_int(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                ))))
-            }
+            Expr::Intrinsic(Intrinsic::NegInt, local_id) => heap.add(Value::Num(NumValue::Int(
+                -unwrap_int(heap, locals[local_id], stacktrace.add_frame("arith".into())),
+            ))),
 
-            Expr::ArithOp(ArithOp::Negate(NumType::Float, local_id)) => {
+            Expr::Intrinsic(Intrinsic::NegFloat, local_id) => {
                 heap.add(Value::Num(NumValue::Float(-unwrap_float(
                     heap,
                     locals[local_id],
                     stacktrace.add_frame("arith".into()),
                 ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::ByteToInt, local_id) => {
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    unwrap_byte(
+                        heap,
+                        locals[local_id],
+                        stacktrace.add_frame("byte_to_int".into()),
+                    )
+                    .0 as i64,
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::ByteToIntSigned, local_id) => {
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    unwrap_byte(
+                        heap,
+                        locals[local_id],
+                        stacktrace.add_frame("byte_to_int".into()),
+                    )
+                    .0 as i8 as i64,
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntToByte, local_id) => {
+                heap.add(Value::Num(NumValue::Byte(Wrapping(
+                    unwrap_int(
+                        heap,
+                        locals[local_id],
+                        stacktrace.add_frame("int_to_byte".into()),
+                    )
+                    .0 as u8,
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntShiftLeft, local_id) => {
+                let args = unwrap_tuple(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_shift_left".into()),
+                );
+                assert_eq!(args.len(), 2);
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_shift_left".into()));
+                let right =
+                    unwrap_int(heap, args[1], stacktrace.add_frame("int_shift_left".into()));
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    left.0 << (right.0 as u64 % 64),
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntShiftRight, local_id) => {
+                let args = unwrap_tuple(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_shift_right".into()),
+                );
+                assert_eq!(args.len(), 2);
+                let left = unwrap_int(
+                    heap,
+                    args[0],
+                    stacktrace.add_frame("int_shift_right".into()),
+                );
+                let right = unwrap_int(
+                    heap,
+                    args[1],
+                    stacktrace.add_frame("int_shift_right".into()),
+                );
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    ((left.0 as u64) >> (right.0 as u64 % 64)) as i64,
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntBitAnd, local_id) => {
+                let args = unwrap_tuple(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_bit_and".into()),
+                );
+                assert_eq!(args.len(), 2);
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_and".into()));
+                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_and".into()));
+                heap.add(Value::Num(NumValue::Int(left & right)))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntBitOr, local_id) => {
+                let args = unwrap_tuple(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_bit_or".into()),
+                );
+                assert_eq!(args.len(), 2);
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_or".into()));
+                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_or".into()));
+                heap.add(Value::Num(NumValue::Int(left | right)))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntBitXor, local_id) => {
+                let args = unwrap_tuple(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_bit_xor".into()),
+                );
+                assert_eq!(args.len(), 2);
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_xor".into()));
+                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_xor".into()));
+                heap.add(Value::Num(NumValue::Int(left ^ right)))
             }
 
             Expr::ArrayOp(rep, _item_type, ArrayOp::New()) => {
@@ -1531,6 +1622,36 @@ fn interpret_expr(
                 .expect("write failed");
 
                 HeapId(0)
+            }
+
+            Expr::Panic(_ret_type, rep, array_id) => {
+                let array_heap_id = locals[array_id];
+
+                let array = unwrap_array(
+                    heap,
+                    array_heap_id,
+                    *rep,
+                    stacktrace.add_frame("panic".into()),
+                );
+
+                let mut bytes = vec![];
+                for heap_id in array {
+                    bytes.push(unwrap_byte(
+                        heap,
+                        heap_id,
+                        stacktrace.add_frame("panic byte".into()),
+                    ));
+                }
+
+                write!(
+                    stderr,
+                    "{}",
+                    String::from_utf8(bytes.iter().map(|&Wrapping(byte)| byte).collect())
+                        .expect("UTF-8 output error")
+                )
+                .expect("write failed");
+
+                return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
             }
 
             Expr::BoolLit(val) => heap.add(Value::Bool(*val)),

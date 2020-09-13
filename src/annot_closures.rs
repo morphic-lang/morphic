@@ -1,12 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::closure_annot_ast as annot;
+use crate::data::intrinsics as intrs;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+use crate::data::num_type::NumType;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
+use crate::intrinsic_config::intrinsic_sig;
 use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
 use crate::util::graph::{self, Graph};
 use crate::util::id_gen::IdGen;
@@ -207,10 +209,11 @@ enum SolverRequirement {
     Lam(lifted::LamId, IdVec<annot::RepParamId, SolverVarId>),
     PendingLam(lifted::LamId),
     Template(annot::TemplateId, IdVec<annot::RepParamId, SolverVarId>),
-    ArithOp(Op),
+    Intrinsic(intrs::Intrinsic),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>),
     ArrayReplace(annot::Type<SolverVarId>),
     IoOp(IoOp),
+    Panic(annot::Type<SolverVarId>),
     Ctor(
         mono::CustomTypeId,
         IdVec<annot::RepParamId, SolverVarId>,
@@ -220,9 +223,10 @@ enum SolverRequirement {
 
 #[derive(Clone, Debug)]
 enum SolverExpr {
-    ArithOp(Op, SolverVarId),
+    Intrinsic(intrs::Intrinsic, SolverVarId),
     ArrayOp(ArrayOp, annot::Type<SolverVarId>, SolverVarId),
     IoOp(IoOp, SolverVarId),
+    Panic(annot::Type<SolverVarId>, SolverVarId),
     NullaryCtor(
         mono::CustomTypeId,
         IdVec<annot::RepParamId, SolverVarId>,
@@ -489,137 +493,31 @@ fn instantiate_pattern(
     }
 }
 
-fn arith_op_type(
+fn intrinsic_type(
     graph: &mut ConstraintGraph<SolverRequirement>,
-    op: Op,
+    intr: intrs::Intrinsic,
 ) -> (annot::Type<SolverVarId>, SolverVarId) {
+    fn trans_type(type_: &intrs::Type) -> annot::Type<SolverVarId> {
+        match type_ {
+            intrs::Type::Bool => annot::Type::Bool,
+            intrs::Type::Num(NumType::Byte) => annot::Type::Byte,
+            intrs::Type::Num(NumType::Int) => annot::Type::Int,
+            intrs::Type::Num(NumType::Float) => annot::Type::Float,
+            intrs::Type::Tuple(items) => annot::Type::Tuple(items.iter().map(trans_type).collect()),
+        }
+    }
+
     let op_var = graph.new_var();
-    graph.require(op_var, SolverRequirement::ArithOp(op));
+    graph.require(op_var, SolverRequirement::Intrinsic(intr));
 
-    fn byte_binop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Tuple(vec![
-                annot::Type::Byte,
-                annot::Type::Byte,
-            ])),
-            Box::new(annot::Type::Byte),
-        )
-    }
+    let sig = intrinsic_sig(intr);
 
-    fn int_binop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Tuple(vec![annot::Type::Int, annot::Type::Int])),
-            Box::new(annot::Type::Int),
-        )
-    }
-
-    fn float_binop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Tuple(vec![
-                annot::Type::Float,
-                annot::Type::Float,
-            ])),
-            Box::new(annot::Type::Float),
-        )
-    }
-
-    fn byte_comp(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Tuple(vec![
-                annot::Type::Byte,
-                annot::Type::Byte,
-            ])),
-            Box::new(annot::Type::Bool),
-        )
-    }
-
-    fn int_comp(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Tuple(vec![annot::Type::Int, annot::Type::Int])),
-            Box::new(annot::Type::Bool),
-        )
-    }
-
-    fn float_comp(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Tuple(vec![
-                annot::Type::Float,
-                annot::Type::Float,
-            ])),
-            Box::new(annot::Type::Bool),
-        )
-    }
-
-    fn byte_unop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Byte),
-            Box::new(annot::Type::Byte),
-        )
-    }
-
-    fn int_unop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Int),
-            Box::new(annot::Type::Int),
-        )
-    }
-
-    fn float_unop(op_var: SolverVarId) -> annot::Type<SolverVarId> {
-        annot::Type::Func(
-            Purity::Pure,
-            op_var,
-            Box::new(annot::Type::Float),
-            Box::new(annot::Type::Float),
-        )
-    }
-
-    let op_type = match op {
-        Op::AddByte => byte_binop(op_var),
-        Op::SubByte => byte_binop(op_var),
-        Op::MulByte => byte_binop(op_var),
-        Op::DivByte => byte_binop(op_var),
-        Op::NegByte => byte_unop(op_var),
-
-        Op::EqByte => byte_comp(op_var),
-        Op::LtByte => byte_comp(op_var),
-        Op::LteByte => byte_comp(op_var),
-
-        Op::AddInt => int_binop(op_var),
-        Op::SubInt => int_binop(op_var),
-        Op::MulInt => int_binop(op_var),
-        Op::DivInt => int_binop(op_var),
-        Op::NegInt => int_unop(op_var),
-
-        Op::EqInt => int_comp(op_var),
-        Op::LtInt => int_comp(op_var),
-        Op::LteInt => int_comp(op_var),
-
-        Op::AddFloat => float_binop(op_var),
-        Op::SubFloat => float_binop(op_var),
-        Op::MulFloat => float_binop(op_var),
-        Op::DivFloat => float_binop(op_var),
-        Op::NegFloat => float_unop(op_var),
-
-        Op::EqFloat => float_comp(op_var),
-        Op::LtFloat => float_comp(op_var),
-        Op::LteFloat => float_comp(op_var),
-    };
+    let op_type = annot::Type::Func(
+        sig.purity,
+        op_var,
+        Box::new(trans_type(&sig.arg)),
+        Box::new(trans_type(&sig.ret)),
+    );
 
     (op_type, op_var)
 }
@@ -718,6 +616,23 @@ fn io_op_type(
     (op_type, op_var)
 }
 
+fn panic_type(
+    graph: &mut ConstraintGraph<SolverRequirement>,
+    ret_type: annot::Type<SolverVarId>,
+) -> (annot::Type<SolverVarId>, SolverVarId) {
+    let op_var = graph.new_var();
+    graph.require(op_var, SolverRequirement::Panic(ret_type.clone()));
+
+    let op_type = annot::Type::Func(
+        Purity::Pure,
+        op_var,
+        Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
+        Box::new(ret_type),
+    );
+
+    (op_type, op_var)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct GlobalContext<'a> {
     annot_vals: &'a IdVec<mono::CustomGlobalId, Option<annot::ValDef>>,
@@ -757,9 +672,9 @@ fn instantiate_expr(
     expr: &lifted::Expr,
 ) -> (SolverExpr, annot::Type<SolverVarId>) {
     match expr {
-        &lifted::Expr::ArithOp(op) => {
-            let (solver_type, op_var) = arith_op_type(graph, op);
-            (SolverExpr::ArithOp(op, op_var), solver_type)
+        &lifted::Expr::Intrinsic(intr) => {
+            let (solver_type, op_var) = intrinsic_type(graph, intr);
+            (SolverExpr::Intrinsic(intr, op_var), solver_type)
         }
 
         lifted::Expr::ArrayOp(op, item_type) => {
@@ -774,6 +689,12 @@ fn instantiate_expr(
         &lifted::Expr::IoOp(op) => {
             let (solver_type, op_var) = io_op_type(graph, op);
             (SolverExpr::IoOp(op, op_var), solver_type)
+        }
+
+        lifted::Expr::Panic(ret_type) => {
+            let solver_ret_type = instantiate_mono(typedefs, graph, ret_type);
+            let (solver_type, op_var) = panic_type(graph, solver_ret_type.clone());
+            (SolverExpr::Panic(solver_ret_type, op_var), solver_type)
         }
 
         &lifted::Expr::Ctor(custom, variant) => {
@@ -1271,13 +1192,17 @@ fn add_req_mentioned_classes(
             );
         }
 
-        SolverRequirement::ArithOp(_) => {}
+        SolverRequirement::Intrinsic(_) => {}
 
         SolverRequirement::ArrayOp(_, item_type) | SolverRequirement::ArrayReplace(item_type) => {
             add_mentioned_classes(equiv_classes, item_type, mentioned);
         }
 
         SolverRequirement::IoOp(_) => {}
+
+        SolverRequirement::Panic(ret_type) => {
+            add_mentioned_classes(equiv_classes, ret_type, mentioned);
+        }
 
         SolverRequirement::Ctor(_, custom_params, _) => {
             mentioned.extend(
@@ -1458,7 +1383,7 @@ fn translate_req_for_template(
             }),
         ),
 
-        SolverRequirement::ArithOp(op) => annot::Requirement::ArithOp(*op),
+        SolverRequirement::Intrinsic(intr) => annot::Requirement::Intrinsic(*intr),
 
         SolverRequirement::ArrayOp(op, item_type) => annot::Requirement::ArrayOp(
             *op,
@@ -1480,6 +1405,15 @@ fn translate_req_for_template(
         }
 
         SolverRequirement::IoOp(op) => annot::Requirement::IoOp(*op),
+
+        SolverRequirement::Panic(ret_type) => {
+            annot::Requirement::Panic(translate_type_for_template(
+                equiv_classes,
+                class_solutions,
+                solver_to_template,
+                ret_type,
+            ))
+        }
 
         SolverRequirement::Ctor(custom, vars, variant) => annot::Requirement::Ctor(
             *custom,
@@ -1725,8 +1659,8 @@ fn extract_expr(
     expr: &SolverExpr,
 ) -> annot::Expr {
     match expr {
-        &SolverExpr::ArithOp(op, var) => {
-            annot::Expr::ArithOp(op, class_solutions[equiv_classes.class(var)].clone())
+        &SolverExpr::Intrinsic(intr, var) => {
+            annot::Expr::Intrinsic(intr, class_solutions[equiv_classes.class(var)].clone())
         }
 
         SolverExpr::ArrayOp(op, item_type, var) => annot::Expr::ArrayOp(
@@ -1738,6 +1672,11 @@ fn extract_expr(
         &SolverExpr::IoOp(op, var) => {
             annot::Expr::IoOp(op, class_solutions[equiv_classes.class(var)].clone())
         }
+
+        SolverExpr::Panic(ret_type, var) => annot::Expr::Panic(
+            extract_type(equiv_classes, class_solutions, ret_type),
+            class_solutions[equiv_classes.class(*var)].clone(),
+        ),
 
         SolverExpr::NullaryCtor(custom, vars, variant) => annot::Expr::NullaryCtor(
             *custom,
@@ -1984,11 +1923,13 @@ enum Item {
 
 fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
     match expr {
-        lifted::Expr::ArithOp(_) => {}
+        lifted::Expr::Intrinsic(_) => {}
 
         lifted::Expr::ArrayOp(_, _) => {}
 
         lifted::Expr::IoOp(_) => {}
+
+        lifted::Expr::Panic(_) => {}
 
         lifted::Expr::Ctor(_, _) => {}
 

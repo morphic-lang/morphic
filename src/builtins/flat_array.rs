@@ -381,6 +381,7 @@ pub struct FlatArrayIoImpl<'a> {
     pub byte_array_type: FlatArrayImpl<'a>,
     pub input: FunctionValue<'a>,
     pub output: FunctionValue<'a>,
+    pub output_error: FunctionValue<'a>,
 }
 
 impl<'a> FlatArrayIoImpl<'a> {
@@ -403,10 +404,17 @@ impl<'a> FlatArrayIoImpl<'a> {
             Some(Linkage::Internal),
         );
 
+        let output_error = module.add_function(
+            "builtin_flat_array_output_error",
+            void_type.fn_type(&[byte_array_type.interface.array_type.into()], false),
+            Some(Linkage::Internal),
+        );
+
         Self {
             byte_array_type,
             input,
             output,
+            output_error,
         }
     }
 
@@ -445,6 +453,23 @@ impl<'a> FlatArrayIoImpl<'a> {
             // TODO: check bytes_written for errors
             let _bytes_written = s.call_void(
                 tal.write,
+                &[
+                    s.arrow(me, F_ARR_DATA),
+                    s.usize(1),
+                    s.int_cast(s.usize_t(), s.arrow(me, F_ARR_LEN)),
+                ],
+            );
+            s.ret_void();
+        }
+
+        // define 'output_error'
+        {
+            let s = scope(self.output_error, context, target);
+            let me = s.arg(0);
+
+            // TODO: check bytes_written for errors
+            let _bytes_written = s.call_void(
+                tal.write_error,
                 &[
                     s.arrow(me, F_ARR_DATA),
                     s.usize(1),

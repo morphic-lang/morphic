@@ -5,9 +5,11 @@ use crate::data::alias_annot_ast as alias;
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::intrinsics as intrs;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::purity::Purity;
 use crate::data::repr_unified_ast as unif;
+use crate::intrinsic_config::intrinsic_sig;
 use crate::util::graph::{connected_components, strongly_connected, Graph, Scc, Undirected};
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
@@ -456,6 +458,17 @@ fn instantate_condition(
         _ => unreachable!(),
     }
 }
+fn instantiate_intrinsic_sig(sig: &intrs::Signature) -> (SolverType, SolverType) {
+    fn trans_type(type_: &intrs::Type) -> SolverType {
+        match type_ {
+            intrs::Type::Bool => unif::Type::Bool,
+            intrs::Type::Num(num_type) => unif::Type::Num(*num_type),
+            intrs::Type::Tuple(items) => unif::Type::Tuple(items.iter().map(trans_type).collect()),
+        }
+    }
+
+    (trans_type(&sig.arg), trans_type(&sig.ret))
+}
 
 fn instantiate_expr(
     typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
@@ -666,14 +679,15 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArithOp(op) => {
-            let ret_type = match op {
-                flat::ArithOp::Op(num_type, _, _, _) => unif::Type::Num(*num_type),
-                flat::ArithOp::Cmp(_, _, _, _) => unif::Type::Bool,
-                flat::ArithOp::Negate(num_type, _) => unif::Type::Num(*num_type),
-            };
+        mutation::Expr::Intrinsic(intr, arg) => {
+            let (arg_inst, ret_inst) = instantiate_intrinsic_sig(&intrinsic_sig(*intr));
 
-            (unif::Expr::ArithOp(*op), ret_type)
+            // NOTE [intrinsics]: Currently, this is just an internal consistency check.  However,
+            // if we ever add type or representation variables to intrinsic signatures, then this
+            // will perform the necessary unification.
+            equate_types(graph, &arg_inst, locals.local_binding(*arg));
+
+            (unif::Expr::Intrinsic(*intr, *arg), ret_inst)
         }
 
         mutation::Expr::ArrayOp(mutation::ArrayOp::Item(
@@ -846,6 +860,31 @@ fn instantiate_expr(
                     ),
                 ),
                 unif::Type::Tuple(Vec::new()),
+            )
+        }
+
+        mutation::Expr::Panic(ret_type, array_status, byte_array) => {
+            let rep_var =
+                if let unif::Type::Array(rep_var, item_type) = locals.local_binding(*byte_array) {
+                    debug_assert_eq!(
+                        item_type as &unif::Type<_>,
+                        &unif::Type::Num(first_ord::NumType::Byte)
+                    );
+                    *rep_var
+                } else {
+                    unreachable!();
+                };
+
+            let ret_type_inst = instantiate_type(typedefs, graph, ret_type);
+
+            (
+                unif::Expr::Panic(
+                    ret_type_inst.clone(),
+                    rep_var,
+                    array_status.clone(),
+                    *byte_array,
+                ),
+                ret_type_inst,
             )
         }
 
@@ -1200,7 +1239,7 @@ fn extract_expr(
             unif::Expr::UnwrapCustom(custom, rep_args_extracted, wrapped)
         }
 
-        unif::Expr::ArithOp(op) => unif::Expr::ArithOp(op),
+        unif::Expr::Intrinsic(intr, arg) => unif::Expr::Intrinsic(intr, arg),
 
         unif::Expr::ArrayOp(rep_var, item_type, array_status, op) => unif::Expr::ArrayOp(
             this_solutions[to_unified[rep_var]],
@@ -1210,6 +1249,13 @@ fn extract_expr(
         ),
 
         unif::Expr::IoOp(rep_var, op) => unif::Expr::IoOp(this_solutions[to_unified[rep_var]], op),
+
+        unif::Expr::Panic(ret_type, rep_var, message_status, message) => unif::Expr::Panic(
+            extract_type(to_unified, this_solutions, ret_type),
+            this_solutions[to_unified[rep_var]],
+            message_status,
+            message,
+        ),
 
         unif::Expr::ArrayLit(rep_var, item_type, items) => unif::Expr::ArrayLit(
             this_solutions[to_unified[rep_var]],

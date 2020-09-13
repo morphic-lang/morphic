@@ -4,6 +4,7 @@ use crate::data::alias_annot_ast as alias;
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -109,9 +110,14 @@ pub enum Expr {
     WrapCustom(first_ord::CustomTypeId, flat::LocalId),
     UnwrapCustom(first_ord::CustomTypeId, flat::LocalId),
 
-    ArithOp(flat::ArithOp),
+    Intrinsic(Intrinsic, flat::LocalId),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(
+        anon::Type,    // Return type
+        LocalStatus,   // Message status
+        flat::LocalId, // Message
+    ),
 
     ArrayLit(anon::Type, Vec<flat::LocalId>),
     BoolLit(bool),

@@ -1,28 +1,28 @@
-type State s r {
+pub type State s r {
   State(s -> (s, r)),
 }
 
-get: State s s =
+pub get: State s s =
   State(\s -> (s, s))
 
-set(s: s): State s () =
+pub set(s: s): State s () =
   State(\_ -> (s, ()))
 
-modify(f: s -> s): State s () =
+pub modify(f: s -> s): State s () =
   State(\s -> (f(s), ()))
 
-pure(x: r): State s r =
+pub pure(x: r): State s r =
   State(\s -> (s, x))
 
-run(body: State s r, init: s): (s, r) =
+pub run(body: State s r, init: s): (s, r) =
   let State(f) = body in
   f(init)
 
-bind(fst: State s a, cont: a -> State s b): State s b =
+pub bind(fst: State s a, cont: a -> State s b): State s b =
   State(\s1 ->
     let (s2, res) = run(fst, s1) in
     run(cont(res), s2)
   )
 
-seq(fst: State s a, snd: State s b): State s b =
+pub seq(fst: State s a, snd: State s b): State s b =
   bind(fst, \_ -> snd)

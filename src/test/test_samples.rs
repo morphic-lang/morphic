@@ -108,6 +108,57 @@ sample! { nested "samples/nested.mor";
     ];
 }
 
+sample! { order_of_eval "samples/order_of_eval.mor";
+    stdin = "";
+    stdout = lines! [
+        // <&
+        "left",
+        "right",
+        // <=&
+        "left",
+        "right",
+        // >&
+        "left",
+        "right",
+        // >=&
+        "left",
+        "right",
+
+        // <
+        "left",
+        "right",
+        // <=
+        "left",
+        "right",
+        // >
+        "left",
+        "right",
+        // >=
+        "left",
+        "right",
+
+        // <.
+        "left",
+        "right",
+        // <=.
+        "left",
+        "right",
+        // >.
+        "left",
+        "right",
+        // >=.
+        "left",
+        "right",
+
+        "done",
+    ];
+}
+
+sample! { pipe "samples/pipe.mor";
+    stdin = "";
+    stdout = "Completed all tests\n";
+}
+
 sample! { mutual_tail_rec "samples/mutual_tail_rec.mor";
     stdin = "";
     stdout = lines! [
@@ -155,6 +206,11 @@ sample! { recursive_array "samples/recursive_array.mor";
     stdout = "";
 }
 
+sample! { zero_case_variant "samples/zero_case_variant.mor";
+    stdin = "";
+    stdout = "";
+}
+
 // Samples expected to fail at runtime:
 
 sample! { item_oob1 "samples/run-fail/item_oob1.mor";
@@ -193,6 +249,22 @@ sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
     stdin = "";
     stdout = "";
     stderr = "panicked due to division by zero\n";
+    status = Failure(Some(1));
+    leak_check = false;
+}
+
+sample! { panic "samples/run-fail/panic.mor";
+    stdin = "";
+    stdout = "";
+    stderr = "Goodbye!\n";
+    status = Failure(Some(1));
+    leak_check = false;
+}
+
+sample! { panic_persistent "samples/run-fail/panic_persistent.mor";
+    stdin = "";
+    stdout = "";
+    stderr = "Goodbye";
     status = Failure(Some(1));
     leak_check = false;
 }

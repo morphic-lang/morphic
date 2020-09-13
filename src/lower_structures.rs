@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
@@ -174,16 +175,9 @@ fn count_moves(expr: &tail::Expr) -> MoveInfo {
         tail::Expr::WrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
         tail::Expr::UnwrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
 
-        tail::Expr::ArithOp(arith_op) => match arith_op {
-            flat::ArithOp::Op(_, _, local_id1, local_id2)
-            | flat::ArithOp::Cmp(_, _, local_id1, local_id2) => {
-                move_info.add_move(*local_id1);
-                move_info.add_move(*local_id2);
-            }
-            flat::ArithOp::Negate(_num_type, local_id) => {
-                move_info.add_move(*local_id);
-            }
-        },
+        // NOTE [intrinsics]: If we ever add intrinsics which can take heap values as arguments, we
+        // may need to modify this.
+        tail::Expr::Intrinsic(_intr, local_id) => move_info.add_move(*local_id),
         tail::Expr::ArrayOp(_rep_choice, _item_type, array_op) => match array_op {
             unif::ArrayOp::Item(array_id, index_id) => {
                 move_info.add_borrow(*array_id);
@@ -210,6 +204,9 @@ fn count_moves(expr: &tail::Expr) -> MoveInfo {
                 move_info.add_borrow(*local_id);
             }
         },
+        tail::Expr::Panic(_ret_type, _rep_choice, message) => {
+            move_info.add_borrow(*message);
+        }
 
         tail::Expr::ArrayLit(_rep_choice, _item_type, elem_ids) => {
             for elem_id in elem_ids {
@@ -271,6 +268,22 @@ impl LowAstBuilder {
     fn build(self, final_local_id: low::LocalId) -> low::Expr {
         low::Expr::LetMany(self.exprs, final_local_id)
     }
+}
+
+// Used to lower constant conditions
+fn build_comp(
+    lhs: low::LocalId,
+    rhs: low::LocalId,
+    type_: first_ord::NumType,
+    op: Intrinsic,
+    builder: &mut LowAstBuilder,
+) -> low::LocalId {
+    let args = builder.add_expr(
+        low::Type::Tuple(vec![low::Type::Num(type_), low::Type::Num(type_)]),
+        low::Expr::Tuple(vec![lhs, rhs]),
+    );
+
+    builder.add_expr(low::Type::Bool, low::Expr::Intrinsic(op, args))
 }
 
 fn lower_condition(
@@ -389,14 +402,12 @@ fn lower_condition(
                 low::Expr::ByteLit(*val),
             );
 
-            builder.add_expr(
-                low::Type::Bool,
-                low::Expr::ArithOp(low::ArithOp::Cmp(
-                    first_ord::NumType::Byte,
-                    first_ord::Comparison::Equal,
-                    val_id,
-                    discrim,
-                )),
+            build_comp(
+                val_id,
+                discrim,
+                first_ord::NumType::Byte,
+                Intrinsic::EqByte,
+                builder,
             )
         }
         special::Condition::IntConst(val) => {
@@ -405,14 +416,12 @@ fn lower_condition(
                 low::Expr::IntLit(*val),
             );
 
-            builder.add_expr(
-                low::Type::Bool,
-                low::Expr::ArithOp(low::ArithOp::Cmp(
-                    first_ord::NumType::Int,
-                    first_ord::Comparison::Equal,
-                    val_id,
-                    discrim,
-                )),
+            build_comp(
+                val_id,
+                discrim,
+                first_ord::NumType::Int,
+                Intrinsic::EqInt,
+                builder,
             )
         }
 
@@ -422,14 +431,12 @@ fn lower_condition(
                 low::Expr::FloatLit(*val),
             );
 
-            builder.add_expr(
-                low::Type::Bool,
-                low::Expr::ArithOp(low::ArithOp::Cmp(
-                    first_ord::NumType::Float,
-                    first_ord::Comparison::Equal,
-                    val_id,
-                    discrim,
-                )),
+            build_comp(
+                val_id,
+                discrim,
+                first_ord::NumType::Float,
+                Intrinsic::EqFloat,
+                builder,
             )
         }
     }
@@ -611,27 +618,10 @@ fn lower_leaf(
             typedefs[type_id].clone(),
             low::Expr::UnwrapCustom(*type_id, wrapped_id.lookup_in(context)),
         ),
-        tail::Expr::ArithOp(arith_op) => {
-            let arith_expr = match arith_op {
-                flat::ArithOp::Op(num_type, bin_op, local_id1, local_id2) => low::ArithOp::Op(
-                    *num_type,
-                    *bin_op,
-                    local_id1.lookup_in(context),
-                    local_id2.lookup_in(context),
-                ),
-                flat::ArithOp::Cmp(num_type, comp, local_id1, local_id2) => low::ArithOp::Cmp(
-                    *num_type,
-                    *comp,
-                    local_id1.lookup_in(context),
-                    local_id2.lookup_in(context),
-                ),
-                flat::ArithOp::Negate(num_type, local_id) => {
-                    low::ArithOp::Negate(*num_type, local_id.lookup_in(context))
-                }
-            };
-            builder.add_expr(result_type.clone(), low::Expr::ArithOp(arith_expr))
-        }
-
+        tail::Expr::Intrinsic(intr, local_id) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::Intrinsic(*intr, local_id.lookup_in(context)),
+        ),
         tail::Expr::ArrayOp(rep, item_type, array_op) => {
             let array_expr = match array_op {
                 unif::ArrayOp::Item(array_id, index_id) => {
@@ -662,6 +652,10 @@ fn lower_leaf(
                     }
                 },
             ),
+        ),
+        tail::Expr::Panic(ret_type, rep, message) => builder.add_expr(
+            result_type.clone(),
+            low::Expr::Panic(ret_type.clone(), *rep, message.lookup_in(context)),
         ),
         tail::Expr::ArrayLit(rep, elem_type, elems) => {
             let mut result_id = builder.add_expr(

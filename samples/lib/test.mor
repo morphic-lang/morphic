@@ -1,6 +1,6 @@
 import Core expose { module Array expose { concat } }
 
-proc test(msg: Array Byte, cond: Bool): () =
+pub proc test(msg: Array Byte, cond: Bool): () =
   if cond {
     ()
   } else {

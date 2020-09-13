@@ -1,4 +1,5 @@
 use crate::data::first_order_ast as first_ord;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
@@ -14,13 +15,6 @@ id_type!(pub CustomFuncId);
 pub type CustomTypeId = special::CustomTypeId;
 
 pub type Type = special::Type;
-
-#[derive(Clone, Copy, Debug)]
-pub enum ArithOp {
-    Op(first_ord::NumType, first_ord::BinOp, LocalId, LocalId),
-    Cmp(first_ord::NumType, first_ord::Comparison, LocalId, LocalId),
-    Negate(first_ord::NumType, LocalId),
-}
 
 // Mutable operations on persistent arrays with refcount 1 should mutate
 #[derive(Clone, Debug)]
@@ -106,9 +100,15 @@ pub enum Expr {
 
     CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
 
-    ArithOp(ArithOp),
+    Intrinsic(Intrinsic, LocalId),
     ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
     IoOp(constrain::RepChoice, IoOp),
+    // Takes message by borrow (not that it matters when the program is about to end anyway...)
+    Panic(
+        Type,                 // Return type
+        constrain::RepChoice, // Message representation
+        LocalId,              // Message
+    ),
 
     BoolLit(bool),
     ByteLit(u8),

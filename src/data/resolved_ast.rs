@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::raw_ast::{self as raw, Op};
+use crate::data::raw_ast::{self as raw};
 use crate::util::id_vec::IdVec;
 
 // 'ModId' is used only for the purposes of reporting human-readable module information to the user,
@@ -28,9 +29,10 @@ id_type!(pub TypeParamId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GlobalId {
-    ArithOp(Op),
+    Intrinsic(Intrinsic),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic,
     Ctor(TypeId, VariantId),
     Custom(CustomGlobalId),
 }

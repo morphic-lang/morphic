@@ -1,6 +1,8 @@
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::intrinsics as intrs;
+use crate::intrinsic_config::intrinsic_sig;
 use crate::util::id_vec::IdVec;
 
 pub fn flatten(program: anon::Program) -> flat::Program {
@@ -212,46 +214,27 @@ fn flatten_expr(
     }
 
     match expr {
-        anon::Expr::ArithOp(anon::ArithOp::Op(num_type, op, left, right)) => {
-            let (left_local, left_type) = flatten_expr(orig, ctx, builder, left);
-            let (right_local, right_type) = flatten_expr(orig, ctx, builder, right);
+        anon::Expr::Intrinsic(intr, arg) => {
+            let (arg_local, arg_type) = flatten_expr(orig, ctx, builder, arg);
 
-            let type_ = anon::Type::Num(*num_type);
-            debug_assert_eq!(&left_type, &type_);
-            debug_assert_eq!(&right_type, &type_);
+            fn trans_type(type_: &intrs::Type) -> anon::Type {
+                match type_ {
+                    intrs::Type::Bool => anon::Type::Bool,
+                    intrs::Type::Num(num_type) => anon::Type::Num(*num_type),
+                    intrs::Type::Tuple(items) => {
+                        anon::Type::Tuple(items.iter().map(trans_type).collect())
+                    }
+                }
+            }
 
-            bind(
-                builder,
-                type_,
-                flat::Expr::ArithOp(flat::ArithOp::Op(*num_type, *op, left_local, right_local)),
-            )
-        }
+            let sig = intrinsic_sig(*intr);
 
-        anon::Expr::ArithOp(anon::ArithOp::Cmp(num_type, cmp, left, right)) => {
-            let (left_local, left_type) = flatten_expr(orig, ctx, builder, left);
-            let (right_local, right_type) = flatten_expr(orig, ctx, builder, right);
-
-            let operand_type = anon::Type::Num(*num_type);
-            debug_assert_eq!(&left_type, &operand_type);
-            debug_assert_eq!(&right_type, &operand_type);
+            debug_assert_eq!(&arg_type, &trans_type(&sig.arg));
 
             bind(
                 builder,
-                anon::Type::Bool,
-                flat::Expr::ArithOp(flat::ArithOp::Cmp(*num_type, *cmp, left_local, right_local)),
-            )
-        }
-
-        anon::Expr::ArithOp(anon::ArithOp::Negate(num_type, val)) => {
-            let (val_local, val_type) = flatten_expr(orig, ctx, builder, val);
-
-            let type_ = anon::Type::Num(*num_type);
-            debug_assert_eq!(&val_type, &type_);
-
-            bind(
-                builder,
-                type_.clone(),
-                flat::Expr::ArithOp(flat::ArithOp::Negate(*num_type, val_local)),
+                trans_type(&sig.ret),
+                flat::Expr::Intrinsic(*intr, arg_local),
             )
         }
 
@@ -360,6 +343,21 @@ fn flatten_expr(
                 builder,
                 anon::Type::Tuple(Vec::new()),
                 flat::Expr::IoOp(flat::IoOp::Output(array_local)),
+            )
+        }
+
+        anon::Expr::Panic(ret_type, array) => {
+            let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
+
+            debug_assert_eq!(
+                &anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+                &array_type
+            );
+
+            bind(
+                builder,
+                ret_type.clone(),
+                flat::Expr::Panic(ret_type.clone(), array_local),
             )
         }
 

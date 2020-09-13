@@ -6,11 +6,13 @@ use crate::util::graph::{self, Graph, Scc};
 
 fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
     match expr {
-        mono::Expr::ArithOp(_) => {}
+        mono::Expr::Intrinsic(_) => {}
 
         mono::Expr::ArrayOp(_, _) => {}
 
         mono::Expr::IoOp(_) => {}
+
+        mono::Expr::Panic(_) => {}
 
         mono::Expr::Ctor(_, _) => {}
 
@@ -83,11 +85,13 @@ fn rebind_references(
     expr: &mut mono::Expr,
 ) {
     match expr {
-        mono::Expr::ArithOp(_) => {}
+        mono::Expr::Intrinsic(_) => {}
 
         mono::Expr::ArrayOp(_, _) => {}
 
         mono::Expr::IoOp(_) => {}
+
+        mono::Expr::Panic(_) => {}
 
         mono::Expr::Ctor(_, _) => {}
 

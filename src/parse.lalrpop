@@ -1,5 +1,7 @@
-use crate::data::raw_ast as syntax;
+use crate::data::intrinsics::Intrinsic as Intr;
 use crate::data::purity::Purity;
+use crate::data::raw_ast as syntax;
+use crate::data::visibility::Visibility;
 use crate::lex;
 
 grammar;
@@ -33,6 +35,8 @@ extern {
     "from" => lex::Token::From,
     "expose" => lex::Token::Expose,
     "with" => lex::Token::With,
+    "as" => lex::Token::As,
+    "pub" => lex::Token::Pub,
 
     "(" => lex::Token::LParen,
     ")" => lex::Token::RParen,
@@ -48,6 +52,8 @@ extern {
     "\\" => lex::Token::BackSlash,
     "_" => lex::Token::Underscore,
     "." => lex::Token::Dot,
+    "<|" => lex::Token::PipeLeft,
+    "|>" => lex::Token::PipeRight,
 
     "+&" => lex::Token::AddAmp,
     "-&" => lex::Token::SubAmp,
@@ -134,6 +140,12 @@ OptProc: Purity = {
   () => Purity::Pure,
 };
 
+#[inline]
+OptPub: Visibility = {
+  "pub" => Visibility::Public,
+  () => Visibility::Private,
+}
+
 // Top-Level Items
 
 pub Program: syntax::Program = {
@@ -151,18 +163,20 @@ Item: syntax::Item = {
 // Type Definitions
 
 TypeDef: syntax::Item = {
-  "type" <name: TypeName> <params: TypeParam*>
+  <visibility: OptPub> "type" <name: TypeName> <params: TypeParam*>
     "{" <cases: CommaSep<TypeCase>> "}" =>
-      syntax::Item::TypeDef(name, params, cases),
+      syntax::Item::TypeDef(visibility, name, params, cases),
 };
 
-TypeCase: (syntax::CtorName, Option<syntax::Type>) = {
-  <name: CtorName> <content: ("(" <Types> ")")?> => (name, content),
+TypeCase: (Visibility, syntax::CtorName, Option<syntax::Type>) = {
+  <visibility: OptPub> <name: CtorName> <content: ("(" <Types> ")")?> =>
+    (visibility, name, content),
 };
 
 // Value Definitions
 
 ValDef: syntax::Item = {
+  <visibility: OptPub>
   <purity: OptProc>
   <name: ValName>
   "(" <args: CommaSep<(<ValName> ":" <Type>)>> ")"
@@ -186,21 +200,21 @@ ValDef: syntax::Item = {
     let def_type = syntax::Type::Func(purity, Box::new(arg_type), Box::new(ret_type));
     let def_body = syntax::Expr::Lam(purity, arg_pat, Box::new(body));
 
-    syntax::Item::ValDef(name, def_type, def_body)
+    syntax::Item::ValDef(visibility, name, def_type, def_body)
   },
 
-  <name: ValName> ":" <def_type: Type> "=" <val: Expr> => {
-    syntax::Item::ValDef(name, def_type, val)
+  <visibility: OptPub> <name: ValName> ":" <def_type: Type> "=" <val: Expr> => {
+    syntax::Item::ValDef(visibility, name, def_type, val)
   },
-};
+}
 
 // Module Defintions
 
 ModDef: syntax::Item = {
-  "module" <name: ModName> "=" <spec: ModSpec>
+  <visibility: OptPub> "module" <name: ModName> "=" <spec: ModSpec>
   <bindings: ("with" "{" <CommaSep<ModBinding>> "}")?>
   <expose: OptExposeSpec> =>
-    syntax::Item::ModDef(name, spec, bindings.unwrap_or_default(), expose),
+    syntax::Item::ModDef(visibility, name, spec, bindings.unwrap_or_default(), expose),
 };
 
 ModImport: syntax::Item = {
@@ -265,13 +279,13 @@ OptExposeSpec: syntax::ExposeSpec = {
 };
 
 ExposeItem: syntax::ExposeItem = {
-  <name: ValName> => syntax::ExposeItem::Val(name),
+  <visibility: OptPub> <name: ValName> => syntax::ExposeItem::Val(visibility, name),
 
-  <name: TypeName> <ctors: ("{" <CommaSep<CtorName>> "}")?> =>
-    syntax::ExposeItem::Type(name, ctors.unwrap_or_default()),
+  <visibility: OptPub> <name: TypeName> <ctors: ("{" <CommaSep<(OptPub CtorName)>> "}")?> =>
+    syntax::ExposeItem::Type(visibility, name, ctors.unwrap_or_default()),
 
-  "module" <name: ModName> <expose: OptExposeSpec> =>
-    syntax::ExposeItem::Mod(name, Box::new(expose)),
+  <visibility: OptPub> "module" <name: ModName> <expose: OptExposeSpec> =>
+    syntax::ExposeItem::Mod(visibility, name, Box::new(expose)),
 };
 
 // Types
@@ -395,8 +409,8 @@ IfExpr: syntax::Expr = {
 PureAppExpr_: syntax::Expr = {
   <AtomicExpr>,
 
-  <func: PureAppExpr> "(" <args: Exprs> ")" =>
-    syntax::Expr::App(Purity::Pure, Box::new(func), Box::new(args)),
+  <func: PureAppExpr> <lo: @L> "(" <args: CommaSep<Expr>> ")" <hi: @R> =>
+    syntax::Expr::App(Purity::Pure, Box::new(func), (lo, hi, args)),
 };
 
 PureAppExpr: syntax::Expr = {
@@ -406,8 +420,8 @@ PureAppExpr: syntax::Expr = {
 AppExpr_: syntax::Expr = {
   <PureAppExpr>,
 
-  "do" <func: AtomicExpr> "(" <args: Exprs> ")" =>
-    syntax::Expr::App(Purity::Impure, Box::new(func), Box::new(args)),
+  "do" <func: AtomicExpr> <lo: @L> "(" <args: CommaSep<Expr>> ")" <hi: @R> =>
+    syntax::Expr::App(Purity::Impure, Box::new(func), (lo, hi, args)),
 };
 
 AppExpr: syntax::Expr = {
@@ -417,27 +431,26 @@ AppExpr: syntax::Expr = {
 PrefixExpr_: syntax::Expr = {
   <AppExpr>,
 
-  "-&" <PrefixExpr> => syntax::unop(syntax::Op::NegByte, <>),
-  "-" <PrefixExpr> => syntax::unop(syntax::Op::NegInt, <>),
-  "-." <PrefixExpr> => syntax::unop(syntax::Op::NegFloat, <>),
+  "-&" <PrefixExpr> => syntax::unop(Intr::NegByte, <>),
+  "-" <PrefixExpr> => syntax::unop(Intr::NegInt, <>),
+  "-." <PrefixExpr> => syntax::unop(Intr::NegFloat, <>),
 };
 
 PrefixExpr: syntax::Expr = {
   <Spanned<PrefixExpr_>>,
 };
 
-
 ArithProdExpr_: syntax::Expr = {
   <PrefixExpr>,
 
-  <left: ArithProdExpr> "*&" <right: AppExpr> => syntax::binop(syntax::Op::MulByte, left, right),
-  <left: ArithProdExpr> "/&" <right: AppExpr> => syntax::binop(syntax::Op::DivByte, left, right),
+  <left: ArithProdExpr> "*&" <right: AppExpr> => syntax::binop(Intr::MulByte, left, right),
+  <left: ArithProdExpr> "/&" <right: AppExpr> => syntax::binop(Intr::DivByte, left, right),
 
-  <left: ArithProdExpr> "*" <right: AppExpr> => syntax::binop(syntax::Op::MulInt, left, right),
-  <left: ArithProdExpr> "/" <right: AppExpr> => syntax::binop(syntax::Op::DivInt, left, right),
+  <left: ArithProdExpr> "*" <right: AppExpr> => syntax::binop(Intr::MulInt, left, right),
+  <left: ArithProdExpr> "/" <right: AppExpr> => syntax::binop(Intr::DivInt, left, right),
 
-  <left: ArithProdExpr> "*." <right: AppExpr> => syntax::binop(syntax::Op::MulFloat, left, right),
-  <left: ArithProdExpr> "/." <right: AppExpr> => syntax::binop(syntax::Op::DivFloat, left, right),
+  <left: ArithProdExpr> "*." <right: AppExpr> => syntax::binop(Intr::MulFloat, left, right),
+  <left: ArithProdExpr> "/." <right: AppExpr> => syntax::binop(Intr::DivFloat, left, right),
 };
 
 ArithProdExpr: syntax::Expr = {
@@ -447,14 +460,14 @@ ArithProdExpr: syntax::Expr = {
 ArithSumExpr_: syntax::Expr = {
   <ArithProdExpr>,
 
-  <left: ArithSumExpr> "+&" <right: ArithProdExpr> => syntax::binop(syntax::Op::AddByte, left, right),
-  <left: ArithSumExpr> "-&" <right: ArithProdExpr> => syntax::binop(syntax::Op::SubByte, left, right),
+  <left: ArithSumExpr> "+&" <right: ArithProdExpr> => syntax::binop(Intr::AddByte, left, right),
+  <left: ArithSumExpr> "-&" <right: ArithProdExpr> => syntax::binop(Intr::SubByte, left, right),
 
-  <left: ArithSumExpr> "+" <right: ArithProdExpr> => syntax::binop(syntax::Op::AddInt, left, right),
-  <left: ArithSumExpr> "-" <right: ArithProdExpr> => syntax::binop(syntax::Op::SubInt, left, right),
+  <left: ArithSumExpr> "+" <right: ArithProdExpr> => syntax::binop(Intr::AddInt, left, right),
+  <left: ArithSumExpr> "-" <right: ArithProdExpr> => syntax::binop(Intr::SubInt, left, right),
 
-  <left: ArithSumExpr> "+." <right: ArithProdExpr> => syntax::binop(syntax::Op::AddFloat, left, right),
-  <left: ArithSumExpr> "-." <right: ArithProdExpr> => syntax::binop(syntax::Op::SubFloat, left, right),
+  <left: ArithSumExpr> "+." <right: ArithProdExpr> => syntax::binop(Intr::AddFloat, left, right),
+  <left: ArithSumExpr> "-." <right: ArithProdExpr> => syntax::binop(Intr::SubFloat, left, right),
 };
 
 ArithSumExpr: syntax::Expr = {
@@ -466,23 +479,23 @@ ArithSumExpr: syntax::Expr = {
 ArithCompExpr_: syntax::Expr = {
   <ArithSumExpr>,
 
-  <left: ArithSumExpr> "=&" <right: ArithSumExpr> => syntax::binop(syntax::Op::EqByte, left, right),
-  <left: ArithSumExpr> "<&" <right: ArithSumExpr> => syntax::binop(syntax::Op::LtByte, left, right),
-  <left: ArithSumExpr> "<=&" <right: ArithSumExpr> => syntax::binop(syntax::Op::LteByte, left, right),
-  <left: ArithSumExpr> ">&" <right: ArithSumExpr> => syntax::binop(syntax::Op::LtByte, right, left),
-  <left: ArithSumExpr> ">=&" <right: ArithSumExpr> => syntax::binop(syntax::Op::LteByte, right, left),
+  <left: ArithSumExpr> "=&" <right: ArithSumExpr> => syntax::binop(Intr::EqByte, left, right),
+  <left: ArithSumExpr> "<&" <right: ArithSumExpr> => syntax::binop(Intr::LtByte, left, right),
+  <left: ArithSumExpr> "<=&" <right: ArithSumExpr> => syntax::binop(Intr::LteByte, left, right),
+  <left: ArithSumExpr> ">&" <right: ArithSumExpr> => syntax::binop(Intr::GtByte, left, right),
+  <left: ArithSumExpr> ">=&" <right: ArithSumExpr> => syntax::binop(Intr::GteByte, left, right),
 
-  <left: ArithSumExpr> "=" <right: ArithSumExpr> => syntax::binop(syntax::Op::EqInt, left, right),
-  <left: ArithSumExpr> "<" <right: ArithSumExpr> => syntax::binop(syntax::Op::LtInt, left, right),
-  <left: ArithSumExpr> "<=" <right: ArithSumExpr> => syntax::binop(syntax::Op::LteInt, left, right),
-  <left: ArithSumExpr> ">" <right: ArithSumExpr> => syntax::binop(syntax::Op::LtInt, right, left),
-  <left: ArithSumExpr> ">=" <right: ArithSumExpr> => syntax::binop(syntax::Op::LteInt, right, left),
+  <left: ArithSumExpr> "=" <right: ArithSumExpr> => syntax::binop(Intr::EqInt, left, right),
+  <left: ArithSumExpr> "<" <right: ArithSumExpr> => syntax::binop(Intr::LtInt, left, right),
+  <left: ArithSumExpr> "<=" <right: ArithSumExpr> => syntax::binop(Intr::LteInt, left, right),
+  <left: ArithSumExpr> ">" <right: ArithSumExpr> => syntax::binop(Intr::GtInt, left, right),
+  <left: ArithSumExpr> ">=" <right: ArithSumExpr> => syntax::binop(Intr::GteInt, left, right),
 
-  <left: ArithSumExpr> "=." <right: ArithSumExpr> => syntax::binop(syntax::Op::EqFloat, left, right),
-  <left: ArithSumExpr> "<." <right: ArithSumExpr> => syntax::binop(syntax::Op::LtFloat, left, right),
-  <left: ArithSumExpr> "<=." <right: ArithSumExpr> => syntax::binop(syntax::Op::LteFloat, left, right),
-  <left: ArithSumExpr> ">." <right: ArithSumExpr> => syntax::binop(syntax::Op::LtFloat, right, left),
-  <left: ArithSumExpr> ">=." <right: ArithSumExpr> => syntax::binop(syntax::Op::LteFloat, right, left),
+  <left: ArithSumExpr> "=." <right: ArithSumExpr> => syntax::binop(Intr::EqFloat, left, right),
+  <left: ArithSumExpr> "<." <right: ArithSumExpr> => syntax::binop(Intr::LtFloat, left, right),
+  <left: ArithSumExpr> "<=." <right: ArithSumExpr> => syntax::binop(Intr::LteFloat, left, right),
+  <left: ArithSumExpr> ">." <right: ArithSumExpr> => syntax::binop(Intr::GtFloat, left, right),
+  <left: ArithSumExpr> ">=." <right: ArithSumExpr> => syntax::binop(Intr::GteFloat, left, right),
 };
 
 ArithCompExpr: syntax::Expr = {
@@ -493,8 +506,20 @@ ArithExpr: syntax::Expr = {
   <ArithCompExpr>,
 };
 
-BlockExpr_: syntax::Expr = {
+PipeRightExpr_: syntax::Expr = {
   <ArithExpr>,
+
+  <left: PipeRightExpr> "|>" <right: AppExpr> => syntax::Expr::PipeRight(Box::new(left), Box::new(right)),
+}
+
+PipeRightExpr: syntax::Expr = {
+  <Spanned<PipeRightExpr_>>,
+}
+
+BlockExpr_: syntax::Expr = {
+  <PipeRightExpr>,
+
+  <left: PipeRightExpr> "<|" <right: BlockExpr> => syntax::Expr::PipeLeft(Box::new(left), Box::new(right)),
 
   "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
     if let syntax::Expr::Span(left, right, body) = body {
@@ -529,26 +554,17 @@ BlockExpr_: syntax::Expr = {
       unreachable!();
     }
   },
+
+  <purity: OptProc> "\\" <param: Pattern> "->" <body: BlockExpr> =>
+    syntax::Expr::Lam(purity, param, Box::new(body)),
 };
 
 BlockExpr: syntax::Expr = {
   <Spanned<BlockExpr_>>,
 };
 
-LamExpr_: syntax::Expr = {
-  <BlockExpr>,
-
-  <purity: OptProc> "\\" <param: Pattern> "->" <body: LamExpr> =>
-    syntax::Expr::Lam(purity, param, Box::new(body)),
-};
-
-LamExpr: syntax::Expr = {
-  <Spanned<LamExpr_>>,
-};
-
-
 Expr: syntax::Expr = {
-  <LamExpr>,
+  <BlockExpr>,
 };
 
 Exprs_: syntax::Expr = {

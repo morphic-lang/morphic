@@ -1,4 +1,4 @@
-use find_clang::find_clang;
+use find_clang::find_default_clang;
 use std::path::Path;
 use std::process::Command;
 use std::{env, fs};
@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 
 fn compile_tal() {
     let cwd = env::current_dir().unwrap();
-    let clang = find_clang(10).unwrap();
+    let clang = find_default_clang().unwrap();
 
     let wasm_out_dir = env::var("OUT_DIR").unwrap() + "/wasm";
     let native_out_dir = env::var("OUT_DIR").unwrap() + "/native";

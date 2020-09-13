@@ -232,13 +232,17 @@ fn trans_expr(
 
         special::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
 
-        special::Expr::ArithOp(op) => tail::Expr::ArithOp(*op),
+        special::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
 
         special::Expr::ArrayOp(rep, item_type, op) => {
             tail::Expr::ArrayOp(*rep, item_type.clone(), *op)
         }
 
         special::Expr::IoOp(rep, op) => tail::Expr::IoOp(*rep, *op),
+
+        special::Expr::Panic(ret_type, rep, message) => {
+            tail::Expr::Panic(ret_type.clone(), *rep, *message)
+        }
 
         special::Expr::ArrayLit(rep, item_type, items) => {
             tail::Expr::ArrayLit(*rep, item_type.clone(), items.clone())

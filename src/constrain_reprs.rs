@@ -87,7 +87,8 @@ fn constrain_expr(
         }
 
         unif::Expr::ArrayOp(rep_var, _, status, _)
-        | unif::Expr::IoOp(rep_var, mutation::IoOp::Output(_, status, _)) => {
+        | unif::Expr::IoOp(rep_var, mutation::IoOp::Output(_, status, _))
+        | unif::Expr::Panic(_, rep_var, status, _) => {
             constrain_var(params, internal, *rep_var, status.mutated_cond.clone())
         }
 
@@ -102,13 +103,16 @@ fn constrain_expr(
         | unif::Expr::UnwrapBoxed(_, _)
         | unif::Expr::WrapCustom(_, _, _)
         | unif::Expr::UnwrapCustom(_, _, _)
-        | unif::Expr::ArithOp(_)
         | unif::Expr::IoOp(_, mutation::IoOp::Input)
         | unif::Expr::ArrayLit(_, _, _)
         | unif::Expr::BoolLit(_)
         | unif::Expr::ByteLit(_)
         | unif::Expr::IntLit(_)
         | unif::Expr::FloatLit(_) => {}
+
+        // NOTE [intrinsics]: If we ever add array intrinsics in the future, this will need to be
+        // modified.
+        unif::Expr::Intrinsic(_, _) => {}
     }
 }
 

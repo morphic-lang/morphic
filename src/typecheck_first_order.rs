@@ -1,4 +1,6 @@
 use crate::data::first_order_ast as ast;
+use crate::data::intrinsics as intrs;
+use crate::intrinsic_config::intrinsic_sig;
 use crate::util::with_scope;
 
 pub fn typecheck(program: &ast::Program) {
@@ -25,19 +27,18 @@ fn typecheck_expr(
     use ast::Type as T;
 
     match expr {
-        E::ArithOp(ast::ArithOp::Op(num_type, _, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Num(*num_type));
-            T::Num(*num_type)
-        }
-        E::ArithOp(ast::ArithOp::Cmp(num_type, _, v, w)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
-            assert_eq!(typecheck_expr(program, locals, &**w), T::Num(*num_type));
-            T::Bool
-        }
-        E::ArithOp(ast::ArithOp::Negate(num_type, v)) => {
-            assert_eq!(typecheck_expr(program, locals, &**v), T::Num(*num_type));
-            T::Num(*num_type)
+        E::Intrinsic(intr, v) => {
+            fn trans_type(type_: &intrs::Type) -> ast::Type {
+                match type_ {
+                    intrs::Type::Bool => T::Bool,
+                    intrs::Type::Num(num_type) => T::Num(*num_type),
+                    intrs::Type::Tuple(items) => T::Tuple(items.iter().map(trans_type).collect()),
+                }
+            }
+
+            let sig = intrinsic_sig(*intr);
+            assert_eq!(typecheck_expr(program, locals, v), trans_type(&sig.arg));
+            trans_type(&sig.ret)
         }
         E::ArrayOp(ast::ArrayOp::Item(item_type, array, index)) => {
             assert_eq!(
@@ -87,6 +88,13 @@ fn typecheck_expr(
                 T::Array(Box::new(T::Num(ast::NumType::Byte)))
             );
             T::Tuple(vec![])
+        }
+        E::Panic(ret_type, message) => {
+            assert_eq!(
+                typecheck_expr(program, locals, &**message),
+                T::Array(Box::new(T::Num(ast::NumType::Byte)))
+            );
+            ret_type.clone()
         }
         E::Ctor(type_id, variant_id, expr) => {
             assert_eq!(

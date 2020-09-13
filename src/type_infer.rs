@@ -3,12 +3,15 @@ use std::cell::{RefCell, RefMut};
 use std::io;
 use std::ops::{Deref, DerefMut};
 
+use crate::data::intrinsics as intrs;
+use crate::data::num_type::NumType;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
 use crate::file_cache::FileCache;
+use crate::intrinsic_config::intrinsic_sig;
 use crate::report_error::{locate_path, locate_span, Locate};
 use crate::report_type;
 use crate::util::id_vec::IdVec;
@@ -477,6 +480,27 @@ enum AnnotPattern {
     Span(usize, usize, Box<AnnotPattern>),
 }
 
+fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> res::TypeScheme {
+    fn trans_type(type_: &intrs::Type) -> res::Type {
+        match type_ {
+            intrs::Type::Bool => res::Type::App(res::TypeId::Bool, vec![]),
+            intrs::Type::Num(NumType::Byte) => res::Type::App(res::TypeId::Byte, vec![]),
+            intrs::Type::Num(NumType::Int) => res::Type::App(res::TypeId::Int, vec![]),
+            intrs::Type::Num(NumType::Float) => res::Type::App(res::TypeId::Float, vec![]),
+            intrs::Type::Tuple(items) => res::Type::Tuple(items.iter().map(trans_type).collect()),
+        }
+    }
+
+    res::TypeScheme {
+        num_params: 0,
+        body: res::Type::Func(
+            sig.purity,
+            Box::new(trans_type(&sig.arg)),
+            Box::new(trans_type(&sig.ret)),
+        ),
+    }
+}
+
 // Sounds ominous...
 pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::TypeScheme> {
     use crate::data::resolved_ast::Type::*;
@@ -492,10 +516,6 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
 
     fn int() -> res::Type {
         App(Int, vec![])
-    }
-
-    fn float() -> res::Type {
-        App(Float, vec![])
     }
 
     fn array(arg: res::Type) -> res::Type {
@@ -514,30 +534,6 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         Tuple(vec![fst, snd])
     }
 
-    fn byte_binop() -> res::Type {
-        func(pair(byte(), byte()), byte())
-    }
-
-    fn byte_comp() -> res::Type {
-        func(pair(byte(), byte()), bool_())
-    }
-
-    fn int_binop() -> res::Type {
-        func(pair(int(), int()), int())
-    }
-
-    fn int_comp() -> res::Type {
-        func(pair(int(), int()), bool_())
-    }
-
-    fn float_binop() -> res::Type {
-        func(pair(float(), float()), float())
-    }
-
-    fn float_comp() -> res::Type {
-        func(pair(float(), float()), bool_())
-    }
-
     fn scheme(num_params: usize, body: res::Type) -> res::TypeScheme {
         res::TypeScheme { num_params, body }
     }
@@ -547,41 +543,7 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
     }
 
     match global {
-        res::GlobalId::ArithOp(op) => {
-            use crate::data::raw_ast::Op::*;
-            let body = match op {
-                AddByte => byte_binop(),
-                SubByte => byte_binop(),
-                MulByte => byte_binop(),
-                DivByte => byte_binop(),
-                NegByte => func(byte(), byte()),
-
-                EqByte => byte_comp(),
-                LtByte => byte_comp(),
-                LteByte => byte_comp(),
-
-                AddInt => int_binop(),
-                SubInt => int_binop(),
-                MulInt => int_binop(),
-                DivInt => int_binop(),
-                NegInt => func(int(), int()),
-
-                EqInt => int_comp(),
-                LtInt => int_comp(),
-                LteInt => int_comp(),
-
-                AddFloat => float_binop(),
-                SubFloat => float_binop(),
-                MulFloat => float_binop(),
-                DivFloat => float_binop(),
-                NegFloat => func(float(), float()),
-
-                EqFloat => float_comp(),
-                LtFloat => float_comp(),
-                LteFloat => float_comp(),
-            };
-            Cow::Owned(scheme(0, body))
-        }
+        res::GlobalId::Intrinsic(intr) => Cow::Owned(intrinsic_sig_to_scheme(&intrinsic_sig(intr))),
 
         res::GlobalId::ArrayOp(op) => {
             use crate::data::resolved_ast::ArrayOp::*;
@@ -604,6 +566,8 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
             res::IoOp::Input => Cow::Owned(scheme(0, impure_func(Tuple(vec![]), array(byte())))),
             res::IoOp::Output => Cow::Owned(scheme(0, impure_func(array(byte()), Tuple(vec![])))),
         },
+
+        res::GlobalId::Panic => Cow::Owned(scheme(1, func(array(byte()), param(0)))),
 
         res::GlobalId::Ctor(Custom(custom), variant) => {
             let typedef = &program.custom_types[custom];

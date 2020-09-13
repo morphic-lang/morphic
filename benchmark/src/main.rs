@@ -1,4 +1,4 @@
-use find_clang::find_clang;
+use find_clang::find_default_clang;
 use morphic::build;
 use morphic::cli;
 use morphic::file_cache::FileCache;
@@ -155,8 +155,6 @@ fn bench_sample(
     });
 }
 
-const CLANG_VERSION: u32 = 10;
-
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BasicProfReport {
@@ -177,8 +175,7 @@ fn bench_c_sample(
         .expect("Could not create temp file")
         .into_temp_path();
 
-    let clang = find_clang(CLANG_VERSION)
-        .unwrap_or_else(|err| panic!("Could not find clang {}: {:?}", CLANG_VERSION, err));
+    let clang = find_default_clang().expect("clang must be present to run benchmarks");
 
     let clang_output = process::Command::new(&clang.path)
         .arg(src_path.as_ref())

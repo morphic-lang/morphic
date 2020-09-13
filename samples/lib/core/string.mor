@@ -2,7 +2,7 @@ import Array
 import Option expose { Option { Some, None } }
 import Iter
 
-nat_to_string(i: Int): Array Byte =
+pub nat_to_string(i: Int): Array Byte =
   let digit_to_string = \d ->
     match d {
         0 -> "0",
@@ -23,7 +23,7 @@ nat_to_string(i: Int): Array Byte =
     Array.concat(nat_to_string(i / 10), digit_to_string(i - i / 10 * 10))
   }
 
-int_to_string(i: Int): Array Byte =
+pub int_to_string(i: Int): Array Byte =
   if i = 0 {
     "0"
   } else if i < 0 {
@@ -32,9 +32,9 @@ int_to_string(i: Int): Array Byte =
     nat_to_string(i)
   }
 
-digit_ascii_base: Byte = 48b
+pub digit_ascii_base: Byte = 48b
 
-digit_to_nat(char: Byte): Option Int =
+pub digit_to_nat(char: Byte): Option Int =
   match char {
     // 0 is ascii code 48
     48b -> Some(0),
@@ -50,7 +50,7 @@ digit_to_nat(char: Byte): Option Int =
     _ -> None,
   }
 
-string_to_nat(str: Array Byte): Option Int =
+pub string_to_nat(str: Array Byte): Option Int =
   Iter.foldl(
     Iter.items(str),
     Some(0),
@@ -59,3 +59,10 @@ string_to_nat(str: Array Byte): Option Int =
       \acc -> Option.map(digit_to_nat(char), \digit -> acc * 10 + digit),
     )
   )
+
+pub equal(a: Array Byte, b: Array Byte): Bool =
+  if len(a) = len(b) {
+    Iter.all(Iter.zip(Iter.items(a), Iter.items(b)), \(x, y) -> x =& y)
+  } else {
+    False
+  }

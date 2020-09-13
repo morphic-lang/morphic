@@ -1,18 +1,12 @@
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::id_vec::IdVec;
 
 id_type!(pub LocalId);
-
-#[derive(Clone, Copy, Debug)]
-pub enum ArithOp {
-    Op(first_ord::NumType, first_ord::BinOp, LocalId, LocalId),
-    Cmp(first_ord::NumType, first_ord::Comparison, LocalId, LocalId),
-    Negate(first_ord::NumType, LocalId),
-}
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
@@ -76,9 +70,10 @@ pub enum Expr {
     WrapCustom(first_ord::CustomTypeId, LocalId),
     UnwrapCustom(first_ord::CustomTypeId, LocalId),
 
-    ArithOp(ArithOp),
+    Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(anon::Type, LocalId),
 
     ArrayLit(anon::Type, Vec<LocalId>),
     BoolLit(bool),

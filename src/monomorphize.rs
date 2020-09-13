@@ -17,9 +17,9 @@ fn resolve_expr(
     expr: &typed::Expr,
 ) -> mono::Expr {
     match expr {
-        typed::Expr::Global(res::GlobalId::ArithOp(op), args) => {
+        typed::Expr::Global(res::GlobalId::Intrinsic(intr), args) => {
             debug_assert!(args.is_empty());
-            mono::Expr::ArithOp(*op)
+            mono::Expr::Intrinsic(*intr)
         }
 
         typed::Expr::Global(res::GlobalId::ArrayOp(op), args) => {
@@ -33,6 +33,15 @@ fn resolve_expr(
         typed::Expr::Global(res::GlobalId::IoOp(op), args) => {
             debug_assert!(args.is_empty());
             mono::Expr::IoOp(*op)
+        }
+
+        typed::Expr::Global(res::GlobalId::Panic, args) => {
+            debug_assert_eq!(args.len(), 1);
+            mono::Expr::Panic(resolve_type(
+                type_insts,
+                inst_args,
+                &args[res::TypeParamId(0)],
+            ))
         }
 
         typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, variant), args) => {

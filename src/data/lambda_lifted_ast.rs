@@ -1,7 +1,7 @@
+use crate::data::intrinsics::Intrinsic;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
@@ -17,9 +17,10 @@ id_type!(pub CaptureId);
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    ArithOp(Op),
+    Intrinsic(Intrinsic),
     ArrayOp(ArrayOp, mono::Type),
     IoOp(IoOp),
+    Panic(mono::Type),
     Ctor(mono::CustomTypeId, res::VariantId),
     Global(mono::CustomGlobalId),
     Local(LocalId),

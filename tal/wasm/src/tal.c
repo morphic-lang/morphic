@@ -60,6 +60,10 @@ void write(const void *ptr, size_t size, size_t count) {
   morphic_js_print((const char *) ptr, size * count);
 }
 
+void write_error(const void *ptr, size_t size, size_t count) {
+  morphic_js_print_error((const char *) ptr, size * count);
+}
+
 int flush(void) {
   /* There is no analogous function to flush for Javascript. */
   return 0;

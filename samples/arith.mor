@@ -85,4 +85,30 @@ proc main(): () =
   do test("Greater-equal floats equal", 2.0 >=. 2.0) then
   do test("Greater-equal floats greater", 3.0 >=. 2.0) then
 
+  do test("byte_to_int positive", byte_to_int(42b) = 42) then
+  do test("byte_to_int negative", byte_to_int(-&42b) = 256 - 42) then
+
+  do test("byte_to_int_signed positive", byte_to_int_signed(42b) = 42) then
+  do test("byte_to_int_signed negative", byte_to_int_signed(-&42b) = -42) then
+
+  do test("int_to_byte in range", int_to_byte(42) =& 42b) then
+  do test("int_to_byte truncate", int_to_byte(300) =& 44b) then
+  do test("int_to_byte negative", int_to_byte(-2) =& -&2b) then
+
+  do test("int_shift_left in range", int_shift_left(42, 4) = 672) then
+  do test("int_shift_left shift out", int_shift_left(42, 59) = 5764607523034234880) then
+  // in int shifts, the lower 6 bits of the shift index are used
+  do test("int_shift_left overflow", int_shift_left(42, 64) = 42) then
+
+  do test("int_shift_right in range", int_shift_right(80, 3) = 10) then
+  do test("int_shift_right shift out", int_shift_right(42, 3) = 5) then
+  // in int shifts, the lower 6 bits of the shift index are used
+  do test("int_shift_right overflow", int_shift_right(42, 65) = 21) then
+  // int_shift_right is a logical shift, not an arithmetic shift
+  do test("int_shift_right negative", int_shift_right(-1, 1) = 9223372036854775807) then
+
+  do test("int_bit_and", int_bit_and(42, 98) = 34) then
+  do test("int_bit_or", int_bit_or(42, 98) = 106) then
+  do test("int_bit_xor", int_bit_xor(42, 98) = 72) then
+
   do output("Completed all tests\n")

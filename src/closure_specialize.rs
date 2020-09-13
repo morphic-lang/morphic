@@ -125,8 +125,8 @@ impl<'a> Context<'a> {
                 target_cases.0.extend(resolved_template.0);
             }
 
-            annot::Requirement::ArithOp(op) => {
-                target_cases.0.insert(special::FuncCase::ArithOp(*op));
+            annot::Requirement::Intrinsic(intr) => {
+                target_cases.0.insert(special::FuncCase::Intrinsic(*intr));
             }
 
             annot::Requirement::ArrayOp(op, item_type) => {
@@ -148,6 +148,15 @@ impl<'a> Context<'a> {
             annot::Requirement::IoOp(op) => {
                 target_cases.0.insert(special::FuncCase::IoOp(*op));
             }
+
+            annot::Requirement::Panic(ret_type) => {
+                let resolved_ret_type = self.resolve_type(ret_type, params);
+
+                target_cases
+                    .0
+                    .insert(special::FuncCase::Panic(resolved_ret_type));
+            }
+
             annot::Requirement::Ctor(custom, type_params, variant) => {
                 let resolved_type_params =
                     type_params.map(|_, solution| self.resolve_solution(solution, params));
@@ -359,8 +368,8 @@ impl<'a> Context<'a> {
         params: &IdVec<annot::RepParamId, special::FuncRep>,
     ) -> special::Expr {
         match expr {
-            annot::Expr::ArithOp(op, solution) => {
-                special::Expr::ArithOp(*op, self.resolve_solution(solution, params))
+            annot::Expr::Intrinsic(intr, solution) => {
+                special::Expr::Intrinsic(*intr, self.resolve_solution(solution, params))
             }
 
             annot::Expr::ArrayOp(op, item_type, solution) => special::Expr::ArrayOp(
@@ -372,6 +381,11 @@ impl<'a> Context<'a> {
             annot::Expr::IoOp(op, solution) => {
                 special::Expr::IoOp(*op, self.resolve_solution(solution, params))
             }
+
+            annot::Expr::Panic(ret_type, solution) => special::Expr::Panic(
+                self.resolve_type(ret_type, params),
+                self.resolve_solution(solution, params),
+            ),
 
             annot::Expr::NullaryCtor(custom, custom_params, variant) => {
                 let resolved_custom_params =

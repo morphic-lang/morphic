@@ -1,4 +1,6 @@
+use crate::data::intrinsics::Intrinsic;
 use crate::data::purity::Purity;
+use crate::data::visibility::Visibility;
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -25,9 +27,14 @@ pub struct Program(pub Vec<Item>);
 
 #[derive(Clone, Debug)]
 pub enum Item {
-    TypeDef(TypeName, Vec<TypeParam>, Vec<(CtorName, Option<Type>)>),
-    ValDef(ValName, Type, Expr),
-    ModDef(ModName, ModSpec, Vec<ModBinding>, ExposeSpec),
+    TypeDef(
+        Visibility,
+        TypeName,
+        Vec<TypeParam>,
+        Vec<(Visibility, CtorName, Option<Type>)>,
+    ),
+    ValDef(Visibility, ValName, Type, Expr),
+    ModDef(Visibility, ModName, ModSpec, Vec<ModBinding>, ExposeSpec),
     ModImport(ModName, ExposeSpec),
     ModExpose(ModPath, ExposeSpec),
 }
@@ -46,9 +53,9 @@ pub enum ModSpec {
 
 #[derive(Clone, Debug)]
 pub enum ExposeItem {
-    Val(ValName),
-    Type(TypeName, Vec<CtorName>),
-    Mod(ModName, Box<ExposeSpec>),
+    Val(Visibility, ValName),
+    Type(Visibility, TypeName, Vec<(Visibility, CtorName)>),
+    Mod(Visibility, ModName, Box<ExposeSpec>),
 }
 
 #[derive(Clone, Debug)]
@@ -73,13 +80,24 @@ pub enum Expr {
     // are special in that they may refer to local variables as well as module-scoped values.
     Var(ValName),
     QualName(ModPath, ValName),
-    Op(Op),
     Ctor(ModPath, CtorName),
     Tuple(Vec<Expr>),
     Lam(Purity, Pattern, Box<Expr>),
-    App(Purity, Box<Expr>, Box<Expr>),
+    // App expressions in the raw AST need to explicitly distinguish between taking "multiple
+    // arguments" and taking a single tuple as an argument, because this distinction is relevant for
+    // pipe desugaring.  Subsequent passes in the compiler do not make this distinction.
+    //
+    // The `usize`s denote the span of the argument list.
+    App(Purity, Box<Expr>, (usize, usize, Vec<Expr>)),
+    // This distinguishes function applications arising from operator expressions from all other
+    // function applications. Without this variant, error messages for `(a + b) <| c` would be
+    // horrible.
+    OpApp(Intrinsic, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     LetMany(VecDeque<(Pattern, Expr)>, Box<Expr>),
+
+    PipeLeft(Box<Expr>, Box<Expr>),
+    PipeRight(Box<Expr>, Box<Expr>),
 
     ArrayLit(Vec<Expr>),
     ByteLit(u8),
@@ -90,49 +108,12 @@ pub enum Expr {
     Span(usize, usize, Box<Expr>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Op {
-    AddByte,
-    SubByte,
-    MulByte,
-    DivByte,
-    NegByte,
-
-    EqByte,
-    LtByte,
-    LteByte,
-
-    AddInt,
-    SubInt,
-    MulInt,
-    DivInt,
-    NegInt,
-
-    EqInt,
-    LtInt,
-    LteInt,
-
-    AddFloat,
-    SubFloat,
-    MulFloat,
-    DivFloat,
-    NegFloat,
-
-    EqFloat,
-    LtFloat,
-    LteFloat,
+pub fn binop(op: Intrinsic, left: Expr, right: Expr) -> Expr {
+    Expr::OpApp(op, Box::new(Expr::Tuple(vec![left, right])))
 }
 
-pub fn binop(op: Op, left: Expr, right: Expr) -> Expr {
-    Expr::App(
-        Purity::Pure,
-        Box::new(Expr::Op(op)),
-        Box::new(Expr::Tuple(vec![left, right])),
-    )
-}
-
-pub fn unop(op: Op, arg: Expr) -> Expr {
-    Expr::App(Purity::Pure, Box::new(Expr::Op(op)), Box::new(arg))
+pub fn unop(op: Intrinsic, arg: Expr) -> Expr {
+    Expr::OpApp(op, Box::new(arg))
 }
 
 #[derive(Clone, Debug)]

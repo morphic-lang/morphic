@@ -6,6 +6,7 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::fate_annot_ast::{CallId, OccurId};
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -17,13 +18,6 @@ id_type!(pub FuncVersionId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Local(pub OccurId, pub flat::LocalId);
-
-#[derive(Clone, Copy, Debug)]
-pub enum ArithOp {
-    Op(first_ord::NumType, first_ord::BinOp, Local, Local),
-    Cmp(first_ord::NumType, first_ord::Comparison, Local, Local),
-    Negate(first_ord::NumType, Local),
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
@@ -107,9 +101,14 @@ pub enum Expr {
     WrapCustom(first_ord::CustomTypeId, Local),
     UnwrapCustom(first_ord::CustomTypeId, Local),
 
-    ArithOp(ArithOp),
+    Intrinsic(Intrinsic, Local),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(
+        anon::Type,            // Return type
+        mutation::LocalStatus, // Message status
+        Local,                 // Message
+    ),
 
     ArrayLit(anon::Type, Vec<Local>),
     BoolLit(bool),

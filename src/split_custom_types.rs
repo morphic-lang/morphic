@@ -12,15 +12,17 @@ pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
     let boxed_variants = find_boxed_variants(&program.custom_types);
 
     let custom_types = program.custom_types.map(|custom, typedef| {
-        if typedef.variants.len() == 1 {
-            // TODO: As an optimization, we might actually be able to eliminate boxing here in all
-            // cases.
-            trans_content_type(
-                boxed_variants[custom][first_ord::VariantId(0)],
-                &typedef.variants[first_ord::VariantId(0)],
-            )
-        } else {
-            anon::Type::Variants(trans_variants(&boxed_variants[custom], &typedef.variants))
+        match typedef.variants.len() {
+            0 => anon::Type::Tuple(vec![]),
+            1 => {
+                // TODO: As an optimization, we might actually be able to eliminate boxing here in all
+                // cases.
+                trans_content_type(
+                    boxed_variants[custom][first_ord::VariantId(0)],
+                    &typedef.variants[first_ord::VariantId(0)],
+                )
+            }
+            _ => anon::Type::Variants(trans_variants(&boxed_variants[custom], &typedef.variants)),
         }
     });
 
@@ -160,29 +162,8 @@ fn trans_expr(
     expr: &first_ord::Expr,
 ) -> anon::Expr {
     match expr {
-        first_ord::Expr::ArithOp(first_ord::ArithOp::Op(num_type, op, left, right)) => {
-            anon::Expr::ArithOp(anon::ArithOp::Op(
-                *num_type,
-                *op,
-                Box::new(trans_expr(typedefs, boxed_variants, left)),
-                Box::new(trans_expr(typedefs, boxed_variants, right)),
-            ))
-        }
-
-        first_ord::Expr::ArithOp(first_ord::ArithOp::Cmp(num_type, cmp, left, right)) => {
-            anon::Expr::ArithOp(anon::ArithOp::Cmp(
-                *num_type,
-                *cmp,
-                Box::new(trans_expr(typedefs, boxed_variants, left)),
-                Box::new(trans_expr(typedefs, boxed_variants, right)),
-            ))
-        }
-
-        first_ord::Expr::ArithOp(first_ord::ArithOp::Negate(num_type, body)) => {
-            anon::Expr::ArithOp(anon::ArithOp::Negate(
-                *num_type,
-                Box::new(trans_expr(typedefs, boxed_variants, body)),
-            ))
+        first_ord::Expr::Intrinsic(intr, arg) => {
+            anon::Expr::Intrinsic(*intr, Box::new(trans_expr(typedefs, boxed_variants, arg)))
         }
 
         first_ord::Expr::ArrayOp(first_ord::ArrayOp::Item(item_type, array, index)) => {
@@ -229,6 +210,11 @@ fn trans_expr(
             anon::IoOp::Output(Box::new(trans_expr(typedefs, boxed_variants, output))),
         ),
 
+        first_ord::Expr::Panic(ret_type, message) => anon::Expr::Panic(
+            trans_type(ret_type),
+            Box::new(trans_expr(typedefs, boxed_variants, message)),
+        ),
+
         first_ord::Expr::Ctor(type_id, variant, content) => {
             let content_trans = match content {
                 Some(content) => trans_expr(typedefs, boxed_variants, content),
@@ -249,6 +235,8 @@ fn trans_expr(
 
             anon::Expr::WrapCustom(
                 *type_id,
+                // It's impossible to construct a variant with 0 cases, so we don't need to handle that
+                // case even though it uses a different type representation in the transformed AST.
                 if typedefs[type_id].variants.len() != 1 {
                     Box::new(anon::Expr::WrapVariant(
                         trans_variants(&boxed_variants[type_id], &typedefs[type_id].variants),
@@ -365,6 +353,8 @@ fn trans_pattern(
 
             anon::Pattern::Custom(
                 *type_id,
+                // It's impossible to match on a variant with 0 cases, so we don't need to handle that
+                // case even though it uses a different type representation in the transformed AST.
                 if typedefs[type_id].variants.len() != 1 {
                     Box::new(anon::Pattern::Variant(
                         trans_variants(&boxed_variants[type_id], &typedefs[type_id].variants),

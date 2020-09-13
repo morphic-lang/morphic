@@ -11,6 +11,7 @@
 // necessary, because they provide the only mechanism for expressing recursive types.
 
 use crate::data::first_order_ast as first_ord;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -33,18 +34,6 @@ pub enum Type {
 pub enum IoOp {
     Input,
     Output(Box<Expr>),
-}
-
-#[derive(Clone, Debug)]
-pub enum ArithOp {
-    Op(first_ord::NumType, first_ord::BinOp, Box<Expr>, Box<Expr>),
-    Cmp(
-        first_ord::NumType,
-        first_ord::Comparison,
-        Box<Expr>,
-        Box<Expr>,
-    ),
-    Negate(first_ord::NumType, Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
@@ -93,9 +82,10 @@ pub enum Expr {
     ),
     WrapCustom(first_ord::CustomTypeId, Box<Expr>),
 
-    ArithOp(ArithOp),
+    Intrinsic(Intrinsic, Box<Expr>),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(Type, Box<Expr>),
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),

@@ -1,24 +1,25 @@
 import Core expose { module Array }
 
-type Diff {
-    Diff(Array Byte -> Array Byte),
+pub type Diff {
+  Diff(Array Byte -> Array Byte),
 }
-string_to_diff(string: Array Byte): Diff =
-    Diff(\prefix -> Array.concat(prefix, string))
 
-concat_diffs(diff1: Diff, diff2: Diff): Diff = Diff(\prefix ->
-    let Diff(f1) = diff1 in
-    let Diff(f2) = diff2 in
-    f2(f1(prefix)))
+pub string_to_diff(string: Array Byte): Diff =
+  Diff(\prefix -> Array.concat(prefix, string))
+
+pub concat_diffs(diff1: Diff, diff2: Diff): Diff = Diff(\prefix ->
+  let Diff(f1) = diff1 in
+  let Diff(f2) = diff2 in
+  f2(f1(prefix)))
 
 // One day
 // // Declare a custom infix operator
 // infixl (+++) = concat_diffs
 
-lazy(body: () -> Diff): Diff = Diff(\prefix ->
-    let Diff(f) = body() in
-    f(prefix) )
+pub lazy(body: () -> Diff): Diff = Diff(\prefix ->
+  let Diff(f) = body() in
+  f(prefix) )
 
-render_diff(diff: Diff): Array Byte =
+pub render_diff(diff: Diff): Array Byte =
   let Diff(f) = diff in
   f("")

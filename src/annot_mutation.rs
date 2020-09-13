@@ -532,7 +532,9 @@ fn annot_expr(
             )
         }
 
-        alias::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), trivial_info()),
+        // NOTE [intrinsics]: If we add array intrinsics in the future, this will need to be
+        // modified.
+        alias::Expr::Intrinsic(intr, arg) => (annot::Expr::Intrinsic(*intr, *arg), trivial_info()),
 
         alias::Expr::ArrayOp(alias::ArrayOp::Item(item_type, array_aliases, array, index)) => (
             annot::Expr::ArrayOp(annot::ArrayOp::Item(
@@ -639,6 +641,18 @@ fn annot_expr(
                 *bytes,
             )),
             trivial_info(),
+        ),
+
+        alias::Expr::Panic(ret_type, _bytes_aliases, bytes) => (
+            annot::Expr::Panic(
+                ret_type.clone(),
+                ctx[bytes].statuses[&Vector::new()].clone(),
+                *bytes,
+            ),
+            ExprInfo {
+                mutations: Vec::new(),
+                val_statuses: empty_statuses(&orig.custom_types, ret_type),
+            },
         ),
 
         alias::Expr::ArrayLit(item_type, items) => {

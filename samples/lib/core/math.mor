@@ -1,0 +1,34 @@
+import Bool expose { and, or }
+
+pub int_bit_not(a: Int): Int =
+  -a - 1
+
+pub rem(a: Int, b: Int): Int =
+  a - b * (a / b)
+
+pub mod(a: Int, b: Int): Int =
+  if a < 0 {
+    rem(a, b) + b
+  } else {
+    rem(a, b)
+  }
+
+pow_rec(accum: Int, a: Int, b: Int): Int =
+  if (b = 0) {
+    accum
+  } else {
+    pow_rec(a * accum, a, b - 1)
+  }
+
+pub pow(a: Int, b: Int): Int =
+  pow_rec(1, a, b)
+
+byte_pow_rec(accum: Byte, a: Byte, b: Byte): Byte =
+  if (b =& 0b) {
+    accum
+  } else {
+    byte_pow_rec(a *& accum, a, b -& 1b)
+  }
+
+pub byte_pow(a: Byte, b: Byte): Byte =
+  byte_pow_rec(1b, a, b)

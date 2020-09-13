@@ -1271,7 +1271,9 @@ fn annot_expr(
             (annot::Expr::UnwrapCustom(*custom_id, *wrapped), expr_info)
         }
 
-        flat::Expr::ArithOp(op) => (annot::Expr::ArithOp(*op), ValInfo::new()),
+        // NOTE [intrinsics]: If we add array intrinsics in the future, this will need to be
+        // modified.
+        flat::Expr::Intrinsic(intr, arg) => (annot::Expr::Intrinsic(*intr, *arg), ValInfo::new()),
 
         flat::Expr::ArrayOp(flat::ArrayOp::Item(item_type, array, index)) => {
             debug_assert_eq!(
@@ -1398,6 +1400,15 @@ fn annot_expr(
             (
                 annot::Expr::IoOp(annot::IoOp::Output(array_aliases, *array)),
                 ValInfo::new(),
+            )
+        }
+
+        flat::Expr::Panic(ret_type, array) => {
+            let array_aliases = ctx[array].aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::Panic(ret_type.clone(), array_aliases, *array),
+                empty_info(&orig.custom_types, ret_type),
             )
         }
 

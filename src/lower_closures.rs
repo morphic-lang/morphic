@@ -3,22 +3,22 @@ use std::iter::repeat_with;
 
 use crate::data::closure_specialized_ast as special;
 use crate::data::first_order_ast::{self as first_ord};
+use crate::data::intrinsics as intrs;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::raw_ast as raw;
-use crate::data::raw_ast::Op;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum LeafFuncCase {
     Lam(special::LamId),
-    ArithOp(raw::Op),
+    Intrinsic(intrs::Intrinsic),
     ArrayOp(res::ArrayOp, special::Type),
     ArrayReplace(special::Type),
     IoOp(res::IoOp),
+    Panic(special::Type),
     Ctor(special::CustomTypeId, res::VariantId),
 }
 
@@ -37,8 +37,8 @@ fn add_rep_leaves(
                 add_rep_leaves(opaque_reps, &opaque_reps[opaque], leaves);
             }
 
-            &special::FuncCase::ArithOp(op) => {
-                leaves.insert(LeafFuncCase::ArithOp(op));
+            &special::FuncCase::Intrinsic(intr) => {
+                leaves.insert(LeafFuncCase::Intrinsic(intr));
             }
 
             special::FuncCase::ArrayOp(op, item_type) => {
@@ -51,6 +51,10 @@ fn add_rep_leaves(
 
             &special::FuncCase::IoOp(op) => {
                 leaves.insert(LeafFuncCase::IoOp(op));
+            }
+
+            special::FuncCase::Panic(ret_type) => {
+                leaves.insert(LeafFuncCase::Panic(ret_type.clone()));
             }
 
             &special::FuncCase::Ctor(custom, variant) => {
@@ -226,9 +230,10 @@ fn is_atomic(expr: &special::Expr) -> bool {
         | special::Expr::LetMany(_, _)
         | special::Expr::ArrayLit(_, _) => false,
 
-        special::Expr::ArithOp(_, _)
+        special::Expr::Intrinsic(_, _)
         | special::Expr::ArrayOp(_, _, _)
         | special::Expr::IoOp(_, _)
+        | special::Expr::Panic(_, _)
         | special::Expr::NullaryCtor(_, _)
         | special::Expr::Ctor(_, _, _)
         | special::Expr::Global(_)
@@ -269,12 +274,13 @@ impl<'a> Context<'a> {
 
                 Some(first_ord::Type::Tuple(lowered_captures))
             }
-            LeafFuncCase::ArithOp(_) => None,
+            LeafFuncCase::Intrinsic(_) => None,
             LeafFuncCase::ArrayOp(_, _) => None,
             LeafFuncCase::ArrayReplace(item_type) => Some(first_ord::Type::HoleArray(Box::new(
                 self.lower_type(item_type),
             ))),
             LeafFuncCase::IoOp(_) => None,
+            LeafFuncCase::Panic(_) => None,
             LeafFuncCase::Ctor(_, _) => None,
         }
     }
@@ -402,85 +408,10 @@ impl<'a> Context<'a> {
                                 }
                             }
 
-                            LeafFuncCase::ArithOp(op) => {
+                            LeafFuncCase::Intrinsic(intr) => {
                                 debug_assert!(env_pat.is_none());
 
-                                fn binop(
-                                    num_type: first_ord::NumType,
-                                    op: first_ord::BinOp,
-                                ) -> first_ord::Expr {
-                                    with_args(
-                                        vec![
-                                            first_ord::Type::Num(num_type),
-                                            first_ord::Type::Num(num_type),
-                                        ],
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::Op(
-                                            num_type,
-                                            op,
-                                            Box::new(local(2)),
-                                            Box::new(local(3)),
-                                        )),
-                                    )
-                                }
-
-                                fn cmp(
-                                    num_type: first_ord::NumType,
-                                    op: first_ord::Comparison,
-                                ) -> first_ord::Expr {
-                                    with_args(
-                                        vec![
-                                            first_ord::Type::Num(num_type),
-                                            first_ord::Type::Num(num_type),
-                                        ],
-                                        first_ord::Expr::ArithOp(first_ord::ArithOp::Cmp(
-                                            num_type,
-                                            op,
-                                            Box::new(local(2)),
-                                            Box::new(local(3)),
-                                        )),
-                                    )
-                                }
-
-                                fn negate(num_type: first_ord::NumType) -> first_ord::Expr {
-                                    first_ord::Expr::ArithOp(first_ord::ArithOp::Negate(
-                                        num_type,
-                                        Box::new(ARG_LOCAL.clone()),
-                                    ))
-                                }
-
-                                use first_ord::NumType::{Byte, Float, Int};
-
-                                match op {
-                                    Op::AddByte => binop(Byte, first_ord::BinOp::Add),
-                                    Op::SubByte => binop(Byte, first_ord::BinOp::Sub),
-                                    Op::MulByte => binop(Byte, first_ord::BinOp::Mul),
-                                    Op::DivByte => binop(Byte, first_ord::BinOp::Div),
-                                    Op::NegByte => negate(Byte),
-
-                                    Op::EqByte => cmp(Byte, first_ord::Comparison::Equal),
-                                    Op::LtByte => cmp(Byte, first_ord::Comparison::Less),
-                                    Op::LteByte => cmp(Byte, first_ord::Comparison::LessEqual),
-
-                                    Op::AddInt => binop(Int, first_ord::BinOp::Add),
-                                    Op::SubInt => binop(Int, first_ord::BinOp::Sub),
-                                    Op::MulInt => binop(Int, first_ord::BinOp::Mul),
-                                    Op::DivInt => binop(Int, first_ord::BinOp::Div),
-                                    Op::NegInt => negate(Int),
-
-                                    Op::EqInt => cmp(Int, first_ord::Comparison::Equal),
-                                    Op::LtInt => cmp(Int, first_ord::Comparison::Less),
-                                    Op::LteInt => cmp(Int, first_ord::Comparison::LessEqual),
-
-                                    Op::AddFloat => binop(Float, first_ord::BinOp::Add),
-                                    Op::SubFloat => binop(Float, first_ord::BinOp::Sub),
-                                    Op::MulFloat => binop(Float, first_ord::BinOp::Mul),
-                                    Op::DivFloat => binop(Float, first_ord::BinOp::Div),
-                                    Op::NegFloat => negate(Float),
-
-                                    Op::EqFloat => cmp(Float, first_ord::Comparison::Equal),
-                                    Op::LtFloat => cmp(Float, first_ord::Comparison::Less),
-                                    Op::LteFloat => cmp(Float, first_ord::Comparison::LessEqual),
-                                }
+                                first_ord::Expr::Intrinsic(*intr, Box::new(ARG_LOCAL.clone()))
                             }
 
                             LeafFuncCase::ArrayOp(op, item_type) => {
@@ -605,6 +536,17 @@ impl<'a> Context<'a> {
                                         Box::new(ARG_LOCAL.clone()),
                                     )),
                                 }
+                            }
+
+                            LeafFuncCase::Panic(ret_type) => {
+                                debug_assert!(env_pat.is_none());
+
+                                let lowered_ret_type = self.lower_type(ret_type);
+
+                                first_ord::Expr::Panic(
+                                    lowered_ret_type,
+                                    Box::new(ARG_LOCAL.clone()),
+                                )
                             }
 
                             LeafFuncCase::Ctor(custom, variant) => {
@@ -742,74 +684,8 @@ impl<'a> Context<'a> {
                     Box::new(arg.clone()),
                 ));
             }
-            LeafFuncCase::ArithOp(op) => {
-                let binop = |num_type, op| match &arg {
-                    first_ord::Expr::Tuple(args) => {
-                        assert![args.len() == 2];
-
-                        Some(first_ord::Expr::ArithOp(first_ord::ArithOp::Op(
-                            num_type,
-                            op,
-                            Box::new(args[0].clone()),
-                            Box::new(args[1].clone()),
-                        )))
-                    }
-                    _ => None,
-                };
-
-                let cmp = |num_type, cmp| match &arg {
-                    first_ord::Expr::Tuple(args) => {
-                        assert![args.len() == 2];
-
-                        Some(first_ord::Expr::ArithOp(first_ord::ArithOp::Cmp(
-                            num_type,
-                            cmp,
-                            Box::new(args[0].clone()),
-                            Box::new(args[1].clone()),
-                        )))
-                    }
-                    _ => None,
-                };
-
-                let negate = |num_type| {
-                    Some(first_ord::Expr::ArithOp(first_ord::ArithOp::Negate(
-                        num_type,
-                        Box::new(arg.clone()),
-                    )))
-                };
-
-                use first_ord::NumType::{Byte, Float, Int};
-                return match op {
-                    Op::AddByte => binop(Byte, first_ord::BinOp::Add),
-                    Op::SubByte => binop(Byte, first_ord::BinOp::Sub),
-                    Op::MulByte => binop(Byte, first_ord::BinOp::Mul),
-                    Op::DivByte => binop(Byte, first_ord::BinOp::Div),
-                    Op::NegByte => negate(Byte),
-
-                    Op::EqByte => cmp(Byte, first_ord::Comparison::Equal),
-                    Op::LtByte => cmp(Byte, first_ord::Comparison::Less),
-                    Op::LteByte => cmp(Byte, first_ord::Comparison::LessEqual),
-
-                    Op::AddInt => binop(Int, first_ord::BinOp::Add),
-                    Op::SubInt => binop(Int, first_ord::BinOp::Sub),
-                    Op::MulInt => binop(Int, first_ord::BinOp::Mul),
-                    Op::DivInt => binop(Int, first_ord::BinOp::Div),
-                    Op::NegInt => negate(Int),
-
-                    Op::EqInt => cmp(Int, first_ord::Comparison::Equal),
-                    Op::LtInt => cmp(Int, first_ord::Comparison::Less),
-                    Op::LteInt => cmp(Int, first_ord::Comparison::LessEqual),
-
-                    Op::AddFloat => binop(Float, first_ord::BinOp::Add),
-                    Op::SubFloat => binop(Float, first_ord::BinOp::Sub),
-                    Op::MulFloat => binop(Float, first_ord::BinOp::Mul),
-                    Op::DivFloat => binop(Float, first_ord::BinOp::Div),
-                    Op::NegFloat => negate(Float),
-
-                    Op::EqFloat => cmp(Float, first_ord::Comparison::Equal),
-                    Op::LtFloat => cmp(Float, first_ord::Comparison::Less),
-                    Op::LteFloat => cmp(Float, first_ord::Comparison::LessEqual),
-                };
+            LeafFuncCase::Intrinsic(intr) => {
+                return Some(first_ord::Expr::Intrinsic(intr, Box::new(arg.clone())));
             }
             LeafFuncCase::ArrayOp(op, item_type) => {
                 return match op {
@@ -861,6 +737,12 @@ impl<'a> Context<'a> {
                     ))));
                 }
             },
+            LeafFuncCase::Panic(ret_type) => {
+                return Some(first_ord::Expr::Panic(
+                    self.lower_type(&ret_type),
+                    Box::new(arg.clone()),
+                ));
+            }
             LeafFuncCase::Ctor(type_id, variant_id) => {
                 return Some(first_ord::Expr::Ctor(
                     self.mapping.map_custom_type(type_id),
@@ -879,10 +761,14 @@ impl<'a> Context<'a> {
         expr: &special::Expr,
     ) -> first_ord::Expr {
         match expr {
-            special::Expr::ArithOp(op, rep) => {
+            special::Expr::Intrinsic(intr, rep) => {
                 let lowered_rep = self.lower_closure(rep);
-                let op_variant = self.case_variant(lowered_rep, &LeafFuncCase::ArithOp(*op));
-                first_ord::Expr::Ctor(self.mapping.map_closure_type(lowered_rep), op_variant, None)
+                let intr_variant = self.case_variant(lowered_rep, &LeafFuncCase::Intrinsic(*intr));
+                first_ord::Expr::Ctor(
+                    self.mapping.map_closure_type(lowered_rep),
+                    intr_variant,
+                    None,
+                )
             }
 
             special::Expr::ArrayOp(op, item_type, rep) => {
@@ -895,6 +781,13 @@ impl<'a> Context<'a> {
             special::Expr::IoOp(op, rep) => {
                 let lowered_rep = self.lower_closure(rep);
                 let op_variant = self.case_variant(lowered_rep, &LeafFuncCase::IoOp(*op));
+                first_ord::Expr::Ctor(self.mapping.map_closure_type(lowered_rep), op_variant, None)
+            }
+
+            special::Expr::Panic(ret_type, rep) => {
+                let lowered_rep = self.lower_closure(rep);
+                let op_variant =
+                    self.case_variant(lowered_rep, &LeafFuncCase::Panic(ret_type.clone()));
                 first_ord::Expr::Ctor(self.mapping.map_closure_type(lowered_rep), op_variant, None)
             }
 

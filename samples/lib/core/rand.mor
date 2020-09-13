@@ -1,0 +1,70 @@
+import Array
+import Math expose { rem, int_bit_not }
+
+// see https://en.wikipedia.org/wiki/Mersenne_Twister
+pub type Mt19937_64 {
+  Mt19937_64(Int, Array Int)
+}
+
+coeff_w: Int = 64
+coeff_n: Int = 312
+coeff_m: Int = 156
+coeff_r: Int = 31
+coeff_a: Int = -5403634167711393303
+coeff_u: Int = 29
+coeff_d: Int = 6148914691236517205
+coeff_s: Int = 17
+coeff_b: Int = 8202884508482404352
+coeff_t: Int = 37
+coeff_c: Int = -2270628950310912
+coeff_l: Int = 43
+coeff_f: Int = 6364136223846793005
+
+lower_mask: Int = int_shift_left(1, coeff_r) - 1
+upper_mask: Int = int_bit_not(lower_mask)
+
+seed_mt19937_64_rec(accum: Array Int, prev: Int, i: Int, count: Int): Array Int =
+  if i >= count {
+    accum
+  } else {
+    let val = coeff_f * int_bit_xor(prev, int_shift_right(prev, coeff_w - 2)) + i in
+    seed_mt19937_64_rec(push(accum, val), val, i + 1, count)
+  }
+
+pub seed_mt19937_64(seed: Int): Mt19937_64 =
+  Mt19937_64(coeff_n, seed_mt19937_64_rec([seed], seed, 1, coeff_n))
+
+mt19937_64_twist_rec(mt: Array Int, i: Int, count: Int): Array Int =
+  if i >= count {
+    mt
+  } else {
+    let x = int_bit_and(Array.get(mt, i), upper_mask) +
+      int_bit_and(Array.get(mt, rem(i + 1, coeff_n)), lower_mask) in
+    let x_a = if int_bit_and(x, 1) = 0 {
+      int_shift_right(x, 1)
+    } else {
+      int_bit_xor(int_shift_right(x, 1), coeff_a)
+    } in
+    let val = int_bit_xor(Array.get(mt, rem(i + coeff_m, coeff_n)), x_a) in
+    mt19937_64_twist_rec(Array.set(mt, i, val), i + 1, count)
+  }
+
+mt19937_64_twist(gen: Mt19937_64): Mt19937_64 =
+  let Mt19937_64(_, mt) = gen in
+  Mt19937_64(0, mt19937_64_twist_rec(mt, 0, coeff_n))
+
+pub mt19937_64_next(gen: Mt19937_64): (Mt19937_64, Int) =
+  let Mt19937_64(index_, _) = gen in
+  let Mt19937_64(index, mt) = if index_ >= coeff_n {
+    mt19937_64_twist(gen)
+  } else {
+    gen
+  } in
+
+  let y1 = Array.get(mt, index) in
+  let y2 = int_bit_xor(y1, int_bit_and(int_shift_right(y1, coeff_u), coeff_d)) in
+  let y3 = int_bit_xor(y2, int_bit_and(int_shift_left(y2, coeff_s), coeff_b)) in
+  let y4 = int_bit_xor(y3, int_bit_and(int_shift_left(y3, coeff_t), coeff_c)) in
+  let y5 = int_bit_xor(y4, int_shift_right(y4, coeff_l)) in
+
+  (Mt19937_64(index + 1, mt), y5)

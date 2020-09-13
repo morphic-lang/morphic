@@ -1,0 +1,5 @@
+proc main(): () =
+  let arr = "Goodbye" in
+  push(arr, 63b) then
+  panic(arr) then
+  do output("Should not run")

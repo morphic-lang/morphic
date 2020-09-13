@@ -244,7 +244,7 @@ fn resolve_expr(
             *wrapped,
         ),
 
-        &unif::Expr::ArithOp(op) => special::Expr::ArithOp(op),
+        &unif::Expr::Intrinsic(intr, arg) => special::Expr::Intrinsic(intr, arg),
 
         unif::Expr::ArrayOp(rep_var, item_type, _array_status, op) => special::Expr::ArrayOp(
             resolve_solution(params, internal, *rep_var),
@@ -260,6 +260,12 @@ fn resolve_expr(
             };
             special::Expr::IoOp(resolved_var, resolved_op)
         }
+
+        unif::Expr::Panic(ret_type, rep_var, _message_status, message) => special::Expr::Panic(
+            resolve_body_type(type_insts, params, internal, ret_type),
+            resolve_solution(params, internal, *rep_var),
+            *message,
+        ),
 
         unif::Expr::ArrayLit(rep_var, item_type, items) => special::Expr::ArrayLit(
             resolve_solution(params, internal, *rep_var),

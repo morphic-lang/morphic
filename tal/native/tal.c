@@ -24,6 +24,10 @@ void write(const void *ptr, size_t size, size_t count) {
     fwrite(ptr, size, count, stdout);
 }
 
+void write_error(const void *ptr, size_t size, size_t count) {
+    fwrite(ptr, size, count, stderr);
+}
+
 int flush(void) {
     return fflush(stdout);
 }

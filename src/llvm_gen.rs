@@ -9,6 +9,7 @@ use crate::builtins::tal::{self, Tal};
 use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
 use crate::cli;
 use crate::data::first_order_ast as first_ord;
+use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
 use crate::data::profile as prof;
 use crate::data::repr_constrained_ast as constrain;
@@ -16,7 +17,7 @@ use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
-use find_clang::find_clang;
+use find_clang::find_default_clang;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -27,7 +28,7 @@ use inkwell::targets::{
     TargetTriple,
 };
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
-use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -36,7 +37,42 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("directory {0:?} does not exist")]
+    DirectoryDoesNotExist(PathBuf),
+    #[error("expected a file but was provided directory {0:?} instead")]
+    GivenDirExpectedFile(PathBuf),
+    #[error("expected a directory but was provided file {0:?} instead")]
+    GivenFileExpectedDir(PathBuf),
+    #[error("could not create directory, IO error: {0}")]
+    CouldNotCreateOutputDir(std::io::Error),
+    #[error("could not create temporary file, IO error: {0}")]
+    CouldNotCreateTempFile(std::io::Error),
+    #[error("could not create object file, IO error: {0}")]
+    CouldNotWriteObjFile(std::io::Error),
+    #[error("could not create output file, {0}")]
+    CouldNotWriteOutputFile(std::io::Error),
+    #[error("could not locate valid clang install: {0}")]
+    CouldNotFindClang(anyhow::Error),
+    #[error("clang exited unsuccessfully, IO error: {0}")]
+    ClangFailed(std::io::Error),
+    #[error("selected LLVM target triple is not supported on your system, {0}")]
+    TargetTripleNotSupported(inkwell::support::LLVMString),
+    #[error("could not configure LLVM for target")]
+    CouldNotCreateTargetMachine,
+    #[error("compilation of generated LLVM-IR failed, {0}")]
+    LlvmCompilationFailed(inkwell::support::LLVMString),
+    #[error("could not dump IR from LLVM, {0}")]
+    CouldNotDumpIrFromLlvm(inkwell::support::LLVMString),
+    #[error("could not spawn child process, IO error: {0}")]
+    CouldNotSpawnChild(std::io::Error),
+}
+
+type Result<T> = std::result::Result<T, Error>;
 
 const VARIANT_DISCRIM_IDX: u32 = 0;
 // we use a zero sized array to enforce proper alignment on `bytes`
@@ -567,10 +603,6 @@ fn get_llvm_variant_type<'a, 'b>(
     instances: &Instances<'a>,
     variants: &IdVec<first_ord::VariantId, low::Type>,
 ) -> StructType<'a> {
-    if variants.len() == 0 {
-        return globals.context.struct_type(&[], false).into();
-    }
-
     let discrim_type = if variants.len() <= 1 << 8 {
         globals.context.i8_type()
     } else if variants.len() <= 1 << 16 {
@@ -983,6 +1015,40 @@ fn build_check_divisor_nonzero<'a, 'b>(
     builder.position_at_end(continue_if_nonzero);
 }
 
+fn build_binop_int_args<'a>(
+    builder: &Builder<'a>,
+    args: BasicValueEnum<'a>,
+) -> (IntValue<'a>, IntValue<'a>) {
+    let args_struct = args.into_struct_value();
+    debug_assert_eq!(args_struct.get_type().count_fields(), 2);
+    let lhs = builder
+        .build_extract_value(args_struct, 0, "binop_lhs")
+        .unwrap()
+        .into_int_value();
+    let rhs = builder
+        .build_extract_value(args_struct, 1, "binop_rhs")
+        .unwrap()
+        .into_int_value();
+    (lhs, rhs)
+}
+
+fn build_binop_float_args<'a>(
+    builder: &Builder<'a>,
+    args: BasicValueEnum<'a>,
+) -> (FloatValue<'a>, FloatValue<'a>) {
+    let args_struct = args.into_struct_value();
+    debug_assert_eq!(args_struct.get_type().count_fields(), 2);
+    let lhs = builder
+        .build_extract_value(args_struct, 0, "binop_lhs")
+        .unwrap()
+        .into_float_value();
+    let rhs = builder
+        .build_extract_value(args_struct, 1, "binop_rhs")
+        .unwrap()
+        .into_float_value();
+    (lhs, rhs)
+}
+
 fn gen_expr<'a, 'b>(
     builder: &Builder<'a>,
     instances: &Instances<'a>,
@@ -1079,14 +1145,7 @@ fn gen_expr<'a, 'b>(
             builder.build_unreachable();
             let unreachable_block = context.append_basic_block(func, "after_unreachable");
             builder.position_at_end(unreachable_block);
-            match get_llvm_type(globals, instances, type_) {
-                BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
-                BasicTypeEnum::FloatType(t) => t.get_undef().into(),
-                BasicTypeEnum::IntType(t) => t.get_undef().into(),
-                BasicTypeEnum::PointerType(t) => t.get_undef().into(),
-                BasicTypeEnum::StructType(t) => t.get_undef().into(),
-                BasicTypeEnum::VectorType(t) => t.get_undef().into(),
-            }
+            get_undef(&get_llvm_type(globals, instances, type_))
         }
         E::Tuple(fields) => {
             let field_types: Vec<_> = fields.iter().map(|id| locals[id].get_type()).collect();
@@ -1232,198 +1291,224 @@ fn gen_expr<'a, 'b>(
             );
             context.struct_type(&[], false).get_undef().into()
         }
-        E::ArithOp(op) => match op {
-            low::ArithOp::Op(type_, bin_op, lhs, rhs) => match bin_op {
-                first_ord::BinOp::Add => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_add(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "byte_add",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_add(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_add",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_add(
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_add",
-                        )
-                        .into(),
-                },
-                first_ord::BinOp::Sub => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_sub(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "byte_sub",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_sub(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_sub",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_sub(
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_sub",
-                        )
-                        .into(),
-                },
-                first_ord::BinOp::Mul => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_mul(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "byte_mul",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_mul(
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_mul",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_mul(
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_mul",
-                        )
-                        .into(),
-                },
-                first_ord::BinOp::Div => match type_ {
-                    first_ord::NumType::Byte => {
-                        build_check_divisor_nonzero(globals, builder, locals[rhs].into_int_value());
-                        builder
-                            .build_int_unsigned_div(
-                                locals[lhs].into_int_value(),
-                                locals[rhs].into_int_value(),
-                                "byte_div",
-                            )
-                            .into()
-                    }
-                    first_ord::NumType::Int => {
-                        build_check_divisor_nonzero(globals, builder, locals[rhs].into_int_value());
-                        builder
-                            .build_int_signed_div(
-                                locals[lhs].into_int_value(),
-                                locals[rhs].into_int_value(),
-                                "int_div",
-                            )
-                            .into()
-                    }
-                    first_ord::NumType::Float => builder
-                        .build_float_div(
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_div",
-                        )
-                        .into(),
-                },
-            },
-            low::ArithOp::Cmp(type_, cmp, lhs, rhs) => match cmp {
-                first_ord::Comparison::Less => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_compare(
-                            IntPredicate::ULT,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "bytes_less",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_compare(
-                            IntPredicate::SLT,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_less",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_compare(
-                            FloatPredicate::OLT,
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_less",
-                        )
-                        .into(),
-                },
-                first_ord::Comparison::LessEqual => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_compare(
-                            IntPredicate::ULE,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "bytes_less_equal",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_compare(
-                            IntPredicate::SLE,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_less_equal",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_compare(
-                            FloatPredicate::OLE,
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_less_equal",
-                        )
-                        .into(),
-                },
-                first_ord::Comparison::Equal => match type_ {
-                    first_ord::NumType::Byte => builder
-                        .build_int_compare(
-                            IntPredicate::EQ,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "bytes_equal",
-                        )
-                        .into(),
-                    first_ord::NumType::Int => builder
-                        .build_int_compare(
-                            IntPredicate::EQ,
-                            locals[lhs].into_int_value(),
-                            locals[rhs].into_int_value(),
-                            "int_equal",
-                        )
-                        .into(),
-                    first_ord::NumType::Float => builder
-                        .build_float_compare(
-                            FloatPredicate::OEQ,
-                            locals[lhs].into_float_value(),
-                            locals[rhs].into_float_value(),
-                            "float_equal",
-                        )
-                        .into(),
-                },
-            },
-            low::ArithOp::Negate(type_, local_id) => match type_ {
-                first_ord::NumType::Byte => builder
-                    .build_int_neg(locals[local_id].into_int_value(), "byte_neg")
-                    .into(),
-                first_ord::NumType::Int => builder
-                    .build_int_neg(locals[local_id].into_int_value(), "int_neg")
-                    .into(),
-                first_ord::NumType::Float => builder
-                    .build_float_neg(locals[local_id].into_float_value(), "float_neg")
-                    .into(),
-            },
+        E::Intrinsic(intr, local_id) => match intr {
+            Intrinsic::AddByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_add(lhs, rhs, "add_byte").into()
+            }
+            Intrinsic::AddInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_add(lhs, rhs, "add_int").into()
+            }
+            Intrinsic::AddFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder.build_float_add(lhs, rhs, "add_float").into()
+            }
+            Intrinsic::SubByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_sub(lhs, rhs, "sub_byte").into()
+            }
+            Intrinsic::SubInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_sub(lhs, rhs, "sub_int").into()
+            }
+            Intrinsic::SubFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder.build_float_sub(lhs, rhs, "sub_float").into()
+            }
+            Intrinsic::MulByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_mul(lhs, rhs, "mul_byte").into()
+            }
+            Intrinsic::MulInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_int_mul(lhs, rhs, "mul_int").into()
+            }
+            Intrinsic::MulFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder.build_float_mul(lhs, rhs, "mul_float").into()
+            }
+            Intrinsic::DivByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                build_check_divisor_nonzero(globals, builder, rhs);
+                builder.build_int_unsigned_div(lhs, rhs, "div_byte").into()
+            }
+            Intrinsic::DivInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                build_check_divisor_nonzero(globals, builder, rhs);
+                builder.build_int_signed_div(lhs, rhs, "div_int").into()
+            }
+            Intrinsic::DivFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder.build_float_div(lhs, rhs, "div_float").into()
+            }
+            Intrinsic::LtByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::ULT, lhs, rhs, "lt_byte")
+                    .into()
+            }
+            Intrinsic::LtInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::SLT, lhs, rhs, "lt_int")
+                    .into()
+            }
+            Intrinsic::LtFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OLT, lhs, rhs, "lt_float")
+                    .into()
+            }
+            Intrinsic::LteByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::ULE, lhs, rhs, "lte_byte")
+                    .into()
+            }
+            Intrinsic::LteInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::SLE, lhs, rhs, "lte_int")
+                    .into()
+            }
+            Intrinsic::LteFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OLE, lhs, rhs, "lte_float")
+                    .into()
+            }
+            Intrinsic::GtByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::UGT, lhs, rhs, "gt_byte")
+                    .into()
+            }
+            Intrinsic::GtInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::SGT, lhs, rhs, "gt_int")
+                    .into()
+            }
+            Intrinsic::GtFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OGT, lhs, rhs, "gt_float")
+                    .into()
+            }
+            Intrinsic::GteByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::UGE, lhs, rhs, "gte_byte")
+                    .into()
+            }
+            Intrinsic::GteInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::SGE, lhs, rhs, "gte_int")
+                    .into()
+            }
+            Intrinsic::GteFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OGE, lhs, rhs, "gte_float")
+                    .into()
+            }
+            Intrinsic::EqByte => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq_byte")
+                    .into()
+            }
+            Intrinsic::EqInt => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder
+                    .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq_int")
+                    .into()
+            }
+            Intrinsic::EqFloat => {
+                let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
+                builder
+                    .build_float_compare(FloatPredicate::OEQ, lhs, rhs, "eq_float")
+                    .into()
+            }
+            Intrinsic::NegByte => builder
+                .build_int_neg(locals[local_id].into_int_value(), "neg_byte")
+                .into(),
+            Intrinsic::NegInt => builder
+                .build_int_neg(locals[local_id].into_int_value(), "neg_int")
+                .into(),
+            Intrinsic::NegFloat => builder
+                .build_float_neg(locals[local_id].into_float_value(), "neg_float")
+                .into(),
+            Intrinsic::ByteToInt => builder
+                .build_int_z_extend(
+                    locals[local_id].into_int_value(),
+                    context.i64_type(),
+                    "byte_to_int",
+                )
+                .into(),
+            Intrinsic::ByteToIntSigned => builder
+                .build_int_s_extend(
+                    locals[local_id].into_int_value(),
+                    context.i64_type(),
+                    "byte_to_int_signed",
+                )
+                .into(),
+            Intrinsic::IntToByte => builder
+                .build_int_truncate(
+                    locals[local_id].into_int_value(),
+                    context.i8_type(),
+                    "int_to_byte",
+                )
+                .into(),
+            Intrinsic::IntShiftLeft => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
+                // 1 (which is the same as taking the rhs mod 64). This appears to be what rustc
+                // does.
+                builder
+                    .build_left_shift(
+                        lhs,
+                        builder.build_and(
+                            rhs,
+                            context.i64_type().const_int(64 - 1, false),
+                            "int_shift_left_rhs_mask",
+                        ),
+                        "int_shift_left",
+                    )
+                    .into()
+            }
+            Intrinsic::IntShiftRight => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
+                // 1 (which is the same as taking the rhs mod 64). This appears to be what rustc
+                // does.
+                builder
+                    .build_right_shift(
+                        lhs,
+                        builder.build_and(
+                            rhs,
+                            context.i64_type().const_int(64 - 1, false),
+                            "int_shift_right_rhs_mask",
+                        ),
+                        false, // this is a logical shift
+                        "int_shift_right",
+                    )
+                    .into()
+            }
+            Intrinsic::IntBitAnd => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_and(lhs, rhs, "int_bit_and").into()
+            }
+            Intrinsic::IntBitOr => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_or(lhs, rhs, "int_bit_or").into()
+            }
+            Intrinsic::IntBitXor => {
+                let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
+                builder.build_xor(lhs, rhs, "int_bit_xor").into()
+            }
         },
         E::ArrayOp(rep, item_type, array_op) => match rep {
             constrain::RepChoice::OptimizedMut => {
@@ -1577,6 +1662,38 @@ fn gen_expr<'a, 'b>(
                 }
             }
         },
+        E::Panic(ret_type, rep, message_id) => {
+            match rep {
+                constrain::RepChoice::OptimizedMut => {
+                    let builtin_io = instances.flat_array_io;
+                    builder.build_call(
+                        builtin_io.output_error,
+                        &[locals[message_id]],
+                        "flat_array_panic",
+                    );
+                }
+
+                constrain::RepChoice::FallbackImmut => {
+                    let builtin_io = instances.persistent_array_io;
+                    builder.build_call(
+                        builtin_io.output_error,
+                        &[locals[message_id]],
+                        "pers_array_panic",
+                    );
+                }
+            }
+
+            builder.build_call(
+                globals.tal.exit,
+                &[globals.context.i32_type().const_int(1 as u64, false).into()],
+                "exit_call",
+            );
+
+            builder.build_unreachable();
+            let unreachable_block = context.append_basic_block(func, "after_panic");
+            builder.position_at_end(unreachable_block);
+            get_undef(&get_llvm_type(globals, instances, ret_type))
+        }
         E::BoolLit(val) => {
             BasicValueEnum::from(context.bool_type().const_int(*val as u64, false)).into()
         }
@@ -1717,7 +1834,10 @@ fn gen_function<'a, 'b>(
     }
 }
 
-fn get_target_machine(target: cli::TargetConfig, opt_level: OptimizationLevel) -> TargetMachine {
+fn get_target_machine(
+    target: cli::TargetConfig,
+    opt_level: OptimizationLevel,
+) -> Result<TargetMachine> {
     Target::initialize_all(&InitializationConfig::default());
 
     let (target_triple, target_cpu, target_features) = match target {
@@ -1733,7 +1853,8 @@ fn get_target_machine(target: cli::TargetConfig, opt_level: OptimizationLevel) -
         ),
     };
 
-    let llvm_target = Target::from_triple(&target_triple).unwrap();
+    let llvm_target =
+        Target::from_triple(&target_triple).map_err(Error::TargetTripleNotSupported)?;
 
     // RelocMode and CodeModel can affect the options we need to pass clang in run_cc
     llvm_target
@@ -1746,7 +1867,7 @@ fn get_target_machine(target: cli::TargetConfig, opt_level: OptimizationLevel) -
             // https://stackoverflow.com/questions/40493448/what-does-the-codemodel-in-clang-llvm-refer-to
             CodeModel::Small,
         )
-        .unwrap()
+        .ok_or_else(|| Error::CouldNotCreateTargetMachine)
 }
 
 fn add_size_deps(type_: &low::Type, deps: &mut BTreeSet<low::CustomTypeId>) {
@@ -1825,12 +1946,8 @@ fn is_zero_sized_with(
             .iter()
             .all(|item| is_zero_sized_with(item, custom_is_zero_sized)),
 
-        low::Type::Variants(variants) => {
-            variants.len() <= 1
-                && variants
-                    .iter()
-                    .all(|(_, variant)| is_zero_sized_with(variant, custom_is_zero_sized))
-        }
+        // All variants have a non-zero-sized discriminant
+        low::Type::Variants(_) => false,
 
         &low::Type::Custom(custom) => custom_is_zero_sized(custom) == IsZeroSized::ZeroSized,
     }
@@ -1990,17 +2107,56 @@ fn gen_program<'a>(
     return module;
 }
 
-fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
+fn check_valid_file_path(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        return Err(Error::GivenDirExpectedFile(path.to_owned()));
+    }
+
+    match path.parent() {
+        None => return Err(Error::GivenDirExpectedFile(path.to_owned())),
+        Some(parent) => {
+            if !parent.exists() {
+                return Err(Error::DirectoryDoesNotExist(parent.to_owned()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn check_valid_dir_path(path: &Path) -> Result<()> {
+    if path.is_file() {
+        return Err(Error::GivenFileExpectedDir(path.to_owned()));
+    }
+
+    match path.parent() {
+        None => {}
+        Some(parent) => {
+            if !parent.exists() {
+                return Err(Error::DirectoryDoesNotExist(parent.to_owned()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) -> Result<()> {
     match target {
         cli::TargetConfig::Native => {
+            check_valid_file_path(obj_path)?;
+            check_valid_file_path(exe_path)?;
+
             // materialize files to link with
             let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
-                .unwrap();
-            tal_file.write_all(tal::native::TAL_O).unwrap();
+                .map_err(Error::CouldNotCreateTempFile)?;
+            tal_file
+                .write_all(tal::native::TAL_O)
+                .map_err(Error::CouldNotWriteObjFile)?;
 
-            let clang = find_clang(10).unwrap();
+            let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
             std::process::Command::new(clang.path)
                 .arg("-O3")
                 .arg("-ffunction-sections")
@@ -2012,43 +2168,45 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .arg(obj_path)
                 .arg(tal_file.path())
                 .status()
-                .unwrap();
+                .map_err(Error::ClangFailed)?;
         }
         cli::TargetConfig::Wasm => {
             // materialize files to link with
             let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
-                .unwrap();
-            tal_file.write_all(tal::wasm::TAL_O).unwrap();
+                .map_err(Error::CouldNotCreateTempFile)?;
+            tal_file
+                .write_all(tal::wasm::TAL_O)
+                .map_err(Error::CouldNotWriteObjFile)?;
             let mut malloc_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
-                .unwrap();
-            malloc_file.write_all(tal::wasm::MALLOC_O).unwrap();
+                .map_err(Error::CouldNotCreateTempFile)?;
+            malloc_file
+                .write_all(tal::wasm::MALLOC_O)
+                .map_err(Error::CouldNotWriteObjFile)?;
 
-            // TODO: improve error handling and make more user friendly
-            if exe_path.is_file() {
-                panic!(
-                    "Trying to create dir {:#?}, but there is already a file with that path",
-                    exe_path
-                );
-            }
+            check_valid_dir_path(exe_path)?;
             if !exe_path.exists() {
-                std::fs::create_dir(exe_path).unwrap();
+                std::fs::create_dir(exe_path).map_err(Error::CouldNotCreateOutputDir)?;
             }
 
             let index_path = exe_path.join("index.html");
-            let mut index_file = std::fs::File::create(index_path).unwrap();
-            index_file.write_all(tal::wasm::INDEX_HTML).unwrap();
+            let mut index_file =
+                std::fs::File::create(index_path).map_err(Error::CouldNotWriteOutputFile)?;
+            index_file
+                .write_all(tal::wasm::INDEX_HTML)
+                .map_err(Error::CouldNotWriteOutputFile)?;
 
             let wasm_loader_path = exe_path.join("wasm_loader.js");
-            let mut wasm_loader_file = std::fs::File::create(wasm_loader_path).unwrap();
+            let mut wasm_loader_file =
+                std::fs::File::create(wasm_loader_path).map_err(Error::CouldNotWriteOutputFile)?;
             wasm_loader_file
                 .write_all(tal::wasm::WASM_LOADER_JS)
-                .unwrap();
+                .map_err(Error::CouldNotWriteOutputFile)?;
 
-            let clang = find_clang(10).unwrap();
+            let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
             std::process::Command::new(clang.path)
                 .arg("-O3")
                 .arg("-ffunction-sections")
@@ -2066,9 +2224,10 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) {
                 .arg(tal_file.path())
                 .arg(malloc_file.path())
                 .status()
-                .unwrap();
+                .map_err(Error::ClangFailed)?;
         }
     }
+    Ok(())
 }
 
 fn verify_llvm(module: &Module) {
@@ -2091,8 +2250,8 @@ fn compile_to_executable(
     target: cli::TargetConfig,
     opt_level: OptimizationLevel,
     artifact_paths: ArtifactPaths,
-) {
-    let target_machine = get_target_machine(target, opt_level);
+) -> Result<()> {
+    let target_machine = get_target_machine(target, opt_level)?;
     let context = Context::create();
 
     let module = gen_program(program, &target_machine, &context);
@@ -2100,7 +2259,9 @@ fn compile_to_executable(
     // We output the ll file before verifying so that it can be inspected even if verification
     // fails.
     if let Some(ll_path) = artifact_paths.ll {
-        module.print_to_file(ll_path).unwrap();
+        module
+            .print_to_file(ll_path)
+            .map_err(Error::CouldNotDumpIrFromLlvm)?;
     }
 
     verify_llvm(&module);
@@ -2124,7 +2285,9 @@ fn compile_to_executable(
     pass_manager.run_on(&module);
 
     if let Some(opt_ll_path) = artifact_paths.opt_ll {
-        module.print_to_file(opt_ll_path).unwrap();
+        module
+            .print_to_file(opt_ll_path)
+            .map_err(Error::CouldNotDumpIrFromLlvm)?;
     }
 
     // Optimization should produce a well-formed module, but if it doesn't, we want to know about
@@ -2134,30 +2297,30 @@ fn compile_to_executable(
     if let Some(asm_path) = artifact_paths.asm {
         target_machine
             .write_to_file(&module, FileType::Assembly, &asm_path)
-            .unwrap();
+            .map_err(Error::LlvmCompilationFailed)?;
     }
 
     target_machine
         .write_to_file(&module, FileType::Object, artifact_paths.obj)
-        .unwrap();
+        .map_err(Error::LlvmCompilationFailed)?;
 
-    run_cc(target, artifact_paths.obj, artifact_paths.exe);
+    run_cc(target, artifact_paths.obj, artifact_paths.exe)
 }
 
-pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>) -> Child {
+pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>) -> Result<Child> {
     let target = cli::TargetConfig::Native;
     let opt_level = cli::default_llvm_opt_level();
 
     let obj_path = tempfile::Builder::new()
         .suffix(".o")
         .tempfile_in("")
-        .unwrap()
+        .map_err(Error::CouldNotCreateTempFile)?
         .into_temp_path();
 
     let output_path = tempfile::Builder::new()
         .prefix(".tmp-exe-")
         .tempfile_in("")
-        .unwrap()
+        .map_err(Error::CouldNotCreateTempFile)?
         .into_temp_path();
 
     compile_to_executable(
@@ -2171,14 +2334,14 @@ pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>
             obj: &obj_path,
             exe: &output_path,
         },
-    );
+    )?;
 
     std::mem::drop(obj_path);
 
-    spawn_process(stdio, output_path, valgrind).unwrap()
+    spawn_process(stdio, output_path, valgrind).map_err(Error::CouldNotSpawnChild)
 }
 
-pub fn build(program: low::Program, config: &cli::BuildConfig) {
+pub fn build(program: low::Program, config: &cli::BuildConfig) -> Result<()> {
     if let Some(artifact_dir) = &config.artifact_dir {
         compile_to_executable(
             program,
@@ -2191,12 +2354,12 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) {
                 obj: &artifact_dir.artifact_path("o"),
                 exe: &config.output_path,
             },
-        );
+        )
     } else {
         let obj_path = tempfile::Builder::new()
             .suffix(".o")
             .tempfile_in("")
-            .unwrap()
+            .map_err(Error::CouldNotCreateTempFile)?
             .into_temp_path();
 
         compile_to_executable(

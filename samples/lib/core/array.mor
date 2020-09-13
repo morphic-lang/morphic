@@ -1,10 +1,16 @@
-get(arr: Array a, i: Int): a =
+import Iter expose { Iter }
+
+pub get(arr: Array a, i: Int): a =
   let (x, _) = item(arr, i) in
   x
 
-set(arr: Array a, i: Int, val: a): Array a =
+pub set(arr: Array a, i: Int, val: a): Array a =
   let (_, hole) = item(arr, i) in
   hole(val)
+
+pub update(arr: Array a, i: Int, f: a -> a): Array a =
+  let (x, hole) = item(arr, i) in
+  hole(f(x))
 
 concat_from(a: Array t, b: Array t, i: Int): Array t =
   if i = len(b) {
@@ -13,7 +19,7 @@ concat_from(a: Array t, b: Array t, i: Int): Array t =
     concat_from(push(a, get(b, i)), b, i + 1)
   }
 
-concat(a: Array t, b: Array t): Array t =
+pub concat(a: Array t, b: Array t): Array t =
   concat_from(a, b, 0)
 
 fill_with_rec(arr: Array t, count: Int, mk_val: () -> t): Array t =
@@ -23,8 +29,11 @@ fill_with_rec(arr: Array t, count: Int, mk_val: () -> t): Array t =
     arr
   }
 
-fill_with(count: Int, mk_val: () -> t): Array t =
+pub fill_with(count: Int, mk_val: () -> t): Array t =
   fill_with_rec([], count, mk_val)
 
-fill(count: Int, val: t): Array t =
+pub fill(count: Int, val: t): Array t =
   fill_with(count, \() -> val)
+
+pub from_iter(iter: Iter a): Array a =
+  Iter.foldr(iter, [], \(x, arr) -> push(arr, x))

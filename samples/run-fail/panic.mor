@@ -1,0 +1,5 @@
+expect_int(i: Int): () = ()
+
+proc main(): () =
+  expect_int(panic("Goodbye!\n")) then
+  do output("Should not run")

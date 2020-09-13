@@ -1,5 +1,7 @@
+use crate::data::intrinsics::Intrinsic;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+pub use crate::data::num_type::NumType;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -38,35 +40,6 @@ pub enum IoOp {
     Output(Box<Expr>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NumType {
-    Byte,
-    Int,
-    Float,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Comparison {
-    Less,
-    LessEqual,
-    Equal,
-}
-
-#[derive(Clone, Debug)]
-pub enum ArithOp {
-    Op(NumType, BinOp, Box<Expr>, Box<Expr>),
-    Cmp(NumType, Comparison, Box<Expr>, Box<Expr>),
-    Negate(NumType, Box<Expr>),
-}
-
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Item(
@@ -102,9 +75,10 @@ impl LocalId {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    ArithOp(ArithOp),
+    Intrinsic(Intrinsic, Box<Expr>),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
+    Panic(Type, Box<Expr>),
     Ctor(CustomTypeId, VariantId, Option<Box<Expr>>),
     Local(LocalId),
     Tuple(Vec<Expr>),
