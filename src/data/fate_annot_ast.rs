@@ -150,6 +150,7 @@ pub struct FuncDef {
     pub purity: Purity,
     pub arg_type: anon::Type,
     pub ret_type: anon::Type,
+    pub alias_sig: alias::AliasSig,
     pub mutation_sig: mutation::MutationSig,
     pub arg_fate: Fate,
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding

@@ -748,6 +748,7 @@ fn annot_func(
         purity: func_def.purity,
         arg_type: func_def.arg_type.clone(),
         ret_type: func_def.ret_type.clone(),
+        alias_sig: func_def.alias_sig.clone(),
         mutation_sig,
         body: annot_body,
         profile_point: func_def.profile_point,

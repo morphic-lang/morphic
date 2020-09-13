@@ -36,6 +36,8 @@ pub mod mutation_annot_ast;
 
 pub mod fate_annot_ast;
 
+pub mod alias_specialized_ast;
+
 // end new passes
 
 pub mod repr_unified_ast;
