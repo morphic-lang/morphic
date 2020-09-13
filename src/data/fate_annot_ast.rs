@@ -124,11 +124,20 @@ pub enum Expr {
     FloatLit(f64),
 }
 
+/// Represents the fate of a field path *inside the current function*.
+///
+/// These variants form a meaningful total order, with Unusued < Accessed < Owned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InternalFate {
+    Unused,
+    Accessed,
+    Owned,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FieldFate {
-    pub will_access: bool,
-    pub will_own: bool,
-    pub ret_destinations: BTreeMap<alias::FieldPath, OrdSet<alias::RetName>>,
+    pub internal: InternalFate,
+    pub ret_destinations: OrdSet<alias::RetName>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -147,6 +156,7 @@ pub struct FuncDef {
     // the argument.
     pub body: Expr,
     pub fates: IdVec<OccurId, Fate>,
+    pub num_calls: usize,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 

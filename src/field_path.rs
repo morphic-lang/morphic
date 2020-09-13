@@ -186,6 +186,7 @@ pub fn get_fold_points_in<'a>(
     }
 }
 
+/// See `get_names_in_excluding`.
 pub fn get_names_in<'a>(
     type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
@@ -195,62 +196,102 @@ pub fn get_names_in<'a>(
 
 // Compute the fields in `type_` at which there is a heap reference participating in RC elision.
 //
-// Currently, this only considers top-level references (i.e., those that would be placed directly on
-// the stack if a value of type `type_` were placed on the stack), but we intend to find a way to
-// handle nested references in the future.
-fn get_refs_in<'a>(
+// This function differs from `get_names_in_excluding` in that it considers *all* heap structures,
+// not only those which participate in mutation optimization.  In particular,
+// `get_names_in_excluding` does not include paths to boxes, whereas this function does.
+//
+// This includes both top-level stack references (which are directly retained and released) and heap
+// references inside other heap structures (which are tracked for the purpose of determining when
+// it's safe for an item access to be borrowed rather than owned).
+pub fn get_refs_in_excluding<'a>(
     type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
-) -> Vec<annot::FieldPath> {
+    mut exclude: BTreeSet<first_ord::CustomTypeId>,
+) -> Vec<(annot::FieldPath, &'a anon::Type)> {
     let mut refs = Vec::new();
-    add_refs_from_type(type_defs, &mut refs, type_, Vector::new());
+    add_refs_from_type(type_defs, &mut refs, &mut exclude, type_, Vector::new());
     return refs;
 
+    // Recursively appends paths to refs in `type_` to `refs`
     fn add_refs_from_type<'a>(
         type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
-        refs: &mut Vec<annot::FieldPath>,
+        refs: &mut Vec<(annot::FieldPath, &'a anon::Type)>,
+        typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
         type_: &'a anon::Type,
         prefix: annot::FieldPath,
     ) {
         match type_ {
             anon::Type::Bool | anon::Type::Num(_) => {}
-
-            anon::Type::Array(_) | anon::Type::HoleArray(_) | anon::Type::Boxed(_) => {
-                refs.push(prefix);
+            anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => {
+                // The array itself:
+                refs.push((prefix.clone(), type_));
+                // The refs in elements of the array:
+                add_refs_from_type(
+                    type_defs,
+                    refs,
+                    typedefs_on_path,
+                    item_type,
+                    prefix.add_back(annot::Field::ArrayMembers),
+                );
             }
-
             anon::Type::Tuple(item_types) => {
                 for (i, item_type) in item_types.iter().enumerate() {
                     add_refs_from_type(
                         type_defs,
                         refs,
+                        typedefs_on_path,
                         item_type,
                         prefix.clone().add_back(annot::Field::Field(i)),
                     );
                 }
             }
-
-            anon::Type::Variants(variants) => {
-                for (variant, variant_type) in variants {
+            anon::Type::Variants(variant_types) => {
+                for (variant, variant_type) in variant_types {
                     add_refs_from_type(
                         type_defs,
                         refs,
+                        typedefs_on_path,
                         variant_type,
                         prefix.clone().add_back(annot::Field::Variant(variant)),
                     );
                 }
             }
-
-            anon::Type::Custom(id) => {
+            anon::Type::Boxed(content_type) => {
+                // The box itself:
+                refs.push((prefix.clone(), type_));
+                // The refs inside the box:
                 add_refs_from_type(
                     type_defs,
                     refs,
-                    &type_defs[id],
-                    prefix.add_back(annot::Field::Custom(*id)),
+                    typedefs_on_path,
+                    content_type,
+                    prefix.add_back(annot::Field::Boxed),
                 );
+            }
+            anon::Type::Custom(id) => {
+                if !typedefs_on_path.contains(id) {
+                    typedefs_on_path.insert(*id);
+                    add_refs_from_type(
+                        type_defs,
+                        refs,
+                        typedefs_on_path,
+                        &type_defs[id],
+                        prefix.add_back(annot::Field::Custom(*id)),
+                    );
+                    // Remove if we added it
+                    typedefs_on_path.remove(id);
+                }
             }
         }
     }
+}
+
+/// See `get_refs_in_excluding`.
+pub fn get_refs_in<'a>(
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &'a anon::Type,
+) -> Vec<(annot::FieldPath, &'a anon::Type)> {
+    get_refs_in_excluding(type_defs, type_, BTreeSet::new())
 }
 
 pub fn split_at_fold(

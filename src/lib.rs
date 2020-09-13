@@ -59,6 +59,8 @@ mod annot_aliases;
 
 mod annot_mutation;
 
+mod annot_fates;
+
 mod unify_reprs;
 
 mod constrain_reprs;

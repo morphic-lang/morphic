@@ -17,6 +17,10 @@ impl<Var: Id, T> LocalContext<Var, T> {
         self.stack.push(binding)
     }
 
+    pub fn truncate(&mut self, len: usize) {
+        self.stack.truncate(len);
+    }
+
     pub fn local_binding(&self, local: Var) -> &T
     where
         T: Clone,
@@ -30,6 +34,7 @@ impl<Var: Id, T> LocalContext<Var, T> {
     ) -> R {
         let old_len = self.stack.len();
         let result = body(self);
+        debug_assert!(self.stack.len() >= old_len);
         self.stack.items.truncate(old_len);
         result
     }
