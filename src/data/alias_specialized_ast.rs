@@ -17,18 +17,14 @@ use crate::util::id_vec::IdVec;
 
 id_type!(pub FuncVersionId);
 
+/// The total order on this type is meaningful, with NoAlias < MayAlias.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConcreteAlias {
     NoAlias,
     MayAlias,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ConcreteMutation {
-    NotMutated,
-    MaybeMutated,
-}
-
+/// The total order on this type is meaningful, with NotUsed < MaybeUsed
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RetFate {
     NotUsed,
@@ -37,10 +33,9 @@ pub enum RetFate {
 
 #[derive(Clone, Debug)]
 pub struct FuncVersion {
-    pub calls: IdVec<FuncVersionId, (first_ord::CustomFuncId, FuncVersionId)>,
+    pub calls: IdVec<fate::CallId, (first_ord::CustomFuncId, FuncVersionId)>,
     pub aliases: BTreeMap<alias::AliasCondition, ConcreteAlias>,
-    pub mutations: BTreeMap<alias::ArgName, ConcreteMutation>,
-    pub ret_fates: BTreeMap<alias::RetName, RetFate>,
+    pub ret_fate: BTreeMap<alias::RetName, RetFate>,
 }
 
 #[derive(Clone, Debug)]

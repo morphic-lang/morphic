@@ -59,7 +59,13 @@ mod annot_aliases;
 
 mod annot_mutation;
 
+// new passes
+
 mod annot_fates;
+
+mod specialize_aliases;
+
+// end new passes
 
 mod unify_reprs;
 

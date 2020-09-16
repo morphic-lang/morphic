@@ -81,6 +81,8 @@ pub enum Expr {
         OrdMap<alias::FieldPath, alias::FoldedAliases>,
         // Statuses of argument fields prior to call
         OrdMap<alias::FieldPath, mutation::LocalStatus>,
+        // Fate of *return value*
+        Fate,
         Local, // Argument
     ),
     Branch(Local, Vec<(flat::Condition, Expr)>, anon::Type),

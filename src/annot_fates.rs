@@ -145,6 +145,7 @@ fn annot_expr(
                 arg_alises.clone(),
                 arg_folded_alises.clone(),
                 arg_statuses.clone(),
+                val_fate.clone(),
                 local_annot,
             )
         }

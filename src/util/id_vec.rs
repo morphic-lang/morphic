@@ -189,6 +189,17 @@ impl<K: Id, V> IdVec<K, V> {
 
         Ok(IdVec::from_items(mapped_items))
     }
+
+    pub fn try_from_contiguous(entries: impl Iterator<Item = (K, V)>) -> Option<Self> {
+        let mut items = Vec::with_capacity(entries.size_hint().0);
+        for (idx, (key, val)) in entries.enumerate() {
+            if idx != key.to_index() {
+                return None;
+            }
+            items.push(val);
+        }
+        Some(Self::from_items(items))
+    }
 }
 
 impl<K: Id, V, I: Borrow<K>> Index<I> for IdVec<K, V> {
