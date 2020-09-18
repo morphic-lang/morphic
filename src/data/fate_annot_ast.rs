@@ -67,8 +67,16 @@ pub enum IoOp {
     ), // Returns unit
 }
 
+id_type!(pub ExprId);
+
 #[derive(Clone, Debug)]
-pub enum Expr {
+pub struct Expr {
+    pub id: ExprId,
+    pub kind: ExprKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum ExprKind {
     Local(Local),
     Call(
         CallId,
@@ -81,8 +89,6 @@ pub enum Expr {
         OrdMap<alias::FieldPath, alias::FoldedAliases>,
         // Statuses of argument fields prior to call
         OrdMap<alias::FieldPath, mutation::LocalStatus>,
-        // Fate of *return value*
-        Fate,
         Local, // Argument
     ),
     Branch(Local, Vec<(flat::Condition, Expr)>, anon::Type),
@@ -158,7 +164,8 @@ pub struct FuncDef {
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument.
     pub body: Expr,
-    pub fates: IdVec<OccurId, Fate>,
+    pub occur_fates: IdVec<OccurId, Fate>,
+    pub expr_fates: IdVec<ExprId, Fate>,
     pub num_calls: usize,
     pub profile_point: Option<prof::ProfilePointId>,
 }

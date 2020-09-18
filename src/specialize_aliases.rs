@@ -38,41 +38,42 @@ id_type!(SccId);
 
 fn collect_call_sites(
     curr_func: first_ord::CustomFuncId,
+    expr_fates: &IdVec<fate::ExprId, fate::Fate>,
     expr: &fate::Expr,
     callers: &mut BTreeMap<first_ord::CustomFuncId, Vec<SccCallSite>>,
 ) {
-    match expr {
-        fate::Expr::Call(
+    match &expr.kind {
+        fate::ExprKind::Call(
             _call_id,
             _purity,
             callee,
             arg_aliases,
             arg_folded_aliases,
             _arg_statuses,
-            ret_fate,
             fate::Local(_, arg),
         ) => {
             // `callers` has key `callee` iff `callee` is in the current SCC
             if let Some(callee_sites) = callers.get_mut(callee) {
+                let ret_fate = expr_fates[expr.id].clone();
                 callee_sites.push(SccCallSite {
                     caller: curr_func,
                     caller_arg_local: *arg,
                     arg_aliases: arg_aliases.clone(),
                     arg_folded_aliases: arg_folded_aliases.clone(),
-                    ret_fate: ret_fate.clone(),
+                    ret_fate,
                 });
             }
         }
 
-        fate::Expr::Branch(_, cases, _) => {
+        fate::ExprKind::Branch(_, cases, _) => {
             for (_, body) in cases {
-                collect_call_sites(curr_func, body, callers);
+                collect_call_sites(curr_func, expr_fates, body, callers);
             }
         }
 
-        fate::Expr::LetMany(bindings, _) => {
+        fate::ExprKind::LetMany(bindings, _) => {
             for (_, binding) in bindings {
-                collect_call_sites(curr_func, binding, callers);
+                collect_call_sites(curr_func, expr_fates, binding, callers);
             }
         }
 
@@ -102,7 +103,12 @@ fn collect_sccs(
             Scc::Cyclic(scc_funcs) => {
                 let mut callers = scc_funcs.iter().map(|&func| (func, Vec::new())).collect();
                 for func in scc_funcs {
-                    collect_call_sites(*func, &funcs[func].body, &mut callers);
+                    collect_call_sites(
+                        *func,
+                        &funcs[func].expr_fates,
+                        &funcs[func].body,
+                        &mut callers,
+                    );
                 }
 
                 let scc_id = scc_infos.push(SccInfo {
@@ -330,24 +336,25 @@ fn resolve_expr(
     insts: &mut InstanceQueue,
     inst: &FuncInstance,
     scc_versions: &BTreeMap<first_ord::CustomFuncId, spec::FuncVersionId>,
+    expr_fates: &IdVec<fate::ExprId, fate::Fate>, // for current function
     expr: &fate::Expr,
     calls: &mut IdVec<fate::CallId, Option<(first_ord::CustomFuncId, spec::FuncVersionId)>>,
 ) {
-    match expr {
-        fate::Expr::Call(
+    match &expr.kind {
+        fate::ExprKind::Call(
             call_id,
             _purity,
             callee,
             arg_aliases,
             arg_folded_aliases,
             _arg_statuses,
-            ret_fate,
             fate::Local(_, arg),
         ) => {
             if let Some(version) = scc_versions.get(callee) {
                 debug_assert!(calls[call_id].is_none());
                 calls[call_id] = Some((*callee, *version));
             } else {
+                let ret_fate = &expr_fates[expr.id];
                 let callee_inst = callee_inst_for_call_site(
                     inst,
                     *arg,
@@ -362,15 +369,15 @@ fn resolve_expr(
             }
         }
 
-        fate::Expr::Branch(_, cases, _) => {
+        fate::ExprKind::Branch(_, cases, _) => {
             for (_, body) in cases {
-                resolve_expr(funcs, insts, inst, scc_versions, body, calls);
+                resolve_expr(funcs, insts, inst, scc_versions, expr_fates, body, calls);
             }
         }
 
-        fate::Expr::LetMany(bindings, _) => {
+        fate::ExprKind::LetMany(bindings, _) => {
             for (_, binding) in bindings {
-                resolve_expr(funcs, insts, inst, scc_versions, binding, calls);
+                resolve_expr(funcs, insts, inst, scc_versions, expr_fates, binding, calls);
             }
         }
 
@@ -508,6 +515,7 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
                 &mut insts,
                 &scc_func_inst,
                 &scc_versions,
+                &func_def.expr_fates,
                 &func_def.body,
                 &mut version_calls,
             );
@@ -541,7 +549,8 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
                     mutation_sig: func_def.mutation_sig,
                     arg_fate: func_def.arg_fate,
                     body: func_def.body,
-                    fates: func_def.fates,
+                    occur_fates: func_def.occur_fates,
+                    expr_fates: func_def.expr_fates,
                     versions: IdVec::try_from_contiguous(func_versions.into_iter()).expect(
                         "A function's fully-populated version map should have contiguous keys",
                     ),

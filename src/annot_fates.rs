@@ -1,5 +1,4 @@
 use im_rc::OrdSet;
-use std::borrow::Cow;
 use std::collections::btree_map::{self, BTreeMap};
 
 use crate::data::alias_annot_ast as alias;
@@ -93,17 +92,18 @@ fn annot_expr(
     sigs: &SignatureAssumptions<first_ord::CustomFuncId, fate::FuncDef>,
     locals: &mut LocalContext<flat::LocalId, anon::Type>,
     expr: &mutation::Expr,
-    val_fate: &fate::Fate,
+    val_fate: fate::Fate,
     occurs: &mut IdVec<fate::OccurId, fate::Fate>,
+    expr_fates: &mut IdVec<fate::ExprId, fate::Fate>,
     calls: &mut IdGen<fate::CallId>,
 ) -> (fate::Expr, LocalUses) {
     let mut uses = LocalUses {
         uses: BTreeMap::new(),
     };
 
-    let fate_expr = match expr {
+    let fate_expr_kind = match expr {
         mutation::Expr::Local(local) => {
-            fate::Expr::Local(add_occurence(occurs, &mut uses, *local, val_fate.clone()))
+            fate::ExprKind::Local(add_occurence(occurs, &mut uses, *local, val_fate.clone()))
         }
 
         mutation::Expr::Call(
@@ -138,14 +138,13 @@ fn annot_expr(
 
             let local_annot = add_occurence(occurs, &mut uses, *arg_local, arg_fate);
 
-            fate::Expr::Call(
+            fate::ExprKind::Call(
                 calls.fresh(),
                 *purity,
                 *func,
                 arg_alises.clone(),
                 arg_folded_alises.clone(),
                 arg_statuses.clone(),
-                val_fate.clone(),
                 local_annot,
             )
         }
@@ -164,8 +163,16 @@ fn annot_expr(
             let cases_annot = cases
                 .iter()
                 .map(|(cond, body)| {
-                    let (body_annot, body_uses) =
-                        annot_expr(orig, sigs, locals, body, val_fate, occurs, calls);
+                    let (body_annot, body_uses) = annot_expr(
+                        orig,
+                        sigs,
+                        locals,
+                        body,
+                        val_fate.clone(),
+                        occurs,
+                        expr_fates,
+                        calls,
+                    );
 
                     for (local, body_fate) in body_uses.uses {
                         add_use(&mut uses, local, body_fate);
@@ -175,7 +182,7 @@ fn annot_expr(
                 })
                 .collect();
 
-            fate::Expr::Branch(discrim_annot, cases_annot, ret_type.clone())
+            fate::ExprKind::Branch(discrim_annot, cases_annot, ret_type.clone())
         }
 
         mutation::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
@@ -203,11 +210,12 @@ fn annot_expr(
                 let rhs_fate = let_uses
                     .uses
                     .get(&binding_local)
-                    .map(Cow::Borrowed)
-                    .unwrap_or_else(|| Cow::Owned(empty_fate(&orig.custom_types, type_)));
+                    .cloned()
+                    .unwrap_or_else(|| empty_fate(&orig.custom_types, type_));
 
-                let (rhs_annot, rhs_uses) =
-                    annot_expr(orig, sigs, sub_locals, rhs, &rhs_fate, occurs, calls);
+                let (rhs_annot, rhs_uses) = annot_expr(
+                    orig, sigs, sub_locals, rhs, rhs_fate, occurs, expr_fates, calls,
+                );
 
                 for (used_var, var_fate) in rhs_uses.uses {
                     debug_assert!(used_var.0 < binding_local.0);
@@ -229,13 +237,21 @@ fn annot_expr(
                 bindings_annot_rev
             };
 
-            fate::Expr::LetMany(bindings_annot, final_local_annot)
+            fate::ExprKind::LetMany(bindings_annot, final_local_annot)
         }),
 
         _ => todo!(),
     };
 
-    (fate_expr, uses)
+    let id = expr_fates.push(val_fate);
+
+    (
+        fate::Expr {
+            id,
+            kind: fate_expr_kind,
+        },
+        uses,
+    )
 }
 
 fn annot_func(
@@ -262,6 +278,7 @@ fn annot_func(
     locals.add_local(func_def.arg_type.clone());
 
     let mut occurs = IdVec::new();
+    let mut expr_fates = IdVec::new();
     let mut calls = IdGen::new();
 
     let (body_annot, body_uses) = annot_expr(
@@ -269,8 +286,9 @@ fn annot_func(
         sigs,
         &mut locals,
         &func_def.body,
-        &ret_fate,
+        ret_fate,
         &mut occurs,
+        &mut expr_fates,
         &mut calls,
     );
 
@@ -293,7 +311,8 @@ fn annot_func(
         mutation_sig: func_def.mutation_sig.clone(),
         arg_fate,
         body: body_annot,
-        fates: occurs,
+        occur_fates: occurs,
+        expr_fates: expr_fates,
         num_calls: calls.count(),
         profile_point: func_def.profile_point,
     }

@@ -49,7 +49,8 @@ pub struct FuncDef {
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument.
     pub body: fate::Expr,
-    pub fates: IdVec<fate::OccurId, fate::Fate>,
+    pub occur_fates: IdVec<fate::OccurId, fate::Fate>,
+    pub expr_fates: IdVec<fate::ExprId, fate::Fate>,
     pub versions: IdVec<FuncVersionId, FuncVersion>,
     pub profile_point: Option<prof::ProfilePointId>,
 }
