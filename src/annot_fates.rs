@@ -96,6 +96,7 @@ fn annot_expr(
     occurs: &mut IdVec<fate::OccurId, fate::Fate>,
     expr_fates: &mut IdVec<fate::ExprId, fate::Fate>,
     calls: &mut IdGen<fate::CallId>,
+    blocks: &mut IdGen<fate::BlockId>,
 ) -> (fate::Expr, LocalUses) {
     let mut uses = LocalUses {
         uses: BTreeMap::new(),
@@ -172,6 +173,7 @@ fn annot_expr(
                         occurs,
                         expr_fates,
                         calls,
+                        blocks,
                     );
 
                     for (local, body_fate) in body_uses.uses {
@@ -182,7 +184,7 @@ fn annot_expr(
                 })
                 .collect();
 
-            fate::ExprKind::Branch(discrim_annot, cases_annot, ret_type.clone())
+            fate::ExprKind::Branch(blocks.fresh(), discrim_annot, cases_annot, ret_type.clone())
         }
 
         mutation::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
@@ -214,7 +216,7 @@ fn annot_expr(
                     .unwrap_or_else(|| empty_fate(&orig.custom_types, type_));
 
                 let (rhs_annot, rhs_uses) = annot_expr(
-                    orig, sigs, sub_locals, rhs, rhs_fate, occurs, expr_fates, calls,
+                    orig, sigs, sub_locals, rhs, rhs_fate, occurs, expr_fates, calls, blocks,
                 );
 
                 for (used_var, var_fate) in rhs_uses.uses {
@@ -237,7 +239,7 @@ fn annot_expr(
                 bindings_annot_rev
             };
 
-            fate::ExprKind::LetMany(bindings_annot, final_local_annot)
+            fate::ExprKind::LetMany(blocks.fresh(), bindings_annot, final_local_annot)
         }),
 
         _ => todo!(),
@@ -280,6 +282,7 @@ fn annot_func(
     let mut occurs = IdVec::new();
     let mut expr_fates = IdVec::new();
     let mut calls = IdGen::new();
+    let mut blocks = IdGen::new();
 
     let (body_annot, body_uses) = annot_expr(
         orig,
@@ -290,6 +293,7 @@ fn annot_func(
         &mut occurs,
         &mut expr_fates,
         &mut calls,
+        &mut blocks,
     );
 
     let arg_fate = match body_uses.uses.get(&flat::ARG_LOCAL) {
@@ -314,6 +318,7 @@ fn annot_func(
         occur_fates: occurs,
         expr_fates: expr_fates,
         num_calls: calls.count(),
+        num_blocks: blocks.count(),
         profile_point: func_def.profile_point,
     }
 }

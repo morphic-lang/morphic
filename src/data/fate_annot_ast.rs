@@ -17,6 +17,8 @@ id_type!(pub CallId);
 
 id_type!(pub OccurId);
 
+id_type!(pub BlockId);
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Local(pub OccurId, pub flat::LocalId);
 
@@ -91,8 +93,9 @@ pub enum ExprKind {
         OrdMap<alias::FieldPath, mutation::LocalStatus>,
         Local, // Argument
     ),
-    Branch(Local, Vec<(flat::Condition, Expr)>, anon::Type),
+    Branch(BlockId, Local, Vec<(flat::Condition, Expr)>, anon::Type),
     LetMany(
+        BlockId,
         Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
         Local,                   // body
     ),
@@ -167,6 +170,7 @@ pub struct FuncDef {
     pub occur_fates: IdVec<OccurId, Fate>,
     pub expr_fates: IdVec<ExprId, Fate>,
     pub num_calls: usize,
+    pub num_blocks: usize,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 

@@ -65,13 +65,13 @@ fn collect_call_sites(
             }
         }
 
-        fate::ExprKind::Branch(_, cases, _) => {
+        fate::ExprKind::Branch(_, _, cases, _) => {
             for (_, body) in cases {
                 collect_call_sites(curr_func, expr_fates, body, callers);
             }
         }
 
-        fate::ExprKind::LetMany(bindings, _) => {
+        fate::ExprKind::LetMany(_, bindings, _) => {
             for (_, binding) in bindings {
                 collect_call_sites(curr_func, expr_fates, binding, callers);
             }
@@ -369,13 +369,13 @@ fn resolve_expr(
             }
         }
 
-        fate::ExprKind::Branch(_, cases, _) => {
+        fate::ExprKind::Branch(_, _, cases, _) => {
             for (_, body) in cases {
                 resolve_expr(funcs, insts, inst, scc_versions, expr_fates, body, calls);
             }
         }
 
-        fate::ExprKind::LetMany(bindings, _) => {
+        fate::ExprKind::LetMany(_, bindings, _) => {
             for (_, binding) in bindings {
                 resolve_expr(funcs, insts, inst, scc_versions, expr_fates, binding, calls);
             }
