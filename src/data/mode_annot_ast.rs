@@ -1,3 +1,4 @@
+use im_rc::Vector;
 use std::collections::BTreeMap;
 
 use crate::data::alias_annot_ast as alias;
@@ -12,6 +13,15 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::id_vec::IdVec;
 use crate::util::inequality_graph::{ExternalVarId, Infimum, UpperBound};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StackField {
+    Field(usize),
+    Variant(first_ord::VariantId),
+    Custom(first_ord::CustomTypeId),
+}
+
+pub type StackPath = Vector<StackField>;
 
 /// The ordering for modes is meaningful, and encodes a *subtyping relation* where owned values can
 /// be converted to borrowed values, but not vice versa.  In other words, Owned < Borrowed.
@@ -64,7 +74,7 @@ pub enum PathOccurMode {
 
 #[derive(Clone, Debug)]
 pub struct OccurModes {
-    pub path_modes: BTreeMap<alias::FieldPath, PathOccurMode>,
+    pub path_modes: BTreeMap<StackPath, PathOccurMode>,
 }
 
 /// Represents an operation in which a subset of a value's paths are dropped, and the modes of those
@@ -78,7 +88,7 @@ pub struct OccurModes {
 /// moved exactly once along each control flow path.
 #[derive(Clone, Debug)]
 pub struct DropModes {
-    pub dropped_paths: BTreeMap<alias::FieldPath, UpperBound<Mode>>,
+    pub dropped_paths: BTreeMap<StackPath, UpperBound<Mode>>,
 }
 
 // TODO: Move this to fate analysis

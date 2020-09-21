@@ -307,19 +307,6 @@ pub fn split_at_fold(
     }
 }
 
-pub fn split_stack_heap(path: annot::FieldPath) -> (annot::FieldPath, annot::SubPath) {
-    match path.iter().enumerate().find(|(_, field)| match field {
-        annot::Field::Boxed | annot::Field::ArrayMembers => true,
-        annot::Field::Field(_) | annot::Field::Variant(_) | annot::Field::Custom(_) => false,
-    }) {
-        Some((split_point, _)) => {
-            let (stack_path, heap_path) = path.split_at(split_point);
-            (stack_path, annot::SubPath(heap_path))
-        }
-        None => (path, annot::SubPath(Vector::new())),
-    }
-}
-
 pub fn group_unfolded_names_by_folded_form(
     type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     custom_id: first_ord::CustomTypeId,

@@ -54,6 +54,7 @@ mod flatten;
 mod field_path;
 mod fixed_point;
 mod mutation_status;
+mod stack_path;
 
 mod annot_aliases;
 

@@ -10,6 +10,7 @@ use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as mutation;
 use crate::field_path;
 use crate::fixed_point::{iterate_fixed_point, Signature};
+use crate::stack_path;
 use crate::util::disjunction::Disj;
 use crate::util::graph::Scc;
 use crate::util::id_gen::IdGen;
@@ -285,8 +286,8 @@ fn callee_inst_for_call_site(
             // heap structure for the purposes of RC elision, because a release
             // operation on a heap structure counts as an access of that structure *and
             // all of its children* for the purposes of mutation optimization.
-            let (stack_path, _) = field_path::split_stack_heap(ret_name.0.clone());
-            internally_mutated_ret_paths.insert(stack_path);
+            let (path, _) = stack_path::split_stack_heap(ret_name.0.clone());
+            internally_mutated_ret_paths.insert(stack_path::to_field_path(&path));
         }
     }
 
