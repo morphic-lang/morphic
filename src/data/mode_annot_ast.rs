@@ -91,9 +91,6 @@ pub struct DropModes {
     pub dropped_paths: BTreeMap<StackPath, UpperBound<Mode>>,
 }
 
-// TODO: Move this to fate analysis
-id_type!(pub BlockId);
-
 #[derive(Clone, Debug)]
 pub struct ModeAnnots {
     pub extern_constraints: IdVec<ExternalVarId, UpperBound<Mode>>,
@@ -102,7 +99,7 @@ pub struct ModeAnnots {
 
     /// Drop epilogues are used to drop otherwise-unmoved expressions at the end of a let block,
     /// branch arm.
-    pub drop_epilogues: IdVec<BlockId, Vec<(flat::LocalId, DropModes)>>,
+    pub drop_epilogues: IdVec<fate::BlockId, Vec<(flat::LocalId, DropModes)>>,
 
     /// Drop epilogue for the argument at the end of the function body.
     ///
