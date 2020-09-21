@@ -17,7 +17,9 @@ id_type!(pub CallId);
 
 id_type!(pub OccurId);
 
-id_type!(pub BlockId);
+id_type!(pub LetBlockId);
+
+id_type!(pub BranchBlockId);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Local(pub OccurId, pub flat::LocalId);
@@ -93,9 +95,13 @@ pub enum ExprKind {
         OrdMap<alias::FieldPath, mutation::LocalStatus>,
         Local, // Argument
     ),
-    Branch(BlockId, Local, Vec<(flat::Condition, Expr)>, anon::Type),
+    Branch(
+        Local,
+        Vec<(BranchBlockId, flat::Condition, Expr)>,
+        anon::Type,
+    ),
     LetMany(
-        BlockId,
+        LetBlockId,
         Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
         Local,                   // body
     ),
@@ -148,6 +154,20 @@ pub enum InternalFate {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FieldFate {
     pub internal: InternalFate,
+    // We only consider a value to escape a block if it is *used* (accessed or owned) after that
+    // block.  This means we should have the invariant that if `internal` is `Unused`, then
+    // `blocks_escaped` should be empty.
+    //
+    // For a fate attached to a syntactic construct (e.g. a variable occurrence) residing in a
+    // particular block, this set might contain blocks which are neither the current block nor
+    // parents of the current block.  These are harmless, but are also almost always irrelevant.
+    pub blocks_escaped: OrdSet<LetBlockId>,
+    pub ret_destinations: OrdSet<alias::RetName>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ArgFieldFate {
+    pub internal: InternalFate,
     pub ret_destinations: OrdSet<alias::RetName>,
 }
 
@@ -163,14 +183,15 @@ pub struct FuncDef {
     pub ret_type: anon::Type,
     pub alias_sig: alias::AliasSig,
     pub mutation_sig: mutation::MutationSig,
-    pub arg_fate: Fate,
+    pub arg_fate: BTreeMap<alias::ArgName, ArgFieldFate>,
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument.
     pub body: Expr,
     pub occur_fates: IdVec<OccurId, Fate>,
     pub expr_fates: IdVec<ExprId, Fate>,
     pub num_calls: usize,
-    pub num_blocks: usize,
+    pub num_let_blocks: usize,
+    pub num_branch_blocks: usize,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 

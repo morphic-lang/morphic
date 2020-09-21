@@ -97,9 +97,10 @@ pub struct ModeAnnots {
     pub occur_modes: IdVec<fate::OccurId, OccurModes>,
     pub call_modes: IdVec<fate::CallId, IdVec<ExternalVarId, UpperBound<Mode>>>,
 
-    /// Drop epilogues are used to drop otherwise-unmoved expressions at the end of a let block,
+    /// Drop epilogues are used to drop otherwise-unmoved expressions at the end of a let block or
     /// branch arm.
-    pub drop_epilogues: IdVec<fate::BlockId, Vec<(flat::LocalId, DropModes)>>,
+    pub let_drop_epilogues: IdVec<fate::LetBlockId, Vec<(flat::LocalId, DropModes)>>,
+    pub branch_drop_epilogues: IdVec<fate::BranchBlockId, Vec<(flat::LocalId, DropModes)>>,
 
     /// Drop epilogue for the argument at the end of the function body.
     ///

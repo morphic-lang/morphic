@@ -14,7 +14,7 @@ use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
 
 impl Signature for fate::FuncDef {
-    type Sig = fate::Fate;
+    type Sig = BTreeMap<alias::ArgName, fate::ArgFieldFate>;
 
     fn signature(&self) -> &Self::Sig {
         &self.arg_fate
@@ -28,6 +28,10 @@ struct LocalUses {
 
 fn merge_field_fates(fate1: &mut fate::FieldFate, fate2: &fate::FieldFate) {
     fate1.internal = fate1.internal.max(fate2.internal);
+
+    fate1
+        .blocks_escaped
+        .extend(fate2.blocks_escaped.iter().cloned());
 
     fate1
         .ret_destinations
@@ -75,6 +79,7 @@ fn empty_fate(
                     path,
                     fate::FieldFate {
                         internal: fate::InternalFate::Unused,
+                        blocks_escaped: OrdSet::new(),
                         ret_destinations: OrdSet::new(),
                     },
                 )
@@ -96,7 +101,8 @@ fn annot_expr(
     occurs: &mut IdVec<fate::OccurId, fate::Fate>,
     expr_fates: &mut IdVec<fate::ExprId, fate::Fate>,
     calls: &mut IdGen<fate::CallId>,
-    blocks: &mut IdGen<fate::BlockId>,
+    let_blocks: &mut IdGen<fate::LetBlockId>,
+    branch_blocks: &mut IdGen<fate::BranchBlockId>,
 ) -> (fate::Expr, LocalUses) {
     let mut uses = LocalUses {
         uses: BTreeMap::new(),
@@ -119,11 +125,11 @@ fn annot_expr(
                 None => empty_fate(&orig.custom_types, &orig.funcs[func].arg_type),
                 Some(sig_arg_fate) => fate::Fate {
                     fates: sig_arg_fate
-                        .fates
                         .iter()
-                        .map(|(arg_path, sig_path_fate)| {
+                        .map(|(alias::ArgName(arg_path), sig_path_fate)| {
                             let mut path_fate = fate::FieldFate {
                                 internal: sig_path_fate.internal,
+                                blocks_escaped: OrdSet::new(),
                                 ret_destinations: OrdSet::new(),
                             };
 
@@ -173,21 +179,28 @@ fn annot_expr(
                         occurs,
                         expr_fates,
                         calls,
-                        blocks,
+                        let_blocks,
+                        branch_blocks,
                     );
 
                     for (local, body_fate) in body_uses.uses {
                         add_use(&mut uses, local, body_fate);
                     }
 
-                    (cond.clone(), body_annot)
+                    (branch_blocks.fresh(), cond.clone(), body_annot)
                 })
                 .collect();
 
-            fate::ExprKind::Branch(blocks.fresh(), discrim_annot, cases_annot, ret_type.clone())
+            fate::ExprKind::Branch(discrim_annot, cases_annot, ret_type.clone())
         }
 
         mutation::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
+            let block_id = let_blocks.fresh();
+            let mut block_val_fate = val_fate.clone();
+            for (_, path_fate) in &mut block_val_fate.fates {
+                path_fate.blocks_escaped.insert(block_id);
+            }
+
             let locals_offset = sub_locals.len();
 
             for (type_, _) in bindings.iter() {
@@ -198,7 +211,7 @@ fn annot_expr(
                 uses: BTreeMap::new(),
             };
             let final_local_annot =
-                add_occurence(occurs, &mut let_uses, *final_local, val_fate.clone());
+                add_occurence(occurs, &mut let_uses, *final_local, block_val_fate.clone());
 
             let mut bindings_annot_rev = Vec::new();
 
@@ -216,7 +229,16 @@ fn annot_expr(
                     .unwrap_or_else(|| empty_fate(&orig.custom_types, type_));
 
                 let (rhs_annot, rhs_uses) = annot_expr(
-                    orig, sigs, sub_locals, rhs, rhs_fate, occurs, expr_fates, calls, blocks,
+                    orig,
+                    sigs,
+                    sub_locals,
+                    rhs,
+                    rhs_fate,
+                    occurs,
+                    expr_fates,
+                    calls,
+                    let_blocks,
+                    branch_blocks,
                 );
 
                 for (used_var, var_fate) in rhs_uses.uses {
@@ -239,7 +261,7 @@ fn annot_expr(
                 bindings_annot_rev
             };
 
-            fate::ExprKind::LetMany(blocks.fresh(), bindings_annot, final_local_annot)
+            fate::ExprKind::LetMany(block_id, bindings_annot, final_local_annot)
         }),
 
         _ => todo!(),
@@ -269,6 +291,7 @@ fn annot_func(
                     path.clone(),
                     fate::FieldFate {
                         internal: fate::InternalFate::Unused,
+                        blocks_escaped: OrdSet::new(),
                         ret_destinations: OrdSet::unit(alias::RetName(path)),
                     },
                 )
@@ -282,7 +305,8 @@ fn annot_func(
     let mut occurs = IdVec::new();
     let mut expr_fates = IdVec::new();
     let mut calls = IdGen::new();
-    let mut blocks = IdGen::new();
+    let mut let_blocks = IdGen::new();
+    let mut branch_blocks = IdGen::new();
 
     let (body_annot, body_uses) = annot_expr(
         orig,
@@ -293,10 +317,11 @@ fn annot_func(
         &mut occurs,
         &mut expr_fates,
         &mut calls,
-        &mut blocks,
+        &mut let_blocks,
+        &mut branch_blocks,
     );
 
-    let arg_fate = match body_uses.uses.get(&flat::ARG_LOCAL) {
+    let arg_internal_fate = match body_uses.uses.get(&flat::ARG_LOCAL) {
         Some(fate) => {
             debug_assert_eq!(body_uses.uses.len(), 1);
             fate.clone()
@@ -306,6 +331,20 @@ fn annot_func(
             empty_fate(&orig.custom_types, &func_def.arg_type)
         }
     };
+
+    let arg_fate = arg_internal_fate
+        .fates
+        .into_iter()
+        .map(|(path, path_fate)| {
+            (
+                alias::ArgName(path),
+                fate::ArgFieldFate {
+                    internal: path_fate.internal,
+                    ret_destinations: path_fate.ret_destinations,
+                },
+            )
+        })
+        .collect();
 
     fate::FuncDef {
         purity: func_def.purity,
@@ -318,7 +357,8 @@ fn annot_func(
         occur_fates: occurs,
         expr_fates: expr_fates,
         num_calls: calls.count(),
-        num_blocks: blocks.count(),
+        num_let_blocks: let_blocks.count(),
+        num_branch_blocks: branch_blocks.count(),
         profile_point: func_def.profile_point,
     }
 }

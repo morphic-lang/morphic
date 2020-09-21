@@ -45,12 +45,14 @@ pub struct FuncDef {
     pub ret_type: anon::Type,
     pub alias_sig: alias::AliasSig,
     pub mutation_sig: mutation::MutationSig,
-    pub arg_fate: fate::Fate,
+    pub arg_fate: BTreeMap<alias::ArgName, fate::ArgFieldFate>,
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument.
     pub body: fate::Expr,
     pub occur_fates: IdVec<fate::OccurId, fate::Fate>,
     pub expr_fates: IdVec<fate::ExprId, fate::Fate>,
+    pub num_let_blocks: usize,
+    pub num_branch_blocks: usize,
     pub versions: IdVec<FuncVersionId, FuncVersion>,
     pub profile_point: Option<prof::ProfilePointId>,
 }

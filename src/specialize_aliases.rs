@@ -66,8 +66,8 @@ fn collect_call_sites(
             }
         }
 
-        fate::ExprKind::Branch(_, _, cases, _) => {
-            for (_, body) in cases {
+        fate::ExprKind::Branch(_, cases, _) => {
+            for (_, _, body) in cases {
                 collect_call_sites(curr_func, expr_fates, body, callers);
             }
         }
@@ -370,8 +370,8 @@ fn resolve_expr(
             }
         }
 
-        fate::ExprKind::Branch(_, _, cases, _) => {
-            for (_, body) in cases {
+        fate::ExprKind::Branch(_, cases, _) => {
+            for (_, _, body) in cases {
                 resolve_expr(funcs, insts, inst, scc_versions, expr_fates, body, calls);
             }
         }
@@ -552,6 +552,8 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
                     body: func_def.body,
                     occur_fates: func_def.occur_fates,
                     expr_fates: func_def.expr_fates,
+                    num_let_blocks: func_def.num_let_blocks,
+                    num_branch_blocks: func_def.num_branch_blocks,
                     versions: IdVec::try_from_contiguous(func_versions.into_iter()).expect(
                         "A function's fully-populated version map should have contiguous keys",
                     ),
