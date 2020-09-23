@@ -2,6 +2,7 @@ use im_rc::OrdMap;
 use std::collections::btree_map;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use crate::alias_spec_flag::lookup_concrete_cond;
 use crate::data::alias_annot_ast as alias;
 use crate::data::alias_specialized_ast as spec;
 use crate::data::fate_annot_ast as fate;
@@ -191,18 +192,6 @@ impl InstanceQueue {
         &mut self,
     ) -> Option<(first_ord::CustomFuncId, spec::FuncVersionId, FuncInstance)> {
         self.pending.pop_front()
-    }
-}
-
-fn lookup_concrete_cond(
-    aliases: &BTreeMap<alias::AliasCondition, spec::ConcreteAlias>,
-    symbolic: &Disj<alias::AliasCondition>,
-) -> bool {
-    match symbolic {
-        Disj::True => true,
-        Disj::Any(conds) => conds
-            .iter()
-            .any(|cond| aliases[cond] == spec::ConcreteAlias::MayAlias),
     }
 }
 

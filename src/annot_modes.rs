@@ -1,6 +1,7 @@
 use im_rc::OrdMap;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::alias_spec_flag::lookup_concrete_cond;
 use crate::data::alias_annot_ast as alias;
 use crate::data::alias_specialized_ast as spec;
 use crate::data::anon_sum_ast as anon;
@@ -9,6 +10,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mode_annot_ast as mode;
 use crate::stack_path;
+use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
 
@@ -47,16 +49,6 @@ struct FutureUses {
 #[derive(Clone, Debug)]
 struct ExprUses {
     uses: OrdMap<flat::LocalId, OrdMap<mode::StackPath, UseKind>>,
-}
-
-/// This struct is used to represent the uses of let-bound variables *inside* the let block in which
-/// they are defined.
-///
-/// The keys of the `uses` map should be a subset of the local ids bound in the let block; no other
-/// variables should be present.
-#[derive(Clone, Debug)]
-struct LetUses {
-    uses: BTreeMap<flat::LocalId, OrdMap<mode::StackPath, UseKind>>,
 }
 
 fn merge_uses(
@@ -104,6 +96,7 @@ fn mark_occur(
     ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
     future_uses_after_expr: Option<&OrdMap<mode::StackPath, UseKind>>,
     future_uses_in_expr: Option<&OrdMap<mode::StackPath, UseKind>>,
+    to_be_mutated: Option<&BTreeSet<mode::StackPath>>,
 ) -> BTreeMap<mode::StackPath, OccurKind> {
     let mut result = BTreeMap::new();
 
@@ -151,7 +144,15 @@ fn mark_occur(
                 result.insert(path, OccurKind::Final);
             }
             fate::InternalFate::Accessed => {
-                result.insert(path, OccurKind::Intermediate);
+                let is_mutated = to_be_mutated
+                    .map(|mutated| mutated.contains(&path))
+                    .unwrap_or(false);
+
+                if is_mutated {
+                    result.insert(path, OccurKind::Final);
+                } else {
+                    result.insert(path, OccurKind::Intermediate);
+                }
             }
             fate::InternalFate::Unused => {
                 result.insert(path, OccurKind::Unused);
@@ -171,6 +172,7 @@ fn mark_occur_mut<'a>(
     future_uses: &FutureUses,
     expr_uses: &mut ExprUses,
     occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
+    to_be_mutated: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
 ) {
     let this_occur_kinds = mark_occur(
         typedefs,
@@ -179,6 +181,7 @@ fn mark_occur_mut<'a>(
         ret_fates,
         future_uses.uses.get(&occur.1),
         expr_uses.uses.get(&occur.1),
+        to_be_mutated.get(&occur.1),
     );
 
     for (path, path_occur_kind) in &this_occur_kinds {
@@ -204,21 +207,59 @@ fn mark_occur_mut<'a>(
     occur_kinds[occur.0] = Some(this_occur_kinds);
 }
 
-// This is a backwards data-flow pass, so all variable occurrence should be processed in reverse
+// Marking tentative prologue drops doesn't contribute to expression uses, because when we mark a
+// prologue drop we're not sure yet whether or not it will be pruned later due to a prior `Final`
+// use of the same variable.  We don't want to foreclose the possibility of the variable in the drop
+// prologue being moved earlier for some other reason.
+fn mark_tentative_prologue_drops(
+    future_uses: &FutureUses,
+    expr_uses: &ExprUses,
+    to_be_mutated: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
+    tentative_drop_prologue: &mut BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
+) {
+    for (local, mutated_paths) in to_be_mutated {
+        for mutated_path in mutated_paths {
+            let used_after_expr = future_uses
+                .uses
+                .get(local)
+                .map(|uses| uses.contains_key(mutated_path))
+                .unwrap_or(false);
+
+            let used_later_in_expr = expr_uses
+                .uses
+                .get(local)
+                .map(|uses| uses.contains_key(mutated_path))
+                .unwrap_or(false);
+
+            if used_after_expr || used_later_in_expr {
+                continue;
+            }
+
+            tentative_drop_prologue
+                .entry(*local)
+                .or_insert_with(BTreeSet::new)
+                .insert(mutated_path.clone());
+        }
+    }
+}
+
+// This is a backwards data-flow pass, so all variable occurrences should be processed in reverse
 // order, both across expressions and within each expression.
 //
 // TODO: This doesn't have great asymptotics for deeply nested expressions, e.g. long chains of
 // if/else-if branches.  Can we do better?
 fn mark_expr_occurs<'a>(
-    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    orig: &spec::Program,
+    this_version: &spec::FuncVersion,
     locals: &mut MarkOccurContext<'a>,
     occur_fates: &IdVec<fate::OccurId, fate::Fate>,
-    ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
     future_uses: &FutureUses,
     expr: &'a fate::Expr,
     occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
-    let_block_uses: &mut IdVec<fate::LetBlockId, Option<LetUses>>,
-    branch_block_uses: &mut IdVec<fate::BranchBlockId, Option<ExprUses>>,
+    tentative_drop_prologues: &mut IdVec<
+        fate::ExprId,
+        Option<BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
+    >,
 ) -> ExprUses {
     debug_assert!(future_uses
         .uses
@@ -230,18 +271,21 @@ fn mark_expr_occurs<'a>(
         uses: OrdMap::new(),
     };
 
+    let mut tentative_drop_prologue = BTreeMap::new();
+
     // We need to pass `locals`, `occur_kinds`, and `expr_uses` as arguments to appease the borrow
     // checker.
     let mark = |locals, occur_kinds, expr_uses, occur| {
         mark_occur_mut(
-            typedefs,
+            &orig.custom_types,
             locals,
             occur_fates,
-            ret_fates,
+            &this_version.ret_fate,
             occur,
             future_uses,
             expr_uses,
             occur_kinds,
+            &BTreeMap::new(),
         );
     };
 
@@ -250,26 +294,91 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *local);
         }
 
-        fate::ExprKind::Call(_, _, _, _, _, _, arg) => {
-            mark(locals, occur_kinds, &mut expr_uses, *arg);
+        fate::ExprKind::Call(_, _, callee, arg_aliases, _, _, arg) => {
+            // It's not important for `to_be_mutated` to contain directly / unconditionally mutated
+            // paths in the argument, because those will already be annotated with "owned" fates by
+            // fate analysis.  We only care about collecting paths which are mutated *indirectly*
+            // via aliases, and which fate analysis therefore can't catch.
+            let mut to_be_mutated = BTreeMap::new();
+            for (alias::ArgName(arg_field_path), callee_cond) in
+                &orig.funcs[callee].mutation_sig.arg_mutation_conds
+            {
+                match callee_cond {
+                    Disj::True => {
+                        // We don't need to consult the argument's folded aliases here, because any
+                        // two argument field paths related by a folded alias will collapse down to
+                        // the same stack path.
+                        //
+                        // Also, note that even if we were to miss a potential mutation here (which
+                        // doesn't appear to be possible, but there could always be bugs...), that
+                        // would only result in a precision / optimization issue, and wouldn't
+                        // threaten soundness.  Even if we were to set `to_be_mutated` to the empty
+                        // map for all calls, RC elision would remain perfectly sound (but could
+                        // result in deoptimizations in downstream mutation optimization passes).
+                        for ((other_local, other_field_path), symbolic_cond) in
+                            &arg_aliases[arg_field_path].aliases
+                        {
+                            let concretely_aliased =
+                                lookup_concrete_cond(&this_version.aliases, symbolic_cond);
+
+                            if concretely_aliased {
+                                let (other_stack_path, _) =
+                                    stack_path::split_stack_heap(other_field_path.clone());
+
+                                to_be_mutated
+                                    .entry(*other_local)
+                                    .or_insert_with(BTreeSet::new)
+                                    .insert(other_stack_path);
+                            }
+                        }
+                    }
+                    Disj::Any(_) => {
+                        // If this mutation occurs, it's due to an alias edge, so we don't need to
+                        // explicitly handle it here; if it occurs under the current set of concrete
+                        // aliasing edges for this version of the function, we'll propagate it via
+                        // the aliases incident on an unconditionally mutated path.
+                        //
+                        // TODO: Could we do this in mutation analysis as well?  Maybe mutation
+                        // signatures only need to explicitly store the *unconditionally* mutated
+                        // argument names?
+                    }
+                }
+            }
+
+            mark_occur_mut(
+                &orig.custom_types,
+                locals,
+                occur_fates,
+                &this_version.ret_fate,
+                *arg,
+                future_uses,
+                &mut expr_uses,
+                occur_kinds,
+                &to_be_mutated,
+            );
+
+            mark_tentative_prologue_drops(
+                future_uses,
+                &expr_uses,
+                &to_be_mutated,
+                &mut tentative_drop_prologue,
+            );
         }
 
         fate::ExprKind::Branch(discrim, cases, _ret_type) => {
-            for (block_id, _cond, body) in cases {
+            // TODO: This was the only place where branch block ids were originally intended to be
+            // used. Should we remove them now that we don't use them here?
+            for (_, _cond, body) in cases {
                 let case_uses = mark_expr_occurs(
-                    typedefs,
+                    orig,
+                    this_version,
                     locals,
                     occur_fates,
-                    ret_fates,
                     future_uses,
                     body,
                     occur_kinds,
-                    let_block_uses,
-                    branch_block_uses,
+                    tentative_drop_prologues,
                 );
-
-                debug_assert!(branch_block_uses[block_id].is_none());
-                branch_block_uses[block_id] = Some(case_uses.clone());
 
                 merge_uses(&mut expr_uses.uses, &case_uses.uses);
             }
@@ -300,14 +409,15 @@ fn mark_expr_occurs<'a>(
                 // explicitly with a higher-rank trait bound, and make it a `dyn` closure (because
                 // `impl Trait` on variables isn't supported).  It's not worth it.
                 mark_occur_mut(
-                    typedefs,
+                    &orig.custom_types,
                     sub_locals,
                     occur_fates,
-                    ret_fates,
+                    &this_version.ret_fate,
                     *final_local,
                     future_uses,
                     &mut expr_uses,
                     occur_kinds,
+                    &BTreeMap::new(),
                 );
                 internal_future_uses.add_expr_uses(&expr_uses);
 
@@ -320,36 +430,26 @@ fn mark_expr_occurs<'a>(
                     internal_future_uses.uses.remove(&binding_local);
 
                     let rhs_uses = mark_expr_occurs(
-                        typedefs,
+                        orig,
+                        this_version,
                         sub_locals,
                         occur_fates,
-                        ret_fates,
                         &internal_future_uses,
                         rhs,
                         occur_kinds,
-                        let_block_uses,
-                        branch_block_uses,
+                        tentative_drop_prologues,
                     );
                     internal_future_uses.add_expr_uses(&rhs_uses);
                     merge_uses(&mut expr_uses.uses, &rhs_uses.uses);
                 }
 
                 // We need to clean up `expr_uses` so it contains only variables in the enclosing
-                // scope (outside this let block), and we also need to record all the uses of
-                // variables bound in this let block in `let_block_uses`.
-                let mut let_uses = LetUses {
-                    uses: BTreeMap::new(),
-                };
+                // scope (outside this let block).
                 for bound_local in
                     (locals_offset..locals_offset + bindings.len()).map(flat::LocalId)
                 {
-                    if let Some(use_kinds) = expr_uses.uses.remove(&bound_local) {
-                        let_uses.uses.insert(bound_local, use_kinds);
-                    }
+                    expr_uses.uses.remove(&bound_local);
                 }
-
-                debug_assert!(let_block_uses[block_id].is_none());
-                let_block_uses[block_id] = Some(let_uses);
             });
         }
 
@@ -362,15 +462,17 @@ fn mark_expr_occurs<'a>(
         .map(|(flat::LocalId(max_id), _)| *max_id < locals.len())
         .unwrap_or(true));
 
+    debug_assert!(tentative_drop_prologues[expr.id].is_none());
+    tentative_drop_prologues[expr.id] = Some(tentative_drop_prologue);
+
     expr_uses
 }
 
 #[derive(Clone, Debug)]
 struct MarkedOccurs {
     occur_kinds: IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
-    let_block_uses: IdVec<fate::LetBlockId, LetUses>,
-    branch_block_uses: IdVec<fate::BranchBlockId, ExprUses>,
-    arg_uses: OrdMap<mode::StackPath, UseKind>,
+    tentative_drop_prologues:
+        IdVec<fate::ExprId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
 }
 
 fn mark_program_occurs(
@@ -379,8 +481,8 @@ fn mark_program_occurs(
     program.funcs.map(|_, func_def| {
         func_def.versions.map(|_, version| {
             let mut occur_kinds = IdVec::from_items(vec![None; func_def.occur_fates.len()]);
-            let mut let_block_uses = IdVec::from_items(vec![None; func_def.num_let_blocks]);
-            let mut branch_block_uses = IdVec::from_items(vec![None; func_def.num_branch_blocks]);
+            let mut tentative_drop_prologues =
+                IdVec::from_items(vec![None; func_def.expr_fates.len()]);
 
             let mut locals = LocalContext::new();
             locals.add_local(MarkOccurLocalInfo {
@@ -389,30 +491,24 @@ fn mark_program_occurs(
             });
 
             let body_uses = mark_expr_occurs(
-                &program.custom_types,
+                program,
+                version,
                 &mut locals,
                 &func_def.occur_fates,
-                &version.ret_fate,
                 &FutureUses {
                     uses: OrdMap::new(),
                 },
                 &func_def.body,
                 &mut occur_kinds,
-                &mut let_block_uses,
-                &mut branch_block_uses,
+                &mut tentative_drop_prologues,
             );
 
             debug_assert!(body_uses.uses.keys().all(|&local| local == flat::ARG_LOCAL));
 
             MarkedOccurs {
                 occur_kinds: occur_kinds.into_mapped(|_, kinds| kinds.unwrap()),
-                let_block_uses: let_block_uses.into_mapped(|_, uses| uses.unwrap()),
-                branch_block_uses: branch_block_uses.into_mapped(|_, uses| uses.unwrap()),
-                arg_uses: body_uses
-                    .uses
-                    .get(&flat::ARG_LOCAL)
-                    .cloned()
-                    .unwrap_or_else(OrdMap::new),
+                tentative_drop_prologues: tentative_drop_prologues
+                    .into_mapped(|_, prologue| prologue.unwrap()),
             }
         })
     })
