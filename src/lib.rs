@@ -66,6 +66,8 @@ mod annot_fates;
 
 mod specialize_aliases;
 
+mod annot_modes;
+
 // end new passes
 
 mod unify_reprs;

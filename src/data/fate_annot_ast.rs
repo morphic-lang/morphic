@@ -21,7 +21,7 @@ id_type!(pub LetBlockId);
 
 id_type!(pub BranchBlockId);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Local(pub OccurId, pub flat::LocalId);
 
 #[derive(Clone, Debug, PartialEq, Eq)]

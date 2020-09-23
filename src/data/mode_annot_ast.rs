@@ -70,6 +70,13 @@ pub enum PathOccurMode {
     ///
     /// This always compiles to a no-op.
     Final,
+
+    /// Unused occurrences should only occur strictly after moving occurrences.
+    ///
+    /// Intermediate occurrences should only occur strictly *before* moving occurrences.
+    ///
+    /// This always compiles to a no-op.
+    Unused,
 }
 
 #[derive(Clone, Debug)]

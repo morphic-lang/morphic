@@ -194,6 +194,9 @@ fn annot_expr(
             fate::ExprKind::Branch(discrim_annot, cases_annot, ret_type.clone())
         }
 
+        // We're only using `with_scope` here for its debug assertion, and to signal intent; by the
+        // time the passed closure returns, we've manually truncated away all the variables which it
+        // would usually be `with_scope`'s responsibility to remove.
         mutation::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
             let block_id = let_blocks.fresh();
             let mut block_val_fate = val_fate.clone();
