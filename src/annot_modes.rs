@@ -1,4 +1,4 @@
-use im_rc::OrdMap;
+use im_rc::{OrdMap, OrdSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::alias_spec_flag::lookup_concrete_cond;
@@ -475,41 +475,319 @@ struct MarkedOccurs {
         IdVec<fate::ExprId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
 }
 
-fn mark_program_occurs(
+fn mark_func_occurs(
     program: &spec::Program,
-) -> IdVec<first_ord::CustomFuncId, IdVec<spec::FuncVersionId, MarkedOccurs>> {
+    func_def: &spec::FuncDef,
+    version: &spec::FuncVersion,
+) -> MarkedOccurs {
+    let mut occur_kinds = IdVec::from_items(vec![None; func_def.occur_fates.len()]);
+    let mut tentative_drop_prologues = IdVec::from_items(vec![None; func_def.expr_fates.len()]);
+
+    let mut locals = LocalContext::new();
+    locals.add_local(MarkOccurLocalInfo {
+        type_: &func_def.arg_type,
+        decl_site: DeclarationSite::Arg,
+    });
+
+    let body_uses = mark_expr_occurs(
+        program,
+        version,
+        &mut locals,
+        &func_def.occur_fates,
+        &FutureUses {
+            uses: OrdMap::new(),
+        },
+        &func_def.body,
+        &mut occur_kinds,
+        &mut tentative_drop_prologues,
+    );
+
+    debug_assert!(body_uses.uses.keys().all(|&local| local == flat::ARG_LOCAL));
+
+    MarkedOccurs {
+        occur_kinds: occur_kinds.into_mapped(|_, kinds| kinds.unwrap()),
+        tentative_drop_prologues: tentative_drop_prologues
+            .into_mapped(|_, prologue| prologue.unwrap()),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PastMoves {
+    moves: OrdMap<flat::LocalId, OrdSet<mode::StackPath>>,
+}
+
+/// An `ExprMoves` is conceptually a diff on a `PastMoves`
+#[derive(Clone, Debug)]
+struct ExprMoves {
+    moves: OrdMap<flat::LocalId, OrdSet<mode::StackPath>>,
+}
+
+fn merge_moves(
+    curr_moves: &mut OrdMap<flat::LocalId, OrdSet<mode::StackPath>>,
+    new_moves: &OrdMap<flat::LocalId, OrdSet<mode::StackPath>>,
+) {
+    for (local, new_local_moves) in new_moves {
+        curr_moves
+            .entry(*local)
+            .or_insert_with(OrdSet::new)
+            .extend(new_local_moves.iter().cloned())
+    }
+}
+
+fn add_move(
+    occur_kinds: &IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
+    expr_moves: &mut ExprMoves,
+    occur: fate::Local,
+) {
+    for (path, kind) in &occur_kinds[occur.0] {
+        match kind {
+            OccurKind::Intermediate | OccurKind::Unused => {}
+            OccurKind::Final => {
+                expr_moves
+                    .moves
+                    .entry(occur.1)
+                    .or_insert_with(OrdSet::new)
+                    .insert(path.clone());
+            }
+        }
+    }
+}
+
+fn get_missing_drops(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    moves_for_local: Option<&OrdSet<mode::StackPath>>,
+    type_: &anon::Type,
+) -> BTreeSet<mode::StackPath> {
+    let mut result = BTreeSet::new();
+    for path in stack_path::stack_paths_in(typedefs, type_) {
+        let already_moved = moves_for_local
+            .map(|moves| moves.contains(&path))
+            .unwrap_or(false);
+        if !already_moved {
+            result.insert(path);
+        }
+    }
+    result
+}
+
+fn repair_expr_drops<'a>(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    num_locals: usize,
+    occur_kinds: &IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
+    drop_prologues: &mut IdVec<fate::ExprId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
+    let_drop_epilogues: &mut IdVec<
+        fate::LetBlockId,
+        Option<BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
+    >,
+    branch_drop_epilogues: &mut IdVec<
+        fate::BranchBlockId,
+        Option<BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
+    >,
+    past_moves: &PastMoves,
+    expr: &fate::Expr,
+) -> ExprMoves {
+    debug_assert!(past_moves
+        .moves
+        .get_max()
+        .map(|(max_local, _)| max_local.0 < num_locals)
+        .unwrap_or(true));
+
+    let mut expr_moves = ExprMoves {
+        moves: OrdMap::new(),
+    };
+
+    for (local, drops) in &mut drop_prologues[expr.id] {
+        let mut to_remove = Vec::new();
+        for path in drops.iter() {
+            if past_moves
+                .moves
+                .get(local)
+                .map(|local_moves| local_moves.contains(path))
+                .unwrap_or(false)
+            {
+                to_remove.push(path.clone());
+            } else {
+                expr_moves
+                    .moves
+                    .entry(*local)
+                    .or_insert_with(OrdSet::new)
+                    .insert(path.clone());
+            }
+        }
+
+        for path in to_remove {
+            drops.remove(&path);
+        }
+    }
+
+    match &expr.kind {
+        fate::ExprKind::Local(local) => {
+            add_move(occur_kinds, &mut expr_moves, *local);
+        }
+
+        fate::ExprKind::Call(_, _, _, _, _, _, local) => {
+            add_move(occur_kinds, &mut expr_moves, *local);
+        }
+
+        fate::ExprKind::Branch(discrim, cases, _) => {
+            add_move(occur_kinds, &mut expr_moves, *discrim);
+            debug_assert!(expr_moves.moves.is_empty());
+
+            let block_moves = cases
+                .iter()
+                .map(|(block_id, _, body)| {
+                    (
+                        *block_id,
+                        repair_expr_drops(
+                            typedefs,
+                            num_locals,
+                            occur_kinds,
+                            drop_prologues,
+                            let_drop_epilogues,
+                            branch_drop_epilogues,
+                            past_moves,
+                            body,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            // Collect the union of moves across all arms
+            for (_, moves) in &block_moves {
+                merge_moves(&mut expr_moves.moves, &moves.moves);
+            }
+
+            // We compare each arm's individual moves to the union of all moves across all arms, and
+            // add drop epilogues as necessary to ensure all arms have the same set of moves.
+            for (block_id, this_block_moves) in &block_moves {
+                let mut block_drop_epilogue = BTreeMap::new();
+
+                for (local, all_block_local_moves) in &expr_moves.moves {
+                    for path in all_block_local_moves {
+                        let moved_by_block = this_block_moves
+                            .moves
+                            .get(local)
+                            .map(|this_block_local_moves| this_block_local_moves.contains(path))
+                            .unwrap_or(false);
+
+                        if !moved_by_block {
+                            block_drop_epilogue
+                                .entry(*local)
+                                .or_insert_with(BTreeSet::new)
+                                .insert(path.clone());
+                        }
+                    }
+                }
+
+                debug_assert!(branch_drop_epilogues[block_id].is_none());
+                branch_drop_epilogues[block_id] = Some(block_drop_epilogue.into_iter().collect());
+            }
+        }
+
+        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+            let mut internal_past_moves = past_moves.clone();
+
+            for (offset, (_type, rhs)) in bindings.iter().enumerate() {
+                let rhs_moves = repair_expr_drops(
+                    typedefs,
+                    num_locals + offset,
+                    occur_kinds,
+                    drop_prologues,
+                    let_drop_epilogues,
+                    branch_drop_epilogues,
+                    &internal_past_moves,
+                    rhs,
+                );
+
+                merge_moves(&mut internal_past_moves.moves, &rhs_moves.moves);
+                merge_moves(&mut expr_moves.moves, &rhs_moves.moves);
+            }
+
+            add_move(occur_kinds, &mut expr_moves, *final_local);
+
+            let mut drop_epilogue = BTreeMap::new();
+            for (offset, (type_, _)) in bindings.iter().enumerate() {
+                let local_id = flat::LocalId(num_locals + offset);
+                drop_epilogue.insert(
+                    local_id,
+                    get_missing_drops(typedefs, expr_moves.moves.get(&local_id), type_),
+                );
+            }
+
+            debug_assert!(let_drop_epilogues[block_id].is_none());
+            let_drop_epilogues[block_id] = Some(drop_epilogue.into_iter().collect());
+
+            for local_id in (num_locals..num_locals + bindings.len()).map(flat::LocalId) {
+                expr_moves.moves.remove(&local_id);
+            }
+        }
+
+        _ => todo!(),
+    }
+
+    debug_assert!(expr_moves
+        .moves
+        .get_max()
+        .map(|(max_local, _)| max_local.0 < num_locals)
+        .unwrap_or(false));
+
+    expr_moves
+}
+
+#[derive(Clone, Debug)]
+struct MarkedDrops {
+    occur_kinds: IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
+    drop_prologues: IdVec<fate::ExprId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
+    let_drop_epilogues: IdVec<fate::LetBlockId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
+    branch_drop_epilogues:
+        IdVec<fate::BranchBlockId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
+    arg_drop_epilogue: BTreeSet<mode::StackPath>,
+}
+
+fn repair_func_drops(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    func_def: &spec::FuncDef,
+    marked_occurs: MarkedOccurs,
+) -> MarkedDrops {
+    let mut drop_prologues = marked_occurs.tentative_drop_prologues;
+    let mut let_drop_epilogues = IdVec::from_items(vec![None; func_def.num_let_blocks]);
+    let mut branch_drop_epilogues = IdVec::from_items(vec![None; func_def.num_branch_blocks]);
+
+    let body_moves = repair_expr_drops(
+        typedefs,
+        1,
+        &marked_occurs.occur_kinds,
+        &mut drop_prologues,
+        &mut let_drop_epilogues,
+        &mut branch_drop_epilogues,
+        &PastMoves {
+            moves: OrdMap::new(),
+        },
+        &func_def.body,
+    );
+
+    let arg_drop_epilogue = get_missing_drops(
+        typedefs,
+        body_moves.moves.get(&flat::ARG_LOCAL),
+        &func_def.arg_type,
+    );
+
+    MarkedDrops {
+        occur_kinds: marked_occurs.occur_kinds,
+        drop_prologues,
+        let_drop_epilogues: let_drop_epilogues.into_mapped(|_, epilogue| epilogue.unwrap()),
+        branch_drop_epilogues: branch_drop_epilogues.into_mapped(|_, epilogue| epilogue.unwrap()),
+        arg_drop_epilogue,
+    }
+}
+
+fn mark_program_drops(
+    program: &spec::Program,
+) -> IdVec<first_ord::CustomFuncId, IdVec<spec::FuncVersionId, MarkedDrops>> {
     program.funcs.map(|_, func_def| {
         func_def.versions.map(|_, version| {
-            let mut occur_kinds = IdVec::from_items(vec![None; func_def.occur_fates.len()]);
-            let mut tentative_drop_prologues =
-                IdVec::from_items(vec![None; func_def.expr_fates.len()]);
-
-            let mut locals = LocalContext::new();
-            locals.add_local(MarkOccurLocalInfo {
-                type_: &func_def.arg_type,
-                decl_site: DeclarationSite::Arg,
-            });
-
-            let body_uses = mark_expr_occurs(
-                program,
-                version,
-                &mut locals,
-                &func_def.occur_fates,
-                &FutureUses {
-                    uses: OrdMap::new(),
-                },
-                &func_def.body,
-                &mut occur_kinds,
-                &mut tentative_drop_prologues,
-            );
-
-            debug_assert!(body_uses.uses.keys().all(|&local| local == flat::ARG_LOCAL));
-
-            MarkedOccurs {
-                occur_kinds: occur_kinds.into_mapped(|_, kinds| kinds.unwrap()),
-                tentative_drop_prologues: tentative_drop_prologues
-                    .into_mapped(|_, prologue| prologue.unwrap()),
-            }
+            let marked_occurs = mark_func_occurs(program, func_def, version);
+            repair_func_drops(&program.custom_types, func_def, marked_occurs)
         })
     })
 }
@@ -518,7 +796,7 @@ fn annot_modes(program: spec::Program) -> mode::Program {
     // TODO: Mark tail calls, and adapt move-marking logic to ensure all drops and moves happen
     // prior to tail calls.
 
-    let _marked_occurs = mark_program_occurs(&program);
+    let _marked_drops = mark_program_drops(&program);
 
     todo!()
 }
