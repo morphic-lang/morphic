@@ -24,6 +24,8 @@ pub mod im_rc_ext;
 
 pub mod inequality_graph;
 
+pub mod event_set;
+
 pub fn with_scope<T, R, F: for<'a> FnOnce(&'a mut Vec<T>) -> R>(vec: &mut Vec<T>, func: F) -> R {
     let old_len = vec.len();
     let result = func(vec);
