@@ -40,7 +40,7 @@ id_type!(SccId);
 
 fn collect_call_sites(
     curr_func: first_ord::CustomFuncId,
-    expr_fates: &IdVec<fate::ExprId, fate::Fate>,
+    expr_annots: &IdVec<fate::ExprId, fate::ExprAnnot>,
     expr: &fate::Expr,
     callers: &mut BTreeMap<first_ord::CustomFuncId, Vec<SccCallSite>>,
 ) {
@@ -56,7 +56,7 @@ fn collect_call_sites(
         ) => {
             // `callers` has key `callee` iff `callee` is in the current SCC
             if let Some(callee_sites) = callers.get_mut(callee) {
-                let ret_fate = expr_fates[expr.id].clone();
+                let ret_fate = expr_annots[expr.id].fate.clone();
                 callee_sites.push(SccCallSite {
                     caller: curr_func,
                     caller_arg_local: *arg,
@@ -69,13 +69,13 @@ fn collect_call_sites(
 
         fate::ExprKind::Branch(_, cases, _) => {
             for (_, _, body) in cases {
-                collect_call_sites(curr_func, expr_fates, body, callers);
+                collect_call_sites(curr_func, expr_annots, body, callers);
             }
         }
 
         fate::ExprKind::LetMany(_, bindings, _) => {
             for (_, binding) in bindings {
-                collect_call_sites(curr_func, expr_fates, binding, callers);
+                collect_call_sites(curr_func, expr_annots, binding, callers);
             }
         }
 
@@ -107,7 +107,7 @@ fn collect_sccs(
                 for func in scc_funcs {
                     collect_call_sites(
                         *func,
-                        &funcs[func].expr_fates,
+                        &funcs[func].expr_annots,
                         &funcs[func].body,
                         &mut callers,
                     );
@@ -326,7 +326,7 @@ fn resolve_expr(
     insts: &mut InstanceQueue,
     inst: &FuncInstance,
     scc_versions: &BTreeMap<first_ord::CustomFuncId, spec::FuncVersionId>,
-    expr_fates: &IdVec<fate::ExprId, fate::Fate>, // for current function
+    expr_annots: &IdVec<fate::ExprId, fate::ExprAnnot>, // for current function
     expr: &fate::Expr,
     calls: &mut IdVec<fate::CallId, Option<(first_ord::CustomFuncId, spec::FuncVersionId)>>,
 ) {
@@ -344,7 +344,7 @@ fn resolve_expr(
                 debug_assert!(calls[call_id].is_none());
                 calls[call_id] = Some((*callee, *version));
             } else {
-                let ret_fate = &expr_fates[expr.id];
+                let ret_fate = &expr_annots[expr.id].fate;
                 let callee_inst = callee_inst_for_call_site(
                     inst,
                     *arg,
@@ -361,13 +361,21 @@ fn resolve_expr(
 
         fate::ExprKind::Branch(_, cases, _) => {
             for (_, _, body) in cases {
-                resolve_expr(funcs, insts, inst, scc_versions, expr_fates, body, calls);
+                resolve_expr(funcs, insts, inst, scc_versions, expr_annots, body, calls);
             }
         }
 
         fate::ExprKind::LetMany(_, bindings, _) => {
             for (_, binding) in bindings {
-                resolve_expr(funcs, insts, inst, scc_versions, expr_fates, binding, calls);
+                resolve_expr(
+                    funcs,
+                    insts,
+                    inst,
+                    scc_versions,
+                    expr_annots,
+                    binding,
+                    calls,
+                );
             }
         }
 
@@ -505,7 +513,7 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
                 &mut insts,
                 &scc_func_inst,
                 &scc_versions,
-                &func_def.expr_fates,
+                &func_def.expr_annots,
                 &func_def.body,
                 &mut version_calls,
             );
@@ -540,9 +548,9 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
                     arg_fate: func_def.arg_fate,
                     body: func_def.body,
                     occur_fates: func_def.occur_fates,
-                    expr_fates: func_def.expr_fates,
-                    num_let_blocks: func_def.num_let_blocks,
-                    num_branch_blocks: func_def.num_branch_blocks,
+                    expr_annots: func_def.expr_annots,
+                    let_block_end_events: func_def.let_block_end_events,
+                    branch_block_end_events: func_def.branch_block_end_events,
                     versions: IdVec::try_from_contiguous(func_versions.into_iter()).expect(
                         "A function's fully-populated version map should have contiguous keys",
                     ),

@@ -481,7 +481,7 @@ fn mark_func_occurs(
     version: &spec::FuncVersion,
 ) -> MarkedOccurs {
     let mut occur_kinds = IdVec::from_items(vec![None; func_def.occur_fates.len()]);
-    let mut tentative_drop_prologues = IdVec::from_items(vec![None; func_def.expr_fates.len()]);
+    let mut tentative_drop_prologues = IdVec::from_items(vec![None; func_def.expr_annots.len()]);
 
     let mut locals = LocalContext::new();
     locals.add_local(MarkOccurLocalInfo {
@@ -750,8 +750,9 @@ fn repair_func_drops(
     marked_occurs: MarkedOccurs,
 ) -> MarkedDrops {
     let mut drop_prologues = marked_occurs.tentative_drop_prologues;
-    let mut let_drop_epilogues = IdVec::from_items(vec![None; func_def.num_let_blocks]);
-    let mut branch_drop_epilogues = IdVec::from_items(vec![None; func_def.num_branch_blocks]);
+    let mut let_drop_epilogues = IdVec::from_items(vec![None; func_def.let_block_end_events.len()]);
+    let mut branch_drop_epilogues =
+        IdVec::from_items(vec![None; func_def.branch_block_end_events.len()]);
 
     let body_moves = repair_expr_drops(
         typedefs,

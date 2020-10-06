@@ -13,6 +13,7 @@ use crate::data::mutation_annot_ast as mutation;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::event_set as event;
 use crate::util::id_vec::IdVec;
 
 id_type!(pub FuncVersionId);
@@ -50,9 +51,9 @@ pub struct FuncDef {
     // the argument.
     pub body: fate::Expr,
     pub occur_fates: IdVec<fate::OccurId, fate::Fate>,
-    pub expr_fates: IdVec<fate::ExprId, fate::Fate>,
-    pub num_let_blocks: usize,
-    pub num_branch_blocks: usize,
+    pub expr_annots: IdVec<fate::ExprId, fate::ExprAnnot>,
+    pub let_block_end_events: IdVec<fate::LetBlockId, event::Horizon>,
+    pub branch_block_end_events: IdVec<fate::BranchBlockId, event::Horizon>,
     pub versions: IdVec<FuncVersionId, FuncVersion>,
     pub profile_point: Option<prof::ProfilePointId>,
 }

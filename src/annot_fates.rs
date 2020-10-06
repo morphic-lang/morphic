@@ -9,6 +9,7 @@ use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as mutation;
 use crate::field_path::get_refs_in;
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
+use crate::util::event_set as event;
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
@@ -28,6 +29,10 @@ struct LocalUses {
 
 fn merge_field_fates(fate1: &mut fate::FieldFate, fate2: &fate::FieldFate) {
     fate1.internal = fate1.internal.max(fate2.internal);
+
+    fate1
+        .last_internal_use
+        .merge_latest(&fate2.last_internal_use);
 
     fate1
         .blocks_escaped
@@ -79,6 +84,7 @@ fn empty_fate(
                     path,
                     fate::FieldFate {
                         internal: fate::InternalFate::Unused,
+                        last_internal_use: event::Horizon::new(),
                         blocks_escaped: OrdSet::new(),
                         ret_destinations: OrdSet::new(),
                     },
@@ -99,14 +105,18 @@ fn annot_expr(
     expr: &mutation::Expr,
     val_fate: fate::Fate,
     occurs: &mut IdVec<fate::OccurId, fate::Fate>,
-    expr_fates: &mut IdVec<fate::ExprId, fate::Fate>,
+    expr_annots: &mut IdVec<fate::ExprId, fate::ExprAnnot>,
     calls: &mut IdGen<fate::CallId>,
-    let_blocks: &mut IdGen<fate::LetBlockId>,
-    branch_blocks: &mut IdGen<fate::BranchBlockId>,
+    let_block_end_events: &mut IdVec<fate::LetBlockId, event::Horizon>,
+    branch_block_end_events: &mut IdVec<fate::BranchBlockId, event::Horizon>,
+    event_set: &mut event::EventSet,
+    event_block: event::BlockId,
 ) -> (fate::Expr, LocalUses) {
     let mut uses = LocalUses {
         uses: BTreeMap::new(),
     };
+
+    let expr_event = event_set.prepend_event(event_block);
 
     let fate_expr_kind = match expr {
         mutation::Expr::Local(local) => {
@@ -129,6 +139,12 @@ fn annot_expr(
                         .map(|(alias::ArgName(arg_path), sig_path_fate)| {
                             let mut path_fate = fate::FieldFate {
                                 internal: sig_path_fate.internal,
+                                last_internal_use: match sig_path_fate.internal {
+                                    fate::InternalFate::Accessed | fate::InternalFate::Owned => {
+                                        expr_event.clone()
+                                    }
+                                    fate::InternalFate::Unused => event::Horizon::new(),
+                                },
                                 blocks_escaped: OrdSet::new(),
                                 ret_destinations: OrdSet::new(),
                             };
@@ -163,13 +179,19 @@ fn annot_expr(
                 empty_fate(&orig.custom_types, locals.local_binding(*discrim));
             for (_, path_fate) in &mut discrim_access_fate.fates {
                 path_fate.internal = fate::InternalFate::Accessed;
+                path_fate.last_internal_use = expr_event.clone();
             }
 
             let discrim_annot = add_occurence(occurs, &mut uses, *discrim, discrim_access_fate);
 
+            let case_event_blocks = event_set.prepend_branch(event_block, cases.len());
+
             let cases_annot = cases
                 .iter()
-                .map(|(cond, body)| {
+                .zip(case_event_blocks)
+                .map(|((cond, body), case_event_block)| {
+                    let case_end_event = event_set.prepend_event(case_event_block);
+
                     let (body_annot, body_uses) = annot_expr(
                         orig,
                         sigs,
@@ -177,17 +199,23 @@ fn annot_expr(
                         body,
                         val_fate.clone(),
                         occurs,
-                        expr_fates,
+                        expr_annots,
                         calls,
-                        let_blocks,
-                        branch_blocks,
+                        let_block_end_events,
+                        branch_block_end_events,
+                        event_set,
+                        case_event_block,
                     );
 
                     for (local, body_fate) in body_uses.uses {
                         add_use(&mut uses, local, body_fate);
                     }
 
-                    (branch_blocks.fresh(), cond.clone(), body_annot)
+                    (
+                        branch_block_end_events.push(case_end_event),
+                        cond.clone(),
+                        body_annot,
+                    )
                 })
                 .collect();
 
@@ -198,7 +226,8 @@ fn annot_expr(
         // time the passed closure returns, we've manually truncated away all the variables which it
         // would usually be `with_scope`'s responsibility to remove.
         mutation::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
-            let block_id = let_blocks.fresh();
+            let block_end_event = event_set.prepend_event(event_block);
+            let block_id = let_block_end_events.push(block_end_event);
             let mut block_val_fate = val_fate.clone();
             for (_, path_fate) in &mut block_val_fate.fates {
                 path_fate.blocks_escaped.insert(block_id);
@@ -238,10 +267,12 @@ fn annot_expr(
                     rhs,
                     rhs_fate,
                     occurs,
-                    expr_fates,
+                    expr_annots,
                     calls,
-                    let_blocks,
-                    branch_blocks,
+                    let_block_end_events,
+                    branch_block_end_events,
+                    event_set,
+                    event_block,
                 );
 
                 for (used_var, var_fate) in rhs_uses.uses {
@@ -270,7 +301,10 @@ fn annot_expr(
         _ => todo!(),
     };
 
-    let id = expr_fates.push(val_fate);
+    let id = expr_annots.push(fate::ExprAnnot {
+        fate: val_fate,
+        event: expr_event,
+    });
 
     (
         fate::Expr {
@@ -294,6 +328,7 @@ fn annot_func(
                     path.clone(),
                     fate::FieldFate {
                         internal: fate::InternalFate::Unused,
+                        last_internal_use: event::Horizon::new(),
                         blocks_escaped: OrdSet::new(),
                         ret_destinations: OrdSet::unit(alias::RetName(path)),
                     },
@@ -306,10 +341,11 @@ fn annot_func(
     locals.add_local(func_def.arg_type.clone());
 
     let mut occurs = IdVec::new();
-    let mut expr_fates = IdVec::new();
+    let mut expr_annots = IdVec::new();
     let mut calls = IdGen::new();
-    let mut let_blocks = IdGen::new();
-    let mut branch_blocks = IdGen::new();
+    let mut let_block_end_events = IdVec::new();
+    let mut branch_block_end_events = IdVec::new();
+    let (mut event_set, root_event_block) = event::EventSet::new();
 
     let (body_annot, body_uses) = annot_expr(
         orig,
@@ -318,10 +354,12 @@ fn annot_func(
         &func_def.body,
         ret_fate,
         &mut occurs,
-        &mut expr_fates,
+        &mut expr_annots,
         &mut calls,
-        &mut let_blocks,
-        &mut branch_blocks,
+        &mut let_block_end_events,
+        &mut branch_block_end_events,
+        &mut event_set,
+        root_event_block,
     );
 
     let arg_internal_fate = match body_uses.uses.get(&flat::ARG_LOCAL) {
@@ -358,10 +396,10 @@ fn annot_func(
         arg_fate,
         body: body_annot,
         occur_fates: occurs,
-        expr_fates: expr_fates,
+        expr_annots,
         num_calls: calls.count(),
-        num_let_blocks: let_blocks.count(),
-        num_branch_blocks: branch_blocks.count(),
+        let_block_end_events,
+        branch_block_end_events,
         profile_point: func_def.profile_point,
     }
 }

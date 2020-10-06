@@ -10,6 +10,7 @@ use crate::data::mutation_annot_ast as mutation;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::event_set as event;
 use crate::util::graph::Scc;
 use crate::util::id_vec::IdVec;
 
@@ -151,9 +152,16 @@ pub enum InternalFate {
     Owned,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug)]
 pub struct FieldFate {
     pub internal: InternalFate,
+    // `last_internal_use` is an upper bound on the points in the function's control flow graph
+    // where this value will be used (accessed or owned) last.  It does not consider accesses which
+    // occur after the current function returns; instead, `ret_destinations` tracks that
+    // information.
+    //
+    // If `internal` is `Unused`, then `last_internal_use` should be empty.
+    pub last_internal_use: event::Horizon,
     // We only consider a value to escape a block if it is *used* (accessed or owned) after that
     // block.  This means we should have the invariant that if `internal` is `Unused`, then
     // `blocks_escaped` should be empty.
@@ -171,9 +179,15 @@ pub struct ArgFieldFate {
     pub ret_destinations: OrdSet<alias::RetName>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug)]
 pub struct Fate {
     pub fates: BTreeMap<alias::FieldPath, FieldFate>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExprAnnot {
+    pub fate: Fate,
+    pub event: event::Horizon,
 }
 
 #[derive(Clone, Debug)]
@@ -188,10 +202,10 @@ pub struct FuncDef {
     // the argument.
     pub body: Expr,
     pub occur_fates: IdVec<OccurId, Fate>,
-    pub expr_fates: IdVec<ExprId, Fate>,
+    pub expr_annots: IdVec<ExprId, ExprAnnot>,
     pub num_calls: usize,
-    pub num_let_blocks: usize,
-    pub num_branch_blocks: usize,
+    pub let_block_end_events: IdVec<LetBlockId, event::Horizon>,
+    pub branch_block_end_events: IdVec<BranchBlockId, event::Horizon>,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 
