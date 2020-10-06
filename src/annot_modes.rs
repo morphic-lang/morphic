@@ -11,6 +11,7 @@ use crate::data::flat_ast as flat;
 use crate::data::mode_annot_ast as mode;
 use crate::stack_path;
 use crate::util::disjunction::Disj;
+use crate::util::event_set as event;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
 
@@ -791,6 +792,167 @@ fn mark_program_drops(
             repair_func_drops(&program.custom_types, func_def, marked_occurs)
         })
     })
+}
+
+#[derive(Clone, Debug)]
+struct VarMoveHorizon {
+    path_move_horizons: BTreeMap<mode::StackPath, event::Horizon>,
+}
+
+#[derive(Clone, Debug)]
+struct MoveHorizons {
+    binding_moves: IdVec<fate::LetBlockId, Vec<VarMoveHorizon>>,
+    arg_moves: VarMoveHorizon,
+}
+
+fn collect_drop_events(
+    var_moves: &mut IdVec<flat::LocalId, VarMoveHorizon>,
+    drop_event: &event::Horizon,
+    drops: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
+) {
+    for (local, dropped_paths) in drops {
+        for path in dropped_paths {
+            var_moves[local]
+                .path_move_horizons
+                .entry(path.clone())
+                .or_insert_with(event::Horizon::new)
+                .disjoint_union(drop_event);
+        }
+    }
+}
+
+fn collect_expr_moves(
+    marked_drops: &MarkedDrops,
+    expr_annots: &IdVec<fate::ExprId, fate::ExprAnnot>,
+    let_block_end_events: &IdVec<fate::LetBlockId, event::Horizon>,
+    branch_block_end_events: &IdVec<fate::BranchBlockId, event::Horizon>,
+    expr: &fate::Expr,
+    var_moves: &mut IdVec<flat::LocalId, VarMoveHorizon>,
+    binding_moves: &mut IdVec<fate::LetBlockId, Option<Vec<VarMoveHorizon>>>,
+) {
+    let expr_event = &expr_annots[expr.id].event;
+
+    let collect_occur_events = |var_moves: &mut IdVec<flat::LocalId, VarMoveHorizon>,
+                                occur: fate::Local| {
+        for (path, kind) in &marked_drops.occur_kinds[occur.0] {
+            match kind {
+                OccurKind::Unused | OccurKind::Intermediate => {}
+                OccurKind::Final => {
+                    var_moves[occur.1]
+                        .path_move_horizons
+                        .entry(path.clone())
+                        .or_insert_with(event::Horizon::new)
+                        .disjoint_union(expr_event);
+                }
+            }
+        }
+    };
+
+    collect_drop_events(var_moves, expr_event, &marked_drops.drop_prologues[expr.id]);
+
+    match &expr.kind {
+        fate::ExprKind::Local(local) => {
+            collect_occur_events(var_moves, *local);
+        }
+
+        fate::ExprKind::Call(_, _, _, _, _, _, arg_local) => {
+            collect_occur_events(var_moves, *arg_local);
+        }
+
+        fate::ExprKind::Branch(discrim, cases, _) => {
+            collect_occur_events(var_moves, *discrim);
+            for (block_id, _, body) in cases {
+                collect_expr_moves(
+                    marked_drops,
+                    expr_annots,
+                    let_block_end_events,
+                    branch_block_end_events,
+                    body,
+                    var_moves,
+                    binding_moves,
+                );
+                collect_drop_events(
+                    var_moves,
+                    &branch_block_end_events[block_id],
+                    &marked_drops.branch_drop_epilogues[block_id],
+                );
+            }
+        }
+
+        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+            let orig_locals = var_moves.len();
+
+            for (offset, (_type, rhs)) in bindings.iter().enumerate() {
+                collect_expr_moves(
+                    marked_drops,
+                    expr_annots,
+                    let_block_end_events,
+                    branch_block_end_events,
+                    rhs,
+                    var_moves,
+                    binding_moves,
+                );
+                let local_id = var_moves.push(VarMoveHorizon {
+                    path_move_horizons: BTreeMap::new(),
+                });
+                debug_assert_eq!(local_id.0, orig_locals + offset);
+            }
+
+            collect_occur_events(var_moves, *final_local);
+
+            collect_drop_events(
+                var_moves,
+                &let_block_end_events[block_id],
+                &marked_drops.let_drop_epilogues[block_id],
+            );
+
+            let block_binding_moves = var_moves.items.drain(orig_locals..).collect::<Vec<_>>();
+            debug_assert_eq!(block_binding_moves.len(), bindings.len());
+            debug_assert!(binding_moves[block_id].is_none());
+            binding_moves[block_id] = Some(block_binding_moves);
+        }
+
+        _ => todo!(),
+    }
+}
+
+fn collect_func_moves(func_def: &spec::FuncDef, marked_drops: &MarkedDrops) -> MoveHorizons {
+    let mut var_moves = IdVec::new();
+    let _ = var_moves.push(VarMoveHorizon {
+        path_move_horizons: BTreeMap::new(),
+    });
+
+    let mut binding_moves = IdVec::from_items(vec![None; func_def.let_block_end_events.len()]);
+
+    collect_expr_moves(
+        marked_drops,
+        &func_def.expr_annots,
+        &func_def.let_block_end_events,
+        &func_def.branch_block_end_events,
+        &func_def.body,
+        &mut var_moves,
+        &mut binding_moves,
+    );
+
+    debug_assert_eq!(var_moves.len(), 1);
+    let mut arg_moves = var_moves.items.into_iter().next().unwrap();
+
+    // The argument drop epilogue occurs after all other events in the function, so we don't need to
+    // explicitly track move horizons associated with the argument drop epilogue for the purpose of
+    // lifetime analysis.  It's safe to just mark every path in the argument which is dropped in the
+    // epilogue as having an empty move horizon, which will give `false` for any `can_occur_before`
+    // check.
+    for arg_path in &marked_drops.arg_drop_epilogue {
+        let existing = arg_moves
+            .path_move_horizons
+            .insert(arg_path.clone(), event::Horizon::new());
+        debug_assert!(existing.is_none());
+    }
+
+    MoveHorizons {
+        binding_moves: binding_moves.into_mapped(|_, moves| moves.unwrap()),
+        arg_moves,
+    }
 }
 
 fn annot_modes(program: spec::Program) -> mode::Program {
