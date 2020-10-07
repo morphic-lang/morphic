@@ -12,6 +12,7 @@ use crate::data::mode_annot_ast as mode;
 use crate::stack_path;
 use crate::util::disjunction::Disj;
 use crate::util::event_set as event;
+use crate::util::graph::{strongly_connected, Graph};
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
 
@@ -783,17 +784,6 @@ fn repair_func_drops(
     }
 }
 
-fn mark_program_drops(
-    program: &spec::Program,
-) -> IdVec<first_ord::CustomFuncId, IdVec<spec::FuncVersionId, MarkedDrops>> {
-    program.funcs.map(|_, func_def| {
-        func_def.versions.map(|_, version| {
-            let marked_occurs = mark_func_occurs(program, func_def, version);
-            repair_func_drops(&program.custom_types, func_def, marked_occurs)
-        })
-    })
-}
-
 #[derive(Clone, Debug)]
 struct VarMoveHorizon {
     path_move_horizons: BTreeMap<mode::StackPath, event::Horizon>,
@@ -955,11 +945,118 @@ fn collect_func_moves(func_def: &spec::FuncDef, marked_drops: &MarkedDrops) -> M
     }
 }
 
-fn annot_modes(program: spec::Program) -> mode::Program {
-    // TODO: Mark tail calls, and adapt move-marking logic to ensure all drops and moves happen
-    // prior to tail calls.
+fn find_sccs(
+    funcs: &IdVec<first_ord::CustomFuncId, spec::FuncDef>,
+) -> Vec<Vec<(first_ord::CustomFuncId, spec::FuncVersionId)>> {
+    // To find SCCs, we need all functions in the program to be associated with concrete ids in a single
+    // "address space".  This means we can't use '(function id, version id)' pairs to refer to
+    // specialized function versions in these algorithms.  To work around this, we build an internal
+    // table mapping those pairs to `GlobalFuncVersionId`s which are suitable for use with the SCC
+    // algorithm.
+    id_type!(GlobalFuncVersionId);
 
-    let _marked_drops = mark_program_drops(&program);
+    let mut global_to_version: IdVec<GlobalFuncVersionId, _> = IdVec::new();
+    let version_to_global = funcs.map(|func_id, func_def| {
+        func_def
+            .versions
+            .map(|version_id, _| global_to_version.push((func_id, version_id)))
+    });
+
+    let dep_graph = Graph {
+        edges_out: global_to_version.map(|_, (func_id, version_id)| {
+            funcs[func_id].versions[version_id]
+                .calls
+                .iter()
+                .map(|(_, (dep_func_id, dep_version_id))| {
+                    version_to_global[dep_func_id][dep_version_id]
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        }),
+    };
+
+    strongly_connected(&dep_graph)
+        .into_iter()
+        .map(|global_ids| {
+            global_ids
+                .into_iter()
+                .map(|global_id| global_to_version[global_id])
+                .collect()
+        })
+        .collect()
+}
+
+fn annot_scc(
+    orig: &spec::Program,
+    _func_annots: &mut IdVec<
+        first_ord::CustomFuncId,
+        IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
+    >,
+    scc: &[(first_ord::CustomFuncId, spec::FuncVersionId)],
+) {
+    let _move_annots = scc
+        .iter()
+        .map(|&(func_id, version_id)| {
+            // TODO: Mark tail calls, and adapt move-marking logic to ensure all drops and moves
+            // happen prior to tail calls.
+
+            let func_def = &orig.funcs[func_id];
+            let version = &func_def.versions[version_id];
+
+            let marked_occurs = mark_func_occurs(orig, func_def, version);
+            let marked_drops = repair_func_drops(&orig.custom_types, func_def, marked_occurs);
+            let move_horizons = collect_func_moves(func_def, &marked_drops);
+
+            ((func_id, version_id), (marked_drops, move_horizons))
+        })
+        .collect::<BTreeMap<_, _>>();
 
     todo!()
+}
+
+fn annot_modes(program: spec::Program) -> mode::Program {
+    let sccs = find_sccs(&program.funcs);
+
+    let mut func_annots = program
+        .funcs
+        .map(|_, func_def| func_def.versions.map(|_, _| None));
+
+    for scc in sccs {
+        annot_scc(&program, &mut func_annots, &scc);
+    }
+
+    mode::Program {
+        mod_symbols: program.mod_symbols,
+        custom_types: program.custom_types,
+        custom_type_symbols: program.custom_type_symbols,
+        funcs: IdVec::from_items(
+            program
+                .funcs
+                .into_iter()
+                .zip(func_annots.into_iter())
+                .map(|((_, func_def), (_, modes))| {
+                    debug_assert_eq!(func_def.versions.len(), modes.len());
+
+                    mode::FuncDef {
+                        purity: func_def.purity,
+                        arg_type: func_def.arg_type,
+                        ret_type: func_def.ret_type,
+                        alias_sig: func_def.alias_sig,
+                        mutation_sig: func_def.mutation_sig,
+                        arg_fate: func_def.arg_fate,
+                        body: func_def.body,
+                        occur_fates: func_def.occur_fates,
+                        expr_annots: func_def.expr_annots,
+                        versions: func_def.versions,
+                        modes: modes.into_mapped(|_, version_annots| version_annots.unwrap()),
+                        profile_point: func_def.profile_point,
+                    }
+                })
+                .collect(),
+        ),
+        func_symbols: program.func_symbols,
+        profile_points: program.profile_points,
+        main: program.main,
+    }
 }
