@@ -1025,9 +1025,9 @@ struct SolverValModes {
 }
 
 #[derive(Clone, Debug)]
-struct SolverLocalInfo {
+struct SolverLocalInfo<'a> {
     val_modes: SolverValModes,
-    move_horizon: VarMoveHorizon,
+    move_horizon: &'a VarMoveHorizon,
 }
 
 #[derive(Clone, Debug)]
@@ -1132,7 +1132,7 @@ fn annot_drops(
 }
 
 // TODO: This type signature *really* need to not be like this
-fn annot_expr(
+fn annot_expr<'a>(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     known_annots: &IdVec<
         first_ord::CustomFuncId,
@@ -1142,10 +1142,10 @@ fn annot_expr(
     call_versions: &IdVec<fate::CallId, (first_ord::CustomFuncId, spec::FuncVersionId)>,
     ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
     marked_drops: &MarkedDrops,
-    move_horizons: &MoveHorizons,
+    move_horizons: &'a MoveHorizons,
     constraints: &mut ineq::ConstraintGraph<mode::Mode>,
     scc_sigs: &SolverSccSigs,
-    locals: &mut LocalContext<flat::LocalId, SolverLocalInfo>,
+    locals: &mut LocalContext<flat::LocalId, SolverLocalInfo<'a>>,
     expr: &fate::Expr,
     solver_annots: &mut SolverModeAnnots,
 ) -> SolverValModes {
@@ -1312,6 +1312,42 @@ fn annot_expr(
             }
 
             result_modes
+        }
+
+        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+            locals.with_scope(|sub_locals| {
+                let binding_horizons = &move_horizons.binding_moves[block_id];
+                debug_assert_eq!(binding_horizons.len(), bindings.len());
+                for ((_type, rhs), move_horizon) in bindings.iter().zip(binding_horizons.iter()) {
+                    let binding_modes = annot_expr(
+                        typedefs,
+                        known_annots,
+                        occur_fates,
+                        call_versions,
+                        ret_fates,
+                        marked_drops,
+                        move_horizons,
+                        constraints,
+                        scc_sigs,
+                        sub_locals,
+                        rhs,
+                        solver_annots,
+                    );
+
+                    sub_locals.add_local(SolverLocalInfo {
+                        val_modes: binding_modes,
+                        move_horizon,
+                    });
+                }
+
+                let drop_epilogue_annot =
+                    annot_drops(sub_locals, &marked_drops.let_drop_epilogues[block_id]);
+
+                debug_assert!(solver_annots.let_drop_epilogues[block_id].is_none());
+                solver_annots.let_drop_epilogues[block_id] = Some(drop_epilogue_annot);
+
+                annot_occur(constraints, sub_locals, solver_annots, *final_local)
+            })
         }
 
         _ => todo!(),
