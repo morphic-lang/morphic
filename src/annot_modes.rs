@@ -9,11 +9,13 @@ use crate::data::fate_annot_ast as fate;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mode_annot_ast as mode;
+use crate::field_path;
 use crate::stack_path;
 use crate::util::disjunction::Disj;
 use crate::util::event_set as event;
 use crate::util::graph::{strongly_connected, Graph};
 use crate::util::id_vec::IdVec;
+use crate::util::inequality_graph as ineq;
 use crate::util::local_context::LocalContext;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -987,6 +989,206 @@ fn find_sccs(
         .collect()
 }
 
+#[derive(Clone, Debug)]
+struct SolverSccFuncSig {
+    arg_modes: BTreeMap<alias::FieldPath, ineq::SolverVarId>,
+    ret_modes: BTreeMap<alias::FieldPath, ineq::SolverVarId>,
+}
+
+fn instantiate_sig_type(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+    external_vars: &mut IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
+    type_: &anon::Type,
+) -> BTreeMap<alias::FieldPath, ineq::SolverVarId> {
+    field_path::get_refs_in(typedefs, type_)
+        .into_iter()
+        .map(|(path, _)| {
+            let solver_var = constraints.new_var();
+            let _ = external_vars.push(solver_var);
+            (path, solver_var)
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+enum SolverPathOccurMode {
+    Intermediate {
+        src: ineq::SolverVarId,
+        dest: ineq::SolverVarId,
+    },
+    Final,
+    Unused,
+}
+
+#[derive(Clone, Debug)]
+struct SolverOccurModes {
+    path_modes: BTreeMap<mode::StackPath, SolverPathOccurMode>,
+}
+
+#[derive(Clone, Debug)]
+struct SolverDropModes {
+    dropped_paths: BTreeMap<mode::StackPath, ineq::SolverVarId>,
+}
+
+#[derive(Clone, Debug)]
+struct SolverModeAnnots {
+    occur_modes: IdVec<fate::OccurId, Option<SolverOccurModes>>,
+    call_modes: IdVec<fate::CallId, IdVec<ineq::ExternalVarId, ineq::SolverVarId>>,
+    let_drop_epilogues: IdVec<fate::LetBlockId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
+    branch_drop_epilogues:
+        IdVec<fate::BranchBlockId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
+    drop_prologues: IdVec<fate::ExprId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
+}
+
+#[derive(Clone, Debug)]
+struct SolverValModes {
+    path_modes: OrdMap<alias::FieldPath, ineq::SolverVarId>,
+}
+
+#[derive(Clone, Debug)]
+struct SolverLocalInfo {
+    val_modes: SolverValModes,
+    move_horizon: VarMoveHorizon,
+}
+
+// TODO: This type signature *really* need to not be like this
+fn annot_expr(
+    _typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    _known_annots: &IdVec<
+        first_ord::CustomFuncId,
+        IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
+    >,
+    occur_fates: &IdVec<fate::OccurId, fate::Fate>, // Used only for access horizons
+    ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
+    marked_drops: &MarkedDrops,
+    _move_horizons: &MoveHorizons,
+    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+    _scc_sigs: &BTreeMap<(first_ord::CustomFuncId, spec::FuncVersionId), SolverSccFuncSig>,
+    locals: &mut LocalContext<flat::LocalId, SolverLocalInfo>,
+    expr: &fate::Expr,
+    solver_annots: &mut SolverModeAnnots,
+) -> SolverValModes {
+    let drop_prologue_modes = marked_drops.drop_prologues[expr.id]
+        .iter()
+        .map(|(dropped_local, dropped_paths)| {
+            let local_modes = &locals.local_binding(*dropped_local).val_modes;
+            (
+                *dropped_local,
+                SolverDropModes {
+                    dropped_paths: dropped_paths
+                        .iter()
+                        .map(|path| {
+                            (
+                                path.clone(),
+                                local_modes.path_modes[&stack_path::to_field_path(path)],
+                            )
+                        })
+                        .collect(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    debug_assert!(solver_annots.drop_prologues[expr.id].is_none());
+    solver_annots.drop_prologues[expr.id] = Some(drop_prologue_modes);
+
+    let annot_occur = |constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+                       locals: &LocalContext<flat::LocalId, SolverLocalInfo>,
+                       solver_annots: &mut SolverModeAnnots,
+                       occur: fate::Local|
+     -> SolverValModes {
+        let mut occur_modes = BTreeMap::new();
+        let mut occur_val_modes = OrdMap::new();
+
+        let binding = locals.local_binding(occur.1);
+        let occur_kinds = &marked_drops.occur_kinds[occur.0];
+
+        for (path, src_mode_var) in &binding.val_modes.path_modes {
+            let (stack, heap) = stack_path::split_stack_heap(path.clone());
+
+            let (dest_mode, dest_mode_var) = match &occur_kinds[&stack] {
+                OccurKind::Unused => {
+                    // TODO: When we monomorphize, `dest_mode_var` should always be `Borrowed`. Is
+                    // there some way to add an assertion for this invariant?
+                    //
+                    // TODO [critical]: It may actually be possible to break this.  We should
+                    // definintely implement the assertion defined above, and try hard to either
+                    // rigorously prove that it will always succeed, or find a counterexample that
+                    // causes it to fail.
+                    let dest_mode_var = constraints.new_var();
+                    (SolverPathOccurMode::Unused, dest_mode_var)
+                }
+                OccurKind::Final => (SolverPathOccurMode::Final, *src_mode_var),
+                OccurKind::Intermediate => {
+                    let occur_fate = &occur_fates[occur.0].fates[path];
+
+                    let escapes_to_used_ret_path = occur_fate
+                        .ret_destinations
+                        .iter()
+                        .any(|ret_path| ret_fates[ret_path] == spec::RetFate::MaybeUsed);
+
+                    let path_move_horizon = &binding.move_horizon.path_move_horizons[&stack];
+                    let path_access_horizon = &occur_fates[occur.0].fates[path].last_internal_use;
+
+                    let borrow_would_outlive_src = escapes_to_used_ret_path
+                        || path_move_horizon.can_occur_before(path_access_horizon);
+
+                    // This is where the magic happens.
+                    //
+                    // The entire horizon-based borrow checking system exists to support this
+                    // conditional right here.  When an occurrence of a variable path will not be
+                    // accessed beyond the end of its source's lifetime, we allow the occurrence to
+                    // have mode `Borrowed` even if the source has mode `Owned` (although the
+                    // destination may still end up having the mode `Owned` if something else about
+                    // the way it's used later forces it to be owned, such as unifying with an
+                    // unconditionally owned variable).  On the other hand, when an occurrence of a
+                    // variable may outlive its source, the destination needs to have the same mode
+                    // as the source (which may still end up being `Borrowed` if the source is
+                    // itself borrowed from another variable).
+                    let dest_mode_var = if borrow_would_outlive_src {
+                        *src_mode_var
+                    } else {
+                        let var = constraints.new_var();
+                        constraints.require_lte(*src_mode_var, var);
+                        var
+                    };
+
+                    (
+                        SolverPathOccurMode::Intermediate {
+                            src: *src_mode_var,
+                            dest: dest_mode_var,
+                        },
+                        dest_mode_var,
+                    )
+                }
+            };
+
+            if heap.0.is_empty() {
+                let existing = occur_modes.insert(stack, dest_mode);
+                debug_assert!(existing.is_none());
+            }
+
+            occur_val_modes.insert(path.clone(), dest_mode_var);
+        }
+
+        debug_assert!(solver_annots.occur_modes[occur.0].is_none());
+        solver_annots.occur_modes[occur.0] = Some(SolverOccurModes {
+            path_modes: occur_modes,
+        });
+
+        SolverValModes {
+            path_modes: occur_val_modes,
+        }
+    };
+
+    match &expr.kind {
+        fate::ExprKind::Local(local) => annot_occur(constraints, locals, solver_annots, *local),
+
+        _ => todo!(),
+    }
+}
+
 fn annot_scc(
     orig: &spec::Program,
     _func_annots: &mut IdVec<
@@ -1009,6 +1211,35 @@ fn annot_scc(
             let move_horizons = collect_func_moves(func_def, &marked_drops);
 
             ((func_id, version_id), (marked_drops, move_horizons))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut constraints = ineq::ConstraintGraph::<mode::Mode>::new();
+
+    let mut external_vars = IdVec::new();
+    let _scc_sigs = scc
+        .iter()
+        .map(|&(func_id, version_id)| {
+            let func_def = &orig.funcs[func_id];
+            let arg_modes = instantiate_sig_type(
+                &orig.custom_types,
+                &mut constraints,
+                &mut external_vars,
+                &func_def.arg_type,
+            );
+            let ret_modes = instantiate_sig_type(
+                &orig.custom_types,
+                &mut constraints,
+                &mut external_vars,
+                &func_def.ret_type,
+            );
+            (
+                (func_id, version_id),
+                SolverSccFuncSig {
+                    arg_modes,
+                    ret_modes,
+                },
+            )
         })
         .collect::<BTreeMap<_, _>>();
 
