@@ -990,28 +990,6 @@ fn find_sccs(
 }
 
 #[derive(Clone, Debug)]
-struct SolverSccFuncSig {
-    arg_modes: BTreeMap<alias::FieldPath, ineq::SolverVarId>,
-    ret_modes: BTreeMap<alias::FieldPath, ineq::SolverVarId>,
-}
-
-fn instantiate_sig_type(
-    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-    external_vars: &mut IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
-    type_: &anon::Type,
-) -> BTreeMap<alias::FieldPath, ineq::SolverVarId> {
-    field_path::get_refs_in(typedefs, type_)
-        .into_iter()
-        .map(|(path, _)| {
-            let solver_var = constraints.new_var();
-            let _ = external_vars.push(solver_var);
-            (path, solver_var)
-        })
-        .collect()
-}
-
-#[derive(Clone, Debug)]
 enum SolverPathOccurMode {
     Intermediate {
         src: ineq::SolverVarId,
@@ -1034,7 +1012,7 @@ struct SolverDropModes {
 #[derive(Clone, Debug)]
 struct SolverModeAnnots {
     occur_modes: IdVec<fate::OccurId, Option<SolverOccurModes>>,
-    call_modes: IdVec<fate::CallId, IdVec<ineq::ExternalVarId, ineq::SolverVarId>>,
+    call_modes: IdVec<fate::CallId, Option<IdVec<ineq::ExternalVarId, ineq::SolverVarId>>>,
     let_drop_epilogues: IdVec<fate::LetBlockId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
     branch_drop_epilogues:
         IdVec<fate::BranchBlockId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
@@ -1052,19 +1030,78 @@ struct SolverLocalInfo {
     move_horizon: VarMoveHorizon,
 }
 
+#[derive(Clone, Debug)]
+struct SolverSccFuncSig {
+    arg_modes: SolverValModes,
+    ret_modes: SolverValModes,
+}
+
+#[derive(Clone, Debug)]
+struct SolverSccSigs {
+    extern_vars: IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
+    func_sigs: BTreeMap<(first_ord::CustomFuncId, spec::FuncVersionId), SolverSccFuncSig>,
+}
+
+fn instantiate_sig_type(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+    external_vars: &mut IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
+    type_: &anon::Type,
+) -> SolverValModes {
+    SolverValModes {
+        path_modes: field_path::get_refs_in(typedefs, type_)
+            .into_iter()
+            .map(|(path, _)| {
+                let solver_var = constraints.new_var();
+                let _ = external_vars.push(solver_var);
+                (path, solver_var)
+            })
+            .collect(),
+    }
+}
+
+fn equate_modes(
+    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+    modes1: &SolverValModes,
+    modes2: &SolverValModes,
+) {
+    debug_assert_eq!(
+        modes1.path_modes.keys().collect::<BTreeSet<_>>(),
+        modes2.path_modes.keys().collect::<BTreeSet<_>>()
+    );
+
+    for (path, mode1) in &modes1.path_modes {
+        let mode2 = modes2.path_modes[path];
+        constraints.require_eq(*mode1, mode2);
+    }
+}
+
+fn substitute_sig_modes(
+    sig_vars: &IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
+    sig_modes: &BTreeMap<alias::FieldPath, ineq::ExternalVarId>,
+) -> SolverValModes {
+    SolverValModes {
+        path_modes: sig_modes
+            .iter()
+            .map(|(path, sig_var)| (path.clone(), sig_vars[sig_var]))
+            .collect(),
+    }
+}
+
 // TODO: This type signature *really* need to not be like this
 fn annot_expr(
     _typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-    _known_annots: &IdVec<
+    known_annots: &IdVec<
         first_ord::CustomFuncId,
         IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
     >,
     occur_fates: &IdVec<fate::OccurId, fate::Fate>, // Used only for access horizons
+    call_versions: &IdVec<fate::CallId, (first_ord::CustomFuncId, spec::FuncVersionId)>,
     ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
     marked_drops: &MarkedDrops,
     _move_horizons: &MoveHorizons,
     constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-    _scc_sigs: &BTreeMap<(first_ord::CustomFuncId, spec::FuncVersionId), SolverSccFuncSig>,
+    scc_sigs: &SolverSccSigs,
     locals: &mut LocalContext<flat::LocalId, SolverLocalInfo>,
     expr: &fate::Expr,
     solver_annots: &mut SolverModeAnnots,
@@ -1184,6 +1221,42 @@ fn annot_expr(
 
     match &expr.kind {
         fate::ExprKind::Local(local) => annot_occur(constraints, locals, solver_annots, *local),
+
+        fate::ExprKind::Call(call_id, _, _, _, _, _, local) => {
+            let arg_val_modes = annot_occur(constraints, locals, solver_annots, *local);
+
+            let (callee_id, callee_version_id) = call_versions[call_id];
+
+            match scc_sigs.func_sigs.get(&(callee_id, callee_version_id)) {
+                Some(scc_sig) => {
+                    equate_modes(constraints, &arg_val_modes, &scc_sig.arg_modes);
+                    debug_assert!(solver_annots.call_modes[call_id].is_none());
+                    solver_annots.call_modes[call_id] = Some(scc_sigs.extern_vars.clone());
+                    scc_sig.ret_modes.clone()
+                }
+
+                None => {
+                    let callee_annots =
+                        known_annots[callee_id][callee_version_id].as_ref().unwrap();
+
+                    let callee_extern_vars =
+                        constraints.instantiate_subgraph(&callee_annots.extern_constraints);
+
+                    let callee_arg_modes =
+                        substitute_sig_modes(&callee_extern_vars, &callee_annots.arg_modes);
+
+                    let callee_ret_modes =
+                        substitute_sig_modes(&callee_extern_vars, &callee_annots.ret_modes);
+
+                    equate_modes(constraints, &arg_val_modes, &callee_arg_modes);
+
+                    debug_assert!(solver_annots.call_modes[call_id].is_none());
+                    solver_annots.call_modes[call_id] = Some(callee_extern_vars);
+
+                    callee_ret_modes
+                }
+            }
+        }
 
         _ => todo!(),
     }

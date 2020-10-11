@@ -101,6 +101,9 @@ pub struct DropModes {
 #[derive(Clone, Debug)]
 pub struct ModeAnnots {
     pub extern_constraints: IdVec<ExternalVarId, UpperBound<Mode>>,
+    pub arg_modes: BTreeMap<alias::FieldPath, ExternalVarId>,
+    pub ret_modes: BTreeMap<alias::FieldPath, ExternalVarId>,
+
     pub occur_modes: IdVec<fate::OccurId, OccurModes>,
     pub call_modes: IdVec<fate::CallId, IdVec<ExternalVarId, UpperBound<Mode>>>,
 
