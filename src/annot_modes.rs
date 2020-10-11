@@ -950,11 +950,11 @@ fn collect_func_moves(func_def: &spec::FuncDef, marked_drops: &MarkedDrops) -> M
 fn find_sccs(
     funcs: &IdVec<first_ord::CustomFuncId, spec::FuncDef>,
 ) -> Vec<Vec<(first_ord::CustomFuncId, spec::FuncVersionId)>> {
-    // To find SCCs, we need all functions in the program to be associated with concrete ids in a single
-    // "address space".  This means we can't use '(function id, version id)' pairs to refer to
-    // specialized function versions in these algorithms.  To work around this, we build an internal
-    // table mapping those pairs to `GlobalFuncVersionId`s which are suitable for use with the SCC
-    // algorithm.
+    // To find SCCs, we need all functions in the program to be associated with concrete ids in a
+    // single "address space".  This means we can't use '(function id, version id)' pairs to refer
+    // to specialized function versions in these algorithms.  To work around this, we build an
+    // internal table mapping those pairs to `GlobalFuncVersionId`s which are suitable for use with
+    // the SCC algorithm.
     id_type!(GlobalFuncVersionId);
 
     let mut global_to_version: IdVec<GlobalFuncVersionId, _> = IdVec::new();
@@ -1032,36 +1032,29 @@ struct SolverLocalInfo<'a> {
 
 #[derive(Clone, Debug)]
 struct SolverSccFuncSig {
-    arg_modes: SolverValModes,
-    ret_modes: SolverValModes,
+    arg_modes: BTreeMap<alias::FieldPath, ineq::ExternalVarId>,
+    ret_modes: BTreeMap<alias::FieldPath, ineq::ExternalVarId>,
 }
 
 #[derive(Clone, Debug)]
-struct SolverSccSigs {
-    extern_vars: IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
+struct SolverSccSigs<'a> {
+    extern_vars: &'a IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
     func_sigs: BTreeMap<(first_ord::CustomFuncId, spec::FuncVersionId), SolverSccFuncSig>,
 }
 
-// TODO: We may need to modify this to return something other than `SolverValModes`, where the
-// values are `ExternalVarId`s rather than `SolverVarId`s.
-//
-// TODO: Can we unify this with `instnatiate_type`?
 fn instantiate_sig_type(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-    external_vars: &mut IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
+    extern_vars: &mut IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
     type_: &anon::Type,
-) -> SolverValModes {
-    SolverValModes {
-        path_modes: field_path::get_refs_in(typedefs, type_)
-            .into_iter()
-            .map(|(path, _)| {
-                let solver_var = constraints.new_var();
-                let _ = external_vars.push(solver_var);
-                (path, solver_var)
-            })
-            .collect(),
-    }
+) -> BTreeMap<alias::FieldPath, ineq::ExternalVarId> {
+    field_path::get_refs_in(typedefs, type_)
+        .into_iter()
+        .map(|(path, _)| {
+            let solver_var = constraints.new_var();
+            (path, extern_vars.push(solver_var))
+        })
+        .collect()
 }
 
 fn instantiate_type(
@@ -1105,6 +1098,23 @@ fn substitute_sig_modes(
     }
 }
 
+fn annot_local_drops(
+    local_modes: &SolverValModes,
+    dropped_paths: &BTreeSet<mode::StackPath>,
+) -> SolverDropModes {
+    SolverDropModes {
+        dropped_paths: dropped_paths
+            .iter()
+            .map(|path| {
+                (
+                    path.clone(),
+                    local_modes.path_modes[&stack_path::to_field_path(path)],
+                )
+            })
+            .collect(),
+    }
+}
+
 fn annot_drops(
     locals: &LocalContext<flat::LocalId, SolverLocalInfo>,
     drops: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
@@ -1115,23 +1125,13 @@ fn annot_drops(
             let local_modes = &locals.local_binding(*dropped_local).val_modes;
             (
                 *dropped_local,
-                SolverDropModes {
-                    dropped_paths: dropped_paths
-                        .iter()
-                        .map(|path| {
-                            (
-                                path.clone(),
-                                local_modes.path_modes[&stack_path::to_field_path(path)],
-                            )
-                        })
-                        .collect(),
-                },
+                annot_local_drops(local_modes, dropped_paths),
             )
         })
         .collect::<BTreeMap<_, _>>()
 }
 
-// TODO: This type signature *really* need to not be like this
+// TODO: This type signature *really* needs to not be like this
 fn annot_expr<'a>(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     known_annots: &IdVec<
@@ -1250,35 +1250,38 @@ fn annot_expr<'a>(
 
             let (callee_id, callee_version_id) = call_versions[call_id];
 
-            match scc_sigs.func_sigs.get(&(callee_id, callee_version_id)) {
-                Some(scc_sig) => {
-                    equate_modes(constraints, &arg_val_modes, &scc_sig.arg_modes);
-                    debug_assert!(solver_annots.call_modes[call_id].is_none());
-                    solver_annots.call_modes[call_id] = Some(scc_sigs.extern_vars.clone());
-                    scc_sig.ret_modes.clone()
-                }
+            let (callee_extern_vars, callee_sig_arg_modes, callee_sig_ret_modes) =
+                match scc_sigs.func_sigs.get(&(callee_id, callee_version_id)) {
+                    Some(scc_sig) => (
+                        scc_sigs.extern_vars.clone(),
+                        &scc_sig.arg_modes,
+                        &scc_sig.ret_modes,
+                    ),
 
-                None => {
-                    let callee_annots =
-                        known_annots[callee_id][callee_version_id].as_ref().unwrap();
+                    None => {
+                        let callee_annots =
+                            known_annots[callee_id][callee_version_id].as_ref().unwrap();
 
-                    let callee_extern_vars =
-                        constraints.instantiate_subgraph(&callee_annots.extern_constraints);
+                        let callee_extern_vars =
+                            constraints.instantiate_subgraph(&callee_annots.extern_constraints);
 
-                    let callee_arg_modes =
-                        substitute_sig_modes(&callee_extern_vars, &callee_annots.arg_modes);
+                        (
+                            callee_extern_vars,
+                            &callee_annots.arg_modes,
+                            &callee_annots.ret_modes,
+                        )
+                    }
+                };
 
-                    let callee_ret_modes =
-                        substitute_sig_modes(&callee_extern_vars, &callee_annots.ret_modes);
+            let callee_arg_modes = substitute_sig_modes(&callee_extern_vars, callee_sig_arg_modes);
+            let callee_ret_modes = substitute_sig_modes(&callee_extern_vars, callee_sig_ret_modes);
 
-                    equate_modes(constraints, &arg_val_modes, &callee_arg_modes);
+            equate_modes(constraints, &arg_val_modes, &callee_arg_modes);
 
-                    debug_assert!(solver_annots.call_modes[call_id].is_none());
-                    solver_annots.call_modes[call_id] = Some(callee_extern_vars);
+            debug_assert!(solver_annots.call_modes[call_id].is_none());
+            solver_annots.call_modes[call_id] = Some(callee_extern_vars);
 
-                    callee_ret_modes
-                }
-            }
+            callee_ret_modes
         }
 
         fate::ExprKind::Branch(discrim, cases, result_type) => {
@@ -1354,48 +1357,81 @@ fn annot_expr<'a>(
     }
 }
 
+fn extract_drop_modes(
+    solutions: &IdVec<ineq::SolverVarId, ineq::UpperBound<mode::Mode>>,
+    modes: SolverDropModes,
+) -> mode::DropModes {
+    mode::DropModes {
+        dropped_paths: modes
+            .dropped_paths
+            .into_iter()
+            .map(|(path, var)| (path, solutions[var].clone()))
+            .collect(),
+    }
+}
+
+fn extract_drops(
+    solutions: &IdVec<ineq::SolverVarId, ineq::UpperBound<mode::Mode>>,
+    drops: BTreeMap<flat::LocalId, SolverDropModes>,
+) -> Vec<(flat::LocalId, mode::DropModes)> {
+    drops
+        .into_iter()
+        .map(|(path, drop_modes)| (path, extract_drop_modes(solutions, drop_modes)))
+        .collect()
+}
+
+fn extract_occur_modes(
+    solutions: &IdVec<ineq::SolverVarId, ineq::UpperBound<mode::Mode>>,
+    occur_modes: SolverOccurModes,
+) -> mode::OccurModes {
+    mode::OccurModes {
+        path_modes: occur_modes
+            .path_modes
+            .into_iter()
+            .map(|(path, mode)| {
+                (
+                    path,
+                    match mode {
+                        SolverPathOccurMode::Unused => mode::PathOccurMode::Unused,
+                        SolverPathOccurMode::Final => mode::PathOccurMode::Final,
+                        SolverPathOccurMode::Intermediate { src, dest } => {
+                            mode::PathOccurMode::Intermediate {
+                                src: solutions[src].clone(),
+                                dest: solutions[dest].clone(),
+                            }
+                        }
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 fn annot_scc(
     orig: &spec::Program,
-    _func_annots: &mut IdVec<
+    func_annots: &mut IdVec<
         first_ord::CustomFuncId,
         IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
     >,
     scc: &[(first_ord::CustomFuncId, spec::FuncVersionId)],
 ) {
-    let _move_annots = scc
-        .iter()
-        .map(|&(func_id, version_id)| {
-            // TODO: Mark tail calls, and adapt move-marking logic to ensure all drops and moves
-            // happen prior to tail calls.
-
-            let func_def = &orig.funcs[func_id];
-            let version = &func_def.versions[version_id];
-
-            let marked_occurs = mark_func_occurs(orig, func_def, version);
-            let marked_drops = repair_func_drops(&orig.custom_types, func_def, marked_occurs);
-            let move_horizons = collect_func_moves(func_def, &marked_drops);
-
-            ((func_id, version_id), (marked_drops, move_horizons))
-        })
-        .collect::<BTreeMap<_, _>>();
-
     let mut constraints = ineq::ConstraintGraph::<mode::Mode>::new();
 
-    let mut external_vars = IdVec::new();
-    let _scc_sigs = scc
+    let mut extern_vars = IdVec::new();
+    let func_sigs = scc
         .iter()
         .map(|&(func_id, version_id)| {
             let func_def = &orig.funcs[func_id];
             let arg_modes = instantiate_sig_type(
                 &orig.custom_types,
                 &mut constraints,
-                &mut external_vars,
+                &mut extern_vars,
                 &func_def.arg_type,
             );
             let ret_modes = instantiate_sig_type(
                 &orig.custom_types,
                 &mut constraints,
-                &mut external_vars,
+                &mut extern_vars,
                 &func_def.ret_type,
             );
             (
@@ -1408,7 +1444,129 @@ fn annot_scc(
         })
         .collect::<BTreeMap<_, _>>();
 
-    todo!()
+    let scc_sigs = SolverSccSigs {
+        extern_vars: &extern_vars,
+        func_sigs,
+    };
+
+    #[derive(Clone, Debug)]
+    struct SolverFullModeAnnots {
+        occur_modes: IdVec<fate::OccurId, SolverOccurModes>,
+        call_modes: IdVec<fate::CallId, IdVec<ineq::ExternalVarId, ineq::SolverVarId>>,
+        let_drop_epilogues: IdVec<fate::LetBlockId, BTreeMap<flat::LocalId, SolverDropModes>>,
+        branch_drop_epilogues: IdVec<fate::BranchBlockId, BTreeMap<flat::LocalId, SolverDropModes>>,
+        drop_prologues: IdVec<fate::ExprId, BTreeMap<flat::LocalId, SolverDropModes>>,
+        arg_drop_epilogue: SolverDropModes,
+    }
+
+    let func_solver_annots = scc
+        .iter()
+        .map(|&(func_id, version_id)| {
+            let func_def = &orig.funcs[func_id];
+            let version = &func_def.versions[version_id];
+            let func_scc_sig = &scc_sigs.func_sigs[&(func_id, version_id)];
+
+            let marked_occurs = mark_func_occurs(orig, func_def, version);
+            let marked_drops = repair_func_drops(&orig.custom_types, func_def, marked_occurs);
+            let move_horizons = collect_func_moves(func_def, &marked_drops);
+
+            let mut locals = LocalContext::new();
+            locals.add_local(SolverLocalInfo {
+                val_modes: substitute_sig_modes(&extern_vars, &func_scc_sig.arg_modes),
+                move_horizon: &move_horizons.arg_moves,
+            });
+
+            let mut solver_annots = SolverModeAnnots {
+                occur_modes: func_def.occur_fates.map(|_, _| None),
+                call_modes: version.calls.map(|_, _| None),
+                let_drop_epilogues: marked_drops.let_drop_epilogues.map(|_, _| None),
+                branch_drop_epilogues: marked_drops.branch_drop_epilogues.map(|_, _| None),
+                drop_prologues: marked_drops.drop_prologues.map(|_, _| None),
+            };
+
+            let ret_val_modes = annot_expr(
+                &orig.custom_types,
+                func_annots,
+                &func_def.occur_fates,
+                &version.calls,
+                &version.ret_fate,
+                &marked_drops,
+                &move_horizons,
+                &mut constraints,
+                &scc_sigs,
+                &mut locals,
+                &func_def.body,
+                &mut solver_annots,
+            );
+
+            equate_modes(
+                &mut constraints,
+                &ret_val_modes,
+                &substitute_sig_modes(&extern_vars, &func_scc_sig.ret_modes),
+            );
+
+            let arg_drop_epilogue_annot = annot_local_drops(
+                &locals.local_binding(flat::ARG_LOCAL).val_modes,
+                &marked_drops.arg_drop_epilogue,
+            );
+
+            (
+                (func_id, version_id),
+                SolverFullModeAnnots {
+                    occur_modes: solver_annots
+                        .occur_modes
+                        .into_mapped(|_, modes| modes.unwrap()),
+                    call_modes: solver_annots
+                        .call_modes
+                        .into_mapped(|_, modes| modes.unwrap()),
+                    let_drop_epilogues: solver_annots
+                        .let_drop_epilogues
+                        .into_mapped(|_, modes| modes.unwrap()),
+                    branch_drop_epilogues: solver_annots
+                        .branch_drop_epilogues
+                        .into_mapped(|_, modes| modes.unwrap()),
+                    drop_prologues: solver_annots
+                        .drop_prologues
+                        .into_mapped(|_, modes| modes.unwrap()),
+                    arg_drop_epilogue: arg_drop_epilogue_annot,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let solutions = constraints.solve(&extern_vars);
+
+    let extern_constraints = extern_vars.map(|_, var| solutions[var].clone());
+
+    let mut remaining_func_sigs = scc_sigs.func_sigs;
+    for ((func_id, version_id), solver_annots) in func_solver_annots {
+        let scc_sig = remaining_func_sigs.remove(&(func_id, version_id)).unwrap();
+
+        let extracted_annots = mode::ModeAnnots {
+            extern_constraints: extern_constraints.clone(),
+            arg_modes: scc_sig.arg_modes,
+            ret_modes: scc_sig.ret_modes,
+            occur_modes: solver_annots
+                .occur_modes
+                .into_mapped(|_, modes| extract_occur_modes(&solutions, modes)),
+            call_modes: solver_annots
+                .call_modes
+                .into_mapped(|_, modes| modes.into_mapped(|_, var| solutions[var].clone())),
+            let_drop_epilogues: solver_annots
+                .let_drop_epilogues
+                .into_mapped(|_, drops| extract_drops(&solutions, drops)),
+            branch_drop_epilogues: solver_annots
+                .branch_drop_epilogues
+                .into_mapped(|_, drops| extract_drops(&solutions, drops)),
+            arg_drop_epilogue: extract_drop_modes(&solutions, solver_annots.arg_drop_epilogue),
+            drop_prologues: solver_annots
+                .drop_prologues
+                .into_mapped(|_, modes| extract_drops(&solutions, modes)),
+        };
+
+        debug_assert!(func_annots[func_id][version_id].is_none());
+        func_annots[func_id][version_id] = Some(extracted_annots);
+    }
 }
 
 fn annot_modes(program: spec::Program) -> mode::Program {

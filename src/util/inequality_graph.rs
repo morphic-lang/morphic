@@ -90,7 +90,7 @@ impl<T: Ord + Infimum + Clone> ConstraintGraph<T> {
     // we change this?
     pub fn solve(
         &self,
-        external: IdVec<ExternalVarId, SolverVarId>,
+        external: &IdVec<ExternalVarId, SolverVarId>,
     ) -> IdVec<SolverVarId, UpperBound<T>> {
         // This is a "partial map"; it is keyed by only a subset of all the `SolverVarId` indices in
         // this graph, because `external` need not contain all `SolverVarId` indices as values.
