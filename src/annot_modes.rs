@@ -1042,6 +1042,10 @@ struct SolverSccSigs {
     func_sigs: BTreeMap<(first_ord::CustomFuncId, spec::FuncVersionId), SolverSccFuncSig>,
 }
 
+// TODO: We may need to modify this to return something other than `SolverValModes`, where the
+// values are `ExternalVarId`s rather than `SolverVarId`s.
+//
+// TODO: Can we unify this with `instnatiate_type`?
 fn instantiate_sig_type(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     constraints: &mut ineq::ConstraintGraph<mode::Mode>,
@@ -1056,6 +1060,19 @@ fn instantiate_sig_type(
                 let _ = external_vars.push(solver_var);
                 (path, solver_var)
             })
+            .collect(),
+    }
+}
+
+fn instantiate_type(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+    type_: &anon::Type,
+) -> SolverValModes {
+    SolverValModes {
+        path_modes: field_path::get_refs_in(typedefs, type_)
+            .into_iter()
+            .map(|(path, _)| (path, constraints.new_var()))
             .collect(),
     }
 }
@@ -1088,25 +1105,11 @@ fn substitute_sig_modes(
     }
 }
 
-// TODO: This type signature *really* need to not be like this
-fn annot_expr(
-    _typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-    known_annots: &IdVec<
-        first_ord::CustomFuncId,
-        IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
-    >,
-    occur_fates: &IdVec<fate::OccurId, fate::Fate>, // Used only for access horizons
-    call_versions: &IdVec<fate::CallId, (first_ord::CustomFuncId, spec::FuncVersionId)>,
-    ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
-    marked_drops: &MarkedDrops,
-    _move_horizons: &MoveHorizons,
-    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-    scc_sigs: &SolverSccSigs,
-    locals: &mut LocalContext<flat::LocalId, SolverLocalInfo>,
-    expr: &fate::Expr,
-    solver_annots: &mut SolverModeAnnots,
-) -> SolverValModes {
-    let drop_prologue_modes = marked_drops.drop_prologues[expr.id]
+fn annot_drops(
+    locals: &LocalContext<flat::LocalId, SolverLocalInfo>,
+    drops: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
+) -> BTreeMap<flat::LocalId, SolverDropModes> {
+    drops
         .iter()
         .map(|(dropped_local, dropped_paths)| {
             let local_modes = &locals.local_binding(*dropped_local).val_modes;
@@ -1125,8 +1128,28 @@ fn annot_expr(
                 },
             )
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect::<BTreeMap<_, _>>()
+}
 
+// TODO: This type signature *really* need to not be like this
+fn annot_expr(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    known_annots: &IdVec<
+        first_ord::CustomFuncId,
+        IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
+    >,
+    occur_fates: &IdVec<fate::OccurId, fate::Fate>, // Used only for access horizons
+    call_versions: &IdVec<fate::CallId, (first_ord::CustomFuncId, spec::FuncVersionId)>,
+    ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
+    marked_drops: &MarkedDrops,
+    move_horizons: &MoveHorizons,
+    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+    scc_sigs: &SolverSccSigs,
+    locals: &mut LocalContext<flat::LocalId, SolverLocalInfo>,
+    expr: &fate::Expr,
+    solver_annots: &mut SolverModeAnnots,
+) -> SolverValModes {
+    let drop_prologue_modes = annot_drops(locals, &marked_drops.drop_prologues[expr.id]);
     debug_assert!(solver_annots.drop_prologues[expr.id].is_none());
     solver_annots.drop_prologues[expr.id] = Some(drop_prologue_modes);
 
@@ -1256,6 +1279,39 @@ fn annot_expr(
                     callee_ret_modes
                 }
             }
+        }
+
+        fate::ExprKind::Branch(discrim, cases, result_type) => {
+            annot_occur(constraints, locals, solver_annots, *discrim);
+
+            let result_modes = instantiate_type(typedefs, constraints, result_type);
+
+            for (block_id, _cond, body) in cases {
+                let body_modes = annot_expr(
+                    typedefs,
+                    known_annots,
+                    occur_fates,
+                    call_versions,
+                    ret_fates,
+                    marked_drops,
+                    move_horizons,
+                    constraints,
+                    scc_sigs,
+                    locals,
+                    body,
+                    solver_annots,
+                );
+
+                equate_modes(constraints, &body_modes, &result_modes);
+
+                let drop_epilogue_annot =
+                    annot_drops(locals, &marked_drops.branch_drop_epilogues[block_id]);
+
+                debug_assert!(solver_annots.branch_drop_epilogues[block_id].is_none());
+                solver_annots.branch_drop_epilogues[block_id] = Some(drop_epilogue_annot);
+            }
+
+            result_modes
         }
 
         _ => todo!(),
