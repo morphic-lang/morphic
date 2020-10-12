@@ -173,17 +173,6 @@ fn annot_expr(
         }
 
         mutation::Expr::Branch(discrim, cases, ret_type) => {
-            // TODO: We currently consider all paths in the discrim to be accessed, even if they're
-            // not used in any condition.  We could make this more precise in the future.
-            let mut discrim_access_fate =
-                empty_fate(&orig.custom_types, locals.local_binding(*discrim));
-            for (_, path_fate) in &mut discrim_access_fate.fates {
-                path_fate.internal = fate::InternalFate::Accessed;
-                path_fate.last_internal_use = expr_event.clone();
-            }
-
-            let discrim_annot = add_occurence(occurs, &mut uses, *discrim, discrim_access_fate);
-
             let case_event_blocks = event_set.prepend_branch(event_block, cases.len());
 
             let cases_annot = cases
@@ -218,6 +207,20 @@ fn annot_expr(
                     )
                 })
                 .collect();
+
+            // We need to mark the discrim as accessed *before* the body of the branch, so we create
+            // a separate event for it instead of using `expr_event`.
+            let discrim_check_event = event_set.prepend_event(event_block);
+
+            // TODO: We currently consider all paths in the discrim to be accessed, even if they're
+            // not used in any condition.  We could make this more precise in the future.
+            let mut discrim_access_fate =
+                empty_fate(&orig.custom_types, locals.local_binding(*discrim));
+            for (_, path_fate) in &mut discrim_access_fate.fates {
+                path_fate.internal = fate::InternalFate::Accessed;
+                path_fate.last_internal_use = discrim_check_event.clone();
+            }
+            let discrim_annot = add_occurence(occurs, &mut uses, *discrim, discrim_access_fate);
 
             fate::ExprKind::Branch(discrim_annot, cases_annot, ret_type.clone())
         }
