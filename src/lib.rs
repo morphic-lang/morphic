@@ -69,6 +69,8 @@ mod specialize_aliases;
 
 mod annot_modes;
 
+mod rc_specialize;
+
 // end new passes
 
 mod unify_reprs;
