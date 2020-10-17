@@ -40,6 +40,8 @@ pub mod alias_specialized_ast;
 
 pub mod mode_annot_ast;
 
+pub mod rc_specialized_ast;
+
 // end new passes
 
 pub mod repr_unified_ast;
