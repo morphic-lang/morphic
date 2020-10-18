@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use crate::data::alias_specialized_ast as spec;
+use crate::data::anon_sum_ast as anon;
 use crate::data::fate_annot_ast as fate;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
@@ -10,6 +11,7 @@ use crate::data::rc_specialized_ast as rc;
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::inequality_graph as ineq;
+use crate::util::local_context::LocalContext;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReleasePaths {
@@ -216,6 +218,242 @@ impl<'a> InstanceQueue<'a> {
 
         new_id
     }
+}
+
+// TODO: Can we unify this with the `LetManyBuilder` in `flatten`, or the `LowAstBuilder` in
+// `lower_structures`?
+#[derive(Clone, Debug)]
+struct LetManyBuilder {
+    free_locals: usize,
+    bindings: Vec<(anon::Type, rc::Expr)>,
+}
+
+impl LetManyBuilder {
+    fn new(free_locals: usize) -> Self {
+        LetManyBuilder {
+            free_locals,
+            bindings: Vec::new(),
+        }
+    }
+
+    fn add_binding(&mut self, type_: anon::Type, rhs: rc::Expr) -> rc::LocalId {
+        let binding_id = rc::LocalId(self.free_locals + self.bindings.len());
+        self.bindings.push((type_, rhs));
+        binding_id
+    }
+
+    fn to_expr(self, ret: rc::LocalId) -> rc::Expr {
+        debug_assert!(ret.0 < self.free_locals + self.bindings.len());
+        rc::Expr::LetMany(self.bindings, ret)
+    }
+
+    fn child(&self) -> LetManyBuilder {
+        LetManyBuilder::new(self.free_locals + self.bindings.len())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LocalInfo<'a> {
+    type_: &'a anon::Type,
+    new_id: rc::LocalId,
+}
+
+#[derive(Clone, Debug)]
+enum RcOpPlan {
+    NoOp,
+    LeafOp,
+    OnTupleFields(BTreeMap<usize, RcOpPlan>),
+    OnVariantCases(BTreeMap<first_ord::VariantId, RcOpPlan>),
+    OnCustom(first_ord::CustomTypeId, Box<RcOpPlan>),
+}
+
+impl RcOpPlan {
+    fn add_leaf_path(&mut self, path: &mode::StackPath) {
+        let mut curr = self;
+        for field in path.iter() {
+            if matches!(&curr, RcOpPlan::NoOp) {
+                *curr = match field {
+                    mode::StackField::Field(_) => RcOpPlan::OnTupleFields(BTreeMap::new()),
+                    mode::StackField::Variant(_) => RcOpPlan::OnVariantCases(BTreeMap::new()),
+                    mode::StackField::Custom(custom_id) => {
+                        RcOpPlan::OnCustom(*custom_id, Box::new(RcOpPlan::NoOp))
+                    }
+                };
+            }
+
+            curr = match (curr, field) {
+                (RcOpPlan::OnTupleFields(sub_plans), mode::StackField::Field(idx)) => {
+                    sub_plans.entry(*idx).or_insert(RcOpPlan::NoOp)
+                }
+                (RcOpPlan::OnVariantCases(sub_plans), mode::StackField::Variant(variant_id)) => {
+                    sub_plans.entry(*variant_id).or_insert(RcOpPlan::NoOp)
+                }
+                (
+                    RcOpPlan::OnCustom(custom_id, sub_plan),
+                    mode::StackField::Custom(field_custom_id),
+                ) => {
+                    debug_assert_eq!(custom_id, field_custom_id);
+                    &mut **sub_plan
+                }
+                _ => unreachable!(),
+            };
+        }
+        debug_assert!(matches!(&curr, RcOpPlan::NoOp));
+        *curr = RcOpPlan::LeafOp;
+    }
+}
+
+fn build_plan(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    rc_op: rc::RcOp,
+    root: rc::LocalId,
+    root_type: &anon::Type,
+    plan: &RcOpPlan,
+    builder: &mut LetManyBuilder,
+) {
+    match plan {
+        RcOpPlan::NoOp => {}
+
+        RcOpPlan::LeafOp => {
+            let (container_type, item_type) = match root_type {
+                anon::Type::Array(item_type) => (rc::ContainerType::Array, item_type),
+                anon::Type::HoleArray(item_type) => (rc::ContainerType::HoleArray, item_type),
+                anon::Type::Boxed(item_type) => (rc::ContainerType::Boxed, item_type),
+                _ => unreachable!(),
+            };
+
+            builder.add_binding(
+                anon::Type::Tuple(vec![]),
+                rc::Expr::RcOp(rc_op, container_type, (**item_type).clone(), root),
+            );
+        }
+
+        RcOpPlan::OnTupleFields(sub_plans) => {
+            let field_types = if let anon::Type::Tuple(field_types) = root_type {
+                field_types
+            } else {
+                unreachable!()
+            };
+
+            for (idx, sub_plan) in sub_plans {
+                let field_type = &field_types[*idx];
+                let field_local =
+                    builder.add_binding(field_type.clone(), rc::Expr::TupleField(root, *idx));
+                Some(build_plan(
+                    typedefs,
+                    rc_op,
+                    field_local,
+                    field_type,
+                    sub_plan,
+                    builder,
+                ));
+            }
+        }
+
+        RcOpPlan::OnVariantCases(sub_plans) => {
+            let variant_types = if let anon::Type::Variants(variant_types) = root_type {
+                variant_types
+            } else {
+                unreachable!()
+            };
+
+            let mut cases = Vec::new();
+            for (variant_id, sub_plan) in sub_plans {
+                let variant_type = &variant_types[variant_id];
+                let cond = flat::Condition::Variant(*variant_id, Box::new(flat::Condition::Any));
+
+                let mut case_builder = builder.child();
+                let content_id = case_builder.add_binding(
+                    variant_type.clone(),
+                    rc::Expr::UnwrapVariant(*variant_id, root),
+                );
+                build_plan(
+                    typedefs,
+                    rc_op,
+                    content_id,
+                    variant_type,
+                    sub_plan,
+                    &mut case_builder,
+                );
+
+                // We need to return *something* from this branch arm, so we return a `()` value.
+                //
+                // TODO: Should we reuse the result of the generated RC op to make the generated
+                // code for this case slightly easier to read?
+                let unit_id =
+                    case_builder.add_binding(anon::Type::Tuple(vec![]), rc::Expr::Tuple(vec![]));
+
+                cases.push((cond, case_builder.to_expr(unit_id)))
+            }
+            cases.push((flat::Condition::Any, rc::Expr::Tuple(vec![])));
+
+            builder.add_binding(
+                anon::Type::Tuple(vec![]),
+                rc::Expr::Branch(root, cases, anon::Type::Tuple(vec![])),
+            );
+        }
+
+        RcOpPlan::OnCustom(custom_id, sub_plan) => {
+            debug_assert_eq!(root_type, &anon::Type::Custom(*custom_id));
+
+            let content_type = &typedefs[custom_id];
+
+            let content_id = builder.add_binding(
+                content_type.clone(),
+                rc::Expr::UnwrapCustom(*custom_id, root),
+            );
+            build_plan(typedefs, rc_op, content_id, content_type, sub_plan, builder);
+        }
+    }
+}
+
+fn build_rc_ops(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    rc_op: rc::RcOp,
+    local: rc::LocalId,
+    local_type: &anon::Type,
+    paths: &BTreeSet<mode::StackPath>,
+    builder: &mut LetManyBuilder,
+) {
+    let mut plan = RcOpPlan::NoOp;
+    for path in paths {
+        plan.add_leaf_path(path);
+    }
+    build_plan(typedefs, rc_op, local, local_type, &plan, builder);
+}
+
+fn build_releases(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    locals: &LocalContext<flat::LocalId, LocalInfo>,
+    releases: &Vec<(flat::LocalId, ReleasePaths)>,
+    builder: &mut LetManyBuilder,
+) {
+    for (flat_local, release_paths) in releases {
+        let local_info = locals.local_binding(*flat_local);
+        build_rc_ops(
+            typedefs,
+            rc::RcOp::Release,
+            local_info.new_id,
+            local_info.type_,
+            &release_paths.release_paths,
+            builder,
+        );
+    }
+}
+
+fn resolve_expr<'a>(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    _insts: &mut InstanceQueue,
+    _modes: &IdVec<ineq::ExternalVarId, mode::Mode>,
+    ops: &ConcreteRcOps,
+    locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
+    expr: &'a fate::Expr,
+    _result_type: anon::Type,
+    builder: &mut LetManyBuilder,
+) -> rc::LocalId {
+    build_releases(typedefs, locals, &ops.release_prologues[expr.id], builder);
+
+    todo!()
 }
 
 pub fn rc_specialize(_program: mode::Program) -> rc::Program {

@@ -44,7 +44,7 @@ pub enum RcOp {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Local(flat::LocalId),
+    Local(LocalId),
     Call(
         Purity,
         CustomFuncId,
@@ -52,50 +52,50 @@ pub enum Expr {
         ArgAliases,
         // Statuses of argument fields prior to call
         OrdMap<alias::FieldPath, mutation::LocalStatus>,
-        flat::LocalId, // Argument
+        LocalId, // Argument
     ),
-    Branch(flat::LocalId, Vec<(flat::Condition, Expr)>, anon::Type),
+    Branch(LocalId, Vec<(flat::Condition, Expr)>, anon::Type),
     LetMany(
         Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
-        flat::LocalId,           // body
+        LocalId,                 // body
     ),
 
-    Tuple(Vec<flat::LocalId>),
-    TupleField(flat::LocalId, usize),
+    Tuple(Vec<LocalId>),
+    TupleField(LocalId, usize),
     WrapVariant(
         IdVec<first_ord::VariantId, anon::Type>,
         first_ord::VariantId,
-        flat::LocalId,
+        LocalId,
     ),
-    UnwrapVariant(first_ord::VariantId, flat::LocalId),
+    UnwrapVariant(first_ord::VariantId, LocalId),
     WrapBoxed(
-        flat::LocalId,
+        LocalId,
         anon::Type, // Inner type
     ),
     UnwrapBoxed(
-        flat::LocalId,
+        LocalId,
         anon::Type, // Inner type
     ),
-    WrapCustom(first_ord::CustomTypeId, flat::LocalId),
-    UnwrapCustom(first_ord::CustomTypeId, flat::LocalId),
+    WrapCustom(first_ord::CustomTypeId, LocalId),
+    UnwrapCustom(first_ord::CustomTypeId, LocalId),
 
     RcOp(
         RcOp,
         ContainerType,
         anon::Type, // Inner type inside container
-        flat::LocalId,
+        LocalId,
     ),
 
-    Intrinsic(Intrinsic, flat::LocalId),
+    Intrinsic(Intrinsic, LocalId),
     ArrayOp(mutation::ArrayOp),
     IoOp(mutation::IoOp),
     Panic(
         anon::Type,            // Return type
         mutation::LocalStatus, // Message status
-        flat::LocalId,         // Message
+        LocalId,               // Message
     ),
 
-    ArrayLit(anon::Type, Vec<flat::LocalId>),
+    ArrayLit(anon::Type, Vec<LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
