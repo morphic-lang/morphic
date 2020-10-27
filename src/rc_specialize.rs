@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::rc::Rc;
+use im_rc::OrdMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_specialized_ast as spec;
 use crate::data::anon_sum_ast as anon;
@@ -8,10 +8,82 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mode_annot_ast as mode;
 use crate::data::rc_specialized_ast as rc;
-use crate::util::id_gen::IdGen;
+use crate::util::graph::{strongly_connected, Graph};
 use crate::util::id_vec::IdVec;
 use crate::util::inequality_graph as ineq;
+use crate::util::instance_queue::InstanceQueue;
 use crate::util::local_context::LocalContext;
+use crate::util::norm_pair::NormPair;
+
+id_type!(ModeSpecFuncId);
+
+#[derive(Clone, Debug)]
+struct ModeSpecialization {
+    func: first_ord::CustomFuncId,
+    version: spec::FuncVersionId,
+    modes: IdVec<ineq::ExternalVarId, mode::Mode>,
+    calls: IdVec<fate::CallId, ModeSpecFuncId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ModeInstance {
+    func: first_ord::CustomFuncId,
+    version: spec::FuncVersionId,
+    modes: IdVec<ineq::ExternalVarId, mode::Mode>,
+}
+
+fn specialize_modes(
+    funcs: &IdVec<first_ord::CustomFuncId, mode::FuncDef>,
+    main: first_ord::CustomFuncId,
+    main_version: spec::FuncVersionId,
+) -> (IdVec<ModeSpecFuncId, ModeSpecialization>, ModeSpecFuncId) {
+    let mut insts: InstanceQueue<ModeInstance, ModeSpecFuncId> = InstanceQueue::new();
+
+    let main_spec = insts.resolve(ModeInstance {
+        func: main,
+        version: main_version,
+        // The main function may appear in an SCC containing functions with nontrivial mode
+        // parameters, which will leak into main's signature.
+        modes: funcs[main].modes[main_version]
+            .extern_constraints
+            .map(|_, bound| bound.lte_const),
+    });
+
+    let mut specialized = IdVec::new();
+
+    while let Some((spec_id, instance)) = insts.pop_pending() {
+        let func_def = &funcs[instance.func];
+
+        let version_annots = &func_def.versions[instance.version];
+        let mode_annots = &func_def.modes[instance.version];
+
+        let spec_calls = version_annots
+            .calls
+            .map(|call_id, &(callee_id, callee_version)| {
+                let callee_modes = mode_annots.call_modes[call_id]
+                    .map(|_, bound| get_mode(&instance.modes, bound));
+
+                insts.resolve(ModeInstance {
+                    func: callee_id,
+                    version: callee_version,
+                    modes: callee_modes,
+                })
+            });
+
+        let pushed_id = specialized.push(ModeSpecialization {
+            func: instance.func,
+            version: instance.version,
+            modes: instance.modes,
+            calls: spec_calls,
+        });
+
+        // We enqueue instances to resolve in the order in which their ids are generated, so this
+        // should always hold.
+        debug_assert_eq!(pushed_id, spec_id);
+    }
+
+    (specialized, main_spec)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReleasePaths {
@@ -23,13 +95,31 @@ pub struct RetainPaths {
     retain_paths: BTreeSet<mode::StackPath>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SccCall {
+    // A call in the same SCC as the caller
+    //
+    // Specialized functions in an SCC are uniquely identified by their `first_ord::CustomFuncId`,
+    // because both alias specialization and mode annotation should both uphold the invariant that
+    // each `first_ord::CustomFuncId` appears at most once in each SCC in the mode-specialized call
+    // graph.
+    RecCall(first_ord::CustomFuncId),
+    Call(rc::CustomFuncId),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ConcreteRcOps {
+struct ConcreteRcOps<Call> {
+    calls: IdVec<fate::CallId, Call>,
     release_prologues: IdVec<fate::ExprId, Vec<(flat::LocalId, ReleasePaths)>>,
     occur_retains: IdVec<fate::OccurId, RetainPaths>,
     let_release_epilogues: IdVec<fate::LetBlockId, Vec<(flat::LocalId, ReleasePaths)>>,
     branch_release_epilogues: IdVec<fate::BranchBlockId, Vec<(flat::LocalId, ReleasePaths)>>,
     arg_release_epilogue: ReleasePaths,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ConcreteScc {
+    concrete_funcs: BTreeMap<first_ord::CustomFuncId, ConcreteRcOps<SccCall>>,
 }
 
 fn get_mode(
@@ -103,121 +193,157 @@ fn concretize_occurs(
     }
 }
 
-fn concretize_ops(
-    modes: &IdVec<ineq::ExternalVarId, mode::Mode>,
-    mode_annots: &mode::ModeAnnots,
-) -> ConcreteRcOps {
-    let release_prologues = mode_annots
-        .drop_prologues
-        .map(|_, drops| concretize_drops(modes, drops));
+fn deduplicate_specializations(
+    funcs: &IdVec<first_ord::CustomFuncId, mode::FuncDef>,
+    specializations: &IdVec<ModeSpecFuncId, ModeSpecialization>,
+) -> (
+    IdVec<ModeSpecFuncId, rc::CustomFuncId>,
+    IdVec<rc::CustomFuncId, ConcreteRcOps<rc::CustomFuncId>>,
+) {
+    let sccs = strongly_connected(&Graph {
+        edges_out: specializations.map(|_, specialization| specialization.calls.items.clone()),
+    });
 
-    let occur_retains = mode_annots
-        .occur_modes
-        .map(|_, occur_modes| concretize_occurs(modes, occur_modes));
+    let mut concrete_funcs: IdVec<rc::CustomFuncId, Option<ConcreteRcOps<rc::CustomFuncId>>> =
+        IdVec::new();
 
-    let let_release_epilogues = mode_annots
-        .let_drop_epilogues
-        .map(|_, drops| concretize_drops(modes, drops));
+    let mut cache: BTreeMap<ConcreteScc, BTreeMap<first_ord::CustomFuncId, rc::CustomFuncId>> =
+        BTreeMap::new();
 
-    let branch_release_epilogues = mode_annots
-        .branch_drop_epilogues
-        .map(|_, drops| concretize_drops(modes, drops));
+    let mut known_dedups: IdVec<ModeSpecFuncId, Option<rc::CustomFuncId>> =
+        IdVec::from_items(vec![None; specializations.len()]);
 
-    let arg_release_epilogue = concretize_drop_modes(modes, &mode_annots.arg_drop_epilogue);
+    for scc in &sccs {
+        let mut scc_concrete_funcs = BTreeMap::new();
 
-    ConcreteRcOps {
-        release_prologues,
-        occur_retains,
-        let_release_epilogues,
-        branch_release_epilogues,
-        arg_release_epilogue,
-    }
-}
+        for spec_id in scc {
+            let specialization = &specializations[spec_id];
 
-#[derive(Clone, Debug)]
-struct FuncInstances {
-    by_modes: BTreeMap<IdVec<ineq::ExternalVarId, mode::Mode>, rc::CustomFuncId>,
-    // We use an `Rc` here because these values tend to be large, and appear in both this instance
-    // cache and the pending instance queue.
-    //
-    // TODO: This should *really* be a hashmap -- we just need to make sure we never depend on
-    // iteration order.
-    by_ops: BTreeMap<Rc<ConcreteRcOps>, rc::CustomFuncId>,
-}
+            let calls =
+                specialization
+                    .calls
+                    .map(|_, callee_spec| match known_dedups[callee_spec] {
+                        Some(callee_dedup) => SccCall::Call(callee_dedup),
+                        None => {
+                            let callee_func = specializations[callee_spec].func;
 
-// We can't use `util::InstanceQueue` here because we have two layers of caching.  The uncached
-// monomorphization process consists of a three-step transformation 'concrete modes -> concrete ops
-// -> monomorphized function'.  We maintain caches for both 'concrete modes -> monomorphized
-// function' and 'concrete ops -> monomorphized function'.
-//
-// The reason we have two layers of caching is that two distinct assignments of concrete mode
-// parameters may result in the same set of concrete RC operations in the function body, and we want
-// to deduplicate functions based on this fact.
-#[derive(Clone, Debug)]
-struct InstanceQueue<'a> {
-    // We maintain a reference to `orig_funcs` only to access the mode annotations of each function
-    // for the purpose of the 'concrete modes -> concrete ops' transformation.
-    orig_funcs: &'a IdVec<first_ord::CustomFuncId, mode::FuncDef>,
+                            debug_assert_eq!(
+                                scc.iter()
+                                    .filter(|&other_spec| specializations[other_spec].func
+                                        == callee_func)
+                                    .count(),
+                                1
+                            );
 
-    func_id_gen: IdGen<rc::CustomFuncId>,
-    instances: IdVec<first_ord::CustomFuncId, IdVec<spec::FuncVersionId, FuncInstances>>,
+                            SccCall::RecCall(callee_func)
+                        }
+                    });
 
-    pending: VecDeque<(
-        (first_ord::CustomFuncId, spec::FuncVersionId),
-        rc::CustomFuncId,
-        IdVec<ineq::ExternalVarId, mode::Mode>,
-        Rc<ConcreteRcOps>,
-    )>,
-}
+            let modes = &specialization.modes;
+            let mode_annots = &funcs[specialization.func].modes[specialization.version];
 
-impl<'a> InstanceQueue<'a> {
-    fn new(orig_funcs: &'a IdVec<first_ord::CustomFuncId, mode::FuncDef>) -> Self {
-        InstanceQueue {
-            orig_funcs,
+            let release_prologues = mode_annots
+                .drop_prologues
+                .map(|_, drops| concretize_drops(modes, drops));
 
-            func_id_gen: IdGen::new(),
-            instances: orig_funcs.map(|_, func_def| {
-                func_def.versions.map(|_, _| FuncInstances {
-                    by_modes: BTreeMap::new(),
-                    by_ops: BTreeMap::new(),
-                })
-            }),
+            let occur_retains = mode_annots
+                .occur_modes
+                .map(|_, occur_modes| concretize_occurs(modes, occur_modes));
 
-            pending: VecDeque::new(),
+            let let_release_epilogues = mode_annots
+                .let_drop_epilogues
+                .map(|_, drops| concretize_drops(modes, drops));
+
+            let branch_release_epilogues = mode_annots
+                .branch_drop_epilogues
+                .map(|_, drops| concretize_drops(modes, drops));
+
+            let arg_release_epilogue = concretize_drop_modes(modes, &mode_annots.arg_drop_epilogue);
+
+            let existing = scc_concrete_funcs.insert(
+                specialization.func,
+                ConcreteRcOps {
+                    calls,
+                    release_prologues,
+                    occur_retains,
+                    let_release_epilogues,
+                    branch_release_epilogues,
+                    arg_release_epilogue,
+                },
+            );
+
+            // Alias specialization and mode annotation should both uphold the invariant that each
+            // `first_ord::CustomFuncId` appears at most once in each SCC in the mode-specialized
+            // call graph.
+            debug_assert!(existing.is_none());
+        }
+
+        let concrete_scc = ConcreteScc {
+            concrete_funcs: scc_concrete_funcs,
+        };
+
+        match cache.get(&concrete_scc) {
+            Some(cached_scc_dedups) => {
+                for spec_id in scc {
+                    debug_assert!(known_dedups[spec_id].is_none());
+                    known_dedups[spec_id] = Some(cached_scc_dedups[&specializations[spec_id].func]);
+                }
+            }
+
+            None => {
+                // This concretization of the SCC isn't in the `cache`.
+                //
+                // We need to:
+                // - Mint fresh `rc::CustomFuncId`s for all the function specializations in this SCC
+                //   (in `concrete_funcs`)
+                // - Associate those fresh deduplicated ids to the original un-deduplicated ids for
+                //   this SCC (in `known_dedups`)
+                // - Populate `concrete_funcs` with the actual concrete RC ops associated to each
+                //   new deduplicated/concretized function we're adding
+                // - Register this concretization of the SCC in the `cache`.
+
+                let scc_fresh_ids = scc
+                    .iter()
+                    .map(|spec_id| {
+                        let fresh_id = concrete_funcs.push(None);
+
+                        debug_assert!(known_dedups[spec_id].is_none());
+                        known_dedups[spec_id] = Some(fresh_id);
+
+                        (specializations[spec_id].func, fresh_id)
+                    })
+                    .collect::<BTreeMap<_, _>>();
+
+                for (func_id, dedup_id) in &scc_fresh_ids {
+                    let ops = &concrete_scc.concrete_funcs[func_id];
+
+                    let resolved_calls = ops.calls.map(|_, &call| match call {
+                        SccCall::Call(dedup_id) => dedup_id,
+                        SccCall::RecCall(func_id) => scc_fresh_ids[&func_id],
+                    });
+
+                    let resolved_ops = ConcreteRcOps {
+                        calls: resolved_calls,
+                        release_prologues: ops.release_prologues.clone(),
+                        occur_retains: ops.occur_retains.clone(),
+                        let_release_epilogues: ops.let_release_epilogues.clone(),
+                        branch_release_epilogues: ops.branch_release_epilogues.clone(),
+                        arg_release_epilogue: ops.arg_release_epilogue.clone(),
+                    };
+
+                    debug_assert!(concrete_funcs[dedup_id].is_none());
+                    concrete_funcs[dedup_id] = Some(resolved_ops);
+                }
+
+                cache.insert(concrete_scc, scc_fresh_ids);
+            }
         }
     }
 
-    fn resolve(
-        &mut self,
-        func: first_ord::CustomFuncId,
-        version: spec::FuncVersionId,
-        modes: IdVec<ineq::ExternalVarId, mode::Mode>,
-    ) -> rc::CustomFuncId {
-        let func_instances = &mut self.instances[func][version];
-
-        if let Some(inst) = func_instances.by_modes.get(&modes) {
-            return *inst;
-        }
-
-        let concrete_ops = Rc::new(concretize_ops(
-            &modes,
-            &self.orig_funcs[func].modes[version],
-        ));
-
-        if let Some(inst) = func_instances.by_ops.get(&concrete_ops) {
-            return *inst;
-        }
-
-        let new_id = self.func_id_gen.fresh();
-
-        func_instances.by_modes.insert(modes.clone(), new_id);
-        func_instances.by_ops.insert(concrete_ops.clone(), new_id);
-
-        self.pending
-            .push_back(((func, version), new_id, modes, concrete_ops));
-
-        new_id
-    }
+    (
+        known_dedups.into_mapped(|_, dedup_id| dedup_id.unwrap()),
+        concrete_funcs.into_mapped(|_, concrete| concrete.unwrap()),
+    )
 }
 
 // TODO: Can we unify this with the `LetManyBuilder` in `flatten`, or the `LowAstBuilder` in
@@ -339,14 +465,7 @@ fn build_plan(
                 let field_type = &field_types[*idx];
                 let field_local =
                     builder.add_binding(field_type.clone(), rc::Expr::TupleField(root, *idx));
-                Some(build_plan(
-                    typedefs,
-                    rc_op,
-                    field_local,
-                    field_type,
-                    sub_plan,
-                    builder,
-                ));
+                build_plan(typedefs, rc_op, field_local, field_type, sub_plan, builder);
             }
         }
 
@@ -443,15 +562,80 @@ fn build_releases(
 
 fn resolve_expr<'a>(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-    _insts: &mut InstanceQueue,
-    _modes: &IdVec<ineq::ExternalVarId, mode::Mode>,
-    ops: &ConcreteRcOps,
+    ops: &ConcreteRcOps<rc::CustomFuncId>,
     locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
     expr: &'a fate::Expr,
     _result_type: anon::Type,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
     build_releases(typedefs, locals, &ops.release_prologues[expr.id], builder);
+
+    let build_occur =
+        |locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>, occur: fate::Local, builder| {
+            let local_info = locals.local_binding(occur.1);
+            build_rc_ops(
+                typedefs,
+                rc::RcOp::Retain,
+                local_info.new_id,
+                local_info.type_,
+                &ops.occur_retains[occur.0].retain_paths,
+                builder,
+            );
+            local_info.new_id
+        };
+
+    let _new_expr = match &expr.kind {
+        fate::ExprKind::Local(local) => {
+            let rc_local = build_occur(locals, *local, builder);
+            rc::Expr::Local(rc_local)
+        }
+
+        fate::ExprKind::Call(
+            call_id,
+            purity,
+            _func,
+            arg_aliases,
+            arg_folded_aliases,
+            arg_statuses,
+            arg_local,
+        ) => {
+            let rc_arg_local = build_occur(locals, *arg_local, builder);
+
+            let mut arg_internal_aliases = OrdMap::new();
+            for (arg_path, aliases) in arg_aliases {
+                for ((other, other_path), alias_cond) in &aliases.aliases {
+                    if other == &arg_local.1 {
+                        arg_internal_aliases
+                            .entry(NormPair::new(arg_path.clone(), other_path.clone()))
+                            .and_modify(|existing_cond| {
+                                // Each argument-internal edge appears twice in the original
+                                // `LocalAliases` structure.  The conditions on the two symmetric
+                                // occurrences should match.
+                                debug_assert_eq!(existing_cond, alias_cond);
+                            })
+                            .or_insert_with(|| alias_cond.clone());
+                    }
+                }
+            }
+
+            let rc_arg_aliases = rc::ArgAliases {
+                aliases: arg_internal_aliases,
+                folded_aliases: arg_folded_aliases.clone(),
+            };
+
+            let rc_callee_id = ops.calls[call_id];
+
+            rc::Expr::Call(
+                *purity,
+                rc_callee_id,
+                rc_arg_aliases,
+                arg_statuses.clone(),
+                rc_arg_local,
+            )
+        }
+
+        _ => todo!(),
+    };
 
     todo!()
 }

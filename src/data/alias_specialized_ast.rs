@@ -67,4 +67,5 @@ pub struct Program {
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: first_ord::CustomFuncId,
+    pub main_version: FuncVersionId,
 }

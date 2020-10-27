@@ -467,7 +467,7 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
 
     let mut insts = InstanceQueue::new(program.funcs.len());
 
-    insts.resolve(
+    let main_version = insts.resolve(
         program.main,
         // 'main' has signature 'proc () -> ()', so it has no argument or return heap paths
         FuncInstance {
@@ -570,5 +570,6 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,
+        main_version,
     }
 }

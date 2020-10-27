@@ -1612,5 +1612,6 @@ fn annot_modes(program: spec::Program) -> mode::Program {
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,
+        main_version: program.main_version,
     }
 }
