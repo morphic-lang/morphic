@@ -565,7 +565,7 @@ fn resolve_expr<'a>(
     ops: &ConcreteRcOps<rc::CustomFuncId>,
     locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
     expr: &'a fate::Expr,
-    _result_type: anon::Type,
+    result_type: anon::Type,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
     build_releases(typedefs, locals, &ops.release_prologues[expr.id], builder);
@@ -632,6 +632,39 @@ fn resolve_expr<'a>(
                 arg_statuses.clone(),
                 rc_arg_local,
             )
+        }
+
+        fate::ExprKind::Branch(discrim, cases, branch_result_type) => {
+            debug_assert_eq!(&result_type, branch_result_type);
+
+            let rc_discrim = build_occur(locals, *discrim, builder);
+
+            let rc_cases = cases
+                .iter()
+                .map(|(block_id, cond, body)| {
+                    let mut case_builder = builder.child();
+
+                    let final_local = resolve_expr(
+                        typedefs,
+                        ops,
+                        locals,
+                        body,
+                        result_type.clone(),
+                        &mut case_builder,
+                    );
+
+                    build_releases(
+                        typedefs,
+                        locals,
+                        &ops.branch_release_epilogues[block_id],
+                        &mut case_builder,
+                    );
+
+                    (cond.clone(), case_builder.to_expr(final_local))
+                })
+                .collect();
+
+            rc::Expr::Branch(rc_discrim, rc_cases, result_type.clone())
         }
 
         _ => todo!(),
