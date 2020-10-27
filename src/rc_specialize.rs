@@ -585,7 +585,7 @@ fn build_expr<'a>(
         local_info.new_id
     };
 
-    let _new_expr = match &expr.kind {
+    let new_expr = match &expr.kind {
         fate::ExprKind::Local(local) => {
             let rc_local = build_occur(locals, *local, builder);
             rc::Expr::Local(rc_local)
@@ -697,7 +697,7 @@ fn build_expr<'a>(
         _ => todo!(),
     };
 
-    todo!()
+    builder.add_binding(result_type, new_expr)
 }
 
 pub fn rc_specialize(_program: mode::Program) -> rc::Program {
