@@ -570,19 +570,20 @@ fn build_expr<'a>(
 ) -> rc::LocalId {
     build_releases(typedefs, locals, &ops.release_prologues[expr.id], builder);
 
-    let build_occur =
-        |locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>, occur: fate::Local, builder| {
-            let local_info = locals.local_binding(occur.1);
-            build_rc_ops(
-                typedefs,
-                rc::RcOp::Retain,
-                local_info.new_id,
-                local_info.type_,
-                &ops.occur_retains[occur.0].retain_paths,
-                builder,
-            );
-            local_info.new_id
-        };
+    let build_occur = |locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
+                       occur: fate::Local,
+                       builder: &mut LetManyBuilder| {
+        let local_info = locals.local_binding(occur.1);
+        build_rc_ops(
+            typedefs,
+            rc::RcOp::Retain,
+            local_info.new_id,
+            local_info.type_,
+            &ops.occur_retains[occur.0].retain_paths,
+            builder,
+        );
+        local_info.new_id
+    };
 
     let _new_expr = match &expr.kind {
         fate::ExprKind::Local(local) => {
@@ -675,6 +676,8 @@ fn build_expr<'a>(
                     sub_locals.add_local(LocalInfo { type_, new_id });
                 }
 
+                let rc_final_local = build_occur(sub_locals, *final_local, builder);
+
                 build_releases(
                     typedefs,
                     sub_locals,
@@ -682,7 +685,7 @@ fn build_expr<'a>(
                     builder,
                 );
 
-                build_occur(sub_locals, *final_local, builder)
+                rc_final_local
             });
 
             // Note: Early return!  We circumvent the usual return flow because we don't actually
