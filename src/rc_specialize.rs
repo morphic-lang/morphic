@@ -560,7 +560,7 @@ fn build_releases(
     }
 }
 
-fn resolve_expr<'a>(
+fn build_expr<'a>(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     ops: &ConcreteRcOps<rc::CustomFuncId>,
     locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
@@ -644,7 +644,7 @@ fn resolve_expr<'a>(
                 .map(|(block_id, cond, body)| {
                     let mut case_builder = builder.child();
 
-                    let final_local = resolve_expr(
+                    let final_local = build_expr(
                         typedefs,
                         ops,
                         locals,
@@ -670,8 +670,7 @@ fn resolve_expr<'a>(
         fate::ExprKind::LetMany(block_id, bindings, final_local) => {
             let rc_final_local = locals.with_scope(|sub_locals| {
                 for (type_, rhs) in bindings {
-                    let new_id =
-                        resolve_expr(typedefs, ops, sub_locals, rhs, type_.clone(), builder);
+                    let new_id = build_expr(typedefs, ops, sub_locals, rhs, type_.clone(), builder);
 
                     sub_locals.add_local(LocalInfo { type_, new_id });
                 }
