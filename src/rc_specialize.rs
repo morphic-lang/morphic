@@ -667,6 +667,31 @@ fn resolve_expr<'a>(
             rc::Expr::Branch(rc_discrim, rc_cases, result_type.clone())
         }
 
+        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+            let rc_final_local = locals.with_scope(|sub_locals| {
+                for (type_, rhs) in bindings {
+                    let new_id =
+                        resolve_expr(typedefs, ops, sub_locals, rhs, type_.clone(), builder);
+
+                    sub_locals.add_local(LocalInfo { type_, new_id });
+                }
+
+                build_releases(
+                    typedefs,
+                    sub_locals,
+                    &ops.let_release_epilogues[block_id],
+                    builder,
+                );
+
+                build_occur(sub_locals, *final_local, builder)
+            });
+
+            // Note: Early return!  We circumvent the usual return flow because we don't actually
+            // want to create an expression directly corresponding to this 'let' block.  The 'let'
+            // block's bindings just get absorbed into the ambient `builder`.
+            return rc_final_local;
+        }
+
         _ => todo!(),
     };
 
