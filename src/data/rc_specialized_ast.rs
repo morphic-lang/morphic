@@ -121,5 +121,5 @@ pub struct Program {
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
-    pub main: first_ord::CustomFuncId,
+    pub main: CustomFuncId,
 }

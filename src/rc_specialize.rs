@@ -109,6 +109,7 @@ enum SccCall {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ConcreteRcOps<Call> {
+    func: first_ord::CustomFuncId,
     calls: IdVec<fate::CallId, Call>,
     release_prologues: IdVec<fate::ExprId, Vec<(flat::LocalId, ReleasePaths)>>,
     occur_retains: IdVec<fate::OccurId, RetainPaths>,
@@ -196,9 +197,10 @@ fn concretize_occurs(
 fn deduplicate_specializations(
     funcs: &IdVec<first_ord::CustomFuncId, mode::FuncDef>,
     specializations: &IdVec<ModeSpecFuncId, ModeSpecialization>,
+    main_spec: ModeSpecFuncId,
 ) -> (
-    IdVec<ModeSpecFuncId, rc::CustomFuncId>,
     IdVec<rc::CustomFuncId, ConcreteRcOps<rc::CustomFuncId>>,
+    rc::CustomFuncId,
 ) {
     let sccs = strongly_connected(&Graph {
         edges_out: specializations.map(|_, specialization| specialization.calls.items.clone()),
@@ -263,6 +265,7 @@ fn deduplicate_specializations(
             let existing = scc_concrete_funcs.insert(
                 specialization.func,
                 ConcreteRcOps {
+                    func: specialization.func,
                     calls,
                     release_prologues,
                     occur_retains,
@@ -323,6 +326,7 @@ fn deduplicate_specializations(
                     });
 
                     let resolved_ops = ConcreteRcOps {
+                        func: ops.func,
                         calls: resolved_calls,
                         release_prologues: ops.release_prologues.clone(),
                         occur_retains: ops.occur_retains.clone(),
@@ -341,8 +345,8 @@ fn deduplicate_specializations(
     }
 
     (
-        known_dedups.into_mapped(|_, dedup_id| dedup_id.unwrap()),
         concrete_funcs.into_mapped(|_, concrete| concrete.unwrap()),
+        known_dedups[main_spec].unwrap(),
     )
 }
 
@@ -700,6 +704,70 @@ fn build_expr<'a>(
     builder.add_binding(result_type, new_expr)
 }
 
-pub fn rc_specialize(_program: mode::Program) -> rc::Program {
-    todo!()
+fn build_func(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    func_def: &mode::FuncDef,
+    ops: &ConcreteRcOps<rc::CustomFuncId>,
+) -> rc::FuncDef {
+    // The builder starts with one free local for the argument.
+    let mut builder = LetManyBuilder::new(1);
+
+    let mut locals = LocalContext::new();
+    locals.add_local(LocalInfo {
+        type_: &func_def.arg_type,
+        new_id: rc::ARG_LOCAL,
+    });
+
+    let ret_local = build_expr(
+        typedefs,
+        ops,
+        &mut locals,
+        &func_def.body,
+        func_def.ret_type.clone(),
+        &mut builder,
+    );
+
+    debug_assert_eq!(locals.len(), 1);
+
+    build_rc_ops(
+        typedefs,
+        rc::RcOp::Release,
+        rc::ARG_LOCAL,
+        &func_def.arg_type,
+        &ops.arg_release_epilogue.release_paths,
+        &mut builder,
+    );
+
+    let rc_body = builder.to_expr(ret_local);
+
+    rc::FuncDef {
+        purity: func_def.purity,
+        arg_type: func_def.arg_type.clone(),
+        ret_type: func_def.ret_type.clone(),
+        body: rc_body,
+        profile_point: func_def.profile_point,
+    }
+}
+
+pub fn rc_specialize(program: mode::Program) -> rc::Program {
+    let (specializations, main_spec) =
+        specialize_modes(&program.funcs, program.main, program.main_version);
+
+    let (concrete_ops, rc_main) =
+        deduplicate_specializations(&program.funcs, &specializations, main_spec);
+
+    let rc_func_symbols = concrete_ops.map(|_, ops| program.func_symbols[ops.func].clone());
+
+    let rc_funcs =
+        concrete_ops.map(|_, ops| build_func(&program.custom_types, &program.funcs[ops.func], ops));
+
+    rc::Program {
+        mod_symbols: program.mod_symbols,
+        custom_types: program.custom_types,
+        custom_type_symbols: program.custom_type_symbols,
+        funcs: rc_funcs,
+        func_symbols: rc_func_symbols,
+        profile_points: program.profile_points,
+        main: rc_main,
+    }
 }
