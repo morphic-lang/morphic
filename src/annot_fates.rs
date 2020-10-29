@@ -407,7 +407,7 @@ fn annot_func(
     }
 }
 
-fn annot_fates(program: mutation::Program) -> fate::Program {
+pub fn annot_fates(program: mutation::Program) -> fate::Program {
     let funcs = annot_all(
         program.funcs.len(),
         |sig_assumptions, func| annot_func(&program, sig_assumptions, &program.funcs[func]),

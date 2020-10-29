@@ -8,9 +8,12 @@ use crate::data::flat_ast as flat;
 use crate::data::intrinsics as intrs;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::purity::Purity;
+use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_unified_ast as unif;
 use crate::intrinsic_config::intrinsic_sig;
-use crate::util::graph::{connected_components, strongly_connected, Graph, Scc, Undirected};
+use crate::util::graph::{
+    acyclic_and_cyclic_sccs, connected_components, strongly_connected, Graph, Scc, Undirected,
+};
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
@@ -204,8 +207,8 @@ struct PendingSig {
 
 #[derive(Clone, Copy, Debug)]
 struct GlobalContext<'a> {
-    funcs_annot: &'a IdVec<first_ord::CustomFuncId, Option<unif::FuncDef>>,
-    sigs_pending: &'a BTreeMap<first_ord::CustomFuncId, PendingSig>,
+    funcs_annot: &'a IdVec<rc::CustomFuncId, Option<unif::FuncDef>>,
+    sigs_pending: &'a BTreeMap<rc::CustomFuncId, PendingSig>,
 }
 
 #[derive(Clone, Debug)]
@@ -213,11 +216,10 @@ enum SolverCall {
     KnownCall(unif::SolvedCall<SolverVarId>),
     PendingCall(
         Purity,
-        first_ord::CustomFuncId,
-        OrdMap<alias::FieldPath, alias::LocalAliases>,
-        OrdMap<alias::FieldPath, alias::FoldedAliases>,
+        rc::CustomFuncId,
+        rc::ArgAliases,
         OrdMap<alias::FieldPath, mutation::LocalStatus>,
-        flat::LocalId,
+        rc::LocalId,
     ),
 }
 
@@ -474,16 +476,16 @@ fn instantiate_expr(
     typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
     globals: GlobalContext,
     graph: &mut ConstraintGraph,
-    locals: &mut LocalContext<flat::LocalId, SolverType>,
-    expr: &mutation::Expr,
+    locals: &mut LocalContext<rc::LocalId, SolverType>,
+    expr: &rc::Expr,
 ) -> (SolverExpr, SolverType) {
     match expr {
-        mutation::Expr::Local(local) => (
+        rc::Expr::Local(local) => (
             unif::Expr::Local(*local),
             locals.local_binding(*local).clone(),
         ),
 
-        mutation::Expr::Call(purity, func, arg_aliases, arg_folded_aliases, arg_statuses, arg) => {
+        rc::Expr::Call(purity, func, arg_aliases, arg_statuses, arg) => {
             match &globals.funcs_annot[func] {
                 Some(def_annot) => {
                     let rep_vars = IdVec::from_items(
@@ -500,7 +502,6 @@ fn instantiate_expr(
                         *func,
                         rep_vars,
                         arg_aliases.clone(),
-                        arg_folded_aliases.clone(),
                         arg_statuses.clone(),
                         *arg,
                     )));
@@ -519,7 +520,6 @@ fn instantiate_expr(
                         *purity,
                         *func,
                         arg_aliases.clone(),
-                        arg_folded_aliases.clone(),
                         arg_statuses.clone(),
                         *arg,
                     ));
@@ -529,7 +529,7 @@ fn instantiate_expr(
             }
         }
 
-        mutation::Expr::Branch(discrim, cases, result_type) => {
+        rc::Expr::Branch(discrim, cases, result_type) => {
             let result_type_inst = instantiate_type(typedefs, graph, result_type);
 
             let cases_inst = cases
@@ -552,7 +552,7 @@ fn instantiate_expr(
             (expr_inst, result_type_inst)
         }
 
-        mutation::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
+        rc::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
             let bindings_inst = bindings
                 .iter()
                 .map(|(_type, binding)| {
@@ -572,7 +572,7 @@ fn instantiate_expr(
             (expr_inst, result_type)
         }),
 
-        mutation::Expr::Tuple(items) => {
+        rc::Expr::Tuple(items) => {
             let item_types = items
                 .iter()
                 .map(|&item| locals.local_binding(item).clone())
@@ -584,7 +584,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::TupleField(tuple, idx) => {
+        rc::Expr::TupleField(tuple, idx) => {
             let item_type = if let unif::Type::Tuple(item_types) = locals.local_binding(*tuple) {
                 item_types[*idx].clone()
             } else {
@@ -594,7 +594,7 @@ fn instantiate_expr(
             (unif::Expr::TupleField(*tuple, *idx), item_type)
         }
 
-        mutation::Expr::WrapVariant(variant_types, variant, content) => {
+        rc::Expr::WrapVariant(variant_types, variant, content) => {
             let variant_types_inst = variant_types
                 .map(|_, variant_type| instantiate_type(typedefs, graph, variant_type));
 
@@ -610,7 +610,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::UnwrapVariant(variant, wrapped) => {
+        rc::Expr::UnwrapVariant(variant, wrapped) => {
             let variant_type =
                 if let unif::Type::Variants(variant_types) = locals.local_binding(*wrapped) {
                     variant_types[variant].clone()
@@ -621,7 +621,7 @@ fn instantiate_expr(
             (unif::Expr::UnwrapVariant(*variant, *wrapped), variant_type)
         }
 
-        mutation::Expr::WrapBoxed(content, _content_type) => {
+        rc::Expr::WrapBoxed(content, _content_type) => {
             let content_type = locals.local_binding(*content);
 
             (
@@ -630,7 +630,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::UnwrapBoxed(boxed, _content_type) => {
+        rc::Expr::UnwrapBoxed(boxed, _content_type) => {
             let content_type = if let unif::Type::Boxed(content) = locals.local_binding(*boxed) {
                 content
             } else {
@@ -643,7 +643,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::WrapCustom(custom, content) => {
+        rc::Expr::WrapCustom(custom, content) => {
             let typedef = &typedefs[custom];
 
             let rep_vars =
@@ -658,7 +658,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::UnwrapCustom(custom, wrapped) => {
+        rc::Expr::UnwrapCustom(custom, wrapped) => {
             let typedef = &typedefs[custom];
 
             let rep_vars = if let unif::Type::Custom(wrapped_custom, rep_vars) =
@@ -679,7 +679,36 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::Intrinsic(intr, arg) => {
+        // TODO: Consider removing inner_type from `rc::Expr::RcOp`, because we don't actually need
+        // to use it here.
+        rc::Expr::RcOp(op, container, _inner_type, local) => {
+            let (unif_container, inner_type_inst) = match (container, locals.local_binding(*local))
+            {
+                (rc::ContainerType::Array, unif::Type::Array(rep_var, inner_type_inst)) => (
+                    unif::ContainerType::Array(*rep_var),
+                    (**inner_type_inst).clone(),
+                ),
+                (rc::ContainerType::HoleArray, unif::Type::HoleArray(rep_var, inner_type_inst)) => {
+                    (
+                        unif::ContainerType::HoleArray(*rep_var),
+                        (**inner_type_inst).clone(),
+                    )
+                }
+                (rc::ContainerType::Boxed, unif::Type::Boxed(inner_type_inst)) => {
+                    (unif::ContainerType::Boxed, (**inner_type_inst).clone())
+                }
+                (rc::ContainerType::Array, _)
+                | (rc::ContainerType::HoleArray, _)
+                | (rc::ContainerType::Boxed, _) => unreachable!(),
+            };
+
+            (
+                unif::Expr::RcOp(*op, unif_container, inner_type_inst, *local),
+                unif::Type::Tuple(vec![]),
+            )
+        }
+
+        rc::Expr::Intrinsic(intr, arg) => {
             let (arg_inst, ret_inst) = instantiate_intrinsic_sig(&intrinsic_sig(*intr));
 
             // NOTE [intrinsics]: Currently, this is just an internal consistency check.  However,
@@ -690,13 +719,7 @@ fn instantiate_expr(
             (unif::Expr::Intrinsic(*intr, *arg), ret_inst)
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Item(
-            _item_type,
-            _array_aliases,
-            array_status,
-            array,
-            index,
-        )) => {
+        rc::Expr::ArrayOp(rc::ArrayOp::Item(_item_type, array_status, array, index)) => {
             let (rep_var, item_type_inst) =
                 if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
@@ -718,12 +741,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Len(
-            _item_type,
-            _array_aliases,
-            array_status,
-            array,
-        )) => {
+        rc::Expr::ArrayOp(rc::ArrayOp::Len(_item_type, array_status, array)) => {
             let (rep_var, item_type_inst) =
                 if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
@@ -742,13 +760,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Push(
-            _item_type,
-            _array_aliases,
-            array_status,
-            array,
-            item,
-        )) => {
+        rc::Expr::ArrayOp(rc::ArrayOp::Push(_item_type, array_status, array, item)) => {
             let (rep_var, array_item_type) =
                 if let unif::Type::Array(rep_var, array_item_type) = locals.local_binding(*array) {
                     (*rep_var, array_item_type as &unif::Type<_>)
@@ -771,12 +783,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Pop(
-            _item_type,
-            _array_aliases,
-            array_status,
-            array,
-        )) => {
+        rc::Expr::ArrayOp(rc::ArrayOp::Pop(_item_type, array_status, array)) => {
             let (rep_var, item_type_inst) =
                 if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
@@ -798,9 +805,8 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Replace(
+        rc::Expr::ArrayOp(rc::ArrayOp::Replace(
             _item_type,
-            _array_aliases,
             hole_array_status,
             hole_array,
             item,
@@ -829,16 +835,16 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::IoOp(mutation::IoOp::Input) => {
+        rc::Expr::IoOp(rc::IoOp::Input) => {
             let rep_var = graph.new_var();
 
             (
-                unif::Expr::IoOp(rep_var, mutation::IoOp::Input),
+                unif::Expr::IoOp(rep_var, rc::IoOp::Input),
                 unif::Type::Array(rep_var, Box::new(unif::Type::Num(first_ord::NumType::Byte))),
             )
         }
 
-        mutation::Expr::IoOp(mutation::IoOp::Output(array_aliases, array_status, byte_array)) => {
+        rc::Expr::IoOp(rc::IoOp::Output(array_status, byte_array)) => {
             let rep_var =
                 if let unif::Type::Array(rep_var, item_type) = locals.local_binding(*byte_array) {
                     debug_assert_eq!(
@@ -851,19 +857,12 @@ fn instantiate_expr(
                 };
 
             (
-                unif::Expr::IoOp(
-                    rep_var,
-                    mutation::IoOp::Output(
-                        array_aliases.clone(),
-                        array_status.clone(),
-                        *byte_array,
-                    ),
-                ),
+                unif::Expr::IoOp(rep_var, rc::IoOp::Output(array_status.clone(), *byte_array)),
                 unif::Type::Tuple(Vec::new()),
             )
         }
 
-        mutation::Expr::Panic(ret_type, array_status, byte_array) => {
+        rc::Expr::Panic(ret_type, array_status, byte_array) => {
             let rep_var =
                 if let unif::Type::Array(rep_var, item_type) = locals.local_binding(*byte_array) {
                     debug_assert_eq!(
@@ -888,7 +887,7 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::ArrayLit(item_type, items) => {
+        rc::Expr::ArrayLit(item_type, items) => {
             let rep_var = graph.new_var();
 
             let item_type_inst = instantiate_type(typedefs, graph, item_type);
@@ -903,19 +902,19 @@ fn instantiate_expr(
             )
         }
 
-        mutation::Expr::BoolLit(val) => (unif::Expr::BoolLit(*val), unif::Type::Bool),
+        rc::Expr::BoolLit(val) => (unif::Expr::BoolLit(*val), unif::Type::Bool),
 
-        mutation::Expr::ByteLit(val) => (
+        rc::Expr::ByteLit(val) => (
             unif::Expr::ByteLit(*val),
             unif::Type::Num(first_ord::NumType::Byte),
         ),
 
-        mutation::Expr::IntLit(val) => (
+        rc::Expr::IntLit(val) => (
             unif::Expr::IntLit(*val),
             unif::Type::Num(first_ord::NumType::Int),
         ),
 
-        mutation::Expr::FloatLit(val) => (
+        rc::Expr::FloatLit(val) => (
             unif::Expr::FloatLit(*val),
             unif::Type::Num(first_ord::NumType::Float),
         ),
@@ -1118,7 +1117,7 @@ fn extract_expr(
     to_unified: &IdVec<SolverVarId, UnifiedVarId>,
     this_solutions: &IdVec<UnifiedVarId, unif::RepSolution>,
     scc_sigs: &BTreeMap<
-        first_ord::CustomFuncId,
+        rc::CustomFuncId,
         (
             unif::Type<unif::RepParamId>,
             unif::Type<unif::RepParamId>,
@@ -1135,7 +1134,6 @@ fn extract_expr(
             func,
             rep_args,
             arg_aliases,
-            arg_folded_aliases,
             arg_statuses,
             arg,
         ))) => unif::Expr::Call(unif::SolvedCall(
@@ -1143,19 +1141,11 @@ fn extract_expr(
             func,
             rep_args.map(|_, arg| this_solutions[to_unified[arg]]),
             arg_aliases,
-            arg_folded_aliases,
             arg_statuses,
             arg,
         )),
 
-        unif::Expr::Call(SolverCall::PendingCall(
-            purity,
-            func,
-            arg_aliases,
-            arg_folded_aliases,
-            arg_statuses,
-            arg,
-        )) => {
+        unif::Expr::Call(SolverCall::PendingCall(purity, func, arg_aliases, arg_statuses, arg)) => {
             let (_, _, func_partition) = &scc_sigs[&func];
 
             unif::Expr::Call(unif::SolvedCall(
@@ -1165,7 +1155,6 @@ fn extract_expr(
                     .params
                     .map(|_, unified| this_solutions[unified]),
                 arg_aliases,
-                arg_folded_aliases,
                 arg_statuses,
                 arg,
             ))
@@ -1239,6 +1228,25 @@ fn extract_expr(
             unif::Expr::UnwrapCustom(custom, rep_args_extracted, wrapped)
         }
 
+        unif::Expr::RcOp(op, container, inner_type, local) => {
+            let container_extracted = match container {
+                unif::ContainerType::Array(rep_var) => {
+                    unif::ContainerType::Array(this_solutions[to_unified[rep_var]])
+                }
+                unif::ContainerType::HoleArray(rep_var) => {
+                    unif::ContainerType::HoleArray(this_solutions[to_unified[rep_var]])
+                }
+                unif::ContainerType::Boxed => unif::ContainerType::Boxed,
+            };
+
+            unif::Expr::RcOp(
+                op,
+                container_extracted,
+                extract_type(to_unified, this_solutions, inner_type),
+                local,
+            )
+        }
+
         unif::Expr::Intrinsic(intr, arg) => unif::Expr::Intrinsic(intr, arg),
 
         unif::Expr::ArrayOp(rep_var, item_type, array_status, op) => unif::Expr::ArrayOp(
@@ -1273,10 +1281,10 @@ fn extract_expr(
 #[allow(unused_variables)]
 fn unify_func_scc(
     typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
-    orig_funcs: &IdVec<first_ord::CustomFuncId, mutation::FuncDef>,
-    funcs_annot: &IdVec<first_ord::CustomFuncId, Option<unif::FuncDef>>,
-    scc: &[first_ord::CustomFuncId],
-) -> BTreeMap<first_ord::CustomFuncId, unif::FuncDef> {
+    orig_funcs: &IdVec<rc::CustomFuncId, rc::FuncDef>,
+    funcs_annot: &IdVec<rc::CustomFuncId, Option<unif::FuncDef>>,
+    scc: &[rc::CustomFuncId],
+) -> BTreeMap<rc::CustomFuncId, unif::FuncDef> {
     let mut graph = ConstraintGraph::new();
 
     let sigs_pending = scc
@@ -1415,11 +1423,45 @@ fn unify_func_scc(
     solved_funcs
 }
 
-pub fn unify_reprs(program: mutation::Program) -> unif::Program {
+fn add_func_deps(deps: &mut BTreeSet<rc::CustomFuncId>, expr: &rc::Expr) {
+    match expr {
+        rc::Expr::Call(_, other, _, _, _) => {
+            deps.insert(*other);
+        }
+
+        rc::Expr::Branch(_, cases, _) => {
+            for (_, body) in cases {
+                add_func_deps(deps, body);
+            }
+        }
+
+        rc::Expr::LetMany(bindings, _) => {
+            for (_, rhs) in bindings {
+                add_func_deps(deps, rhs);
+            }
+        }
+
+        _ => {}
+    }
+}
+
+fn func_dependency_graph(program: &rc::Program) -> Graph<rc::CustomFuncId> {
+    Graph {
+        edges_out: program.funcs.map(|_, func_def| {
+            let mut deps = BTreeSet::new();
+            add_func_deps(&mut deps, &func_def.body);
+            deps.into_iter().collect()
+        }),
+    }
+}
+
+pub fn unify_reprs(program: rc::Program) -> unif::Program {
     let typedefs = parameterize_typedefs(&program.custom_types);
 
+    let sccs = acyclic_and_cyclic_sccs(&func_dependency_graph(&program));
+
     let mut funcs_annot = IdVec::from_items(vec![None; program.funcs.len()]);
-    for scc in &program.sccs {
+    for scc in &sccs {
         let scc_annot = match scc {
             Scc::Acyclic(func) => unify_func_scc(&typedefs, &program.funcs, &funcs_annot, &[*func]),
             Scc::Cyclic(funcs) => unify_func_scc(&typedefs, &program.funcs, &funcs_annot, funcs),
@@ -1440,6 +1482,6 @@ pub fn unify_reprs(program: mutation::Program) -> unif::Program {
         profile_points: program.profile_points,
         main: program.main,
 
-        sccs: program.sccs,
+        sccs,
     }
 }

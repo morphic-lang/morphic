@@ -1,9 +1,9 @@
-use crate::data::first_order_ast as first_ord;
 use crate::data::mutation_annot_ast as mutation;
+use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_unified_ast as unif;
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
-use crate::mutation_status::translate_callee_status_cond_disj;
+use crate::mutation_status::translate_callee_status_cond_disj_post_rc;
 use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
 
@@ -41,7 +41,7 @@ fn constrain_var(
 }
 
 fn constrain_expr(
-    sigs: &SignatureAssumptions<first_ord::CustomFuncId, constrain::FuncRepConstraints>,
+    sigs: &SignatureAssumptions<rc::CustomFuncId, constrain::FuncRepConstraints>,
     params: &mut IdVec<unif::RepParamId, constrain::ParamConstraints>,
     internal: &mut IdVec<unif::InternalRepVarId, constrain::RepChoice>,
     expr: &unif::Expr<unif::SolvedCall<unif::RepSolution>, unif::RepSolution>,
@@ -52,17 +52,14 @@ fn constrain_expr(
             func,
             rep_vars,
             arg_aliases,
-            arg_folded_aliases,
             arg_statuses,
-            arg,
+            _arg,
         )) => {
             if let Some(callee_sig) = sigs.sig_of(func) {
                 for (callee_param, callee_constraint) in callee_sig {
                     let caller_rep_var = rep_vars[callee_param];
-                    let caller_cond = translate_callee_status_cond_disj(
-                        *arg,
+                    let caller_cond = translate_callee_status_cond_disj_post_rc(
                         arg_aliases,
-                        arg_folded_aliases,
                         arg_statuses,
                         &callee_constraint.fallback_immut_if,
                     );
@@ -87,7 +84,7 @@ fn constrain_expr(
         }
 
         unif::Expr::ArrayOp(rep_var, _, status, _)
-        | unif::Expr::IoOp(rep_var, mutation::IoOp::Output(_, status, _))
+        | unif::Expr::IoOp(rep_var, rc::IoOp::Output(status, _))
         | unif::Expr::Panic(_, rep_var, status, _) => {
             constrain_var(params, internal, *rep_var, status.mutated_cond.clone())
         }
@@ -103,12 +100,15 @@ fn constrain_expr(
         | unif::Expr::UnwrapBoxed(_, _)
         | unif::Expr::WrapCustom(_, _, _)
         | unif::Expr::UnwrapCustom(_, _, _)
-        | unif::Expr::IoOp(_, mutation::IoOp::Input)
+        | unif::Expr::IoOp(_, rc::IoOp::Input)
         | unif::Expr::ArrayLit(_, _, _)
         | unif::Expr::BoolLit(_)
         | unif::Expr::ByteLit(_)
         | unif::Expr::IntLit(_)
         | unif::Expr::FloatLit(_) => {}
+
+        // TODO: We will need to add a constraint here to support single-boxed arrays
+        unif::Expr::RcOp(_, _, _, _) => {}
 
         // NOTE [intrinsics]: If we ever add array intrinsics in the future, this will need to be
         // modified.
@@ -117,7 +117,7 @@ fn constrain_expr(
 }
 
 fn constrain_func(
-    sigs: &SignatureAssumptions<first_ord::CustomFuncId, constrain::FuncRepConstraints>,
+    sigs: &SignatureAssumptions<rc::CustomFuncId, constrain::FuncRepConstraints>,
     func_def: &unif::FuncDef,
 ) -> constrain::FuncRepConstraints {
     let mut param_constraints = IdVec::from_items(vec![

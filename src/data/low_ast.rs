@@ -95,6 +95,7 @@ pub enum Expr {
         Type, // Inner type
     ), // Does not touch refcount
 
+    // TODO: Consider using the same representation as the RC-specialized AST and subsequent passes
     Retain(LocalId, Type),  // Takes any type, returns unit
     Release(LocalId, Type), // Takes any type, returns unit
 

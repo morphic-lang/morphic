@@ -1,232 +1,13 @@
 use crate::data::first_order_ast as first_ord;
-use crate::data::flat_ast as flat;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
+use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
 use crate::data::tail_rec_ast as tail;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
-use im_rc::OrdMap;
-use im_rc::OrdSet;
 
-#[derive(Clone, Debug)]
-struct MoveInfo {
-    move_info: OrdMap<flat::LocalId, u64>,
-}
-
-#[derive(Clone, Debug)]
-struct FutureUsageInfo {
-    future_usages: OrdSet<flat::LocalId>,
-}
-
-#[derive(Clone, Debug)]
-struct AnnotExpr {
-    kind: AnnotExprKind,
-    move_info: MoveInfo,
-}
-
-#[derive(Clone, Debug)]
-enum AnnotExprKind {
-    Branch(
-        flat::LocalId,
-        Vec<(special::Condition, AnnotExpr)>,
-        special::Type,
-    ),
-    LetMany(
-        Vec<(special::Type, AnnotExpr, FutureUsageInfo)>,
-        flat::LocalId,
-    ),
-    Leaf(tail::Expr),
-}
-
-fn annotate_expr(
-    expr: tail::Expr,
-    future_usages: &FutureUsageInfo,
-    ids_in_scope: usize,
-) -> AnnotExpr {
-    match expr {
-        tail::Expr::LetMany(exprs, final_local) => {
-            let mut current_future_usages = future_usages.clone();
-            current_future_usages.future_usages.insert(final_local);
-
-            let mut let_move_info = MoveInfo {
-                move_info: OrdMap::new(),
-            };
-            if final_local.0 < ids_in_scope {
-                if !current_future_usages.future_usages.contains(&final_local) {
-                    let_move_info.move_info.insert(final_local, 1);
-                } else {
-                    let_move_info.move_info.insert(final_local, 0);
-                }
-            }
-
-            let mut new_bindings_reversed = Vec::new();
-
-            for (index, (type_, binding)) in exprs.into_iter().enumerate().rev() {
-                let post_binding_future_usages = current_future_usages.clone();
-
-                current_future_usages
-                    .future_usages
-                    .remove(&flat::LocalId(index + ids_in_scope));
-
-                let annotated_binding =
-                    annotate_expr(binding, &current_future_usages, ids_in_scope + index);
-
-                let binding_move_info = annotated_binding.move_info.clone();
-
-                new_bindings_reversed.push((type_, annotated_binding, post_binding_future_usages));
-
-                for (var, _moves) in &binding_move_info.move_info {
-                    if var.0 < ids_in_scope {
-                        let entry = let_move_info.move_info.entry(*var).or_insert(0);
-                        if !current_future_usages.future_usages.contains(var) {
-                            *entry = 1;
-                        }
-                    }
-                }
-                for var in binding_move_info.move_info.keys() {
-                    current_future_usages.future_usages.insert(*var);
-                }
-            }
-
-            let mut new_bindings = new_bindings_reversed;
-            new_bindings.reverse();
-
-            AnnotExpr {
-                kind: AnnotExprKind::LetMany(new_bindings, final_local),
-                move_info: let_move_info,
-            }
-        }
-
-        tail::Expr::Branch(discrim, cases, res_type) => {
-            let mut branch_move_info = MoveInfo {
-                move_info: OrdMap::unit(discrim, 0),
-            };
-            if !future_usages.future_usages.contains(&discrim) {
-                branch_move_info.move_info.insert(discrim, 1);
-            }
-
-            let mut new_cases = Vec::new();
-
-            for (cond, body) in cases {
-                let annotated_body = annotate_expr(body, future_usages, ids_in_scope);
-
-                for (var, _move_count) in &annotated_body.move_info.move_info {
-                    let entry = branch_move_info.move_info.entry(*var).or_insert(0);
-                    if !future_usages.future_usages.contains(var) {
-                        *entry = 1;
-                    }
-                }
-
-                new_cases.push((cond, annotated_body));
-            }
-
-            AnnotExpr {
-                move_info: branch_move_info,
-                kind: AnnotExprKind::Branch(discrim, new_cases, res_type),
-            }
-        }
-
-        _ => AnnotExpr {
-            move_info: count_moves(&expr),
-            kind: AnnotExprKind::Leaf(expr),
-        },
-    }
-}
-
-impl MoveInfo {
-    fn add_borrow(&mut self, local_id: flat::LocalId) {
-        self.move_info.entry(local_id).or_insert(0);
-    }
-
-    fn add_move(&mut self, local_id: flat::LocalId) {
-        *self.move_info.entry(local_id).or_insert(0) += 1;
-    }
-}
-
-fn count_moves(expr: &tail::Expr) -> MoveInfo {
-    let mut move_info = MoveInfo {
-        move_info: OrdMap::new(),
-    };
-
-    match expr {
-        tail::Expr::Local(local_id) => move_info.add_move(*local_id),
-
-        tail::Expr::Call(_, _, local_id) | tail::Expr::TailCall(_, local_id) => {
-            move_info.add_move(*local_id)
-        }
-
-        tail::Expr::Tuple(local_ids) => {
-            for local_id in local_ids {
-                move_info.add_move(*local_id);
-            }
-        }
-        tail::Expr::TupleField(local_id, _index) => move_info.add_borrow(*local_id),
-
-        tail::Expr::WrapVariant(_variants, _variant_id, local_id) => {
-            move_info.add_move(*local_id);
-        }
-        tail::Expr::UnwrapVariant(_variant_id, local_id) => move_info.add_move(*local_id),
-
-        tail::Expr::WrapBoxed(local_id, _content_type) => move_info.add_move(*local_id),
-        tail::Expr::UnwrapBoxed(local_id, _content_type) => move_info.add_borrow(*local_id),
-
-        tail::Expr::WrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
-        tail::Expr::UnwrapCustom(_type_id, local_id) => move_info.add_move(*local_id),
-
-        // NOTE [intrinsics]: If we ever add intrinsics which can take heap values as arguments, we
-        // may need to modify this.
-        tail::Expr::Intrinsic(_intr, local_id) => move_info.add_move(*local_id),
-        tail::Expr::ArrayOp(_rep_choice, _item_type, array_op) => match array_op {
-            unif::ArrayOp::Item(array_id, index_id) => {
-                move_info.add_borrow(*array_id);
-                move_info.add_move(*index_id);
-            }
-            unif::ArrayOp::Len(array_id) => {
-                move_info.add_borrow(*array_id);
-            }
-            unif::ArrayOp::Push(array_id, item_id) => {
-                move_info.add_move(*array_id);
-                move_info.add_move(*item_id);
-            }
-            unif::ArrayOp::Pop(array_id) => {
-                move_info.add_move(*array_id);
-            }
-            unif::ArrayOp::Replace(array_id, item_id) => {
-                move_info.add_move(*array_id);
-                move_info.add_move(*item_id);
-            }
-        },
-        tail::Expr::IoOp(_rep_choice, io_op) => match io_op {
-            flat::IoOp::Input => {}
-            flat::IoOp::Output(local_id) => {
-                move_info.add_borrow(*local_id);
-            }
-        },
-        tail::Expr::Panic(_ret_type, _rep_choice, message) => {
-            move_info.add_borrow(*message);
-        }
-
-        tail::Expr::ArrayLit(_rep_choice, _item_type, elem_ids) => {
-            for elem_id in elem_ids {
-                move_info.add_move(*elem_id);
-            }
-        }
-        tail::Expr::BoolLit(_)
-        | tail::Expr::ByteLit(_)
-        | tail::Expr::IntLit(_)
-        | tail::Expr::FloatLit(_) => {}
-
-        tail::Expr::LetMany(_, _) => unreachable![],
-        tail::Expr::Branch(_, _, _) => unreachable![],
-    }
-
-    move_info
-}
-
-// we need to add retain and releases
-// every time we have a syntactic occurence of a variable, we need to add a retain
 // we need to change branches to ifs
 // we need to unwrap array literals
 
@@ -443,11 +224,10 @@ fn lower_condition(
 }
 
 fn lower_branch(
-    discrim: flat::LocalId,
-    cases: &[(special::Condition, AnnotExpr)],
+    discrim: rc::LocalId,
+    cases: &[(special::Condition, tail::Expr)],
     result_type: &low::Type,
-    move_info: &MoveInfo,
-    context: &mut LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
+    context: &mut LocalContext<rc::LocalId, (special::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
 ) -> low::LocalId {
@@ -466,42 +246,9 @@ fn lower_branch(
             );
 
             let mut then_builder = builder.child();
-            for (var, move_count) in &body.move_info.move_info {
-                let context_info = context.local_binding(*var);
-                for _ in move_info.move_info[var]..*move_count {
-                    then_builder.add_expr(
-                        low::Type::Tuple(vec![]),
-                        low::Expr::Retain(context_info.1, context_info.0.clone()),
-                    );
-                }
-            }
-
-            for (var, move_count) in &move_info.move_info {
-                debug_assert!(*move_count == 0 || *move_count == 1);
-                let context_info = context.local_binding(*var);
-                if *move_count == 1 && !body.move_info.move_info.contains_key(&var) {
-                    then_builder.add_expr(
-                        low::Type::Tuple(vec![]),
-                        low::Expr::Release(context_info.1, context_info.0.clone()),
-                    );
-                }
-            }
 
             let then_final_id = lower_expr(body, result_type, context, &mut then_builder, typedefs);
 
-            for (var, move_count) in &body.move_info.move_info {
-                let branch_move_count = move_info.move_info[var];
-
-                debug_assert!(branch_move_count == 0 || branch_move_count == 1);
-
-                let context_info = context.local_binding(*var);
-                if branch_move_count == 1 && *move_count == 0 {
-                    then_builder.add_expr(
-                        low::Type::Tuple(vec![]),
-                        low::Expr::Release(context_info.1, context_info.0.clone()),
-                    );
-                }
-            }
             let then_branch = then_builder.build(then_final_id);
 
             let mut else_builder = builder.child();
@@ -509,7 +256,7 @@ fn lower_branch(
                 discrim,
                 &cases[1..],
                 result_type,
-                move_info,
+                // move_info,
                 context,
                 &mut else_builder,
                 typedefs,
@@ -525,23 +272,33 @@ fn lower_branch(
     }
 }
 
-impl flat::LocalId {
+impl rc::LocalId {
     fn lookup_in(
         &self,
-        context: &LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
+        context: &LocalContext<rc::LocalId, (special::Type, low::LocalId)>,
     ) -> low::LocalId {
         context.local_binding(*self).1
     }
 }
 
-fn lower_leaf(
+fn lower_expr(
     expr: &tail::Expr,
     result_type: &low::Type,
-    context: &LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
+    context: &mut LocalContext<rc::LocalId, (special::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
     typedefs: &IdVec<special::CustomTypeId, special::Type>,
 ) -> low::LocalId {
     match expr {
+        tail::Expr::LetMany(bindings, final_local_id) => context.with_scope(|subcontext| {
+            for (type_, binding) in bindings {
+                let low_binding_id = lower_expr(binding, &type_, subcontext, builder, typedefs);
+                subcontext.add_local((type_.clone(), low_binding_id));
+            }
+            subcontext.local_binding(*final_local_id).1
+        }),
+        tail::Expr::Branch(discrim, cases, result_type) => {
+            lower_branch(*discrim, cases, result_type, context, builder, typedefs)
+        }
         tail::Expr::Local(local_id) => local_id.lookup_in(context),
         tail::Expr::Call(_purity, func_id, arg_id) => builder.add_expr(
             result_type.clone(),
@@ -565,10 +322,6 @@ fn lower_leaf(
                 result_type.clone(),
                 low::Expr::TupleField(tuple_id.lookup_in(context), *index),
             );
-            builder.add_expr(
-                low::Type::Tuple(vec![]),
-                low::Expr::Retain(tuple_elem_id, result_type.clone()),
-            );
             tuple_elem_id
         }
         tail::Expr::WrapBoxed(content_id, content_type) => builder.add_expr(
@@ -579,10 +332,6 @@ fn lower_leaf(
             let content_id = builder.add_expr(
                 result_type.clone(),
                 low::Expr::UnwrapBoxed(boxed_id.lookup_in(context), content_type.clone()),
-            );
-            builder.add_expr(
-                low::Type::Tuple(vec![]),
-                low::Expr::Retain(content_id, result_type.clone()),
             );
             content_id
         }
@@ -618,6 +367,27 @@ fn lower_leaf(
             typedefs[type_id].clone(),
             low::Expr::UnwrapCustom(*type_id, wrapped_id.lookup_in(context)),
         ),
+        tail::Expr::RcOp(op, container, inner_type, local_id) => {
+            let container_type = match container {
+                &unif::ContainerType::Array(rep) => {
+                    low::Type::Array(rep, Box::new(inner_type.clone()))
+                }
+                &unif::ContainerType::HoleArray(rep) => {
+                    low::Type::HoleArray(rep, Box::new(inner_type.clone()))
+                }
+                &unif::ContainerType::Boxed => low::Type::Boxed(Box::new(inner_type.clone())),
+            };
+            match op {
+                rc::RcOp::Retain => builder.add_expr(
+                    low::Type::Tuple(vec![]),
+                    low::Expr::Retain(local_id.lookup_in(context), container_type),
+                ),
+                rc::RcOp::Release => builder.add_expr(
+                    low::Type::Tuple(vec![]),
+                    low::Expr::Release(local_id.lookup_in(context), container_type),
+                ),
+            }
+        }
         tail::Expr::Intrinsic(intr, local_id) => builder.add_expr(
             result_type.clone(),
             low::Expr::Intrinsic(*intr, local_id.lookup_in(context)),
@@ -646,8 +416,8 @@ fn lower_leaf(
             low::Expr::IoOp(
                 *rep,
                 match io_type {
-                    flat::IoOp::Input => low::IoOp::Input,
-                    flat::IoOp::Output(output_id) => {
+                    special::IoOp::Input => low::IoOp::Input,
+                    special::IoOp::Output(output_id) => {
                         low::IoOp::Output(output_id.lookup_in(context))
                     }
                 },
@@ -682,91 +452,6 @@ fn lower_leaf(
         tail::Expr::FloatLit(val) => {
             builder.add_expr(result_type.clone(), low::Expr::FloatLit(*val))
         }
-
-        tail::Expr::Branch(_, _, _) | tail::Expr::LetMany(_, _) => {
-            unreachable![];
-        }
-    }
-}
-
-fn lower_expr(
-    expr: &AnnotExpr,
-    result_type: &low::Type,
-    context: &mut LocalContext<flat::LocalId, (special::Type, low::LocalId)>,
-    builder: &mut LowAstBuilder,
-    typedefs: &IdVec<special::CustomTypeId, special::Type>,
-) -> low::LocalId {
-    match &expr.kind {
-        AnnotExprKind::LetMany(bindings, final_local_id) => {
-            context.with_scope(|subcontext| {
-                for (type_, binding, future_usages) in bindings {
-                    // emit retains
-                    for (var, move_count) in &binding.move_info.move_info {
-                        if *move_count != 0 {
-                            let retain_count = if future_usages.future_usages.contains(var) {
-                                *move_count
-                            } else {
-                                *move_count - 1
-                            };
-
-                            let var_info = subcontext.local_binding(*var);
-
-                            for _retain in 0..retain_count {
-                                builder.add_expr(
-                                    low::Type::Tuple(vec![]),
-                                    low::Expr::Retain(var_info.1, var_info.0.clone()),
-                                );
-                            }
-                        }
-                    }
-
-                    // emit expressions
-                    let low_binding_id = lower_expr(binding, &type_, subcontext, builder, typedefs);
-                    let flat_binding_id = subcontext.add_local((type_.clone(), low_binding_id));
-
-                    // emit releases
-                    for (var, move_count) in &binding.move_info.move_info {
-                        let var_info = subcontext.local_binding(*var);
-                        if *move_count == 0 && !future_usages.future_usages.contains(var) {
-                            builder.add_expr(
-                                low::Type::Tuple(vec![]),
-                                low::Expr::Release(var_info.1, var_info.0.clone()),
-                            );
-                        }
-                    }
-
-                    if !future_usages.future_usages.contains(&flat_binding_id) {
-                        builder.add_expr(
-                            low::Type::Tuple(vec![]),
-                            low::Expr::Release(
-                                subcontext.local_binding(flat_binding_id).1,
-                                type_.clone(),
-                            ),
-                        );
-                    }
-                }
-
-                if expr.move_info.move_info.get(final_local_id) == Some(&0) {
-                    let var_info = subcontext.local_binding(*final_local_id);
-                    builder.add_expr(
-                        low::Type::Tuple(vec![]),
-                        low::Expr::Retain(var_info.1, var_info.0.clone()),
-                    );
-                }
-
-                subcontext.local_binding(*final_local_id).1
-            })
-        }
-        AnnotExprKind::Branch(discrim, cases, result_type) => lower_branch(
-            *discrim,
-            cases,
-            result_type,
-            &expr.move_info,
-            context,
-            builder,
-            typedefs,
-        ),
-        AnnotExprKind::Leaf(leaf) => lower_leaf(leaf, result_type, context, builder, typedefs),
     }
 }
 
@@ -776,56 +461,13 @@ fn lower_function_body(
     ret_type: &special::Type,
     body: tail::Expr,
 ) -> low::Expr {
-    let future_usages = FutureUsageInfo {
-        future_usages: OrdSet::new(),
-    };
-    let annotated_body = annotate_expr(body, &future_usages, 1);
-
     let mut builder = LowAstBuilder::new(low::LocalId(1));
-
-    for _ in 1..*annotated_body
-        .move_info
-        .move_info
-        .get(&flat::ARG_LOCAL)
-        .unwrap_or(&0)
-    {
-        builder.add_expr(
-            low::Type::Tuple(vec![]),
-            low::Expr::Retain(low::ARG_LOCAL, arg_type.clone()),
-        );
-    }
 
     let mut context = LocalContext::new();
 
     context.add_local((arg_type.clone(), low::ARG_LOCAL));
 
-    if !annotated_body
-        .move_info
-        .move_info
-        .contains_key(&flat::ARG_LOCAL)
-    {
-        // If the argument is unused, it is important that we release it *before* the main body of
-        // the function, so as to not interfere with tail calls.
-        builder.add_expr(
-            low::Type::Tuple(vec![]),
-            low::Expr::Release(low::ARG_LOCAL, arg_type.clone()),
-        );
-    }
-
-    let final_local_id = lower_expr(
-        &annotated_body,
-        ret_type,
-        &mut context,
-        &mut builder,
-        typedefs,
-    );
-
-    if annotated_body.move_info.move_info.get(&flat::ARG_LOCAL) == Some(&0) {
-        builder.add_expr(
-            low::Type::Tuple(vec![]),
-            low::Expr::Release(low::ARG_LOCAL, arg_type.clone()),
-        );
-    }
+    let final_local_id = lower_expr(&body, ret_type, &mut context, &mut builder, typedefs);
 
     builder.build(final_local_id)
 }

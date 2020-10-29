@@ -42,6 +42,47 @@ pub enum RcOp {
     Release,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArrayOp {
+    Item(
+        anon::Type,            // Item type
+        mutation::LocalStatus, // Array status
+        LocalId,               // Array
+        LocalId,               // Index
+    ), // Returns tuple of (item, hole array)
+    Len(
+        anon::Type,            // Item type
+        mutation::LocalStatus, // Array status
+        LocalId,               // Array
+    ),
+    Push(
+        anon::Type,            // Item type
+        mutation::LocalStatus, // Array status
+        LocalId,               // array
+        LocalId,               // Item
+    ),
+    Pop(
+        anon::Type,            // Item type
+        mutation::LocalStatus, // Array status
+        LocalId,               // Array
+    ), // Returns tuple of (array, item)
+    Replace(
+        anon::Type,            // Item type
+        mutation::LocalStatus, // Hole array status
+        LocalId,               // Hole array
+        LocalId,               // Item
+    ), // Returns new array
+}
+
+#[derive(Clone, Debug)]
+pub enum IoOp {
+    Input, // Returns byte array
+    Output(
+        mutation::LocalStatus, // Byte array statuses
+        LocalId,               // Byte array
+    ), // Returns unit
+}
+
 #[derive(Clone, Debug)]
 pub enum Expr {
     Local(LocalId),
@@ -87,8 +128,8 @@ pub enum Expr {
     ),
 
     Intrinsic(Intrinsic, LocalId),
-    ArrayOp(mutation::ArrayOp),
-    IoOp(mutation::IoOp),
+    ArrayOp(ArrayOp),
+    IoOp(IoOp),
     Panic(
         anon::Type,            // Return type
         mutation::LocalStatus, // Message status

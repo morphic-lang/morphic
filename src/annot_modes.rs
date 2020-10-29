@@ -1569,7 +1569,7 @@ fn annot_scc(
     }
 }
 
-fn annot_modes(program: spec::Program) -> mode::Program {
+pub fn annot_modes(program: spec::Program) -> mode::Program {
     let sccs = find_sccs(&program.funcs);
 
     let mut func_annots = program

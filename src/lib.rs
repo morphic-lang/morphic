@@ -254,7 +254,15 @@ fn compile(
 
     let mut_annot = annot_mutation::annot_mutation(alias_annot);
 
-    let repr_unified = unify_reprs::unify_reprs(mut_annot);
+    let fate_annot = annot_fates::annot_fates(mut_annot);
+
+    let alias_spec = specialize_aliases::specialize_aliases(fate_annot);
+
+    let mode_annot = annot_modes::annot_modes(alias_spec);
+
+    let rc_spec = rc_specialize::rc_specialize(mode_annot);
+
+    let repr_unified = unify_reprs::unify_reprs(rc_spec);
 
     let repr_constrained = constrain_reprs::constrain_reprs(repr_unified);
 

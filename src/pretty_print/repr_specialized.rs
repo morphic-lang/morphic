@@ -1,12 +1,13 @@
 use crate::data::first_order_ast::NumType;
-use crate::data::flat_ast::IoOp;
-use crate::data::flat_ast::LocalId;
+use crate::data::rc_specialized_ast::LocalId;
+use crate::data::rc_specialized_ast::RcOp;
 use crate::data::repr_constrained_ast::RepChoice;
 use crate::data::repr_specialized_ast::Condition;
 use crate::data::repr_specialized_ast::CustomFuncId;
 use crate::data::repr_specialized_ast::CustomTypeId;
 use crate::data::repr_specialized_ast::Expr;
 use crate::data::repr_specialized_ast::FuncDef;
+use crate::data::repr_specialized_ast::IoOp;
 use crate::data::repr_specialized_ast::Program;
 use crate::data::repr_specialized_ast::Type;
 use crate::data::repr_unified_ast::ArrayOp;
@@ -259,6 +260,14 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             context.type_renderer.render(type_id),
             local_id.0
         ],
+
+        Expr::RcOp(RcOp::Retain, _container, _inner_type, local_id) => {
+            write![w, "retain %{}", local_id.0]
+        }
+
+        Expr::RcOp(RcOp::Release, _container, _inner_type, local_id) => {
+            write![w, "release %{}", local_id.0]
+        }
 
         Expr::Intrinsic(intr, local_id) => write![
             w,

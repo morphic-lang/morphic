@@ -1,6 +1,5 @@
 use crate::data::first_order_ast as first_ord;
-use crate::data::flat_ast as flat;
-use crate::data::mutation_annot_ast as mutation;
+use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
@@ -9,7 +8,7 @@ use crate::util::instance_queue::InstanceQueue;
 
 type ValInstances = InstanceQueue<
     (
-        first_ord::CustomFuncId,
+        rc::CustomFuncId,
         IdVec<unif::RepParamId, constrain::RepChoice>,
     ),
     special::CustomFuncId,
@@ -166,7 +165,6 @@ fn resolve_expr(
             func,
             rep_vars,
             _arg_aliases,
-            _arg_folded_aliases,
             _arg_statuses,
             arg,
         )) => special::Expr::Call(
@@ -244,6 +242,25 @@ fn resolve_expr(
             *wrapped,
         ),
 
+        unif::Expr::RcOp(op, container, inner_type, local) => {
+            let resolved_container = match container {
+                unif::ContainerType::Array(rep_var) => {
+                    unif::ContainerType::Array(resolve_solution(params, internal, *rep_var))
+                }
+                unif::ContainerType::HoleArray(rep_var) => {
+                    unif::ContainerType::HoleArray(resolve_solution(params, internal, *rep_var))
+                }
+                unif::ContainerType::Boxed => unif::ContainerType::Boxed,
+            };
+
+            special::Expr::RcOp(
+                *op,
+                resolved_container,
+                resolve_body_type(type_insts, params, internal, inner_type),
+                *local,
+            )
+        }
+
         &unif::Expr::Intrinsic(intr, arg) => special::Expr::Intrinsic(intr, arg),
 
         unif::Expr::ArrayOp(rep_var, item_type, _array_status, op) => special::Expr::ArrayOp(
@@ -255,8 +272,8 @@ fn resolve_expr(
         unif::Expr::IoOp(rep_var, op) => {
             let resolved_var = resolve_solution(params, internal, *rep_var);
             let resolved_op = match op {
-                mutation::IoOp::Input => flat::IoOp::Input,
-                mutation::IoOp::Output(_, _, array) => flat::IoOp::Output(*array),
+                rc::IoOp::Input => special::IoOp::Input,
+                rc::IoOp::Output(_, array) => special::IoOp::Output(*array),
             };
             special::Expr::IoOp(resolved_var, resolved_op)
         }

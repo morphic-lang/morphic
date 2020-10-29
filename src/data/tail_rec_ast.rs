@@ -1,8 +1,8 @@
 use crate::data::first_order_ast as first_ord;
-use crate::data::flat_ast as flat;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
+use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
@@ -15,45 +15,48 @@ id_type!(pub TailFuncId);
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Local(flat::LocalId),
-    Call(Purity, CustomFuncId, flat::LocalId),
-    TailCall(TailFuncId, flat::LocalId),
-    Branch(
-        flat::LocalId,
-        Vec<(special::Condition, Expr)>,
-        special::Type,
-    ),
-    LetMany(Vec<(special::Type, Expr)>, flat::LocalId),
+    Local(rc::LocalId),
+    Call(Purity, CustomFuncId, rc::LocalId),
+    TailCall(TailFuncId, rc::LocalId),
+    Branch(rc::LocalId, Vec<(special::Condition, Expr)>, special::Type),
+    LetMany(Vec<(special::Type, Expr)>, rc::LocalId),
 
-    Tuple(Vec<flat::LocalId>),
-    TupleField(flat::LocalId, usize),
+    Tuple(Vec<rc::LocalId>),
+    TupleField(rc::LocalId, usize),
     WrapVariant(
         IdVec<first_ord::VariantId, special::Type>,
         first_ord::VariantId,
-        flat::LocalId,
+        rc::LocalId,
     ),
-    UnwrapVariant(first_ord::VariantId, flat::LocalId),
+    UnwrapVariant(first_ord::VariantId, rc::LocalId),
     WrapBoxed(
-        flat::LocalId,
+        rc::LocalId,
         special::Type, // Inner type
     ),
     UnwrapBoxed(
-        flat::LocalId,
+        rc::LocalId,
         special::Type, // Inner type
     ),
-    WrapCustom(special::CustomTypeId, flat::LocalId),
-    UnwrapCustom(special::CustomTypeId, flat::LocalId),
+    WrapCustom(special::CustomTypeId, rc::LocalId),
+    UnwrapCustom(special::CustomTypeId, rc::LocalId),
 
-    Intrinsic(Intrinsic, flat::LocalId),
+    RcOp(
+        rc::RcOp,
+        unif::ContainerType<constrain::RepChoice>,
+        special::Type,
+        rc::LocalId,
+    ),
+
+    Intrinsic(Intrinsic, rc::LocalId),
     ArrayOp(
         constrain::RepChoice,
         special::Type, // Item type
         unif::ArrayOp,
     ),
-    IoOp(constrain::RepChoice, flat::IoOp),
-    Panic(special::Type, constrain::RepChoice, flat::LocalId),
+    IoOp(constrain::RepChoice, special::IoOp),
+    Panic(special::Type, constrain::RepChoice, rc::LocalId),
 
-    ArrayLit(constrain::RepChoice, special::Type, Vec<flat::LocalId>),
+    ArrayLit(constrain::RepChoice, special::Type, Vec<rc::LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),

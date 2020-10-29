@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::first_order_ast as first_ord;
-use crate::data::flat_ast as flat;
 use crate::data::purity::Purity;
+use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_specialized_ast as special;
 use crate::data::tail_rec_ast as tail;
 use crate::util::graph::{self, Graph};
@@ -35,7 +35,7 @@ fn add_tail_call_deps(
 
         special::Expr::LetMany(bindings, final_local) => {
             if let Some(last_i) = last_index(bindings) {
-                if final_local == &flat::LocalId(vars_in_scope + last_i) {
+                if final_local == &rc::LocalId(vars_in_scope + last_i) {
                     add_tail_call_deps(deps, vars_in_scope + last_i, &bindings[last_i].1);
                 }
             }
@@ -81,13 +81,12 @@ fn mark_call_modes(
 
         special::Expr::LetMany(bindings, final_local) => {
             for (i, (_type, binding)) in bindings.iter().enumerate() {
-                let sub_pos = if i + 1 == bindings.len()
-                    && final_local == &flat::LocalId(vars_in_scope + i)
-                {
-                    pos
-                } else {
-                    Position::NotTail
-                };
+                let sub_pos =
+                    if i + 1 == bindings.len() && final_local == &rc::LocalId(vars_in_scope + i) {
+                        pos
+                    } else {
+                        Position::NotTail
+                    };
 
                 mark_call_modes(modes, curr_scc, sub_pos, vars_in_scope + i, binding);
             }
@@ -136,8 +135,8 @@ fn trans_expr(
                     FuncMapping::Direct(new_func) => tail::Expr::Call(*purity, *new_func, *arg),
 
                     FuncMapping::Variant(new_func, variant_types, variant) => {
-                        let local_wrapped_id = flat::LocalId(vars_in_scope);
-                        let local_return_id = flat::LocalId(vars_in_scope + 1);
+                        let local_wrapped_id = rc::LocalId(vars_in_scope);
+                        let local_return_id = rc::LocalId(vars_in_scope + 1);
 
                         tail::Expr::LetMany(
                             vec![
@@ -184,7 +183,7 @@ fn trans_expr(
                 .enumerate()
                 .map(|(i, (type_, binding))| {
                     let is_final_binding =
-                        i + 1 == bindings.len() && final_local == &flat::LocalId(vars_in_scope + i);
+                        i + 1 == bindings.len() && final_local == &rc::LocalId(vars_in_scope + i);
 
                     let sub_pos = if is_final_binding {
                         pos
@@ -231,6 +230,10 @@ fn trans_expr(
         special::Expr::WrapCustom(custom, content) => tail::Expr::WrapCustom(*custom, *content),
 
         special::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
+
+        special::Expr::RcOp(op, container, inner_type, local) => {
+            tail::Expr::RcOp(*op, *container, inner_type.clone(), *local)
+        }
 
         special::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
 
@@ -447,7 +450,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
 
                     (
                         arg_type.clone(),
-                        tail::Expr::TailCall(*entry_func_id, flat::ARG_LOCAL),
+                        tail::Expr::TailCall(*entry_func_id, rc::ARG_LOCAL),
                     )
                 }
 
@@ -457,12 +460,12 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
                     });
 
                     let body = tail::Expr::Branch(
-                        flat::ARG_LOCAL,
+                        rc::ARG_LOCAL,
                         entry_func_ids
                             .iter()
                             .map(|(variant_id, tail_func_id)| {
-                                let unwrapped_var = flat::LocalId(1);
-                                let call_result_var = flat::LocalId(2);
+                                let unwrapped_var = rc::LocalId(1);
+                                let call_result_var = rc::LocalId(2);
 
                                 (
                                     special::Condition::Variant(
@@ -475,7 +478,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
                                                 arg_variant_types[variant_id].clone(),
                                                 tail::Expr::UnwrapVariant(
                                                     variant_id,
-                                                    flat::ARG_LOCAL,
+                                                    rc::ARG_LOCAL,
                                                 ),
                                             ),
                                             (
@@ -524,7 +527,7 @@ pub fn tail_call_elim(program: special::Program) -> tail::Program {
                     &BTreeMap::new(),
                     Position::Tail,
                     1,
-                    &special::Expr::Call(Purity::Impure, program.main, flat::ARG_LOCAL),
+                    &special::Expr::Call(Purity::Impure, program.main, rc::ARG_LOCAL),
                 ),
                 profile_point: None,
             };

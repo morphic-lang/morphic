@@ -2,11 +2,11 @@ use im_rc::OrdMap;
 
 use crate::data::alias_annot_ast as alias;
 use crate::data::first_order_ast as first_ord;
-use crate::data::flat_ast as flat;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
+use crate::data::rc_specialized_ast as rc;
 use crate::data::resolved_ast as res;
 use crate::util::graph::Scc;
 use crate::util::id_vec::IdVec;
@@ -34,82 +34,88 @@ pub enum Type<Rep> {
 #[derive(Clone, Copy, Debug)]
 pub enum ArrayOp {
     Item(
-        flat::LocalId, // Array
-        flat::LocalId, // Index
+        rc::LocalId, // Array
+        rc::LocalId, // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        flat::LocalId, // Array
+        rc::LocalId, // Array
     ),
     Push(
-        flat::LocalId, // Array
-        flat::LocalId, // Item
+        rc::LocalId, // Array
+        rc::LocalId, // Item
     ),
     Pop(
-        flat::LocalId, // Array
+        rc::LocalId, // Array
     ), // Returns tuple (array, item)
     Replace(
-        flat::LocalId, // Hole array
-        flat::LocalId, // Item
+        rc::LocalId, // Hole array
+        rc::LocalId, // Item
     ), // Returns new array
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ContainerType<Rep> {
+    Array(Rep),
+    HoleArray(Rep),
+    Boxed,
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr<Call, Rep> {
-    Local(flat::LocalId),
+    Local(rc::LocalId),
     Call(Call),
     Branch(
-        flat::LocalId,
+        rc::LocalId,
         Vec<(Condition<Rep>, Expr<Call, Rep>)>,
         Type<Rep>,
     ),
     LetMany(
         Vec<(Type<Rep>, Expr<Call, Rep>)>, // bound values.  Each is assigned a new sequential LocalId
-        flat::LocalId,                     // body
+        rc::LocalId,                       // body
     ),
 
-    Tuple(Vec<flat::LocalId>),
-    TupleField(flat::LocalId, usize),
+    Tuple(Vec<rc::LocalId>),
+    TupleField(rc::LocalId, usize),
     WrapVariant(
         IdVec<first_ord::VariantId, Type<Rep>>,
         first_ord::VariantId,
-        flat::LocalId,
+        rc::LocalId,
     ),
-    UnwrapVariant(first_ord::VariantId, flat::LocalId),
+    UnwrapVariant(first_ord::VariantId, rc::LocalId),
     WrapBoxed(
-        flat::LocalId,
+        rc::LocalId,
         Type<Rep>, // Inner type
     ),
     UnwrapBoxed(
-        flat::LocalId,
+        rc::LocalId,
         Type<Rep>, // Inner type
     ),
-    WrapCustom(
-        first_ord::CustomTypeId,
-        IdVec<RepParamId, Rep>,
-        flat::LocalId,
-    ),
-    UnwrapCustom(
-        first_ord::CustomTypeId,
-        IdVec<RepParamId, Rep>,
-        flat::LocalId,
+    WrapCustom(first_ord::CustomTypeId, IdVec<RepParamId, Rep>, rc::LocalId),
+    UnwrapCustom(first_ord::CustomTypeId, IdVec<RepParamId, Rep>, rc::LocalId),
+
+    RcOp(
+        rc::RcOp,
+        ContainerType<Rep>,
+        Type<Rep>, // Inner type inside container
+        rc::LocalId,
     ),
 
-    Intrinsic(Intrinsic, flat::LocalId),
+    Intrinsic(Intrinsic, rc::LocalId),
     ArrayOp(
         Rep,                   // Array representation
         Type<Rep>,             // Item type
         mutation::LocalStatus, // Array status
         ArrayOp,
     ),
-    IoOp(Rep, mutation::IoOp),
+    IoOp(Rep, rc::IoOp),
     Panic(
         Type<Rep>,             // Return type
         Rep,                   // Message representation
         mutation::LocalStatus, // Message status
-        flat::LocalId,         // Message
+        rc::LocalId,           // Message
     ),
 
-    ArrayLit(Rep, Type<Rep>, Vec<flat::LocalId>),
+    ArrayLit(Rep, Type<Rep>, Vec<rc::LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -139,16 +145,13 @@ pub enum Condition<Rep> {
 #[derive(Clone, Debug)]
 pub struct SolvedCall<Rep>(
     pub Purity,
-    pub first_ord::CustomFuncId,
+    pub rc::CustomFuncId,
     pub IdVec<RepParamId, Rep>,
-    // Aliases from argument fields (keys) to other names in scope (values) (which may
-    // potentially also be fields of the argument)
-    pub OrdMap<alias::FieldPath, alias::LocalAliases>,
-    // Folded aliases for each argument fold point
-    pub OrdMap<alias::FieldPath, alias::FoldedAliases>,
+    // Aliases internal to the argument
+    pub rc::ArgAliases,
     // Statuses of argument fields prior to call
     pub OrdMap<alias::FieldPath, mutation::LocalStatus>,
-    pub flat::LocalId,
+    pub rc::LocalId,
 );
 
 id_type!(pub InternalRepVarId);
@@ -175,10 +178,10 @@ pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<first_ord::CustomTypeId, TypeDef>,
     pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
-    pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
-    pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
+    pub funcs: IdVec<rc::CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<rc::CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
-    pub main: first_ord::CustomFuncId,
+    pub main: rc::CustomFuncId,
 
-    pub sccs: Vec<Scc<first_ord::CustomFuncId>>,
+    pub sccs: Vec<Scc<rc::CustomFuncId>>,
 }
