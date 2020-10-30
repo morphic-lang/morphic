@@ -119,7 +119,7 @@ pub enum ExprKind {
         Local,
         anon::Type, // Inner type
     ),
-    WrapUnboxed(
+    UnwrapBoxed(
         Local,
         anon::Type, // Inner type
     ),
@@ -173,6 +173,17 @@ pub struct FieldFate {
     pub ret_destinations: OrdSet<alias::RetName>,
 }
 
+impl FieldFate {
+    pub fn new() -> Self {
+        FieldFate {
+            internal: InternalFate::Unused,
+            last_internal_use: event::Horizon::new(),
+            blocks_escaped: OrdSet::new(),
+            ret_destinations: OrdSet::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArgFieldFate {
     pub internal: InternalFate,
@@ -182,6 +193,14 @@ pub struct ArgFieldFate {
 #[derive(Clone, Debug)]
 pub struct Fate {
     pub fates: BTreeMap<alias::FieldPath, FieldFate>,
+}
+
+impl Fate {
+    pub fn new() -> Self {
+        Fate {
+            fates: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

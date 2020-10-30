@@ -1,4 +1,4 @@
-use im_rc::OrdSet;
+use im_rc::{OrdSet, Vector};
 use std::collections::btree_map::{self, BTreeMap};
 
 use crate::data::alias_annot_ast as alias;
@@ -12,6 +12,7 @@ use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::util::event_set as event;
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
+use crate::util::im_rc_ext::VectorExtensions;
 use crate::util::local_context::LocalContext;
 
 impl Signature for fate::FuncDef {
@@ -79,17 +80,7 @@ fn empty_fate(
     fate::Fate {
         fates: get_refs_in(typedefs, type_)
             .into_iter()
-            .map(|(path, _)| {
-                (
-                    path,
-                    fate::FieldFate {
-                        internal: fate::InternalFate::Unused,
-                        last_internal_use: event::Horizon::new(),
-                        blocks_escaped: OrdSet::new(),
-                        ret_destinations: OrdSet::new(),
-                    },
-                )
-            })
+            .map(|(path, _)| (path, fate::FieldFate::new()))
             .collect(),
     }
 }
@@ -301,7 +292,165 @@ fn annot_expr(
             fate::ExprKind::LetMany(block_id, bindings_annot, final_local_annot)
         }),
 
-        _ => todo!(),
+        mutation::Expr::Tuple(items) => {
+            let mut new_items = Vec::new();
+
+            for (i, item) in items.iter().enumerate() {
+                let mut item_fate = fate::Fate::new();
+
+                for (path, _) in get_refs_in(&orig.custom_types, locals.local_binding(*item)) {
+                    let val_path = path.clone().add_front(alias::Field::Field(i));
+                    item_fate
+                        .fates
+                        .insert(path, val_fate.fates[&val_path].clone());
+                }
+
+                new_items.push(add_occurence(occurs, &mut uses, *item, item_fate));
+            }
+
+            fate::ExprKind::Tuple(new_items)
+        }
+
+        mutation::Expr::TupleField(tuple, idx) => {
+            let mut tuple_fate = fate::Fate::new();
+
+            for (path, _) in get_refs_in(&orig.custom_types, locals.local_binding(*tuple)) {
+                // Heap paths in tuples are necessarily non-empty, because the tuple is not itself a
+                // heap structure
+                debug_assert!(matches!(&path[0], alias::Field::Field(_)));
+                let path_fate = if &path[0] == &alias::Field::Field(*idx) {
+                    val_fate.fates[&path.clone().slice(1..)].clone()
+                } else {
+                    fate::FieldFate::new()
+                };
+                tuple_fate.fates.insert(path, path_fate);
+            }
+
+            fate::ExprKind::TupleField(add_occurence(occurs, &mut uses, *tuple, tuple_fate), *idx)
+        }
+
+        mutation::Expr::WrapVariant(variant_types, variant_id, content) => {
+            let mut content_fate = fate::Fate::new();
+
+            debug_assert_eq!(&variant_types[variant_id], locals.local_binding(*content));
+
+            for (path, _) in get_refs_in(&orig.custom_types, locals.local_binding(*content)) {
+                let path_fate = val_fate.fates
+                    [&path.clone().add_front(alias::Field::Variant(*variant_id))]
+                    .clone();
+
+                content_fate.fates.insert(path, path_fate);
+            }
+
+            fate::ExprKind::WrapVariant(
+                variant_types.clone(),
+                *variant_id,
+                add_occurence(occurs, &mut uses, *content, content_fate),
+            )
+        }
+
+        mutation::Expr::UnwrapVariant(variant_id, wrapped) => {
+            let mut wrapped_fate = fate::Fate::new();
+
+            for (path, _) in get_refs_in(&orig.custom_types, locals.local_binding(*wrapped)) {
+                // Heap paths in variants are necessarily non-empty, because the variant is not
+                // itself a heap structure
+                debug_assert!(matches!(&path[0], alias::Field::Variant(_)));
+                let path_fate = if &path[0] == &alias::Field::Variant(*variant_id) {
+                    val_fate.fates[&path.clone().slice(1..)].clone()
+                } else {
+                    fate::FieldFate::new()
+                };
+                wrapped_fate.fates.insert(path, path_fate);
+            }
+
+            fate::ExprKind::UnwrapVariant(
+                *variant_id,
+                add_occurence(occurs, &mut uses, *wrapped, wrapped_fate),
+            )
+        }
+
+        mutation::Expr::WrapBoxed(content, item_type) => {
+            let mut content_fate = fate::Fate::new();
+
+            for (path, _) in get_refs_in(&orig.custom_types, item_type) {
+                content_fate.fates.insert(
+                    path.clone(),
+                    fate::FieldFate {
+                        internal: fate::InternalFate::Owned,
+                        last_internal_use: expr_event.clone(),
+                        blocks_escaped: OrdSet::new(),
+                        ret_destinations: OrdSet::new(),
+                    },
+                );
+            }
+
+            fate::ExprKind::WrapBoxed(
+                add_occurence(occurs, &mut uses, *content, content_fate),
+                item_type.clone(),
+            )
+        }
+
+        mutation::Expr::UnwrapBoxed(wrapped, item_type) => {
+            let mut wrapped_fate = fate::Fate::new();
+
+            for (path, _) in get_refs_in(&orig.custom_types, item_type) {
+                wrapped_fate.fates.insert(
+                    path.clone().add_front(alias::Field::Boxed),
+                    val_fate.fates[&path].clone(),
+                );
+            }
+
+            wrapped_fate.fates.insert(
+                Vector::new(),
+                fate::FieldFate {
+                    internal: fate::InternalFate::Accessed,
+                    last_internal_use: expr_event.clone(),
+                    blocks_escaped: OrdSet::new(),
+                    ret_destinations: OrdSet::new(),
+                },
+            );
+
+            fate::ExprKind::UnwrapBoxed(
+                add_occurence(occurs, &mut uses, *wrapped, wrapped_fate),
+                item_type.clone(),
+            )
+        }
+
+        mutation::Expr::WrapCustom(_, _) => todo!(),
+        mutation::Expr::UnwrapCustom(_, _) => todo!(),
+        mutation::Expr::Intrinsic(_, _) => todo!(),
+        mutation::Expr::ArrayOp(_) => todo!(),
+        mutation::Expr::IoOp(_) => todo!(),
+        mutation::Expr::Panic(_, _, _) => todo!(),
+
+        mutation::Expr::ArrayLit(item_type, item_ids) => {
+            let mut item_fate = fate::Fate::new();
+
+            for (path, _) in get_refs_in(&orig.custom_types, item_type) {
+                item_fate.fates.insert(
+                    path.clone(),
+                    fate::FieldFate {
+                        internal: fate::InternalFate::Owned,
+                        last_internal_use: expr_event.clone(),
+                        blocks_escaped: OrdSet::new(),
+                        ret_destinations: OrdSet::new(),
+                    },
+                );
+            }
+
+            let new_items = item_ids
+                .iter()
+                .map(|item| add_occurence(occurs, &mut uses, *item, item_fate.clone()))
+                .collect();
+
+            fate::ExprKind::ArrayLit(item_type.clone(), new_items)
+        }
+
+        mutation::Expr::BoolLit(val) => fate::ExprKind::BoolLit(*val),
+        mutation::Expr::ByteLit(val) => fate::ExprKind::ByteLit(*val),
+        mutation::Expr::IntLit(val) => fate::ExprKind::IntLit(*val),
+        mutation::Expr::FloatLit(val) => fate::ExprKind::FloatLit(*val),
     };
 
     let id = expr_annots.push(fate::ExprAnnot {
