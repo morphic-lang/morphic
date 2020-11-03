@@ -19,10 +19,7 @@ RUN apt-get update \
     ssh \
     valgrind \
     vim \
-    zlib1g-dev \
-  && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
-
-ENV PATH="/root/.cargo/bin:${PATH}"
+    zlib1g-dev
 
 RUN gpg-agent --daemon \
   && curl -L https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - \
@@ -38,3 +35,7 @@ RUN gpg-agent --daemon \
   && ln -s /usr/bin/wasm-ld-10 /usr/bin/wasm-ld
 
 USER user
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
+
+ENV PATH="/home/user/.cargo/bin:${PATH}"
