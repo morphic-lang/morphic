@@ -55,7 +55,7 @@ pub enum ArrayOp {
     ), // Returns tuple of (array, item)
     Replace(
         anon::Type,            // Item type
-        alias::LocalAliases,   // Holar array aliases
+        alias::LocalAliases,   // Hole array aliases
         mutation::LocalStatus, // Hole array status
         Local,                 // Hole array
         Local,                 // Item

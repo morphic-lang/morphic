@@ -7,7 +7,7 @@ use crate::data::fate_annot_ast as fate;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as mutation;
-use crate::field_path::get_refs_in;
+use crate::field_path::{get_refs_in, split_at_fold};
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::util::event_set as event;
 use crate::util::id_gen::IdGen;
@@ -82,6 +82,38 @@ fn empty_fate(
             .into_iter()
             .map(|(path, _)| (path, fate::FieldFate::new()))
             .collect(),
+    }
+}
+
+fn consumed_fate(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &anon::Type,
+    expr_event: &event::Horizon,
+) -> fate::Fate {
+    fate::Fate {
+        fates: get_refs_in(typedefs, type_)
+            .into_iter()
+            .map(|(path, _)| {
+                (
+                    path,
+                    fate::FieldFate {
+                        internal: fate::InternalFate::Owned,
+                        last_internal_use: expr_event.clone(),
+                        blocks_escaped: OrdSet::new(),
+                        ret_destinations: OrdSet::new(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+fn access_field_fate(expr_event: event::Horizon) -> fate::FieldFate {
+    fate::FieldFate {
+        internal: fate::InternalFate::Accessed,
+        last_internal_use: expr_event,
+        blocks_escaped: OrdSet::new(),
+        ret_destinations: OrdSet::new(),
     }
 }
 
@@ -371,19 +403,7 @@ fn annot_expr(
         }
 
         mutation::Expr::WrapBoxed(content, item_type) => {
-            let mut content_fate = fate::Fate::new();
-
-            for (path, _) in get_refs_in(&orig.custom_types, item_type) {
-                content_fate.fates.insert(
-                    path.clone(),
-                    fate::FieldFate {
-                        internal: fate::InternalFate::Owned,
-                        last_internal_use: expr_event.clone(),
-                        blocks_escaped: OrdSet::new(),
-                        ret_destinations: OrdSet::new(),
-                    },
-                );
-            }
+            let content_fate = consumed_fate(&orig.custom_types, item_type, &expr_event);
 
             fate::ExprKind::WrapBoxed(
                 add_occurence(occurs, &mut uses, *content, content_fate),
@@ -401,15 +421,9 @@ fn annot_expr(
                 );
             }
 
-            wrapped_fate.fates.insert(
-                Vector::new(),
-                fate::FieldFate {
-                    internal: fate::InternalFate::Accessed,
-                    last_internal_use: expr_event.clone(),
-                    blocks_escaped: OrdSet::new(),
-                    ret_destinations: OrdSet::new(),
-                },
-            );
+            wrapped_fate
+                .fates
+                .insert(Vector::new(), access_field_fate(expr_event.clone()));
 
             fate::ExprKind::UnwrapBoxed(
                 add_occurence(occurs, &mut uses, *wrapped, wrapped_fate),
@@ -417,27 +431,223 @@ fn annot_expr(
             )
         }
 
-        mutation::Expr::WrapCustom(_, _) => todo!(),
-        mutation::Expr::UnwrapCustom(_, _) => todo!(),
-        mutation::Expr::Intrinsic(_, _) => todo!(),
-        mutation::Expr::ArrayOp(_) => todo!(),
-        mutation::Expr::IoOp(_) => todo!(),
-        mutation::Expr::Panic(_, _, _) => todo!(),
+        mutation::Expr::WrapCustom(custom_id, content) => {
+            let mut content_fate = fate::Fate::new();
 
-        mutation::Expr::ArrayLit(item_type, item_ids) => {
-            let mut item_fate = fate::Fate::new();
+            let content_type = &orig.custom_types[custom_id];
+            for (content_path, _) in get_refs_in(&orig.custom_types, content_type) {
+                let (_, alias::SubPath(sub_path)) = split_at_fold(*custom_id, content_path.clone());
 
-            for (path, _) in get_refs_in(&orig.custom_types, item_type) {
-                item_fate.fates.insert(
-                    path.clone(),
-                    fate::FieldFate {
-                        internal: fate::InternalFate::Owned,
-                        last_internal_use: expr_event.clone(),
-                        blocks_escaped: OrdSet::new(),
-                        ret_destinations: OrdSet::new(),
-                    },
+                content_fate.fates.insert(
+                    content_path,
+                    val_fate.fates[&sub_path.add_front(alias::Field::Custom(*custom_id))].clone(),
                 );
             }
+
+            fate::ExprKind::WrapCustom(
+                *custom_id,
+                add_occurence(occurs, &mut uses, *content, content_fate),
+            )
+        }
+
+        mutation::Expr::UnwrapCustom(custom_id, wrapped) => {
+            let wrapped_type = anon::Type::Custom(*custom_id);
+            let mut wrapped_fate = empty_fate(&orig.custom_types, &wrapped_type);
+
+            let content_type = &orig.custom_types[custom_id];
+            for (content_path, _) in get_refs_in(&orig.custom_types, content_type) {
+                let (_, alias::SubPath(sub_path)) = split_at_fold(*custom_id, content_path.clone());
+
+                merge_field_fates(
+                    wrapped_fate
+                        .fates
+                        .get_mut(&sub_path.add_front(alias::Field::Custom(*custom_id)))
+                        .unwrap(),
+                    &val_fate.fates[&content_path],
+                );
+            }
+
+            fate::ExprKind::UnwrapCustom(
+                *custom_id,
+                add_occurence(occurs, &mut uses, *wrapped, wrapped_fate),
+            )
+        }
+
+        // NOTE [intrinsics]: If we add array intrinsics in the future, this will need to be
+        // modified.
+        mutation::Expr::Intrinsic(intr, arg) => fate::ExprKind::Intrinsic(
+            *intr,
+            add_occurence(occurs, &mut uses, *arg, fate::Fate::new()),
+        ),
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Item(
+            item_type,
+            array_aliases,
+            array_status,
+            array,
+            index,
+        )) => {
+            let mut array_fate = fate::Fate::new();
+
+            for (item_path, _) in get_refs_in(&orig.custom_types, item_type) {
+                // The first return value is the item
+                let item_fate =
+                    val_fate.fates[&item_path.clone().add_front(alias::Field::Field(0))].clone();
+
+                // We don't need to consider any contribution of the returned hole array to the
+                // array's fate, because the returned array is unconditionally retained and is
+                // therefore essentially an unrelated object for the purposes of RC elision.
+
+                array_fate
+                    .fates
+                    .insert(item_path.add_front(alias::Field::ArrayMembers), item_fate);
+            }
+
+            // Note: We assume the input array is always unconditionally retained to obtain the hole
+            // array, so that this occurrence of the input array effectively does not escape this
+            // expression for the purposes of RC elision.
+            array_fate
+                .fates
+                .insert(Vector::new(), access_field_fate(expr_event.clone()));
+
+            fate::ExprKind::ArrayOp(fate::ArrayOp::Item(
+                item_type.clone(),
+                array_aliases.clone(),
+                array_status.clone(),
+                add_occurence(occurs, &mut uses, *array, array_fate),
+                add_occurence(occurs, &mut uses, *index, fate::Fate::new()),
+            ))
+        }
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Len(
+            item_type,
+            array_aliases,
+            array_status,
+            array,
+        )) => {
+            let mut array_fate = fate::Fate::new();
+
+            for (item_path, _) in get_refs_in(&orig.custom_types, item_type) {
+                array_fate.fates.insert(
+                    item_path.add_front(alias::Field::ArrayMembers),
+                    fate::FieldFate::new(),
+                );
+            }
+
+            array_fate
+                .fates
+                .insert(Vector::new(), access_field_fate(expr_event.clone()));
+
+            fate::ExprKind::ArrayOp(fate::ArrayOp::Len(
+                item_type.clone(),
+                array_aliases.clone(),
+                array_status.clone(),
+                add_occurence(occurs, &mut uses, *array, array_fate),
+            ))
+        }
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Push(
+            item_type,
+            array_aliases,
+            array_status,
+            array,
+            item,
+        )) => {
+            let array_fate = consumed_fate(
+                &orig.custom_types,
+                &anon::Type::Array(Box::new(item_type.clone())),
+                &expr_event,
+            );
+
+            let item_fate = consumed_fate(&orig.custom_types, item_type, &expr_event);
+
+            fate::ExprKind::ArrayOp(fate::ArrayOp::Push(
+                item_type.clone(),
+                array_aliases.clone(),
+                array_status.clone(),
+                add_occurence(occurs, &mut uses, *array, array_fate),
+                add_occurence(occurs, &mut uses, *item, item_fate),
+            ))
+        }
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Pop(
+            item_type,
+            array_aliases,
+            array_status,
+            array,
+        )) => {
+            let array_fate = consumed_fate(
+                &orig.custom_types,
+                &anon::Type::Array(Box::new(item_type.clone())),
+                &expr_event,
+            );
+
+            fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(
+                item_type.clone(),
+                array_aliases.clone(),
+                array_status.clone(),
+                add_occurence(occurs, &mut uses, *array, array_fate),
+            ))
+        }
+
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Replace(
+            item_type,
+            hole_array_aliases,
+            hole_array_status,
+            hole_array,
+            item,
+        )) => {
+            let hole_array_fate = consumed_fate(
+                &orig.custom_types,
+                &anon::Type::HoleArray(Box::new(item_type.clone())),
+                &expr_event,
+            );
+
+            let item_fate = consumed_fate(&orig.custom_types, item_type, &expr_event);
+
+            fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(
+                item_type.clone(),
+                hole_array_aliases.clone(),
+                hole_array_status.clone(),
+                add_occurence(occurs, &mut uses, *hole_array, hole_array_fate),
+                add_occurence(occurs, &mut uses, *item, item_fate),
+            ))
+        }
+
+        mutation::Expr::IoOp(mutation::IoOp::Input) => fate::ExprKind::IoOp(fate::IoOp::Input),
+
+        mutation::Expr::IoOp(mutation::IoOp::Output(
+            byte_array_aliases,
+            byte_array_status,
+            byte_array,
+        )) => {
+            let mut byte_array_fate = fate::Fate::new();
+            byte_array_fate
+                .fates
+                .insert(Vector::new(), access_field_fate(expr_event.clone()));
+
+            fate::ExprKind::IoOp(fate::IoOp::Output(
+                byte_array_aliases.clone(),
+                byte_array_status.clone(),
+                add_occurence(occurs, &mut uses, *byte_array, byte_array_fate),
+            ))
+        }
+
+        mutation::Expr::Panic(ret_type, byte_array_status, byte_array) => {
+            let mut byte_array_fate = fate::Fate::new();
+            byte_array_fate
+                .fates
+                .insert(Vector::new(), access_field_fate(expr_event.clone()));
+
+            fate::ExprKind::Panic(
+                ret_type.clone(),
+                byte_array_status.clone(),
+                add_occurence(occurs, &mut uses, *byte_array, byte_array_fate),
+            )
+        }
+
+        mutation::Expr::ArrayLit(item_type, item_ids) => {
+            let item_fate = consumed_fate(&orig.custom_types, item_type, &expr_event);
 
             let new_items = item_ids
                 .iter()
