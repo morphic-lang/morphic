@@ -1133,7 +1133,87 @@ fn collect_expr_moves(
             binding_moves[block_id] = Some(block_binding_moves);
         }
 
-        _ => todo!(),
+        fate::ExprKind::Tuple(items) => {
+            for item in items {
+                collect_occur_events(var_moves, *item);
+            }
+        }
+
+        fate::ExprKind::TupleField(tuple, _index) => {
+            collect_occur_events(var_moves, *tuple);
+        }
+
+        fate::ExprKind::WrapVariant(_variant_types, _variant_id, content) => {
+            collect_occur_events(var_moves, *content);
+        }
+
+        fate::ExprKind::UnwrapVariant(_variant_id, wrapped) => {
+            collect_occur_events(var_moves, *wrapped);
+        }
+
+        fate::ExprKind::WrapBoxed(content, _item_type) => {
+            collect_occur_events(var_moves, *content);
+        }
+
+        fate::ExprKind::UnwrapBoxed(wrapped, _item_type) => {
+            collect_occur_events(var_moves, *wrapped);
+        }
+
+        fate::ExprKind::WrapCustom(_custom_id, content) => {
+            collect_occur_events(var_moves, *content);
+        }
+
+        fate::ExprKind::UnwrapCustom(_custom_id, wrapped) => {
+            collect_occur_events(var_moves, *wrapped);
+        }
+
+        fate::ExprKind::Intrinsic(_intr, arg) => {
+            collect_occur_events(var_moves, *arg);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Item(_, _, _, array, index)) => {
+            collect_occur_events(var_moves, *array);
+            collect_occur_events(var_moves, *index);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, _, array)) => {
+            collect_occur_events(var_moves, *array);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_, _, _, array, item)) => {
+            collect_occur_events(var_moves, *array);
+            collect_occur_events(var_moves, *item);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_, _, _, array)) => {
+            collect_occur_events(var_moves, *array);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, _, hole_array, item)) => {
+            collect_occur_events(var_moves, *hole_array);
+            collect_occur_events(var_moves, *item);
+        }
+
+        fate::ExprKind::IoOp(fate::IoOp::Input) => {}
+
+        fate::ExprKind::IoOp(fate::IoOp::Output(_, _, byte_array)) => {
+            collect_occur_events(var_moves, *byte_array);
+        }
+
+        fate::ExprKind::Panic(_, _, message) => {
+            collect_occur_events(var_moves, *message);
+        }
+
+        fate::ExprKind::ArrayLit(_, items) => {
+            for item in items {
+                collect_occur_events(var_moves, *item);
+            }
+        }
+
+        fate::ExprKind::BoolLit(_) => {}
+        fate::ExprKind::ByteLit(_) => {}
+        fate::ExprKind::IntLit(_) => {}
+        fate::ExprKind::FloatLit(_) => {}
     }
 }
 
