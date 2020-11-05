@@ -1784,7 +1784,7 @@ fn annot_expr<'a>(
 
             for (content_path, _) in field_path::get_refs_in(typedefs, item_type) {
                 result_modes.path_modes.insert(
-                    content_path,
+                    content_path.clone(),
                     wrapped_modes.path_modes[&content_path.add_front(alias::Field::Boxed)],
                 );
             }
@@ -1798,8 +1798,42 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::WrapCustom(_, _) => todo!(),
-        fate::ExprKind::UnwrapCustom(_, _) => todo!(),
+        fate::ExprKind::WrapCustom(custom_id, content) => {
+            let result_modes =
+                instantiate_type(typedefs, constraints, &anon::Type::Custom(*custom_id));
+
+            let content_modes = annot_occur(constraints, locals, solver_annots, *content);
+
+            for (content_path, content_mode) in content_modes.path_modes {
+                let (_, alias::SubPath(sub_path)) =
+                    field_path::split_at_fold(*custom_id, content_path);
+
+                constraints.require_eq(
+                    result_modes.path_modes[&sub_path.add_front(alias::Field::Custom(*custom_id))],
+                    content_mode,
+                );
+            }
+            result_modes
+        }
+
+        fate::ExprKind::UnwrapCustom(custom_id, wrapped) => {
+            let result_modes = instantiate_type(typedefs, constraints, &typedefs[custom_id]);
+
+            let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
+
+            for (content_path, content_mode) in &result_modes.path_modes {
+                let (_, alias::SubPath(sub_path)) =
+                    field_path::split_at_fold(*custom_id, content_path.clone());
+
+                constraints.require_eq(
+                    *content_mode,
+                    wrapped_modes.path_modes
+                        [&sub_path.clone().add_front(alias::Field::Custom(*custom_id))],
+                );
+            }
+            result_modes
+        }
+
         fate::ExprKind::Intrinsic(_, _) => todo!(),
         fate::ExprKind::ArrayOp(_) => todo!(),
         fate::ExprKind::IoOp(_) => todo!(),
@@ -1838,6 +1872,19 @@ fn extract_drops(
         .into_iter()
         .map(|(path, drop_modes)| (path, extract_drop_modes(solutions, drop_modes)))
         .collect()
+}
+
+fn extract_retains(
+    solutions: &IdVec<ineq::SolverVarId, ineq::UpperBound<mode::Mode>>,
+    modes: SolverRetainModes,
+) -> mode::RetainModes {
+    mode::RetainModes {
+        retained_paths: modes
+            .retained_paths
+            .into_iter()
+            .map(|(path, var)| (path, solutions[var].clone()))
+            .collect(),
+    }
 }
 
 fn extract_occur_modes(
@@ -1916,6 +1963,7 @@ fn annot_scc(
         let_drop_epilogues: IdVec<fate::LetBlockId, BTreeMap<flat::LocalId, SolverDropModes>>,
         branch_drop_epilogues: IdVec<fate::BranchBlockId, BTreeMap<flat::LocalId, SolverDropModes>>,
         drop_prologues: IdVec<fate::ExprId, BTreeMap<flat::LocalId, SolverDropModes>>,
+        retain_epilogues: IdVec<fate::ExprId, SolverRetainModes>,
         arg_drop_epilogue: SolverDropModes,
     }
 
@@ -1943,6 +1991,9 @@ fn annot_scc(
                 let_drop_epilogues: marked_drops.let_drop_epilogues.map(|_, _| None),
                 branch_drop_epilogues: marked_drops.branch_drop_epilogues.map(|_, _| None),
                 drop_prologues: marked_drops.drop_prologues.map(|_, _| None),
+                // `retain_epilogues` is indexed by `ExprId`, so we can obtain an empty `IdVec` of
+                // the right shape from `drop_prologues`.
+                retain_epilogues: marked_drops.drop_prologues.map(|_, _| None),
             };
 
             let ret_val_modes = annot_expr(
@@ -1989,6 +2040,9 @@ fn annot_scc(
                     drop_prologues: solver_annots
                         .drop_prologues
                         .into_mapped(|_, modes| modes.unwrap()),
+                    retain_epilogues: solver_annots
+                        .retain_epilogues
+                        .into_mapped(|_, modes| modes.unwrap()),
                     arg_drop_epilogue: arg_drop_epilogue_annot,
                 },
             )
@@ -2023,6 +2077,9 @@ fn annot_scc(
             drop_prologues: solver_annots
                 .drop_prologues
                 .into_mapped(|_, modes| extract_drops(&solutions, modes)),
+            retain_epilogues: solver_annots
+                .retain_epilogues
+                .into_mapped(|_, modes| extract_retains(&solutions, modes)),
         };
 
         debug_assert!(func_annots[func_id][version_id].is_none());
