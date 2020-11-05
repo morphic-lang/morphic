@@ -1320,6 +1320,11 @@ struct SolverDropModes {
 }
 
 #[derive(Clone, Debug)]
+struct SolverRetainModes {
+    retained_paths: BTreeMap<mode::StackPath, ineq::SolverVarId>,
+}
+
+#[derive(Clone, Debug)]
 struct SolverModeAnnots {
     occur_modes: IdVec<fate::OccurId, Option<SolverOccurModes>>,
     call_modes: IdVec<fate::CallId, Option<IdVec<ineq::ExternalVarId, ineq::SolverVarId>>>,
@@ -1327,6 +1332,7 @@ struct SolverModeAnnots {
     branch_drop_epilogues:
         IdVec<fate::BranchBlockId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
     drop_prologues: IdVec<fate::ExprId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
+    retain_epilogues: IdVec<fate::ExprId, Option<SolverRetainModes>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1561,7 +1567,11 @@ fn annot_expr<'a>(
         }
     };
 
-    match &expr.kind {
+    let mut retain_epilogue = SolverRetainModes {
+        retained_paths: BTreeMap::new(),
+    };
+
+    let result_modes = match &expr.kind {
         fate::ExprKind::Local(local) => annot_occur(constraints, locals, solver_annots, *local),
 
         fate::ExprKind::Call(call_id, _, _, _, _, _, local) => {
@@ -1748,8 +1758,46 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::WrapBoxed(_, _) => todo!(),
-        fate::ExprKind::UnwrapBoxed(_, _) => todo!(),
+        fate::ExprKind::WrapBoxed(content, item_type) => {
+            let content_modes = annot_occur(constraints, locals, solver_annots, *content);
+
+            for (_, content_mode) in content_modes.path_modes {
+                constraints.require_lte_const(content_mode, &mode::Mode::Owned);
+            }
+
+            let result_modes = instantiate_type(
+                typedefs,
+                constraints,
+                &anon::Type::Boxed(Box::new(item_type.clone())),
+            );
+
+            for (_, result_mode) in &result_modes.path_modes {
+                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
+            }
+            result_modes
+        }
+
+        fate::ExprKind::UnwrapBoxed(wrapped, item_type) => {
+            let mut result_modes = SolverValModes::new();
+
+            let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
+
+            for (content_path, _) in field_path::get_refs_in(typedefs, item_type) {
+                result_modes.path_modes.insert(
+                    content_path,
+                    wrapped_modes.path_modes[&content_path.add_front(alias::Field::Boxed)],
+                );
+            }
+
+            for content_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
+                let content_path = stack_path::to_field_path(&content_stack_path);
+                retain_epilogue
+                    .retained_paths
+                    .insert(content_stack_path, result_modes.path_modes[&content_path]);
+            }
+            result_modes
+        }
+
         fate::ExprKind::WrapCustom(_, _) => todo!(),
         fate::ExprKind::UnwrapCustom(_, _) => todo!(),
         fate::ExprKind::Intrinsic(_, _) => todo!(),
@@ -1761,7 +1809,12 @@ fn annot_expr<'a>(
         fate::ExprKind::ByteLit(_) => todo!(),
         fate::ExprKind::IntLit(_) => todo!(),
         fate::ExprKind::FloatLit(_) => todo!(),
-    }
+    };
+
+    debug_assert!(solver_annots.retain_epilogues[expr.id].is_none());
+    solver_annots.retain_epilogues[expr.id] = Some(retain_epilogue);
+
+    result_modes
 }
 
 fn extract_drop_modes(

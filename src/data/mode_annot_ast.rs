@@ -98,6 +98,17 @@ pub struct DropModes {
     pub dropped_paths: BTreeMap<StackPath, UpperBound<Mode>>,
 }
 
+/// Represents an operation in which a subset of a value's paths might be retained, conditional on
+/// the modes of those paths.
+///
+/// After monomorphization with respect to modes:
+/// - When an `Owned` path appears, this compiles to a retain.
+/// - When a `Borrowed` path appears, this compiles to a no-op.
+#[derive(Clone, Debug)]
+pub struct RetainModes {
+    pub retained_paths: BTreeMap<StackPath, UpperBound<Mode>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ModeAnnots {
     pub extern_constraints: IdVec<ExternalVarId, UpperBound<Mode>>,
@@ -121,6 +132,10 @@ pub struct ModeAnnots {
     /// Drop prologues are used to proactively drop otherwise-unmoved variables before mutating
     /// operations which could potentially invalidate them.
     pub drop_prologues: IdVec<fate::ExprId, Vec<(flat::LocalId, DropModes)>>,
+
+    /// Retain epilogues are used to retain items obtained from 'get' operations on containers (e.g.
+    /// `UnwrapBoxed`).
+    pub retain_epilogues: IdVec<fate::ExprId, RetainModes>,
 }
 
 #[derive(Clone, Debug)]

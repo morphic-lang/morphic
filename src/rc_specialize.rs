@@ -112,6 +112,7 @@ struct ConcreteRcOps<Call> {
     func: first_ord::CustomFuncId,
     calls: IdVec<fate::CallId, Call>,
     release_prologues: IdVec<fate::ExprId, Vec<(flat::LocalId, ReleasePaths)>>,
+    retain_epilogues: IdVec<fate::ExprId, RetainPaths>,
     occur_retains: IdVec<fate::OccurId, RetainPaths>,
     let_release_epilogues: IdVec<fate::LetBlockId, Vec<(flat::LocalId, ReleasePaths)>>,
     branch_release_epilogues: IdVec<fate::BranchBlockId, Vec<(flat::LocalId, ReleasePaths)>>,
@@ -160,6 +161,22 @@ fn concretize_drops(
         .iter()
         .map(|(local, dropped_paths)| (*local, concretize_drop_modes(modes, dropped_paths)))
         .collect()
+}
+
+fn concretize_retains(
+    modes: &IdVec<ineq::ExternalVarId, mode::Mode>,
+    retains: &mode::RetainModes,
+) -> RetainPaths {
+    RetainPaths {
+        retain_paths: retains
+            .retained_paths
+            .iter()
+            .filter_map(|(path, bound)| match get_mode(modes, bound) {
+                mode::Mode::Owned => Some(path.clone()),
+                mode::Mode::Borrowed => None,
+            })
+            .collect(),
+    }
 }
 
 fn concretize_occurs(
@@ -248,6 +265,10 @@ fn deduplicate_specializations(
                 .drop_prologues
                 .map(|_, drops| concretize_drops(modes, drops));
 
+            let retain_epilogues = mode_annots
+                .retain_epilogues
+                .map(|_, retains| concretize_retains(modes, retains));
+
             let occur_retains = mode_annots
                 .occur_modes
                 .map(|_, occur_modes| concretize_occurs(modes, occur_modes));
@@ -268,6 +289,7 @@ fn deduplicate_specializations(
                     func: specialization.func,
                     calls,
                     release_prologues,
+                    retain_epilogues,
                     occur_retains,
                     let_release_epilogues,
                     branch_release_epilogues,
@@ -329,6 +351,7 @@ fn deduplicate_specializations(
                         func: ops.func,
                         calls: resolved_calls,
                         release_prologues: ops.release_prologues.clone(),
+                        retain_epilogues: ops.retain_epilogues.clone(),
                         occur_retains: ops.occur_retains.clone(),
                         let_release_epilogues: ops.let_release_epilogues.clone(),
                         branch_release_epilogues: ops.branch_release_epilogues.clone(),
@@ -564,16 +587,14 @@ fn build_releases(
     }
 }
 
-fn build_expr<'a>(
+fn build_expr_kind<'a>(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     ops: &ConcreteRcOps<rc::CustomFuncId>,
     locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
-    expr: &'a fate::Expr,
-    result_type: anon::Type,
+    kind: &'a fate::ExprKind,
+    result_type: &anon::Type,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
-    build_releases(typedefs, locals, &ops.release_prologues[expr.id], builder);
-
     let build_occur = |locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
                        occur: fate::Local,
                        builder: &mut LetManyBuilder| {
@@ -589,7 +610,7 @@ fn build_expr<'a>(
         local_info.new_id
     };
 
-    let new_expr = match &expr.kind {
+    let new_expr = match kind {
         fate::ExprKind::Local(local) => {
             let rc_local = build_occur(locals, *local, builder);
             rc::Expr::Local(rc_local)
@@ -640,7 +661,7 @@ fn build_expr<'a>(
         }
 
         fate::ExprKind::Branch(discrim, cases, branch_result_type) => {
-            debug_assert_eq!(&result_type, branch_result_type);
+            debug_assert_eq!(result_type, branch_result_type);
 
             let rc_discrim = build_occur(locals, *discrim, builder);
 
@@ -649,14 +670,8 @@ fn build_expr<'a>(
                 .map(|(block_id, cond, body)| {
                     let mut case_builder = builder.child();
 
-                    let final_local = build_expr(
-                        typedefs,
-                        ops,
-                        locals,
-                        body,
-                        result_type.clone(),
-                        &mut case_builder,
-                    );
+                    let final_local =
+                        build_expr(typedefs, ops, locals, body, result_type, &mut case_builder);
 
                     build_releases(
                         typedefs,
@@ -675,7 +690,7 @@ fn build_expr<'a>(
         fate::ExprKind::LetMany(block_id, bindings, final_local) => {
             let rc_final_local = locals.with_scope(|sub_locals| {
                 for (type_, rhs) in bindings {
-                    let new_id = build_expr(typedefs, ops, sub_locals, rhs, type_.clone(), builder);
+                    let new_id = build_expr(typedefs, ops, sub_locals, rhs, type_, builder);
 
                     sub_locals.add_local(LocalInfo { type_, new_id });
                 }
@@ -701,7 +716,31 @@ fn build_expr<'a>(
         _ => todo!(),
     };
 
-    builder.add_binding(result_type, new_expr)
+    builder.add_binding(result_type.clone(), new_expr)
+}
+
+fn build_expr<'a>(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    ops: &ConcreteRcOps<rc::CustomFuncId>,
+    locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
+    expr: &'a fate::Expr,
+    result_type: &anon::Type,
+    builder: &mut LetManyBuilder,
+) -> rc::LocalId {
+    build_releases(typedefs, locals, &ops.release_prologues[expr.id], builder);
+
+    let new_local = build_expr_kind(typedefs, ops, locals, &expr.kind, result_type, builder);
+
+    build_rc_ops(
+        typedefs,
+        rc::RcOp::Retain,
+        new_local,
+        result_type,
+        &ops.retain_epilogues[expr.id].retain_paths,
+        builder,
+    );
+
+    new_local
 }
 
 fn build_func(
@@ -723,7 +762,7 @@ fn build_func(
         ops,
         &mut locals,
         &func_def.body,
-        func_def.ret_type.clone(),
+        &func_def.ret_type,
         &mut builder,
     );
 
