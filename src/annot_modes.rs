@@ -15,6 +15,7 @@ use crate::util::disjunction::Disj;
 use crate::util::event_set as event;
 use crate::util::graph::{strongly_connected, Graph};
 use crate::util::id_vec::IdVec;
+use crate::util::im_rc_ext::VectorExtensions;
 use crate::util::inequality_graph as ineq;
 use crate::util::local_context::LocalContext;
 
@@ -1333,10 +1334,19 @@ struct SolverValModes {
     path_modes: OrdMap<alias::FieldPath, ineq::SolverVarId>,
 }
 
+impl SolverValModes {
+    fn new() -> Self {
+        SolverValModes {
+            path_modes: OrdMap::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct SolverLocalInfo<'a> {
     val_modes: SolverValModes,
     move_horizon: &'a VarMoveHorizon,
+    type_: &'a anon::Type,
 }
 
 #[derive(Clone, Debug)]
@@ -1455,7 +1465,7 @@ fn annot_expr<'a>(
     constraints: &mut ineq::ConstraintGraph<mode::Mode>,
     scc_sigs: &SolverSccSigs,
     locals: &mut LocalContext<flat::LocalId, SolverLocalInfo<'a>>,
-    expr: &fate::Expr,
+    expr: &'a fate::Expr,
     solver_annots: &mut SolverModeAnnots,
 ) -> SolverValModes {
     let drop_prologue_modes = annot_drops(locals, &marked_drops.drop_prologues[expr.id]);
@@ -1630,7 +1640,7 @@ fn annot_expr<'a>(
             locals.with_scope(|sub_locals| {
                 let binding_horizons = &move_horizons.binding_moves[block_id];
                 debug_assert_eq!(binding_horizons.len(), bindings.len());
-                for ((_type, rhs), move_horizon) in bindings.iter().zip(binding_horizons.iter()) {
+                for ((type_, rhs), move_horizon) in bindings.iter().zip(binding_horizons.iter()) {
                     let binding_modes = annot_expr(
                         typedefs,
                         known_annots,
@@ -1649,6 +1659,7 @@ fn annot_expr<'a>(
                     sub_locals.add_local(SolverLocalInfo {
                         val_modes: binding_modes,
                         move_horizon,
+                        type_,
                     });
                 }
 
@@ -1662,7 +1673,94 @@ fn annot_expr<'a>(
             })
         }
 
-        _ => todo!(),
+        fate::ExprKind::Tuple(items) => {
+            let mut result_modes = SolverValModes::new();
+            for (i, item) in items.iter().enumerate() {
+                let item_modes = annot_occur(constraints, locals, solver_annots, *item);
+                for (path, mode) in item_modes.path_modes {
+                    result_modes
+                        .path_modes
+                        .insert(path.add_front(alias::Field::Field(i)), mode);
+                }
+            }
+            result_modes
+        }
+
+        fate::ExprKind::TupleField(tuple, idx) => {
+            let mut result_modes = SolverValModes::new();
+
+            let tuple_modes = annot_occur(constraints, locals, solver_annots, *tuple);
+
+            let tuple_info = locals.local_binding(tuple.1);
+            let item_type = if let anon::Type::Tuple(item_types) = &tuple_info.type_ {
+                &item_types[*idx]
+            } else {
+                unreachable!()
+            };
+
+            for (item_path, _) in field_path::get_refs_in(typedefs, item_type) {
+                result_modes.path_modes.insert(
+                    item_path.clone(),
+                    tuple_modes.path_modes[&item_path.add_front(alias::Field::Field(*idx))],
+                );
+            }
+            result_modes
+        }
+
+        fate::ExprKind::WrapVariant(variant_types, variant_id, content) => {
+            let result_modes = instantiate_type(
+                typedefs,
+                constraints,
+                &anon::Type::Variants(variant_types.clone()),
+            );
+
+            let content_modes = annot_occur(constraints, locals, solver_annots, *content);
+
+            for (content_path, content_mode) in content_modes.path_modes {
+                constraints.require_eq(
+                    result_modes.path_modes
+                        [&content_path.add_front(alias::Field::Variant(*variant_id))],
+                    content_mode,
+                );
+            }
+            result_modes
+        }
+
+        fate::ExprKind::UnwrapVariant(variant_id, wrapped) => {
+            let mut result_modes = SolverValModes::new();
+
+            let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
+
+            let wrapped_info = locals.local_binding(wrapped.1);
+            let content_type = if let anon::Type::Variants(variant_types) = &wrapped_info.type_ {
+                &variant_types[variant_id]
+            } else {
+                unreachable!()
+            };
+
+            for (content_path, _) in field_path::get_refs_in(typedefs, content_type) {
+                result_modes.path_modes.insert(
+                    content_path.clone(),
+                    wrapped_modes.path_modes
+                        [&content_path.add_front(alias::Field::Variant(*variant_id))],
+                );
+            }
+            result_modes
+        }
+
+        fate::ExprKind::WrapBoxed(_, _) => todo!(),
+        fate::ExprKind::UnwrapBoxed(_, _) => todo!(),
+        fate::ExprKind::WrapCustom(_, _) => todo!(),
+        fate::ExprKind::UnwrapCustom(_, _) => todo!(),
+        fate::ExprKind::Intrinsic(_, _) => todo!(),
+        fate::ExprKind::ArrayOp(_) => todo!(),
+        fate::ExprKind::IoOp(_) => todo!(),
+        fate::ExprKind::Panic(_, _, _) => todo!(),
+        fate::ExprKind::ArrayLit(_, _) => todo!(),
+        fate::ExprKind::BoolLit(_) => todo!(),
+        fate::ExprKind::ByteLit(_) => todo!(),
+        fate::ExprKind::IntLit(_) => todo!(),
+        fate::ExprKind::FloatLit(_) => todo!(),
     }
 }
 
@@ -1783,6 +1881,7 @@ fn annot_scc(
             locals.add_local(SolverLocalInfo {
                 val_modes: substitute_sig_modes(&extern_vars, &func_scc_sig.arg_modes),
                 move_horizon: &move_horizons.arg_moves,
+                type_: &func_def.arg_type,
             });
 
             let mut solver_annots = SolverModeAnnots {
