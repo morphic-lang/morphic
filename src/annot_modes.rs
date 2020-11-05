@@ -1,4 +1,4 @@
-use im_rc::{OrdMap, OrdSet};
+use im_rc::{vector, OrdMap, OrdSet, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::alias_spec_flag::lookup_concrete_cond;
@@ -1834,15 +1834,177 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::Intrinsic(_, _) => todo!(),
-        fate::ExprKind::ArrayOp(_) => todo!(),
-        fate::ExprKind::IoOp(_) => todo!(),
-        fate::ExprKind::Panic(_, _, _) => todo!(),
-        fate::ExprKind::ArrayLit(_, _) => todo!(),
-        fate::ExprKind::BoolLit(_) => todo!(),
-        fate::ExprKind::ByteLit(_) => todo!(),
-        fate::ExprKind::IntLit(_) => todo!(),
-        fate::ExprKind::FloatLit(_) => todo!(),
+        // TODO [intrinsics]: If we ever add array intrinsics, we will need to modify this.
+        fate::ExprKind::Intrinsic(_intr, arg) => {
+            let arg_modes = annot_occur(constraints, locals, solver_annots, *arg);
+            debug_assert!(arg_modes.path_modes.is_empty());
+            SolverValModes::new()
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Item(item_type, _, _, array, index)) => {
+            let mut result_modes = SolverValModes::new();
+
+            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
+            let index_modes = annot_occur(constraints, locals, solver_annots, *index);
+            debug_assert!(index_modes.path_modes.is_empty());
+
+            for (item_path, _) in field_path::get_refs_in(typedefs, item_type) {
+                // The item is the first return value
+                result_modes.path_modes.insert(
+                    item_path.clone().add_front(alias::Field::Field(0)),
+                    array_modes.path_modes
+                        [&item_path.clone().add_front(alias::Field::ArrayMembers)],
+                );
+
+                // The hole array is the second return value
+                let hole_array_item_var = constraints.new_var();
+                constraints.require_lte_const(hole_array_item_var, &mode::Mode::Owned);
+                result_modes.path_modes.insert(
+                    vector![alias::Field::Field(1), alias::Field::ArrayMembers] + item_path,
+                    hole_array_item_var,
+                );
+            }
+
+            let hole_array_var = constraints.new_var();
+            constraints.require_lte_const(hole_array_var, &mode::Mode::Owned);
+            result_modes
+                .path_modes
+                .insert(vector![alias::Field::Field(1)], hole_array_var);
+
+            for item_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
+                let item_mode =
+                    array_modes.path_modes[&stack_path::to_field_path(&item_stack_path)
+                        .add_front(alias::Field::ArrayMembers)];
+
+                retain_epilogue
+                    .retained_paths
+                    .insert(item_stack_path, item_mode);
+            }
+
+            result_modes
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, _, array)) => {
+            annot_occur(constraints, locals, solver_annots, *array);
+            SolverValModes::new()
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(item_type, _, _, array, item)) => {
+            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
+            let item_modes = annot_occur(constraints, locals, solver_annots, *item);
+
+            for (_, array_mode) in array_modes.path_modes {
+                constraints.require_lte_const(array_mode, &mode::Mode::Owned);
+            }
+
+            for (_, item_mode) in item_modes.path_modes {
+                constraints.require_lte_const(item_mode, &mode::Mode::Owned);
+            }
+
+            let result_modes = instantiate_type(
+                typedefs,
+                constraints,
+                &anon::Type::Array(Box::new(item_type.clone())),
+            );
+
+            for (_, result_mode) in &result_modes.path_modes {
+                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
+            }
+
+            result_modes
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(item_type, _, _, array)) => {
+            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
+
+            for (_, array_mode) in array_modes.path_modes {
+                constraints.require_lte_const(array_mode, &mode::Mode::Owned);
+            }
+
+            let result_modes = instantiate_type(
+                typedefs,
+                constraints,
+                &anon::Type::Tuple(vec![
+                    anon::Type::Array(Box::new(item_type.clone())),
+                    item_type.clone(),
+                ]),
+            );
+
+            for (_, result_mode) in &result_modes.path_modes {
+                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
+            }
+
+            result_modes
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(item_type, _, _, hole_array, item)) => {
+            let hole_array_modes = annot_occur(constraints, locals, solver_annots, *hole_array);
+            let item_modes = annot_occur(constraints, locals, solver_annots, *item);
+
+            for (_, hole_array_mode) in hole_array_modes.path_modes {
+                constraints.require_lte_const(hole_array_mode, &mode::Mode::Owned);
+            }
+
+            for (_, item_mode) in item_modes.path_modes {
+                constraints.require_lte_const(item_mode, &mode::Mode::Owned);
+            }
+
+            let result_modes = instantiate_type(
+                typedefs,
+                constraints,
+                &anon::Type::Array(Box::new(item_type.clone())),
+            );
+
+            for (_, result_mode) in &result_modes.path_modes {
+                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
+            }
+
+            result_modes
+        }
+
+        fate::ExprKind::IoOp(fate::IoOp::Input) => {
+            let mut result_modes = SolverValModes::new();
+            let array_mode = constraints.new_var();
+            constraints.require_lte_const(array_mode, &mode::Mode::Owned);
+            result_modes.path_modes.insert(Vector::new(), array_mode);
+            result_modes
+        }
+
+        fate::ExprKind::IoOp(fate::IoOp::Output(_, _, byte_array)) => {
+            annot_occur(constraints, locals, solver_annots, *byte_array);
+            SolverValModes::new()
+        }
+
+        fate::ExprKind::Panic(result_type, _, message) => {
+            annot_occur(constraints, locals, solver_annots, *message);
+            instantiate_type(typedefs, constraints, result_type)
+        }
+
+        fate::ExprKind::ArrayLit(item_type, items) => {
+            for item in items {
+                let item_modes = annot_occur(constraints, locals, solver_annots, *item);
+                for (_, item_mode) in item_modes.path_modes {
+                    constraints.require_lte_const(item_mode, &mode::Mode::Owned);
+                }
+            }
+
+            let result_modes = instantiate_type(
+                typedefs,
+                constraints,
+                &anon::Type::Array(Box::new(item_type.clone())),
+            );
+
+            for (_, result_mode) in &result_modes.path_modes {
+                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
+            }
+
+            result_modes
+        }
+
+        fate::ExprKind::BoolLit(_)
+        | fate::ExprKind::ByteLit(_)
+        | fate::ExprKind::IntLit(_)
+        | fate::ExprKind::FloatLit(_) => SolverValModes::new(),
     };
 
     debug_assert!(solver_annots.retain_epilogues[expr.id].is_none());
