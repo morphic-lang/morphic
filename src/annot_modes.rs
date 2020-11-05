@@ -247,6 +247,23 @@ fn mark_tentative_prologue_drops(
     }
 }
 
+fn mutations_from_aliases(
+    version_aliases: &BTreeMap<alias::AliasCondition, spec::ConcreteAlias>,
+    aliases: &alias::LocalAliases,
+) -> BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>> {
+    let mut result = BTreeMap::new();
+    for ((other, other_path), cond) in &aliases.aliases {
+        let (other_stack_path, _) = stack_path::split_stack_heap(other_path.clone());
+        if lookup_concrete_cond(version_aliases, cond) {
+            result
+                .entry(*other)
+                .or_insert_with(BTreeSet::new)
+                .insert(other_stack_path.clone());
+        }
+    }
+    result
+}
+
 // This is a backwards data-flow pass, so all variable occurrences should be processed in reverse
 // order, both across expressions and within each expression.
 //
@@ -279,19 +296,32 @@ fn mark_expr_occurs<'a>(
 
     // We need to pass `locals`, `occur_kinds`, and `expr_uses` as arguments to appease the borrow
     // checker.
-    let mark = |locals, occur_kinds, expr_uses, occur| {
-        mark_occur_mut(
-            &orig.custom_types,
-            locals,
-            occur_fates,
-            &this_version.ret_fate,
-            occur,
-            future_uses,
-            expr_uses,
-            occur_kinds,
-            &BTreeMap::new(),
-        );
-    };
+    let mark_with_mutations =
+        |locals: &mut MarkOccurContext<'a>,
+         occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
+         expr_uses: &mut ExprUses,
+         occur: fate::Local,
+         to_be_mutated: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>| {
+            mark_occur_mut(
+                &orig.custom_types,
+                locals,
+                occur_fates,
+                &this_version.ret_fate,
+                occur,
+                future_uses,
+                expr_uses,
+                occur_kinds,
+                &to_be_mutated,
+            );
+        };
+
+    let mark =
+        |locals: &mut MarkOccurContext<'a>,
+         occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
+         expr_uses: &mut ExprUses,
+         occur: fate::Local| {
+            mark_with_mutations(locals, occur_kinds, expr_uses, occur, &BTreeMap::new());
+        };
 
     match &expr.kind {
         fate::ExprKind::Local(local) => {
@@ -349,17 +379,7 @@ fn mark_expr_occurs<'a>(
                 }
             }
 
-            mark_occur_mut(
-                &orig.custom_types,
-                locals,
-                occur_fates,
-                &this_version.ret_fate,
-                *arg,
-                future_uses,
-                &mut expr_uses,
-                occur_kinds,
-                &to_be_mutated,
-            );
+            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *arg, &to_be_mutated);
 
             mark_tentative_prologue_drops(
                 future_uses,
@@ -457,7 +477,132 @@ fn mark_expr_occurs<'a>(
             });
         }
 
-        _ => todo!(),
+        fate::ExprKind::Tuple(items) => {
+            for item in items {
+                mark(locals, occur_kinds, &mut expr_uses, *item);
+            }
+        }
+
+        fate::ExprKind::TupleField(tuple, _index) => {
+            mark(locals, occur_kinds, &mut expr_uses, *tuple);
+        }
+
+        fate::ExprKind::WrapVariant(_variant_types, _variant_id, content) => {
+            mark(locals, occur_kinds, &mut expr_uses, *content);
+        }
+
+        fate::ExprKind::UnwrapVariant(_variant_id, wrapped) => {
+            mark(locals, occur_kinds, &mut expr_uses, *wrapped);
+        }
+
+        fate::ExprKind::WrapBoxed(content, _item_type) => {
+            mark(locals, occur_kinds, &mut expr_uses, *content);
+        }
+
+        fate::ExprKind::UnwrapBoxed(wrapped, _item_type) => {
+            mark(locals, occur_kinds, &mut expr_uses, *wrapped);
+        }
+
+        fate::ExprKind::WrapCustom(_custom_id, content) => {
+            mark(locals, occur_kinds, &mut expr_uses, *content);
+        }
+
+        fate::ExprKind::UnwrapCustom(_custom_id, content) => {
+            mark(locals, occur_kinds, &mut expr_uses, *content);
+        }
+
+        fate::ExprKind::Intrinsic(_intr, arg) => {
+            mark(locals, occur_kinds, &mut expr_uses, *arg);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Item(
+            _item_type,
+            _aliases,
+            _status,
+            array,
+            index,
+        )) => {
+            mark(locals, occur_kinds, &mut expr_uses, *array);
+            mark(locals, occur_kinds, &mut expr_uses, *index);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_item_type, _aliases, _status, array)) => {
+            mark(locals, occur_kinds, &mut expr_uses, *array);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(
+            _item_type,
+            array_aliases,
+            _status,
+            array,
+            item,
+        )) => {
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
+            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
+            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
+            mark_tentative_prologue_drops(
+                future_uses,
+                &expr_uses,
+                &to_be_mutated,
+                &mut tentative_drop_prologue,
+            );
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_item_type, array_aliases, _status, array)) => {
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
+            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
+            mark_tentative_prologue_drops(
+                future_uses,
+                &expr_uses,
+                &to_be_mutated,
+                &mut tentative_drop_prologue,
+            );
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(
+            _item_type,
+            hole_array_aliases,
+            _status,
+            hole_array,
+            item,
+        )) => {
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, hole_array_aliases);
+            mark_with_mutations(
+                locals,
+                occur_kinds,
+                &mut expr_uses,
+                *hole_array,
+                &to_be_mutated,
+            );
+            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
+            mark_tentative_prologue_drops(
+                future_uses,
+                &expr_uses,
+                &to_be_mutated,
+                &mut tentative_drop_prologue,
+            );
+        }
+
+        fate::ExprKind::IoOp(fate::IoOp::Input) => {}
+
+        fate::ExprKind::IoOp(fate::IoOp::Output(_aliases, _status, byte_array)) => {
+            mark(locals, occur_kinds, &mut expr_uses, *byte_array);
+        }
+
+        fate::ExprKind::Panic(_aliases, _status, message) => {
+            mark(locals, occur_kinds, &mut expr_uses, *message);
+        }
+
+        fate::ExprKind::ArrayLit(_item_type, items) => {
+            for item in items {
+                mark(locals, occur_kinds, &mut expr_uses, *item);
+            }
+        }
+
+        fate::ExprKind::BoolLit(_) => {}
+        fate::ExprKind::ByteLit(_) => {}
+        fate::ExprKind::IntLit(_) => {}
+        fate::ExprKind::FloatLit(_) => {}
     }
 
     debug_assert!(expr_uses
