@@ -26,6 +26,10 @@ enum OccurKind {
 }
 
 // TODO: Should we unify this with `OccurKind`?
+//
+// TODO: Should this exist at all?  We may not actually care about the distinct between `Used` vs
+// `Moved` in any code that consumes this type.
+//
 /// The ordering on this type is meaningful, with Used < Moved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum UseKind {
@@ -871,7 +875,87 @@ fn repair_expr_drops<'a>(
             }
         }
 
-        _ => todo!(),
+        fate::ExprKind::Tuple(items) => {
+            for item in items {
+                add_move(occur_kinds, &mut expr_moves, *item);
+            }
+        }
+
+        fate::ExprKind::TupleField(tuple, _index) => {
+            add_move(occur_kinds, &mut expr_moves, *tuple);
+        }
+
+        fate::ExprKind::WrapVariant(_variant_types, _variant_id, content) => {
+            add_move(occur_kinds, &mut expr_moves, *content);
+        }
+
+        fate::ExprKind::UnwrapVariant(_variant_id, wrapped) => {
+            add_move(occur_kinds, &mut expr_moves, *wrapped);
+        }
+
+        fate::ExprKind::WrapBoxed(content, _item_type) => {
+            add_move(occur_kinds, &mut expr_moves, *content);
+        }
+
+        fate::ExprKind::UnwrapBoxed(wrapped, _item_type) => {
+            add_move(occur_kinds, &mut expr_moves, *wrapped);
+        }
+
+        fate::ExprKind::WrapCustom(_custom_id, content) => {
+            add_move(occur_kinds, &mut expr_moves, *content);
+        }
+
+        fate::ExprKind::UnwrapCustom(_custom_id, wrapped) => {
+            add_move(occur_kinds, &mut expr_moves, *wrapped);
+        }
+
+        fate::ExprKind::Intrinsic(_intr, arg) => {
+            add_move(occur_kinds, &mut expr_moves, *arg);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Item(_, _, _, array, index)) => {
+            add_move(occur_kinds, &mut expr_moves, *array);
+            add_move(occur_kinds, &mut expr_moves, *index);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, _, array)) => {
+            add_move(occur_kinds, &mut expr_moves, *array);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_, _, _, array, item)) => {
+            add_move(occur_kinds, &mut expr_moves, *array);
+            add_move(occur_kinds, &mut expr_moves, *item);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_, _, _, array)) => {
+            add_move(occur_kinds, &mut expr_moves, *array);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, _, hole_array, item)) => {
+            add_move(occur_kinds, &mut expr_moves, *hole_array);
+            add_move(occur_kinds, &mut expr_moves, *item);
+        }
+
+        fate::ExprKind::IoOp(fate::IoOp::Input) => {}
+
+        fate::ExprKind::IoOp(fate::IoOp::Output(_, _, byte_array)) => {
+            add_move(occur_kinds, &mut expr_moves, *byte_array);
+        }
+
+        fate::ExprKind::Panic(_, _, message) => {
+            add_move(occur_kinds, &mut expr_moves, *message);
+        }
+
+        fate::ExprKind::ArrayLit(_, items) => {
+            for item in items {
+                add_move(occur_kinds, &mut expr_moves, *item);
+            }
+        }
+
+        fate::ExprKind::BoolLit(_) => {}
+        fate::ExprKind::ByteLit(_) => {}
+        fate::ExprKind::IntLit(_) => {}
+        fate::ExprKind::FloatLit(_) => {}
     }
 
     debug_assert!(expr_moves
