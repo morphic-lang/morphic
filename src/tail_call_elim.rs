@@ -46,7 +46,7 @@ fn add_tail_call_deps(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
-pub enum CallMode {
+enum CallMode {
     AlwaysTail,
     // A function's call mode must be 'NotAlwaysTail' if it is called in non-tail position, *or* if
     // it is called in tail position from a function outside its tail call SCC.
@@ -54,7 +54,7 @@ pub enum CallMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
-pub enum Position {
+enum Position {
     Tail,
     NotTail,
 }

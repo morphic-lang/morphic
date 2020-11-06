@@ -105,7 +105,7 @@ fn mark_occur(
     ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
     future_uses_after_expr: Option<&OrdMap<mode::StackPath, UseKind>>,
     future_uses_in_expr: Option<&OrdMap<mode::StackPath, UseKind>>,
-    to_be_mutated: Option<&BTreeSet<mode::StackPath>>,
+    extra_owned: Option<&BTreeSet<mode::StackPath>>,
 ) -> BTreeMap<mode::StackPath, OccurKind> {
     let mut result = BTreeMap::new();
 
@@ -153,11 +153,11 @@ fn mark_occur(
                 result.insert(path, OccurKind::Final);
             }
             fate::InternalFate::Accessed => {
-                let is_mutated = to_be_mutated
-                    .map(|mutated| mutated.contains(&path))
+                let is_extra_owned = extra_owned
+                    .map(|extra_owned| extra_owned.contains(&path))
                     .unwrap_or(false);
 
-                if is_mutated {
+                if is_extra_owned {
                     result.insert(path, OccurKind::Final);
                 } else {
                     result.insert(path, OccurKind::Intermediate);
@@ -181,7 +181,7 @@ fn mark_occur_mut<'a>(
     future_uses: &FutureUses,
     expr_uses: &mut ExprUses,
     occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
-    to_be_mutated: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
+    extra_owned: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
 ) {
     let this_occur_kinds = mark_occur(
         typedefs,
@@ -190,7 +190,7 @@ fn mark_occur_mut<'a>(
         ret_fates,
         future_uses.uses.get(&occur.1),
         expr_uses.uses.get(&occur.1),
-        to_be_mutated.get(&occur.1),
+        extra_owned.get(&occur.1),
     );
 
     for (path, path_occur_kind) in &this_occur_kinds {
@@ -269,6 +269,12 @@ fn mutations_from_aliases(
     result
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Position {
+    Tail,
+    NotTail,
+}
+
 // This is a backwards data-flow pass, so all variable occurrences should be processed in reverse
 // order, both across expressions and within each expression.
 //
@@ -276,10 +282,12 @@ fn mutations_from_aliases(
 // if/else-if branches.  Can we do better?
 fn mark_expr_occurs<'a>(
     orig: &spec::Program,
+    scc: &BTreeSet<(first_ord::CustomFuncId, spec::FuncVersionId)>,
     this_version: &spec::FuncVersion,
     locals: &mut MarkOccurContext<'a>,
     occur_fates: &IdVec<fate::OccurId, fate::Fate>,
     future_uses: &FutureUses,
+    position: Position,
     expr: &'a fate::Expr,
     occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
     tentative_drop_prologues: &mut IdVec<
@@ -301,7 +309,7 @@ fn mark_expr_occurs<'a>(
 
     // We need to pass `locals`, `occur_kinds`, and `expr_uses` as arguments to appease the borrow
     // checker.
-    let mark_with_mutations =
+    let mark_with_extra_owned =
         |locals: &mut MarkOccurContext<'a>,
          occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
          expr_uses: &mut ExprUses,
@@ -325,7 +333,7 @@ fn mark_expr_occurs<'a>(
          occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
          expr_uses: &mut ExprUses,
          occur: fate::Local| {
-            mark_with_mutations(locals, occur_kinds, expr_uses, occur, &BTreeMap::new());
+            mark_with_extra_owned(locals, occur_kinds, expr_uses, occur, &BTreeMap::new());
         };
 
     match &expr.kind {
@@ -333,63 +341,88 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *local);
         }
 
-        fate::ExprKind::Call(_, _, callee, arg_aliases, _, _, arg) => {
-            // It's not important for `to_be_mutated` to contain directly / unconditionally mutated
-            // paths in the argument, because those will already be annotated with "owned" fates by
-            // fate analysis.  We only care about collecting paths which are mutated *indirectly*
-            // via aliases, and which fate analysis therefore can't catch.
-            let mut to_be_mutated = BTreeMap::new();
-            for (alias::ArgName(arg_field_path), callee_cond) in
-                &orig.funcs[callee].mutation_sig.arg_mutation_conds
-            {
-                match callee_cond {
-                    Disj::True => {
-                        // We don't need to consult the argument's folded aliases here, because any
-                        // two argument field paths related by a folded alias will collapse down to
-                        // the same stack path.
-                        //
-                        // Also, note that even if we were to miss a potential mutation here (which
-                        // doesn't appear to be possible, but there could always be bugs...), that
-                        // would only result in a precision / optimization issue, and wouldn't
-                        // threaten soundness.  Even if we were to set `to_be_mutated` to the empty
-                        // map for all calls, RC elision would remain perfectly sound (but could
-                        // result in deoptimizations in downstream mutation optimization passes).
-                        for ((other_local, other_field_path), symbolic_cond) in
-                            &arg_aliases[arg_field_path].aliases
-                        {
-                            let concretely_aliased =
-                                lookup_concrete_cond(&this_version.aliases, symbolic_cond);
+        fate::ExprKind::Call(call_id, _, callee, arg_aliases, _, _, arg) => {
+            debug_assert_eq!(&this_version.calls[call_id].0, callee);
+            let is_tail_rec_call =
+                position == Position::Tail && scc.contains(&this_version.calls[call_id]);
 
-                            if concretely_aliased {
-                                let (other_stack_path, _) =
-                                    stack_path::split_stack_heap(other_field_path.clone());
+            let extra_owned = if is_tail_rec_call {
+                // For a tail-recursive call, we want to ensure that all drops happen *before* the
+                // tail call, so in this case `extra_owned` should be *every variable in scope*.
+                (0..locals.len())
+                    .map(flat::LocalId)
+                    .map(|local_id| {
+                        let type_ = locals.local_binding(local_id).type_;
+                        (
+                            local_id,
+                            stack_path::stack_paths_in(&orig.custom_types, type_)
+                                .into_iter()
+                                .collect(),
+                        )
+                    })
+                    .collect()
+            } else {
+                // It's not important for `to_be_mutated` to contain directly / unconditionally
+                // mutated paths in the argument, because those will already be annotated with
+                // "owned" fates by fate analysis.  We only care about collecting paths which are
+                // mutated *indirectly* via aliases, and which fate analysis therefore can't catch.
+                let mut to_be_mutated = BTreeMap::new();
+                for (alias::ArgName(arg_field_path), callee_cond) in
+                    &orig.funcs[callee].mutation_sig.arg_mutation_conds
+                {
+                    match callee_cond {
+                        Disj::True => {
+                            // We don't need to consult the argument's folded aliases here, because
+                            // any two argument field paths related by a folded alias will collapse
+                            // down to the same stack path.
+                            //
+                            // Also, note that even if we were to miss a potential mutation here
+                            // (which doesn't appear to be possible, but there could always be
+                            // bugs...), that would only result in a precision / optimization issue,
+                            // and wouldn't threaten soundness.  Even if we were to set
+                            // `to_be_mutated` to the empty map for all calls, RC elision would
+                            // remain perfectly sound (but could result in deoptimizations in
+                            // downstream mutation optimization passes).
+                            for ((other_local, other_field_path), symbolic_cond) in
+                                &arg_aliases[arg_field_path].aliases
+                            {
+                                let concretely_aliased =
+                                    lookup_concrete_cond(&this_version.aliases, symbolic_cond);
 
-                                to_be_mutated
-                                    .entry(*other_local)
-                                    .or_insert_with(BTreeSet::new)
-                                    .insert(other_stack_path);
+                                if concretely_aliased {
+                                    let (other_stack_path, _) =
+                                        stack_path::split_stack_heap(other_field_path.clone());
+
+                                    to_be_mutated
+                                        .entry(*other_local)
+                                        .or_insert_with(BTreeSet::new)
+                                        .insert(other_stack_path);
+                                }
                             }
                         }
-                    }
-                    Disj::Any(_) => {
-                        // If this mutation occurs, it's due to an alias edge, so we don't need to
-                        // explicitly handle it here; if it occurs under the current set of concrete
-                        // aliasing edges for this version of the function, we'll propagate it via
-                        // the aliases incident on an unconditionally mutated path.
-                        //
-                        // TODO: Could we do this in mutation analysis as well?  Maybe mutation
-                        // signatures only need to explicitly store the *unconditionally* mutated
-                        // argument names?
+                        Disj::Any(_) => {
+                            // If this mutation occurs, it's due to an alias edge, so we don't need
+                            // to explicitly handle it here; if it occurs under the current set of
+                            // concrete aliasing edges for this version of the function, we'll
+                            // propagate it via the aliases incident on an unconditionally mutated
+                            // path.
+                            //
+                            // TODO: Could we do this in mutation analysis as well?  Maybe mutation
+                            // signatures only need to explicitly store the *unconditionally*
+                            // mutated argument names?
+                        }
                     }
                 }
-            }
 
-            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *arg, &to_be_mutated);
+                to_be_mutated
+            };
+
+            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *arg, &extra_owned);
 
             mark_tentative_prologue_drops(
                 future_uses,
                 &expr_uses,
-                &to_be_mutated,
+                &extra_owned,
                 &mut tentative_drop_prologue,
             );
         }
@@ -400,10 +433,12 @@ fn mark_expr_occurs<'a>(
             for (_, _cond, body) in cases {
                 let case_uses = mark_expr_occurs(
                     orig,
+                    scc,
                     this_version,
                     locals,
                     occur_fates,
                     future_uses,
+                    position,
                     body,
                     occur_kinds,
                     tentative_drop_prologues,
@@ -458,12 +493,22 @@ fn mark_expr_occurs<'a>(
                     sub_locals.truncate(binding_local.0);
                     internal_future_uses.uses.remove(&binding_local);
 
+                    let rhs_position = if idx + 1 == bindings.len()
+                        && flat::LocalId(locals_offset + idx) == final_local.1
+                    {
+                        position
+                    } else {
+                        Position::NotTail
+                    };
+
                     let rhs_uses = mark_expr_occurs(
                         orig,
+                        scc,
                         this_version,
                         sub_locals,
                         occur_fates,
                         &internal_future_uses,
+                        rhs_position,
                         rhs,
                         occur_kinds,
                         tentative_drop_prologues,
@@ -543,8 +588,8 @@ fn mark_expr_occurs<'a>(
             item,
         )) => {
             let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
-            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
-            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
+            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
+            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
             mark_tentative_prologue_drops(
                 future_uses,
                 &expr_uses,
@@ -555,7 +600,7 @@ fn mark_expr_occurs<'a>(
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_item_type, array_aliases, _status, array)) => {
             let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
-            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
+            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_tentative_prologue_drops(
                 future_uses,
                 &expr_uses,
@@ -572,14 +617,14 @@ fn mark_expr_occurs<'a>(
             item,
         )) => {
             let to_be_mutated = mutations_from_aliases(&this_version.aliases, hole_array_aliases);
-            mark_with_mutations(
+            mark_with_extra_owned(
                 locals,
                 occur_kinds,
                 &mut expr_uses,
                 *hole_array,
                 &to_be_mutated,
             );
-            mark_with_mutations(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
+            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
             mark_tentative_prologue_drops(
                 future_uses,
                 &expr_uses,
@@ -631,6 +676,7 @@ struct MarkedOccurs {
 
 fn mark_func_occurs(
     program: &spec::Program,
+    scc: &BTreeSet<(first_ord::CustomFuncId, spec::FuncVersionId)>,
     func_def: &spec::FuncDef,
     version: &spec::FuncVersion,
 ) -> MarkedOccurs {
@@ -645,12 +691,14 @@ fn mark_func_occurs(
 
     let body_uses = mark_expr_occurs(
         program,
+        scc,
         version,
         &mut locals,
         &func_def.occur_fates,
         &FutureUses {
             uses: OrdMap::new(),
         },
+        Position::Tail,
         &func_def.body,
         &mut occur_kinds,
         &mut tentative_drop_prologues,
@@ -2129,6 +2177,8 @@ fn annot_scc(
         arg_drop_epilogue: SolverDropModes,
     }
 
+    let scc_set = scc.iter().cloned().collect::<BTreeSet<_>>();
+
     let func_solver_annots = scc
         .iter()
         .map(|&(func_id, version_id)| {
@@ -2136,7 +2186,7 @@ fn annot_scc(
             let version = &func_def.versions[version_id];
             let func_scc_sig = &scc_sigs.func_sigs[&(func_id, version_id)];
 
-            let marked_occurs = mark_func_occurs(orig, func_def, version);
+            let marked_occurs = mark_func_occurs(orig, &scc_set, func_def, version);
             let marked_drops = repair_func_drops(&orig.custom_types, func_def, marked_occurs);
             let move_horizons = collect_func_moves(func_def, &marked_drops);
 

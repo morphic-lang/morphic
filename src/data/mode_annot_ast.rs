@@ -124,9 +124,6 @@ pub struct ModeAnnots {
     pub branch_drop_epilogues: IdVec<fate::BranchBlockId, Vec<(flat::LocalId, DropModes)>>,
 
     /// Drop epilogue for the argument at the end of the function body.
-    ///
-    /// TODO: Determine if there are any edge cases where this interacts badly with tail call
-    /// elimination.
     pub arg_drop_epilogue: DropModes,
 
     /// Drop prologues are used to proactively drop otherwise-unmoved variables before mutating
