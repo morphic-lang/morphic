@@ -33,13 +33,19 @@ pub items(arr: Array a): Iter a =
 
 // Transforming iterators:
 
-pub chain(fst: Iter a, snd: Iter a): Iter a =
+pub cons_lazy(x: () -> a, xs: () -> Iter a): Iter a =
+  Iter(\() -> Some(x(), xs()))
+
+pub chain_lazy(fst: Iter a, snd: () -> Iter a): Iter a =
   Iter(\() ->
     match next(fst) {
-      Some(x, xs) -> Some(x, chain(xs, snd)),
-      None -> next(snd),
+      Some(x, xs) -> Some(x, chain_lazy(xs, snd)),
+      None -> next(snd()),
     }
   )
+
+pub chain(fst: Iter a, snd: Iter a): Iter a =
+  chain_lazy(fst, \() -> snd)
 
 pub map(it: Iter a, f: a -> b): Iter b =
   Iter(\() ->
@@ -48,6 +54,17 @@ pub map(it: Iter a, f: a -> b): Iter b =
       None -> None,
     }
   )
+
+pub flatten(it: Iter (Iter a)): Iter a =
+  Iter(\() ->
+    match next(it) {
+      Some(x, xs) -> next(chain_lazy(x, \() -> flatten(xs))),
+      None -> None,
+    }
+  )
+
+pub flat_map(it: Iter a, f: a -> Iter b): Iter b =
+  flatten(map(it, f))
 
 pub filter(it: Iter a, f: a -> Bool): Iter a =
   Iter(\() ->

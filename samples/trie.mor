@@ -1,0 +1,46 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Option expose { Option { Some, None } },
+    module Io expose { writeln },
+    module String,
+    module Bool expose { or },
+  }
+
+module Trie = file "lib/trie.mor" with { Core } expose { Trie }
+
+proc interact(trie: Trie (Array Byte) (Array Byte)): () =
+  do output("\n> ") then
+  let query = do input() in
+
+  if String.equal(query, "get") {
+    do output("key> ") then
+    let key = do input() in
+    let opt_val = Trie.get(trie, key) in
+    match opt_val {
+      Some(val) -> do output("Some(") then do output(val) then do output(")\n"),
+      None -> do output("None\n"),
+    } then
+    do interact(trie)
+  }
+  else if String.equal(query, "set") {
+    do output("key> ") then
+    let key = do input() in
+    do output("val> ") then
+    let val = do input() in
+    do interact(Trie.set(trie, key, Some(val)))
+  }
+  else if String.equal(query, "del") {
+    do output("key> ") then
+    let key = do input() in
+    do interact(Trie.set(trie, key, None))
+  }
+  else if or(String.equal(query, "quit"), String.equal(query, "exit")) {
+    ()
+  }
+  else {
+    do output("Commands: get, set, del, quit\n") then
+    do interact(trie)
+  }
+
+proc main(): () =
+  do interact(Trie.nybbles_trie)

@@ -1,0 +1,234 @@
+import Core
+  expose {
+    module Option expose { Option { Some, None } },
+    module Array,
+    module Iter expose { Iter },
+    module Func expose { const },
+  }
+
+module SparseArray = {
+
+  import Core
+    expose {
+      module Option expose { Option { Some, None } },
+      module Array,
+    }
+
+  pub type SparseArray a {
+    SparseArray(
+      // Size when nonempty
+      () -> Int,
+      // Backing array and number of populated entries.
+      // If no entries would be populated, this should be `None`.
+      Option (Array (Option a), Int),
+    )
+  }
+
+  pub lazy_size(this: SparseArray a): () -> Int =
+    let SparseArray(size, _) = this in
+    size
+
+  pub empty(size: () -> Int): SparseArray a =
+    SparseArray(
+      size,
+      None,
+    )
+
+  pub is_empty(this: SparseArray a): Bool =
+    let SparseArray(_, store) = this in
+    Option.is_none(store)
+
+  pub get(this: SparseArray a, i: Int): Option a =
+    match this {
+      SparseArray(_, Some(arr, _)) -> Array.get(arr, i),
+
+      SparseArray(size, None) -> if i < size() {
+        None
+      } else {
+        panic("Sparse array index out of bounds")
+      },
+    }
+
+  pub extract(this: SparseArray a, i: Int): (Option a, Option a -> SparseArray a) =
+    match this {
+      SparseArray(size, Some(arr, num_pop)) ->
+        let (val, replace_arr) = item(arr, i) in
+        let num_pop_without_val =
+          if Option.is_some(val) {
+            num_pop - 1
+          } else {
+            num_pop
+          }
+        in
+        let replace_this = \new_val ->
+          if Option.is_some(new_val) {
+            SparseArray(size, Some(replace_arr(new_val), num_pop_without_val + 1))
+          } else if num_pop_without_val > 0 {
+            SparseArray(size, Some(replace_arr(None), num_pop_without_val))
+          } else {
+            SparseArray(size, None)
+          }
+        in
+        (val, replace_this),
+
+      SparseArray(size, None) ->
+        if i < size() {
+          let replace_this = \new_opt_val ->
+            if Option.is_some(new_opt_val) {
+              let init_arr = Array.fill(size(), None) in
+              SparseArray(size, Some(Array.set(init_arr, i, new_opt_val), 1))
+            } else {
+              SparseArray(size, None)
+            }
+          in
+          (None, replace_this)
+        } else {
+          panic("Sparse array index out of bounds")
+        }
+    }
+
+  pub update(this: SparseArray a, i: Int, f: Option a -> Option a): SparseArray a =
+    let (val, replace) = extract(this, i) in
+    replace(f(val))
+
+} with { Core }
+
+module Node = {
+
+  import Core
+    expose {
+      module Option expose { Option { Some, None } },
+      module Iter expose { Iter },
+      module Bool expose { and },
+      module Func expose { const },
+    }
+
+  import SparseArray expose { SparseArray }
+
+  pub type Node v {
+    Node(Option v, SparseArray (Node v))
+  }
+
+  pub empty(size: () -> Int): Node v =
+    Node(None, SparseArray.empty(size))
+
+  pub is_empty(this: Node v): Bool =
+    let Node(leaf, children) = this in
+    and(Option.is_none(leaf), SparseArray.is_empty(children))
+
+  pub get(this: Node v, key: Iter Int): Option v =
+    match Iter.next(key) {
+      Some(first, rest) ->
+        let Node(_, children) = this in
+        children
+        |> SparseArray.get(first)
+        |> Option.and_then(\child -> get(child, rest)),
+
+      None ->
+        let Node(leaf, _) = this in
+        leaf,
+    }
+
+  pub update(this: Node v, key: Iter Int, f: Option v -> Option v): Node v =
+    match Iter.next(key) {
+      Some(first, rest) ->
+        let Node(leaf, children) = this in
+        let new_children =
+          SparseArray.update(children, first, \opt_child ->
+            let new_child =
+              match opt_child {
+                Some(child) -> update(child, rest, f),
+                None ->
+                  // Instead of calling `f` and doing this match, it would also be semantically
+                  // correct to write:
+                  //
+                  //   empty(SparseArray.lazy_size(children)) |> update(rest, f)
+                  //
+                  // However, we know that `f` will eventually be called with `None` at the end of
+                  // the chain, and if `f(None) = None` then the code proposed above would create
+                  // a chain of new intermediate nodes and then immediately destroy them.  It's more
+                  // efficient to compute `f(None)` here, and avoid creating the chain in the first
+                  // place when `f(None) = None`.
+                  match f(None) {
+                    Some(new_val) ->
+                      empty(SparseArray.lazy_size(children))
+                      |> update(rest, const(Some(new_val))),
+
+                    None ->
+                      empty(SparseArray.lazy_size(children)),
+                  }
+              }
+            in
+            if is_empty(new_child) {
+              None
+            } else {
+              Some(new_child)
+            }
+          )
+        in
+        Node(leaf, new_children),
+
+      None ->
+        let Node(leaf, children) = this in
+        Node(f(leaf), children),
+    }
+
+} with { Core, SparseArray }
+
+from Node expose { Node }
+
+pub type Trie k v {
+  Trie(
+    // Key components
+    k -> Iter Int,
+    // Root
+    Node v,
+  )
+}
+
+pub empty(alph_size: () -> Int, components: k -> Iter Int): Trie k v =
+  Trie(components, Node.empty(alph_size))
+
+pub is_empty(this: Trie k v): Bool =
+  let Trie(_, root) = this in
+  Node.is_empty(root)
+
+pub get(this: Trie k v, key: k): Option v =
+  let Trie(components, root) = this in
+  Node.get(root, components(key))
+
+pub update(this: Trie k v, key: k, f: Option v -> Option v): Trie k v =
+  let Trie(components, root) = this in
+  let new_root = Node.update(root, components(key), f) in
+  Trie(components, new_root)
+
+pub set(this: Trie k v, key: k, opt_val: Option v): Trie k v =
+  let Trie(components, root) = this in
+  let new_root = Node.update(root, components(key), const(opt_val)) in
+  Trie(components, new_root)
+
+// Concrete tries
+
+pub bytes_trie: Trie (Array Byte) v =
+  empty(
+    \() -> 256,
+    \bytes ->
+      bytes
+      |> Iter.items()
+      |> Iter.map(byte_to_int),
+  )
+
+nybbles(bytes: Array Byte): Iter Int =
+  bytes
+  |> Iter.items()
+  |> Iter.flat_map(\byte ->
+    Iter.cons_lazy(\() -> int_bit_and(byte_to_int(byte), 15)) <| \() ->
+    Iter.cons_lazy(\() -> int_shift_right(byte_to_int(byte), 4)) <| \() ->
+    Iter.empty
+  )
+
+pub nybbles_trie: Trie (Array Byte) v =
+  empty(
+    \() -> 16,
+    nybbles,
+  )
