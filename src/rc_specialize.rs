@@ -713,7 +713,114 @@ fn build_expr_kind<'a>(
             return rc_final_local;
         }
 
-        _ => todo!(),
+        fate::ExprKind::Tuple(items) => rc::Expr::Tuple(
+            items
+                .iter()
+                .map(|item| build_occur(locals, *item, builder))
+                .collect(),
+        ),
+
+        fate::ExprKind::TupleField(tuple, index) => {
+            rc::Expr::TupleField(build_occur(locals, *tuple, builder), *index)
+        }
+
+        fate::ExprKind::WrapVariant(variant_types, variant_id, content) => rc::Expr::WrapVariant(
+            variant_types.clone(),
+            *variant_id,
+            build_occur(locals, *content, builder),
+        ),
+
+        fate::ExprKind::UnwrapVariant(variant_id, wrapped) => {
+            rc::Expr::UnwrapVariant(*variant_id, build_occur(locals, *wrapped, builder))
+        }
+
+        fate::ExprKind::WrapBoxed(content_id, content_type) => rc::Expr::WrapBoxed(
+            build_occur(locals, *content_id, builder),
+            content_type.clone(),
+        ),
+
+        fate::ExprKind::UnwrapBoxed(wrapped_id, wrapped_type) => rc::Expr::UnwrapBoxed(
+            build_occur(locals, *wrapped_id, builder),
+            wrapped_type.clone(),
+        ),
+
+        fate::ExprKind::WrapCustom(content_type, content_id) => {
+            rc::Expr::WrapCustom(*content_type, build_occur(locals, *content_id, builder))
+        }
+
+        fate::ExprKind::UnwrapCustom(wrapped_type, wrapped_id) => {
+            rc::Expr::UnwrapCustom(*wrapped_type, build_occur(locals, *wrapped_id, builder))
+        }
+
+        fate::ExprKind::Intrinsic(intrinsic, local_id) => {
+            rc::Expr::Intrinsic(*intrinsic, build_occur(locals, *local_id, builder))
+        }
+
+        fate::ExprKind::ArrayOp(op) => {
+            let new_op = match op {
+                fate::ArrayOp::Item(item_type, _, status, array, index) => rc::ArrayOp::Item(
+                    item_type.clone(),
+                    status.clone(),
+                    build_occur(locals, *array, builder),
+                    build_occur(locals, *index, builder),
+                ),
+                fate::ArrayOp::Len(item_type, _, status, array) => rc::ArrayOp::Len(
+                    item_type.clone(),
+                    status.clone(),
+                    build_occur(locals, *array, builder),
+                ),
+                fate::ArrayOp::Push(item_type, _, status, array, item) => rc::ArrayOp::Push(
+                    item_type.clone(),
+                    status.clone(),
+                    build_occur(locals, *array, builder),
+                    build_occur(locals, *item, builder),
+                ),
+                fate::ArrayOp::Pop(item_type, _, status, array) => rc::ArrayOp::Pop(
+                    item_type.clone(),
+                    status.clone(),
+                    build_occur(locals, *array, builder),
+                ),
+                fate::ArrayOp::Replace(item_type, _, status, hole_array, item) => {
+                    rc::ArrayOp::Replace(
+                        item_type.clone(),
+                        status.clone(),
+                        build_occur(locals, *hole_array, builder),
+                        build_occur(locals, *item, builder),
+                    )
+                }
+            };
+            rc::Expr::ArrayOp(new_op)
+        }
+
+        fate::ExprKind::IoOp(io_op) => {
+            let new_io_op = match io_op {
+                fate::IoOp::Input => rc::IoOp::Input,
+                fate::IoOp::Output(_aliases, status, byte_array) => {
+                    rc::IoOp::Output(status.clone(), build_occur(locals, *byte_array, builder))
+                }
+            };
+
+            rc::Expr::IoOp(new_io_op)
+        }
+
+        fate::ExprKind::Panic(result_type, local_status, message) => rc::Expr::Panic(
+            result_type.clone(),
+            local_status.clone(),
+            build_occur(locals, *message, builder),
+        ),
+
+        fate::ExprKind::ArrayLit(item_type, items) => rc::Expr::ArrayLit(
+            item_type.clone(),
+            items
+                .iter()
+                .map(|item| build_occur(locals, *item, builder))
+                .collect(),
+        ),
+
+        fate::ExprKind::BoolLit(val) => rc::Expr::BoolLit(*val),
+        fate::ExprKind::ByteLit(val) => rc::Expr::ByteLit(*val),
+        fate::ExprKind::IntLit(val) => rc::Expr::IntLit(*val),
+        fate::ExprKind::FloatLit(val) => rc::Expr::FloatLit(*val),
     };
 
     builder.add_binding(result_type.clone(), new_expr)
