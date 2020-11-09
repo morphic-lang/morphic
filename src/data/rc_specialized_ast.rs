@@ -44,6 +44,12 @@ pub enum RcOp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
+    Get(
+        anon::Type,            // Item type
+        mutation::LocalStatus, // Array status
+        LocalId,               // Array
+        LocalId,               // Index
+    ), // Returns item
     Item(
         anon::Type,            // Item type
         mutation::LocalStatus, // Array status

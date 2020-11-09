@@ -280,6 +280,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write_repchoice(w, rep)?;
             write![w, " "]?;
             match array_op {
+                ArrayOp::Get(local_id1, local_id2) => write_double(w, "get", local_id1, local_id2),
                 ArrayOp::Item(local_id1, local_id2) => {
                     write_double(w, "item", local_id1, local_id2)
                 }

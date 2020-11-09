@@ -548,6 +548,7 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         res::GlobalId::ArrayOp(op) => {
             use crate::data::resolved_ast::ArrayOp::*;
             let result = match op {
+                Get => scheme(1, func(pair(array(param(0)), int()), param(0))),
                 Item => scheme(
                     1,
                     func(

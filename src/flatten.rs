@@ -238,6 +238,24 @@ fn flatten_expr(
             )
         }
 
+        anon::Expr::ArrayOp(anon::ArrayOp::Get(item_type, array, index)) => {
+            let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
+            let (index_local, index_type) = flatten_expr(orig, ctx, builder, index);
+
+            debug_assert_eq!(&anon::Type::Array(Box::new(item_type.clone())), &array_type);
+            debug_assert_eq!(&anon::Type::Num(first_ord::NumType::Int), &index_type);
+
+            bind(
+                builder,
+                item_type.clone(),
+                flat::Expr::ArrayOp(flat::ArrayOp::Get(
+                    item_type.clone(),
+                    array_local,
+                    index_local,
+                )),
+            )
+        }
+
         anon::Expr::ArrayOp(anon::ArrayOp::Item(item_type, array, index)) => {
             let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
             let (index_local, index_type) = flatten_expr(orig, ctx, builder, index);

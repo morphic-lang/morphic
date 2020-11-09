@@ -166,6 +166,14 @@ fn trans_expr(
             anon::Expr::Intrinsic(*intr, Box::new(trans_expr(typedefs, boxed_variants, arg)))
         }
 
+        first_ord::Expr::ArrayOp(first_ord::ArrayOp::Get(item_type, array, index)) => {
+            anon::Expr::ArrayOp(anon::ArrayOp::Get(
+                trans_type(item_type),
+                Box::new(trans_expr(typedefs, boxed_variants, array)),
+                Box::new(trans_expr(typedefs, boxed_variants, index)),
+            ))
+        }
+
         first_ord::Expr::ArrayOp(first_ord::ArrayOp::Item(item_type, array, index)) => {
             anon::Expr::ArrayOp(anon::ArrayOp::Item(
                 trans_type(item_type),

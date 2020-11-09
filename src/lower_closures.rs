@@ -418,6 +418,14 @@ impl<'a> Context<'a> {
                                 let lowered_item_type = self.lower_type(item_type);
 
                                 match op {
+                                    ArrayOp::Get => {
+                                        first_ord::Expr::ArrayOp(first_ord::ArrayOp::Get(
+                                            lowered_item_type,
+                                            Box::new(local(2)), // Array
+                                            Box::new(local(3)), // Index
+                                        ))
+                                    }
+
                                     ArrayOp::Item => {
                                         let ret_parts =
                                             if let first_ord::Type::Tuple(ret_parts) = &ret_type {
@@ -689,6 +697,19 @@ impl<'a> Context<'a> {
             }
             LeafFuncCase::ArrayOp(op, item_type) => {
                 return match op {
+                    res::ArrayOp::Get => match &arg {
+                        first_ord::Expr::Tuple(args) => {
+                            debug_assert_eq!(args.len(), 2);
+
+                            Some(first_ord::Expr::ArrayOp(first_ord::ArrayOp::Get(
+                                self.lower_type(&item_type),
+                                Box::new(args[0].clone()),
+                                Box::new(args[1].clone()),
+                            )))
+                        }
+
+                        _ => None,
+                    },
                     // TODO: optimize Item
                     res::ArrayOp::Item => None,
                     res::ArrayOp::Len => Some(first_ord::Expr::ArrayOp(first_ord::ArrayOp::Len(

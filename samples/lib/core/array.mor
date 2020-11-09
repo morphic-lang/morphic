@@ -1,8 +1,11 @@
 import Iter expose { Iter }
 
-pub get(arr: Array a, i: Int): a =
-  let (x, _) = item(arr, i) in
-  x
+// TODO: This is a temporary workaround.  We should have a namespacing system for builtins.
+module NoShadow = {
+  pub get_: (Array a, Int) -> a = get
+}
+
+pub get: (Array a, Int) -> a = NoShadow.get_
 
 pub set(arr: Array a, i: Int, val: a): Array a =
   let (_, hole) = item(arr, i) in

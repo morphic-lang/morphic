@@ -33,6 +33,10 @@ pub enum Type<Rep> {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ArrayOp {
+    Get(
+        rc::LocalId, // Array
+        rc::LocalId, // Index
+    ), // Returns item
     Item(
         rc::LocalId, // Array
         rc::LocalId, // Index

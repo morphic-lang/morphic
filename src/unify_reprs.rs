@@ -719,6 +719,25 @@ fn instantiate_expr(
             (unif::Expr::Intrinsic(*intr, *arg), ret_inst)
         }
 
+        rc::Expr::ArrayOp(rc::ArrayOp::Get(_item_type, array_status, array, index)) => {
+            let (rep_var, item_type_inst) =
+                if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
+                    (*rep_var, item_type_inst as &unif::Type<_>)
+                } else {
+                    unreachable!()
+                };
+
+            (
+                unif::Expr::ArrayOp(
+                    rep_var,
+                    item_type_inst.clone(),
+                    array_status.clone(),
+                    unif::ArrayOp::Get(*array, *index),
+                ),
+                item_type_inst.clone(),
+            )
+        }
+
         rc::Expr::ArrayOp(rc::ArrayOp::Item(_item_type, array_status, array, index)) => {
             let (rep_var, item_type_inst) =
                 if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {

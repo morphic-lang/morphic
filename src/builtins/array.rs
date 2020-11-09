@@ -11,6 +11,7 @@ pub struct ArrayInterface<'a> {
     pub hole_array_type: BasicTypeEnum<'a>,
 
     pub new: FunctionValue<'a>,
+    pub get: FunctionValue<'a>,
     pub item: FunctionValue<'a>,
     pub len: FunctionValue<'a>,
     pub push: FunctionValue<'a>,

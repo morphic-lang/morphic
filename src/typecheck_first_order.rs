@@ -40,6 +40,17 @@ fn typecheck_expr(
             assert_eq!(typecheck_expr(program, locals, v), trans_type(&sig.arg));
             trans_type(&sig.ret)
         }
+        E::ArrayOp(ast::ArrayOp::Get(item_type, array, index)) => {
+            assert_eq!(
+                typecheck_expr(program, locals, &**index),
+                T::Num(ast::NumType::Int)
+            );
+            assert_eq!(
+                typecheck_expr(program, locals, &**array),
+                T::Array(Box::new(item_type.clone()))
+            );
+            item_type.clone()
+        }
         E::ArrayOp(ast::ArrayOp::Item(item_type, array, index)) => {
             assert_eq!(
                 typecheck_expr(program, locals, &**index),

@@ -1519,6 +1519,15 @@ fn gen_expr<'a, 'b>(
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
+                    low::ArrayOp::Get(array_id, index_id) => builder
+                        .build_call(
+                            builtin.interface().get,
+                            &[locals[array_id], locals[index_id]],
+                            "flat_array_get",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
                     low::ArrayOp::Item(array_id, index_id) => builder
                         .build_call(
                             builtin.interface().item,
@@ -1571,6 +1580,15 @@ fn gen_expr<'a, 'b>(
                 match array_op {
                     low::ArrayOp::New() => builder
                         .build_call(builtin.interface().new, &[], "pers_array_new")
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Get(array_id, index_id) => builder
+                        .build_call(
+                            builtin.interface().get,
+                            &[locals[array_id], locals[index_id]],
+                            "pers_array_get",
+                        )
                         .try_as_basic_value()
                         .left()
                         .unwrap(),

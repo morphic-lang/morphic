@@ -47,6 +47,7 @@ pub enum IoOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ArrayOp {
+    Get,
     Item,
     Len,
     Push,

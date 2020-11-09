@@ -42,6 +42,11 @@ pub enum IoOp {
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
+    Get(
+        Type,      // Item type
+        Box<Expr>, // Array
+        Box<Expr>, // Index
+    ), // Returns item
     Item(
         Type,      // Item type
         Box<Expr>, // Array

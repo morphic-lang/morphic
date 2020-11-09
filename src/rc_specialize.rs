@@ -758,6 +758,12 @@ fn build_expr_kind<'a>(
 
         fate::ExprKind::ArrayOp(op) => {
             let new_op = match op {
+                fate::ArrayOp::Get(item_type, _, status, array, index) => rc::ArrayOp::Get(
+                    item_type.clone(),
+                    status.clone(),
+                    build_occur(locals, *array, builder),
+                    build_occur(locals, *index, builder),
+                ),
                 fate::ArrayOp::Item(item_type, _, status, array, index) => rc::ArrayOp::Item(
                     item_type.clone(),
                     status.clone(),

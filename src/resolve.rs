@@ -267,6 +267,10 @@ lazy_static! {
         let mut global_map = BTreeMap::new();
 
         global_map.insert(
+            raw::ValName("get".to_owned()),
+            res::GlobalId::ArrayOp(res::ArrayOp::Get),
+        );
+        global_map.insert(
             raw::ValName("item".to_owned()),
             res::GlobalId::ArrayOp(res::ArrayOp::Item),
         );

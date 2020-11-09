@@ -394,6 +394,9 @@ fn lower_expr(
         ),
         tail::Expr::ArrayOp(rep, item_type, array_op) => {
             let array_expr = match array_op {
+                unif::ArrayOp::Get(array_id, index_id) => {
+                    low::ArrayOp::Get(array_id.lookup_in(context), index_id.lookup_in(context))
+                }
                 unif::ArrayOp::Item(array_id, index_id) => {
                     low::ArrayOp::Item(array_id.lookup_in(context), index_id.lookup_in(context))
                 }

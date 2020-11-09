@@ -1514,6 +1514,27 @@ fn interpret_expr(
                 heap.add(Value::Tuple(vec![new_array, item_heap_id]))
             }
 
+            Expr::ArrayOp(rep, _item_type, ArrayOp::Get(array_id, index_id)) => {
+                let array_heap_id = locals[array_id];
+                let index_heap_id = locals[index_id];
+
+                let array = unwrap_array(
+                    heap,
+                    array_heap_id,
+                    *rep,
+                    stacktrace.add_frame("get array".into()),
+                );
+                let index = unwrap_int(
+                    heap,
+                    index_heap_id,
+                    stacktrace.add_frame("get index".into()),
+                );
+
+                bounds_check(stderr, array.len(), index.0)?;
+
+                array[index.0 as usize]
+            }
+
             Expr::ArrayOp(rep, _item_type, ArrayOp::Item(array_id, index_id)) => {
                 let array_heap_id = locals[array_id];
                 let index_heap_id = locals[index_id];

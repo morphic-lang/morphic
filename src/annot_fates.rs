@@ -480,6 +480,35 @@ fn annot_expr(
             add_occurence(occurs, &mut uses, *arg, fate::Fate::new()),
         ),
 
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Get(
+            item_type,
+            array_aliases,
+            array_status,
+            array,
+            index,
+        )) => {
+            let mut array_fate = fate::Fate::new();
+
+            for (item_path, _) in get_refs_in(&orig.custom_types, item_type) {
+                array_fate.fates.insert(
+                    item_path.clone().add_front(alias::Field::ArrayMembers),
+                    val_fate.fates[&item_path].clone(),
+                );
+            }
+
+            array_fate
+                .fates
+                .insert(Vector::new(), access_field_fate(expr_event.clone()));
+
+            fate::ExprKind::ArrayOp(fate::ArrayOp::Get(
+                item_type.clone(),
+                array_aliases.clone(),
+                array_status.clone(),
+                add_occurence(occurs, &mut uses, *array, array_fate),
+                add_occurence(occurs, &mut uses, *index, fate::Fate::new()),
+            ))
+        }
+
         mutation::Expr::ArrayOp(mutation::ArrayOp::Item(
             item_type,
             array_aliases,

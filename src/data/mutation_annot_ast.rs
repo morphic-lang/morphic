@@ -25,6 +25,13 @@ pub struct LocalStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
+    Get(
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        LocalStatus,         // Array status
+        flat::LocalId,       // Array
+        flat::LocalId,       // Index
+    ), // Returns item
     Item(
         anon::Type,          // Item type
         alias::LocalAliases, // Array aliases

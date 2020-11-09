@@ -565,6 +565,17 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *arg);
         }
 
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(
+            _item_type,
+            _aliases,
+            _status,
+            array,
+            index,
+        )) => {
+            mark(locals, occur_kinds, &mut expr_uses, *array);
+            mark(locals, occur_kinds, &mut expr_uses, *index);
+        }
+
         fate::ExprKind::ArrayOp(fate::ArrayOp::Item(
             _item_type,
             _aliases,
@@ -962,6 +973,11 @@ fn repair_expr_drops<'a>(
             add_move(occur_kinds, &mut expr_moves, *arg);
         }
 
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, _, array, index)) => {
+            add_move(occur_kinds, &mut expr_moves, *array);
+            add_move(occur_kinds, &mut expr_moves, *index);
+        }
+
         fate::ExprKind::ArrayOp(fate::ArrayOp::Item(_, _, _, array, index)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
             add_move(occur_kinds, &mut expr_moves, *index);
@@ -1218,6 +1234,11 @@ fn collect_expr_moves(
 
         fate::ExprKind::Intrinsic(_intr, arg) => {
             collect_occur_events(var_moves, *arg);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, _, array, index)) => {
+            collect_occur_events(var_moves, *array);
+            collect_occur_events(var_moves, *index);
         }
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Item(_, _, _, array, index)) => {
@@ -1887,6 +1908,34 @@ fn annot_expr<'a>(
             let arg_modes = annot_occur(constraints, locals, solver_annots, *arg);
             debug_assert!(arg_modes.path_modes.is_empty());
             SolverValModes::new()
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(item_type, _, _, array, index)) => {
+            let mut result_modes = SolverValModes::new();
+
+            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
+            let index_modes = annot_occur(constraints, locals, solver_annots, *index);
+            debug_assert!(index_modes.path_modes.is_empty());
+
+            for (item_path, _) in field_path::get_refs_in(typedefs, item_type) {
+                result_modes.path_modes.insert(
+                    item_path.clone(),
+                    array_modes.path_modes
+                        [&item_path.clone().add_front(alias::Field::ArrayMembers)],
+                );
+            }
+
+            for item_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
+                let item_mode =
+                    array_modes.path_modes[&stack_path::to_field_path(&item_stack_path)
+                        .add_front(alias::Field::ArrayMembers)];
+
+                retain_epilogue
+                    .retained_paths
+                    .insert(item_stack_path, item_mode);
+            }
+
+            result_modes
         }
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Item(item_type, _, _, array, index)) => {

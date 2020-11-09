@@ -49,6 +49,12 @@ impl<'a> FlatArrayImpl<'a> {
             Some(Linkage::Internal),
         );
 
+        let get = module.add_function(
+            "builtin_flat_array_get",
+            item_type.fn_type(&[array_type.into(), i64_type.into()], false),
+            Some(Linkage::Internal),
+        );
+
         let item = module.add_function(
             "builtin_flat_array_item",
             item_ret_type.fn_type(&[array_type.into(), i64_type.into()], false),
@@ -120,6 +126,7 @@ impl<'a> FlatArrayImpl<'a> {
             array_type: array_type.into(),
             hole_array_type: hole_array_type.into(),
             new,
+            get,
             item,
             len,
             push,
@@ -176,6 +183,18 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             s.arrow_set(me, F_ARR_REFCOUNT, s.i64(1));
 
             s.ret(me);
+        }
+
+        // define 'get'
+        {
+            let s = scope(self.interface.get, context, target);
+            let me = s.arg(0);
+            let idx = s.arg(1);
+
+            s.call_void(self.bounds_check, &[me, idx]);
+            let data = s.arrow(me, F_ARR_DATA);
+
+            s.ret(s.buf_get(data, idx));
         }
 
         // define 'item'

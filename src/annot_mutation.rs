@@ -536,6 +536,32 @@ fn annot_expr(
         // modified.
         alias::Expr::Intrinsic(intr, arg) => (annot::Expr::Intrinsic(*intr, *arg), trivial_info()),
 
+        alias::Expr::ArrayOp(alias::ArrayOp::Get(item_type, array_aliases, array, index)) => {
+            let array_info = &ctx[array];
+
+            let mut item_statuses = OrdMap::new();
+            for (item_path, _) in get_names_in(&orig.custom_types, item_type) {
+                let mut array_path = item_path.clone();
+                array_path.push_front(alias::Field::ArrayMembers);
+
+                item_statuses.insert(item_path, array_info.statuses[&array_path].clone());
+            }
+
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Get(
+                    item_type.clone(),
+                    array_aliases.clone(),
+                    ctx[array].statuses[&Vector::new()].clone(),
+                    *array,
+                    *index,
+                )),
+                ExprInfo {
+                    mutations: Vec::new(),
+                    val_statuses: item_statuses,
+                },
+            )
+        }
+
         alias::Expr::ArrayOp(alias::ArrayOp::Item(item_type, array_aliases, array, index)) => (
             annot::Expr::ArrayOp(annot::ArrayOp::Item(
                 item_type.clone(),

@@ -328,6 +328,7 @@ impl<'a> PersistentArrayImpl<'a> {
             hole_array_type: hole_array_type.into(),
 
             new,
+            get,
             item,
             len,
             push,

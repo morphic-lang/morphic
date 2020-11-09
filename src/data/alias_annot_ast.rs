@@ -67,6 +67,12 @@ pub struct LocalAliases {
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
+    Get(
+        anon::Type,    // Item type
+        LocalAliases,  // Array aliases
+        flat::LocalId, // Array
+        flat::LocalId, // Index
+    ), // Returns item
     Item(
         anon::Type,    // Item type
         LocalAliases,  // Array aliases

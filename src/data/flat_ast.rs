@@ -10,6 +10,11 @@ id_type!(pub LocalId);
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
+    Get(
+        anon::Type, // Item type
+        LocalId,    // Array
+        LocalId,    // Index
+    ), // Returns item
     Item(
         anon::Type, // Item type
         LocalId,    // Array

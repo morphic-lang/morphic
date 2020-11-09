@@ -43,6 +43,12 @@ impl<'a> ZeroSizedArrayImpl<'a> {
 
         let new = fun("new", array_type, &[]);
 
+        let get = fun(
+            "get",
+            item_type.into(),
+            &[array_type.into(), i64_type.into()],
+        );
+
         let item = fun(
             "item",
             context
@@ -87,6 +93,7 @@ impl<'a> ZeroSizedArrayImpl<'a> {
             hole_array_type,
 
             new,
+            get,
             item,
             len,
             push,
@@ -118,6 +125,23 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         {
             let s = scope(self.interface.new, context, target);
             s.ret(s.i64(0));
+        }
+
+        // define 'get'
+        {
+            let s = scope(self.interface.get, context, target);
+            let array = s.arg(0);
+            let idx = s.arg(1);
+
+            s.if_(s.uge(idx, array), |s| {
+                s.panic(
+                    "idx %d is out of bounds for array of length %d",
+                    &[idx, array],
+                    tal,
+                )
+            });
+
+            s.ret(s.undef(self.interface.item_type));
         }
 
         // define 'item'

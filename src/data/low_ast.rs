@@ -23,6 +23,14 @@ pub enum ArrayOp {
 
     // Returns tuple of (item, hole array)
     // Argument is borrowed
+    // Return value is borrowed
+    Get(
+        LocalId, // Array
+        LocalId, // Index
+    ),
+
+    // Returns tuple of (item, hole array)
+    // Argument is borrowed
     // Returned item is borrowed
     // Returned hole array is owned
     Item(

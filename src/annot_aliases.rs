@@ -1275,6 +1275,48 @@ fn annot_expr(
         // modified.
         flat::Expr::Intrinsic(intr, arg) => (annot::Expr::Intrinsic(*intr, *arg), ValInfo::new()),
 
+        flat::Expr::ArrayOp(flat::ArrayOp::Get(item_type, array, index)) => {
+            let array_info = &ctx[array];
+
+            let mut expr_info = ValInfo::new();
+
+            for (path_in_item, _) in get_names_in(&orig.custom_types, item_type) {
+                let mut path_in_array = path_in_item.clone();
+                path_in_array.push_front(annot::Field::ArrayMembers);
+
+                expr_info.create_path(path_in_item.clone());
+                copy_aliases(
+                    &mut expr_info,
+                    &path_in_item,
+                    array_info,
+                    *array,
+                    &path_in_array,
+                );
+            }
+
+            for (fold_point_in_item, _) in get_fold_points_in(&orig.custom_types, item_type) {
+                let mut fold_point_in_array = fold_point_in_item.clone();
+                fold_point_in_array.push_front(annot::Field::ArrayMembers);
+
+                expr_info.create_folded_aliases(
+                    fold_point_in_item,
+                    array_info.folded_aliases[&fold_point_in_array].clone(),
+                );
+            }
+
+            let array_aliases = array_info.aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Get(
+                    item_type.clone(),
+                    array_aliases,
+                    *array,
+                    *index,
+                )),
+                expr_info,
+            )
+        }
+
         flat::Expr::ArrayOp(flat::ArrayOp::Item(item_type, array, index)) => {
             debug_assert_eq!(
                 get_names_in(
