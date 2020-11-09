@@ -40,7 +40,8 @@ impl<'a> FlatArrayImpl<'a> {
         let array_type = array_deref_type.ptr_type(AddressSpace::Generic);
 
         let hole_array_type = context.struct_type(&[i64_type.into(), array_type.into()], false);
-        let item_ret_type = context.struct_type(&[item_type.into(), hole_array_type.into()], false);
+        let extract_ret_type =
+            context.struct_type(&[item_type.into(), hole_array_type.into()], false);
         let pop_ret_type = context.struct_type(&[array_type.into(), item_type.into()], false);
 
         let new = module.add_function(
@@ -55,9 +56,9 @@ impl<'a> FlatArrayImpl<'a> {
             Some(Linkage::Internal),
         );
 
-        let item = module.add_function(
-            "builtin_flat_array_item",
-            item_ret_type.fn_type(&[array_type.into(), i64_type.into()], false),
+        let extract = module.add_function(
+            "builtin_flat_array_extract",
+            extract_ret_type.fn_type(&[array_type.into(), i64_type.into()], false),
             Some(Linkage::Internal),
         );
 
@@ -127,7 +128,7 @@ impl<'a> FlatArrayImpl<'a> {
             hole_array_type: hole_array_type.into(),
             new,
             get,
-            item,
+            extract,
             len,
             push,
             pop,
@@ -153,7 +154,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         context: &'a Context,
         target: &TargetData,
         tal: &Tal<'a>,
-        _item_retain: Option<FunctionValue<'a>>,
+        item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
         let i64_type = context.i64_type();
@@ -197,16 +198,18 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             s.ret(s.buf_get(data, idx));
         }
 
-        // define 'item'
+        // define 'extract'
         {
-            let s = scope(self.interface.item, context, target);
+            let s = scope(self.interface.extract, context, target);
             let me = s.arg(0);
             let idx = s.arg(1);
 
             s.call_void(self.bounds_check, &[me, idx]);
             let data = s.arrow(me, F_ARR_DATA);
 
-            s.call_void(self.interface.retain_array, &[me]);
+            if let Some(item_retain) = item_retain {
+                s.call_void(item_retain, &[s.buf_addr(data, idx)]);
+            }
 
             s.ret(s.make_tup(&[
                 s.buf_get(data, idx),

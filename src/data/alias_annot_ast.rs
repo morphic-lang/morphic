@@ -73,7 +73,7 @@ pub enum ArrayOp {
         flat::LocalId, // Array
         flat::LocalId, // Index
     ), // Returns item
-    Item(
+    Extract(
         anon::Type,    // Item type
         LocalAliases,  // Array aliases
         flat::LocalId, // Array

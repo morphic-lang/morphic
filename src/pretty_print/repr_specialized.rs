@@ -281,8 +281,8 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write![w, " "]?;
             match array_op {
                 ArrayOp::Get(local_id1, local_id2) => write_double(w, "get", local_id1, local_id2),
-                ArrayOp::Item(local_id1, local_id2) => {
-                    write_double(w, "item", local_id1, local_id2)
+                ArrayOp::Extract(local_id1, local_id2) => {
+                    write_double(w, "extract", local_id1, local_id2)
                 }
                 ArrayOp::Len(local_id) => write_single(w, "len", local_id),
                 ArrayOp::Push(local_id1, local_id2) => {

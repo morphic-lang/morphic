@@ -544,7 +544,7 @@ fn array_op_type(
             Box::new(solver_item_type.clone()),
         ),
 
-        ArrayOp::Item => {
+        ArrayOp::Extract => {
             let ret_closure_var = graph.new_var();
             graph.require(
                 ret_closure_var,

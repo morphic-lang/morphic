@@ -141,8 +141,8 @@ impl<'a> PersistentArrayImpl<'a> {
 
         let new = fun("new", array_type.into(), &[]);
 
-        let item = fun(
-            "item",
+        let extract = fun(
+            "extract",
             context
                 .struct_type(&[item_type, hole_array_type.into()], false)
                 .into(),
@@ -329,7 +329,7 @@ impl<'a> PersistentArrayImpl<'a> {
 
             new,
             get,
-            item,
+            extract,
             len,
             push,
             pop,
@@ -425,9 +425,9 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             ));
         }
 
-        // define 'item'
+        // define 'extract'
         {
-            let s = scope(self.interface.item, context, target);
+            let s = scope(self.interface.extract, context, target);
             let arr = s.arg(0);
             let idx = s.arg(1);
 
@@ -440,14 +440,19 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                 )
             });
 
-            s.call_void(self.interface.retain_array, &[arr]);
-
             let hole_array = s.make_struct(
                 self.interface.hole_array_type,
                 &[(F_HOLE_IDX, idx), (F_HOLE_ARRAY, arr)],
             );
 
             let item = s.call(self.get, &[arr, idx]);
+
+            let item_ptr = s.alloca(self.interface.item_type);
+            s.ptr_set(item_ptr, item);
+
+            if let Some(item_retain) = item_retain {
+                s.call_void(item_retain, &[item_ptr]);
+            }
 
             s.ret(s.make_tup(&[item, hole_array]));
         }

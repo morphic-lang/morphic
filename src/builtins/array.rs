@@ -12,7 +12,7 @@ pub struct ArrayInterface<'a> {
 
     pub new: FunctionValue<'a>,
     pub get: FunctionValue<'a>,
-    pub item: FunctionValue<'a>,
+    pub extract: FunctionValue<'a>,
     pub len: FunctionValue<'a>,
     pub push: FunctionValue<'a>,
     pub pop: FunctionValue<'a>,

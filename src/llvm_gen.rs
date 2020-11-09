@@ -1528,11 +1528,11 @@ fn gen_expr<'a, 'b>(
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
-                    low::ArrayOp::Item(array_id, index_id) => builder
+                    low::ArrayOp::Extract(array_id, index_id) => builder
                         .build_call(
-                            builtin.interface().item,
+                            builtin.interface().extract,
                             &[locals[array_id], locals[index_id]],
-                            "flat_array_item",
+                            "flat_array_extract",
                         )
                         .try_as_basic_value()
                         .left()
@@ -1592,11 +1592,11 @@ fn gen_expr<'a, 'b>(
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
-                    low::ArrayOp::Item(array_id, index_id) => builder
+                    low::ArrayOp::Extract(array_id, index_id) => builder
                         .build_call(
-                            builtin.interface().item,
+                            builtin.interface().extract,
                             &[locals[array_id], locals[index_id]],
-                            "pers_array_item",
+                            "pers_array_extract",
                         )
                         .try_as_basic_value()
                         .left()

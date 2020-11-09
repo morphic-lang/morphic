@@ -1535,7 +1535,7 @@ fn interpret_expr(
                 array[index.0 as usize]
             }
 
-            Expr::ArrayOp(rep, _item_type, ArrayOp::Item(array_id, index_id)) => {
+            Expr::ArrayOp(rep, _item_type, ArrayOp::Extract(array_id, index_id)) => {
                 let array_heap_id = locals[array_id];
                 let index_heap_id = locals[index_id];
 
@@ -1543,12 +1543,21 @@ fn interpret_expr(
                     heap,
                     array_heap_id,
                     *rep,
-                    stacktrace.add_frame("item array".into()),
+                    stacktrace.add_frame("extract array".into()),
                 );
+
+                release(
+                    heap,
+                    array_heap_id,
+                    stacktrace.add_frame("release extract".into()),
+                );
+
+                heap.maybe_invalidate(array_heap_id);
+
                 let index = unwrap_int(
                     heap,
                     index_heap_id,
-                    stacktrace.add_frame("item index".into()),
+                    stacktrace.add_frame("extract index".into()),
                 );
 
                 let hole_array_id = heap.add(Value::HoleArray(
@@ -1562,6 +1571,7 @@ fn interpret_expr(
                 bounds_check(stderr, array.len(), index.0)?;
 
                 let get_item = array[index.0 as usize];
+                retain(heap, get_item, stacktrace.add_frame("item retain".into()));
                 heap.add(Value::Tuple(vec![get_item, hole_array_id]))
             }
 

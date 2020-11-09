@@ -50,7 +50,7 @@ pub enum ArrayOp {
         LocalId,               // Array
         LocalId,               // Index
     ), // Returns item
-    Item(
+    Extract(
         anon::Type,            // Item type
         mutation::LocalStatus, // Array status
         LocalId,               // Array

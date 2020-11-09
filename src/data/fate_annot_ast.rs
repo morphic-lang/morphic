@@ -34,7 +34,7 @@ pub enum ArrayOp {
         Local,                 // Array
         Local,                 // Index
     ), // Returns item
-    Item(
+    Extract(
         anon::Type,            // Item type
         alias::LocalAliases,   // Array aliases
         mutation::LocalStatus, // Array status

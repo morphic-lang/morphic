@@ -11,9 +11,9 @@ proc main(): () =
     let (arr_popped, item1) = pop(arr_pushed) in
 
     let arr_pushed_again = push(arr_popped, item1) in
-    let (item2, hole_arr) = item(arr_pushed_again, 0) in
+    let (item2, hole_arr) = extract(arr_pushed_again, 0) in
     let arr_filled = hole_arr(item2) in
-   
+
     do test("Check initial length", len(arr) = 0) then
     do test("Check length after push", len(arr_pushed) = 1) then
     do test("Check length after pop", len(arr_popped) = 0) then

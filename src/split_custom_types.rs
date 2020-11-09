@@ -174,8 +174,8 @@ fn trans_expr(
             ))
         }
 
-        first_ord::Expr::ArrayOp(first_ord::ArrayOp::Item(item_type, array, index)) => {
-            anon::Expr::ArrayOp(anon::ArrayOp::Item(
+        first_ord::Expr::ArrayOp(first_ord::ArrayOp::Extract(item_type, array, index)) => {
+            anon::Expr::ArrayOp(anon::ArrayOp::Extract(
                 trans_type(item_type),
                 Box::new(trans_expr(typedefs, boxed_variants, array)),
                 Box::new(trans_expr(typedefs, boxed_variants, index)),

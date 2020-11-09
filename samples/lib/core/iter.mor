@@ -26,10 +26,7 @@ pub ints(lo: Int): Iter Int =
   Iter(\() -> Some(lo, ints(lo + 1)))
 
 pub items(arr: Array a): Iter a =
-  map(range(0, len(arr)), \idx ->
-    let (val, _) = item(arr, idx) in
-    val
-  )
+  map(range(0, len(arr)), \idx -> get(arr, idx))
 
 // Transforming iterators:
 

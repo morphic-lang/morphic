@@ -256,7 +256,7 @@ fn flatten_expr(
             )
         }
 
-        anon::Expr::ArrayOp(anon::ArrayOp::Item(item_type, array, index)) => {
+        anon::Expr::ArrayOp(anon::ArrayOp::Extract(item_type, array, index)) => {
             let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
             let (index_local, index_type) = flatten_expr(orig, ctx, builder, index);
 
@@ -269,7 +269,7 @@ fn flatten_expr(
                     item_type.clone(),
                     anon::Type::HoleArray(Box::new(item_type.clone())),
                 ]),
-                flat::Expr::ArrayOp(flat::ArrayOp::Item(
+                flat::Expr::ArrayOp(flat::ArrayOp::Extract(
                     item_type.clone(),
                     array_local,
                     index_local,

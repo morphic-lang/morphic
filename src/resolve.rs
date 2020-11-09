@@ -271,8 +271,8 @@ lazy_static! {
             res::GlobalId::ArrayOp(res::ArrayOp::Get),
         );
         global_map.insert(
-            raw::ValName("item".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Item),
+            raw::ValName("extract".to_owned()),
+            res::GlobalId::ArrayOp(res::ArrayOp::Extract),
         );
         global_map.insert(
             raw::ValName("len".to_owned()),

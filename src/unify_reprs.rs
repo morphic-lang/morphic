@@ -738,7 +738,7 @@ fn instantiate_expr(
             )
         }
 
-        rc::Expr::ArrayOp(rc::ArrayOp::Item(_item_type, array_status, array, index)) => {
+        rc::Expr::ArrayOp(rc::ArrayOp::Extract(_item_type, array_status, array, index)) => {
             let (rep_var, item_type_inst) =
                 if let unif::Type::Array(rep_var, item_type_inst) = locals.local_binding(*array) {
                     (*rep_var, item_type_inst as &unif::Type<_>)
@@ -751,7 +751,7 @@ fn instantiate_expr(
                     rep_var,
                     item_type_inst.clone(),
                     array_status.clone(),
-                    unif::ArrayOp::Item(*array, *index),
+                    unif::ArrayOp::Extract(*array, *index),
                 ),
                 unif::Type::Tuple(vec![
                     item_type_inst.clone(),

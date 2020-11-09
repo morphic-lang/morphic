@@ -397,8 +397,8 @@ fn lower_expr(
                 unif::ArrayOp::Get(array_id, index_id) => {
                     low::ArrayOp::Get(array_id.lookup_in(context), index_id.lookup_in(context))
                 }
-                unif::ArrayOp::Item(array_id, index_id) => {
-                    low::ArrayOp::Item(array_id.lookup_in(context), index_id.lookup_in(context))
+                unif::ArrayOp::Extract(array_id, index_id) => {
+                    low::ArrayOp::Extract(array_id.lookup_in(context), index_id.lookup_in(context))
                 }
                 unif::ArrayOp::Len(array_id) => low::ArrayOp::Len(array_id.lookup_in(context)),
                 unif::ArrayOp::Push(array_id, item_id) => {

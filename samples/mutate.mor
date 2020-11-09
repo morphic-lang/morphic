@@ -9,7 +9,7 @@ map_from(arr: Array a, f: a -> a, idx: Int): Array a =
   if idx = len(arr) {
     arr
   } else {
-    let (x, hole) = item(arr, idx) in
+    let (x, hole) = extract(arr, idx) in
     map_from(hole(f(x)), f, idx + 1)
   }
 
@@ -20,8 +20,7 @@ proc for_each_from(arr: Array a, f: proc a -> b, idx: Int): () =
   if idx = len(arr) {
     ()
   } else {
-    let (x, _) = item(arr, idx) in
-    let _ = do f(x) in
+    do f(get(arr, idx)) then
     do for_each_from(arr, f, idx + 1)
   }
 
@@ -51,8 +50,8 @@ reverse(arr: Array a): Array a =
   reverse_from(arr, 0)
 
 swap(arr: Array a, left_idx: Int, right_idx: Int): Array a =
-  let (left_el, left_hole) = item(arr, left_idx) in
   let right_el = get(arr, right_idx) in
+  let (left_el, left_hole) = extract(arr, left_idx) in
   set(left_hole(right_el), right_idx, left_el)
 
 favs : Array Int =

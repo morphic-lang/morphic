@@ -8,11 +8,11 @@ module NoShadow = {
 pub get: (Array a, Int) -> a = NoShadow.get_
 
 pub set(arr: Array a, i: Int, val: a): Array a =
-  let (_, hole) = item(arr, i) in
+  let (_, hole) = extract(arr, i) in
   hole(val)
 
 pub update(arr: Array a, i: Int, f: a -> a): Array a =
-  let (x, hole) = item(arr, i) in
+  let (x, hole) = extract(arr, i) in
   hole(f(x))
 
 concat_from(a: Array t, b: Array t, i: Int): Array t =

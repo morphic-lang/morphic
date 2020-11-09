@@ -51,7 +51,7 @@ fn typecheck_expr(
             );
             item_type.clone()
         }
-        E::ArrayOp(ast::ArrayOp::Item(item_type, array, index)) => {
+        E::ArrayOp(ast::ArrayOp::Extract(item_type, array, index)) => {
             assert_eq!(
                 typecheck_expr(program, locals, &**index),
                 T::Num(ast::NumType::Int)

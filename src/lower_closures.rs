@@ -426,7 +426,7 @@ impl<'a> Context<'a> {
                                         ))
                                     }
 
-                                    ArrayOp::Item => {
+                                    ArrayOp::Extract => {
                                         let ret_parts =
                                             if let first_ord::Type::Tuple(ret_parts) = &ret_type {
                                                 ret_parts
@@ -471,7 +471,7 @@ impl<'a> Context<'a> {
                                                         ),
                                                     ]),
                                                     first_ord::Expr::ArrayOp(
-                                                        first_ord::ArrayOp::Item(
+                                                        first_ord::ArrayOp::Extract(
                                                             lowered_item_type,
                                                             Box::new(local(2)), // Array
                                                             Box::new(local(3)), // Index
@@ -710,8 +710,8 @@ impl<'a> Context<'a> {
 
                         _ => None,
                     },
-                    // TODO: optimize Item
-                    res::ArrayOp::Item => None,
+                    // TODO: optimize Extract
+                    res::ArrayOp::Extract => None,
                     res::ArrayOp::Len => Some(first_ord::Expr::ArrayOp(first_ord::ArrayOp::Len(
                         self.lower_type(&item_type),
                         Box::new(arg.clone()),

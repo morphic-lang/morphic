@@ -49,8 +49,8 @@ impl<'a> ZeroSizedArrayImpl<'a> {
             &[array_type.into(), i64_type.into()],
         );
 
-        let item = fun(
-            "item",
+        let extract = fun(
+            "extract",
             context
                 .struct_type(&[item_type, hole_array_type], false)
                 .into(),
@@ -94,7 +94,7 @@ impl<'a> ZeroSizedArrayImpl<'a> {
 
             new,
             get,
-            item,
+            extract,
             len,
             push,
             pop,
@@ -144,9 +144,9 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
             s.ret(s.undef(self.interface.item_type));
         }
 
-        // define 'item'
+        // define 'extract'
         {
-            let s = scope(self.interface.item, context, target);
+            let s = scope(self.interface.extract, context, target);
             let array = s.arg(0);
             let idx = s.arg(1);
 

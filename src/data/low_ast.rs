@@ -30,10 +30,10 @@ pub enum ArrayOp {
     ),
 
     // Returns tuple of (item, hole array)
-    // Argument is borrowed
-    // Returned item is borrowed
+    // Argument is owned
+    // Returned item is owned
     // Returned hole array is owned
-    Item(
+    Extract(
         LocalId, // Array
         LocalId, // Index
     ),

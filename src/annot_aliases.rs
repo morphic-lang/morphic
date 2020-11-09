@@ -375,9 +375,8 @@ fn array_extraction_aliases(
 
     // Populate new array info
     //
-    // TODO: In the 'ArrayOp::Pop' case, this adds an edge between the old and new array.  Modeling
-    // this edge is not strictly necessary (in contrast to the 'ArrayOp::Item' case), so we should
-    // consider eliminating it.
+    // TODO: This adds an edge between the old and new array.  Modeling this edge is not strictly
+    // necessary, so we should consider eliminating it.
     {
         for (array_path, _) in get_names_in(&orig.custom_types, &array_info.type_) {
             let mut ret_path = array_path.clone();
@@ -1317,7 +1316,7 @@ fn annot_expr(
             )
         }
 
-        flat::Expr::ArrayOp(flat::ArrayOp::Item(item_type, array, index)) => {
+        flat::Expr::ArrayOp(flat::ArrayOp::Extract(item_type, array, index)) => {
             debug_assert_eq!(
                 get_names_in(
                     &orig.custom_types,
@@ -1349,7 +1348,7 @@ fn annot_expr(
             let array_aliases = ctx[array].aliases[&Vector::new()].clone();
 
             (
-                annot::Expr::ArrayOp(annot::ArrayOp::Item(
+                annot::Expr::ArrayOp(annot::ArrayOp::Extract(
                     item_type.clone(),
                     array_aliases,
                     *array,

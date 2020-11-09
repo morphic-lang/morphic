@@ -49,10 +49,11 @@ module SparseArray = {
       },
     }
 
-  pub extract(this: SparseArray a, i: Int): (Option a, Option a -> SparseArray a) =
+  // TODO: Find a better way to fix the name collision here
+  pub sparse_array_extract(this: SparseArray a, i: Int): (Option a, Option a -> SparseArray a) =
     match this {
       SparseArray(size, Some(arr, num_pop)) ->
-        let (val, replace_arr) = item(arr, i) in
+        let (val, replace_arr) = extract(arr, i) in
         let num_pop_without_val =
           if Option.is_some(val) {
             num_pop - 1
@@ -75,7 +76,7 @@ module SparseArray = {
         if i < size() {
           let replace_this = \new_opt_val ->
             if Option.is_some(new_opt_val) {
-              let init_arr = Array.fill(size(), None) in
+              let init_arr = Array.fill_with(size(), \() -> None) in
               SparseArray(size, Some(Array.set(init_arr, i, new_opt_val), 1))
             } else {
               SparseArray(size, None)
@@ -88,7 +89,7 @@ module SparseArray = {
     }
 
   pub update(this: SparseArray a, i: Int, f: Option a -> Option a): SparseArray a =
-    let (val, replace) = extract(this, i) in
+    let (val, replace) = sparse_array_extract(this, i) in
     replace(f(val))
 
 } with { Core }

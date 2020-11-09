@@ -37,7 +37,7 @@ pub enum ArrayOp {
         rc::LocalId, // Array
         rc::LocalId, // Index
     ), // Returns item
-    Item(
+    Extract(
         rc::LocalId, // Array
         rc::LocalId, // Index
     ), // Returns tuple of (item, hole array)

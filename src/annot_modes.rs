@@ -1,4 +1,4 @@
-use im_rc::{vector, OrdMap, OrdSet, Vector};
+use im_rc::{OrdMap, OrdSet, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::alias_spec_flag::lookup_concrete_cond;
@@ -576,15 +576,22 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *index);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Item(
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(
             _item_type,
-            _aliases,
+            array_aliases,
             _status,
             array,
             index,
         )) => {
-            mark(locals, occur_kinds, &mut expr_uses, *array);
-            mark(locals, occur_kinds, &mut expr_uses, *index);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
+            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
+            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *index, &to_be_mutated);
+            mark_tentative_prologue_drops(
+                future_uses,
+                &expr_uses,
+                &to_be_mutated,
+                &mut tentative_drop_prologue,
+            );
         }
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_item_type, _aliases, _status, array)) => {
@@ -978,7 +985,7 @@ fn repair_expr_drops<'a>(
             add_move(occur_kinds, &mut expr_moves, *index);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Item(_, _, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(_, _, _, array, index)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
             add_move(occur_kinds, &mut expr_moves, *index);
         }
@@ -1241,7 +1248,7 @@ fn collect_expr_moves(
             collect_occur_events(var_moves, *index);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Item(_, _, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(_, _, _, array, index)) => {
             collect_occur_events(var_moves, *array);
             collect_occur_events(var_moves, *index);
         }
@@ -1938,45 +1945,26 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Item(item_type, _, _, array, index)) => {
-            let mut result_modes = SolverValModes::new();
-
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(item_type, _, _, array, index)) => {
             let array_modes = annot_occur(constraints, locals, solver_annots, *array);
             let index_modes = annot_occur(constraints, locals, solver_annots, *index);
             debug_assert!(index_modes.path_modes.is_empty());
 
-            for (item_path, _) in field_path::get_refs_in(typedefs, item_type) {
-                // The item is the first return value
-                result_modes.path_modes.insert(
-                    item_path.clone().add_front(alias::Field::Field(0)),
-                    array_modes.path_modes
-                        [&item_path.clone().add_front(alias::Field::ArrayMembers)],
-                );
-
-                // The hole array is the second return value
-                let hole_array_item_var = constraints.new_var();
-                constraints.require_lte_const(hole_array_item_var, &mode::Mode::Owned);
-                result_modes.path_modes.insert(
-                    vector![alias::Field::Field(1), alias::Field::ArrayMembers] + item_path,
-                    hole_array_item_var,
-                );
+            for (_, array_mode) in array_modes.path_modes {
+                constraints.require_lte_const(array_mode, &mode::Mode::Owned);
             }
 
-            let hole_array_var = constraints.new_var();
-            constraints.require_lte_const(hole_array_var, &mode::Mode::Owned);
-            result_modes
-                .path_modes
-                .insert(vector![alias::Field::Field(1)], hole_array_var);
+            let result_modes = instantiate_type(
+                typedefs,
+                constraints,
+                &anon::Type::Tuple(vec![
+                    item_type.clone(),
+                    anon::Type::HoleArray(Box::new(item_type.clone())),
+                ]),
+            );
 
-            for item_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
-                let item_mode =
-                    array_modes.path_modes[&stack_path::to_field_path(&item_stack_path)
-                        .add_front(alias::Field::ArrayMembers)];
-
-                retain_epilogue.retained_paths.insert(
-                    item_stack_path.add_front(mode::StackField::Field(0)),
-                    item_mode,
-                );
+            for (_, result_mode) in &result_modes.path_modes {
+                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
             }
 
             result_modes

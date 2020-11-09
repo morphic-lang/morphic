@@ -43,7 +43,7 @@ pub enum ArrayOp {
         Box<Expr>, // Array
         Box<Expr>, // Index
     ), // Returns item
-    Item(
+    Extract(
         Type,      // Item type
         Box<Expr>, // Array
         Box<Expr>, // Index

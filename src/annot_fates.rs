@@ -509,37 +509,20 @@ fn annot_expr(
             ))
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Item(
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Extract(
             item_type,
             array_aliases,
             array_status,
             array,
             index,
         )) => {
-            let mut array_fate = fate::Fate::new();
+            let array_fate = consumed_fate(
+                &orig.custom_types,
+                &anon::Type::Array(Box::new(item_type.clone())),
+                &expr_event,
+            );
 
-            for (item_path, _) in get_refs_in(&orig.custom_types, item_type) {
-                // The first return value is the item
-                let item_fate =
-                    val_fate.fates[&item_path.clone().add_front(alias::Field::Field(0))].clone();
-
-                // We don't need to consider any contribution of the returned hole array to the
-                // array's fate, because the returned array is unconditionally retained and is
-                // therefore essentially an unrelated object for the purposes of RC elision.
-
-                array_fate
-                    .fates
-                    .insert(item_path.add_front(alias::Field::ArrayMembers), item_fate);
-            }
-
-            // Note: We assume the input array is always unconditionally retained to obtain the hole
-            // array, so that this occurrence of the input array effectively does not escape this
-            // expression for the purposes of RC elision.
-            array_fate
-                .fates
-                .insert(Vector::new(), access_field_fate(expr_event.clone()));
-
-            fate::ExprKind::ArrayOp(fate::ArrayOp::Item(
+            fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(
                 item_type.clone(),
                 array_aliases.clone(),
                 array_status.clone(),

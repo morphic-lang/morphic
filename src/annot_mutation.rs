@@ -562,8 +562,8 @@ fn annot_expr(
             )
         }
 
-        alias::Expr::ArrayOp(alias::ArrayOp::Item(item_type, array_aliases, array, index)) => (
-            annot::Expr::ArrayOp(annot::ArrayOp::Item(
+        alias::Expr::ArrayOp(alias::ArrayOp::Extract(item_type, array_aliases, array, index)) => (
+            annot::Expr::ArrayOp(annot::ArrayOp::Extract(
                 item_type.clone(),
                 array_aliases.clone(),
                 ctx[array].statuses[&Vector::new()].clone(),
@@ -571,8 +571,7 @@ fn annot_expr(
                 *index,
             )),
             ExprInfo {
-                // 'Item' is not a mutating operation, but 'Replace' is.
-                mutations: Vec::new(),
+                mutations: propagated_mutations(*array, array_aliases),
                 val_statuses: array_extraction_statuses(
                     orig,
                     ctx,

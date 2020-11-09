@@ -764,7 +764,7 @@ fn build_expr_kind<'a>(
                     build_occur(locals, *array, builder),
                     build_occur(locals, *index, builder),
                 ),
-                fate::ArrayOp::Item(item_type, _, status, array, index) => rc::ArrayOp::Item(
+                fate::ArrayOp::Extract(item_type, _, status, array, index) => rc::ArrayOp::Extract(
                     item_type.clone(),
                     status.clone(),
                     build_occur(locals, *array, builder),

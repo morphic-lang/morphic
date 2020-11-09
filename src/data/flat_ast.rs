@@ -15,7 +15,7 @@ pub enum ArrayOp {
         LocalId,    // Array
         LocalId,    // Index
     ), // Returns item
-    Item(
+    Extract(
         anon::Type, // Item type
         LocalId,    // Array
         LocalId,    // Index
