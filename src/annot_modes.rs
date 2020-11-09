@@ -1011,7 +1011,7 @@ fn repair_expr_drops<'a>(
         .moves
         .get_max()
         .map(|(max_local, _)| max_local.0 < num_locals)
-        .unwrap_or(false));
+        .unwrap_or(true));
 
     expr_moves
 }
@@ -1924,9 +1924,10 @@ fn annot_expr<'a>(
                     array_modes.path_modes[&stack_path::to_field_path(&item_stack_path)
                         .add_front(alias::Field::ArrayMembers)];
 
-                retain_epilogue
-                    .retained_paths
-                    .insert(item_stack_path, item_mode);
+                retain_epilogue.retained_paths.insert(
+                    item_stack_path.add_front(mode::StackField::Field(0)),
+                    item_mode,
+                );
             }
 
             result_modes

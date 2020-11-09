@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::alias_spec_flag::lookup_concrete_cond;
 use crate::data::alias_annot_ast as alias;
 use crate::data::alias_specialized_ast as spec;
+use crate::data::anon_sum_ast as anon;
 use crate::data::fate_annot_ast as fate;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
@@ -16,6 +17,7 @@ use crate::util::disjunction::Disj;
 use crate::util::graph::Scc;
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
+use crate::util::norm_pair::NormPair;
 
 #[derive(Clone, Debug)]
 struct SccCallSite {
@@ -93,10 +95,9 @@ fn collect_sccs(
     for scc in sccs {
         match &scc {
             &Scc::Acyclic(func) => {
-                let scc_id = scc_infos.push(SccInfo {
-                    scc,
-                    callers: BTreeMap::new(),
-                });
+                let mut callers = BTreeMap::new();
+                callers.insert(func, Vec::new());
+                let scc_id = scc_infos.push(SccInfo { scc, callers });
 
                 debug_assert!(func_to_scc[func].is_none());
                 func_to_scc[func] = Some(scc_id);
@@ -173,11 +174,12 @@ impl InstanceQueue {
         inst: FuncInstance,
     ) -> spec::FuncVersionId {
         let func_insts = &mut self.instances[func];
-        match func_insts.cache.entry(inst) {
+        match func_insts.cache.entry(inst.clone()) {
             btree_map::Entry::Occupied(occupied) => *occupied.get(),
             btree_map::Entry::Vacant(vacant) => {
                 let version = func_insts.version_gen.fresh();
                 vacant.insert(version);
+                self.pending.push_back((func, version, inst));
                 version
             }
         }
@@ -218,24 +220,71 @@ fn filter_internal_mutation_cond(
     }
 }
 
-// An alias is only relevant to RC elision if it appears as the condition on an argument mutation
-// flag.
+// An alias is only relevant to RC elision if it is in incident on a name which is unconditionally
+// mutated.
 //
 // TODO: What is the easiest way to prove this rigorously?
-fn relevant_alias_conds(sig: &mutation::MutationSig) -> BTreeSet<&alias::AliasCondition> {
-    let mut result = BTreeSet::new();
-    for (_, disj) in &sig.arg_mutation_conds {
-        match disj {
-            Disj::True => {}
-            Disj::Any(conds) => {
-                result.extend(conds.iter());
+//
+// TODO: The algorithm here does not use type information to prune edges, so it may introduce
+// (harmless, but inefficient) spurious edges.  We should optimize this.
+fn relevant_alias_conds(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    arg_type: &anon::Type,
+    sig: &mutation::MutationSig,
+) -> BTreeSet<alias::AliasCondition> {
+    let mut relevant = BTreeSet::new();
+
+    let names = field_path::get_names_in(typedefs, arg_type);
+
+    for (name, _) in &names {
+        if matches!(
+            &sig.arg_mutation_conds[&alias::ArgName(name.clone())],
+            Disj::True
+        ) {
+            for (other_name, _) in &names {
+                if other_name != name {
+                    relevant.insert(alias::AliasCondition::AliasInArg(NormPair::new(
+                        alias::ArgName(name.clone()),
+                        alias::ArgName(other_name.clone()),
+                    )));
+                }
             }
         }
     }
-    result
+
+    for (fold_point, folded_type) in field_path::get_fold_points_in(typedefs, arg_type) {
+        let mut customs_on_path = BTreeSet::new();
+        for field in &fold_point {
+            if let alias::Field::Custom(custom_id) = field {
+                customs_on_path.insert(*custom_id);
+            }
+        }
+
+        let sub_paths = field_path::get_names_in_excluding(typedefs, folded_type, customs_on_path);
+        for (sub_path, _) in &sub_paths {
+            let full_path = fold_point.clone() + sub_path.clone();
+            if matches!(
+                &sig.arg_mutation_conds[&alias::ArgName(full_path.clone())],
+                Disj::True
+            ) {
+                for (other_sub_path, _) in &sub_paths {
+                    relevant.insert(alias::AliasCondition::FoldedAliasInArg(
+                        alias::ArgName(fold_point.clone()),
+                        NormPair::new(
+                            alias::SubPath(sub_path.clone()),
+                            alias::SubPath(other_sub_path.clone()),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    relevant
 }
 
 fn callee_inst_for_call_site(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     caller_inst: &FuncInstance,
     caller_arg_local: flat::LocalId,
     callee_def: &fate::FuncDef,
@@ -244,12 +293,14 @@ fn callee_inst_for_call_site(
     ret_fate: &fate::Fate,
 ) -> FuncInstance {
     let mut callee_relevant_aliases = BTreeMap::new();
-    for callee_cond in relevant_alias_conds(&callee_def.mutation_sig) {
+    for callee_cond in
+        relevant_alias_conds(typedefs, &callee_def.arg_type, &callee_def.mutation_sig)
+    {
         let arg_cond_symbolic = field_path::translate_callee_cond(
             caller_arg_local,
             arg_aliases,
             arg_folded_aliases,
-            callee_cond,
+            &callee_cond,
         );
 
         let arg_cond_concrete = if lookup_concrete_cond(&caller_inst.aliases, &arg_cond_symbolic) {
@@ -322,6 +373,7 @@ fn callee_inst_for_call_site(
 }
 
 fn resolve_expr(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     funcs: &IdVec<first_ord::CustomFuncId, fate::FuncDef>,
     insts: &mut InstanceQueue,
     inst: &FuncInstance,
@@ -346,6 +398,7 @@ fn resolve_expr(
             } else {
                 let ret_fate = &expr_annots[expr.id].fate;
                 let callee_inst = callee_inst_for_call_site(
+                    typedefs,
                     inst,
                     *arg,
                     &funcs[callee],
@@ -361,13 +414,23 @@ fn resolve_expr(
 
         fate::ExprKind::Branch(_, cases, _) => {
             for (_, _, body) in cases {
-                resolve_expr(funcs, insts, inst, scc_versions, expr_annots, body, calls);
+                resolve_expr(
+                    typedefs,
+                    funcs,
+                    insts,
+                    inst,
+                    scc_versions,
+                    expr_annots,
+                    body,
+                    calls,
+                );
             }
         }
 
         fate::ExprKind::LetMany(_, bindings, _) => {
             for (_, binding) in bindings {
                 resolve_expr(
+                    typedefs,
                     funcs,
                     insts,
                     inst,
@@ -406,6 +469,7 @@ impl Signature for Option<FuncInstance> {
 // SCC might be invoked, which is similar to knowing all the contexts in which a block might be
 // jumped to in SSA.
 fn solve_scc_fixed_point(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     funcs: &IdVec<first_ord::CustomFuncId, fate::FuncDef>,
     entry_func: first_ord::CustomFuncId,
     entry_inst: &FuncInstance,
@@ -423,9 +487,10 @@ fn solve_scc_fixed_point(
             for call_site in &scc.callers[func] {
                 if let Some(Some(caller_inst)) = sigs.sig_of(&call_site.caller) {
                     let inst_from_call_site = callee_inst_for_call_site(
+                        typedefs,
                         caller_inst,
                         call_site.caller_arg_local,
-                        &funcs[call_site.caller],
+                        &funcs[func],
                         &call_site.arg_aliases,
                         &call_site.arg_folded_aliases,
                         &call_site.ret_fate,
@@ -486,7 +551,13 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
 
         let scc = &sccs[func_to_scc[entry_func]];
 
-        let solved_insts = solve_scc_fixed_point(&program.funcs, entry_func, &entry_inst, scc);
+        let solved_insts = solve_scc_fixed_point(
+            &program.custom_types,
+            &program.funcs,
+            entry_func,
+            &entry_inst,
+            scc,
+        );
 
         let mut scc_versions = BTreeMap::new();
         scc_versions.insert(entry_func, entry_version);
@@ -509,6 +580,7 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
             let func_def = &program.funcs[scc_func];
             let mut version_calls = IdVec::from_items(vec![None; func_def.num_calls]);
             resolve_expr(
+                &program.custom_types,
                 &program.funcs,
                 &mut insts,
                 &scc_func_inst,

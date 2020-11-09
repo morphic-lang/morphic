@@ -1541,7 +1541,6 @@ fn interpret_expr(
                 bounds_check(stderr, array.len(), index.0)?;
 
                 let get_item = array[index.0 as usize];
-                retain(heap, get_item, stacktrace.add_frame("item retain".into()));
                 heap.add(Value::Tuple(vec![get_item, hole_array_id]))
             }
 

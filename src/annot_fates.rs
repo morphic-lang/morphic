@@ -149,8 +149,8 @@ fn annot_expr(
         mutation::Expr::Call(
             purity,
             func,
-            arg_alises,
-            arg_folded_alises,
+            arg_aliases,
+            arg_folded_aliases,
             arg_statuses,
             arg_local,
         ) => {
@@ -188,8 +188,8 @@ fn annot_expr(
                 calls.fresh(),
                 *purity,
                 *func,
-                arg_alises.clone(),
-                arg_folded_alises.clone(),
+                arg_aliases.clone(),
+                arg_folded_aliases.clone(),
                 arg_statuses.clone(),
                 local_annot,
             )

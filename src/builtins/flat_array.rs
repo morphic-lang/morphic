@@ -146,7 +146,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         context: &'a Context,
         target: &TargetData,
         tal: &Tal<'a>,
-        item_retain: Option<FunctionValue<'a>>,
+        _item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
         let i64_type = context.i64_type();
@@ -188,9 +188,6 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let data = s.arrow(me, F_ARR_DATA);
 
             s.call_void(self.interface.retain_array, &[me]);
-            if let Some(item_retain) = item_retain {
-                s.call_void(item_retain, &[s.buf_addr(data, idx)]);
-            }
 
             s.ret(s.make_tup(&[
                 s.buf_get(data, idx),

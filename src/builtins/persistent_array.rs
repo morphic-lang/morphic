@@ -448,13 +448,6 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
 
             let item = s.call(self.get, &[arr, idx]);
 
-            let item_ptr = s.alloca(self.interface.item_type);
-            s.ptr_set(item_ptr, item);
-
-            if let Some(item_retain) = item_retain {
-                s.call_void(item_retain, &[item_ptr]);
-            }
-
             s.ret(s.make_tup(&[item, hole_array]));
         }
 

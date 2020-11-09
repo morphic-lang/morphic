@@ -1,4 +1,5 @@
 use im_rc::{OrdMap, Vector};
+use std::fmt;
 
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
@@ -12,13 +13,26 @@ use crate::util::graph::Scc;
 use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Field {
     Field(usize),
     Variant(first_ord::VariantId),
     Boxed,
     Custom(first_ord::CustomTypeId),
     ArrayMembers,
+}
+
+// Custom Debug impl avoids multi-line formatting when formatted with {:#?}
+impl fmt::Debug for Field {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Field::Field(idx) => write!(f, "Field({})", idx),
+            Field::Variant(variant_id) => write!(f, "Variant({:?})", variant_id),
+            Field::Boxed => write!(f, "Boxed"),
+            Field::Custom(custom_id) => write!(f, "Custom({:?})", custom_id),
+            Field::ArrayMembers => write!(f, "ArrayMembers"),
+        }
+    }
 }
 
 pub type FieldPath = Vector<Field>;

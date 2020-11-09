@@ -17,13 +17,18 @@ pub struct SignatureAssumptions<'a, FuncId: Id + Ord, FuncDef: Signature> {
 
 impl<'a, FuncId: Id + Ord, FuncDef: Signature> SignatureAssumptions<'a, FuncId, FuncDef> {
     pub fn sig_of(&self, func: &FuncId) -> Option<&'a FuncDef::Sig> {
-        if let Some(func_def) = &self.known_defs[func] {
-            Some(func_def.signature())
-        } else if let Some(provisional_defs) = &self.provisional_defs {
-            Some(provisional_defs[func].signature())
-        } else {
-            None
+        // TODO: This bounds check exists only to make alias specialization work, because alias
+        // specialization passes an empty IdVec for known_defs.  We should probably find a different
+        // way to do this.
+        if func.to_index() < self.known_defs.len() {
+            if let Some(func_def) = &self.known_defs[func] {
+                return Some(func_def.signature());
+            }
         }
+        if let Some(provisional_defs) = &self.provisional_defs {
+            return Some(provisional_defs[func].signature());
+        }
+        None
     }
 }
 

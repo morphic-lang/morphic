@@ -22,7 +22,9 @@ pub enum ArrayOp {
     New(),
 
     // Returns tuple of (item, hole array)
-    // Argument is borrowed; Return is owned
+    // Argument is borrowed
+    // Returned item is borrowed
+    // Returned hole array is owned
     Item(
         LocalId, // Array
         LocalId, // Index
