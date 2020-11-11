@@ -39,3 +39,14 @@ USER user
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 
 ENV PATH="/home/user/.cargo/bin:${PATH}"
+
+# We install GHC to run Haskell benchmarks.  Building the compiler itself does not require GHC.
+
+USER root
+
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    ghc \
+    ghc-prof
+
+USER user

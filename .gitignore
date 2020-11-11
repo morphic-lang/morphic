@@ -2,13 +2,16 @@
 
 /target
 
-# opt-proto artifacts
+# Compilation artifacts
 **/*.ll
 **/*.s
 **/*.out
 **/*-artifacts
-**/.tmp-exe-*
-**/.tmp-report-*
+**/.tmp-*
+**/*.hi
+**/*.o
+**/*.prof
+
 
 # Editor/system files
 *.swp
