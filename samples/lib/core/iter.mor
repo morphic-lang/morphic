@@ -16,11 +16,13 @@ pub forever(x: a): Iter a =
   Iter(\() -> Some(x, forever(x)))
 
 pub range(lo: Int, hi: Int): Iter Int =
-  if lo < hi {
-    Iter(\() -> Some(lo, range(lo + 1, hi)))
-  } else {
-    empty
-  }
+  Iter(\() ->
+    if lo < hi {
+      Some(lo, range(lo + 1, hi))
+    } else {
+      None
+    }
+  )
 
 pub ints(lo: Int): Iter Int =
   Iter(\() -> Some(lo, ints(lo + 1)))

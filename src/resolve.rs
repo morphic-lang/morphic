@@ -1333,19 +1333,25 @@ fn resolve_profile_points(
             .parse(lex::Lexer::new(&sym_name.0))
             .map_err(|_| ErrorKind::ParseProfileSymFailed(sym_name.clone()))?;
 
-        let sym_mod_id = if path.0.len() > 0 {
-            resolve_mod_path(global_mods, &global_mods[main_mod].mods, &path)
-                .map_err(|_| ErrorKind::ResolveProfileSymFailed(sym_name.clone()))?
-        } else {
-            main_mod
-        };
+        // We don't use `resolve_mod_path` here because we want to ignore visibility restrictions.
+        let mut sym_mod_id = main_mod;
+        for mod_name in &path.0 {
+            sym_mod_id = global_mods[sym_mod_id]
+                .mods
+                .get(mod_name)
+                .map(|(_visibility, sub_mod_id)| *sub_mod_id)
+                .ok_or_else(|| ErrorKind::ResolveProfileSymFailed(sym_name.clone()))?;
+        }
 
-        let sym_val_id = match resolve_mod_val(global_mods, sym_mod_id, &val_name)
-            .map_err(|_| ErrorKind::ResolveProfileSymFailed(sym_name.clone()))?
-        {
-            res::GlobalId::Custom(custom) => custom,
-            _ => return Err(ErrorKind::ResolveProfileSymFailed(sym_name.clone()).into()),
-        };
+        // We don't use `resolve_mod_val` here because we want to ignore visibility restrictions.
+        let sym_val_id = global_mods[sym_mod_id]
+            .vals
+            .get(&val_name)
+            .and_then(|(_visibility, global_id)| match global_id {
+                &res::GlobalId::Custom(custom) => Some(custom),
+                _ => None,
+            })
+            .ok_or_else(|| ErrorKind::ResolveProfileSymFailed(sym_name.clone()))?;
 
         annotate_profile_point(
             &mut profile_points,

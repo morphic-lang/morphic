@@ -12,6 +12,40 @@ use std::path::Path;
 use std::process;
 use std::time::Duration;
 
+fn drive_subprocess(
+    mut child: process::Child,
+    iters: u64,
+    extra_stdin: &str,
+    expected_stdout: &str,
+) {
+    write!(child.stdin.as_mut().unwrap(), "{}\n{}", iters, extra_stdin)
+        .expect("Could not write iteration to child stdin");
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .flush()
+        .expect("Could not flush child stdin");
+
+    let output = child.wait_with_output().expect("Waiting on child failed");
+
+    assert!(
+        output.status.success(),
+        "Child process did not exit successfully: exit status {:?}",
+        output.status
+    );
+    assert!(
+        &output.stdout as &[u8] == expected_stdout.as_bytes(),
+        "Sample stdout did not match expected stdout.\
+                 \n  Expected: {:?}\
+                 \n    Actual: {:?}\
+                 \n",
+        expected_stdout,
+        String::from_utf8_lossy(&output.stdout),
+    );
+}
+
 fn run_exe<Report: for<'a> Deserialize<'a>>(
     exe_path: impl AsRef<Path>,
     iters: u64,
@@ -25,7 +59,7 @@ fn run_exe<Report: for<'a> Deserialize<'a>>(
         .expect("Could not create temp file")
         .into_temp_path();
 
-    let mut child = process::Command::new(exe_path.as_ref().canonicalize().unwrap())
+    let child = process::Command::new(exe_path.as_ref().canonicalize().unwrap())
         .env("MORPHIC_PROFILE_PATH", &report_path)
         .stdin(process::Stdio::piped())
         .stdout(process::Stdio::piped())
@@ -33,28 +67,7 @@ fn run_exe<Report: for<'a> Deserialize<'a>>(
         .spawn()
         .expect("Could not spawn child process");
 
-    write!(child.stdin.as_mut().unwrap(), "{}\n{}", iters, extra_stdin)
-        .expect("Could not write iteration to child stdin");
-
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .flush()
-        .expect("Could not flush child stdin");
-
-    let output = child.wait_with_output().expect("Waiting on child failed");
-
-    assert!(output.status.success(), output.status);
-    assert!(
-        &output.stdout as &[u8] == expected_stdout.as_bytes(),
-        "Sample stdout did not match expected stdout.\
-                 \n  Expected: {:?}\
-                 \n    Actual: {:?}\
-                 \n",
-        expected_stdout,
-        String::from_utf8_lossy(&output.stdout),
-    );
+    drive_subprocess(child, iters, extra_stdin, expected_stdout);
 
     let report: Report = serde_json::from_reader(BufReader::new(
         File::open(&report_path).expect("Failed to open child performance report file"),
@@ -62,6 +75,40 @@ fn run_exe<Report: for<'a> Deserialize<'a>>(
     .expect("Failed to read child performance report file");
 
     report
+}
+
+fn run_ghc_exe(
+    exe_path: impl AsRef<Path>,
+    iters: u64,
+    extra_stdin: &str,
+    expected_stdout: &str,
+) -> GhcProfReport {
+    let report_path = tempfile::Builder::new()
+        .prefix(".tmp-report-")
+        .suffix(".prof")
+        .tempfile_in("")
+        .expect("Could not create temp file")
+        .into_temp_path();
+
+    let child = process::Command::new(exe_path.as_ref().canonicalize().unwrap())
+        .arg("+RTS")
+        .arg("-pj")
+        .arg(format!(
+            "-po{}",
+            report_path.file_stem().unwrap().to_str().unwrap()
+        ))
+        .stdin(process::Stdio::piped())
+        .stdout(process::Stdio::piped())
+        .stderr(process::Stdio::null())
+        .spawn()
+        .expect("Could not spawn child process");
+
+    drive_subprocess(child, iters, extra_stdin, expected_stdout);
+
+    serde_json::from_reader(BufReader::new(
+        File::open(&report_path).expect("Failed to open child performance report file"),
+    ))
+    .expect("Failed to read child performance report file")
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -212,7 +259,7 @@ fn bench_rust_sample(
     expected_stdout: &str,
 ) {
     let exe_path = tempfile::Builder::new()
-        .prefix(".tmp-exe")
+        .prefix(".tmp-exe-")
         .tempfile_in("")
         .expect("Could not create temp file")
         .into_temp_path();
@@ -241,6 +288,133 @@ fn bench_rust_sample(
             assert_eq!(report.total_calls, iters);
 
             Duration::from_nanos(report.total_clock_nanos)
+        })
+    });
+}
+
+// N.B. GHC uses the British English spelling 'centre'
+
+#[derive(Clone, Debug, Deserialize)]
+struct GhcProfReport {
+    total_time: f64,
+    total_ticks: u64,
+    tick_interval: f64,
+    cost_centres: Vec<GhcCostCentre>,
+    profile: GhcProfileTree,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GhcCostCentre {
+    id: u32,
+    label: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GhcProfileTree {
+    id: u32,
+    entries: u64,
+    ticks: u64,
+    children: Vec<GhcProfileTree>,
+}
+
+fn find_ghc_cost_centre_in_tree(tree: &GhcProfileTree, id: u32) -> Option<&GhcProfileTree> {
+    if tree.id == id {
+        return Some(tree);
+    }
+
+    for child in &tree.children {
+        if let Some(found) = find_ghc_cost_centre_in_tree(child, id) {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+fn find_labeled_ghc_cost_centre<'a>(report: &'a GhcProfReport, label: &str) -> &'a GhcProfileTree {
+    let id = report
+        .cost_centres
+        .iter()
+        .find(|cost_centre| &cost_centre.label == label)
+        .unwrap_or_else(|| panic!("Could not find cost centre with label {}", label))
+        .id;
+
+    find_ghc_cost_centre_in_tree(&report.profile, id)
+        .unwrap_or_else(|| panic!("Cost centre with id {} not found", id))
+}
+
+fn bench_haskell_sample(
+    g: &mut BenchmarkGroup<WallTime>,
+    bench_name: &str,
+    src_path: impl AsRef<Path>,
+    cost_centre: &str,
+    extra_stdin: &str,
+    expected_stdout: &str,
+) {
+    let exe_path = tempfile::Builder::new()
+        .prefix(".tmp-exe-")
+        .tempfile_in("")
+        .expect("Could not create temp file")
+        .into_temp_path();
+
+    let out_dir = tempfile::Builder::new()
+        .prefix(".tmp-ghc-out-")
+        .tempdir_in("")
+        .expect("Could not create temp directory");
+
+    let ghc_output = process::Command::new("ghc")
+        .arg("-o")
+        .arg(&exe_path)
+        .arg("-odir")
+        .arg(out_dir.as_ref())
+        .arg("-hidir")
+        .arg(out_dir.as_ref())
+        .arg("-O2")
+        .arg("-prof")
+        .arg("-rtsopts")
+        .arg("-Wall")
+        .arg("-Werror")
+        .arg("samples/haskell_samples/BenchCommon.hs")
+        .arg(src_path.as_ref())
+        .arg("-main-is")
+        .arg(
+            src_path
+                .as_ref()
+                .file_stem()
+                .expect("Source path should have stem"),
+        )
+        .output()
+        .expect("Compilation failed");
+
+    assert!(
+        ghc_output.status.success(),
+        "Compilation failed:\n{}",
+        String::from_utf8_lossy(&ghc_output.stderr)
+    );
+
+    g.bench_function(bench_name, |b| {
+        b.iter_custom(|iters| {
+            let report: GhcProfReport = run_ghc_exe(&exe_path, iters, extra_stdin, expected_stdout);
+
+            let prof_tree = find_labeled_ghc_cost_centre(&report, cost_centre);
+
+            // 'tick_interval' appears to be measured in microseconds, although I can't find this
+            // documented anywhere.
+            assert!(
+                report.tick_interval * 1e-6 * (report.total_ticks as f64) - report.total_time
+                    <= 0.01
+            );
+
+            assert!(prof_tree.children.is_empty());
+            assert_eq!(prof_tree.entries, iters);
+
+            // TODO: Should we have a check here to ensure the time resolution is sufficiently
+            // precise to obtain a meaningful estimate?
+            let tick_nanos = report.tick_interval * 1e3 * (prof_tree.ticks as f64);
+
+            assert!(tick_nanos.is_finite());
+
+            Duration::from_nanos(tick_nanos as u64)
         })
     });
 }
@@ -342,6 +516,33 @@ fn sample_primes_sieve(c: &mut Criterion) {
         &mut g,
         "bench_primes_sieve_boxed.rs",
         "samples/rust_samples/bench_primes_sieve_boxed.rs",
+        stdin,
+        stdout,
+    );
+
+    bench_haskell_sample(
+        &mut g,
+        "BenchPrimesSieve.hs",
+        "samples/haskell_samples/BenchPrimesSieve.hs",
+        "BenchPrimesSieve.sieve",
+        stdin,
+        stdout,
+    );
+
+    bench_haskell_sample(
+        &mut g,
+        "BenchPrimesSieveSeq.hs",
+        "samples/haskell_samples/BenchPrimesSieveSeq.hs",
+        "BenchPrimesSieveSeq.sieve",
+        stdin,
+        stdout,
+    );
+
+    bench_haskell_sample(
+        &mut g,
+        "BenchPrimesSieveArray.hs",
+        "samples/haskell_samples/BenchPrimesSieveArray.hs",
+        "BenchPrimesSieveArray.sieve",
         stdin,
         stdout,
     );
