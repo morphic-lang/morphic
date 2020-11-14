@@ -408,6 +408,10 @@ fn lower_expr(
                 unif::ArrayOp::Replace(array_id, item_id) => {
                     low::ArrayOp::Replace(array_id.lookup_in(context), item_id.lookup_in(context))
                 }
+                unif::ArrayOp::Reserve(array_id, capacity_id) => low::ArrayOp::Reserve(
+                    array_id.lookup_in(context),
+                    capacity_id.lookup_in(context),
+                ),
             };
             builder.add_expr(
                 result_type.clone(),
@@ -434,6 +438,20 @@ fn lower_expr(
             let mut result_id = builder.add_expr(
                 result_type.clone(),
                 low::Expr::ArrayOp(*rep, elem_type.clone(), low::ArrayOp::New()),
+            );
+
+            let capacity_id = builder.add_expr(
+                low::Type::Num(first_ord::NumType::Int),
+                low::Expr::IntLit(elems.len() as i64),
+            );
+
+            result_id = builder.add_expr(
+                result_type.clone(),
+                low::Expr::ArrayOp(
+                    *rep,
+                    elem_type.clone(),
+                    low::ArrayOp::Reserve(result_id, capacity_id),
+                ),
             );
 
             for elem_id in elems {

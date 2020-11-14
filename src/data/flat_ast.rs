@@ -38,6 +38,11 @@ pub enum ArrayOp {
         LocalId,    // Hole array
         LocalId,    // Item
     ), // Returns new array
+    Reserve(
+        anon::Type, // Item type
+        LocalId,    // Array
+        LocalId,    // Capacity
+    ), // Returns new array
 }
 
 #[derive(Clone, Copy, Debug)]

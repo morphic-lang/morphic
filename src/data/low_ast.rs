@@ -62,6 +62,12 @@ pub enum ArrayOp {
         LocalId, // Hole array
         LocalId, // Item
     ),
+
+    // Arguments are owned; Return is owned
+    Reserve(
+        LocalId, // Array
+        LocalId, // Capacity
+    ),
 }
 
 #[derive(Clone, Debug)]

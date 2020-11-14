@@ -1606,6 +1606,32 @@ fn interpret_expr(
                 heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array))
             }
 
+            Expr::ArrayOp(rep, _item_type, ArrayOp::Reserve(array_id, capacity_id)) => {
+                let array_heap_id = locals[array_id];
+                unwrap_int(
+                    heap,
+                    locals[capacity_id],
+                    stacktrace.add_frame("reserve capacity".into()),
+                );
+
+                let array = unwrap_array_retain(
+                    heap,
+                    array_heap_id,
+                    *rep,
+                    stacktrace.add_frame("push".into()),
+                );
+
+                release(
+                    heap,
+                    array_heap_id,
+                    stacktrace.add_frame("release push".into()),
+                );
+
+                heap.maybe_invalidate(array_heap_id);
+
+                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array))
+            }
+
             Expr::IoOp(rep, IoOp::Input) => {
                 let mut input = String::new();
                 stdin

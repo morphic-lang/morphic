@@ -171,6 +171,12 @@ impl<'a> PersistentArrayImpl<'a> {
             &[hole_array_type.into(), item_type.into()],
         );
 
+        let reserve = fun(
+            "reserve",
+            array_type.into(),
+            &[array_type.into(), i64_type.into()],
+        );
+
         let retain_array = void_fun("retain", &[array_type.into()]);
 
         let release_array = void_fun("release", &[array_type.into()]);
@@ -334,6 +340,7 @@ impl<'a> PersistentArrayImpl<'a> {
             push,
             pop,
             replace,
+            reserve,
             retain_array,
             release_array,
             retain_hole,
@@ -719,6 +726,14 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             let idx = s.field(hole, F_HOLE_IDX);
             let array = s.field(hole, F_HOLE_ARRAY);
             s.ret(s.call(self.set, &[array, idx, item]));
+        }
+
+        // define 'reserve'
+        {
+            let s = scope(self.interface.reserve, context, target);
+            let me = s.arg(0);
+            // let capacity = s.arg(1); UNUSED ARGUMENT
+            s.ret(me);
         }
 
         // define 'retain_array'

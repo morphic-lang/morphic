@@ -67,6 +67,13 @@ pub enum ArrayOp {
         Local,                 // Hole array
         Local,                 // Item
     ), // Returns new array
+    Reserve(
+        anon::Type,            // Item type
+        alias::LocalAliases,   // Array aliases
+        mutation::LocalStatus, // Array status
+        Local,                 // Array
+        Local,                 // Capacity
+    ), // Returns new array
 }
 
 #[derive(Clone, Debug)]

@@ -17,6 +17,7 @@ pub struct ArrayInterface<'a> {
     pub push: FunctionValue<'a>,
     pub pop: FunctionValue<'a>,
     pub replace: FunctionValue<'a>,
+    pub reserve: FunctionValue<'a>,
     pub retain_array: FunctionValue<'a>,
     pub release_array: FunctionValue<'a>,
     pub retain_hole: FunctionValue<'a>,

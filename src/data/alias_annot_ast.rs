@@ -101,6 +101,12 @@ pub enum ArrayOp {
         flat::LocalId, // Hole array
         flat::LocalId, // Item
     ), // Returns new array
+    Reserve(
+        anon::Type,    // Item type
+        LocalAliases,  // Array aliases
+        flat::LocalId, // Array
+        flat::LocalId, // Capacity
+    ), // Returns new array
 }
 
 #[derive(Clone, Debug)]

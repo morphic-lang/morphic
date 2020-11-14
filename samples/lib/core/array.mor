@@ -33,7 +33,7 @@ fill_with_rec(arr: Array t, count: Int, mk_val: () -> t): Array t =
   }
 
 pub fill_with(count: Int, mk_val: () -> t): Array t =
-  fill_with_rec([], count, mk_val)
+  fill_with_rec(reserve([], count), count, mk_val)
 
 pub fill(count: Int, val: t): Array t =
   fill_with(count, \() -> val)

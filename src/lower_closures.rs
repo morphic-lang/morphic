@@ -513,6 +513,22 @@ impl<'a> Context<'a> {
                                         )
                                     }
 
+                                    ArrayOp::Reserve => {
+                                        with_args(
+                                            vec![
+                                                first_ord::Type::Array(Box::new(
+                                                    lowered_item_type.clone(),
+                                                )),
+                                                first_ord::Type::Num(first_ord::NumType::Int),
+                                            ],
+                                            first_ord::Expr::ArrayOp(first_ord::ArrayOp::Reserve(
+                                                lowered_item_type,
+                                                Box::new(local(2)), // Array
+                                                Box::new(local(3)), // Capacity
+                                            )),
+                                        )
+                                    }
+
                                     ArrayOp::Pop => {
                                         first_ord::Expr::ArrayOp(first_ord::ArrayOp::Pop(
                                             lowered_item_type,
@@ -732,6 +748,18 @@ impl<'a> Context<'a> {
                         self.lower_type(&item_type),
                         Box::new(arg.clone()),
                     ))),
+                    res::ArrayOp::Reserve => match &arg {
+                        first_ord::Expr::Tuple(args) => {
+                            assert![args.len() == 2];
+
+                            Some(first_ord::Expr::ArrayOp(first_ord::ArrayOp::Reserve(
+                                self.lower_type(&item_type),
+                                Box::new(args[0].clone()),
+                                Box::new(args[1].clone()),
+                            )))
+                        }
+                        _ => None,
+                    },
                 };
             }
             // TODO: optimize ArrayReplace

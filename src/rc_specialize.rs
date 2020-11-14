@@ -794,6 +794,14 @@ fn build_expr_kind<'a>(
                         build_occur(locals, *item, builder),
                     )
                 }
+                fate::ArrayOp::Reserve(item_type, _, status, array, capacity) => {
+                    rc::ArrayOp::Reserve(
+                        item_type.clone(),
+                        status.clone(),
+                        build_occur(locals, *array, builder),
+                        build_occur(locals, *capacity, builder),
+                    )
+                }
             };
             rc::Expr::ArrayOp(new_op)
         }

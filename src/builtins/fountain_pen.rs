@@ -495,6 +495,17 @@ impl<'a, 'b> Scope<'a, 'b> {
             .into()
     }
 
+    pub fn slt(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
+        self.builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                arg1.into_int_value(),
+                arg2.into_int_value(),
+                "slt",
+            )
+            .into()
+    }
+
     pub fn ult(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_compare(

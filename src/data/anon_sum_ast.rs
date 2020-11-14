@@ -66,6 +66,11 @@ pub enum ArrayOp {
         Box<Expr>, // Hole array
         Box<Expr>, // Item
     ), // Returns new array
+    Reserve(
+        Type,
+        Box<Expr>, // Array
+        Box<Expr>, // Capacity
+    ), // Returns new array
 }
 
 #[derive(Clone, Debug)]

@@ -343,6 +343,24 @@ fn flatten_expr(
             )
         }
 
+        anon::Expr::ArrayOp(anon::ArrayOp::Reserve(item_type, array, capacity)) => {
+            let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
+            let (capacity_local, capacity_type) = flatten_expr(orig, ctx, builder, capacity);
+
+            debug_assert_eq!(&anon::Type::Array(Box::new(item_type.clone())), &array_type);
+            debug_assert_eq!(&capacity_type, &anon::Type::Num(first_ord::NumType::Int));
+
+            bind(
+                builder,
+                anon::Type::Array(Box::new(item_type.clone())),
+                flat::Expr::ArrayOp(flat::ArrayOp::Reserve(
+                    item_type.clone(),
+                    array_local,
+                    capacity_local,
+                )),
+            )
+        }
+
         anon::Expr::IoOp(anon::IoOp::Input) => bind(
             builder,
             anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),

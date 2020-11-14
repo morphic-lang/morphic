@@ -92,6 +92,15 @@ fn typecheck_expr(
             assert_eq!(&typecheck_expr(program, locals, &**item), item_type);
             T::Array(Box::new(item_type.clone()))
         }
+        E::ArrayOp(ast::ArrayOp::Reserve(item_type, array, capacity)) => {
+            assert_eq!(
+                &typecheck_expr(program, locals, &**capacity),
+                &T::Num(ast::NumType::Int)
+            );
+            let array_type = T::Array(Box::new(item_type.clone()));
+            assert_eq!(&typecheck_expr(program, locals, &**array), &array_type);
+            array_type
+        }
         E::IoOp(ast::IoOp::Input) => T::Array(Box::new(T::Num(ast::NumType::Byte))),
         E::IoOp(ast::IoOp::Output(output)) => {
             assert_eq!(

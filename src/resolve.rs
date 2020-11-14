@@ -287,6 +287,10 @@ lazy_static! {
             res::GlobalId::ArrayOp(res::ArrayOp::Pop),
         );
         global_map.insert(
+            raw::ValName("reserve".to_owned()),
+            res::GlobalId::ArrayOp(res::ArrayOp::Reserve),
+        );
+        global_map.insert(
             raw::ValName("input".to_owned()),
             res::GlobalId::IoOp(res::IoOp::Input),
         );

@@ -55,6 +55,10 @@ pub enum ArrayOp {
         rc::LocalId, // Hole array
         rc::LocalId, // Item
     ), // Returns new array
+    Reserve(
+        rc::LocalId, // Array
+        rc::LocalId, // Capacity
+    ), // Returns new array
 }
 
 #[derive(Clone, Copy, Debug)]

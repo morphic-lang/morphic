@@ -49,7 +49,7 @@ pub enum ArrayOp {
         anon::Type,          // Item type
         alias::LocalAliases, // Array aliases
         LocalStatus,         // Array status
-        flat::LocalId,       // array
+        flat::LocalId,       // Array
         flat::LocalId,       // Item
     ),
     Pop(
@@ -64,6 +64,13 @@ pub enum ArrayOp {
         LocalStatus,         // Hole array status
         flat::LocalId,       // Hole array
         flat::LocalId,       // Item
+    ), // Returns new array
+    Reserve(
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        LocalStatus,         // Array status
+        flat::LocalId,       // Array
+        flat::LocalId,       // Capacity
     ), // Returns new array
 }
 

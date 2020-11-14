@@ -626,6 +626,30 @@ fn annot_expr(
             ))
         }
 
+        mutation::Expr::ArrayOp(mutation::ArrayOp::Reserve(
+            item_type,
+            array_aliases,
+            array_status,
+            array,
+            capacity,
+        )) => {
+            let array_fate = consumed_fate(
+                &orig.custom_types,
+                &anon::Type::Array(Box::new(item_type.clone())),
+                &expr_event,
+            );
+
+            let capacity_fate = fate::Fate::new();
+
+            fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(
+                item_type.clone(),
+                array_aliases.clone(),
+                array_status.clone(),
+                add_occurence(occurs, &mut uses, *array, array_fate),
+                add_occurence(occurs, &mut uses, *capacity, capacity_fate),
+            ))
+        }
+
         mutation::Expr::IoOp(mutation::IoOp::Input) => fate::ExprKind::IoOp(fate::IoOp::Input),
 
         mutation::Expr::IoOp(mutation::IoOp::Output(

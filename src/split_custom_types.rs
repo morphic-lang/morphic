@@ -212,6 +212,14 @@ fn trans_expr(
             ))
         }
 
+        first_ord::Expr::ArrayOp(first_ord::ArrayOp::Reserve(item_type, array, capacity)) => {
+            anon::Expr::ArrayOp(anon::ArrayOp::Reserve(
+                trans_type(item_type),
+                Box::new(trans_expr(typedefs, boxed_variants, array)),
+                Box::new(trans_expr(typedefs, boxed_variants, capacity)),
+            ))
+        }
+
         first_ord::Expr::IoOp(first_ord::IoOp::Input) => anon::Expr::IoOp(anon::IoOp::Input),
 
         first_ord::Expr::IoOp(first_ord::IoOp::Output(output)) => anon::Expr::IoOp(

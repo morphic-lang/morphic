@@ -219,6 +219,9 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                 ArrayOp::Replace(local_id1, local_id2) => {
                     write_double(w, "replace", local_id1, local_id2)
                 }
+                ArrayOp::Reserve(local_id1, local_id2) => {
+                    write_double(w, "reserve", local_id1, local_id2)
+                }
             }
         }
 

@@ -49,6 +49,10 @@ pub struct Tal<'a> {
     pub prof_report_write_string: FunctionValue<'a>,
     pub prof_report_write_u64: FunctionValue<'a>,
     pub prof_report_done: FunctionValue<'a>,
+
+    // LLVM Intrinsics
+    pub expect_i1: FunctionValue<'a>,
+    pub umul_with_overflow_i64: FunctionValue<'a>,
 }
 
 impl<'a> Tal<'a> {
@@ -153,6 +157,24 @@ impl<'a> Tal<'a> {
             Some(Linkage::External),
         );
 
+        // LLVM Intrinsics:
+
+        let expect_i1 = module.add_function(
+            "llvm.expect.i1",
+            context.bool_type().fn_type(
+                &[context.bool_type().into(), context.bool_type().into()],
+                false,
+            ),
+            Some(Linkage::External),
+        );
+        let umul_with_overflow_i64 = module.add_function(
+            "llvm.umul.with.overflow.i64",
+            context
+                .struct_type(&[i64_t.into(), context.bool_type().into()], false)
+                .fn_type(&[i64_t.into(), i64_t.into()], false),
+            Some(Linkage::External),
+        );
+
         Self {
             memcpy,
             exit,
@@ -175,6 +197,9 @@ impl<'a> Tal<'a> {
             prof_report_write_string,
             prof_report_write_u64,
             prof_report_done,
+
+            expect_i1,
+            umul_with_overflow_i64,
         }
     }
 }

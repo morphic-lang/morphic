@@ -651,6 +651,30 @@ fn mark_expr_occurs<'a>(
             );
         }
 
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(
+            _item_type,
+            array_aliases,
+            _status,
+            array,
+            capacity,
+        )) => {
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
+            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
+            mark_with_extra_owned(
+                locals,
+                occur_kinds,
+                &mut expr_uses,
+                *capacity,
+                &to_be_mutated,
+            );
+            mark_tentative_prologue_drops(
+                future_uses,
+                &expr_uses,
+                &to_be_mutated,
+                &mut tentative_drop_prologue,
+            );
+        }
+
         fate::ExprKind::IoOp(fate::IoOp::Input) => {}
 
         fate::ExprKind::IoOp(fate::IoOp::Output(_aliases, _status, byte_array)) => {
@@ -1008,6 +1032,11 @@ fn repair_expr_drops<'a>(
             add_move(occur_kinds, &mut expr_moves, *item);
         }
 
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(_, _, _, array, capacity)) => {
+            add_move(occur_kinds, &mut expr_moves, *array);
+            add_move(occur_kinds, &mut expr_moves, *capacity);
+        }
+
         fate::ExprKind::IoOp(fate::IoOp::Input) => {}
 
         fate::ExprKind::IoOp(fate::IoOp::Output(_, _, byte_array)) => {
@@ -1269,6 +1298,11 @@ fn collect_expr_moves(
         fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, _, hole_array, item)) => {
             collect_occur_events(var_moves, *hole_array);
             collect_occur_events(var_moves, *item);
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(_, _, _, array, capacity)) => {
+            collect_occur_events(var_moves, *array);
+            collect_occur_events(var_moves, *capacity);
         }
 
         fate::ExprKind::IoOp(fate::IoOp::Input) => {}
@@ -2033,6 +2067,29 @@ fn annot_expr<'a>(
 
             for (_, item_mode) in item_modes.path_modes {
                 constraints.require_lte_const(item_mode, &mode::Mode::Owned);
+            }
+
+            let result_modes = instantiate_type(
+                typedefs,
+                constraints,
+                &anon::Type::Array(Box::new(item_type.clone())),
+            );
+
+            for (_, result_mode) in &result_modes.path_modes {
+                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
+            }
+
+            result_modes
+        }
+
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(item_type, _, _, array, capacity)) => {
+            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
+            let capacity_modes = annot_occur(constraints, locals, solver_annots, *capacity);
+
+            debug_assert!(capacity_modes.path_modes.is_empty());
+
+            for (_, array_mode) in array_modes.path_modes {
+                constraints.require_lte_const(array_mode, &mode::Mode::Owned);
             }
 
             let result_modes = instantiate_type(

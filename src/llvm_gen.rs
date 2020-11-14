@@ -79,11 +79,6 @@ const VARIANT_DISCRIM_IDX: u32 = 0;
 const VARIANT_ALIGN_IDX: u32 = 1;
 const VARIANT_BYTES_IDX: u32 = 2;
 
-#[derive(Clone, Debug)]
-struct Intrinsics<'a> {
-    expect_i1: FunctionValue<'a>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum IsZeroSized {
     NonZeroSized,
@@ -94,7 +89,6 @@ enum IsZeroSized {
 struct Globals<'a, 'b> {
     context: &'a Context,
     module: &'b Module<'a>,
-    intrinsics: Intrinsics<'a>,
     target: &'b TargetData,
     tal: Tal<'a>,
     custom_types_zero_sized: IdVec<low::CustomTypeId, IsZeroSized>,
@@ -969,7 +963,7 @@ fn build_check_divisor_nonzero<'a, 'b>(
     );
 
     builder.build_call(
-        globals.intrinsics.expect_i1,
+        globals.tal.expect_i1,
         &[
             is_nonzero.into(),
             globals
@@ -1573,6 +1567,15 @@ fn gen_expr<'a, 'b>(
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
+                    low::ArrayOp::Reserve(array_id, capacity_id) => builder
+                        .build_call(
+                            builtin.interface().reserve,
+                            &[locals[array_id], locals[capacity_id]],
+                            "flat_array_reserve",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
                 }
             }
             constrain::RepChoice::FallbackImmut => {
@@ -1633,6 +1636,15 @@ fn gen_expr<'a, 'b>(
                             builtin.interface().replace,
                             &[locals[array_id], locals[item_id]],
                             "pers_array_replace",
+                        )
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap(),
+                    low::ArrayOp::Reserve(array_id, capacity_id) => builder
+                        .build_call(
+                            builtin.interface().reserve,
+                            &[locals[array_id], locals[capacity_id]],
+                            "pers_array_reserve",
                         )
                         .try_as_basic_value()
                         .left()
@@ -1931,19 +1943,6 @@ fn custom_type_dep_order(typedefs: &IdVec<low::CustomTypeId, low::Type>) -> Vec<
         .collect()
 }
 
-fn get_intrinsics<'a>(context: &'a Context, module: &Module<'a>) -> Intrinsics<'a> {
-    Intrinsics {
-        expect_i1: module.add_function(
-            "llvm.expect.i1",
-            context.bool_type().fn_type(
-                &[context.bool_type().into(), context.bool_type().into()],
-                false,
-            ),
-            Some(Linkage::External),
-        ),
-    }
-}
-
 // We use this function both when computing initial zero-sizedness flags, and when processing types
 // during the main phase of code generation.  These cases use different underlying data structures
 // to store the zero-sizedness of custom types (in particular, during initial flag computation,
@@ -2014,8 +2013,6 @@ fn gen_program<'a>(
     module.set_triple(&target_machine.get_triple());
     module.set_data_layout(&target_machine.get_target_data().get_data_layout());
 
-    let intrinsics = get_intrinsics(context, &module);
-
     let tal = Tal::declare(&context, &module, &target_machine.get_target_data());
 
     let custom_types = program
@@ -2031,7 +2028,6 @@ fn gen_program<'a>(
     let globals = Globals {
         context: &context,
         module: &module,
-        intrinsics,
         target: &target_machine.get_target_data(),
         tal,
         custom_types_zero_sized,

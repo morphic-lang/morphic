@@ -646,6 +646,45 @@ fn annot_expr(
             trivial_info(),
         ),
 
+        alias::Expr::ArrayOp(alias::ArrayOp::Reserve(
+            item_type,
+            array_aliases,
+            array,
+            capacity,
+        )) => {
+            let array_info = &ctx[array];
+
+            let mut new_array_statuses = OrdMap::new();
+            for (item_path, _) in get_names_in(&orig.custom_types, item_type) {
+                let mut array_path = item_path;
+                array_path.push_front(alias::Field::ArrayMembers);
+
+                new_array_statuses
+                    .insert(array_path.clone(), array_info.statuses[&array_path].clone());
+            }
+
+            new_array_statuses.insert(
+                Vector::new(),
+                annot::LocalStatus {
+                    mutated_cond: Disj::new(),
+                },
+            );
+
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Reserve(
+                    item_type.clone(),
+                    array_aliases.clone(),
+                    ctx[array].statuses[&Vector::new()].clone(),
+                    *array,
+                    *capacity,
+                )),
+                ExprInfo {
+                    mutations: propagated_mutations(*array, array_aliases),
+                    val_statuses: new_array_statuses,
+                },
+            )
+        }
+
         alias::Expr::IoOp(alias::IoOp::Input) => (
             annot::Expr::IoOp(annot::IoOp::Input),
             ExprInfo {

@@ -1427,6 +1427,50 @@ fn annot_expr(
             )
         }
 
+        flat::Expr::ArrayOp(flat::ArrayOp::Reserve(item_type, array, capacity)) => {
+            let array_info = &ctx[array];
+
+            let mut expr_info = ValInfo::new();
+
+            for (path_in_item, _) in get_names_in(&orig.custom_types, item_type) {
+                let mut path_in_array = path_in_item;
+                path_in_array.push_front(annot::Field::ArrayMembers);
+
+                expr_info.create_path(path_in_array.clone());
+                copy_aliases(
+                    &mut expr_info,
+                    &path_in_array,
+                    array_info,
+                    *array,
+                    &path_in_array,
+                );
+            }
+
+            expr_info.create_path(Vector::new());
+
+            for (fold_point_in_array, _) in get_fold_points_in(
+                &orig.custom_types,
+                &anon::Type::Array(Box::new(item_type.clone())),
+            ) {
+                expr_info.create_folded_aliases(
+                    fold_point_in_array.clone(),
+                    array_info.folded_aliases[&fold_point_in_array].clone(),
+                );
+            }
+
+            let array_aliases = array_info.aliases[&Vector::new()].clone();
+
+            (
+                annot::Expr::ArrayOp(annot::ArrayOp::Reserve(
+                    item_type.clone(),
+                    array_aliases,
+                    *array,
+                    *capacity,
+                )),
+                expr_info,
+            )
+        }
+
         flat::Expr::IoOp(flat::IoOp::Input) => (
             annot::Expr::IoOp(annot::IoOp::Input),
             empty_info(

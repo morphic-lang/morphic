@@ -854,6 +854,27 @@ fn instantiate_expr(
             )
         }
 
+        rc::Expr::ArrayOp(rc::ArrayOp::Reserve(_item_type, array_status, array, capacity)) => {
+            let array_type = locals.local_binding(*array);
+
+            let (rep_var, array_item_type) =
+                if let unif::Type::Array(rep_var, array_item_type) = array_type {
+                    (*rep_var, (**array_item_type).clone())
+                } else {
+                    unreachable!()
+                };
+
+            (
+                unif::Expr::ArrayOp(
+                    rep_var,
+                    array_item_type.clone(),
+                    array_status.clone(),
+                    unif::ArrayOp::Reserve(*array, *capacity),
+                ),
+                unif::Type::Array(rep_var, Box::new(array_item_type)),
+            )
+        }
+
         rc::Expr::IoOp(rc::IoOp::Input) => {
             let rep_var = graph.new_var();
 

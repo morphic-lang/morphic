@@ -86,6 +86,12 @@ impl<'a> FlatArrayImpl<'a> {
             Some(Linkage::Internal),
         );
 
+        let reserve = module.add_function(
+            "builtin_flat_array_reserve",
+            array_type.fn_type(&[array_type.into(), i64_type.into()], false),
+            Some(Linkage::Internal),
+        );
+
         let retain_array = module.add_function(
             "builtin_flat_array_retain",
             void_type.fn_type(&[array_type.into()], false),
@@ -133,6 +139,7 @@ impl<'a> FlatArrayImpl<'a> {
             push,
             pop,
             replace,
+            reserve,
             retain_array,
             release_array,
             retain_hole,
@@ -278,6 +285,65 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             s.ret(me);
         }
 
+        // define 'reserve'
+        {
+            let s = scope(self.interface.reserve, context, target);
+
+            let me = s.arg(0);
+            let min_cap = s.arg(1);
+
+            let curr_cap = s.arrow(me, F_ARR_CAP);
+
+            // We perform a signed comparison so that e.g. `reserve(arr, -1)` is a no-op, rather
+            // than an instant out-of-memory error.  On any reasonable system `curr_cap` should
+            // never exceed 2^63 - 1, so if we have `curr_cap < min_cap` as signed integers then we
+            // should also have `curr_cap < min_cap` as unsigned integers, so using `min_cap` as the
+            // new capacity is safe.
+            let should_resize = s.slt(curr_cap, min_cap);
+            s.if_(should_resize, |s| {
+                let alloc_size_umul_result = s.call(
+                    tal.umul_with_overflow_i64,
+                    &[s.size(self.interface.item_type), min_cap],
+                );
+
+                let is_overflow = s.field(alloc_size_umul_result, 1);
+                s.if_(is_overflow, |s| {
+                    s.panic(
+                        "reserve: requested size overflows 64-bit integer type",
+                        &[],
+                        tal,
+                    );
+                });
+
+                let alloc_size = s.field(alloc_size_umul_result, 0);
+
+                // TODO: Check for overflow on truncation (for 32-bit systems)
+                let new_data = s.ptr_cast(
+                    self.interface.item_type,
+                    s.call(
+                        tal.realloc,
+                        &[
+                            s.ptr_cast(s.i8_t(), s.arrow(me, F_ARR_DATA)),
+                            s.int_cast(s.usize_t(), alloc_size),
+                        ],
+                    ),
+                );
+
+                s.if_(s.is_null(new_data), |s| {
+                    s.panic(
+                        "reserve: failed to allocate %zu bytes\n",
+                        &[alloc_size],
+                        tal,
+                    );
+                });
+
+                s.arrow_set(me, F_ARR_DATA, new_data);
+                s.arrow_set(me, F_ARR_CAP, min_cap);
+            });
+
+            s.ret(me);
+        }
+
         // define 'retain_array'
         {
             let s = scope(self.interface.retain_array, context, target);
@@ -345,6 +411,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                 let use_candidate_cap = s.uge(candidate_cap, min_cap);
                 let new_cap = s.ternary(use_candidate_cap, candidate_cap, min_cap);
 
+                // TODO: Should we check for arithmetic overflow here?
                 let alloc_size = s.mul(s.size(self.interface.item_type), new_cap);
                 let new_data = s.ptr_cast(
                     self.interface.item_type,
@@ -352,6 +419,8 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                         tal.realloc,
                         &[
                             s.ptr_cast(s.i8_t(), s.arrow(me, F_ARR_DATA)),
+                            // TODO: Should we check for truncation overflow here (on 32-bit
+                            // systems)?
                             s.int_cast(s.usize_t(), alloc_size),
                         ],
                     ),

@@ -596,6 +596,16 @@ fn array_op_type(
                 solver_item_type,
             ])),
         ),
+
+        ArrayOp::Reserve => annot::Type::Func(
+            Purity::Pure,
+            op_var,
+            Box::new(annot::Type::Tuple(vec![
+                annot::Type::Array(Box::new(solver_item_type.clone())),
+                annot::Type::Int,
+            ])),
+            Box::new(annot::Type::Array(Box::new(solver_item_type))),
+        ),
     };
 
     (op_type, op_var)

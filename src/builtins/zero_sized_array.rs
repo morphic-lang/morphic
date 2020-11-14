@@ -79,6 +79,12 @@ impl<'a> ZeroSizedArrayImpl<'a> {
             &[hole_array_type.into(), item_type.into()],
         );
 
+        let reserve = fun(
+            "reserve",
+            array_type.into(),
+            &[array_type.into(), i64_type.into()],
+        );
+
         let retain_array = void_fun("retain", &[array_type.into()]);
 
         let release_array = void_fun("release", &[array_type.into()]);
@@ -99,6 +105,7 @@ impl<'a> ZeroSizedArrayImpl<'a> {
             push,
             pop,
             replace,
+            reserve,
             retain_array,
             release_array,
             retain_hole,
@@ -193,6 +200,14 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
             let hole = s.arg(0);
             // let item = s.arg(1); UNUSED ARGUMENT
             s.ret(hole);
+        }
+
+        // define 'reserve'
+        {
+            let s = scope(self.interface.reserve, context, target);
+            let me = s.arg(0);
+            // let capacity = s.arg(1); UNUSED ARGUMENT
+            s.ret(me);
         }
 
         // define 'retain_array'
