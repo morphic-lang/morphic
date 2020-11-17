@@ -53,7 +53,6 @@ fn collect_call_sites(
             callee,
             arg_aliases,
             arg_folded_aliases,
-            _arg_statuses,
             fate::Local(_, arg),
         ) => {
             // `callers` has key `callee` iff `callee` is in the current SCC
@@ -70,12 +69,12 @@ fn collect_call_sites(
         }
 
         fate::ExprKind::Branch(_, cases, _) => {
-            for (_, _, body) in cases {
+            for (_, _, body, _) in cases {
                 collect_call_sites(curr_func, expr_annots, body, callers);
             }
         }
 
-        fate::ExprKind::LetMany(_, bindings, _) => {
+        fate::ExprKind::LetMany(_, bindings, _, _) => {
             for (_, binding) in bindings {
                 collect_call_sites(curr_func, expr_annots, binding, callers);
             }
@@ -389,7 +388,6 @@ fn resolve_expr(
             callee,
             arg_aliases,
             arg_folded_aliases,
-            _arg_statuses,
             fate::Local(_, arg),
         ) => {
             if let Some(version) = scc_versions.get(callee) {
@@ -413,7 +411,7 @@ fn resolve_expr(
         }
 
         fate::ExprKind::Branch(_, cases, _) => {
-            for (_, _, body) in cases {
+            for (_, _, body, _) in cases {
                 resolve_expr(
                     typedefs,
                     funcs,
@@ -427,7 +425,7 @@ fn resolve_expr(
             }
         }
 
-        fate::ExprKind::LetMany(_, bindings, _) => {
+        fate::ExprKind::LetMany(_, bindings, _, _) => {
             for (_, binding) in bindings {
                 resolve_expr(
                     typedefs,

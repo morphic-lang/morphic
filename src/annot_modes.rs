@@ -341,7 +341,7 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *local);
         }
 
-        fate::ExprKind::Call(call_id, _, callee, arg_aliases, _, _, arg) => {
+        fate::ExprKind::Call(call_id, _, callee, arg_aliases, _, arg) => {
             debug_assert_eq!(&this_version.calls[call_id].0, callee);
             let is_tail_rec_call =
                 position == Position::Tail && scc.contains(&this_version.calls[call_id]);
@@ -430,7 +430,7 @@ fn mark_expr_occurs<'a>(
         fate::ExprKind::Branch(discrim, cases, _ret_type) => {
             // TODO: This was the only place where branch block ids were originally intended to be
             // used. Should we remove them now that we don't use them here?
-            for (_, _cond, body) in cases {
+            for (_, _cond, body, _) in cases {
                 let case_uses = mark_expr_occurs(
                     orig,
                     scc,
@@ -450,7 +450,7 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *discrim);
         }
 
-        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
             // We're only using `with_scope` here for its debug assertion, and to signal intent; by
             // the time the passed closure returns, we've manually truncated away all the variables
             // which it would usually be `with_scope`'s responsibility to remove.
@@ -565,13 +565,7 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *arg);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(
-            _item_type,
-            _aliases,
-            _status,
-            array,
-            index,
-        )) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_item_type, _aliases, array, index)) => {
             mark(locals, occur_kinds, &mut expr_uses, *array);
             mark(locals, occur_kinds, &mut expr_uses, *index);
         }
@@ -579,7 +573,6 @@ fn mark_expr_occurs<'a>(
         fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(
             _item_type,
             array_aliases,
-            _status,
             array,
             index,
         )) => {
@@ -594,17 +587,11 @@ fn mark_expr_occurs<'a>(
             );
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_item_type, _aliases, _status, array)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_item_type, _aliases, array)) => {
             mark(locals, occur_kinds, &mut expr_uses, *array);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(
-            _item_type,
-            array_aliases,
-            _status,
-            array,
-            item,
-        )) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_item_type, array_aliases, array, item)) => {
             let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
@@ -616,7 +603,7 @@ fn mark_expr_occurs<'a>(
             );
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_item_type, array_aliases, _status, array)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_item_type, array_aliases, array)) => {
             let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_tentative_prologue_drops(
@@ -630,7 +617,6 @@ fn mark_expr_occurs<'a>(
         fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(
             _item_type,
             hole_array_aliases,
-            _status,
             hole_array,
             item,
         )) => {
@@ -654,7 +640,6 @@ fn mark_expr_occurs<'a>(
         fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(
             _item_type,
             array_aliases,
-            _status,
             array,
             capacity,
         )) => {
@@ -677,11 +662,11 @@ fn mark_expr_occurs<'a>(
 
         fate::ExprKind::IoOp(fate::IoOp::Input) => {}
 
-        fate::ExprKind::IoOp(fate::IoOp::Output(_aliases, _status, byte_array)) => {
+        fate::ExprKind::IoOp(fate::IoOp::Output(_aliases, byte_array)) => {
             mark(locals, occur_kinds, &mut expr_uses, *byte_array);
         }
 
-        fate::ExprKind::Panic(_aliases, _status, message) => {
+        fate::ExprKind::Panic(_aliases, message) => {
             mark(locals, occur_kinds, &mut expr_uses, *message);
         }
 
@@ -869,7 +854,7 @@ fn repair_expr_drops<'a>(
             add_move(occur_kinds, &mut expr_moves, *local);
         }
 
-        fate::ExprKind::Call(_, _, _, _, _, _, local) => {
+        fate::ExprKind::Call(_, _, _, _, _, local) => {
             add_move(occur_kinds, &mut expr_moves, *local);
         }
 
@@ -879,7 +864,7 @@ fn repair_expr_drops<'a>(
 
             let block_moves = cases
                 .iter()
-                .map(|(block_id, _, body)| {
+                .map(|(block_id, _, body, _final_ctx)| {
                     (
                         *block_id,
                         repair_expr_drops(
@@ -928,7 +913,7 @@ fn repair_expr_drops<'a>(
             }
         }
 
-        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
             let mut internal_past_moves = past_moves.clone();
 
             for (offset, (_type, rhs)) in bindings.iter().enumerate() {
@@ -1004,46 +989,46 @@ fn repair_expr_drops<'a>(
             add_move(occur_kinds, &mut expr_moves, *arg);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, array, index)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
             add_move(occur_kinds, &mut expr_moves, *index);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(_, _, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(_, _, array, index)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
             add_move(occur_kinds, &mut expr_moves, *index);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, _, array)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, array)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_, _, _, array, item)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_, _, array, item)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
             add_move(occur_kinds, &mut expr_moves, *item);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_, _, _, array)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_, _, array)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, _, hole_array, item)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, hole_array, item)) => {
             add_move(occur_kinds, &mut expr_moves, *hole_array);
             add_move(occur_kinds, &mut expr_moves, *item);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(_, _, _, array, capacity)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(_, _, array, capacity)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
             add_move(occur_kinds, &mut expr_moves, *capacity);
         }
 
         fate::ExprKind::IoOp(fate::IoOp::Input) => {}
 
-        fate::ExprKind::IoOp(fate::IoOp::Output(_, _, byte_array)) => {
+        fate::ExprKind::IoOp(fate::IoOp::Output(_, byte_array)) => {
             add_move(occur_kinds, &mut expr_moves, *byte_array);
         }
 
-        fate::ExprKind::Panic(_, _, message) => {
+        fate::ExprKind::Panic(_, message) => {
             add_move(occur_kinds, &mut expr_moves, *message);
         }
 
@@ -1177,13 +1162,13 @@ fn collect_expr_moves(
             collect_occur_events(var_moves, *local);
         }
 
-        fate::ExprKind::Call(_, _, _, _, _, _, arg_local) => {
+        fate::ExprKind::Call(_, _, _, _, _, arg_local) => {
             collect_occur_events(var_moves, *arg_local);
         }
 
         fate::ExprKind::Branch(discrim, cases, _) => {
             collect_occur_events(var_moves, *discrim);
-            for (block_id, _, body) in cases {
+            for (block_id, _, body, _final_ctx) in cases {
                 collect_expr_moves(
                     marked_drops,
                     expr_annots,
@@ -1201,7 +1186,7 @@ fn collect_expr_moves(
             }
         }
 
-        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
             let orig_locals = var_moves.len();
 
             for (offset, (_type, rhs)) in bindings.iter().enumerate() {
@@ -1272,46 +1257,46 @@ fn collect_expr_moves(
             collect_occur_events(var_moves, *arg);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, array, index)) => {
             collect_occur_events(var_moves, *array);
             collect_occur_events(var_moves, *index);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(_, _, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(_, _, array, index)) => {
             collect_occur_events(var_moves, *array);
             collect_occur_events(var_moves, *index);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, _, array)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, array)) => {
             collect_occur_events(var_moves, *array);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_, _, _, array, item)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_, _, array, item)) => {
             collect_occur_events(var_moves, *array);
             collect_occur_events(var_moves, *item);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_, _, _, array)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_, _, array)) => {
             collect_occur_events(var_moves, *array);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, _, hole_array, item)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, hole_array, item)) => {
             collect_occur_events(var_moves, *hole_array);
             collect_occur_events(var_moves, *item);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(_, _, _, array, capacity)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(_, _, array, capacity)) => {
             collect_occur_events(var_moves, *array);
             collect_occur_events(var_moves, *capacity);
         }
 
         fate::ExprKind::IoOp(fate::IoOp::Input) => {}
 
-        fate::ExprKind::IoOp(fate::IoOp::Output(_, _, byte_array)) => {
+        fate::ExprKind::IoOp(fate::IoOp::Output(_, byte_array)) => {
             collect_occur_events(var_moves, *byte_array);
         }
 
-        fate::ExprKind::Panic(_, _, message) => {
+        fate::ExprKind::Panic(_, message) => {
             collect_occur_events(var_moves, *message);
         }
 
@@ -1684,7 +1669,7 @@ fn annot_expr<'a>(
     let result_modes = match &expr.kind {
         fate::ExprKind::Local(local) => annot_occur(constraints, locals, solver_annots, *local),
 
-        fate::ExprKind::Call(call_id, _, _, _, _, _, local) => {
+        fate::ExprKind::Call(call_id, _, _, _, _, local) => {
             let arg_val_modes = annot_occur(constraints, locals, solver_annots, *local);
 
             let (callee_id, callee_version_id) = call_versions[call_id];
@@ -1728,7 +1713,7 @@ fn annot_expr<'a>(
 
             let result_modes = instantiate_type(typedefs, constraints, result_type);
 
-            for (block_id, _cond, body) in cases {
+            for (block_id, _cond, body, _final_ctx) in cases {
                 let body_modes = annot_expr(
                     typedefs,
                     known_annots,
@@ -1756,7 +1741,7 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
             locals.with_scope(|sub_locals| {
                 let binding_horizons = &move_horizons.binding_moves[block_id];
                 debug_assert_eq!(binding_horizons.len(), bindings.len());
@@ -1951,7 +1936,7 @@ fn annot_expr<'a>(
             SolverValModes::new()
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(item_type, _, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(item_type, _, array, index)) => {
             let mut result_modes = SolverValModes::new();
 
             let array_modes = annot_occur(constraints, locals, solver_annots, *array);
@@ -1979,7 +1964,7 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(item_type, _, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(item_type, _, array, index)) => {
             let array_modes = annot_occur(constraints, locals, solver_annots, *array);
             let index_modes = annot_occur(constraints, locals, solver_annots, *index);
             debug_assert!(index_modes.path_modes.is_empty());
@@ -2004,12 +1989,12 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, _, array)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, array)) => {
             annot_occur(constraints, locals, solver_annots, *array);
             SolverValModes::new()
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(item_type, _, _, array, item)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(item_type, _, array, item)) => {
             let array_modes = annot_occur(constraints, locals, solver_annots, *array);
             let item_modes = annot_occur(constraints, locals, solver_annots, *item);
 
@@ -2034,7 +2019,7 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(item_type, _, _, array)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(item_type, _, array)) => {
             let array_modes = annot_occur(constraints, locals, solver_annots, *array);
 
             for (_, array_mode) in array_modes.path_modes {
@@ -2057,7 +2042,7 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(item_type, _, _, hole_array, item)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(item_type, _, hole_array, item)) => {
             let hole_array_modes = annot_occur(constraints, locals, solver_annots, *hole_array);
             let item_modes = annot_occur(constraints, locals, solver_annots, *item);
 
@@ -2082,7 +2067,7 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(item_type, _, _, array, capacity)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(item_type, _, array, capacity)) => {
             let array_modes = annot_occur(constraints, locals, solver_annots, *array);
             let capacity_modes = annot_occur(constraints, locals, solver_annots, *capacity);
 
@@ -2113,12 +2098,12 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::IoOp(fate::IoOp::Output(_, _, byte_array)) => {
+        fate::ExprKind::IoOp(fate::IoOp::Output(_, byte_array)) => {
             annot_occur(constraints, locals, solver_annots, *byte_array);
             SolverValModes::new()
         }
 
-        fate::ExprKind::Panic(result_type, _, message) => {
+        fate::ExprKind::Panic(result_type, message) => {
             annot_occur(constraints, locals, solver_annots, *message);
             instantiate_type(typedefs, constraints, result_type)
         }

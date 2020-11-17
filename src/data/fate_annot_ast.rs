@@ -28,51 +28,44 @@ pub struct Local(pub OccurId, pub flat::LocalId);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
     Get(
-        anon::Type,            // Item type
-        alias::LocalAliases,   // Array aliases
-        mutation::LocalStatus, // Array status
-        Local,                 // Array
-        Local,                 // Index
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        Local,               // Array
+        Local,               // Index
     ), // Returns item
     Extract(
-        anon::Type,            // Item type
-        alias::LocalAliases,   // Array aliases
-        mutation::LocalStatus, // Array status
-        Local,                 // Array
-        Local,                 // Index
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        Local,               // Array
+        Local,               // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        anon::Type,            // Item type
-        alias::LocalAliases,   // Array aliases
-        mutation::LocalStatus, // Array status
-        Local,                 // Array
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        Local,               // Array
     ),
     Push(
-        anon::Type,            // Item type
-        alias::LocalAliases,   // Array aliases
-        mutation::LocalStatus, // Array status
-        Local,                 // array
-        Local,                 // Item
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        Local,               // array
+        Local,               // Item
     ),
     Pop(
-        anon::Type,            // Item type
-        alias::LocalAliases,   // Array aliases
-        mutation::LocalStatus, // Array status
-        Local,                 // Array
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        Local,               // Array
     ), // Returns tuple of (array, item)
     Replace(
-        anon::Type,            // Item type
-        alias::LocalAliases,   // Hole array aliases
-        mutation::LocalStatus, // Hole array status
-        Local,                 // Hole array
-        Local,                 // Item
+        anon::Type,          // Item type
+        alias::LocalAliases, // Hole array aliases
+        Local,               // Hole array
+        Local,               // Item
     ), // Returns new array
     Reserve(
-        anon::Type,            // Item type
-        alias::LocalAliases,   // Array aliases
-        mutation::LocalStatus, // Array status
-        Local,                 // Array
-        Local,                 // Capacity
+        anon::Type,          // Item type
+        alias::LocalAliases, // Array aliases
+        Local,               // Array
+        Local,               // Capacity
     ), // Returns new array
 }
 
@@ -80,9 +73,8 @@ pub enum ArrayOp {
 pub enum IoOp {
     Input, // Returns byte array
     Output(
-        alias::LocalAliases,   // Byte array aliases
-        mutation::LocalStatus, // Byte array status
-        Local,                 // Byte array
+        alias::LocalAliases, // Byte array aliases
+        Local,               // Byte array
     ), // Returns unit
 }
 
@@ -91,6 +83,7 @@ id_type!(pub ExprId);
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub id: ExprId,
+    pub prior_context: mutation::ContextSnapshot,
     pub kind: ExprKind,
 }
 
@@ -106,18 +99,22 @@ pub enum ExprKind {
         OrdMap<alias::FieldPath, alias::LocalAliases>,
         // Folded aliases for each argument fold point
         OrdMap<alias::FieldPath, alias::FoldedAliases>,
-        // Statuses of argument fields prior to call
-        OrdMap<alias::FieldPath, mutation::LocalStatus>,
         Local, // Argument
     ),
     Branch(
         Local,
-        Vec<(BranchBlockId, flat::Condition, Expr)>,
+        Vec<(
+            BranchBlockId,
+            flat::Condition,
+            Expr,
+            mutation::ContextSnapshot, // Snapshot of the context after evaluating this branch arm
+        )>,
         anon::Type,
     ),
     LetMany(
         LetBlockId,
         Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        mutation::ContextSnapshot, // Snapshot of the context after all bindings have been evaluated
         Local,                   // body
     ),
 
@@ -144,9 +141,8 @@ pub enum ExprKind {
     ArrayOp(ArrayOp),
     IoOp(IoOp),
     Panic(
-        anon::Type,            // Return type
-        mutation::LocalStatus, // Message status
-        Local,                 // Message
+        anon::Type, // Return type
+        Local,      // Message
     ),
 
     ArrayLit(anon::Type, Vec<Local>),
@@ -217,6 +213,8 @@ impl Fate {
     }
 }
 
+// TODO: Remove this struct.  We can remove the `fate` field here entirely (we only need it for the
+// `ExprKind::Call` case), and we can merge the `event` field here into the `Expr` struct.
 #[derive(Clone, Debug)]
 pub struct ExprAnnot {
     pub fate: Fate,

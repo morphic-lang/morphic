@@ -141,19 +141,12 @@ fn annot_expr(
 
     let expr_event = event_set.prepend_event(event_block);
 
-    let fate_expr_kind = match expr {
-        mutation::Expr::Local(local) => {
+    let fate_expr_kind = match &expr.kind {
+        mutation::ExprKind::Local(local) => {
             fate::ExprKind::Local(add_occurence(occurs, &mut uses, *local, val_fate.clone()))
         }
 
-        mutation::Expr::Call(
-            purity,
-            func,
-            arg_aliases,
-            arg_folded_aliases,
-            arg_statuses,
-            arg_local,
-        ) => {
+        mutation::ExprKind::Call(purity, func, arg_aliases, arg_folded_aliases, arg_local) => {
             let arg_fate = match sigs.sig_of(func) {
                 None => empty_fate(&orig.custom_types, &orig.funcs[func].arg_type),
                 Some(sig_arg_fate) => fate::Fate {
@@ -190,18 +183,17 @@ fn annot_expr(
                 *func,
                 arg_aliases.clone(),
                 arg_folded_aliases.clone(),
-                arg_statuses.clone(),
                 local_annot,
             )
         }
 
-        mutation::Expr::Branch(discrim, cases, ret_type) => {
+        mutation::ExprKind::Branch(discrim, cases, ret_type) => {
             let case_event_blocks = event_set.prepend_branch(event_block, cases.len());
 
             let cases_annot = cases
                 .iter()
                 .zip(case_event_blocks)
-                .map(|((cond, body), case_event_block)| {
+                .map(|((cond, body, final_ctx), case_event_block)| {
                     let case_end_event = event_set.prepend_event(case_event_block);
 
                     let (body_annot, body_uses) = annot_expr(
@@ -227,6 +219,7 @@ fn annot_expr(
                         branch_block_end_events.push(case_end_event),
                         cond.clone(),
                         body_annot,
+                        final_ctx.clone(),
                     )
                 })
                 .collect();
@@ -251,80 +244,87 @@ fn annot_expr(
         // We're only using `with_scope` here for its debug assertion, and to signal intent; by the
         // time the passed closure returns, we've manually truncated away all the variables which it
         // would usually be `with_scope`'s responsibility to remove.
-        mutation::Expr::LetMany(bindings, final_local) => locals.with_scope(|sub_locals| {
-            let block_end_event = event_set.prepend_event(event_block);
-            let block_id = let_block_end_events.push(block_end_event);
-            let mut block_val_fate = val_fate.clone();
-            for (_, path_fate) in &mut block_val_fate.fates {
-                path_fate.blocks_escaped.insert(block_id);
-            }
-
-            let locals_offset = sub_locals.len();
-
-            for (type_, _) in bindings.iter() {
-                sub_locals.add_local(type_.clone());
-            }
-
-            let mut let_uses = LocalUses {
-                uses: BTreeMap::new(),
-            };
-            let final_local_annot =
-                add_occurence(occurs, &mut let_uses, *final_local, block_val_fate.clone());
-
-            let mut bindings_annot_rev = Vec::new();
-
-            for (i, (type_, rhs)) in bindings.iter().enumerate().rev() {
-                let binding_local = flat::LocalId(locals_offset + i);
-
-                // Note: After truncation, `sub_locals` contains all locals *strictly* before
-                // `binding_local`.
-                sub_locals.truncate(binding_local.0);
-
-                let rhs_fate = let_uses
-                    .uses
-                    .get(&binding_local)
-                    .cloned()
-                    .unwrap_or_else(|| empty_fate(&orig.custom_types, type_));
-
-                let (rhs_annot, rhs_uses) = annot_expr(
-                    orig,
-                    sigs,
-                    sub_locals,
-                    rhs,
-                    rhs_fate,
-                    occurs,
-                    expr_annots,
-                    calls,
-                    let_block_end_events,
-                    branch_block_end_events,
-                    event_set,
-                    event_block,
-                );
-
-                for (used_var, var_fate) in rhs_uses.uses {
-                    debug_assert!(used_var.0 < binding_local.0);
-                    add_use(&mut let_uses, used_var, var_fate);
+        mutation::ExprKind::LetMany(bindings, final_ctx, final_local) => {
+            locals.with_scope(|sub_locals| {
+                let block_end_event = event_set.prepend_event(event_block);
+                let block_id = let_block_end_events.push(block_end_event);
+                let mut block_val_fate = val_fate.clone();
+                for (_, path_fate) in &mut block_val_fate.fates {
+                    path_fate.blocks_escaped.insert(block_id);
                 }
 
-                bindings_annot_rev.push((type_.clone(), rhs_annot));
-            }
+                let locals_offset = sub_locals.len();
 
-            for (var, let_use) in let_uses.uses {
-                if var.0 < locals_offset {
-                    debug_assert!(!uses.uses.contains_key(&var));
-                    uses.uses.insert(var, let_use);
+                for (type_, _) in bindings.iter() {
+                    sub_locals.add_local(type_.clone());
                 }
-            }
 
-            let bindings_annot = {
-                bindings_annot_rev.reverse();
-                bindings_annot_rev
-            };
+                let mut let_uses = LocalUses {
+                    uses: BTreeMap::new(),
+                };
+                let final_local_annot =
+                    add_occurence(occurs, &mut let_uses, *final_local, block_val_fate.clone());
 
-            fate::ExprKind::LetMany(block_id, bindings_annot, final_local_annot)
-        }),
+                let mut bindings_annot_rev = Vec::new();
 
-        mutation::Expr::Tuple(items) => {
+                for (i, (type_, rhs)) in bindings.iter().enumerate().rev() {
+                    let binding_local = flat::LocalId(locals_offset + i);
+
+                    // Note: After truncation, `sub_locals` contains all locals *strictly* before
+                    // `binding_local`.
+                    sub_locals.truncate(binding_local.0);
+
+                    let rhs_fate = let_uses
+                        .uses
+                        .get(&binding_local)
+                        .cloned()
+                        .unwrap_or_else(|| empty_fate(&orig.custom_types, type_));
+
+                    let (rhs_annot, rhs_uses) = annot_expr(
+                        orig,
+                        sigs,
+                        sub_locals,
+                        rhs,
+                        rhs_fate,
+                        occurs,
+                        expr_annots,
+                        calls,
+                        let_block_end_events,
+                        branch_block_end_events,
+                        event_set,
+                        event_block,
+                    );
+
+                    for (used_var, var_fate) in rhs_uses.uses {
+                        debug_assert!(used_var.0 < binding_local.0);
+                        add_use(&mut let_uses, used_var, var_fate);
+                    }
+
+                    bindings_annot_rev.push((type_.clone(), rhs_annot));
+                }
+
+                for (var, let_use) in let_uses.uses {
+                    if var.0 < locals_offset {
+                        debug_assert!(!uses.uses.contains_key(&var));
+                        uses.uses.insert(var, let_use);
+                    }
+                }
+
+                let bindings_annot = {
+                    bindings_annot_rev.reverse();
+                    bindings_annot_rev
+                };
+
+                fate::ExprKind::LetMany(
+                    block_id,
+                    bindings_annot,
+                    final_ctx.clone(),
+                    final_local_annot,
+                )
+            })
+        }
+
+        mutation::ExprKind::Tuple(items) => {
             let mut new_items = Vec::new();
 
             for (i, item) in items.iter().enumerate() {
@@ -343,7 +343,7 @@ fn annot_expr(
             fate::ExprKind::Tuple(new_items)
         }
 
-        mutation::Expr::TupleField(tuple, idx) => {
+        mutation::ExprKind::TupleField(tuple, idx) => {
             let mut tuple_fate = fate::Fate::new();
 
             for (path, _) in get_refs_in(&orig.custom_types, locals.local_binding(*tuple)) {
@@ -361,7 +361,7 @@ fn annot_expr(
             fate::ExprKind::TupleField(add_occurence(occurs, &mut uses, *tuple, tuple_fate), *idx)
         }
 
-        mutation::Expr::WrapVariant(variant_types, variant_id, content) => {
+        mutation::ExprKind::WrapVariant(variant_types, variant_id, content) => {
             let mut content_fate = fate::Fate::new();
 
             debug_assert_eq!(&variant_types[variant_id], locals.local_binding(*content));
@@ -381,7 +381,7 @@ fn annot_expr(
             )
         }
 
-        mutation::Expr::UnwrapVariant(variant_id, wrapped) => {
+        mutation::ExprKind::UnwrapVariant(variant_id, wrapped) => {
             let mut wrapped_fate = fate::Fate::new();
 
             for (path, _) in get_refs_in(&orig.custom_types, locals.local_binding(*wrapped)) {
@@ -402,7 +402,7 @@ fn annot_expr(
             )
         }
 
-        mutation::Expr::WrapBoxed(content, item_type) => {
+        mutation::ExprKind::WrapBoxed(content, item_type) => {
             let content_fate = consumed_fate(&orig.custom_types, item_type, &expr_event);
 
             fate::ExprKind::WrapBoxed(
@@ -411,7 +411,7 @@ fn annot_expr(
             )
         }
 
-        mutation::Expr::UnwrapBoxed(wrapped, item_type) => {
+        mutation::ExprKind::UnwrapBoxed(wrapped, item_type) => {
             let mut wrapped_fate = fate::Fate::new();
 
             for (path, _) in get_refs_in(&orig.custom_types, item_type) {
@@ -431,7 +431,7 @@ fn annot_expr(
             )
         }
 
-        mutation::Expr::WrapCustom(custom_id, content) => {
+        mutation::ExprKind::WrapCustom(custom_id, content) => {
             let mut content_fate = fate::Fate::new();
 
             let content_type = &orig.custom_types[custom_id];
@@ -450,7 +450,7 @@ fn annot_expr(
             )
         }
 
-        mutation::Expr::UnwrapCustom(custom_id, wrapped) => {
+        mutation::ExprKind::UnwrapCustom(custom_id, wrapped) => {
             let wrapped_type = anon::Type::Custom(*custom_id);
             let mut wrapped_fate = empty_fate(&orig.custom_types, &wrapped_type);
 
@@ -475,15 +475,14 @@ fn annot_expr(
 
         // NOTE [intrinsics]: If we add array intrinsics in the future, this will need to be
         // modified.
-        mutation::Expr::Intrinsic(intr, arg) => fate::ExprKind::Intrinsic(
+        mutation::ExprKind::Intrinsic(intr, arg) => fate::ExprKind::Intrinsic(
             *intr,
             add_occurence(occurs, &mut uses, *arg, fate::Fate::new()),
         ),
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Get(
+        mutation::ExprKind::ArrayOp(mutation::ArrayOp::Get(
             item_type,
             array_aliases,
-            array_status,
             array,
             index,
         )) => {
@@ -503,16 +502,14 @@ fn annot_expr(
             fate::ExprKind::ArrayOp(fate::ArrayOp::Get(
                 item_type.clone(),
                 array_aliases.clone(),
-                array_status.clone(),
                 add_occurence(occurs, &mut uses, *array, array_fate),
                 add_occurence(occurs, &mut uses, *index, fate::Fate::new()),
             ))
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Extract(
+        mutation::ExprKind::ArrayOp(mutation::ArrayOp::Extract(
             item_type,
             array_aliases,
-            array_status,
             array,
             index,
         )) => {
@@ -525,18 +522,12 @@ fn annot_expr(
             fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(
                 item_type.clone(),
                 array_aliases.clone(),
-                array_status.clone(),
                 add_occurence(occurs, &mut uses, *array, array_fate),
                 add_occurence(occurs, &mut uses, *index, fate::Fate::new()),
             ))
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Len(
-            item_type,
-            array_aliases,
-            array_status,
-            array,
-        )) => {
+        mutation::ExprKind::ArrayOp(mutation::ArrayOp::Len(item_type, array_aliases, array)) => {
             let mut array_fate = fate::Fate::new();
 
             for (item_path, _) in get_refs_in(&orig.custom_types, item_type) {
@@ -553,15 +544,13 @@ fn annot_expr(
             fate::ExprKind::ArrayOp(fate::ArrayOp::Len(
                 item_type.clone(),
                 array_aliases.clone(),
-                array_status.clone(),
                 add_occurence(occurs, &mut uses, *array, array_fate),
             ))
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Push(
+        mutation::ExprKind::ArrayOp(mutation::ArrayOp::Push(
             item_type,
             array_aliases,
-            array_status,
             array,
             item,
         )) => {
@@ -576,18 +565,12 @@ fn annot_expr(
             fate::ExprKind::ArrayOp(fate::ArrayOp::Push(
                 item_type.clone(),
                 array_aliases.clone(),
-                array_status.clone(),
                 add_occurence(occurs, &mut uses, *array, array_fate),
                 add_occurence(occurs, &mut uses, *item, item_fate),
             ))
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Pop(
-            item_type,
-            array_aliases,
-            array_status,
-            array,
-        )) => {
+        mutation::ExprKind::ArrayOp(mutation::ArrayOp::Pop(item_type, array_aliases, array)) => {
             let array_fate = consumed_fate(
                 &orig.custom_types,
                 &anon::Type::Array(Box::new(item_type.clone())),
@@ -597,15 +580,13 @@ fn annot_expr(
             fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(
                 item_type.clone(),
                 array_aliases.clone(),
-                array_status.clone(),
                 add_occurence(occurs, &mut uses, *array, array_fate),
             ))
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Replace(
+        mutation::ExprKind::ArrayOp(mutation::ArrayOp::Replace(
             item_type,
             hole_array_aliases,
-            hole_array_status,
             hole_array,
             item,
         )) => {
@@ -620,16 +601,14 @@ fn annot_expr(
             fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(
                 item_type.clone(),
                 hole_array_aliases.clone(),
-                hole_array_status.clone(),
                 add_occurence(occurs, &mut uses, *hole_array, hole_array_fate),
                 add_occurence(occurs, &mut uses, *item, item_fate),
             ))
         }
 
-        mutation::Expr::ArrayOp(mutation::ArrayOp::Reserve(
+        mutation::ExprKind::ArrayOp(mutation::ArrayOp::Reserve(
             item_type,
             array_aliases,
-            array_status,
             array,
             capacity,
         )) => {
@@ -644,19 +623,14 @@ fn annot_expr(
             fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(
                 item_type.clone(),
                 array_aliases.clone(),
-                array_status.clone(),
                 add_occurence(occurs, &mut uses, *array, array_fate),
                 add_occurence(occurs, &mut uses, *capacity, capacity_fate),
             ))
         }
 
-        mutation::Expr::IoOp(mutation::IoOp::Input) => fate::ExprKind::IoOp(fate::IoOp::Input),
+        mutation::ExprKind::IoOp(mutation::IoOp::Input) => fate::ExprKind::IoOp(fate::IoOp::Input),
 
-        mutation::Expr::IoOp(mutation::IoOp::Output(
-            byte_array_aliases,
-            byte_array_status,
-            byte_array,
-        )) => {
+        mutation::ExprKind::IoOp(mutation::IoOp::Output(byte_array_aliases, byte_array)) => {
             let mut byte_array_fate = fate::Fate::new();
             byte_array_fate
                 .fates
@@ -664,12 +638,11 @@ fn annot_expr(
 
             fate::ExprKind::IoOp(fate::IoOp::Output(
                 byte_array_aliases.clone(),
-                byte_array_status.clone(),
                 add_occurence(occurs, &mut uses, *byte_array, byte_array_fate),
             ))
         }
 
-        mutation::Expr::Panic(ret_type, byte_array_status, byte_array) => {
+        mutation::ExprKind::Panic(ret_type, byte_array) => {
             let mut byte_array_fate = fate::Fate::new();
             byte_array_fate
                 .fates
@@ -677,12 +650,11 @@ fn annot_expr(
 
             fate::ExprKind::Panic(
                 ret_type.clone(),
-                byte_array_status.clone(),
                 add_occurence(occurs, &mut uses, *byte_array, byte_array_fate),
             )
         }
 
-        mutation::Expr::ArrayLit(item_type, item_ids) => {
+        mutation::ExprKind::ArrayLit(item_type, item_ids) => {
             let item_fate = consumed_fate(&orig.custom_types, item_type, &expr_event);
 
             let new_items = item_ids
@@ -693,10 +665,10 @@ fn annot_expr(
             fate::ExprKind::ArrayLit(item_type.clone(), new_items)
         }
 
-        mutation::Expr::BoolLit(val) => fate::ExprKind::BoolLit(*val),
-        mutation::Expr::ByteLit(val) => fate::ExprKind::ByteLit(*val),
-        mutation::Expr::IntLit(val) => fate::ExprKind::IntLit(*val),
-        mutation::Expr::FloatLit(val) => fate::ExprKind::FloatLit(*val),
+        mutation::ExprKind::BoolLit(val) => fate::ExprKind::BoolLit(*val),
+        mutation::ExprKind::ByteLit(val) => fate::ExprKind::ByteLit(*val),
+        mutation::ExprKind::IntLit(val) => fate::ExprKind::IntLit(*val),
+        mutation::ExprKind::FloatLit(val) => fate::ExprKind::FloatLit(*val),
     };
 
     let id = expr_annots.push(fate::ExprAnnot {
@@ -707,6 +679,7 @@ fn annot_expr(
     (
         fate::Expr {
             id,
+            prior_context: expr.prior_context.clone(),
             kind: fate_expr_kind,
         },
         uses,

@@ -1,4 +1,5 @@
 use im_rc::{vector, OrdMap, OrdSet, Vector};
+use std::rc::Rc;
 
 use crate::data::alias_annot_ast as alias;
 use crate::data::anon_sum_ast as anon;
@@ -39,12 +40,6 @@ pub fn annot_mutation(program: alias::Program) -> annot::Program {
 }
 
 #[derive(Clone, Debug)]
-struct LocalInfo {
-    type_: anon::Type,
-    statuses: OrdMap<alias::FieldPath, annot::LocalStatus>,
-}
-
-#[derive(Clone, Debug)]
 struct ExprInfo {
     mutations: Vec<(flat::LocalId, alias::FieldPath, Disj<alias::AliasCondition>)>,
     val_statuses: OrdMap<alias::FieldPath, annot::LocalStatus>,
@@ -76,7 +71,7 @@ fn empty_statuses(
 
 fn array_extraction_statuses(
     orig: &alias::Program,
-    ctx: &OrdMap<flat::LocalId, LocalInfo>,
+    ctx: &OrdMap<flat::LocalId, annot::LocalInfo>,
     item_type: &anon::Type,
     array: flat::LocalId,
     ret_array_field: alias::Field,
@@ -115,7 +110,7 @@ fn array_extraction_statuses(
 
 fn array_insertion_statuses(
     orig: &alias::Program,
-    ctx: &OrdMap<flat::LocalId, LocalInfo>,
+    ctx: &OrdMap<flat::LocalId, annot::LocalInfo>,
     item_type: &anon::Type,
     array: flat::LocalId,
     item: flat::LocalId,
@@ -164,12 +159,12 @@ fn propagated_mutations(
 fn annot_expr(
     orig: &alias::Program,
     sigs: &SignatureAssumptions<first_ord::CustomFuncId, annot::FuncDef>,
-    ctx: &OrdMap<flat::LocalId, LocalInfo>,
+    ctx: &OrdMap<flat::LocalId, annot::LocalInfo>,
     expr: &alias::Expr,
 ) -> (annot::Expr, ExprInfo) {
-    match expr {
+    let (expr_kind, expr_info) = match expr {
         alias::Expr::Local(local) => (
-            annot::Expr::Local(*local),
+            annot::ExprKind::Local(*local),
             ExprInfo {
                 mutations: Vec::new(),
                 val_statuses: ctx[local].statuses.clone(),
@@ -179,12 +174,11 @@ fn annot_expr(
         alias::Expr::Call(purity, func, arg_aliases, arg_folded_aliases, arg) => {
             let arg_info = &ctx[arg];
 
-            let annot_expr = annot::Expr::Call(
+            let annot_expr = annot::ExprKind::Call(
                 *purity,
                 *func,
                 arg_aliases.clone(),
                 arg_folded_aliases.clone(),
-                arg_info.statuses.clone(),
                 *arg,
             );
 
@@ -265,7 +259,21 @@ fn annot_expr(
 
             for (cond, body) in cases {
                 let (annot_body, body_info) = annot_expr(orig, sigs, ctx, body);
-                annot_cases.push((cond.clone(), annot_body));
+
+                let mut final_ctx = ctx.clone();
+                for (other, other_path, mut_cond) in &body_info.mutations {
+                    final_ctx[&other].statuses[&other_path].mutated_cond.or_mut(
+                        mut_cond
+                            .clone()
+                            .into_mapped(annot::MutationCondition::AliasCondition),
+                    );
+                }
+
+                annot_cases.push((
+                    cond.clone(),
+                    annot_body,
+                    annot::ContextSnapshot { locals: final_ctx },
+                ));
 
                 for mutation in body_info.mutations {
                     mutations.push(mutation);
@@ -276,7 +284,7 @@ fn annot_expr(
                 }
             }
 
-            let annot_expr = annot::Expr::Branch(*discrim, annot_cases, result_type.clone());
+            let annot_expr = annot::ExprKind::Branch(*discrim, annot_cases, result_type.clone());
             let expr_info = ExprInfo {
                 mutations,
                 val_statuses,
@@ -309,8 +317,8 @@ fn annot_expr(
                 let lhs = flat::LocalId(new_ctx.len());
                 debug_assert!(!new_ctx.contains_key(&lhs));
 
-                let lhs_info = LocalInfo {
-                    type_: type_.clone(),
+                let lhs_info = annot::LocalInfo {
+                    type_: Rc::new(type_.clone()),
                     statuses: rhs_info.val_statuses,
                 };
 
@@ -319,11 +327,17 @@ fn annot_expr(
 
             debug_assert_eq!(new_bindings.len(), bindings.len());
 
+            let final_local_statuses = new_ctx[final_local].statuses.clone();
+
             (
-                annot::Expr::LetMany(new_bindings, *final_local),
+                annot::ExprKind::LetMany(
+                    new_bindings,
+                    annot::ContextSnapshot { locals: new_ctx },
+                    *final_local,
+                ),
                 ExprInfo {
                     mutations,
-                    val_statuses: new_ctx[final_local].statuses.clone(),
+                    val_statuses: final_local_statuses,
                 },
             )
         }
@@ -343,7 +357,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::Tuple(items.clone()),
+                annot::ExprKind::Tuple(items.clone()),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: tuple_statuses,
@@ -354,7 +368,7 @@ fn annot_expr(
         alias::Expr::TupleField(tuple, idx) => {
             let tuple_info = &ctx[tuple];
 
-            let item_type = if let anon::Type::Tuple(item_types) = &tuple_info.type_ {
+            let item_type = if let anon::Type::Tuple(item_types) = &*tuple_info.type_ {
                 &item_types[*idx]
             } else {
                 unreachable!()
@@ -369,7 +383,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::TupleField(*tuple, *idx),
+                annot::ExprKind::TupleField(*tuple, *idx),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: item_statuses,
@@ -380,7 +394,7 @@ fn annot_expr(
         alias::Expr::WrapVariant(variant_types, variant_id, content) => {
             let content_info = &ctx[content];
 
-            debug_assert_eq!(variant_types[variant_id], content_info.type_);
+            debug_assert_eq!(&variant_types[variant_id], &*content_info.type_);
 
             let mut variant_statuses = OrdMap::new();
             for (idx, variant_type) in variant_types.iter() {
@@ -402,7 +416,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::WrapVariant(variant_types.clone(), *variant_id, *content),
+                annot::ExprKind::WrapVariant(variant_types.clone(), *variant_id, *content),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: variant_statuses,
@@ -413,7 +427,7 @@ fn annot_expr(
         alias::Expr::UnwrapVariant(variant_id, variant) => {
             let variant_info = &ctx[variant];
 
-            let content_type = if let anon::Type::Variants(variant_types) = &variant_info.type_ {
+            let content_type = if let anon::Type::Variants(variant_types) = &*variant_info.type_ {
                 &variant_types[variant_id]
             } else {
                 unreachable!()
@@ -428,7 +442,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::UnwrapVariant(*variant_id, *variant),
+                annot::ExprKind::UnwrapVariant(*variant_id, *variant),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: content_statuses,
@@ -439,7 +453,7 @@ fn annot_expr(
         alias::Expr::WrapBoxed(content, content_type) => {
             let content_info = &ctx[content];
 
-            debug_assert_eq!(&content_info.type_, content_type);
+            debug_assert_eq!(&*content_info.type_, content_type);
 
             let mut boxed_statuses = OrdMap::new();
             for (content_path, _) in get_names_in(&orig.custom_types, content_type) {
@@ -450,7 +464,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::WrapBoxed(*content, content_type.clone()),
+                annot::ExprKind::WrapBoxed(*content, content_type.clone()),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: boxed_statuses,
@@ -470,7 +484,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::UnwrapBoxed(*boxed, content_type.clone()),
+                annot::ExprKind::UnwrapBoxed(*boxed, content_type.clone()),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: content_statuses,
@@ -481,7 +495,7 @@ fn annot_expr(
         alias::Expr::WrapCustom(custom_id, content) => {
             let content_info = &ctx[content];
 
-            debug_assert_eq!(&content_info.type_, &orig.custom_types[custom_id]);
+            debug_assert_eq!(&*content_info.type_, &orig.custom_types[custom_id]);
 
             let mut wrapped_statuses =
                 empty_statuses(&orig.custom_types, &anon::Type::Custom(*custom_id));
@@ -498,7 +512,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::WrapCustom(*custom_id, *content),
+                annot::ExprKind::WrapCustom(*custom_id, *content),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: wrapped_statuses,
@@ -509,7 +523,7 @@ fn annot_expr(
         alias::Expr::UnwrapCustom(custom_id, wrapped) => {
             let wrapped_info = &ctx[wrapped];
 
-            debug_assert_eq!(&wrapped_info.type_, &anon::Type::Custom(*custom_id));
+            debug_assert_eq!(&*wrapped_info.type_, &anon::Type::Custom(*custom_id));
 
             let content_type = &orig.custom_types[custom_id];
 
@@ -524,7 +538,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::UnwrapCustom(*custom_id, *wrapped),
+                annot::ExprKind::UnwrapCustom(*custom_id, *wrapped),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: content_statuses,
@@ -534,7 +548,9 @@ fn annot_expr(
 
         // NOTE [intrinsics]: If we add array intrinsics in the future, this will need to be
         // modified.
-        alias::Expr::Intrinsic(intr, arg) => (annot::Expr::Intrinsic(*intr, *arg), trivial_info()),
+        alias::Expr::Intrinsic(intr, arg) => {
+            (annot::ExprKind::Intrinsic(*intr, *arg), trivial_info())
+        }
 
         alias::Expr::ArrayOp(alias::ArrayOp::Get(item_type, array_aliases, array, index)) => {
             let array_info = &ctx[array];
@@ -548,10 +564,9 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::ArrayOp(annot::ArrayOp::Get(
+                annot::ExprKind::ArrayOp(annot::ArrayOp::Get(
                     item_type.clone(),
                     array_aliases.clone(),
-                    ctx[array].statuses[&Vector::new()].clone(),
                     *array,
                     *index,
                 )),
@@ -563,10 +578,9 @@ fn annot_expr(
         }
 
         alias::Expr::ArrayOp(alias::ArrayOp::Extract(item_type, array_aliases, array, index)) => (
-            annot::Expr::ArrayOp(annot::ArrayOp::Extract(
+            annot::ExprKind::ArrayOp(annot::ArrayOp::Extract(
                 item_type.clone(),
                 array_aliases.clone(),
-                ctx[array].statuses[&Vector::new()].clone(),
                 *array,
                 *index,
             )),
@@ -584,10 +598,9 @@ fn annot_expr(
         ),
 
         alias::Expr::ArrayOp(alias::ArrayOp::Pop(item_type, array_aliases, array)) => (
-            annot::Expr::ArrayOp(annot::ArrayOp::Pop(
+            annot::ExprKind::ArrayOp(annot::ArrayOp::Pop(
                 item_type.clone(),
                 array_aliases.clone(),
-                ctx[array].statuses[&Vector::new()].clone(),
                 *array,
             )),
             ExprInfo {
@@ -609,10 +622,9 @@ fn annot_expr(
             hole_array,
             item,
         )) => (
-            annot::Expr::ArrayOp(annot::ArrayOp::Replace(
+            annot::ExprKind::ArrayOp(annot::ArrayOp::Replace(
                 item_type.clone(),
                 array_aliases.clone(),
-                ctx[hole_array].statuses[&Vector::new()].clone(),
                 *hole_array,
                 *item,
             )),
@@ -623,10 +635,9 @@ fn annot_expr(
         ),
 
         alias::Expr::ArrayOp(alias::ArrayOp::Push(item_type, array_aliases, array, item)) => (
-            annot::Expr::ArrayOp(annot::ArrayOp::Push(
+            annot::ExprKind::ArrayOp(annot::ArrayOp::Push(
                 item_type.clone(),
                 array_aliases.clone(),
-                ctx[array].statuses[&Vector::new()].clone(),
                 *array,
                 *item,
             )),
@@ -637,10 +648,9 @@ fn annot_expr(
         ),
 
         alias::Expr::ArrayOp(alias::ArrayOp::Len(item_type, array_aliases, array)) => (
-            annot::Expr::ArrayOp(annot::ArrayOp::Len(
+            annot::ExprKind::ArrayOp(annot::ArrayOp::Len(
                 item_type.clone(),
                 array_aliases.clone(),
-                ctx[array].statuses[&Vector::new()].clone(),
                 *array,
             )),
             trivial_info(),
@@ -671,10 +681,9 @@ fn annot_expr(
             );
 
             (
-                annot::Expr::ArrayOp(annot::ArrayOp::Reserve(
+                annot::ExprKind::ArrayOp(annot::ArrayOp::Reserve(
                     item_type.clone(),
                     array_aliases.clone(),
-                    ctx[array].statuses[&Vector::new()].clone(),
                     *array,
                     *capacity,
                 )),
@@ -686,7 +695,7 @@ fn annot_expr(
         }
 
         alias::Expr::IoOp(alias::IoOp::Input) => (
-            annot::Expr::IoOp(annot::IoOp::Input),
+            annot::ExprKind::IoOp(annot::IoOp::Input),
             ExprInfo {
                 mutations: Vec::new(),
                 val_statuses: OrdMap::unit(
@@ -699,20 +708,12 @@ fn annot_expr(
         ),
 
         alias::Expr::IoOp(alias::IoOp::Output(bytes_aliases, bytes)) => (
-            annot::Expr::IoOp(annot::IoOp::Output(
-                bytes_aliases.clone(),
-                ctx[bytes].statuses[&Vector::new()].clone(),
-                *bytes,
-            )),
+            annot::ExprKind::IoOp(annot::IoOp::Output(bytes_aliases.clone(), *bytes)),
             trivial_info(),
         ),
 
         alias::Expr::Panic(ret_type, _bytes_aliases, bytes) => (
-            annot::Expr::Panic(
-                ret_type.clone(),
-                ctx[bytes].statuses[&Vector::new()].clone(),
-                *bytes,
-            ),
+            annot::ExprKind::Panic(ret_type.clone(), *bytes),
             ExprInfo {
                 mutations: Vec::new(),
                 val_statuses: empty_statuses(&orig.custom_types, ret_type),
@@ -730,7 +731,7 @@ fn annot_expr(
             for item in items {
                 let item_info = &ctx[item];
 
-                debug_assert_eq!(&item_info.type_, item_type);
+                debug_assert_eq!(&*item_info.type_, item_type);
 
                 for (item_path, _) in &item_paths {
                     let mut array_path = item_path.clone();
@@ -743,7 +744,7 @@ fn annot_expr(
             }
 
             (
-                annot::Expr::ArrayLit(item_type.clone(), items.clone()),
+                annot::ExprKind::ArrayLit(item_type.clone(), items.clone()),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: array_statuses,
@@ -751,11 +752,21 @@ fn annot_expr(
             )
         }
 
-        &alias::Expr::BoolLit(val) => (annot::Expr::BoolLit(val), trivial_info()),
-        &alias::Expr::ByteLit(val) => (annot::Expr::ByteLit(val), trivial_info()),
-        &alias::Expr::IntLit(val) => (annot::Expr::IntLit(val), trivial_info()),
-        &alias::Expr::FloatLit(val) => (annot::Expr::FloatLit(val), trivial_info()),
-    }
+        &alias::Expr::BoolLit(val) => (annot::ExprKind::BoolLit(val), trivial_info()),
+        &alias::Expr::ByteLit(val) => (annot::ExprKind::ByteLit(val), trivial_info()),
+        &alias::Expr::IntLit(val) => (annot::ExprKind::IntLit(val), trivial_info()),
+        &alias::Expr::FloatLit(val) => (annot::ExprKind::FloatLit(val), trivial_info()),
+    };
+
+    (
+        annot::Expr {
+            prior_context: annot::ContextSnapshot {
+                locals: ctx.clone(),
+            },
+            kind: expr_kind,
+        },
+        expr_info,
+    )
 }
 
 fn annot_func(
@@ -780,8 +791,8 @@ fn annot_func(
         );
     }
 
-    let arg_info = LocalInfo {
-        type_: func_def.arg_type.clone(),
+    let arg_info = annot::LocalInfo {
+        type_: Rc::new(func_def.arg_type.clone()),
         statuses: arg_init_statuses,
     };
 

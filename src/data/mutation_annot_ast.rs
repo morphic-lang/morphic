@@ -1,4 +1,5 @@
 use im_rc::OrdMap;
+use std::rc::Rc;
 
 use crate::data::alias_annot_ast as alias;
 use crate::data::anon_sum_ast as anon;
@@ -23,52 +24,56 @@ pub struct LocalStatus {
     pub mutated_cond: Disj<MutationCondition>,
 }
 
+#[derive(Clone, Debug)]
+pub struct LocalInfo {
+    pub type_: Rc<anon::Type>,
+    pub statuses: OrdMap<alias::FieldPath, LocalStatus>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ContextSnapshot {
+    pub locals: OrdMap<flat::LocalId, LocalInfo>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
     Get(
         anon::Type,          // Item type
         alias::LocalAliases, // Array aliases
-        LocalStatus,         // Array status
         flat::LocalId,       // Array
         flat::LocalId,       // Index
     ), // Returns item
     Extract(
         anon::Type,          // Item type
         alias::LocalAliases, // Array aliases
-        LocalStatus,         // Array status
         flat::LocalId,       // Array
         flat::LocalId,       // Index
     ), // Returns tuple of (item, hole array)
     Len(
         anon::Type,          // Item type
         alias::LocalAliases, // Array aliases
-        LocalStatus,         // Array status
         flat::LocalId,       // Array
     ),
     Push(
         anon::Type,          // Item type
         alias::LocalAliases, // Array aliases
-        LocalStatus,         // Array status
         flat::LocalId,       // Array
         flat::LocalId,       // Item
     ),
     Pop(
         anon::Type,          // Item type
         alias::LocalAliases, // Array aliases
-        LocalStatus,         // Array status
         flat::LocalId,       // Array
     ), // Returns tuple of (array, item)
     Replace(
         anon::Type,          // Item type
         alias::LocalAliases, // Hole array aliases
-        LocalStatus,         // Hole array status
         flat::LocalId,       // Hole array
         flat::LocalId,       // Item
     ), // Returns new array
     Reserve(
         anon::Type,          // Item type
         alias::LocalAliases, // Array aliases
-        LocalStatus,         // Array status
         flat::LocalId,       // Array
         flat::LocalId,       // Capacity
     ), // Returns new array
@@ -79,13 +84,19 @@ pub enum IoOp {
     Input, // Returns byte array
     Output(
         alias::LocalAliases, // Byte array aliases
-        LocalStatus,         // Byte array statuses
         flat::LocalId,       // Byte array
     ), // Returns unit
 }
 
 #[derive(Clone, Debug)]
-pub enum Expr {
+pub struct Expr {
+    /// Snapshot of the context before evaluating this expression
+    pub prior_context: ContextSnapshot,
+    pub kind: ExprKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum ExprKind {
     Local(flat::LocalId),
     Call(
         Purity,
@@ -95,13 +106,20 @@ pub enum Expr {
         OrdMap<alias::FieldPath, alias::LocalAliases>,
         // Folded aliases for each argument fold point
         OrdMap<alias::FieldPath, alias::FoldedAliases>,
-        // Statuses of argument fields prior to call
-        OrdMap<alias::FieldPath, LocalStatus>,
         flat::LocalId, // Argument
     ),
-    Branch(flat::LocalId, Vec<(flat::Condition, Expr)>, anon::Type),
+    Branch(
+        flat::LocalId,
+        Vec<(
+            flat::Condition,
+            Expr,
+            ContextSnapshot, // Snapshot of the context after evaluating this branch arm
+        )>,
+        anon::Type,
+    ),
     LetMany(
         Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        ContextSnapshot,         // Snapshot of the context after all bindings have been evaluated
         flat::LocalId,           // body
     ),
 
@@ -129,7 +147,6 @@ pub enum Expr {
     IoOp(IoOp),
     Panic(
         anon::Type,    // Return type
-        LocalStatus,   // Message status
         flat::LocalId, // Message
     ),
 

@@ -1,4 +1,4 @@
-use im_rc::OrdMap;
+use im_rc::{OrdMap, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_specialized_ast as spec;
@@ -7,6 +7,7 @@ use crate::data::fate_annot_ast as fate;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mode_annot_ast as mode;
+use crate::data::mutation_annot_ast as mutation;
 use crate::data::rc_specialized_ast as rc;
 use crate::util::graph::{strongly_connected, Graph};
 use crate::util::id_vec::IdVec;
@@ -591,6 +592,7 @@ fn build_expr_kind<'a>(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     ops: &ConcreteRcOps<rc::CustomFuncId>,
     locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
+    mutation_ctx: &mutation::ContextSnapshot,
     kind: &'a fate::ExprKind,
     result_type: &anon::Type,
     builder: &mut LetManyBuilder,
@@ -610,6 +612,10 @@ fn build_expr_kind<'a>(
         local_info.new_id
     };
 
+    let array_status = |array_occur: &fate::Local| {
+        mutation_ctx.locals[&array_occur.1].statuses[&Vector::new()].clone()
+    };
+
     let new_expr = match kind {
         fate::ExprKind::Local(local) => {
             let rc_local = build_occur(locals, *local, builder);
@@ -622,7 +628,6 @@ fn build_expr_kind<'a>(
             _func,
             arg_aliases,
             arg_folded_aliases,
-            arg_statuses,
             arg_local,
         ) => {
             let rc_arg_local = build_occur(locals, *arg_local, builder);
@@ -651,11 +656,13 @@ fn build_expr_kind<'a>(
 
             let rc_callee_id = ops.calls[call_id];
 
+            let arg_statuses = mutation_ctx.locals[&arg_local.1].statuses.clone();
+
             rc::Expr::Call(
                 *purity,
                 rc_callee_id,
                 rc_arg_aliases,
-                arg_statuses.clone(),
+                arg_statuses,
                 rc_arg_local,
             )
         }
@@ -667,7 +674,7 @@ fn build_expr_kind<'a>(
 
             let rc_cases = cases
                 .iter()
-                .map(|(block_id, cond, body)| {
+                .map(|(block_id, cond, body, _final_ctx)| {
                     let mut case_builder = builder.child();
 
                     let final_local =
@@ -687,7 +694,7 @@ fn build_expr_kind<'a>(
             rc::Expr::Branch(rc_discrim, rc_cases, result_type.clone())
         }
 
-        fate::ExprKind::LetMany(block_id, bindings, final_local) => {
+        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
             let rc_final_local = locals.with_scope(|sub_locals| {
                 for (type_, rhs) in bindings {
                     let new_id = build_expr(typedefs, ops, sub_locals, rhs, type_, builder);
@@ -758,50 +765,46 @@ fn build_expr_kind<'a>(
 
         fate::ExprKind::ArrayOp(op) => {
             let new_op = match op {
-                fate::ArrayOp::Get(item_type, _, status, array, index) => rc::ArrayOp::Get(
+                fate::ArrayOp::Get(item_type, _, array, index) => rc::ArrayOp::Get(
                     item_type.clone(),
-                    status.clone(),
+                    array_status(array),
                     build_occur(locals, *array, builder),
                     build_occur(locals, *index, builder),
                 ),
-                fate::ArrayOp::Extract(item_type, _, status, array, index) => rc::ArrayOp::Extract(
+                fate::ArrayOp::Extract(item_type, _, array, index) => rc::ArrayOp::Extract(
                     item_type.clone(),
-                    status.clone(),
+                    array_status(array),
                     build_occur(locals, *array, builder),
                     build_occur(locals, *index, builder),
                 ),
-                fate::ArrayOp::Len(item_type, _, status, array) => rc::ArrayOp::Len(
+                fate::ArrayOp::Len(item_type, _, array) => rc::ArrayOp::Len(
                     item_type.clone(),
-                    status.clone(),
+                    array_status(array),
                     build_occur(locals, *array, builder),
                 ),
-                fate::ArrayOp::Push(item_type, _, status, array, item) => rc::ArrayOp::Push(
+                fate::ArrayOp::Push(item_type, _, array, item) => rc::ArrayOp::Push(
                     item_type.clone(),
-                    status.clone(),
+                    array_status(array),
                     build_occur(locals, *array, builder),
                     build_occur(locals, *item, builder),
                 ),
-                fate::ArrayOp::Pop(item_type, _, status, array) => rc::ArrayOp::Pop(
+                fate::ArrayOp::Pop(item_type, _, array) => rc::ArrayOp::Pop(
                     item_type.clone(),
-                    status.clone(),
+                    array_status(array),
                     build_occur(locals, *array, builder),
                 ),
-                fate::ArrayOp::Replace(item_type, _, status, hole_array, item) => {
-                    rc::ArrayOp::Replace(
-                        item_type.clone(),
-                        status.clone(),
-                        build_occur(locals, *hole_array, builder),
-                        build_occur(locals, *item, builder),
-                    )
-                }
-                fate::ArrayOp::Reserve(item_type, _, status, array, capacity) => {
-                    rc::ArrayOp::Reserve(
-                        item_type.clone(),
-                        status.clone(),
-                        build_occur(locals, *array, builder),
-                        build_occur(locals, *capacity, builder),
-                    )
-                }
+                fate::ArrayOp::Replace(item_type, _, hole_array, item) => rc::ArrayOp::Replace(
+                    item_type.clone(),
+                    array_status(hole_array),
+                    build_occur(locals, *hole_array, builder),
+                    build_occur(locals, *item, builder),
+                ),
+                fate::ArrayOp::Reserve(item_type, _, array, capacity) => rc::ArrayOp::Reserve(
+                    item_type.clone(),
+                    array_status(array),
+                    build_occur(locals, *array, builder),
+                    build_occur(locals, *capacity, builder),
+                ),
             };
             rc::Expr::ArrayOp(new_op)
         }
@@ -809,17 +812,18 @@ fn build_expr_kind<'a>(
         fate::ExprKind::IoOp(io_op) => {
             let new_io_op = match io_op {
                 fate::IoOp::Input => rc::IoOp::Input,
-                fate::IoOp::Output(_aliases, status, byte_array) => {
-                    rc::IoOp::Output(status.clone(), build_occur(locals, *byte_array, builder))
-                }
+                fate::IoOp::Output(_aliases, byte_array) => rc::IoOp::Output(
+                    array_status(byte_array),
+                    build_occur(locals, *byte_array, builder),
+                ),
             };
 
             rc::Expr::IoOp(new_io_op)
         }
 
-        fate::ExprKind::Panic(result_type, local_status, message) => rc::Expr::Panic(
+        fate::ExprKind::Panic(result_type, message) => rc::Expr::Panic(
             result_type.clone(),
-            local_status.clone(),
+            array_status(message),
             build_occur(locals, *message, builder),
         ),
 
@@ -850,7 +854,15 @@ fn build_expr<'a>(
 ) -> rc::LocalId {
     build_releases(typedefs, locals, &ops.release_prologues[expr.id], builder);
 
-    let new_local = build_expr_kind(typedefs, ops, locals, &expr.kind, result_type, builder);
+    let new_local = build_expr_kind(
+        typedefs,
+        ops,
+        locals,
+        &expr.prior_context,
+        &expr.kind,
+        result_type,
+        builder,
+    );
 
     build_rc_ops(
         typedefs,
