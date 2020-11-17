@@ -1,6 +1,7 @@
-use im_rc::{OrdMap, Vector};
+use im_rc::{OrdMap, OrdSet, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::data::alias_annot_ast as alias;
 use crate::data::alias_specialized_ast as spec;
 use crate::data::anon_sum_ast as anon;
 use crate::data::fate_annot_ast as fate;
@@ -9,8 +10,11 @@ use crate::data::flat_ast as flat;
 use crate::data::mode_annot_ast as mode;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::rc_specialized_ast as rc;
+use crate::field_path;
+use crate::util::disjunction::Disj;
 use crate::util::graph::{strongly_connected, Graph};
 use crate::util::id_vec::IdVec;
+use crate::util::im_rc_ext::VectorExtensions;
 use crate::util::inequality_graph as ineq;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::local_context::LocalContext;
@@ -113,7 +117,7 @@ struct ConcreteRcOps<Call> {
     func: first_ord::CustomFuncId,
     calls: IdVec<fate::CallId, Call>,
     release_prologues: IdVec<fate::ExprId, Vec<(flat::LocalId, ReleasePaths)>>,
-    retain_epilogues: IdVec<fate::ExprId, RetainPaths>,
+    retain_epilogues: IdVec<fate::RetainPointId, RetainPaths>,
     occur_retains: IdVec<fate::OccurId, RetainPaths>,
     let_release_epilogues: IdVec<fate::LetBlockId, Vec<(flat::LocalId, ReleasePaths)>>,
     branch_release_epilogues: IdVec<fate::BranchBlockId, Vec<(flat::LocalId, ReleasePaths)>>,
@@ -463,6 +467,11 @@ fn build_plan(
     root: rc::LocalId,
     root_type: &anon::Type,
     plan: &RcOpPlan,
+    prefix: alias::FieldPath,
+    // These are the statuses of the top-level local variables which whose components we are
+    // recursing through.  The statuses relevant to the `root` for this call appear at those paths
+    // in `local_statuses` which begin with `prefix`.
+    local_statuses: &OrdMap<alias::FieldPath, mutation::LocalStatus>,
     builder: &mut LetManyBuilder,
 ) {
     match plan {
@@ -476,9 +485,25 @@ fn build_plan(
                 _ => unreachable!(),
             };
 
+            let leaf_statuses = field_path::get_names_in(typedefs, root_type)
+                .into_iter()
+                .filter_map(|(leaf_path, _)| {
+                    // Due to folding, some `prefix + leaf_path` paths may not actually exist
+                    local_statuses
+                        .get(&(prefix.clone() + leaf_path.clone()))
+                        .map(|status| (leaf_path, status.clone()))
+                })
+                .collect();
+
             builder.add_binding(
                 anon::Type::Tuple(vec![]),
-                rc::Expr::RcOp(rc_op, container_type, (**item_type).clone(), root),
+                rc::Expr::RcOp(
+                    rc_op,
+                    container_type,
+                    (**item_type).clone(),
+                    leaf_statuses,
+                    root,
+                ),
             );
         }
 
@@ -493,7 +518,16 @@ fn build_plan(
                 let field_type = &field_types[*idx];
                 let field_local =
                     builder.add_binding(field_type.clone(), rc::Expr::TupleField(root, *idx));
-                build_plan(typedefs, rc_op, field_local, field_type, sub_plan, builder);
+                build_plan(
+                    typedefs,
+                    rc_op,
+                    field_local,
+                    field_type,
+                    sub_plan,
+                    prefix.clone().add_back(alias::Field::Field(*idx)),
+                    local_statuses,
+                    builder,
+                );
             }
         }
 
@@ -520,6 +554,8 @@ fn build_plan(
                     content_id,
                     variant_type,
                     sub_plan,
+                    prefix.clone().add_back(alias::Field::Variant(*variant_id)),
+                    local_statuses,
                     &mut case_builder,
                 );
 
@@ -549,7 +585,16 @@ fn build_plan(
                 content_type.clone(),
                 rc::Expr::UnwrapCustom(*custom_id, root),
             );
-            build_plan(typedefs, rc_op, content_id, content_type, sub_plan, builder);
+            build_plan(
+                typedefs,
+                rc_op,
+                content_id,
+                content_type,
+                sub_plan,
+                prefix.add_back(alias::Field::Custom(*custom_id)),
+                local_statuses,
+                builder,
+            );
         }
     }
 }
@@ -559,6 +604,7 @@ fn build_rc_ops(
     rc_op: rc::RcOp,
     local: rc::LocalId,
     local_type: &anon::Type,
+    local_statuses: &OrdMap<alias::FieldPath, mutation::LocalStatus>,
     paths: &BTreeSet<mode::StackPath>,
     builder: &mut LetManyBuilder,
 ) {
@@ -566,12 +612,22 @@ fn build_rc_ops(
     for path in paths {
         plan.add_leaf_path(path);
     }
-    build_plan(typedefs, rc_op, local, local_type, &plan, builder);
+    build_plan(
+        typedefs,
+        rc_op,
+        local,
+        local_type,
+        &plan,
+        Vector::new(),
+        local_statuses,
+        builder,
+    );
 }
 
 fn build_releases(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     locals: &LocalContext<flat::LocalId, LocalInfo>,
+    mutation_ctx: &mutation::ContextSnapshot,
     releases: &Vec<(flat::LocalId, ReleasePaths)>,
     builder: &mut LetManyBuilder,
 ) {
@@ -582,6 +638,7 @@ fn build_releases(
             rc::RcOp::Release,
             local_info.new_id,
             local_info.type_,
+            &mutation_ctx.locals[flat_local].statuses,
             &release_paths.release_paths,
             builder,
         );
@@ -597,19 +654,27 @@ fn build_expr_kind<'a>(
     result_type: &anon::Type,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
-    let build_occur = |locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
-                       occur: fate::Local,
-                       builder: &mut LetManyBuilder| {
+    let build_occur_in_context = |locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
+                                  ctx: &mutation::ContextSnapshot,
+                                  occur: fate::Local,
+                                  builder: &mut LetManyBuilder| {
         let local_info = locals.local_binding(occur.1);
         build_rc_ops(
             typedefs,
             rc::RcOp::Retain,
             local_info.new_id,
             local_info.type_,
+            &ctx.locals[&occur.1].statuses,
             &ops.occur_retains[occur.0].retain_paths,
             builder,
         );
         local_info.new_id
+    };
+
+    let build_occur = |locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
+                       occur: fate::Local,
+                       builder: &mut LetManyBuilder| {
+        build_occur_in_context(locals, mutation_ctx, occur, builder)
     };
 
     let array_status = |array_occur: &fate::Local| {
@@ -674,7 +739,7 @@ fn build_expr_kind<'a>(
 
             let rc_cases = cases
                 .iter()
-                .map(|(block_id, cond, body, _final_ctx)| {
+                .map(|(block_id, cond, body, final_ctx)| {
                     let mut case_builder = builder.child();
 
                     let final_local =
@@ -683,6 +748,7 @@ fn build_expr_kind<'a>(
                     build_releases(
                         typedefs,
                         locals,
+                        final_ctx,
                         &ops.branch_release_epilogues[block_id],
                         &mut case_builder,
                     );
@@ -694,7 +760,7 @@ fn build_expr_kind<'a>(
             rc::Expr::Branch(rc_discrim, rc_cases, result_type.clone())
         }
 
-        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
+        fate::ExprKind::LetMany(block_id, bindings, final_ctx, final_local) => {
             let rc_final_local = locals.with_scope(|sub_locals| {
                 for (type_, rhs) in bindings {
                     let new_id = build_expr(typedefs, ops, sub_locals, rhs, type_, builder);
@@ -702,11 +768,13 @@ fn build_expr_kind<'a>(
                     sub_locals.add_local(LocalInfo { type_, new_id });
                 }
 
-                let rc_final_local = build_occur(sub_locals, *final_local, builder);
+                let rc_final_local =
+                    build_occur_in_context(sub_locals, final_ctx, *final_local, builder);
 
                 build_releases(
                     typedefs,
                     sub_locals,
+                    final_ctx,
                     &ops.let_release_epilogues[block_id],
                     builder,
                 );
@@ -746,10 +814,28 @@ fn build_expr_kind<'a>(
             content_type.clone(),
         ),
 
-        fate::ExprKind::UnwrapBoxed(wrapped_id, wrapped_type) => rc::Expr::UnwrapBoxed(
-            build_occur(locals, *wrapped_id, builder),
-            wrapped_type.clone(),
-        ),
+        fate::ExprKind::UnwrapBoxed(wrapped_id, wrapped_type, item_statuses, retain_point) => {
+            let new_expr = rc::Expr::UnwrapBoxed(
+                build_occur(locals, *wrapped_id, builder),
+                wrapped_type.clone(),
+            );
+
+            let item_id = builder.add_binding(wrapped_type.clone(), new_expr);
+
+            build_rc_ops(
+                typedefs,
+                rc::RcOp::Retain,
+                item_id,
+                result_type,
+                item_statuses,
+                &ops.retain_epilogues[retain_point].retain_paths,
+                builder,
+            );
+
+            // Note: Early return!  We circumbent the usual return flow because we want to insert
+            // expressions after the expression whose id we're returning.
+            return item_id;
+        }
 
         fate::ExprKind::WrapCustom(content_type, content_id) => {
             rc::Expr::WrapCustom(*content_type, build_occur(locals, *content_id, builder))
@@ -765,12 +851,31 @@ fn build_expr_kind<'a>(
 
         fate::ExprKind::ArrayOp(op) => {
             let new_op = match op {
-                fate::ArrayOp::Get(item_type, _, array, index) => rc::ArrayOp::Get(
-                    item_type.clone(),
-                    array_status(array),
-                    build_occur(locals, *array, builder),
-                    build_occur(locals, *index, builder),
-                ),
+                fate::ArrayOp::Get(item_type, _, array, index, item_statuses, retain_point) => {
+                    let new_expr = rc::Expr::ArrayOp(rc::ArrayOp::Get(
+                        item_type.clone(),
+                        array_status(array),
+                        build_occur(locals, *array, builder),
+                        build_occur(locals, *index, builder),
+                    ));
+
+                    let item_id = builder.add_binding(item_type.clone(), new_expr);
+
+                    build_rc_ops(
+                        typedefs,
+                        rc::RcOp::Retain,
+                        item_id,
+                        result_type,
+                        item_statuses,
+                        &ops.retain_epilogues[retain_point].retain_paths,
+                        builder,
+                    );
+
+                    // Note: Early return!  We circumbent the usual return flow because we want to insert
+                    // expressions after the expression whose id we're returning.
+                    return item_id;
+                }
+
                 fate::ArrayOp::Extract(item_type, _, array, index) => rc::ArrayOp::Extract(
                     item_type.clone(),
                     array_status(array),
@@ -852,7 +957,13 @@ fn build_expr<'a>(
     result_type: &anon::Type,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
-    build_releases(typedefs, locals, &ops.release_prologues[expr.id], builder);
+    build_releases(
+        typedefs,
+        locals,
+        &expr.prior_context,
+        &ops.release_prologues[expr.id],
+        builder,
+    );
 
     let new_local = build_expr_kind(
         typedefs,
@@ -861,15 +972,6 @@ fn build_expr<'a>(
         &expr.prior_context,
         &expr.kind,
         result_type,
-        builder,
-    );
-
-    build_rc_ops(
-        typedefs,
-        rc::RcOp::Retain,
-        new_local,
-        result_type,
-        &ops.retain_epilogues[expr.id].retain_paths,
         builder,
     );
 
@@ -901,11 +1003,31 @@ fn build_func(
 
     debug_assert_eq!(locals.len(), 1);
 
+    let arg_final_statuses = func_def
+        .mutation_sig
+        .arg_mutation_conds
+        .iter()
+        .map(|(arg_name, mutation_cond)| {
+            (
+                arg_name.0.clone(),
+                mutation::LocalStatus {
+                    mutated_cond: mutation_cond
+                        .clone()
+                        .into_mapped(mutation::MutationCondition::AliasCondition)
+                        .or(Disj::Any(OrdSet::unit(
+                            mutation::MutationCondition::ArgMutated(arg_name.clone()),
+                        ))),
+                },
+            )
+        })
+        .collect();
+
     build_rc_ops(
         typedefs,
         rc::RcOp::Release,
         rc::ARG_LOCAL,
         &func_def.arg_type,
+        &arg_final_statuses,
         &ops.arg_release_epilogue.release_paths,
         &mut builder,
     );

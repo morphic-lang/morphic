@@ -619,6 +619,7 @@ pub fn specialize_aliases(program: fate::Program) -> spec::Program {
                     body: func_def.body,
                     occur_fates: func_def.occur_fates,
                     expr_annots: func_def.expr_annots,
+                    num_retain_points: func_def.num_retain_points,
                     let_block_end_events: func_def.let_block_end_events,
                     branch_block_end_events: func_def.branch_block_end_events,
                     versions: IdVec::try_from_contiguous(func_versions.into_iter()).expect(

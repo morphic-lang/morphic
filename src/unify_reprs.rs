@@ -681,7 +681,7 @@ fn instantiate_expr(
 
         // TODO: Consider removing inner_type from `rc::Expr::RcOp`, because we don't actually need
         // to use it here.
-        rc::Expr::RcOp(op, container, _inner_type, local) => {
+        rc::Expr::RcOp(op, container, _inner_type, _local_statuses, local) => {
             let (unif_container, inner_type_inst) = match (container, locals.local_binding(*local))
             {
                 (rc::ContainerType::Array, unif::Type::Array(rep_var, inner_type_inst)) => (

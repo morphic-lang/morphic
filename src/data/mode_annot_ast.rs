@@ -132,7 +132,7 @@ pub struct ModeAnnots {
 
     /// Retain epilogues are used to retain items obtained from 'get' operations on containers (e.g.
     /// `UnwrapBoxed`).
-    pub retain_epilogues: IdVec<fate::ExprId, RetainModes>,
+    pub retain_epilogues: IdVec<fate::RetainPointId, RetainModes>,
 }
 
 #[derive(Clone, Debug)]

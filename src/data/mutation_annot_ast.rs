@@ -38,10 +38,11 @@ pub struct ContextSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
     Get(
-        anon::Type,          // Item type
-        alias::LocalAliases, // Array aliases
-        flat::LocalId,       // Array
-        flat::LocalId,       // Index
+        anon::Type,                            // Item type
+        alias::LocalAliases,                   // Array aliases
+        flat::LocalId,                         // Array
+        flat::LocalId,                         // Index
+        OrdMap<alias::FieldPath, LocalStatus>, // Statuses of returned item
     ), // Returns item
     Extract(
         anon::Type,          // Item type
@@ -137,7 +138,8 @@ pub enum ExprKind {
     ),
     UnwrapBoxed(
         flat::LocalId,
-        anon::Type, // Inner type
+        anon::Type,                            // Inner type
+        OrdMap<alias::FieldPath, LocalStatus>, // Statuses of returned item
     ),
     WrapCustom(first_ord::CustomTypeId, flat::LocalId),
     UnwrapCustom(first_ord::CustomTypeId, flat::LocalId),

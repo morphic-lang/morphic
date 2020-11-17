@@ -549,7 +549,7 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *content);
         }
 
-        fate::ExprKind::UnwrapBoxed(wrapped, _item_type) => {
+        fate::ExprKind::UnwrapBoxed(wrapped, _item_type, _, _) => {
             mark(locals, occur_kinds, &mut expr_uses, *wrapped);
         }
 
@@ -565,7 +565,7 @@ fn mark_expr_occurs<'a>(
             mark(locals, occur_kinds, &mut expr_uses, *arg);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_item_type, _aliases, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_item_type, _aliases, array, index, _, _)) => {
             mark(locals, occur_kinds, &mut expr_uses, *array);
             mark(locals, occur_kinds, &mut expr_uses, *index);
         }
@@ -973,7 +973,7 @@ fn repair_expr_drops<'a>(
             add_move(occur_kinds, &mut expr_moves, *content);
         }
 
-        fate::ExprKind::UnwrapBoxed(wrapped, _item_type) => {
+        fate::ExprKind::UnwrapBoxed(wrapped, _item_type, _, _) => {
             add_move(occur_kinds, &mut expr_moves, *wrapped);
         }
 
@@ -989,7 +989,7 @@ fn repair_expr_drops<'a>(
             add_move(occur_kinds, &mut expr_moves, *arg);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, array, index, _, _)) => {
             add_move(occur_kinds, &mut expr_moves, *array);
             add_move(occur_kinds, &mut expr_moves, *index);
         }
@@ -1241,7 +1241,7 @@ fn collect_expr_moves(
             collect_occur_events(var_moves, *content);
         }
 
-        fate::ExprKind::UnwrapBoxed(wrapped, _item_type) => {
+        fate::ExprKind::UnwrapBoxed(wrapped, _item_type, _, _) => {
             collect_occur_events(var_moves, *wrapped);
         }
 
@@ -1257,7 +1257,7 @@ fn collect_expr_moves(
             collect_occur_events(var_moves, *arg);
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, array, index, _, _)) => {
             collect_occur_events(var_moves, *array);
             collect_occur_events(var_moves, *index);
         }
@@ -1427,7 +1427,7 @@ struct SolverModeAnnots {
     branch_drop_epilogues:
         IdVec<fate::BranchBlockId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
     drop_prologues: IdVec<fate::ExprId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
-    retain_epilogues: IdVec<fate::ExprId, Option<SolverRetainModes>>,
+    retain_epilogues: IdVec<fate::RetainPointId, Option<SolverRetainModes>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1662,10 +1662,6 @@ fn annot_expr<'a>(
         }
     };
 
-    let mut retain_epilogue = SolverRetainModes {
-        retained_paths: BTreeMap::new(),
-    };
-
     let result_modes = match &expr.kind {
         fate::ExprKind::Local(local) => annot_occur(constraints, locals, solver_annots, *local),
 
@@ -1872,7 +1868,7 @@ fn annot_expr<'a>(
             result_modes
         }
 
-        fate::ExprKind::UnwrapBoxed(wrapped, item_type) => {
+        fate::ExprKind::UnwrapBoxed(wrapped, item_type, _, retain_point) => {
             let mut result_modes = SolverValModes::new();
 
             let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
@@ -1884,12 +1880,18 @@ fn annot_expr<'a>(
                 );
             }
 
+            let mut retain_epilogue = SolverRetainModes {
+                retained_paths: BTreeMap::new(),
+            };
             for content_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
                 let content_path = stack_path::to_field_path(&content_stack_path);
                 retain_epilogue
                     .retained_paths
                     .insert(content_stack_path, result_modes.path_modes[&content_path]);
             }
+            debug_assert!(solver_annots.retain_epilogues[retain_point].is_none());
+            solver_annots.retain_epilogues[retain_point] = Some(retain_epilogue);
+
             result_modes
         }
 
@@ -1936,7 +1938,14 @@ fn annot_expr<'a>(
             SolverValModes::new()
         }
 
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(item_type, _, array, index)) => {
+        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(
+            item_type,
+            _,
+            array,
+            index,
+            _,
+            retain_point,
+        )) => {
             let mut result_modes = SolverValModes::new();
 
             let array_modes = annot_occur(constraints, locals, solver_annots, *array);
@@ -1951,6 +1960,10 @@ fn annot_expr<'a>(
                 );
             }
 
+            let mut retain_epilogue = SolverRetainModes {
+                retained_paths: BTreeMap::new(),
+            };
+
             for item_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
                 let item_mode =
                     array_modes.path_modes[&stack_path::to_field_path(&item_stack_path)
@@ -1960,6 +1973,9 @@ fn annot_expr<'a>(
                     .retained_paths
                     .insert(item_stack_path, item_mode);
             }
+
+            debug_assert!(solver_annots.retain_epilogues[retain_point].is_none());
+            solver_annots.retain_epilogues[retain_point] = Some(retain_epilogue);
 
             result_modes
         }
@@ -2135,9 +2151,6 @@ fn annot_expr<'a>(
         | fate::ExprKind::FloatLit(_) => SolverValModes::new(),
     };
 
-    debug_assert!(solver_annots.retain_epilogues[expr.id].is_none());
-    solver_annots.retain_epilogues[expr.id] = Some(retain_epilogue);
-
     result_modes
 }
 
@@ -2253,7 +2266,7 @@ fn annot_scc(
         let_drop_epilogues: IdVec<fate::LetBlockId, BTreeMap<flat::LocalId, SolverDropModes>>,
         branch_drop_epilogues: IdVec<fate::BranchBlockId, BTreeMap<flat::LocalId, SolverDropModes>>,
         drop_prologues: IdVec<fate::ExprId, BTreeMap<flat::LocalId, SolverDropModes>>,
-        retain_epilogues: IdVec<fate::ExprId, SolverRetainModes>,
+        retain_epilogues: IdVec<fate::RetainPointId, SolverRetainModes>,
         arg_drop_epilogue: SolverDropModes,
     }
 
@@ -2285,7 +2298,7 @@ fn annot_scc(
                 drop_prologues: marked_drops.drop_prologues.map(|_, _| None),
                 // `retain_epilogues` is indexed by `ExprId`, so we can obtain an empty `IdVec` of
                 // the right shape from `drop_prologues`.
-                retain_epilogues: marked_drops.drop_prologues.map(|_, _| None),
+                retain_epilogues: IdVec::from_items(vec![None; func_def.num_retain_points]),
             };
 
             let ret_val_modes = annot_expr(

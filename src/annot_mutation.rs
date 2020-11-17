@@ -484,7 +484,11 @@ fn annot_expr(
             }
 
             (
-                annot::ExprKind::UnwrapBoxed(*boxed, content_type.clone()),
+                annot::ExprKind::UnwrapBoxed(
+                    *boxed,
+                    content_type.clone(),
+                    content_statuses.clone(),
+                ),
                 ExprInfo {
                     mutations: Vec::new(),
                     val_statuses: content_statuses,
@@ -569,6 +573,7 @@ fn annot_expr(
                     array_aliases.clone(),
                     *array,
                     *index,
+                    item_statuses.clone(),
                 )),
                 ExprInfo {
                     mutations: Vec::new(),

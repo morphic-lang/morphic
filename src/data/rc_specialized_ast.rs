@@ -135,7 +135,8 @@ pub enum Expr {
     RcOp(
         RcOp,
         ContainerType,
-        anon::Type, // Inner type inside container
+        anon::Type,                                      // Inner type inside container
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Argument statuses
         LocalId,
     ),
 

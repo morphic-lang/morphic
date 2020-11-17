@@ -52,6 +52,7 @@ pub struct FuncDef {
     pub body: fate::Expr,
     pub occur_fates: IdVec<fate::OccurId, fate::Fate>,
     pub expr_annots: IdVec<fate::ExprId, fate::ExprAnnot>,
+    pub num_retain_points: usize,
     pub let_block_end_events: IdVec<fate::LetBlockId, event::Horizon>,
     pub branch_block_end_events: IdVec<fate::BranchBlockId, event::Horizon>,
     pub versions: IdVec<FuncVersionId, FuncVersion>,

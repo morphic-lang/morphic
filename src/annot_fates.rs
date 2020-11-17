@@ -130,6 +130,7 @@ fn annot_expr(
     occurs: &mut IdVec<fate::OccurId, fate::Fate>,
     expr_annots: &mut IdVec<fate::ExprId, fate::ExprAnnot>,
     calls: &mut IdGen<fate::CallId>,
+    retain_points: &mut IdGen<fate::RetainPointId>,
     let_block_end_events: &mut IdVec<fate::LetBlockId, event::Horizon>,
     branch_block_end_events: &mut IdVec<fate::BranchBlockId, event::Horizon>,
     event_set: &mut event::EventSet,
@@ -205,6 +206,7 @@ fn annot_expr(
                         occurs,
                         expr_annots,
                         calls,
+                        retain_points,
                         let_block_end_events,
                         branch_block_end_events,
                         event_set,
@@ -289,6 +291,7 @@ fn annot_expr(
                         occurs,
                         expr_annots,
                         calls,
+                        retain_points,
                         let_block_end_events,
                         branch_block_end_events,
                         event_set,
@@ -411,7 +414,7 @@ fn annot_expr(
             )
         }
 
-        mutation::ExprKind::UnwrapBoxed(wrapped, item_type) => {
+        mutation::ExprKind::UnwrapBoxed(wrapped, item_type, item_statuses) => {
             let mut wrapped_fate = fate::Fate::new();
 
             for (path, _) in get_refs_in(&orig.custom_types, item_type) {
@@ -428,6 +431,8 @@ fn annot_expr(
             fate::ExprKind::UnwrapBoxed(
                 add_occurence(occurs, &mut uses, *wrapped, wrapped_fate),
                 item_type.clone(),
+                item_statuses.clone(),
+                retain_points.fresh(),
             )
         }
 
@@ -485,6 +490,7 @@ fn annot_expr(
             array_aliases,
             array,
             index,
+            item_statuses,
         )) => {
             let mut array_fate = fate::Fate::new();
 
@@ -504,6 +510,8 @@ fn annot_expr(
                 array_aliases.clone(),
                 add_occurence(occurs, &mut uses, *array, array_fate),
                 add_occurence(occurs, &mut uses, *index, fate::Fate::new()),
+                item_statuses.clone(),
+                retain_points.fresh(),
             ))
         }
 
@@ -714,6 +722,7 @@ fn annot_func(
     let mut occurs = IdVec::new();
     let mut expr_annots = IdVec::new();
     let mut calls = IdGen::new();
+    let mut retain_points = IdGen::new();
     let mut let_block_end_events = IdVec::new();
     let mut branch_block_end_events = IdVec::new();
     let (mut event_set, root_event_block) = event::EventSet::new();
@@ -727,6 +736,7 @@ fn annot_func(
         &mut occurs,
         &mut expr_annots,
         &mut calls,
+        &mut retain_points,
         &mut let_block_end_events,
         &mut branch_block_end_events,
         &mut event_set,
@@ -769,6 +779,7 @@ fn annot_func(
         occur_fates: occurs,
         expr_annots,
         num_calls: calls.count(),
+        num_retain_points: retain_points.count(),
         let_block_end_events,
         branch_block_end_events,
         profile_point: func_def.profile_point,

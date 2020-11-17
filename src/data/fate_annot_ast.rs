@@ -22,16 +22,20 @@ id_type!(pub LetBlockId);
 
 id_type!(pub BranchBlockId);
 
+id_type!(pub RetainPointId);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Local(pub OccurId, pub flat::LocalId);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
     Get(
-        anon::Type,          // Item type
-        alias::LocalAliases, // Array aliases
-        Local,               // Array
-        Local,               // Index
+        anon::Type,                                      // Item type
+        alias::LocalAliases,                             // Array aliases
+        Local,                                           // Array
+        Local,                                           // Index
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Statuses of returned item
+        RetainPointId,
     ), // Returns item
     Extract(
         anon::Type,          // Item type
@@ -132,7 +136,9 @@ pub enum ExprKind {
     ),
     UnwrapBoxed(
         Local,
-        anon::Type, // Inner type
+        anon::Type,                                      // Inner type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Statuses of returned item
+        RetainPointId,
     ),
     WrapCustom(first_ord::CustomTypeId, Local),
     UnwrapCustom(first_ord::CustomTypeId, Local),
@@ -235,6 +241,7 @@ pub struct FuncDef {
     pub occur_fates: IdVec<OccurId, Fate>,
     pub expr_annots: IdVec<ExprId, ExprAnnot>,
     pub num_calls: usize,
+    pub num_retain_points: usize,
     pub let_block_end_events: IdVec<LetBlockId, event::Horizon>,
     pub branch_block_end_events: IdVec<BranchBlockId, event::Horizon>,
     pub profile_point: Option<prof::ProfilePointId>,
