@@ -148,12 +148,23 @@ fn array_insertion_statuses(
 fn propagated_mutations(
     array: flat::LocalId,
     aliases: &alias::LocalAliases,
-) -> Vec<(flat::LocalId, alias::FieldPath, Disj<alias::AliasCondition>)> {
+    orig_ctx: &OrdMap<flat::LocalId, annot::LocalInfo>,
+) -> (
+    Vec<(flat::LocalId, alias::FieldPath, Disj<alias::AliasCondition>)>,
+    OrdMap<flat::LocalId, annot::LocalInfo>,
+) {
     let mut mutations = vec![(array, Vector::new(), Disj::True)];
+    let mut new_ctx = orig_ctx.clone();
     for ((other, other_path), alias_cond) in &aliases.aliases {
         mutations.push((*other, other_path.clone(), alias_cond.clone()));
+
+        new_ctx[&other].statuses[&other_path].mutated_cond.or_mut(
+            alias_cond
+                .clone()
+                .into_mapped(annot::MutationCondition::AliasCondition),
+        );
     }
-    mutations
+    (mutations, new_ctx)
 }
 
 fn annot_expr(
@@ -582,75 +593,99 @@ fn annot_expr(
             )
         }
 
-        alias::Expr::ArrayOp(alias::ArrayOp::Extract(item_type, array_aliases, array, index)) => (
-            annot::ExprKind::ArrayOp(annot::ArrayOp::Extract(
-                item_type.clone(),
-                array_aliases.clone(),
-                *array,
-                *index,
-            )),
-            ExprInfo {
-                mutations: propagated_mutations(*array, array_aliases),
-                val_statuses: array_extraction_statuses(
-                    orig,
-                    ctx,
-                    item_type,
-                    *array,
-                    alias::Field::Field(1), // hole array is the second return value
-                    alias::Field::Field(0), // item is the first return value
-                ),
-            },
-        ),
+        alias::Expr::ArrayOp(alias::ArrayOp::Extract(item_type, array_aliases, array, index)) => {
+            let (mutations, new_ctx) = propagated_mutations(*array, array_aliases, ctx);
 
-        alias::Expr::ArrayOp(alias::ArrayOp::Pop(item_type, array_aliases, array)) => (
-            annot::ExprKind::ArrayOp(annot::ArrayOp::Pop(
-                item_type.clone(),
-                array_aliases.clone(),
-                *array,
-            )),
-            ExprInfo {
-                mutations: propagated_mutations(*array, array_aliases),
-                val_statuses: array_extraction_statuses(
-                    orig,
-                    ctx,
-                    item_type,
+            (
+                annot::ExprKind::ArrayOp(annot::ArrayOp::Extract(
+                    item_type.clone(),
+                    array_aliases.clone(),
                     *array,
-                    alias::Field::Field(0), // new array is the first return value
-                    alias::Field::Field(1), // item is the second return value
-                ),
-            },
-        ),
+                    *index,
+                )),
+                ExprInfo {
+                    mutations,
+                    val_statuses: array_extraction_statuses(
+                        orig,
+                        &new_ctx,
+                        item_type,
+                        *array,
+                        alias::Field::Field(1), // hole array is the second return value
+                        alias::Field::Field(0), // item is the first return value
+                    ),
+                },
+            )
+        }
+
+        alias::Expr::ArrayOp(alias::ArrayOp::Pop(item_type, array_aliases, array)) => {
+            let (mutations, new_ctx) = propagated_mutations(*array, array_aliases, ctx);
+
+            (
+                annot::ExprKind::ArrayOp(annot::ArrayOp::Pop(
+                    item_type.clone(),
+                    array_aliases.clone(),
+                    *array,
+                )),
+                ExprInfo {
+                    mutations,
+                    val_statuses: array_extraction_statuses(
+                        orig,
+                        &new_ctx,
+                        item_type,
+                        *array,
+                        alias::Field::Field(0), // new array is the first return value
+                        alias::Field::Field(1), // item is the second return value
+                    ),
+                },
+            )
+        }
 
         alias::Expr::ArrayOp(alias::ArrayOp::Replace(
             item_type,
             array_aliases,
             hole_array,
             item,
-        )) => (
-            annot::ExprKind::ArrayOp(annot::ArrayOp::Replace(
-                item_type.clone(),
-                array_aliases.clone(),
-                *hole_array,
-                *item,
-            )),
-            ExprInfo {
-                mutations: propagated_mutations(*hole_array, array_aliases),
-                val_statuses: array_insertion_statuses(orig, ctx, item_type, *hole_array, *item),
-            },
-        ),
+        )) => {
+            let (mutations, new_ctx) = propagated_mutations(*hole_array, array_aliases, ctx);
 
-        alias::Expr::ArrayOp(alias::ArrayOp::Push(item_type, array_aliases, array, item)) => (
-            annot::ExprKind::ArrayOp(annot::ArrayOp::Push(
-                item_type.clone(),
-                array_aliases.clone(),
-                *array,
-                *item,
-            )),
-            ExprInfo {
-                mutations: propagated_mutations(*array, array_aliases),
-                val_statuses: array_insertion_statuses(orig, ctx, item_type, *array, *item),
-            },
-        ),
+            (
+                annot::ExprKind::ArrayOp(annot::ArrayOp::Replace(
+                    item_type.clone(),
+                    array_aliases.clone(),
+                    *hole_array,
+                    *item,
+                )),
+                ExprInfo {
+                    mutations,
+                    val_statuses: array_insertion_statuses(
+                        orig,
+                        &new_ctx,
+                        item_type,
+                        *hole_array,
+                        *item,
+                    ),
+                },
+            )
+        }
+
+        alias::Expr::ArrayOp(alias::ArrayOp::Push(item_type, array_aliases, array, item)) => {
+            let (mutations, new_ctx) = propagated_mutations(*array, array_aliases, ctx);
+
+            (
+                annot::ExprKind::ArrayOp(annot::ArrayOp::Push(
+                    item_type.clone(),
+                    array_aliases.clone(),
+                    *array,
+                    *item,
+                )),
+                ExprInfo {
+                    mutations,
+                    val_statuses: array_insertion_statuses(
+                        orig, &new_ctx, item_type, *array, *item,
+                    ),
+                },
+            )
+        }
 
         alias::Expr::ArrayOp(alias::ArrayOp::Len(item_type, array_aliases, array)) => (
             annot::ExprKind::ArrayOp(annot::ArrayOp::Len(
@@ -667,7 +702,9 @@ fn annot_expr(
             array,
             capacity,
         )) => {
-            let array_info = &ctx[array];
+            let (mutations, new_ctx) = propagated_mutations(*array, array_aliases, ctx);
+
+            let array_info = &new_ctx[array];
 
             let mut new_array_statuses = OrdMap::new();
             for (item_path, _) in get_names_in(&orig.custom_types, item_type) {
@@ -693,7 +730,7 @@ fn annot_expr(
                     *capacity,
                 )),
                 ExprInfo {
-                    mutations: propagated_mutations(*array, array_aliases),
+                    mutations,
                     val_statuses: new_array_statuses,
                 },
             )

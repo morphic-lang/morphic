@@ -104,15 +104,16 @@ pub enum Expr<Call, Rep> {
     RcOp(
         rc::RcOp,
         ContainerType<Rep>,
-        Type<Rep>, // Inner type inside container
+        Type<Rep>,                                       // Inner type inside container
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Argument statuses
         rc::LocalId,
     ),
 
     Intrinsic(Intrinsic, rc::LocalId),
     ArrayOp(
-        Rep,                   // Array representation
-        Type<Rep>,             // Item type
-        mutation::LocalStatus, // Array status
+        Rep,                                             // Array representation
+        Type<Rep>,                                       // Item type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Array statuses
         ArrayOp,
     ),
     IoOp(Rep, rc::IoOp),

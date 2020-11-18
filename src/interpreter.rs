@@ -292,6 +292,8 @@ impl Heap<'_> {
 fn retain(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
     let kind = &mut heap[heap_id];
 
+    kind.assert_live(stacktrace.add_frame("retain assert live".into()));
+
     match kind {
         Value::Bool(_) | Value::Num(_) => {}
         Value::Tuple(contents) => {
@@ -319,6 +321,8 @@ fn retain(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
 
 fn release(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
     let kind = &mut heap[heap_id];
+
+    kind.assert_live(stacktrace.add_frame("release assert live".into()));
 
     match kind {
         Value::Bool(_) | Value::Num(_) => {}

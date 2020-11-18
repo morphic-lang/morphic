@@ -1,3 +1,7 @@
+use im_rc::OrdMap;
+
+use crate::data::alias_annot_ast as alias;
+use crate::data::first_order_ast as first_ord;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_constrained_ast as constrain;
@@ -40,7 +44,152 @@ fn constrain_var(
     }
 }
 
+fn constrain_path(
+    typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
+    params: &mut IdVec<unif::RepParamId, constrain::ParamConstraints>,
+    internal: &mut IdVec<unif::InternalRepVarId, constrain::RepChoice>,
+    type_: &unif::Type<unif::RepSolution>,
+    path: &alias::FieldPath,
+    fallback_cond: Disj<mutation::MutationCondition>,
+) {
+    #[derive(Clone, Debug)]
+    enum State<'a> {
+        Outer {
+            curr_type: &'a unif::Type<unif::RepSolution>,
+        },
+        Inner {
+            curr_type: &'a unif::Type<unif::RepParamId>,
+            param_mapping: IdVec<unif::RepParamId, unif::RepSolution>,
+        },
+    }
+
+    let mut state = State::Outer { curr_type: type_ };
+    for field in path {
+        state = match state {
+            State::Outer { curr_type } => match (field, curr_type) {
+                (alias::Field::Field(idx), unif::Type::Tuple(item_types)) => State::Outer {
+                    curr_type: &item_types[*idx],
+                },
+                (alias::Field::Variant(variant_id), unif::Type::Variants(variant_types)) => {
+                    State::Outer {
+                        curr_type: &variant_types[variant_id],
+                    }
+                }
+                (alias::Field::Boxed, unif::Type::Boxed(content_type)) => State::Outer {
+                    curr_type: content_type,
+                },
+                (
+                    alias::Field::Custom(custom_id),
+                    unif::Type::Custom(custom_id_2, custom_params),
+                ) => {
+                    debug_assert_eq!(custom_id, custom_id_2);
+                    debug_assert_eq!(custom_params.len(), typedefs[custom_id].num_params);
+                    State::Inner {
+                        curr_type: &typedefs[custom_id].content,
+                        param_mapping: custom_params.clone(),
+                    }
+                }
+                (alias::Field::ArrayMembers, unif::Type::Array(_, item_type))
+                | (alias::Field::ArrayMembers, unif::Type::HoleArray(_, item_type)) => {
+                    State::Outer {
+                        curr_type: item_type,
+                    }
+                }
+                // We explicitly enumerate these cases to trigger an exhaustivity error if we ever
+                // add a new field variant.
+                (alias::Field::Field(_), _)
+                | (alias::Field::Variant(_), _)
+                | (alias::Field::Boxed, _)
+                | (alias::Field::Custom(_), _)
+                | (alias::Field::ArrayMembers, _) => unreachable!(),
+            },
+            State::Inner {
+                curr_type,
+                param_mapping,
+            } => match (field, curr_type) {
+                (alias::Field::Field(idx), unif::Type::Tuple(item_types)) => State::Inner {
+                    curr_type: &item_types[*idx],
+                    param_mapping,
+                },
+                (alias::Field::Variant(variant_id), unif::Type::Variants(variant_types)) => {
+                    State::Inner {
+                        curr_type: &variant_types[variant_id],
+                        param_mapping,
+                    }
+                }
+                (alias::Field::Boxed, unif::Type::Boxed(content_type)) => State::Inner {
+                    curr_type: content_type,
+                    param_mapping,
+                },
+                (
+                    alias::Field::Custom(custom_id),
+                    unif::Type::Custom(custom_id_2, custom_params),
+                ) => {
+                    debug_assert_eq!(custom_id, custom_id_2);
+                    debug_assert_eq!(custom_params.len(), typedefs[custom_id].num_params);
+                    State::Inner {
+                        curr_type: &typedefs[custom_id].content,
+                        param_mapping: custom_params.map(|_, param| param_mapping[param]),
+                    }
+                }
+                (alias::Field::ArrayMembers, unif::Type::Array(_, item_type))
+                | (alias::Field::ArrayMembers, unif::Type::HoleArray(_, item_type)) => {
+                    State::Inner {
+                        curr_type: item_type,
+                        param_mapping,
+                    }
+                }
+                // We explicitly enumerate these cases to trigger an exhaustivity error if we ever
+                // add a new field variant.
+                (alias::Field::Field(_), _)
+                | (alias::Field::Variant(_), _)
+                | (alias::Field::Boxed, _)
+                | (alias::Field::Custom(_), _)
+                | (alias::Field::ArrayMembers, _) => unreachable!(),
+            },
+        };
+    }
+
+    let rep_var = match state {
+        State::Outer { curr_type } => match curr_type {
+            unif::Type::Array(rep_var, _) | unif::Type::HoleArray(rep_var, _) => *rep_var,
+            _ => unreachable!(),
+        },
+        State::Inner {
+            curr_type,
+            param_mapping,
+        } => match curr_type {
+            unif::Type::Array(rep_param, _) | unif::Type::HoleArray(rep_param, _) => {
+                param_mapping[rep_param]
+            }
+            _ => unreachable!(),
+        },
+    };
+
+    constrain_var(params, internal, rep_var, fallback_cond);
+}
+
+fn constrain_deep_access(
+    typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
+    params: &mut IdVec<unif::RepParamId, constrain::ParamConstraints>,
+    internal: &mut IdVec<unif::InternalRepVarId, constrain::RepChoice>,
+    type_: &unif::Type<unif::RepSolution>,
+    statuses: &OrdMap<alias::FieldPath, mutation::LocalStatus>,
+) {
+    for (path, status) in statuses {
+        constrain_path(
+            typedefs,
+            params,
+            internal,
+            type_,
+            path,
+            status.mutated_cond.clone(),
+        );
+    }
+}
+
 fn constrain_expr(
+    typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
     sigs: &SignatureAssumptions<rc::CustomFuncId, constrain::FuncRepConstraints>,
     params: &mut IdVec<unif::RepParamId, constrain::ParamConstraints>,
     internal: &mut IdVec<unif::InternalRepVarId, constrain::RepChoice>,
@@ -73,18 +222,40 @@ fn constrain_expr(
 
         unif::Expr::Branch(_discrim, cases, _result_type) => {
             for (_cond, body) in cases {
-                constrain_expr(sigs, params, internal, body);
+                constrain_expr(typedefs, sigs, params, internal, body);
             }
         }
 
         unif::Expr::LetMany(bindings, _final_local) => {
             for (_type, binding) in bindings {
-                constrain_expr(sigs, params, internal, binding);
+                constrain_expr(typedefs, sigs, params, internal, binding);
             }
         }
 
-        unif::Expr::ArrayOp(rep_var, _, status, _)
-        | unif::Expr::IoOp(rep_var, rc::IoOp::Output(status, _))
+        unif::Expr::ArrayOp(rep_var, item_type, statuses, array_op) => {
+            // Note: We don't strictly speaking *need* to pass a `HoleArray` type for the `Replace`
+            // case, because the resulting constraint generation logic will be identical either way,
+            // but there is a sense in which that would only work "by coincidence."  Using the
+            // correct type is more robust to refactorings.
+            let array_type = match array_op {
+                unif::ArrayOp::Get(_, _)
+                | unif::ArrayOp::Extract(_, _)
+                | unif::ArrayOp::Len(_)
+                | unif::ArrayOp::Push(_, _)
+                | unif::ArrayOp::Pop(_)
+                | unif::ArrayOp::Reserve(_, _) => {
+                    unif::Type::Array(*rep_var, Box::new(item_type.clone()))
+                }
+
+                unif::ArrayOp::Replace(_, _) => {
+                    unif::Type::HoleArray(*rep_var, Box::new(item_type.clone()))
+                }
+            };
+
+            constrain_deep_access(typedefs, params, internal, &array_type, statuses);
+        }
+
+        unif::Expr::IoOp(rep_var, rc::IoOp::Output(status, _))
         | unif::Expr::Panic(_, rep_var, status, _) => {
             constrain_var(params, internal, *rep_var, status.mutated_cond.clone())
         }
@@ -107,8 +278,19 @@ fn constrain_expr(
         | unif::Expr::IntLit(_)
         | unif::Expr::FloatLit(_) => {}
 
-        // TODO: We will need to add a constraint here to support single-boxed arrays
-        unif::Expr::RcOp(_, _, _, _) => {}
+        unif::Expr::RcOp(_rc_op, container, item_type, local_statuses, _local) => {
+            let container_type = match container {
+                unif::ContainerType::Boxed => unif::Type::Boxed(Box::new(item_type.clone())),
+                unif::ContainerType::Array(rep_var) => {
+                    unif::Type::Array(*rep_var, Box::new(item_type.clone()))
+                }
+                unif::ContainerType::HoleArray(rep_var) => {
+                    unif::Type::HoleArray(*rep_var, Box::new(item_type.clone()))
+                }
+            };
+
+            constrain_deep_access(typedefs, params, internal, &container_type, local_statuses);
+        }
 
         // NOTE [intrinsics]: If we ever add array intrinsics in the future, this will need to be
         // modified.
@@ -117,6 +299,7 @@ fn constrain_expr(
 }
 
 fn constrain_func(
+    typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
     sigs: &SignatureAssumptions<rc::CustomFuncId, constrain::FuncRepConstraints>,
     func_def: &unif::FuncDef,
 ) -> constrain::FuncRepConstraints {
@@ -133,6 +316,7 @@ fn constrain_func(
     ]);
 
     constrain_expr(
+        typedefs,
         sigs,
         &mut param_constraints,
         &mut internal_vars,
@@ -148,7 +332,7 @@ fn constrain_func(
 pub fn constrain_reprs(program: unif::Program) -> constrain::Program {
     let rep_constraints = annot_all(
         program.funcs.len(),
-        |sigs, func| constrain_func(sigs, &program.funcs[func]),
+        |sigs, func| constrain_func(&program.custom_types, sigs, &program.funcs[func]),
         &program.sccs,
     );
 

@@ -681,7 +681,7 @@ fn instantiate_expr(
 
         // TODO: Consider removing inner_type from `rc::Expr::RcOp`, because we don't actually need
         // to use it here.
-        rc::Expr::RcOp(op, container, _inner_type, _local_statuses, local) => {
+        rc::Expr::RcOp(op, container, _inner_type, local_statuses, local) => {
             let (unif_container, inner_type_inst) = match (container, locals.local_binding(*local))
             {
                 (rc::ContainerType::Array, unif::Type::Array(rep_var, inner_type_inst)) => (
@@ -703,7 +703,13 @@ fn instantiate_expr(
             };
 
             (
-                unif::Expr::RcOp(*op, unif_container, inner_type_inst, *local),
+                unif::Expr::RcOp(
+                    *op,
+                    unif_container,
+                    inner_type_inst,
+                    local_statuses.clone(),
+                    *local,
+                ),
                 unif::Type::Tuple(vec![]),
             )
         }
@@ -1268,7 +1274,7 @@ fn extract_expr(
             unif::Expr::UnwrapCustom(custom, rep_args_extracted, wrapped)
         }
 
-        unif::Expr::RcOp(op, container, inner_type, local) => {
+        unif::Expr::RcOp(op, container, inner_type, local_statuses, local) => {
             let container_extracted = match container {
                 unif::ContainerType::Array(rep_var) => {
                     unif::ContainerType::Array(this_solutions[to_unified[rep_var]])
@@ -1283,6 +1289,7 @@ fn extract_expr(
                 op,
                 container_extracted,
                 extract_type(to_unified, this_solutions, inner_type),
+                local_statuses,
                 local,
             )
         }

@@ -677,9 +677,8 @@ fn build_expr_kind<'a>(
         build_occur_in_context(locals, mutation_ctx, occur, builder)
     };
 
-    let array_status = |array_occur: &fate::Local| {
-        mutation_ctx.locals[&array_occur.1].statuses[&Vector::new()].clone()
-    };
+    let array_statuses =
+        |array_occur: &fate::Local| mutation_ctx.locals[&array_occur.1].statuses.clone();
 
     let new_expr = match kind {
         fate::ExprKind::Local(local) => {
@@ -854,7 +853,7 @@ fn build_expr_kind<'a>(
                 fate::ArrayOp::Get(item_type, _, array, index, item_statuses, retain_point) => {
                     let new_expr = rc::Expr::ArrayOp(rc::ArrayOp::Get(
                         item_type.clone(),
-                        array_status(array),
+                        array_statuses(array),
                         build_occur(locals, *array, builder),
                         build_occur(locals, *index, builder),
                     ));
@@ -878,35 +877,35 @@ fn build_expr_kind<'a>(
 
                 fate::ArrayOp::Extract(item_type, _, array, index) => rc::ArrayOp::Extract(
                     item_type.clone(),
-                    array_status(array),
+                    array_statuses(array),
                     build_occur(locals, *array, builder),
                     build_occur(locals, *index, builder),
                 ),
                 fate::ArrayOp::Len(item_type, _, array) => rc::ArrayOp::Len(
                     item_type.clone(),
-                    array_status(array),
+                    array_statuses(array),
                     build_occur(locals, *array, builder),
                 ),
                 fate::ArrayOp::Push(item_type, _, array, item) => rc::ArrayOp::Push(
                     item_type.clone(),
-                    array_status(array),
+                    array_statuses(array),
                     build_occur(locals, *array, builder),
                     build_occur(locals, *item, builder),
                 ),
                 fate::ArrayOp::Pop(item_type, _, array) => rc::ArrayOp::Pop(
                     item_type.clone(),
-                    array_status(array),
+                    array_statuses(array),
                     build_occur(locals, *array, builder),
                 ),
                 fate::ArrayOp::Replace(item_type, _, hole_array, item) => rc::ArrayOp::Replace(
                     item_type.clone(),
-                    array_status(hole_array),
+                    array_statuses(hole_array),
                     build_occur(locals, *hole_array, builder),
                     build_occur(locals, *item, builder),
                 ),
                 fate::ArrayOp::Reserve(item_type, _, array, capacity) => rc::ArrayOp::Reserve(
                     item_type.clone(),
-                    array_status(array),
+                    array_statuses(array),
                     build_occur(locals, *array, builder),
                     build_occur(locals, *capacity, builder),
                 ),
@@ -918,7 +917,7 @@ fn build_expr_kind<'a>(
             let new_io_op = match io_op {
                 fate::IoOp::Input => rc::IoOp::Input,
                 fate::IoOp::Output(_aliases, byte_array) => rc::IoOp::Output(
-                    array_status(byte_array),
+                    array_statuses(byte_array)[&Vector::new()].clone(),
                     build_occur(locals, *byte_array, builder),
                 ),
             };
@@ -928,7 +927,7 @@ fn build_expr_kind<'a>(
 
         fate::ExprKind::Panic(result_type, message) => rc::Expr::Panic(
             result_type.clone(),
-            array_status(message),
+            array_statuses(message)[&Vector::new()].clone(),
             build_occur(locals, *message, builder),
         ),
 

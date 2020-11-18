@@ -45,44 +45,44 @@ pub enum RcOp {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayOp {
     Get(
-        anon::Type,            // Item type
-        mutation::LocalStatus, // Array status
-        LocalId,               // Array
-        LocalId,               // Index
+        anon::Type,                                      // Item type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Array statuses
+        LocalId,                                         // Array
+        LocalId,                                         // Index
     ), // Returns item
     Extract(
-        anon::Type,            // Item type
-        mutation::LocalStatus, // Array status
-        LocalId,               // Array
-        LocalId,               // Index
+        anon::Type,                                      // Item type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Array statuses
+        LocalId,                                         // Array
+        LocalId,                                         // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        anon::Type,            // Item type
-        mutation::LocalStatus, // Array status
-        LocalId,               // Array
+        anon::Type,                                      // Item type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Array statuses
+        LocalId,                                         // Array
     ),
     Push(
-        anon::Type,            // Item type
-        mutation::LocalStatus, // Array status
-        LocalId,               // array
-        LocalId,               // Item
+        anon::Type,                                      // Item type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Array statuses
+        LocalId,                                         // array
+        LocalId,                                         // Item
     ),
     Pop(
-        anon::Type,            // Item type
-        mutation::LocalStatus, // Array status
-        LocalId,               // Array
+        anon::Type,                                      // Item type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Array statuses
+        LocalId,                                         // Array
     ), // Returns tuple of (array, item)
     Replace(
-        anon::Type,            // Item type
-        mutation::LocalStatus, // Hole array status
-        LocalId,               // Hole array
-        LocalId,               // Item
+        anon::Type,                                      // Item type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Hole array statuses
+        LocalId,                                         // Hole array
+        LocalId,                                         // Item
     ), // Returns new array
     Reserve(
-        anon::Type,            // Item type
-        mutation::LocalStatus, // Array status
-        LocalId,               // Array
-        LocalId,               // Capacity
+        anon::Type,                                      // Item type
+        OrdMap<alias::FieldPath, mutation::LocalStatus>, // Array statuses
+        LocalId,                                         // Array
+        LocalId,                                         // Capacity
     ), // Returns new array
 }
 

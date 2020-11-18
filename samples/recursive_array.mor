@@ -3,7 +3,4 @@ type Rec { Rec(Array Rec) }
 proc main(): () =
   let arr = [] in
   push(arr, Rec(arr)) then
-  // FIXME: If you remove this 'len' call, 'arr' becomes mutable, introducing a reference cycle and
-  // a memory leak.
-  len(arr) then
   ()

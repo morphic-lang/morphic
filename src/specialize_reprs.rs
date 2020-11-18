@@ -242,7 +242,7 @@ fn resolve_expr(
             *wrapped,
         ),
 
-        unif::Expr::RcOp(op, container, inner_type, local) => {
+        unif::Expr::RcOp(op, container, inner_type, _local_statuses, local) => {
             let resolved_container = match container {
                 unif::ContainerType::Array(rep_var) => {
                     unif::ContainerType::Array(resolve_solution(params, internal, *rep_var))
