@@ -161,7 +161,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         context: &'a Context,
         target: &TargetData,
         tal: &Tal<'a>,
-        item_retain: Option<FunctionValue<'a>>,
+        _item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
         let i64_type = context.i64_type();
@@ -213,10 +213,6 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
             s.call_void(self.bounds_check, &[me, idx]);
             let data = s.arrow(me, F_ARR_DATA);
-
-            if let Some(item_retain) = item_retain {
-                s.call_void(item_retain, &[s.buf_addr(data, idx)]);
-            }
 
             s.ret(s.make_tup(&[
                 s.buf_get(data, idx),
@@ -275,10 +271,6 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let item = s.arg(1);
             let idx = s.field(hole, F_HOLE_IDX);
             let me = s.field(hole, F_HOLE_ARR);
-
-            if let Some(item_release) = item_release {
-                s.call_void(item_release, &[s.buf_addr(s.arrow(me, F_ARR_DATA), idx)]);
-            }
 
             s.buf_set(s.arrow(me, F_ARR_DATA), idx, item);
 
@@ -393,7 +385,28 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let s = scope(self.interface.release_hole, context, target);
             let hole = s.arg(0);
 
-            s.call_void(self.interface.release_array, &[s.field(hole, F_HOLE_ARR)]);
+            let hole_idx = s.field(hole, F_HOLE_IDX);
+            let arr = s.field(hole, F_HOLE_ARR);
+
+            let new_refcount = s.sub(s.arrow(arr, F_ARR_REFCOUNT), s.i64(1));
+            s.arrow_set(arr, F_ARR_REFCOUNT, new_refcount);
+
+            s.if_(s.eq(new_refcount, s.i64(0)), |s| {
+                let data = s.arrow(arr, F_ARR_DATA);
+                if let Some(item_release) = item_release {
+                    // TODO: Investigate implementing this as two 'for' loops covering the ranges
+                    // [0, hole_idx) and [hole_idx + 1, len), and determine if this would be faster
+                    // than using a single 'for' loop with an internal branch.
+                    s.for_(s.arrow(arr, F_ARR_LEN), |s, i| {
+                        s.if_(s.ne(i, hole_idx), |s| {
+                            s.call_void(item_release, &[s.buf_addr(data, i)]);
+                        });
+                    });
+                }
+                s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), data)]);
+                s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), arr)]);
+            });
+
             s.ret_void();
         }
 
