@@ -36,4 +36,4 @@ pub fill(count: Int, val: t): Array t =
   fill_with(count, \() -> val)
 
 pub from_iter(iter: Iter a): Array a =
-  Iter.foldr(iter, [], \(x, arr) -> push(arr, x))
+  Iter.foldl(iter, [], push)
