@@ -43,7 +43,7 @@ count_words(tokens: Array (Array Byte), queries: Array (Array Byte)): Array Int 
     |> Trie.get(query)
     |> Option.or_default(0)
   )
-  |> Array.from_iter()
+  |> Array.from_iter_with_capacity(len(queries))
 
 proc main(): () =
   match (string_to_nat(do input())) {

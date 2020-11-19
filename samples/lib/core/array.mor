@@ -38,5 +38,8 @@ pub fill_with(count: Int, mk_val: () -> t): Array t =
 pub fill(count: Int, val: t): Array t =
   fill_with(count, \() -> val)
 
+pub from_iter_with_capacity(iter: Iter a, capacity: Int): Array a =
+  Iter.foldl(iter, reserve([], capacity), push)
+
 pub from_iter(iter: Iter a): Array a =
-  Iter.foldl(iter, [], push)
+  from_iter_with_capacity(iter, 0)
