@@ -1,0 +1,66 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io expose { writeln },
+    module Option expose { Option { Some, None } },
+    module Array,
+    module String expose { string_to_nat },
+    module Iter expose { Iter },
+  }
+
+module Trie = file "lib/trie.mor"
+  with { Core }
+  expose { Trie }
+
+module Bench = file "lib/bench_common.mor"
+  with { Core }
+  expose { repeat }
+
+proc read_words_rec(words: Array (Array Byte)): Array (Array Byte) =
+  let line = do input() in
+  if len(line) = 0 {
+    words
+  } else {
+    do read_words_rec(push(words, line))
+  }
+
+proc read_words(): Array (Array Byte) =
+  do read_words_rec([])
+
+count_words(tokens: Array (Array Byte), queries: Array (Array Byte)): Array Int =
+  let counts =
+    tokens
+    |> Iter.items()
+    |> Iter.foldl(
+      Trie.nybbles_trie,
+      \(trie, token) ->
+        Trie.update(trie, token, \count -> Some(Option.or_default(count, 0) + 1))
+    )
+  in
+  queries
+  |> Iter.items()
+  |> Iter.map(\query ->
+    counts
+    |> Trie.get(query)
+    |> Option.or_default(0)
+  )
+  |> Array.from_iter()
+
+proc main(): () =
+  match (string_to_nat(do input())) {
+    Some(iters) ->
+      let tokens = do read_words() in
+      let queries = do read_words() in
+      match repeat(iters, \() -> count_words(tokens, queries)) {
+        Some(query_counts) ->
+          query_counts
+          |> Iter.items()
+          |> do Iter.for_each(proc \count ->
+            do writeln(String.int_to_string(count))
+          ),
+
+        None -> (),
+      },
+
+    None ->
+      do writeln("Please enter an iteration count"),
+  }

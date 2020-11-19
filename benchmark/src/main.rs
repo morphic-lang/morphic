@@ -548,6 +548,38 @@ fn sample_primes_sieve(c: &mut Criterion) {
     );
 }
 
+fn sample_words_trie(c: &mut Criterion) {
+    let mut g = c.benchmark_group("words_trie");
+    g.sample_size(20);
+
+    let stdin = concat!(
+        include_str!("../../samples/sample-input/udhr.txt"),
+        "\n",
+        include_str!("../../samples/sample-input/udhr_queries.txt"),
+        "\n",
+    );
+
+    let stdout = include_str!("../../samples/expected-output/udhr_query_counts.txt");
+
+    bench_sample(
+        &mut g,
+        "bench_words_trie.mor",
+        "samples/bench_words_trie.mor",
+        &[],
+        "count_words",
+        stdin,
+        stdout,
+    );
+
+    bench_rust_sample(
+        &mut g,
+        "bench_words_trie.rs",
+        "samples/rust_samples/bench_words_trie.rs",
+        stdin,
+        stdout,
+    );
+}
+
 fn main() {
     if !Path::new("samples").exists() {
         eprintln!();
@@ -567,4 +599,6 @@ fn main() {
     sample_primes(&mut c);
 
     sample_primes_sieve(&mut c);
+
+    sample_words_trie(&mut c);
 }
