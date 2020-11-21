@@ -180,6 +180,21 @@ fn write_double(
     write![w, "{}(%{}, %{})", name, local_id1.0, local_id2.0]
 }
 
+fn match_string_bytes(bindings: &[(Type, Expr)]) -> Option<String> {
+    let mut result_bytes = Vec::new();
+    for binding in bindings {
+        if let (_, Expr::ByteLit(byte)) = binding {
+            result_bytes.push(*byte);
+        } else {
+            break;
+        }
+    }
+    if result_bytes.len() < 2 {
+        return None;
+    }
+    String::from_utf8(result_bytes).ok()
+}
+
 fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
     match expr {
         Expr::Local(local_id) => write![w, "%{}", local_id.0],
@@ -207,19 +222,34 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::LetMany(bindings, final_local) => {
             write![w, "let"]?;
             let new_context = context.add_indent();
-            for (index, (binding_type, binding_expr)) in bindings.iter().enumerate() {
-                new_context.writeln(w)?;
-                write![w, "%{}: ", context.num_locals + index]?;
-                write_type(w, context.type_renderer, binding_type)?;
-                write![w, " = "]?;
-                write_expr(
-                    w,
-                    binding_expr,
-                    Context {
-                        num_locals: context.num_locals + index,
-                        ..new_context
-                    },
-                )?;
+            let mut index = 0;
+            while index < bindings.len() {
+                if let Some(string) = match_string_bytes(&bindings[index..]) {
+                    new_context.writeln(w)?;
+                    write![
+                        w,
+                        "%{}...%{}: Byte = {:?}",
+                        context.num_locals + index,
+                        context.num_locals + index + string.len() - 1,
+                        string,
+                    ]?;
+                    index += string.len();
+                } else {
+                    let (binding_type, binding_expr) = &bindings[index];
+                    new_context.writeln(w)?;
+                    write![w, "%{}: ", context.num_locals + index]?;
+                    write_type(w, context.type_renderer, binding_type)?;
+                    write![w, " = "]?;
+                    write_expr(
+                        w,
+                        binding_expr,
+                        Context {
+                            num_locals: context.num_locals + index,
+                            ..new_context
+                        },
+                    )?;
+                    index += 1;
+                }
             }
             context.writeln(w)?;
             write![w, "in %{}", final_local.0]?;
@@ -314,10 +344,20 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         }
 
         Expr::ArrayLit(rep, _type, elem_ids) => {
+            let elems_are_contiguous = elem_ids.len() > 1
+                && (0..elem_ids.len() - 1).all(|i| elem_ids[i].0 + 1 == elem_ids[i + 1].0);
+
             write_repchoice(w, rep)?;
             write![w, " "]?;
             if elem_ids.len() == 0 {
                 write![w, "[]"]?
+            } else if elems_are_contiguous {
+                write![
+                    w,
+                    "[%{}...%{}]",
+                    elem_ids.first().unwrap().0,
+                    elem_ids.last().unwrap().0
+                ]?;
             } else {
                 write![w, "["]?;
                 for elem_id in &elem_ids[..elem_ids.len() - 1] {
