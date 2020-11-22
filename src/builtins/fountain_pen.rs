@@ -328,6 +328,23 @@ impl<'a, 'b> Scope<'a, 'b> {
         }
     }
 
+    /// 'buf_addr' out of bounds (OOB) -- i.e., without the "in-bounds" requirement.
+    pub fn buf_addr_oob(
+        &self,
+        arr: BasicValueEnum<'a>,
+        idx: BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
+        unsafe {
+            self.builder
+                .build_gep(
+                    arr.into_pointer_value().into(),
+                    &[idx.into_int_value()],
+                    "arr_addr",
+                )
+                .into()
+        }
+    }
+
     pub fn buf_set(
         &self,
         arr: BasicValueEnum<'a>,
@@ -455,14 +472,27 @@ impl<'a, 'b> Scope<'a, 'b> {
         ty: BasicTypeEnum<'a>,
         tal: &Tal<'a>,
     ) -> BasicValueEnum<'a> {
-        let ptr = self.call(
-            tal.malloc,
-            &[self.mul(num, self.int_cast(self.usize_t(), self.size(ty)))],
+        let alloc_size_umul_result = self.call(
+            tal.umul_with_overflow_i64,
+            &[num, self.int_cast(self.usize_t(), self.size(ty))],
         );
+
+        let is_overflow = self.field(alloc_size_umul_result, 1);
+        self.if_(is_overflow, |s| {
+            s.panic(
+                "malloc: requested size overflows 64-bit integer type",
+                &[],
+                tal,
+            );
+        });
+
+        // TODO: Check for truncation overflow on 32-bit platforms
+        let ptr = self.call(tal.malloc, &[self.field(alloc_size_umul_result, 0)]);
         self.if_(self.is_null(ptr), |s| {
             s.panic("malloc failed", &[], tal);
         });
-        return ptr;
+
+        return self.ptr_cast(ty, ptr);
     }
 
     pub fn calloc(
