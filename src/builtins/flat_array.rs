@@ -165,7 +165,6 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         _item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
-        let i64_type = context.i64_type();
         let array_type = self.interface.array_type;
 
         // Offset a reference (an *i64) into the underlying heap buffer by sizeof(i64) to skip the leading
