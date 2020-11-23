@@ -193,13 +193,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         {
             let s = scope(self.interface.new, context, target);
 
-            let buf = s.malloc(s.usize(1), i64_type.into(), tal);
-            s.ptr_set(buf, s.i64(1)); // Initialize refcount
-
             let me = s.make_struct(
-                array_type,
+                array_type, //;
                 &[
-                    (F_ARR_DATA, buf_to_data(&s, buf)),
+                    (F_ARR_DATA, buf_to_data(&s, s.null(s.i64_t()))),
                     (F_ARR_CAP, s.i64(0)),
                     (F_ARR_LEN, s.i64(0)),
                 ],
@@ -353,6 +350,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                     ),
                 );
 
+                // Initialize refcount if the allocation was 'null' before.
+                // The refcount is necessarily 1 immediately after a mutating operation.
+                s.ptr_set(new_buf, s.i64(1));
+
                 s.if_(s.is_null(new_buf), |s| {
                     s.panic(
                         "reserve: failed to allocate %zu bytes\n",
@@ -381,7 +382,9 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
-            s.ptr_set(refcount_ptr, s.add(s.ptr_get(refcount_ptr), s.i64(1)));
+            s.if_(s.not(s.is_null(refcount_ptr)), |s| {
+                s.ptr_set(refcount_ptr, s.add(s.ptr_get(refcount_ptr), s.i64(1)));
+            });
 
             s.ret_void();
         }
@@ -393,18 +396,20 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
-            let new_refcount = s.sub(s.ptr_get(refcount_ptr), s.i64(1));
-            s.ptr_set(refcount_ptr, new_refcount);
+            s.if_(s.not(s.is_null(refcount_ptr)), |s| {
+                let new_refcount = s.sub(s.ptr_get(refcount_ptr), s.i64(1));
+                s.ptr_set(refcount_ptr, new_refcount);
 
-            let data = s.field(me, F_ARR_DATA);
+                let data = s.field(me, F_ARR_DATA);
 
-            s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                if let Some(item_release) = item_release {
-                    s.for_(s.field(me, F_ARR_LEN), |s, i| {
-                        s.call_void(item_release, &[s.buf_addr(data, i)]);
-                    });
-                }
-                s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
+                s.if_(s.eq(new_refcount, s.i64(0)), |s| {
+                    if let Some(item_release) = item_release {
+                        s.for_(s.field(me, F_ARR_LEN), |s, i| {
+                            s.call_void(item_release, &[s.buf_addr(data, i)]);
+                        });
+                    }
+                    s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
+                });
             });
 
             s.ret_void();
@@ -494,6 +499,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                         tal,
                     );
                 });
+
+                // Initialize refcount if the allocation was 'null' before.
+                // The refcount is necessarily 1 immediately after a mutating operation.
+                s.ptr_set(new_buf, s.i64(1));
 
                 s.ret(s.make_struct(
                     array_type,
