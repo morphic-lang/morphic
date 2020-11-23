@@ -297,7 +297,7 @@ fn read_words() -> Vec<NybblesKey> {
 
 fn count_words(tokens: &[NybblesKey], queries: &[NybblesKey]) -> Vec<u64> {
     COUNT_WORDS_INFO.record_call(|| {
-        let mut counts = Trie::new();
+        let mut counts: Trie<NybblesKey, u64> = Trie::new();
         for token in tokens {
             counts.update(token, |count| {
                 *count = Some(count.unwrap_or(0) + 1);
