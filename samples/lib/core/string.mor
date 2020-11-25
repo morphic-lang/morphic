@@ -9,7 +9,7 @@ pub bool_to_string(b: Bool): Array Byte =
     "False"
   }
 
-pub nat_to_string(i: Int): Array Byte =
+nat_to_string(i: Int): Array Byte =
   let digit_to_string = \d ->
     match d {
         0 -> "0",
