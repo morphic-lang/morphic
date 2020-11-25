@@ -96,6 +96,10 @@ pub enum Expr {
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     LetMany(VecDeque<(Pattern, Expr)>, Box<Expr>),
 
+    // `!` can be treated as an ordinary `OpApp`, since it follows normal evaluation rules
+    And(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
+
     PipeLeft(Box<Expr>, Box<Expr>),
     PipeRight(Box<Expr>, Box<Expr>),
 

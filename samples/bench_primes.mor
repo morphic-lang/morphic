@@ -3,7 +3,6 @@ module Core = file "lib/core/core.mor"
     module Io expose { writeln },
     module String expose { string_to_nat, int_to_string },
     module Option expose { Option { Some, None } },
-    module Bool expose { not },
   }
 
 module Bench = file "lib/bench_common.mor" with { Core }
@@ -21,7 +20,7 @@ has_divisor_above(n: Int, i: Int): Bool =
   }
 
 is_prime(n: Int): Bool =
-  not(has_divisor_above(n, 2))
+  ! has_divisor_above(n, 2)
 
 count_primes_rec(n: Int, accum: Int): Int =
   if n <= 1 {

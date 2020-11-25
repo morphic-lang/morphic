@@ -75,6 +75,10 @@ pub enum Token {
     LteDot,
     GtDot,
     GteDot,
+
+    Exclamation,
+    DoubleAmp,
+    DoubleBar,
 }
 
 impl fmt::Display for Token {
@@ -142,6 +146,9 @@ impl fmt::Display for Token {
             Token::LteDot => write!(f, "<=."),
             Token::GtDot => write!(f, ">."),
             Token::GteDot => write!(f, ">=."),
+            Token::Exclamation => write!(f, "!"),
+            Token::DoubleAmp => write!(f, "&&"),
+            Token::DoubleBar => write!(f, "||"),
             Token::PipeLeft => write!(f, "<|"),
             Token::PipeRight => write!(f, "|>"),
         }
@@ -476,6 +483,10 @@ impl<'a> Iterator for Lexer<'a> {
                 ("<=.", Token::LteDot),
                 (">.", Token::GtDot),
                 (">=.", Token::GteDot),
+                // Bool operators
+                ("!", Token::Exclamation),
+                ("&&", Token::DoubleAmp),
+                ("||", Token::DoubleBar),
             ],
         ) {
             let sym_start = self.pos;

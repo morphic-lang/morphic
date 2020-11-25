@@ -3,7 +3,6 @@ module Core = file "lib/core/core.mor"
     module Option expose { Option { Some, None } },
     module Io expose { writeln },
     module String,
-    module Bool expose { or },
   }
 
 module Trie = file "lib/trie.mor" with { Core } expose { Trie }
@@ -34,7 +33,7 @@ proc interact(trie: Trie (Array Byte) (Array Byte)): () =
     let key = do input() in
     do interact(Trie.set(trie, key, None))
   }
-  else if or(String.equal(query, "quit"), String.equal(query, "exit")) {
+  else if String.equal(query, "quit") || String.equal(query, "exit") {
     ()
   }
   else {

@@ -8,11 +8,9 @@ pub module String = file "string.mor" with { Array, Option, Iter }
 
 pub module Func = file "func.mor"
 
-pub module Bool = file "bool.mor"
-
 pub module Io = file "io.mor"
 
-pub module Math = file "math.mor" with { Bool }
+pub module Math = file "math.mor"
 
 pub module Control = file "control.mor"
 

@@ -81,6 +81,10 @@ extern {
     "<=." => lex::Token::LteDot,
     ">." => lex::Token::GtDot,
     ">=." => lex::Token::GteDot,
+
+    "!" => lex::Token::Exclamation,
+    "&&" => lex::Token::DoubleAmp,
+    "||" => lex::Token::DoubleBar,
   }
 }
 
@@ -434,6 +438,7 @@ PrefixExpr_: syntax::Expr = {
   "-&" <PrefixExpr> => syntax::unop(Intr::NegByte, <>),
   "-" <PrefixExpr> => syntax::unop(Intr::NegInt, <>),
   "-." <PrefixExpr> => syntax::unop(Intr::NegFloat, <>),
+  "!" <PrefixExpr> => syntax::unop(Intr::Not, <>),
 };
 
 PrefixExpr: syntax::Expr = {
@@ -506,8 +511,28 @@ ArithExpr: syntax::Expr = {
   <ArithCompExpr>,
 };
 
-PipeRightExpr_: syntax::Expr = {
+AndExpr_: syntax::Expr = {
   <ArithExpr>,
+
+  <left: AndExpr> "&&" <right: ArithExpr> => syntax::Expr::And(Box::new(left), Box::new(right)),
+}
+
+AndExpr: syntax::Expr = {
+  <Spanned<AndExpr_>>,
+}
+
+OrExpr_: syntax::Expr = {
+  <AndExpr>,
+
+  <left: OrExpr> "||" <right: AndExpr> => syntax::Expr::Or(Box::new(left), Box::new(right)),
+}
+
+OrExpr: syntax::Expr = {
+  <Spanned<OrExpr_>>,
+}
+
+PipeRightExpr_: syntax::Expr = {
+  <OrExpr>,
 
   <left: PipeRightExpr> "|>" <right: AppExpr> => syntax::Expr::PipeRight(Box::new(left), Box::new(right)),
 }

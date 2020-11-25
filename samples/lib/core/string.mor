@@ -2,6 +2,13 @@ import Array
 import Option expose { Option { Some, None } }
 import Iter
 
+pub bool_to_string(b: Bool): Array Byte =
+  if b {
+    "True"
+  } else {
+    "False"
+  }
+
 pub nat_to_string(i: Int): Array Byte =
   let digit_to_string = \d ->
     match d {

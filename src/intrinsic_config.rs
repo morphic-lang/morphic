@@ -71,6 +71,7 @@ define_intrinsic_names![
     (LteFloat, op_name("lte_float")),
     (GtFloat, op_name("gt_float")),
     (GteFloat, op_name("gte_float")),
+    (Not, op_name("not")),
     // Intrinsic numeric functions
     // These names are used in the source language
     (ByteToInt, name("byte_to_int")),
@@ -137,6 +138,8 @@ pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
         EqByte | LtByte | LteByte | GtByte | GteByte => pure(tuple!(byte(), byte()), bool()),
         EqInt | LtInt | LteInt | GtInt | GteInt => pure(tuple!(int(), int()), bool()),
         EqFloat | LtFloat | LteFloat | GtFloat | GteFloat => pure(tuple!(float(), float()), bool()),
+
+        Not => pure(bool(), bool()),
 
         ByteToInt => pure(byte(), int()),
         ByteToIntSigned => pure(byte(), int()),

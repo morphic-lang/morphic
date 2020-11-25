@@ -1095,6 +1095,14 @@ fn interpret_expr(
                 heap.add(Value::Bool(*variant_id == local_variant_id))
             }
 
+            Expr::Intrinsic(Intrinsic::Not, local_id) => {
+                let heap_id = locals[local_id];
+
+                let value = !unwrap_bool(heap, heap_id, stacktrace.add_frame("check bool".into()));
+
+                heap.add(Value::Bool(value))
+            }
+
             Expr::Intrinsic(Intrinsic::AddByte, local_id) => {
                 let (lhs, rhs) = unwrap_binop_bytes(
                     heap,

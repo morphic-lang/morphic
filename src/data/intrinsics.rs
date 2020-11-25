@@ -49,6 +49,8 @@ pub enum Intrinsic {
     GtFloat,
     GteFloat,
 
+    Not,
+
     // Intrinsic numeric functions
     ByteToInt,
     ByteToIntSigned,

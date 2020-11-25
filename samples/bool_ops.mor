@@ -1,0 +1,31 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io expose { writeln },
+    module String expose { bool_to_string },
+  }
+
+proc launch_missles(b: Bool): Bool =
+  do writeln("launch_missles") then
+  b
+
+proc main(): () =
+  let v1 = do launch_missles(False) && do launch_missles(True) in
+  do writeln(bool_to_string(v1)) then
+
+  let v2 = do launch_missles(True) && do launch_missles(False) in
+  do writeln(bool_to_string(v2)) then
+
+  let v3 = do launch_missles(True) && do launch_missles(True) in
+  do writeln(bool_to_string(v3)) then
+
+  let v4 = do launch_missles(False) || do launch_missles(True) in
+  do writeln(bool_to_string(v4)) then
+
+  let v5 = do launch_missles(True) || do launch_missles(False) in
+  do writeln(bool_to_string(v5)) then
+
+  let v6 = do launch_missles(True) || do launch_missles(True) in
+  do writeln(bool_to_string(v6)) then
+
+  do writeln(bool_to_string(!False)) then
+  do writeln(bool_to_string(!True))

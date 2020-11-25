@@ -1,8 +1,0 @@
-pub not(x: Bool): Bool =
-  if x { False } else { True }
-
-pub and(a: Bool, b: Bool): Bool =
-  if a { b } else { False }
-
-pub or(a: Bool, b: Bool): Bool =
-  if a { True } else { b }

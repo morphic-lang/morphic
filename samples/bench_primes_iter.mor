@@ -3,7 +3,6 @@ module Core = file "lib/core/core.mor"
     module Io expose { writeln },
     module String expose { string_to_nat, int_to_string },
     module Option expose { Option { Some, None } },
-    module Bool expose { not },
     module Iter expose { Iter },
   }
 
@@ -11,10 +10,10 @@ module Bench = file "lib/bench_common.mor" with { Core }
   expose { repeat }
 
 is_prime(n: Int): Bool =
-  not(Iter.any(
+  ! Iter.any(
     Iter.take_while(Iter.ints(2), \i -> i * i <= n),
     \i -> (n / i) * i = n,
-  ))
+  )
 
 primes_to(limit: Int): Iter Int =
   Iter.filter(Iter.range(2, limit + 1), is_prime)

@@ -100,7 +100,6 @@ module Node = {
     expose {
       module Option expose { Option { Some, None } },
       module Iter expose { Iter },
-      module Bool expose { and },
       module Func expose { const },
     }
 
@@ -115,7 +114,7 @@ module Node = {
 
   pub is_empty(this: Node v): Bool =
     let Node(leaf, children) = this in
-    and(Option.is_none(leaf), SparseArray.is_empty(children))
+    Option.is_none(leaf) && SparseArray.is_empty(children)
 
   pub get(this: Node v, key: Iter Int): Option v =
     match Iter.next(key) {

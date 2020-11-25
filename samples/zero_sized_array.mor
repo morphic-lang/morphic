@@ -1,5 +1,4 @@
 module Core = file "lib/core/core.mor"
-  expose { module Bool expose { not } }
 
 module Test = file "lib/test.mor"
   with { Core }

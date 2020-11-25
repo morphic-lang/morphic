@@ -1,5 +1,3 @@
-import Bool expose { and, or }
-
 pub int_bit_not(a: Int): Int =
   -a - 1
 

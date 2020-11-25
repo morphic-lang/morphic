@@ -1117,6 +1117,36 @@ fn resolve_expr(
             Ok(res::Expr::LetMany(new_bindings, Box::new(res_body)))
         }),
 
+        raw::Expr::And(left, right) => {
+            let res_left = resolve_expr(global_mods, local_mod_map, local_ctx, left)?;
+            let res_right = resolve_expr(global_mods, local_mod_map, local_ctx, right)?;
+
+            let false_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(0), None);
+            let false_expr =
+                res::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, res::VariantId(0)));
+            let true_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(1), None);
+
+            Ok(res::Expr::Match(
+                Box::new(res_left),
+                vec![(false_pattern, false_expr), (true_pattern, res_right)],
+            ))
+        }
+
+        raw::Expr::Or(left, right) => {
+            let res_left = resolve_expr(global_mods, local_mod_map, local_ctx, left)?;
+            let res_right = resolve_expr(global_mods, local_mod_map, local_ctx, right)?;
+
+            let true_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(1), None);
+            let true_expr =
+                res::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, res::VariantId(1)));
+            let false_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(0), None);
+
+            Ok(res::Expr::Match(
+                Box::new(res_left),
+                vec![(true_pattern, true_expr), (false_pattern, res_right)],
+            ))
+        }
+
         raw::Expr::PipeLeft(left, right) => {
             // `f(a) <| b` gets converted to `f(a, b)`
 

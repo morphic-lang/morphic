@@ -37,6 +37,29 @@ sample! { arith "samples/arith.mor";
     stdout = "Completed all tests\n";
 }
 
+sample! { bool_ops "samples/bool_ops.mor";
+    stdin = "";
+    stdout = lines! [
+        "launch_missles",
+        "False",
+        "launch_missles",
+        "launch_missles",
+        "False",
+        "launch_missles",
+        "launch_missles",
+        "True",
+        "launch_missles",
+        "launch_missles",
+        "True",
+        "launch_missles",
+        "True",
+        "launch_missles",
+        "True",
+        "True",
+        "False",
+    ];
+}
+
 sample! { concat_persistent "samples/concat_persistent.mor";
     stdin = "";
     stdout = lines! [

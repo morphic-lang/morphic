@@ -1286,6 +1286,9 @@ fn gen_expr<'a, 'b>(
             context.struct_type(&[], false).get_undef().into()
         }
         E::Intrinsic(intr, local_id) => match intr {
+            Intrinsic::Not => builder
+                .build_not(locals[local_id].into_int_value(), "not_expr")
+                .into(),
             Intrinsic::AddByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder.build_int_add(lhs, rhs, "add_byte").into()
