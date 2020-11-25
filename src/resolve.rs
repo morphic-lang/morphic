@@ -1179,14 +1179,16 @@ fn resolve_expr(
             match app {
                 raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
                     local_ctx.new_scope(|local_ctx| {
-                        let res_left = resolve_expr(global_mods, local_mod_map, local_ctx, left)?;
+                        let (left_unspanned, respan_left) = unspan(&**left);
+                        let res_left =
+                            resolve_expr(global_mods, local_mod_map, local_ctx, left_unspanned)?;
 
                         let anon_var = res::Expr::Local(local_ctx.insert_anon());
-                        let binding = vec![(res::Pattern::Var, res_left)];
+                        let binding = vec![(res::Pattern::Var, respan_left(res_left))];
 
                         let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, func)?;
 
-                        let mut res_args = vec![anon_var];
+                        let mut res_args = vec![respan_left(anon_var)];
                         for arg in args {
                             res_args.push(resolve_expr(
                                 global_mods,
