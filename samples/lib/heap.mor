@@ -1,0 +1,67 @@
+import Core 
+  expose {
+    module Array,
+    module Option expose { Option { Some, None } },
+  }
+
+pub type Heap a {
+  pub Heap((a, a) -> Bool, Array a),
+}
+
+pub empty(lt: (a, a) -> Bool): Heap a =
+  Heap(lt, [])
+
+pub insert(heap: Heap a, item: a): Heap a =
+  let Heap(lt, arr) = heap in
+  let new_arr = push(arr, item) in
+  let i = len(new_arr) - 1 in
+  sift_up(Heap(lt, new_arr), i)
+
+pub remove(heap: Heap a): (Heap a, Option a) =
+  let Heap(lt, arr) = heap in
+  if len(arr) > 0 {
+    let i = len(arr) - 1 in
+    let (new_arr, max) = pop(swap(arr, 0, i)) in
+    (sift_down(Heap(lt, new_arr), 0), Some(max))
+  } else {
+    (Heap(lt, arr), None)
+  }
+
+swap(arr: Array a, i: Int, j: Int): Array a =
+  let item_i = Array.get(arr, i) in
+  let (item_j, hole_j) = extract(arr, j) in
+  Array.set(hole_j(item_i), i, item_j)
+
+sift_up(heap: Heap a, i: Int): Heap a =
+  let Heap(lt, arr) = heap in
+  let parent = (i - 1) / 2 in
+  if i = 0 || ! lt(Array.get(arr, parent), Array.get(arr, i)) {
+    Heap(lt, arr)
+  } else {
+    let new_heap = Heap(lt, swap(arr, parent, i)) in
+    sift_up(new_heap, parent)
+  }
+
+sift_down(heap: Heap a, i: Int): Heap a =
+  let Heap(lt, arr) = heap in
+  let left_idx = 2 * i + 1 in
+  let right_idx = 2 * i + 2 in
+
+  let maybe_left = if left_idx < len(arr) && ! lt(Array.get(arr, left_idx), Array.get(arr, i)) {
+    left_idx
+  } else {
+    i
+  } in
+
+  let largest = if right_idx < len(arr) && ! lt(Array.get(arr, right_idx), Array.get(arr, maybe_left)) {
+    right_idx
+  } else {
+    maybe_left
+  } in
+
+  if largest = i {
+    Heap(lt, arr)
+  } else {
+    let new_heap = Heap(lt, swap(arr, largest, i)) in
+    sift_down(new_heap, largest)
+  }

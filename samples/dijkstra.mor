@@ -1,0 +1,52 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Option expose { Option { Some, None } },
+    module Io expose { writeln },
+    module String,
+    module Iter expose { for_each },
+  }
+
+module Heap = file "lib/heap.mor"
+  with { Core }
+  expose { Heap { Heap } }
+
+module Test = file "lib/test.mor"
+  with { Core }
+  expose { test }
+
+proc remove_range(heap: Heap Int, start: Int, end: Int): () =
+  if end > start {
+    let (new_heap, item) = Heap.remove(heap) in
+    do writeln(
+      item
+      |> Option.map(String.int_to_string)
+      |> Option.or_default("None")
+    ) then
+    do test(
+      "heap is not in order",
+      item
+      |> Option.map(\x -> x = end - start - 1)
+      |> Option.or_default(False)
+    ) then
+    do remove_range(new_heap, start + 1, end)
+  } else {
+    let (_, item) = Heap.remove(heap) in
+    do test("heap is not empty", Option.is_none(item)) then
+    ()
+  }
+
+proc main(): () =
+  let heap = Heap.empty(\(x, y) -> x < y) in
+  heap
+  |> Heap.insert(8)
+  |> Heap.insert(7)
+  |> Heap.insert(6)
+  |> Heap.insert(9)
+  |> Heap.insert(3)
+  |> Heap.insert(1)
+  |> Heap.insert(5)
+  |> Heap.insert(2)
+  |> Heap.insert(0)
+  |> Heap.insert(4)
+  |> Heap.insert(10)
+  |> do remove_range(0, 11)
