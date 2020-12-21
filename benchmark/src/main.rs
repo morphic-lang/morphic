@@ -577,6 +577,7 @@ fn sample_primes_sieve(c: &mut Criterion) {
 fn sample_words_trie(c: &mut Criterion) {
     let mut g = c.benchmark_group("words_trie");
     g.sample_size(20);
+    g.measurement_time(Duration::from_secs(75));
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/udhr.txt"),
