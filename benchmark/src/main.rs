@@ -151,37 +151,43 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    let exe_path = tempfile::Builder::new()
-        .prefix(".tmp-exe-")
-        .tempfile_in("")
-        .expect("Could not create temp file")
-        .into_temp_path();
-
-    let mut files = FileCache::new();
-
-    build(
-        cli::BuildConfig {
-            src_path: src_path.as_ref().into(),
-            profile_syms: vec![cli::SymbolName(format!(
-                "{mod_}{func}",
-                mod_ = profile_mod
-                    .iter()
-                    .map(|component| format!("{}.", component))
-                    .collect::<Vec<_>>()
-                    .concat(),
-                func = profile_func,
-            ))],
-            target: cli::TargetConfig::Native,
-            llvm_opt_level: cli::default_llvm_opt_level(),
-            output_path: exe_path.to_owned(),
-            artifact_dir: None,
-        },
-        &mut files,
-    )
-    .expect("Compilation failed");
+    let mut exe_path_cache = None;
 
     g.bench_function(bench_name, |b| {
         b.iter_custom(|iters| {
+            let exe_path = exe_path_cache.get_or_insert_with(|| {
+                let exe_path = tempfile::Builder::new()
+                    .prefix(".tmp-exe-")
+                    .tempfile_in("")
+                    .expect("Could not create temp file")
+                    .into_temp_path();
+
+                let mut files = FileCache::new();
+
+                build(
+                    cli::BuildConfig {
+                        src_path: src_path.as_ref().into(),
+                        profile_syms: vec![cli::SymbolName(format!(
+                            "{mod_}{func}",
+                            mod_ = profile_mod
+                                .iter()
+                                .map(|component| format!("{}.", component))
+                                .collect::<Vec<_>>()
+                                .concat(),
+                            func = profile_func,
+                        ))],
+                        target: cli::TargetConfig::Native,
+                        llvm_opt_level: cli::default_llvm_opt_level(),
+                        output_path: exe_path.to_owned(),
+                        artifact_dir: None,
+                    },
+                    &mut files,
+                )
+                .expect("Compilation failed");
+
+                exe_path
+            });
+
             let report: ProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
 
             let timing = &report.timings[0];
@@ -216,32 +222,38 @@ fn bench_c_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    let exe_path = tempfile::Builder::new()
-        .prefix(".tmp-exe-")
-        .tempfile_in("")
-        .expect("Could not create temp file")
-        .into_temp_path();
-
-    let clang = find_default_clang().expect("clang must be present to run benchmarks");
-
-    let clang_output = process::Command::new(&clang.path)
-        .arg(src_path.as_ref())
-        .arg(format!("-o{}", exe_path.to_str().unwrap()))
-        .arg("-O3")
-        .arg("-march=native")
-        .arg("-Wall")
-        .arg("-Werror")
-        .output()
-        .expect("Compilation failed");
-
-    assert!(
-        clang_output.status.success(),
-        "Compilation failed:\n{}",
-        String::from_utf8_lossy(&clang_output.stderr)
-    );
+    let mut exe_path_cache = None;
 
     g.bench_function(bench_name, |b| {
         b.iter_custom(|iters| {
+            let exe_path = exe_path_cache.get_or_insert_with(|| {
+                let exe_path = tempfile::Builder::new()
+                    .prefix(".tmp-exe-")
+                    .tempfile_in("")
+                    .expect("Could not create temp file")
+                    .into_temp_path();
+
+                let clang = find_default_clang().expect("clang must be present to run benchmarks");
+
+                let clang_output = process::Command::new(&clang.path)
+                    .arg(src_path.as_ref())
+                    .arg(format!("-o{}", exe_path.to_str().unwrap()))
+                    .arg("-O3")
+                    .arg("-march=native")
+                    .arg("-Wall")
+                    .arg("-Werror")
+                    .output()
+                    .expect("Compilation failed");
+
+                assert!(
+                    clang_output.status.success(),
+                    "Compilation failed:\n{}",
+                    String::from_utf8_lossy(&clang_output.stderr)
+                );
+
+                exe_path
+            });
+
             let report: BasicProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
 
             assert_eq!(report.total_calls, iters);
@@ -258,31 +270,37 @@ fn bench_rust_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    let exe_path = tempfile::Builder::new()
-        .prefix(".tmp-exe-")
-        .tempfile_in("")
-        .expect("Could not create temp file")
-        .into_temp_path();
-
-    let rustc_output = process::Command::new("rustc")
-        .arg(format!("-o{}", exe_path.to_str().unwrap()))
-        .arg("-Ctarget-cpu=native")
-        .arg("-Copt-level=3")
-        .arg("--edition=2018")
-        .arg("--deny=warnings")
-        .arg("--")
-        .arg(src_path.as_ref())
-        .output()
-        .expect("Compilation failed");
-
-    assert!(
-        rustc_output.status.success(),
-        "Compilation failed:\n{}",
-        String::from_utf8_lossy(&rustc_output.stderr)
-    );
+    let mut exe_path_cache = None;
 
     g.bench_function(bench_name, |b| {
         b.iter_custom(|iters| {
+            let exe_path = exe_path_cache.get_or_insert_with(|| {
+                let exe_path = tempfile::Builder::new()
+                    .prefix(".tmp-exe-")
+                    .tempfile_in("")
+                    .expect("Could not create temp file")
+                    .into_temp_path();
+
+                let rustc_output = process::Command::new("rustc")
+                    .arg(format!("-o{}", exe_path.to_str().unwrap()))
+                    .arg("-Ctarget-cpu=native")
+                    .arg("-Copt-level=3")
+                    .arg("--edition=2018")
+                    .arg("--deny=warnings")
+                    .arg("--")
+                    .arg(src_path.as_ref())
+                    .output()
+                    .expect("Compilation failed");
+
+                assert!(
+                    rustc_output.status.success(),
+                    "Compilation failed:\n{}",
+                    String::from_utf8_lossy(&rustc_output.stderr)
+                );
+
+                exe_path
+            });
+
             let report: BasicProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
 
             assert_eq!(report.total_calls, iters);
@@ -351,49 +369,55 @@ fn bench_haskell_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    let exe_path = tempfile::Builder::new()
-        .prefix(".tmp-exe-")
-        .tempfile_in("")
-        .expect("Could not create temp file")
-        .into_temp_path();
-
-    let out_dir = tempfile::Builder::new()
-        .prefix(".tmp-ghc-out-")
-        .tempdir_in("")
-        .expect("Could not create temp directory");
-
-    let ghc_output = process::Command::new("ghc")
-        .arg("-o")
-        .arg(&exe_path)
-        .arg("-odir")
-        .arg(out_dir.as_ref())
-        .arg("-hidir")
-        .arg(out_dir.as_ref())
-        .arg("-O2")
-        .arg("-prof")
-        .arg("-rtsopts")
-        .arg("-Wall")
-        .arg("-Werror")
-        .arg("samples/haskell_samples/BenchCommon.hs")
-        .arg(src_path.as_ref())
-        .arg("-main-is")
-        .arg(
-            src_path
-                .as_ref()
-                .file_stem()
-                .expect("Source path should have stem"),
-        )
-        .output()
-        .expect("Compilation failed");
-
-    assert!(
-        ghc_output.status.success(),
-        "Compilation failed:\n{}",
-        String::from_utf8_lossy(&ghc_output.stderr)
-    );
+    let mut exe_path_cache = None;
 
     g.bench_function(bench_name, |b| {
         b.iter_custom(|iters| {
+            let exe_path = exe_path_cache.get_or_insert_with(|| {
+                let exe_path = tempfile::Builder::new()
+                    .prefix(".tmp-exe-")
+                    .tempfile_in("")
+                    .expect("Could not create temp file")
+                    .into_temp_path();
+
+                let out_dir = tempfile::Builder::new()
+                    .prefix(".tmp-ghc-out-")
+                    .tempdir_in("")
+                    .expect("Could not create temp directory");
+
+                let ghc_output = process::Command::new("ghc")
+                    .arg("-o")
+                    .arg(&exe_path)
+                    .arg("-odir")
+                    .arg(out_dir.as_ref())
+                    .arg("-hidir")
+                    .arg(out_dir.as_ref())
+                    .arg("-O2")
+                    .arg("-prof")
+                    .arg("-rtsopts")
+                    .arg("-Wall")
+                    .arg("-Werror")
+                    .arg("samples/haskell_samples/BenchCommon.hs")
+                    .arg(src_path.as_ref())
+                    .arg("-main-is")
+                    .arg(
+                        src_path
+                            .as_ref()
+                            .file_stem()
+                            .expect("Source path should have stem"),
+                    )
+                    .output()
+                    .expect("Compilation failed");
+
+                assert!(
+                    ghc_output.status.success(),
+                    "Compilation failed:\n{}",
+                    String::from_utf8_lossy(&ghc_output.stderr)
+                );
+
+                exe_path
+            });
+
             let report: GhcProfReport = run_ghc_exe(&exe_path, iters, extra_stdin, expected_stdout);
 
             let prof_tree = find_labeled_ghc_cost_centre(&report, cost_centre);
