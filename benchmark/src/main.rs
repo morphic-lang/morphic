@@ -544,6 +544,8 @@ fn sample_primes_sieve(c: &mut Criterion) {
         stdout,
     );
 
+    g.measurement_time(Duration::from_secs(10));
+
     bench_haskell_sample(
         &mut g,
         "BenchPrimesSieve.hs",
