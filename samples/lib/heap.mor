@@ -8,23 +8,25 @@ pub type Heap a {
   pub Heap((a, a) -> Bool, Array a),
 }
 
-pub empty(lt: (a, a) -> Bool): Heap a =
-  Heap(lt, [])
+// If `cmp(x, y)` returns true, then `x` has higher priority than `y`. For
+// example, `cmp = \(x, y) -> x < y` results in a min-heap.
+pub empty(cmp: (a, a) -> Bool): Heap a =
+  Heap(cmp, [])
 
 pub insert(heap: Heap a, item: a): Heap a =
-  let Heap(lt, arr) = heap in
+  let Heap(cmp, arr) = heap in
   let new_arr = push(arr, item) in
   let i = len(new_arr) - 1 in
-  sift_up(Heap(lt, new_arr), i)
+  sift_up(Heap(cmp, new_arr), i)
 
 pub remove(heap: Heap a): (Heap a, Option a) =
-  let Heap(lt, arr) = heap in
+  let Heap(cmp, arr) = heap in
   if len(arr) > 0 {
     let i = len(arr) - 1 in
-    let (new_arr, max) = pop(swap(arr, 0, i)) in
-    (sift_down(Heap(lt, new_arr), 0), Some(max))
+    let (new_arr, root) = pop(swap(arr, 0, i)) in
+    (sift_down(Heap(cmp, new_arr), 0), Some(root))
   } else {
-    (Heap(lt, arr), None)
+    (Heap(cmp, arr), None)
   }
 
 swap(arr: Array a, i: Int, j: Int): Array a =
@@ -33,35 +35,35 @@ swap(arr: Array a, i: Int, j: Int): Array a =
   Array.set(hole_j(item_i), i, item_j)
 
 sift_up(heap: Heap a, i: Int): Heap a =
-  let Heap(lt, arr) = heap in
+  let Heap(cmp, arr) = heap in
   let parent = (i - 1) / 2 in
-  if i = 0 || ! lt(Array.get(arr, parent), Array.get(arr, i)) {
-    Heap(lt, arr)
+  if i = 0 || cmp(Array.get(arr, parent), Array.get(arr, i)) {
+    Heap(cmp, arr)
   } else {
-    let new_heap = Heap(lt, swap(arr, parent, i)) in
+    let new_heap = Heap(cmp, swap(arr, parent, i)) in
     sift_up(new_heap, parent)
   }
 
 sift_down(heap: Heap a, i: Int): Heap a =
-  let Heap(lt, arr) = heap in
+  let Heap(cmp, arr) = heap in
   let left_idx = 2 * i + 1 in
   let right_idx = 2 * i + 2 in
 
-  let maybe_left = if left_idx < len(arr) && ! lt(Array.get(arr, left_idx), Array.get(arr, i)) {
+  let largest_left = if left_idx < len(arr) && cmp(Array.get(arr, left_idx), Array.get(arr, i)) {
     left_idx
   } else {
     i
   } in
 
-  let largest = if right_idx < len(arr) && ! lt(Array.get(arr, right_idx), Array.get(arr, maybe_left)) {
+  let largest = if right_idx < len(arr) && cmp(Array.get(arr, right_idx), Array.get(arr, largest_left)) {
     right_idx
   } else {
-    maybe_left
+    largest_left
   } in
 
   if largest = i {
-    Heap(lt, arr)
+    Heap(cmp, arr)
   } else {
-    let new_heap = Heap(lt, swap(arr, largest, i)) in
+    let new_heap = Heap(cmp, swap(arr, largest, i)) in
     sift_down(new_heap, largest)
   }

@@ -36,7 +36,7 @@ proc remove_range(heap: Heap Int, start: Int, end: Int): () =
   }
 
 proc main(): () =
-  let heap = Heap.empty(\(x, y) -> x < y) in
+  let heap = Heap.empty(\(x, y) -> x > y) in
   heap
   |> Heap.insert(8)
   |> Heap.insert(7)
