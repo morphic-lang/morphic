@@ -4,6 +4,12 @@ use std::io::{stdin, BufRead, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+// Morphic's `Int` type is `i64`, so this alias helps signal when an integer in
+// a Rust benchmark is meant to correspond to the `Int` type in the associated
+// Morphic benchmark, and makes it less likely that we will accidentally use
+// `i32` on the Rust side.
+pub type Int = i64;
+
 pub struct ProfileInfo {
     total_calls: AtomicU64,
     total_clock_nanos: AtomicU64,

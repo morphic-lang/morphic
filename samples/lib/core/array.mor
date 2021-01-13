@@ -43,3 +43,16 @@ pub from_iter_with_capacity(iter: Iter a, capacity: Int): Array a =
 
 pub from_iter(iter: Iter a): Array a =
   from_iter_with_capacity(iter, 0)
+
+pub str(arr: Array a, s: a -> Array Byte): Array Byte =
+  let n = len(arr) - 1 in
+  Iter.items(arr)
+    |> Iter.take(n)
+    |> Iter.foldl(
+        "[",
+        \(accum, item) -> accum
+          |> concat(s(item))
+          |> concat(", ")
+    )
+    |> concat(s(get(arr, n)))
+    |> concat("]")

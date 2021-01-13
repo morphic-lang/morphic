@@ -1,3 +1,19 @@
+pub max_int: Int = 2305843009213693951
+
+pub cmp_max(a: Int, b: Int): Int =
+  if a > b {
+    a
+  } else {
+    b
+  }
+
+pub cmp_min(a: Int, b: Int): Int =
+  if a < b {
+    a
+  } else {
+    b
+  }
+
 pub int_bit_not(a: Int): Int =
   -a - 1
 
