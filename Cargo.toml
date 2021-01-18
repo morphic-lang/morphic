@@ -14,7 +14,7 @@ walkdir = "2.3.1"
 [dependencies]
 find_clang = { path = "./find_clang" }
 lalrpop-util = "0.18.1"
-im-rc = "12.3.3"
+im-rc = "15.0.0"
 itertools = "0.8.0"
 lazy_static = "1.3.0"
 stacker = "0.1.5"

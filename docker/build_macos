@@ -1,2 +1,1 @@
-
 docker build -t morphic --build-arg USERNAME="root" --build-arg UID=0 --build-arg GID=0 - < "$(dirname $0)/Dockerfile"
