@@ -1,13 +1,15 @@
 FROM debian:buster@sha256:c99ed5d068d4f7ff36c7a6f31810defebecca3a92267fefbe0e0cf2d9639115a
 
+ARG USERNAME
 ARG UID
 ARG GID
 
-RUN ((test -n "$UID" && test -n "$GID") \
-  || (>&2 echo "ERROR: 'docker build' requires '--build-arg UID=<uid>' and '--build-arg GID=<gid>'." && false)) \
-  && addgroup --gid $GID user \
-  && adduser --disabled-password --gecos '' --uid $UID --gid $GID user
+RUN if ! id -u "$USERNAME" >/dev/null 2>&1; then \
+    addgroup --gid $GID "$USERNAME" \
+    && adduser --disabled-password --gecos '' --uid $UID --gid $GID "$USERNAME" \
+  ; fi
 
+# We install GHC to run Haskell benchmarks. Building the compiler itself does not require GHC.
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential \
@@ -19,7 +21,9 @@ RUN apt-get update \
     ssh \
     valgrind \
     vim \
-    zlib1g-dev
+    zlib1g-dev \
+    ghc \
+    ghc-prof
 
 RUN gpg-agent --daemon \
   && curl -L https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - \
@@ -34,19 +38,8 @@ RUN gpg-agent --daemon \
   && rm -rf /var/lib/apt/lists/* \
   && ln -s /usr/bin/wasm-ld-10 /usr/bin/wasm-ld
 
-USER user
+USER "$USERNAME"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 
-ENV PATH="/home/user/.cargo/bin:${PATH}"
-
-# We install GHC to run Haskell benchmarks.  Building the compiler itself does not require GHC.
-
-USER root
-
-RUN apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    ghc \
-    ghc-prof
-
-USER user
+ENV PATH="${HOME}/.cargo/bin:${PATH}"

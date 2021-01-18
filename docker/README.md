@@ -1,0 +1,3 @@
+# Why is configuration platform dependent?
+
+The goal is to build a container which does not create files as root for a better development experience. The way permissions work inside containers differs between MacOS and Linux. Working as the root user inside the container is fine on MacOS, but on Linux we need to create a user inside the container with the same UID and GID as the user outside the container. If we do this unconditionally, it creates errors during build on MacOS.
