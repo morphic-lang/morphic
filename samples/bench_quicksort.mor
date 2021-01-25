@@ -1,0 +1,100 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io expose { writeln },
+    module String expose { string_to_nat, int_to_string },
+    module Option expose { Option { Some, None } },
+    module Array,
+    module Iter,
+  }
+
+module Bench = file "lib/bench_common.mor" with { Core }
+  expose { repeat }
+
+swap(arr: Array Int, i: Int, j: Int): Array Int =
+  let temp = Array.get(arr, i) in
+  arr
+    |> Array.set(i, Array.get(arr, j))
+    |> Array.set(j, temp)
+
+for(start: Int, stop: Int, init: a, func: ((a, Int) -> a)): a =
+  Iter.range(start, stop) |> Iter.foldl(init, func)
+
+partition(arr: Array Int, lo: Int, hi: Int): (Int, Array Int) =
+  let pivot = Array.get(arr, hi) in
+  for(lo, hi + 1, (lo, arr),
+    \((i, a), j) ->
+      if j = hi {
+        (i, swap(a, i, hi))
+      } else if Array.get(a, j) < pivot {
+        (i + 1, swap(a, i, j))
+      } else {
+        (i, a)
+      }
+  )
+
+
+quicksort_help(arr: Array Int, lo: Int, hi: Int): Array Int =
+  if lo >= hi {
+    arr
+  } else {
+    let (sep, partitioned_arr) = partition(arr, lo, hi) in
+    partitioned_arr
+      |> quicksort_help(lo, sep - 1)
+      |> quicksort_help(sep + 1, hi)
+  }
+
+quicksort(arr: Array Int): Array Int =
+  quicksort_help(arr, 0, len(arr) - 1)
+
+
+copy_contents_from_start(dst: Array Int, src: Array Int, start: Int): Array Int =
+  if start >= len(src) {
+    dst
+  } else {
+    Array.set(dst, start, Array.get(src, start))
+      |> copy_contents_from_start(src, start + 1)
+  }
+
+copy(dst: Array Int, src: Array Int): Array Int =
+  copy_contents_from_start(dst, src, 0)
+
+
+clone(arr: Array Int): Array Int =
+  Array.fill_with(len(arr), \() -> 0)
+    |> copy(arr)
+
+proc input_ints_help(ints: Array Int): Array Int =
+  match string_to_nat(do input()) {
+    Some(int) ->
+      push(ints, int)
+        |> do input_ints_help(),
+
+    None ->
+      ints
+  }
+
+proc input_ints(): Array Int =
+  do input_ints_help([])
+
+feedforward_repeat(iters: Int, init: a, op: a -> a): a =
+  if iters <= 0 {
+    init
+  } else {
+     feedforward_repeat(iters - 1, op(init), op)
+  }
+
+proc main(): () =
+  match string_to_nat(do input()) {
+    Some(iters) ->
+      let length_ignored = do input() in
+      let ints = do input_ints() in
+      let sorted = feedforward_repeat(iters, clone(ints), \(buf) -> quicksort(copy(buf, ints))) in
+      do output("The sorted version of\n  ") then
+      do output(Array.str(ints, int_to_string)) then
+      do output("\nis\n  ") then
+      do output(Array.str(sorted, int_to_string)) then
+      do output("\n"),
+
+    None ->
+      do writeln("Please enter an integer (expressing iteration count) followed by a sequence of line-separated integers (an array), followed by an empty line"),
+  }

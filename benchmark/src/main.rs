@@ -5,6 +5,8 @@ use morphic::file_cache::FileCache;
 
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, Criterion};
+use rand::{Rng, SeedableRng};
+use rand_pcg::Pcg64;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufReader, Write};
@@ -495,6 +497,50 @@ fn sample_primes(c: &mut Criterion) {
     );
 }
 
+fn sample_quicksort(c: &mut Criterion) {
+    let mut g = c.benchmark_group("quicksort");
+    g.sample_size(10);
+
+    let length = 1000;
+
+    let mut input_ints: Vec<i64> = Vec::new();
+    let mut rng = Pcg64::seed_from_u64(7251862977019338101); // seed is arbitrary
+    while input_ints.len() < length {
+        let next = rng.gen();
+        if next >= 0 {
+            input_ints.push(next);
+        }
+    }
+
+    let mut output_ints = input_ints.clone();
+    output_ints.sort();
+
+    let mut stdin = format!("{}\n", input_ints.len());
+    for int in input_ints.iter() {
+        let line = format!("{}\n", int);
+        stdin.push_str(&line);
+    }
+    let stdout = format!("The sorted version of\n  {:?}\nis\n  {:?}\n", input_ints, output_ints);
+
+    bench_sample(
+        &mut g,
+        "bench_quicksort.mor",
+        "samples/bench_quicksort.mor",
+        &[],
+        "quicksort",
+        &stdin,
+        &stdout,
+    );
+
+    bench_rust_sample(
+        &mut g,
+        "bench_quicksort.rs",
+        "samples/rust_samples/bench_quicksort.rs",
+        &stdin,
+        &stdout,
+    );
+}
+
 fn sample_primes_sieve(c: &mut Criterion) {
     let mut g = c.benchmark_group("primes_sieve");
     g.sample_size(20);
@@ -622,6 +668,8 @@ fn main() {
     let mut c = Criterion::default()
         .default_mode_bench()
         .configure_from_args();
+
+    sample_quicksort(&mut c);
 
     sample_primes(&mut c);
 
