@@ -5,7 +5,7 @@ use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 
 // Event ids are *reverse-chronological*, in the sense that events with *higher* id values occur
-// earlier, and *per-block*, in the sense that ids are unique an sequentially assigned within a
+// earlier, and *per-block*, in the sense that ids are unique and sequentially assigned within a
 // block, but will in general overlap between blocks.
 id_type!(RevEventId);
 
