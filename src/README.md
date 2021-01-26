@@ -28,14 +28,14 @@ In most of these passes there is only one public function, i.e. the one invoked 
     (i.e., `forever x = forever (inc x)` generates the pair
     of functions `forever_internal x = forever_internal (inc x)` and `forever x = forever_internal x`, with
     `forever_internal` only referenced in those two places)
-    (and likewise for mutually recursive functions). This avoids excessively conservative analysis later.
+    (and likewise for mutually recursive functions).
 
 - `fn lambda_lift::lambda_lift` extracts lambdas to top-level lambda definitions describing the
     types of variables they capture alongside argument types.
 
 - `fn annot_closures::annot_closures` synthesizes *type variables for the types of closure-environments
     for each lambda callsite*. In other words, what was before a parameter with a concrete type `Int -> Int`
-    is now a generic type, which can be thought of as `forall T. Closure<Arg=Int, Ret=Int, Param=T>` (in pseudocode).
+    is now a generic type, which can be thought of as `forall T. Closure<Arg=Int, Ret=Int, Env=T>` (in pseudocode).
 
     (Note that a lot of the complexity comes from counting the appropriate number
     of type variables to generate in mutually recursive functions, i.e. in strongly-connected-components of the
