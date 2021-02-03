@@ -8,6 +8,7 @@ use std::time::Instant;
 // a Rust benchmark is meant to correspond to the `Int` type in the associated
 // Morphic benchmark, and makes it less likely that we will accidentally use
 // `i32` on the Rust side.
+#[allow(dead_code)]
 pub type Int = i64;
 
 pub struct ProfileInfo {
