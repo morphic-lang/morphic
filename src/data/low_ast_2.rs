@@ -11,9 +11,10 @@ use crate::util::id_vec::IdVec;
 //   multiple return values.  In comments denoting function signatures, we use square brackets `[]`
 //   to denote argument and return lists, to avoid confusion with tuple types.
 //
-// - A program in this representation consists of a sequence of top-level "definitions", which may
-//   declare both types and functions.  Types are identified by unique `TypeId`s, and functions by
-//   unique `FuncId`s.  Some definitions are user-provided, others are compiler-generated.
+// - A program in this representation consists of a sequence of top-level type definitions, followed
+//   by a sequence of top-level function definitions.  Types are identified by unique `TypeId`s, and
+//   functions by unique `FuncId`s.  Some definitions are user-provided, others are
+//   compiler-generated.
 //
 // - In general, definitions will both refer to types and functions bound by other definitions, and
 //   bind types and functions of their own.  When a definition references a type or function bound
@@ -23,11 +24,18 @@ use crate::util::id_vec::IdVec;
 //   with id `FuncId(3)` would be represented with a definition of the form
 //   `Def::CustomFunc(BindTo(FuncId(3)), ...)`.
 //
-// - Unless otherwise noted, definitions may be given in an arbitrary order.  In particular,
-//   definitions are *not* guaranteed to be given in topological/dependency order, and in general
-//   the dependency graph between definitions may contain cycles.  The only place where we make
-//   guarantees about ordering is in `CustomTypeDef` definitions; see the comments on that type for
-//   more details.
+// - Type definitions are given in strict topological/dependency order; a type definition will only
+//   ever mention types defined earlier in the sequence of type definitions.  This means that you
+//   are always guaranteed to be able to to compute the layout (size and alignment) of any type you
+//   encounter in a type definition, so the sequence of type definitions may be processed in a
+//   single pass.  Some type definitions take the form of "forward declarations", which provide just
+//   enough information to compute the layout of a type before its full content is provided by a
+//   later definition.
+//
+// - Function definitions are given in an arbitrary (non-topological) order, and the dependency
+//   graph between function definitions may contain cycles (i.e., functions may be recursive).  This
+//   means you must process the sequence of function definitions in two passes: a first pass to
+//   forward-declare the signatures of all functions, and a second pass to populate their bodies.
 
 id_type!(pub TypeId);
 id_type!(pub FuncId);
@@ -45,15 +53,88 @@ pub enum Type {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ArrayRep {
-    RepChoice(constrain::RepChoice),
+pub enum IsZeroSized {
+    NonZeroSized,
     ZeroSized,
 }
 
+/// Forward-declare an array type.  This should be paired with an `ArrayTypeDef` later in the
+/// program which references the `array_type` and `hole_array_type` type ids.
+///
+/// Note: This definition intentionally does not provide the item type of the array.  You shouldn't
+/// need it!  The layout of the array type should be fully determined by its representation and
+/// whether or not its item type is zero-sized.
 #[derive(Clone, Debug)]
-pub struct ArrayDef {
-    pub rep: ArrayRep,
+pub struct ArrayTypeDecl {
+    pub rep: constrain::RepChoice,
+    pub item_zero_sized: IsZeroSized,
+
+    // Bindings:
+    pub array_type: BindTo<TypeId>,
+    pub hole_array_type: BindTo<TypeId>,
+}
+
+/// Define the item type of an array type.  This should be paired with an `ArrayTypeDecl` earlier in
+/// the program which binds the `array_type` and `hole_array_type` type ids.
+#[derive(Clone, Debug)]
+pub struct ArrayTypeDef {
+    pub rep: constrain::RepChoice,
+    pub item_zero_sized: IsZeroSized,
     pub item_type: Type,
+    pub array_type: TypeId,
+    pub hole_array_type: TypeId,
+}
+
+/// Forward-declare a boxed type.  This should be paired with a `BoxedTypeDef` later in the program
+/// which references the `boxed_type` type id.
+///
+/// Note: This definition intentionally does not provide the item type of the box.  You shouldn't
+// need it!  The layout of the boxed type should not depend on the item type it wraps.
+#[derive(Clone, Debug)]
+pub struct BoxedTypeDecl {
+    // Bindings:
+    pub boxed_type: BindTo<TypeId>,
+}
+
+/// Define the item type of a boxed type.  This should be paired with a `BoxedTypeDecl` earlier in
+/// the program which binds the `boxed_type` type id.
+#[derive(Clone, Debug)]
+pub struct BoxedTypeDef {
+    pub item_type: Type,
+    pub boxed_type: TypeId,
+}
+
+/// Define a custom type in terms of a type that it wraps.
+///
+/// Note: There is intentionally no `CustomTypeDecl` definition type.  This is because, unlike
+/// arrays and boxes, the layout (size and alignment) of a custom type cannot be known without
+/// knowing the layout of the `content_type` that it wraps.
+#[derive(Clone, Debug)]
+pub struct CustomTypeDef {
+    pub content_type: Type,
+
+    // Bindings:
+    pub custom_type: BindTo<TypeId>,
+}
+
+#[derive(Clone, Debug)]
+pub enum TypeDef {
+    ArrayTypeDecl(ArrayTypeDecl),
+    ArrayTypeDef(ArrayTypeDef),
+    BoxedTypeDecl(BoxedTypeDecl),
+    BoxedTypeDef(BoxedTypeDef),
+    CustomTypeDef(CustomTypeDef),
+}
+
+#[derive(Clone, Debug)]
+pub struct ArrayOpsDef {
+    pub rep: constrain::RepChoice,
+    pub item_zero_sized: IsZeroSized,
+    pub item_type: Type,
+    pub array_type: TypeId,
+    pub hole_array_type: TypeId,
+
+    // Dependencies:
 
     // [item_type (borrowed)] -> []
     pub item_retain: Option<FuncId>,
@@ -61,11 +142,7 @@ pub struct ArrayDef {
     // [item_type (borrowed)] -> []
     pub item_release: Option<FuncId>,
 
-    // Type bindings:
-    pub array_type: BindTo<TypeId>,
-    pub hole_array_type: BindTo<TypeId>,
-
-    // Function bindings:
+    // Bindings:
 
     // [] -> [array_type (owned)]
     pub new: BindTo<FuncId>,
@@ -99,11 +176,9 @@ pub struct ArrayDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct IoDef {
+pub struct IoOpsDef {
     pub byte_array_rep: constrain::RepChoice,
 
-    // Must be the `TypeId` of a byte array with representation `byte_array_rep`.
-    // TODO: Is there some better way to structure this?
     pub byte_array_type: TypeId,
 
     // Bindings:
@@ -119,13 +194,14 @@ pub struct IoDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct BoxedDef {
+pub struct BoxedOpsDef {
     pub item_type: Type,
+    pub boxed_type: TypeId,
 
-    // Type bindings:
-    pub boxed_type: BindTo<TypeId>,
+    // Dependencies:
+    pub item_release: Option<FuncId>,
 
-    // Function bindings:
+    // Bindings:
 
     // [item_type (owned)] -> [boxed_type (owned)]
     pub new: BindTo<FuncId>,
@@ -133,24 +209,26 @@ pub struct BoxedDef {
     // [boxed_type (borrowed)] -> [item_type (borrowed)]
     pub get: BindTo<FuncId>,
 
-    // [boxed_type (borrowed)] -> []
+    // [boxed_type] -> []
     pub retain: BindTo<FuncId>,
 
-    // [boxed_type (owned)] -> []
+    // [boxed_type] -> []
     pub release: BindTo<FuncId>,
 }
 
 #[derive(Clone, Debug)]
-pub struct CustomTypeDef {
-    // Invariant: The *size* of `content_type` must be determinable using only the sizes of types
-    // already defined earlier in the top-level definition list.  This is roughly a topological
-    // ordering constraint, although it does not forbid `content_type` from (transitively)
-    // mentioning custom >[custom_type]
-    // Does not touch refcounts; agnostic to owned/borrowed status.
+pub struct CustomTypeOpsDef {
+    pub content_type: Type,
+    pub custom_type: TypeId,
+
+    // Bindings:
+
+    // [item_type] -> [custom_type]
+    // Does not touch refcounts; agnostic to owned/borrowed status of argument.
     pub wrap: BindTo<FuncId>,
 
-    // [custom_type] -> [content_type]
-    // Does not touch refcounts; agnostic to owned/borrowed status.
+    // [custom_type] -> [item_type]
+    // Does not touch refcounts; agnostic to owned/borrowed status of argument.
     pub unwrap: BindTo<FuncId>,
 }
 
@@ -234,19 +312,19 @@ pub struct CustomFuncDef {
 }
 
 #[derive(Clone, Debug)]
-pub enum Def {
-    CustomTypeDef(CustomTypeDef),
+pub enum FuncDef {
+    ArrayOpsDef(ArrayOpsDef),
+    IoOpsDef(IoOpsDef),
+    BoxedOpsDefs(BoxedOpsDef),
+    CustomTypeOpsDef(CustomTypeOpsDef),
     CustomFuncDef(CustomFuncDef),
-
-    ArrayDef(ArrayDef),
-    IoDef(IoDef),
-    BoxedDef(BoxedDef),
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub defs: Vec<Def>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
+    pub type_defs: Vec<TypeDef>,
+    pub func_defs: Vec<FuncDef>,
 
     // Must have signature [] -> []
     pub main: FuncId,
