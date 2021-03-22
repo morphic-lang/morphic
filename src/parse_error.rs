@@ -9,6 +9,8 @@ use crate::report_error::{report_error, Report};
 // Clean up a token name from the grammar for display to the user.
 fn format_token_name(name: &str) -> &str {
     match name {
+        "\"OuterLineDoc\"" => "outer doc (\"///\" comment on a type or value)",
+        "\"InnerLineDoc\"" => "inner doc (\"//!\" comment in a module)",
         "\"UpperName\"" => "uppercase name",
         "\"LowerName\"" => "lowercase name",
         "\"FloatLit\"" => "float literal",
