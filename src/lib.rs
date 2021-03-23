@@ -9,13 +9,13 @@ mod util;
 
 mod builtins;
 
-mod data;
+pub mod data;
 mod intrinsic_config;
 mod pretty_print;
 
-mod lex;
+pub mod lex;
 
-lalrpop_mod!(parse);
+lalrpop_mod!(pub parse);
 
 mod parse_error;
 mod report_error;

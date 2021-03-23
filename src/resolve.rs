@@ -551,7 +551,7 @@ fn resolve_mod(
                     pending_type_defs.push((type_id, params, variants));
                 }
 
-                raw::Item::ValDef(doc, visibility, name, type_, body) => {
+                raw::Item::ValDef(_, visibility, name, type_, body) => {
                     let val_id = ctx.vals.push(None);
                     {
                         let val_symbols_id = ctx.val_symbols.push(None);

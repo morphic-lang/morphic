@@ -37,7 +37,7 @@ rand = "0.6.5"
 rand_pcg = "0.1.1"
 
 [workspace]
-members = ["benchmark", "find_clang"]
+members = ["benchmark", "find_clang", "tools/morphic-doc"]
 
 [profile.dev.package.criterion]
 opt-level = 3
