@@ -13,6 +13,8 @@ extern {
   type Error = lex::Error;
 
   enum lex::Token {
+    "OuterLineDoc" => lex::Token::OuterLineDoc(<String>),
+    "InnerLineDoc" => lex::Token::InnerLineDoc(<String>),
     "UpperName" => lex::Token::UpperName(<String>),
     "LowerName" => lex::Token::LowerName(<String>),
     "FloatLit" => lex::Token::FloatLit(<f64>),
@@ -114,6 +116,18 @@ Spanned<T>: syntax::Expr = {
 // Names and Strings
 
 #[inline]
+OuterDoc: Option<syntax::OuterDoc> = {
+  <doc: "OuterLineDoc"+> => Some(syntax::OuterDoc(doc.join("\n"))),
+  () => None,
+}
+
+#[inline]
+InnerDoc: Option<syntax::InnerDoc> = {
+  <doc: "InnerLineDoc"+> => Some(syntax::InnerDoc(doc.join("\n"))),
+  () => None,
+}
+
+#[inline]
 TypeName: syntax::TypeName = {
   <"UpperName"> => syntax::TypeName(<>),
 };
@@ -153,7 +167,7 @@ OptPub: Visibility = {
 // Top-Level Items
 
 pub Program: syntax::Program = {
-  <Item*> => syntax::Program(<>),
+  <doc: InnerDoc> <items: Item*> => syntax::Program(doc, items),
 };
 
 Item: syntax::Item = {
@@ -167,19 +181,22 @@ Item: syntax::Item = {
 // Type Definitions
 
 TypeDef: syntax::Item = {
+  <doc: OuterDoc>
   <visibility: OptPub> "type" <name: TypeName> <params: TypeParam*>
     "{" <cases: CommaSep<TypeCase>> "}" =>
-      syntax::Item::TypeDef(visibility, name, params, cases),
+      syntax::Item::TypeDef(doc, visibility, name, params, cases),
 };
 
-TypeCase: (Visibility, syntax::CtorName, Option<syntax::Type>) = {
+TypeCase: (Option<syntax::OuterDoc>, Visibility, syntax::CtorName, Option<syntax::Type>) = {
+  <doc: OuterDoc>
   <visibility: OptPub> <name: CtorName> <content: ("(" <Types> ")")?> =>
-    (visibility, name, content),
+    (doc, visibility, name, content),
 };
 
 // Value Definitions
 
 ValDef: syntax::Item = {
+  <doc: OuterDoc>
   <visibility: OptPub>
   <purity: OptProc>
   <name: ValName>
@@ -204,11 +221,12 @@ ValDef: syntax::Item = {
     let def_type = syntax::Type::Func(purity, Box::new(arg_type), Box::new(ret_type));
     let def_body = syntax::Expr::Lam(purity, arg_pat, Box::new(body));
 
-    syntax::Item::ValDef(visibility, name, def_type, def_body)
+    syntax::Item::ValDef(doc, visibility, name, def_type, def_body)
   },
 
+  <doc: OuterDoc>
   <visibility: OptPub> <name: ValName> ":" <def_type: Type> "=" <val: Expr> => {
-    syntax::Item::ValDef(visibility, name, def_type, val)
+    syntax::Item::ValDef(doc, visibility, name, def_type, val)
   },
 }
 

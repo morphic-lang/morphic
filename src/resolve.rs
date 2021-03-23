@@ -510,9 +510,9 @@ fn resolve_mod(
         let mut pending_type_defs = Vec::new();
         let mut pending_val_defs = Vec::new();
 
-        for item in content.0 {
+        for item in content.1 {
             match item {
-                raw::Item::TypeDef(visibility, name, params, variants) => {
+                raw::Item::TypeDef(_, visibility, name, params, variants) => {
                     let type_id = ctx.types.push(None);
                     {
                         let type_symbols_id = ctx.type_symbols.push(res::TypeSymbols {
@@ -521,7 +521,7 @@ fn resolve_mod(
                             variant_symbols: IdVec::from_items(
                                 variants
                                     .iter()
-                                    .map(|(_, variant_name, _)| res::VariantSymbols {
+                                    .map(|(_, _, variant_name, _)| res::VariantSymbols {
                                         variant_name: variant_name.clone(),
                                     })
                                     .collect(),
@@ -538,7 +538,7 @@ fn resolve_mod(
                     .map_err(|()| ErrorKind::DuplicateTypeName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
 
-                    for (idx, (ctor_visibility, ctor_name, _)) in variants.iter().enumerate() {
+                    for (idx, (_, ctor_visibility, ctor_name, _)) in variants.iter().enumerate() {
                         insert_unique(
                             &mut mod_map.ctors,
                             ctor_name.clone(),
@@ -551,7 +551,7 @@ fn resolve_mod(
                     pending_type_defs.push((type_id, params, variants));
                 }
 
-                raw::Item::ValDef(visibility, name, type_, body) => {
+                raw::Item::ValDef(_, visibility, name, type_, body) => {
                     let val_id = ctx.vals.push(None);
                     {
                         let val_symbols_id = ctx.val_symbols.push(None);
@@ -647,7 +647,7 @@ fn resolve_mod(
         let resolved_variants = IdVec::from_items(
             variants
                 .iter()
-                .map(|(_, _, variant_type)| match variant_type {
+                .map(|(_, _, _, variant_type)| match variant_type {
                     None => Ok(None),
                     Some(variant_type) => Ok(Some(resolve_type(
                         &ctx.mods,

@@ -3,6 +3,12 @@ use crate::data::purity::Purity;
 use crate::data::visibility::Visibility;
 use std::collections::VecDeque;
 
+#[derive(Clone, Debug)]
+pub struct OuterDoc(pub String);
+
+#[derive(Clone, Debug)]
+pub struct InnerDoc(pub String);
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeName(pub String);
 
@@ -23,17 +29,18 @@ pub struct ModPath(pub Vec<ModName>);
 
 // TODO: Rename 'Program' to 'Module'
 #[derive(Clone, Debug)]
-pub struct Program(pub Vec<Item>);
+pub struct Program(pub Option<InnerDoc>, pub Vec<Item>);
 
 #[derive(Clone, Debug)]
 pub enum Item {
     TypeDef(
+        Option<OuterDoc>,
         Visibility,
         TypeName,
         Vec<TypeParam>,
-        Vec<(Visibility, CtorName, Option<Type>)>,
+        Vec<(Option<OuterDoc>, Visibility, CtorName, Option<Type>)>,
     ),
-    ValDef(Visibility, ValName, Type, Expr),
+    ValDef(Option<OuterDoc>, Visibility, ValName, Type, Expr),
     ModDef(Visibility, ModName, ModSpec, Vec<ModBinding>, ExposeSpec),
     ModImport(ModName, ExposeSpec),
     ModExpose(ModPath, ExposeSpec),

@@ -7,6 +7,8 @@ pub struct Error(pub usize);
 
 #[derive(Clone, Debug)]
 pub enum Token {
+    OuterLineDoc(String),
+    InnerLineDoc(String),
     UpperName(String),
     LowerName(String),
     FloatLit(f64),
@@ -84,6 +86,8 @@ pub enum Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Token::OuterLineDoc(doc) => write!(f, "///{}", doc),
+            Token::InnerLineDoc(doc) => write!(f, "//!{}", doc),
             Token::UpperName(name) => write!(f, "{}", name),
             Token::LowerName(name) => write!(f, "{}", name),
             Token::FloatLit(val) => write!(f, "{}", val),
@@ -196,7 +200,13 @@ fn consume_exact(pos: usize, src: &str, target: &str) -> Option<usize> {
 }
 
 fn consume_comment(mut pos: usize, src: &str) -> Option<usize> {
-    pos = consume_exact(pos, src, "//")?;
+    let rest = &src[pos..];
+
+    if rest.starts_with("//") && !rest.starts_with("///") && !rest.starts_with("//!") {
+        pos += "//".len();
+    } else {
+        return None;
+    }
 
     while let Some(c) = char_at(src, pos) {
         pos = next_pos(pos, src);
@@ -232,6 +242,28 @@ fn skip_invisibles(mut pos: usize, src: &str) -> usize {
             (_, Some(after_whitespace)) => pos = after_whitespace,
         }
     }
+}
+
+fn consume_line_doc(mut pos: usize, src: &str, prefix: &str) -> Option<(usize, String)> {
+    pos = consume_exact(pos, src, prefix)?;
+
+    let mut doc = String::new();
+    while let Some(c) = char_at(src, pos) {
+        pos = next_pos(pos, src);
+        if c == '\n' {
+            break;
+        }
+        doc.push(c);
+    }
+    Some((pos, doc))
+}
+
+fn consume_outer_line_doc(pos: usize, src: &str) -> Option<(usize, String)> {
+    consume_line_doc(pos, src, "///")
+}
+
+fn consume_inner_line_doc(pos: usize, src: &str) -> Option<(usize, String)> {
+    consume_line_doc(pos, src, "//!")
 }
 
 fn consume_name(mut pos: usize, src: &str) -> Option<usize> {
@@ -348,6 +380,18 @@ impl<'a> Iterator for Lexer<'a> {
 
         if self.pos == self.src.len() {
             return None;
+        }
+
+        if let Some((doc_end, doc)) = consume_outer_line_doc(self.pos, self.src) {
+            let doc_start = self.pos;
+            self.pos = doc_end;
+            return Some(Ok((doc_start, Token::OuterLineDoc(doc), doc_end)));
+        }
+
+        if let Some((doc_end, doc)) = consume_inner_line_doc(self.pos, self.src) {
+            let doc_start = self.pos;
+            self.pos = doc_end;
+            return Some(Ok((doc_start, Token::InnerLineDoc(doc), doc_end)));
         }
 
         if let Some(name_end) = consume_name(self.pos, self.src) {

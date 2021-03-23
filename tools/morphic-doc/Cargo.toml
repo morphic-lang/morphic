@@ -1,0 +1,12 @@
+[package]
+name = "morphic-doc"
+version = "0.1.0"
+authors = ["William Brandon", "Wilson Berkow", "Frank Dai", "Benjamin Driscoll"]
+edition = "2018"
+
+[dependencies]
+morphic = { path = "../.." }
+anyhow = "1.0.28"
+clap = { version = "2.33.0", features = ["color"] }
+glob = "0.3.0"
+pulldown-cmark = "0.8.0"
