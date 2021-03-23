@@ -41,14 +41,13 @@ id_type!(pub TypeId);
 id_type!(pub FuncId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct BindTo<T>(T);
+pub struct BindTo<T>(pub T);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bool,
     Num(first_ord::NumType),
     Tuple(Vec<Type>),
-    Variants(IdVec<first_ord::VariantId, Type>),
     Opaque(TypeId),
 }
 
@@ -58,72 +57,69 @@ pub enum IsZeroSized {
     ZeroSized,
 }
 
-/// Forward-declare an array type.  This should be paired with an `ArrayTypeDef` later in the
-/// program which references the `array_type` and `hole_array_type` type ids.
-///
-/// Note: This definition intentionally does not provide the item type of the array.  You shouldn't
-/// need it!  The layout of the array type should be fully determined by its representation and
-/// whether or not its item type is zero-sized.
 #[derive(Clone, Debug)]
-pub struct ArrayTypeDecl {
+pub struct ArrayTypeDef {
     pub rep: constrain::RepChoice,
     pub item_zero_sized: IsZeroSized,
+    pub item_type: Type,
 
     // Bindings:
     pub array_type: BindTo<TypeId>,
     pub hole_array_type: BindTo<TypeId>,
 }
 
-/// Define the item type of an array type.  This should be paired with an `ArrayTypeDecl` earlier in
-/// the program which binds the `array_type` and `hole_array_type` type ids.
-#[derive(Clone, Debug)]
-pub struct ArrayTypeDef {
-    pub rep: constrain::RepChoice,
-    pub item_zero_sized: IsZeroSized,
-    pub item_type: Type,
-    pub array_type: TypeId,
-    pub hole_array_type: TypeId,
-}
-
-/// Forward-declare a boxed type.  This should be paired with a `BoxedTypeDef` later in the program
-/// which references the `boxed_type` type id.
-///
-/// Note: This definition intentionally does not provide the item type of the box.  You shouldn't
-// need it!  The layout of the boxed type should not depend on the item type it wraps.
-#[derive(Clone, Debug)]
-pub struct BoxedTypeDecl {
-    // Bindings:
-    pub boxed_type: BindTo<TypeId>,
-}
-
-/// Define the item type of a boxed type.  This should be paired with a `BoxedTypeDecl` earlier in
-/// the program which binds the `boxed_type` type id.
 #[derive(Clone, Debug)]
 pub struct BoxedTypeDef {
     pub item_type: Type,
-    pub boxed_type: TypeId,
+
+    // Binding:
+    pub boxed_type: BindTo<TypeId>,
 }
 
-/// Define a custom type in terms of a type that it wraps.
-///
-/// Note: There is intentionally no `CustomTypeDecl` definition type.  This is because, unlike
-/// arrays and boxes, the layout (size and alignment) of a custom type cannot be known without
-/// knowing the layout of the `content_type` that it wraps.
 #[derive(Clone, Debug)]
 pub struct CustomTypeDef {
     pub content_type: Type,
 
-    // Bindings:
+    // Binding:
     pub custom_type: BindTo<TypeId>,
+}
+
+/// Forward-declare a variant type.  This should be paired with a `VariantTypeDef` later in the
+/// program which references the same `variant_type` type id.
+///
+/// Note: This definition intentionally does not provide the content types for each case of the
+/// variant type.  These are provided in the corresponding `VariantTypeDef`.  Separating variant
+/// type declarations from definitions in this way allows us to break cycles in the type dependency
+/// graph, because generating the concrete representation of a variant type requires knowing the
+/// layout of all of the types that it wraps.
+#[derive(Clone, Debug)]
+pub struct VariantTypeDecl {
+    // Binding:
+    pub variant_type: BindTo<TypeId>,
+}
+
+/// Define a variant type, generating a concrete representation for it.  This should be paired with
+/// a `VariantTypeDecl` earlier in the program which binds the same `variant_type` type id.
+///
+/// Note: the backend *must* generate non-zero-sized representations for all variant types, even if
+/// they could otherwise be represented in zero bytes.
+#[derive(Clone, Debug)]
+pub struct VariantTypeDef {
+    // Invariant: the layout of every type in `content_types` must be determinable entirely from
+    // type defintiions which appear earlier in the program.  In particular, no type in
+    // `content_types` will have a layout which depends on the layout of a variant type which has
+    // been declared (with `VariantTypeDecl`) but not yet defined (with `VariantTypeDef`).
+    pub content_types: IdVec<first_ord::VariantId, Type>,
+    pub variant_type: TypeId,
 }
 
 #[derive(Clone, Debug)]
 pub enum TypeDef {
-    ArrayTypeDecl(ArrayTypeDecl),
     ArrayTypeDef(ArrayTypeDef),
-    BoxedTypeDecl(BoxedTypeDecl),
     BoxedTypeDef(BoxedTypeDef),
     CustomTypeDef(CustomTypeDef),
+    VariantTypeDecl(VariantTypeDecl),
+    VariantTypeDef(VariantTypeDef),
 }
 
 #[derive(Clone, Debug)]
@@ -216,30 +212,14 @@ pub struct BoxedOpsDef {
     pub release: BindTo<FuncId>,
 }
 
-#[derive(Clone, Debug)]
-pub struct CustomTypeOpsDef {
-    pub content_type: Type,
-    pub custom_type: TypeId,
-
-    // Bindings:
-
-    // [item_type] -> [custom_type]
-    // Does not touch refcounts; agnostic to owned/borrowed status of argument.
-    pub wrap: BindTo<FuncId>,
-
-    // [custom_type] -> [item_type]
-    // Does not touch refcounts; agnostic to owned/borrowed status of argument.
-    pub unwrap: BindTo<FuncId>,
-}
-
 id_type!(pub LocalId);
 
 #[derive(Clone, Debug)]
 pub struct LetBinding {
     // Types of bound variables.  Each is assigned a new sequential `LocalId`.
-    types: Vec<Type>,
+    pub types: Vec<Type>,
     // "Right hand side" of assignment.  The `value` expression should return `types.len()` values.
-    values: Expr,
+    pub values: Expr,
 }
 
 #[derive(Clone, Debug)]
@@ -249,9 +229,12 @@ pub enum Expr {
     // May return zero or more values depending on the signature of the called function
     Call(FuncId, Vec<LocalId>),
 
-    // At the type level, returns the same types as the enclosing function.  Semantically, does not
-    // actually return, but rather acts as a jump.
-    TailCall(tail::TailFuncId, LocalId),
+    // At the type level, returns zero return values.  Semantically, does not actually return, but
+    // rather acts as a jump.
+    TailCall(tail::TailFuncId, Vec<LocalId>),
+
+    // Unconditionally invokes undefined behavior.  Allowed to return any type.
+    Unreachable(Type),
 
     // Each branch of the `if` must return exactly one value.
     If(LocalId, Box<Expr>, Box<Expr>),
@@ -264,15 +247,30 @@ pub enum Expr {
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),
     WrapVariant(
+        TypeId,
         IdVec<first_ord::VariantId, Type>,
         first_ord::VariantId,
         LocalId,
     ),
     UnwrapVariant(
+        TypeId,
         IdVec<first_ord::VariantId, Type>,
         first_ord::VariantId,
         LocalId,
     ),
+    WrapCustom(
+        TypeId, // custom type
+        Type,   // content type
+        LocalId,
+    ),
+    UnwrapCustom(
+        TypeId, // custom type
+        Type,   // content type
+        LocalId,
+    ),
+
+    // Returns a bool
+    CheckVariant(TypeId, first_ord::VariantId, LocalId),
 
     // Unlike prior passes, intrinsics here accept multiple arguments rather than tuples.
     // For example, the `AddInt` intrinsic accepts two arguments.
@@ -316,7 +314,6 @@ pub enum FuncDef {
     ArrayOpsDef(ArrayOpsDef),
     IoOpsDef(IoOpsDef),
     BoxedOpsDefs(BoxedOpsDef),
-    CustomTypeOpsDef(CustomTypeOpsDef),
     CustomFuncDef(CustomFuncDef),
 }
 
