@@ -203,7 +203,7 @@ fn consume_comment(mut pos: usize, src: &str) -> Option<usize> {
     let rest = &src[pos..];
 
     if rest.starts_with("//") && !rest.starts_with("///") && !rest.starts_with("//!") {
-        pos += pos + "//".len();
+        pos += "//".len();
     } else {
         return None;
     }
