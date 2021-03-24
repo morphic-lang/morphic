@@ -1,0 +1,124 @@
+@import 'scrollbar-polyfill';
+@import 'github-markdown';
+
+$font-weight-bold: 700;
+$font-weight-regular: 400;
+$font-weight-light: 300;
+
+$font-family-code: 'Fira Code', monospace;
+$font-family-text: 'Source Sans Pro', sans-serif;
+
+$background-gray: #f5f5f5;
+$main-index-size: 1rem;
+
+* {
+  // Work around for bug where Chrome does not respect font weight:
+  // https://stackoverflow.com/questions/22001035/font-weight-ignored-in-chrome
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  display: flex;
+  min-height: 100vh;
+  margin: 0;
+}
+
+nav {
+  flex: 0 0 12.5rem;
+  background-color: $background-gray;
+  font-family: $font-family-code;
+  font-weight: $font-weight-light;
+
+  display: flex;
+  flex-direction: column;
+
+  overflow-y: auto;
+  @include scrollbar-style(thin, auto, auto);
+  height: 100vh;
+
+  hr {
+    width: 100%;
+    border-right: 0;
+    border-left: 0;
+  }
+
+  #nav-logo {
+    align-self: center;
+  }
+
+  .nav-header {
+    align-self: center;
+    background: white;
+    outline: 0.0625rem solid black;
+    width: 11.25rem;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .nav-section-header {
+    text-align: center;
+  }
+}
+
+main {
+  flex: 1;
+  font-family: $font-family-text;
+  font-weight: $font-weight-regular;
+  padding-top: 1rem;
+  padding-left: 3rem;
+
+  code {
+    font-family: $font-family-code;
+    font-weight: $font-weight-light;
+  }
+
+  //////////
+  // HEADERS
+  //////////
+
+  .main-header, .main-section-header {
+    font-weight: $font-weight-bold;
+    font-size: 2rem;
+  }
+
+  .main-subsection-header {
+    font-weight: $font-weight-bold;
+    font-size: 1.5rem;
+    padding-left: $main-index-size;
+  }
+
+  .main-section-entry-header, .main-subsection-entry-header {
+    font-family: $font-family-code;
+    font-weight: $font-weight-light;
+    margin: 0 2px;
+    padding: 0 5px;
+    white-space: nowrap;
+    border: 1px solid #eaeaea;
+    background-color: #f8f8f8;
+    border-radius: 3px;
+  }
+
+  .main-subsection-entry-header {
+    padding-left: $main-index-size;
+  }
+
+  /////////
+  // BODIES
+  /////////
+
+  .main-body, .main-section-entry-body, .main-subsection-entry-body {
+    @include github-markdown-style;
+  }
+
+
+  .main-body, .main-section-entry-body {
+    padding-left: $main-index-size;
+  }
+  
+
+  .main-subsection-entry-body {
+    padding-left: #{2 * $main-index-size};
+  }
+}

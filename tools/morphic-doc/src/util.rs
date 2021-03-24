@@ -13,13 +13,3 @@ where
         res
     }
 }
-
-pub trait OptionStringExt {
-    fn or_empty(self) -> String;
-}
-
-impl OptionStringExt for Option<String> {
-    fn or_empty(self) -> String {
-        self.unwrap_or_else(|| "".to_owned())
-    }
-}

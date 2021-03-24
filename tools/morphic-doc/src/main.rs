@@ -1,16 +1,15 @@
 mod parse;
+mod render;
 mod util;
 
-use crate::parse::{parse_mod_docs, Mod};
+use crate::{
+    parse::parse_mod_docs,
+    render::{render_pkg, Package},
+};
 use anyhow::{anyhow, Result};
 use clap::{App, Arg};
 use glob::glob;
 use std::{fs, path::Path};
-
-#[derive(Debug, Clone)]
-pub struct Package {
-    mods: Vec<Mod>,
-}
 
 fn main() -> Result<()> {
     let authors = clap::crate_authors!().replace(":", ", ");
@@ -54,7 +53,7 @@ fn main() -> Result<()> {
     };
 
     let pkg = Package { mods };
-    println!("{:#?}", pkg);
+    render_pkg(&pkg, "PLACEHOLDER TITLE", "PLACEHOLDER DESCRIPTION", "dist")?;
 
     Ok(())
 }

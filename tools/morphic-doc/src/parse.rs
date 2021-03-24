@@ -1,4 +1,4 @@
-use crate::util::{IteratorStringExt, OptionStringExt};
+use crate::util::IteratorStringExt;
 use anyhow::Result;
 use morphic::{
     data::{
@@ -8,29 +8,30 @@ use morphic::{
     },
     lex, parse,
 };
-use pulldown_cmark::{html::push_html, Event, Parser as CmarkParser, Tag};
+use pulldown_cmark::{html::push_html, Parser as CmarkParser};
+use serde::Serialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Item {
-    name: String,
-    def: String,
-    summary: String,
-    html: String,
+    pub name: String,
+    pub def: String,
+    pub summary: String,
+    pub html: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CustomType {
-    custom: Item,
-    variants: Vec<Item>,
+    pub custom: Item,
+    pub variants: Vec<Item>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Mod {
-    mod_: Item,
-    children: Vec<Box<Mod>>,
-    types: Vec<CustomType>,
-    vals: Vec<Item>,
-    funcs: Vec<Item>,
+    pub self_: Item,
+    pub children: Vec<Box<Mod>>,
+    pub types: Vec<CustomType>,
+    pub vals: Vec<Item>,
+    pub funcs: Vec<Item>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,23 +40,21 @@ pub enum ModName {
     Inline(String),
 }
 
-fn doc_to_summary(doc: &str) -> String {
-    let parser = CmarkParser::new(doc);
-    parser
-        .into_offset_iter()
-        .find_map(|(event, range)| match event {
-            Event::Start(Tag::Paragraph) => Some(range),
-            _ => None,
-        })
-        .map(|range| doc[range].to_owned())
-        .or_empty()
-}
+// Returns a tuple of a summary and the full HTML body
+fn doc_to_html(doc: Option<&String>) -> (String, String) {
+    if matches!(doc, None) {
+        return ("".to_owned(), "".to_owned());
+    }
 
-fn doc_to_html(doc: &str) -> String {
-    let parser = CmarkParser::new(doc);
+    let parser = CmarkParser::new(&doc.unwrap());
     let mut html = String::new();
     push_html(&mut html, parser);
-    html
+
+    let start = html.find("<p>").unwrap();
+    let end = html.find("</p>").unwrap();
+    let summary = html[start..(end + "</p>".len())].to_owned();
+
+    (summary, html)
 }
 
 fn purity_str(purity: Purity) -> &'static str {
@@ -124,10 +123,7 @@ fn process_mod_docs(name: ModName, mod_: &syntax::Program) -> Mod {
         }
     };
 
-    let doc = &mod_.0;
-    let summary = doc.as_ref().map(|doc| doc_to_summary(&doc.0)).or_empty();
-    let html = doc.as_ref().map(|doc| doc_to_html(&doc.0)).or_empty();
-
+    let (summary, html) = doc_to_html(mod_.0.as_ref().map(|doc| &doc.0));
     let mod_item = Item {
         name,
         def,
@@ -156,9 +152,10 @@ fn process_mod_docs(name: ModName, mod_: &syntax::Program) -> Mod {
                         } else {
                             name.0.clone()
                         };
+
                         let def = format!("pub {}", name);
-                        let summary = doc.as_ref().map(|doc| doc_to_summary(&doc.0)).or_empty();
-                        let html = doc.as_ref().map(|doc| doc_to_html(&doc.0)).or_empty();
+                        let (summary, html) = doc_to_html(doc.as_ref().map(|doc| &doc.0));
+
                         Item {
                             name,
                             def,
@@ -194,8 +191,7 @@ fn process_mod_docs(name: ModName, mod_: &syntax::Program) -> Mod {
                     )
                 };
 
-                let summary = doc.as_ref().map(|doc| doc_to_summary(&doc.0)).or_empty();
-                let html = doc.as_ref().map(|doc| doc_to_html(&doc.0)).or_empty();
+                let (summary, html) = doc_to_html(doc.as_ref().map(|doc| &doc.0));
                 let custom = Item {
                     name: name.0.clone(),
                     def,
@@ -221,8 +217,8 @@ fn process_mod_docs(name: ModName, mod_: &syntax::Program) -> Mod {
                     _ => format!("pub {}: {}", name.0, type_to_string(type_)),
                 };
 
-                let summary = doc.as_ref().map(|doc| doc_to_summary(&doc.0)).or_empty();
-                let html = doc.as_ref().map(|doc| doc_to_html(&doc.0)).or_empty();
+                let (summary, html) = doc_to_html(doc.as_ref().map(|doc| &doc.0));
+
                 let item = Item {
                     name: name.0.clone(),
                     def,
@@ -252,7 +248,7 @@ fn process_mod_docs(name: ModName, mod_: &syntax::Program) -> Mod {
     }
 
     Mod {
-        mod_: mod_item,
+        self_: mod_item,
         children,
         types,
         vals,

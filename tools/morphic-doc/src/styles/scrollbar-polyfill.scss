@@ -1,0 +1,48 @@
+// $width: auto | thin | none
+// $thumb-color: auto | <color>
+// $track-color: auto | <color>
+@mixin scrollbar-style($width, $thumb-color, $track-color) {
+  // Works on Firefox
+  scrollbar-width: $width;
+  scrollbar-color: $thumb-color $track-color;
+
+  // Works on Chrome, Edge, and Safari
+  &::-webkit-scrollbar {
+    @if $width == auto {
+      width: auto;
+    } @else if $width == thin {
+      width: 8px;
+    } @else if $width == none {
+      display: none;
+    }
+  }
+  &::-webkit-scrollbar-thumb {
+    @if $thumb-color == auto {
+      // If we set the width but not the background, then the scrollbar disappears on Chrome
+      // regardless of the width we choose. So, we set the background and try to simulate Firefox's
+      // behavior with "scrollbar-color: auto auto".
+      background: #cdcdcd;
+      &:hover {
+        background: mix(#cdcdcd, black, 80%);
+      }
+      &:active {
+        background: mix(#cdcdcd, black, 40%);
+      }
+    } @else {
+      background: $thumb-color;
+    }
+  }
+  &::-webkit-scrollbar-track {
+    @if $track-color == auto {
+      // See the comment under &::-webkit-scrollbar-thumb
+      background: #f0f0f0;
+    } @else {
+      background: $track-color;
+    }
+  }
+
+  // Works on IE
+  // NOTE: there is no way to set the scrollbar width
+  scrollbar-face-color: $thumb-color;
+  scrollbar-track-color: $track-color;
+}

@@ -12,6 +12,8 @@
 **/*.o
 **/*.prof
 
+# Output folder for `morphic-doc`
+/dist
 
 # Editor/system files
 *.swp

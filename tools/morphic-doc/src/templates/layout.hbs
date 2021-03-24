@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>{{title}}</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <meta name="description" content="{{description}}">
+    <link rel="icon" href="/static/morphic-logo.png">
+    <link rel="stylesheet" href="{{style}}">
+
+    <link rel="preconnect" href="https://fonts.gstatic.com">
+
+    <!-- code -->
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Fira+Code&display=swap"
+    >
+
+    <!-- text -->
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Source+Sans+Pro&display=swap"
+    >
+  </head>
+  <body>
+    <nav>
+      <div id="nav-logo">
+        <img src="/static/morphic-logo.png" height="80" width="80">
+      </div>
+
+      <div class="nav-header"><p>{{(normalize-mod-name self_.name)}}</p></div>
+
+      {{#if (nonempty children)}}
+        <hr>
+        <div class="nav-section-header"><p>Modules</p></div>
+        <hr>
+        {{#each children}}
+          <div class="nav-section-entry"><p>{{self_.name}}</p></div>
+        {{/each}}
+      {{/if}}
+
+      {{#if (nonempty types)}}
+        <hr>
+        <div class="nav-section-header"><p>Types</p></div>
+        <hr>
+        {{#each types}}
+          <div class="nav-section-entry"><p>{{custom.name}}</p></div>
+        {{/each}}
+      {{/if}}
+
+      {{#if (nonempty vals)}}
+        <hr>
+        <div class="nav-section-header"><p>Values</p></div>
+        <hr>
+        {{#each vals}}
+          <div class="nav-section-entry"><p>{{name}}</p></div>
+        {{/each}}
+      {{/if}}
+
+      {{#if (nonempty funcs)}}
+        <hr>
+        <div class="nav-section-header"><p>Functions</p></div>
+        <hr>
+        {{#each funcs}}
+          <div class="nav-section-entry"><p>{{name}}</p></div>
+        {{/each}}
+      {{/if}}
+    </nav>
+    <main>
+      <div class="main-header"><p>Module {{self_.name}}</p></div>
+      <div class="main-body"><p>{{{self_.html}}}</p></div>
+
+      {{#if (nonempty children)}}
+        <div class="main-section-header"><p>Modules</p></div>
+        {{#each children}}
+          <div class="main-section-entry-header"><p>{{self_.def}}</p></div>
+          <div class="main-section-entry-body"><p>{{{self_.summary}}}</p></div>
+        {{/each}}
+      {{/if}}
+
+      {{#if (nonempty types)}}
+        <div class="main-section-header"><p>Types</p></div>
+        {{#each types}}
+          <div class="main-section-entry-header"><p>{{custom.def}}</p></div>
+          <div class="main-section-entry-body"><p>{{{custom.html}}}</p></div>
+          {{#if (nonempty variants)}}
+            <div class="main-subsection-header"><p>Variants</p></div>
+            {{#each variants}}
+              <div class="main-subsection-entry-header"><p>{{def}}</p></div>
+              <div class="main-subsection-entry-body"><p>{{{html}}}</p></div>
+            {{/each}}
+          {{/if}}
+        {{/each}}
+      {{/if}}
+
+      {{#if (nonempty vals)}}
+        <div class="main-section-header"><p>Values</p></div>
+        {{#each vals}}
+          <div class="main-section-entry-header"><p>{{def}}</p></div>
+          <div class="main-section-entry-body"><p>{{{html}}}</p></div>
+        {{/each}}
+      {{/if}}
+
+      {{#if (nonempty funcs)}}
+        <div class="main-section-header"><p>Functions</p></div>
+        {{#each funcs}}
+          <div class="main-section-entry-header"><p>{{def}}</p></div>
+          <div class="main-section-entry-body"><p>{{{html}}}</p></div>
+        {{/each}}
+      {{/if}}
+    </main>
+  </body>
+</html>
