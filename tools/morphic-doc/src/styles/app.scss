@@ -8,8 +8,11 @@ $font-weight-light: 300;
 $font-family-code: 'Fira Code', monospace;
 $font-family-text: 'Source Sans Pro', sans-serif;
 
-$background-gray: #f5f5f5;
-$main-index-size: 1rem;
+$navbar-width: 12.5rem;
+$navbar-hide-width: #{3 * $navbar-width};
+$navbar-background: #f5f5f5;
+
+$main-indent-width: 1rem;
 
 * {
   // Work around for bug where Chrome does not respect font weight:
@@ -18,56 +21,99 @@ $main-index-size: 1rem;
 }
 
 body {
-  display: flex;
-  min-height: 100vh;
   margin: 0;
+  min-height: 100vh;
 }
 
-nav {
-  flex: 0 0 12.5rem;
-  background-color: $background-gray;
-  font-family: $font-family-code;
-  font-weight: $font-weight-light;
+@media all and (max-width: $navbar-hide-width) {
+  nav { display: none; }
+}
 
-  display: flex;
-  flex-direction: column;
-
-  overflow-y: auto;
-  @include scrollbar-style(thin, auto, auto);
-  height: 100vh;
-
-  hr {
-    width: 100%;
-    border-right: 0;
-    border-left: 0;
-  }
-
-  #nav-logo {
-    align-self: center;
-  }
-
-  .nav-header {
-    align-self: center;
-    background: white;
-    outline: 0.0625rem solid black;
-    width: 11.25rem;
+@media all and (min-width: $navbar-hide-width) {
+  nav {
+    position: fixed;
+    width: $navbar-width;
+    height: 100vh;
+    overflow-y: auto;
+    @include scrollbar-style(thin, auto, auto);
 
     display: flex;
-    justify-content: center;
-    align-items: center;
-  }
+    flex-direction: column;
 
-  .nav-section-header {
-    text-align: center;
+    background-color: $navbar-background;
+    font-family: $font-family-code;
+    font-weight: $font-weight-light;
+
+    hr {
+      width: 100%;
+      min-height: 1px;
+      height: 1px;
+      border: none;
+      background-color: black;
+      color: black;
+    }
+
+    .spacer {
+      // This is a total hack, but it works
+      border-top: 0.4rem solid transparent;
+      border-bottom: 0.4rem solid transparent;
+    }
+
+    #nav-logo {
+      align-self: center;
+    }
+
+    .header {
+      align-self: center;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+
+      text-decoration: none;
+      color: inherit;
+
+      background: white;
+      outline: 1px solid black;
+      border-right: #{0.3 * $navbar-width} solid transparent;
+      border-left: #{0.3 * $navbar-width} solid transparent;
+    }
+
+    .section-header, .section-entry {
+      display: table;
+      width: 100%;
+      font-size: 0.9rem;
+      text-decoration: none;
+      color: inherit;
+      &:hover {
+        background-color: mix($navbar-background, white, 50%);
+      }
+    }
+
+    .section-header span {
+      display: table-cell;
+      vertical-align: middle;
+      text-align: center;
+    }
+
+    .section-entry span {
+      display: table-cell;
+      vertical-align: middle;
+      padding-left: 0.5rem;
+    }
   }
+}
+
+@media all and (min-width: $navbar-hide-width) {
+  main { margin-left: $navbar-width; }
 }
 
 main {
-  flex: 1;
-  font-family: $font-family-text;
-  font-weight: $font-weight-regular;
+  position: relative;
   padding-top: 1rem;
   padding-left: 3rem;
+
+  font-family: $font-family-text;
+  font-weight: $font-weight-regular;
 
   code {
     font-family: $font-family-code;
@@ -78,47 +124,45 @@ main {
   // HEADERS
   //////////
 
-  .main-header, .main-section-header {
+  .header, .section-header {
     font-weight: $font-weight-bold;
     font-size: 2rem;
   }
 
-  .main-subsection-header {
+  .subsection-header {
+    padding-left: $main-indent-width;
+
     font-weight: $font-weight-bold;
     font-size: 1.5rem;
-    padding-left: $main-index-size;
   }
 
-  .main-section-entry-header, .main-subsection-entry-header {
-    font-family: $font-family-code;
-    font-weight: $font-weight-light;
+  .section-entry-header, .subsection-entry-header {
     margin: 0 2px;
     padding: 0 5px;
-    white-space: nowrap;
-    border: 1px solid #eaeaea;
-    background-color: #f8f8f8;
-    border-radius: 3px;
+
+    font-family: $font-family-code;
+    font-weight: $font-weight-bold;
   }
 
-  .main-subsection-entry-header {
-    padding-left: $main-index-size;
+  .subsection-entry-header {
+    padding-left: $main-indent-width;
   }
 
   /////////
   // BODIES
   /////////
 
-  .main-body, .main-section-entry-body, .main-subsection-entry-body {
+  .body, .section-entry-body, .subsection-entry-body {
     @include github-markdown-style;
   }
 
 
-  .main-body, .main-section-entry-body {
-    padding-left: $main-index-size;
+  .body, .section-entry-body {
+    padding-left: $main-indent-width;
   }
   
 
-  .main-subsection-entry-body {
-    padding-left: #{2 * $main-index-size};
+  .subsection-entry-body {
+    padding-left: #{2 * $main-indent-width};
   }
 }

@@ -25,89 +25,159 @@
     >
   </head>
   <body>
+    <!-- navbar -->
     <nav>
+      <div class="spacer"></div>
       <div id="nav-logo">
         <img src="/static/morphic-logo.png" height="80" width="80">
       </div>
+      <div class="spacer"></div>
+      <div class="spacer"></div>
+      <a href="#top" class="header">
+        <span>{{(normalize-mod-name self_.name)}}</span>
+      </a>
+      <div class="spacer"></div>
 
-      <div class="nav-header"><p>{{(normalize-mod-name self_.name)}}</p></div>
-
+      <!-- modules -->
       {{#if (nonempty children)}}
         <hr>
-        <div class="nav-section-header"><p>Modules</p></div>
+        <a href="#mods" class="section-header">
+          <span>Modules</span>
+        </a>
         <hr>
         {{#each children}}
-          <div class="nav-section-entry"><p>{{self_.name}}</p></div>
+          <a href="#mod.{{self_.name}}" class="section-entry">
+            <span>{{self_.name}}</span>
+          </a>
         {{/each}}
       {{/if}}
 
+      <!-- types -->
       {{#if (nonempty types)}}
         <hr>
-        <div class="nav-section-header"><p>Types</p></div>
+        <a href="#types" class="section-header">
+          <span>Types</span>
+        </a>
         <hr>
         {{#each types}}
-          <div class="nav-section-entry"><p>{{custom.name}}</p></div>
+          <a href="#type.{{custom.name}}" class="section-entry">
+            <span>{{custom.name}}</span>
+          </a>
         {{/each}}
       {{/if}}
 
+      <!-- values -->
       {{#if (nonempty vals)}}
         <hr>
-        <div class="nav-section-header"><p>Values</p></div>
+        <a href="#values" class="section-header">
+          <span>Values</span>
+        </a>
         <hr>
         {{#each vals}}
-          <div class="nav-section-entry"><p>{{name}}</p></div>
+          <a href="#value.{{name}}" class="section-entry">
+            <span>{{name}}</span>
+          </a>
         {{/each}}
       {{/if}}
 
+      <!-- functions -->
       {{#if (nonempty funcs)}}
         <hr>
-        <div class="nav-section-header"><p>Functions</p></div>
+        <a href="#funcs" class="section-header">
+          <span>Functions</span>
+        </a>
         <hr>
         {{#each funcs}}
-          <div class="nav-section-entry"><p>{{name}}</p></div>
+          <a href="#func.{{name}}" class="section-entry">
+            <span>{{name}}</span>
+          </a>
         {{/each}}
       {{/if}}
     </nav>
-    <main>
-      <div class="main-header"><p>Module {{self_.name}}</p></div>
-      <div class="main-body"><p>{{{self_.html}}}</p></div>
 
+    <!-- content -->
+    <main>
+      <div class="header" id="top">
+        <p>Module {{self_.name}}</p>
+      </div>
+      <div class="body">
+        <p>{{{self_.html}}}</p>
+      </div>
+
+      <!-- modules -->
       {{#if (nonempty children)}}
-        <div class="main-section-header"><p>Modules</p></div>
+        <div class="section-header" id="mods">
+          <p>Modules</p>
+        </div>
         {{#each children}}
-          <div class="main-section-entry-header"><p>{{self_.def}}</p></div>
-          <div class="main-section-entry-body"><p>{{{self_.summary}}}</p></div>
+          <div class="section-entry-header" id="mod.{{self_.name}}">
+            <p>{{self_.def}}</p>
+          </div>
+          <div class="section-entry-body">
+            <p>{{{self_.summary}}}</p>
+          </div>
         {{/each}}
       {{/if}}
 
+      <!-- types -->
       {{#if (nonempty types)}}
-        <div class="main-section-header"><p>Types</p></div>
+        <div class="section-header" id="types">
+          <p>Types</p>
+        </div>
         {{#each types}}
-          <div class="main-section-entry-header"><p>{{custom.def}}</p></div>
-          <div class="main-section-entry-body"><p>{{{custom.html}}}</p></div>
+          <div class="section-entry-header" id="type.{{custom.name}}">
+            <p>{{custom.def}}</p>
+          </div>
+          <div class="section-entry-body">
+            <p>{{{custom.html}}}</p>
+          </div>
+
+          <!-- variants -->
           {{#if (nonempty variants)}}
-            <div class="main-subsection-header"><p>Variants</p></div>
+            <div class="subsection-header">
+              <p>Variants</p>
+            </div>
             {{#each variants}}
-              <div class="main-subsection-entry-header"><p>{{def}}</p></div>
-              <div class="main-subsection-entry-body"><p>{{{html}}}</p></div>
+              <div class="subsection-entry-header">
+                <p>{{def}}</p>
+              </div>
+              <div class="subsection-entry-body">
+                <p>{{{html}}}</p>
+              </div>
             {{/each}}
           {{/if}}
+          <!--##########-->
+
         {{/each}}
       {{/if}}
 
+      <!-- values -->
       {{#if (nonempty vals)}}
-        <div class="main-section-header"><p>Values</p></div>
+        <div class="section-header" id="values">
+          <p>Values</p>
+        </div>
         {{#each vals}}
-          <div class="main-section-entry-header"><p>{{def}}</p></div>
-          <div class="main-section-entry-body"><p>{{{html}}}</p></div>
+          <div class="section-entry-header" id="value.{{name}}">
+            <p>{{def}}</p>
+          </div>
+          <div class="section-entry-body">
+            <p>{{{html}}}</p>
+          </div>
         {{/each}}
       {{/if}}
 
+      <!-- functions -->
       {{#if (nonempty funcs)}}
-        <div class="main-section-header"><p>Functions</p></div>
+        <div class="section-header" id="funcs">
+          <p>Functions</p>
+        </div>
         {{#each funcs}}
-          <div class="main-section-entry-header"><p>{{def}}</p></div>
-          <div class="main-section-entry-body"><p>{{{html}}}</p></div>
+          <div class="section-entry-header" id="func.{{name}}">
+            <p>{{def}}</p>
+          </div>
+          <div class="section-entry-body">
+            <p>{{{html}}}</p>
+          </div>
         {{/each}}
       {{/if}}
     </main>
