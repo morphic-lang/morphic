@@ -21,21 +21,17 @@ use crate::util::id_vec::IdVec;
 //   by another definition, we represent this in the IR with a field of type `TypeId` or `FuncId`.
 //   When a definition binds a new type or function to an id, we represent this in the IR with a
 //   field of type `BindTo<TypeId>` or `BindTo<FuncId>`.  For example, the definition of a function
-//   with id `FuncId(3)` would be represented with a definition of the form
-//   `Def::CustomFunc(BindTo(FuncId(3)), ...)`.
+//   with id `FuncId(3)` would be represented with a definition of the form `CustomFuncDef { id:
+//   BindTo(FuncId(3)), ... }`.
 //
-// - Type definitions are given in strict topological/dependency order; a type definition will only
-//   ever mention types defined earlier in the sequence of type definitions.  This means that you
-//   are always guaranteed to be able to to compute the layout (size and alignment) of any type you
-//   encounter in a type definition, so the sequence of type definitions may be processed in a
-//   single pass.  Some type definitions take the form of "forward declarations", which provide just
-//   enough information to compute the layout of a type before its full content is provided by a
-//   later definition.
+// - Neither type definitions nor function definitions are given in topological/dependency order,
+//   and cycles may exist in both the type dependency graph and the function dependency graph.  This
+//   means you must process sequences of definitions in two passes; a first pass to forward-declare
+//   the existence of all defined items, and a second pass to populate their bodies.
 //
-// - Function definitions are given in an arbitrary (non-topological) order, and the dependency
-//   graph between function definitions may contain cycles (i.e., functions may be recursive).  This
-//   means you must process the sequence of function definitions in two passes: a first pass to
-//   forward-declare the signatures of all functions, and a second pass to populate their bodies.
+// - We do enforce a kind of topological ordering constraint on the definitions of variant types:
+//   the *layout* (size and alignment) of all content types in a `VariantTypeDef` must be
+//   determinable based only on definitions appearing earlier in the type definition list.
 
 id_type!(pub TypeId);
 id_type!(pub FuncId);
@@ -84,33 +80,12 @@ pub struct CustomTypeDef {
     pub custom_type: BindTo<TypeId>,
 }
 
-/// Forward-declare a variant type.  This should be paired with a `VariantTypeDef` later in the
-/// program which references the same `variant_type` type id.
-///
-/// Note: This definition intentionally does not provide the content types for each case of the
-/// variant type.  These are provided in the corresponding `VariantTypeDef`.  Separating variant
-/// type declarations from definitions in this way allows us to break cycles in the type dependency
-/// graph, because generating the concrete representation of a variant type requires knowing the
-/// layout of all of the types that it wraps.
-#[derive(Clone, Debug)]
-pub struct VariantTypeDecl {
-    // Binding:
-    pub variant_type: BindTo<TypeId>,
-}
-
-/// Define a variant type, generating a concrete representation for it.  This should be paired with
-/// a `VariantTypeDecl` earlier in the program which binds the same `variant_type` type id.
-///
-/// Note: the backend *must* generate non-zero-sized representations for all variant types, even if
-/// they could otherwise be represented in zero bytes.
 #[derive(Clone, Debug)]
 pub struct VariantTypeDef {
     // Invariant: the layout of every type in `content_types` must be determinable entirely from
-    // type defintiions which appear earlier in the program.  In particular, no type in
-    // `content_types` will have a layout which depends on the layout of a variant type which has
-    // been declared (with `VariantTypeDecl`) but not yet defined (with `VariantTypeDef`).
+    // type defintitions which appear earlier in the program.
     pub content_types: IdVec<first_ord::VariantId, Type>,
-    pub variant_type: TypeId,
+    pub variant_type: BindTo<TypeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -118,7 +93,6 @@ pub enum TypeDef {
     ArrayTypeDef(ArrayTypeDef),
     BoxedTypeDef(BoxedTypeDef),
     CustomTypeDef(CustomTypeDef),
-    VariantTypeDecl(VariantTypeDecl),
     VariantTypeDef(VariantTypeDef),
 }
 
@@ -165,10 +139,16 @@ pub struct ArrayOpsDef {
     pub reserve: BindTo<FuncId>,
 
     // [array_type (borrowed)] -> []
-    pub retain: BindTo<FuncId>,
+    pub array_retain: BindTo<FuncId>,
 
     // [array_type (borrowed)] -> []
-    pub release: BindTo<FuncId>,
+    pub array_release: BindTo<FuncId>,
+
+    // [hole_array_type (borrowed)] -> []
+    pub hole_array_retain: BindTo<FuncId>,
+
+    // [hole_array_type (borrowed)] -> []
+    pub hole_array_release: BindTo<FuncId>,
 }
 
 #[derive(Clone, Debug)]
@@ -300,6 +280,8 @@ pub enum CallingConvention {
 
 #[derive(Clone, Debug)]
 pub struct CustomFuncDef {
+    pub id: BindTo<FuncId>,
+
     // Each argument binds a distinct `LocalId` in `body`, starting from `LocalId(0)`.
     pub arg_types: Vec<(Type, CallingConvention)>,
     pub ret_types: Vec<(Type, CallingConvention)>,
