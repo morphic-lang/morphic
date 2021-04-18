@@ -86,6 +86,7 @@ mod lower_structures;
 mod interpreter;
 
 mod llvm_gen;
+mod llvm_gen_2;
 
 #[cfg(test)]
 mod test;

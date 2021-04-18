@@ -1,4 +1,3 @@
-use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::scope;
 use crate::builtins::tal::Tal;
 use inkwell::context::Context;
