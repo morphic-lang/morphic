@@ -1,7 +1,7 @@
 [package]
 name = "morphic"
 version = "0.1.0"
-authors = ["William Brandon", "Wilson Berkow", "Frank Dai", "Benjamin Driscoll"]
+authors = ["Anonymous"]
 description = "Pure functional programming with whole-program memory management inference"
 edition = "2018"
 build = "build.rs"

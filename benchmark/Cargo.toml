@@ -1,7 +1,7 @@
 [package]
 name = "benchmark"
 version = "0.1.0"
-authors = ["William Brandon <williambrandon@berkeley.edu>"]
+authors = ["Anonymous"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 morphic = { path = ".." }
 find_clang = { path = "../find_clang" }
+# REVIEWERS: for anonyminity DO NOT visit this URL. We cannot remove it, or the project would break.
 criterion = { git = "https://github.com/morphic-lang/criterion.rs", tag = "default-cli-mode-funcs" }
 tempfile = "3.1.0"
 serde = "1.0.11"
