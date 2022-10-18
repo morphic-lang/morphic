@@ -231,6 +231,14 @@ fn compile(
         fs::create_dir(&artifact_dir.dir_path).map_err(ErrorKind::CreateArtifactsFailed)?;
     }
 
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("sml"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::typed::write_program(&mut out_file, &typed)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
     let mono = monomorphize::monomorphize(typed);
 
     let shielded = shield_functions::shield_functions(mono);
