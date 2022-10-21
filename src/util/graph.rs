@@ -231,8 +231,8 @@ mod test {
 
     #[test]
     fn test_random() {
-        use rand::distributions::{Distribution, Exp, Uniform};
         use rand::SeedableRng;
+        use rand_distr::{Distribution, Exp, Uniform};
         use rand_pcg::Pcg64Mcg;
 
         id_type!(TestNodeId);
@@ -250,7 +250,7 @@ mod test {
                 };
 
                 for (_, node_edges) in graph.edges_out.iter_mut() {
-                    for _ in 0..(Exp::new(mean_edges).sample(&mut gen) as u32) {
+                    for _ in 0..(Exp::new(mean_edges).unwrap().sample(&mut gen) as u32) {
                         node_edges.push(TestNodeId(Uniform::new(0, NUM_NODES).sample(&mut gen)));
                     }
                 }

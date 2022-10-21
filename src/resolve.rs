@@ -100,7 +100,7 @@ impl Error {
                     lines![
                         "I couldn't parse this '--profile' argument:",
                         "",
-                        "    --profile {}",
+                        "    --profile {sym}",
                         "",
                         "{explanation}",
                     ],

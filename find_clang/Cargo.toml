@@ -6,4 +6,4 @@ description = "Locate system clang install"
 edition = "2018"
 
 [dependencies]
-anyhow = "1.0.28"
+anyhow = "1.0.66"

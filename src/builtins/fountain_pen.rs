@@ -1,12 +1,13 @@
+use std::convert::TryInto;
+
 use crate::builtins::tal::Tal;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicTypeEnum, IntType};
-use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue};
+use inkwell::values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
-use std::convert::TryInto;
 
 pub fn usize_t<'a>(context: &'a Context, target: &TargetData) -> IntType<'a> {
     let bits_per_byte = 8;
@@ -65,7 +66,14 @@ impl<'a, 'b> Scope<'a, 'b> {
         args: &[BasicValueEnum<'a>],
     ) -> BasicValueEnum<'a> {
         self.builder
-            .build_call(called, args, "call")
+            .build_call(
+                called,
+                &args
+                    .iter()
+                    .map(|x| Into::<BasicMetadataValueEnum>::into(*x))
+                    .collect::<Vec<_>>(),
+                "call",
+            )
             .try_as_basic_value()
             .left()
             .expect("Cannot use 'call' to call a function without a return value")
@@ -73,31 +81,24 @@ impl<'a, 'b> Scope<'a, 'b> {
 
     pub fn call_void(&self, called: FunctionValue<'a>, args: &[BasicValueEnum<'a>]) {
         self.builder
-            .build_call(called, args, "call")
+            .build_call(
+                called,
+                &args
+                    .iter()
+                    .map(|x| Into::<BasicMetadataValueEnum>::into(*x))
+                    .collect::<Vec<_>>(),
+                "call",
+            )
             .try_as_basic_value()
             .right()
             .expect("Cannot use 'call_void' to call a function with a return value");
     }
 
     pub fn gep(&self, struct_ptr: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
-        let struct_type = struct_ptr
-            .get_type()
-            .into_pointer_type()
-            .get_element_type()
-            .into_struct_type();
-
-        // This assert checks that the subsequent GEP is safe
-        assert!(
-            struct_type.get_field_type_at_index(idx).is_some(),
-            "Struct type has no field at index {}",
-            idx
-        );
-
-        unsafe {
-            self.builder
-                .build_struct_gep(struct_ptr.into_pointer_value(), idx, "gep")
-                .into()
-        }
+        self.builder
+            .build_struct_gep(struct_ptr.into_pointer_value(), idx, "gep")
+            .unwrap()
+            .into()
     }
 
     pub fn arrow(&self, struct_ptr: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
@@ -117,24 +118,10 @@ impl<'a, 'b> Scope<'a, 'b> {
         idx: u32,
         new_data: BasicValueEnum<'a>,
     ) {
-        let struct_type = struct_ptr
-            .get_type()
-            .into_pointer_type()
-            .get_element_type()
-            .into_struct_type();
-
-        // This assert checks that the subsequent GEP is safe
-        assert!(
-            struct_type.get_field_type_at_index(idx).is_some(),
-            "Struct type has no field at index {}",
-            idx
-        );
-
         self.builder.build_store(
-            unsafe {
-                self.builder
-                    .build_struct_gep(struct_ptr.into_pointer_value(), idx, "gep")
-            },
+            self.builder
+                .build_struct_gep(struct_ptr.into_pointer_value(), idx, "gep")
+                .unwrap(),
             new_data,
         );
     }
@@ -435,7 +422,12 @@ impl<'a, 'b> Scope<'a, 'b> {
             .build_global_string_ptr(panic_string, "panic_str");
 
         let mut print_error_args = vec![panic_global.as_pointer_value().into()];
-        print_error_args.extend_from_slice(panic_args);
+        print_error_args.extend_from_slice(
+            &panic_args
+                .iter()
+                .map(|x| Into::<BasicMetadataValueEnum>::into(*x))
+                .collect::<Vec<_>>(),
+        );
 
         self.builder
             .build_call(tal.print_error, &print_error_args, "print_error_output");
@@ -450,7 +442,12 @@ impl<'a, 'b> Scope<'a, 'b> {
         let message_global = self.builder.build_global_string_ptr(message, "print_str");
 
         let mut print_args = vec![message_global.as_pointer_value().into()];
-        print_args.extend_from_slice(message_args);
+        print_args.extend_from_slice(
+            &message_args
+                .iter()
+                .map(|x| Into::<BasicMetadataValueEnum>::into(*x))
+                .collect::<Vec<_>>(),
+        );
 
         self.builder
             .build_call(tal.print, &print_args, "print_output");
@@ -460,7 +457,12 @@ impl<'a, 'b> Scope<'a, 'b> {
         let message_global = self.builder.build_global_string_ptr(message, "debug_str");
 
         let mut print_error_args = vec![message_global.as_pointer_value().into()];
-        print_error_args.extend_from_slice(message_args);
+        print_error_args.extend_from_slice(
+            &message_args
+                .iter()
+                .map(|x| Into::<BasicMetadataValueEnum>::into(*x))
+                .collect::<Vec<_>>(),
+        );
 
         self.builder
             .build_call(tal.print_error, &print_error_args, "print_error__output");
