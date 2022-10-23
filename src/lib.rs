@@ -232,7 +232,7 @@ fn compile(
     }
 
     if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("sml"))
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("typed.sml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
         pretty_print::typed::write_program(&mut out_file, &typed)
@@ -253,6 +253,14 @@ fn compile(
     let first_order = lower_closures::lower_closures(special);
 
     typecheck_first_order::typecheck(&first_order);
+
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.sml"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::first_order::write_program(&mut out_file, &first_order)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
 
     let split = split_custom_types::split_custom_types(&first_order);
 

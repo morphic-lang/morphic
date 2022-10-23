@@ -1,8 +1,7 @@
-use crate::data::resolved_ast::{
-    ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeDef, TypeId, TypeParamId,
-    VariantId,
-};
-use crate::data::typed_ast::*;
+use crate::data::first_order_ast::*;
+use crate::data::mono_ast::ValSymbols;
+use crate::data::num_type::NumType;
+use crate::data::resolved_ast;
 use crate::util::graph::{self, Graph};
 
 use std::collections::BTreeSet;
@@ -52,60 +51,43 @@ impl<'a, 'b> Context<'a, 'b> {
         write![self.writer, "{}", " ".repeat(self.indentation)]
     }
 
-    fn write_type_var(&mut self, type_var: &TypeParamId) -> io::Result<()> {
-        self.write("'")?;
-        self.write(type_var.0)?;
-        Ok(())
-    }
-
-    fn write_type_id(&mut self, type_id: &TypeId) -> io::Result<()> {
-        match type_id {
-            TypeId::Bool => self.write("bool")?,
-            TypeId::Byte => self.write("char")?,
-            TypeId::Int => self.write("LargeInt.int")?,
-            TypeId::Float => self.write("real")?,
-            TypeId::Array => self.write("PersistentArray.array")?,
-            TypeId::Custom(type_id) => {
-                self.write(&self.prog.custom_type_symbols[type_id].type_name.0)?
-            }
-        }
-        Ok(())
-    }
-
     fn write_type(&mut self, type_: &Type, precedence: Precedence) -> io::Result<()> {
         let my_precedence = match type_ {
-            Type::Var(_) => Precedence::Var,
-            Type::App(_, args) => {
-                if args.len() == 0 {
-                    Precedence::Var
-                } else {
-                    Precedence::App
-                }
-            }
-            Type::Tuple(_) => Precedence::App,
-            Type::Func(_, _, _) => Precedence::Fun,
+            Type::Bool => Precedence::Var,
+            Type::Num(_) => Precedence::Var,
+            Type::Array(_) => Precedence::App,
+            Type::HoleArray(_) => Precedence::Fun,
+            Type::Tuple(_) => Precedence::Top,
+            Type::Custom(_) => Precedence::Var,
         };
         if precedence > my_precedence {
             self.write("(")?;
         }
 
         match type_ {
-            Type::Var(type_var) => self.write_type_var(type_var)?,
-            Type::App(type_id, args) => {
-                if args.len() == 1 {
-                    self.write_type(&args[0], Precedence::Var)?;
-                    self.write(" ")?;
-                } else if args.len() > 1 {
-                    self.write("(")?;
-                    for (i, arg) in args.iter().enumerate() {
-                        self.write_type(arg, Precedence::Var)?;
-                        if i != args.len() - 1 {
-                            self.write(", ")?;
-                        }
-                    }
-                    self.write(") ")?;
+            Type::Bool => {
+                self.write("bool")?;
+            }
+            Type::Num(num_type) => match num_type {
+                NumType::Byte => {
+                    self.write("char")?;
                 }
-                self.write_type_id(type_id)?;
+                NumType::Int => {
+                    self.write("LargeInt.int")?;
+                }
+                NumType::Float => {
+                    self.write("real")?;
+                }
+            },
+            Type::Array(elem_type) => {
+                self.write_type(elem_type, Precedence::Var)?;
+                self.write(" PersistentArray.array")?;
+            }
+            Type::HoleArray(elem_type) => {
+                self.write_type(elem_type, Precedence::App)?;
+                self.write(" -> ")?;
+                self.write_type(elem_type, Precedence::Var)?;
+                self.write(" PersistentArray.array")?;
             }
             Type::Tuple(types) => {
                 if types.len() == 0 {
@@ -119,10 +101,8 @@ impl<'a, 'b> Context<'a, 'b> {
                     }
                 }
             }
-            Type::Func(_purity, arg_type, ret_type) => {
-                self.write_type(arg_type, Precedence::App)?;
-                self.write(" -> ")?;
-                self.write_type(ret_type, Precedence::Top)?;
+            Type::Custom(custom_type_id) => {
+                self.write_custom_type_id(*custom_type_id)?;
             }
         }
 
@@ -133,12 +113,40 @@ impl<'a, 'b> Context<'a, 'b> {
         Ok(())
     }
 
+    fn write_custom_type_id(&mut self, type_id: CustomTypeId) -> io::Result<()> {
+        match &self.prog.custom_type_symbols[type_id] {
+            CustomTypeSymbols::CustomType(type_name) => {
+                self.write(&type_name.type_name.0)?;
+                self.write("_")?;
+                self.write(type_id.0)?;
+            }
+            CustomTypeSymbols::ClosureType => {
+                self.write("closure_")?;
+                self.write(type_id.0)?;
+            }
+        }
+        Ok(())
+    }
+
     fn write_variant(&mut self, type_id: CustomTypeId, variant_id: VariantId) -> io::Result<()> {
-        self.write(
-            &self.prog.custom_type_symbols[type_id].variant_symbols[variant_id]
-                .variant_name
-                .0,
-        )?;
+        match &self.prog.custom_type_symbols[type_id] {
+            CustomTypeSymbols::CustomType(type_symbols) => {
+                self.write(
+                    &(type_symbols.variant_symbols[resolved_ast::VariantId(variant_id.0)]
+                        .variant_name
+                        .0),
+                )?;
+                self.write(type_id.0)?;
+                self.write("_")?;
+                self.write(variant_id.0)?;
+            }
+            CustomTypeSymbols::ClosureType => {
+                self.write("Variant")?;
+                self.write(type_id.0)?;
+                self.write("_")?;
+                self.write(variant_id.0)?;
+            }
+        }
         Ok(())
     }
 
@@ -157,38 +165,26 @@ impl<'a, 'b> Context<'a, 'b> {
                 Ok(1)
             }
             Pattern::Tuple(pats) => {
-                if pats.len() == 1 {
-                    panic!("length 1 tuple");
-                }
-                self.write("(")?;
                 let mut total_locals = 0;
-                for (i, pat) in pats.iter().enumerate() {
-                    let num_locals = self.write_pattern(pat)?;
-                    total_locals += num_locals;
-                    self.add_locals(num_locals);
-                    if i != pats.len() - 1 {
-                        self.write(", ")?;
+                if pats.len() == 1 {
+                    total_locals = self.write_pattern(&pats[0])?;
+                } else {
+                    self.write("(")?;
+                    for (i, pat) in pats.iter().enumerate() {
+                        let num_locals = self.write_pattern(pat)?;
+                        total_locals += num_locals;
+                        self.add_locals(num_locals);
+                        if i != pats.len() - 1 {
+                            self.write(", ")?;
+                        }
                     }
+                    self.remove_locals(total_locals);
+                    self.write(")")?;
                 }
-                self.remove_locals(total_locals);
-                self.write(")")?;
                 Ok(total_locals)
             }
-            Pattern::Ctor(type_id, _type_args, variant_id, maybe_pattern) => {
-                match type_id {
-                    TypeId::Bool => match variant_id.0 {
-                        0 => self.write("false")?,
-                        1 => self.write("true")?,
-                        _ => unreachable!(),
-                    },
-                    TypeId::Byte => todo!(),
-                    TypeId::Int => todo!(),
-                    TypeId::Float => todo!(),
-                    TypeId::Array => todo!(),
-                    TypeId::Custom(type_id) => {
-                        self.write_variant(*type_id, *variant_id)?;
-                    }
-                }
+            Pattern::Ctor(type_id, variant_id, maybe_pattern) => {
+                self.write_variant(*type_id, *variant_id)?;
                 let new_locals = match maybe_pattern {
                     Some(p) => {
                         self.write(" (")?;
@@ -200,6 +196,14 @@ impl<'a, 'b> Context<'a, 'b> {
                 };
                 Ok(new_locals)
             }
+            Pattern::BoolConst(b) => {
+                if *b {
+                    self.write("true")?;
+                } else {
+                    self.write("false")?;
+                }
+                Ok(0)
+            }
             Pattern::ByteConst(byte) => {
                 self.write_byte_const(byte)?;
                 Ok(0)
@@ -209,82 +213,26 @@ impl<'a, 'b> Context<'a, 'b> {
                 Ok(0)
             }
             Pattern::FloatConst(_) => todo!(),
-            Pattern::Span(_hi, _lo, pattern) => self.write_pattern(pattern),
         }
-    }
-
-    fn write_global_id(&mut self, global_id: &GlobalId) -> io::Result<()> {
-        match global_id {
-            GlobalId::Intrinsic(intrinsic) => {
-                self.write("intrinsic_")?;
-                self.write(&format!("{:?}", intrinsic))?;
-            }
-            GlobalId::ArrayOp(array_op) => match array_op {
-                ArrayOp::Get => self.write("intrinsic_get")?,
-                ArrayOp::Extract => self.write("intrinsic_extract")?,
-                ArrayOp::Len => self.write("intrinsic_len")?,
-                ArrayOp::Push => self.write("intrinsic_push")?,
-                ArrayOp::Pop => self.write("intrinsic_pop")?,
-                ArrayOp::Reserve => self.write("intrinsic_reserve")?,
-            },
-            GlobalId::IoOp(io_op) => match io_op {
-                IoOp::Input => self.write("input")?,
-                IoOp::Output => self.write("output")?,
-            },
-            GlobalId::Panic => self.write("panic")?,
-            GlobalId::Ctor(type_id, variant_id) => match type_id {
-                TypeId::Bool => {
-                    let bool_name = match variant_id.0 {
-                        0 => "false",
-                        1 => "true",
-                        _ => unreachable!(),
-                    };
-                    self.write(bool_name)?;
-                }
-                TypeId::Byte => todo!(),
-                TypeId::Int => todo!(),
-                TypeId::Float => todo!(),
-                TypeId::Array => todo!(),
-                TypeId::Custom(custom_type_id) => {
-                    self.write_variant(*custom_type_id, *variant_id)?;
-                }
-            },
-            GlobalId::Custom(custom_global_id) => {
-                if let Expr::Lam(_, _, _, _, _, _) = self.prog.vals[custom_global_id].body {
-                    self.write_identifier(*custom_global_id)?;
-                } else {
-                    self.write_identifier(*custom_global_id)?;
-                    self.write(" ()")?;
-                }
-            }
-        };
-
-        Ok(())
     }
 
     fn write_expr(&mut self, expr: &Expr, precedence: Precedence) -> io::Result<()> {
         let my_precedence = match expr {
-            Expr::Global(global, _) => match global {
-                GlobalId::Custom(custom_global_id) => {
-                    if let Expr::Lam(_, _, _, _, _, _) = self.prog.vals[custom_global_id].body {
-                        Precedence::Var
-                    } else {
-                        Precedence::App
-                    }
-                }
-                _ => Precedence::Var,
-            },
+            Expr::Intrinsic(_, _) => Precedence::App,
+            Expr::ArrayOp(_) => Precedence::App,
+            Expr::IoOp(_) => Precedence::App,
+            Expr::Panic(_, _) => Precedence::App,
+            Expr::Ctor(_, _, _) => Precedence::App,
             Expr::Local(_) => Precedence::Var,
             Expr::Tuple(_) => Precedence::Var,
-            Expr::Lam(_, _, _, _, _, _) => Precedence::App,
-            Expr::App(_, _, _) => Precedence::App,
+            Expr::Call(_, _, _) => Precedence::App,
             Expr::Match(_, _, _) => Precedence::Fun,
             Expr::LetMany(_, _) => Precedence::App,
             Expr::ArrayLit(_, _) => Precedence::App,
+            Expr::BoolLit(_) => Precedence::Var,
             Expr::ByteLit(_) => Precedence::Var,
             Expr::IntLit(_) => Precedence::Var,
             Expr::FloatLit(_) => Precedence::Var,
-            Expr::Span(_, _, _) => Precedence::Var,
         };
 
         if precedence > my_precedence {
@@ -292,36 +240,81 @@ impl<'a, 'b> Context<'a, 'b> {
         }
 
         match expr {
-            Expr::Global(global_id, _type_args) => {
-                self.write_global_id(global_id)?;
+            Expr::Intrinsic(intrinsic, expr) => {
+                self.write(&format!("intrinsic_{:?} ", intrinsic))?;
+                self.write_expr(expr, Precedence::Var)?;
+            }
+            Expr::ArrayOp(array_op) => match array_op {
+                ArrayOp::Get(_type, a, b) => {
+                    self.write("intrinsic_get ")?;
+                    self.write_expr(&Expr::Tuple(vec![*a.clone(), *b.clone()]), Precedence::Top)?;
+                }
+                ArrayOp::Extract(_type, a, b) => {
+                    self.write("intrinsic_extract ")?;
+                    self.write_expr(&Expr::Tuple(vec![*a.clone(), *b.clone()]), Precedence::Top)?;
+                }
+                ArrayOp::Len(_type, a) => {
+                    self.write("intrinsic_len ")?;
+                    self.write_expr(a, Precedence::Var)?;
+                }
+                ArrayOp::Push(_type, a, b) => {
+                    self.write("intrinsic_push ")?;
+                    self.write_expr(&Expr::Tuple(vec![*a.clone(), *b.clone()]), Precedence::Top)?;
+                }
+                ArrayOp::Pop(_type, a) => {
+                    self.write("intrinsic_pop ")?;
+                    self.write_expr(a, Precedence::Var)?;
+                }
+                ArrayOp::Replace(_type, a, b) => {
+                    self.write("intrinsic_replace ")?;
+                    self.write_expr(&Expr::Tuple(vec![*a.clone(), *b.clone()]), Precedence::Top)?;
+                }
+                ArrayOp::Reserve(_type, a, b) => {
+                    self.write("intrinsic_reserve ")?;
+                    self.write_expr(&Expr::Tuple(vec![*a.clone(), *b.clone()]), Precedence::Top)?;
+                }
+            },
+            Expr::IoOp(io_op) => match io_op {
+                IoOp::Input => self.write("input ()")?,
+                IoOp::Output(a) => {
+                    self.write("output ")?;
+                    self.write_expr(a, Precedence::Var)?;
+                }
+            },
+            Expr::Panic(_type, a) => {
+                self.write("panic ")?;
+                self.write_expr(a, Precedence::Var)?;
+            }
+            Expr::Ctor(type_id, variant_id, maybe_expr) => {
+                self.write_variant(*type_id, *variant_id)?;
+                match maybe_expr {
+                    Some(expr) => {
+                        self.write(" ")?;
+                        self.write_expr(expr, Precedence::Var)?;
+                    }
+                    None => {}
+                }
             }
             Expr::Local(local_id) => {
                 self.write("l")?;
                 self.write(local_id.0)?;
             }
             Expr::Tuple(exprs) => {
-                self.write("(")?;
-                for (i, expr) in exprs.iter().enumerate() {
-                    self.write_expr(expr, Precedence::Top)?;
-                    if i != exprs.len() - 1 {
-                        self.write(", ")?;
+                if exprs.len() == 1 {
+                    self.write_expr(&exprs[0], Precedence::Top)?;
+                } else {
+                    self.write("(")?;
+                    for (i, expr) in exprs.iter().enumerate() {
+                        self.write_expr(expr, Precedence::Top)?;
+                        if i != exprs.len() - 1 {
+                            self.write(", ")?;
+                        }
                     }
+                    self.write(")")?;
                 }
-                self.write(")")?;
             }
-            Expr::Lam(_purity, _arg_type, _ret_type, pattern, body, _prof) => {
-                self.write("fn (")?;
-                let num_locals = self.write_pattern(pattern)?;
-                self.add_indent();
-                self.add_locals(num_locals);
-                self.write(") ")?;
-                self.write("=> ")?;
-                self.write_expr(body, Precedence::Top)?;
-                self.remove_indent();
-                self.remove_locals(num_locals);
-            }
-            Expr::App(_purity, func, arg) => {
-                self.write_expr(func, Precedence::Var)?;
+            Expr::Call(_purity, func_id, arg) => {
+                self.write_custom_func_id(*func_id)?;
                 self.write(" ")?;
                 self.write_expr(arg, Precedence::Var)?;
             }
@@ -386,6 +379,13 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
                 self.write("]")?;
             }
+            Expr::BoolLit(b) => {
+                if *b {
+                    self.write("true")?;
+                } else {
+                    self.write("false")?;
+                }
+            }
             Expr::ByteLit(byte) => {
                 self.write_byte_const(byte)?;
             }
@@ -394,9 +394,6 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             Expr::FloatLit(float) => {
                 self.write_float_const(*float)?;
-            }
-            Expr::Span(_lo, _hi, expr) => {
-                self.write_expr(expr, precedence)?;
             }
         };
 
@@ -443,20 +440,7 @@ impl<'a, 'b> Context<'a, 'b> {
         } else {
             self.write("and ")?;
         }
-
-        if def.num_params == 1 {
-            self.write("'0 ")?;
-        } else if def.num_params > 1 {
-            self.write("(")?;
-            for type_arg in 0..def.num_params {
-                self.write_type_var(&TypeParamId(type_arg))?;
-                if type_arg != def.num_params - 1 {
-                    self.write(", ")?;
-                }
-            }
-            self.write(") ")?;
-        }
-        self.write(&self.prog.custom_type_symbols[type_id].type_name.0)?;
+        self.write_custom_type_id(type_id)?;
         self.write(" = ")?;
         self.writeln()?;
         for (i, (variant_id, variant)) in def.variants.iter().enumerate() {
@@ -479,10 +463,47 @@ impl<'a, 'b> Context<'a, 'b> {
 
         Ok(())
     }
-    fn write_identifier(&mut self, custom_global_id: CustomGlobalId) -> io::Result<()> {
-        self.write(&self.prog.val_symbols[custom_global_id].val_name.0)?;
-        self.write("_")?;
-        self.write(custom_global_id.0)?;
+
+    fn write_custom_func_id(&mut self, func_id: CustomFuncId) -> io::Result<()> {
+        match &self.prog.func_symbols[func_id] {
+            FuncSymbols::Global(val_symbols) => match val_symbols {
+                ValSymbols::Wrapper(val_name) => {
+                    self.write("wrapped_")?;
+                    self.write(&val_name.val_name.0)?;
+                    self.write("_")?;
+                    self.write(func_id.0)?;
+                }
+                ValSymbols::Normal(val_name) => {
+                    self.write(&val_name.val_name.0)?;
+                    self.write("_")?;
+                    self.write(func_id.0)?;
+                }
+            },
+            FuncSymbols::Lam(lam_symbols) => {
+                self.write("lam_")?;
+                match &lam_symbols.lifted_from {
+                    ValSymbols::Wrapper(val_name) => {
+                        self.write("wrapped_")?;
+                        self.write(&val_name.val_name.0)?;
+                        self.write("_")?;
+                        self.write(func_id.0)?;
+                    }
+                    ValSymbols::Normal(val_name) => {
+                        self.write(&val_name.val_name.0)?;
+                        self.write("_")?;
+                        self.write(func_id.0)?;
+                    }
+                }
+            }
+            FuncSymbols::MainWrapper => {
+                self.write("main_wrapper_")?;
+                self.write(func_id.0)?;
+            }
+            FuncSymbols::Dispatch => {
+                self.write("dispatch_")?;
+                self.write(func_id.0)?;
+            }
+        }
         Ok(())
     }
 
@@ -522,58 +543,48 @@ impl<'a, 'b> Context<'a, 'b> {
             }
         }
 
-        let val_sccs = graph::strongly_connected(&Graph {
-            edges_out: prog.vals.map(|_, val_def| {
+        let func_sccs = graph::strongly_connected(&Graph {
+            edges_out: prog.funcs.map(|_, func_def| {
                 let mut deps = BTreeSet::new();
-                add_func_deps(&mut deps, &val_def.body);
+                add_func_deps(&mut deps, &func_def.body);
                 deps.into_iter().collect()
             }),
         });
 
-        for scc in val_sccs {
+        for scc in func_sccs {
             for (i, id) in scc.iter().enumerate() {
-                let val = &prog.vals[id];
-                if let Expr::Lam(_purity, _arg_type, ret_type, pattern, body, _prof) = &val.body {
-                    if i == 0 {
-                        self.write("fun ")?;
-                    } else {
-                        self.write("and ")?;
-                    }
-                    self.write_identifier(*id)?;
-                    self.write(" (")?;
-                    let num_locals = self.write_pattern(&pattern)?;
-                    self.write("): ")?;
-                    self.write_type(&ret_type, Precedence::Top)?;
-                    self.write(" =")?;
-                    self.add_indent();
-                    self.add_locals(num_locals);
-
-                    self.writeln()?;
-                    self.write_expr(&body, Precedence::Top)?;
-
-                    self.remove_indent();
-                    self.remove_locals(num_locals);
-                } else {
+                let func = &prog.funcs[id];
+                if i == 0 {
                     self.write("fun ")?;
-                    self.write_identifier(*id)?;
-                    self.write(" (): ")?;
-                    self.write_type(&val.scheme.body, Precedence::Top)?;
-                    self.write(" =")?;
-                    self.add_indent();
-                    self.writeln()?;
-
-                    self.write_expr(&val.body, Precedence::Top)?;
-                    self.remove_indent();
+                } else {
+                    self.write("and ")?;
                 }
+
+                self.write_custom_func_id(*id)?;
+                self.write(" (")?;
+                let num_locals = self.write_pattern(&func.arg)?;
+                self.write("): ")?;
+                self.write_type(&func.ret_type, Precedence::Top)?;
+                self.write(" =")?;
+                self.add_indent();
+                self.add_locals(num_locals);
+
+                self.writeln()?;
+                self.write_expr(&func.body, Precedence::Top)?;
+
+                self.remove_indent();
+                self.remove_locals(num_locals);
+                self.writeln()?;
+                self.writeln()?;
             }
-            self.writeln()?;
-            self.writeln()?;
         }
+
         self.writeln()?;
-        self.write("val _ = main_")?;
+        self.write("val _ = main_wrapper_")?;
         self.write(prog.main.0)?;
         self.write(" ();")?;
         self.writeln()?;
+
         Ok(())
     }
 }
@@ -625,6 +636,7 @@ fun intrinsic_len(l : 'a PersistentArray.array): LargeInt.int = Int.toLarge (Per
 fun intrinsic_push(l : 'a PersistentArray.array, x : 'a): 'a PersistentArray.array = PersistentArray.append (l, x)
 fun intrinsic_pop(l : 'a PersistentArray.array): 'a PersistentArray.array * 'a = PersistentArray.popEnd(l)
 fun intrinsic_reserve(l : 'a PersistentArray.array, i : LargeInt.int): 'a PersistentArray.array = l
+fun intrinsic_replace(f : 'a -> 'a PersistentArray.array, x : 'a): 'a PersistentArray.array = f x
 
 fun input(()) : char PersistentArray.array = #1 (intrinsic_pop (PersistentArray.fromList (explode (Option.getOpt ((TextIO.inputLine TextIO.stdIn), \"\\n\")))))
 fun output(l : char PersistentArray.array) = print (implode (PersistentArray.toList l));
@@ -633,17 +645,68 @@ fun panic(l : char PersistentArray.array) = raise Fail (implode (PersistentArray
 
 const PRELUDE_PERSISTENT: &str = include_str!("persistent.sml");
 
-fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
-    match expr {
-        Expr::Global(global_id, _) => match global_id {
-            GlobalId::Intrinsic(_) => {}
-            GlobalId::ArrayOp(_) => {}
-            GlobalId::IoOp(_) => {}
-            GlobalId::Panic => {}
-            GlobalId::Ctor(_, _) => {}
-            GlobalId::Custom(custom_id) => {
-                deps.insert(*custom_id);
+fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
+    match type_ {
+        Type::Bool => {}
+        Type::Num(_) => {}
+        Type::Array(elem_type) => {
+            add_type_deps(deps, elem_type);
+        }
+        Type::HoleArray(elem_type) => {
+            add_type_deps(deps, elem_type);
+        }
+        Type::Tuple(elem_types) => {
+            for elem_type in elem_types {
+                add_type_deps(deps, elem_type);
             }
+        }
+        Type::Custom(custom_type_id) => {
+            deps.insert(*custom_type_id);
+        }
+    }
+}
+
+fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &Expr) {
+    match expr {
+        Expr::Intrinsic(_, arg) => {
+            add_func_deps(deps, arg);
+        }
+        Expr::ArrayOp(array_op) => match array_op {
+            ArrayOp::Get(_, a, b) => {
+                add_func_deps(deps, a);
+                add_func_deps(deps, b);
+            }
+            ArrayOp::Extract(_, a, b) => {
+                add_func_deps(deps, a);
+                add_func_deps(deps, b);
+            }
+            ArrayOp::Len(_, a) => {
+                add_func_deps(deps, a);
+            }
+            ArrayOp::Push(_, a, b) => {
+                add_func_deps(deps, a);
+                add_func_deps(deps, b);
+            }
+            ArrayOp::Pop(_, a) => {
+                add_func_deps(deps, a);
+            }
+            ArrayOp::Replace(_, a, b) => {
+                add_func_deps(deps, a);
+                add_func_deps(deps, b);
+            }
+            ArrayOp::Reserve(_, a, b) => {
+                add_func_deps(deps, a);
+                add_func_deps(deps, b);
+            }
+        },
+        Expr::IoOp(op) => match op {
+            IoOp::Input => {}
+            IoOp::Output(a) => add_func_deps(deps, a),
+        },
+        Expr::Panic(_, a) => add_func_deps(deps, a),
+        Expr::Ctor(_, _, a) => match a {
+            Some(b) => add_func_deps(deps, b),
+            None => {}
         },
         Expr::Local(_) => {}
         Expr::Tuple(elems) => {
@@ -651,9 +714,8 @@ fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
                 add_func_deps(deps, elem);
             }
         }
-        Expr::Lam(_, _, _, _, body, _) => add_func_deps(deps, body),
-        Expr::App(_, func, arg) => {
-            add_func_deps(deps, func);
+        Expr::Call(_, func, arg) => {
+            deps.insert(*func);
             add_func_deps(deps, arg)
         }
         Expr::Match(expr, arms, _) => {
@@ -673,42 +735,10 @@ fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
                 add_func_deps(deps, elem);
             }
         }
+        Expr::BoolLit(_) => {}
         Expr::ByteLit(_) => {}
         Expr::IntLit(_) => {}
         Expr::FloatLit(_) => {}
-        Expr::Span(_, _, expr) => {
-            add_func_deps(deps, expr);
-        }
-    }
-}
-
-fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
-    match type_ {
-        Type::Var(_) => {}
-        Type::App(type_id, types) => {
-            match type_id {
-                TypeId::Bool => {}
-                TypeId::Byte => {}
-                TypeId::Int => {}
-                TypeId::Float => {}
-                TypeId::Array => {}
-                TypeId::Custom(custom_type) => {
-                    deps.insert(*custom_type);
-                }
-            }
-            for type_ in types {
-                add_type_deps(deps, type_);
-            }
-        }
-        Type::Tuple(elems) => {
-            for elem in elems {
-                add_type_deps(deps, elem);
-            }
-        }
-        Type::Func(_, arg_type, ret_type) => {
-            add_type_deps(deps, arg_type);
-            add_type_deps(deps, ret_type);
-        }
     }
 }
 
