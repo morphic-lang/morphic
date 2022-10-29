@@ -487,8 +487,8 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 
     fn write_program(&mut self, prog: &Program) -> io::Result<()> {
-        self.write("(* Lines 1-1958 are prelude, included in every generated SML program. *)")?;
-        self.write("(* The generated program begins on line 1959. *)")?;
+        self.write("(* Lines 1-612 are prelude, included in every generated SML program. *)")?;
+        self.write("(* The generated program begins on line 613. *)")?;
         self.writeln()?;
         self.write(PRELUDE_PERSISTENT)?;
         self.writeln()?;
