@@ -247,7 +247,15 @@ fn compile(
         let mut out_file = fs::File::create(artifact_dir.artifact_path("typed.sml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::typed::write_program(&mut out_file, &typed)
+        pretty_print::typed::write_sml_program(&mut out_file, &typed)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("typed.ml"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::typed::write_ocaml_program(&mut out_file, &typed)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 

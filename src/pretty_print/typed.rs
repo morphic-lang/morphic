@@ -11,6 +11,11 @@ use std::io::Write;
 
 const TAB_SIZE: usize = 2;
 
+enum MlVariant {
+    OCAML,
+    SML,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Precedence {
     Top,
@@ -20,6 +25,7 @@ enum Precedence {
 }
 
 struct Context<'a, 'b> {
+    variant: MlVariant,
     writer: &'b mut dyn Write,
     indentation: usize,
     num_locals: usize,
@@ -54,7 +60,17 @@ impl<'a, 'b> Context<'a, 'b> {
 
     fn write_type_var(&mut self, type_var: &TypeParamId) -> io::Result<()> {
         self.write("'")?;
-        self.write(type_var.0)?;
+        let mut result_str = String::new();
+        let mut accum = type_var.0;
+        while accum != 0 {
+            result_str.push(char::from_u32((accum % 64 + ('a' as usize)) as u32).unwrap());
+            accum = accum / 26;
+        }
+
+        if &result_str == "" {
+            result_str = "a".to_string();
+        }
+        self.write(&result_str)?;
         Ok(())
     }
 
@@ -62,12 +78,21 @@ impl<'a, 'b> Context<'a, 'b> {
         match type_id {
             TypeId::Bool => self.write("bool")?,
             TypeId::Byte => self.write("char")?,
-            TypeId::Int => self.write("LargeInt.int")?,
-            TypeId::Float => self.write("real")?,
+            TypeId::Int => match self.variant {
+                MlVariant::OCAML => self.write("int64")?,
+                MlVariant::SML => self.write("LargeInt.int")?,
+            },
+            TypeId::Float => match self.variant {
+                MlVariant::OCAML => self.write("float")?,
+                MlVariant::SML => self.write("real")?,
+            },
             TypeId::Array => self.write("PersistentArray.array")?,
-            TypeId::Custom(type_id) => {
-                self.write(&self.prog.custom_type_symbols[type_id].type_name.0)?
-            }
+            TypeId::Custom(type_id) => self.write(
+                &self.prog.custom_type_symbols[type_id]
+                    .type_name
+                    .0
+                    .to_lowercase(),
+            )?,
         }
         Ok(())
     }
@@ -143,6 +168,10 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 
     fn write_pattern(&mut self, p: &Pattern) -> io::Result<usize> {
+        self.write_pattern_rec(p, true)
+    }
+
+    fn write_pattern_rec(&mut self, p: &Pattern, write_type: bool) -> io::Result<usize> {
         match p {
             Pattern::Any(_) => {
                 self.write("_")?;
@@ -152,18 +181,35 @@ impl<'a, 'b> Context<'a, 'b> {
             Pattern::Var(var_type) => {
                 self.write("l")?;
                 self.write(self.num_locals)?;
-                self.write(" : ")?;
-                self.write_type(var_type, Precedence::Top)?;
+                match self.variant {
+                    MlVariant::OCAML => {
+                        if write_type {
+                            self.write(" : ")?;
+                            self.write_type(var_type, Precedence::Top)?;
+                        }
+                    }
+                    MlVariant::SML => {
+                        self.write(" : ")?;
+                        self.write_type(var_type, Precedence::Top)?;
+                    }
+                }
                 Ok(1)
             }
             Pattern::Tuple(pats) => {
                 if pats.len() == 1 {
                     panic!("length 1 tuple");
                 }
+
+                if let MlVariant::OCAML = self.variant {
+                    if write_type {
+                        self.write("(")?;
+                    }
+                }
+
                 self.write("(")?;
                 let mut total_locals = 0;
                 for (i, pat) in pats.iter().enumerate() {
-                    let num_locals = self.write_pattern(pat)?;
+                    let num_locals = self.write_pattern_rec(pat, false)?;
                     total_locals += num_locals;
                     self.add_locals(num_locals);
                     if i != pats.len() - 1 {
@@ -172,6 +218,42 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
                 self.remove_locals(total_locals);
                 self.write(")")?;
+
+                if let MlVariant::OCAML = self.variant {
+                    if write_type {
+                        self.write(" : ")?;
+                        fn pat_to_type(p: &Pattern) -> Type {
+                            match p {
+                                Pattern::Any(t) => t.clone(),
+                                Pattern::Var(t) => t.clone(),
+                                Pattern::Tuple(pats) => {
+                                    Type::Tuple(pats.iter().map(|x| pat_to_type(x)).collect())
+                                }
+                                Pattern::Ctor(type_id, type_args, _, _) => {
+                                    Type::App(type_id.clone(), type_args.to_vec())
+                                }
+                                Pattern::ByteConst(_) => Type::App(TypeId::Byte, Vec::new()),
+                                Pattern::IntConst(_) => Type::App(TypeId::Int, Vec::new()),
+                                Pattern::FloatConst(_) => Type::App(TypeId::Float, Vec::new()),
+                                Pattern::Span(_, _, p) => pat_to_type(p),
+                            }
+                        }
+
+                        if pats.len() == 0 {
+                            self.write("unit")?;
+                        } else {
+                            for (i, pat) in pats.iter().enumerate() {
+                                self.write_type(&pat_to_type(pat), Precedence::App)?;
+                                if i != pats.len() - 1 {
+                                    self.write(" * ")?;
+                                }
+                            }
+                        }
+
+                        self.write(")")?;
+                    }
+                }
+
                 Ok(total_locals)
             }
             Pattern::Ctor(type_id, _type_args, variant_id, maybe_pattern) => {
@@ -192,7 +274,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 let new_locals = match maybe_pattern {
                     Some(p) => {
                         self.write(" (")?;
-                        let n = self.write_pattern(p)?;
+                        let n = self.write_pattern_rec(p, write_type)?;
                         self.write(")")?;
                         n
                     }
@@ -209,7 +291,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 Ok(0)
             }
             Pattern::FloatConst(_) => todo!(),
-            Pattern::Span(_hi, _lo, pattern) => self.write_pattern(pattern),
+            Pattern::Span(_hi, _lo, pattern) => self.write_pattern_rec(pattern, write_type),
         }
     }
 
@@ -276,9 +358,9 @@ impl<'a, 'b> Context<'a, 'b> {
             },
             Expr::Local(_) => Precedence::Var,
             Expr::Tuple(_) => Precedence::Var,
-            Expr::Lam(_, _, _, _, _, _) => Precedence::App,
+            Expr::Lam(_, _, _, _, _, _) => Precedence::Top,
             Expr::App(_, _, _) => Precedence::App,
-            Expr::Match(_, _, _) => Precedence::Fun,
+            Expr::Match(_, _, _) => Precedence::Top,
             Expr::LetMany(_, _) => Precedence::App,
             Expr::ArrayLit(_, _) => Precedence::App,
             Expr::ByteLit(_) => Precedence::Var,
@@ -302,7 +384,7 @@ impl<'a, 'b> Context<'a, 'b> {
             Expr::Tuple(exprs) => {
                 self.write("(")?;
                 for (i, expr) in exprs.iter().enumerate() {
-                    self.write_expr(expr, Precedence::Top)?;
+                    self.write_expr(expr, Precedence::Fun)?;
                     if i != exprs.len() - 1 {
                         self.write(", ")?;
                     }
@@ -310,12 +392,26 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write(")")?;
             }
             Expr::Lam(_purity, _arg_type, _ret_type, pattern, body, _prof) => {
-                self.write("fn (")?;
+                match self.variant {
+                    MlVariant::OCAML => {
+                        self.write("fun (")?;
+                    }
+                    MlVariant::SML => {
+                        self.write("fn (")?;
+                    }
+                }
                 let num_locals = self.write_pattern(pattern)?;
                 self.add_indent();
                 self.add_locals(num_locals);
                 self.write(") ")?;
-                self.write("=> ")?;
+                match self.variant {
+                    MlVariant::OCAML => {
+                        self.write("-> ")?;
+                    }
+                    MlVariant::SML => {
+                        self.write("=> ")?;
+                    }
+                }
                 self.write_expr(body, Precedence::Top)?;
                 self.remove_indent();
                 self.remove_locals(num_locals);
@@ -326,9 +422,18 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write_expr(arg, Precedence::Var)?;
             }
             Expr::Match(expr, patterns, _type) => {
-                self.write("case ")?;
-                self.write_expr(expr, Precedence::App)?;
-                self.write(" of ")?;
+                match self.variant {
+                    MlVariant::OCAML => {
+                        self.write("match ")?;
+                        self.write_expr(expr, Precedence::App)?;
+                        self.write(" with")?;
+                    }
+                    MlVariant::SML => {
+                        self.write("case ")?;
+                        self.write_expr(expr, Precedence::App)?;
+                        self.write(" of")?;
+                    }
+                }
                 for (i, (pattern, expr)) in patterns.iter().enumerate() {
                     self.writeln()?;
                     if i == 0 {
@@ -341,7 +446,14 @@ impl<'a, 'b> Context<'a, 'b> {
 
                     self.add_indent();
                     self.add_locals(num_locals);
-                    self.write(" => ")?;
+                    match self.variant {
+                        MlVariant::OCAML => {
+                            self.write(" -> ")?;
+                        }
+                        MlVariant::SML => {
+                            self.write(" => ")?;
+                        }
+                    }
                     self.write_expr(expr, Precedence::App)?;
                     self.remove_indent();
                     self.remove_locals(num_locals);
@@ -352,9 +464,18 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write("let")?;
                 self.add_indent();
 
-                for binding in bindings {
+                for (i, binding) in bindings.iter().enumerate() {
                     self.writeln()?;
-                    self.write("val ")?;
+                    match self.variant {
+                        MlVariant::OCAML => {
+                            if i != 0 {
+                                self.write("in let ")?;
+                            }
+                        }
+                        MlVariant::SML => {
+                            self.write("val ")?;
+                        }
+                    }
                     let num_locals = self.write_pattern(&binding.0)?;
                     total_locals = total_locals + num_locals;
                     self.write(" = ")?;
@@ -373,18 +494,41 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.remove_locals(total_locals);
 
                 self.writeln()?;
-                self.write("end")?;
+                if let MlVariant::SML = self.variant {
+                    self.write("end")?;
+                }
             }
             Expr::ArrayLit(_type, elems) => {
                 self.write("PersistentArray.fromList ")?;
-                self.write("[")?;
+                match self.variant {
+                    MlVariant::OCAML => {
+                        self.write("[|")?;
+                    }
+                    MlVariant::SML => {
+                        self.write("[")?;
+                    }
+                }
                 for (i, elem) in elems.iter().enumerate() {
                     self.write_expr(elem, Precedence::Top)?;
                     if i != elems.len() - 1 {
-                        self.write(", ")?;
+                        match self.variant {
+                            MlVariant::OCAML => {
+                                self.write("; ")?;
+                            }
+                            MlVariant::SML => {
+                                self.write(", ")?;
+                            }
+                        }
                     }
                 }
-                self.write("]")?;
+                match self.variant {
+                    MlVariant::OCAML => {
+                        self.write("|]")?;
+                    }
+                    MlVariant::SML => {
+                        self.write("]")?;
+                    }
+                }
             }
             Expr::ByteLit(byte) => {
                 self.write_byte_const(byte)?;
@@ -407,20 +551,38 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 
     fn write_byte_const(&mut self, byte: &u8) -> Result<(), io::Error> {
-        self.write("#\"")?;
-        if *byte == '\"' as u8 {
-            self.write("\\\"")?;
-        } else if !byte.is_ascii_control() {
-            self.write(*byte as char)?;
-        } else {
-            self.write(&format!("\\{:03}", byte))?;
+        match self.variant {
+            MlVariant::OCAML => {
+                self.write("'")?;
+                if *byte == '\'' as u8 {
+                    self.write("\\\'")?;
+                } else if !byte.is_ascii_control() {
+                    self.write(*byte as char)?;
+                } else {
+                    self.write(&format!("\\{:03}", byte))?;
+                }
+                self.write("\'")?;
+            }
+            MlVariant::SML => {
+                self.write("#\"")?;
+                if *byte == '\"' as u8 {
+                    self.write("\\\"")?;
+                } else if !byte.is_ascii_control() {
+                    self.write(*byte as char)?;
+                } else {
+                    self.write(&format!("\\{:03}", byte))?;
+                }
+                self.write("\"")?;
+            }
         }
-        self.write("\"")?;
         Ok(())
     }
 
     fn write_int_const(&mut self, int: i64) -> Result<(), io::Error> {
         self.write(int)?;
+        if let MlVariant::OCAML = self.variant {
+            self.write("L")?;
+        }
         Ok(())
     }
 
@@ -439,13 +601,19 @@ impl<'a, 'b> Context<'a, 'b> {
         is_first: bool,
     ) -> io::Result<()> {
         if is_first {
-            self.write("datatype ")?;
+            match self.variant {
+                MlVariant::OCAML => self.write("type ")?,
+                MlVariant::SML => {
+                    self.write("datatype ")?;
+                }
+            }
         } else {
             self.write("and ")?;
         }
 
         if def.num_params == 1 {
-            self.write("'0 ")?;
+            self.write_type_var(&TypeParamId(0))?;
+            self.write(" ")?;
         } else if def.num_params > 1 {
             self.write("(")?;
             for type_arg in 0..def.num_params {
@@ -456,7 +624,12 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             self.write(") ")?;
         }
-        self.write(&self.prog.custom_type_symbols[type_id].type_name.0)?;
+        self.write(
+            &self.prog.custom_type_symbols[type_id]
+                .type_name
+                .0
+                .to_lowercase(),
+        )?;
         self.write(" = ")?;
         self.writeln()?;
         for (i, (variant_id, variant)) in def.variants.iter().enumerate() {
@@ -470,7 +643,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 Some(type_arg) => {
                     self.write_variant(type_id, variant_id)?;
                     self.write(" of ")?;
-                    self.write_type(type_arg, Precedence::Top)?;
+                    self.write_type(type_arg, Precedence::App)?;
                 }
                 None => self.write_variant(type_id, variant_id)?,
             }
@@ -487,12 +660,21 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 
     fn write_program(&mut self, prog: &Program) -> io::Result<()> {
-        self.write("(* Lines 1-612 are prelude, included in every generated SML program. *)")?;
-        self.write("(* The generated program begins on line 613. *)")?;
+        self.write("(* Lines 1-600ish are prelude, included in every generated program. *)\n")?;
+        self.write("(* The generated program begins around line 600. *)")?;
         self.writeln()?;
-        self.write(PRELUDE_PERSISTENT)?;
-        self.writeln()?;
-        self.write(PRELUDE)?;
+        match self.variant {
+            MlVariant::OCAML => {
+                self.write(PRELUDE_PERSISTENT_OCAML)?;
+                self.writeln()?;
+                self.write(PRELUDE_OCAML)?;
+            }
+            MlVariant::SML => {
+                self.write(PRELUDE_PERSISTENT_SML)?;
+                self.writeln()?;
+                self.write(PRELUDE_SML)?;
+            }
+        }
         self.writeln()?;
 
         let type_sccs = graph::strongly_connected(&Graph {
@@ -535,7 +717,14 @@ impl<'a, 'b> Context<'a, 'b> {
                 let val = &prog.vals[id];
                 if let Expr::Lam(_purity, _arg_type, ret_type, pattern, body, _prof) = &val.body {
                     if i == 0 {
-                        self.write("fun ")?;
+                        match self.variant {
+                            MlVariant::OCAML => {
+                                self.write("let rec ")?;
+                            }
+                            MlVariant::SML => {
+                                self.write("fun ")?;
+                            }
+                        }
                     } else {
                         self.write("and ")?;
                     }
@@ -554,7 +743,14 @@ impl<'a, 'b> Context<'a, 'b> {
                     self.remove_indent();
                     self.remove_locals(num_locals);
                 } else {
-                    self.write("fun ")?;
+                    match self.variant {
+                        MlVariant::OCAML => {
+                            self.write("let rec ")?;
+                        }
+                        MlVariant::SML => {
+                            self.write("fun ")?;
+                        }
+                    }
                     self.write_identifier(*id)?;
                     self.write(" (): ")?;
                     self.write_type(&val.scheme.body, Precedence::Top)?;
@@ -570,7 +766,14 @@ impl<'a, 'b> Context<'a, 'b> {
             self.writeln()?;
         }
         self.writeln()?;
-        self.write("val _ = main_")?;
+        match self.variant {
+            MlVariant::OCAML => {
+                self.write("let _ = main_")?;
+            }
+            MlVariant::SML => {
+                self.write("val _ = main_")?;
+            }
+        }
         self.write(prog.main.0)?;
         self.write(" ();")?;
         self.writeln()?;
@@ -578,7 +781,7 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 }
 
-const PRELUDE : &str = "
+const PRELUDE_SML : &str = "
 fun intrinsic_AddByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) + Word8.fromInt (ord y)))
 fun intrinsic_SubByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) - Word8.fromInt (ord y)))
 fun intrinsic_MulByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) * Word8.fromInt (ord y)))
@@ -627,11 +830,65 @@ fun intrinsic_pop(l : 'a PersistentArray.array): 'a PersistentArray.array * 'a =
 fun intrinsic_reserve(l : 'a PersistentArray.array, i : LargeInt.int): 'a PersistentArray.array = l
 
 fun input(()) : char PersistentArray.array = #1 (intrinsic_pop (PersistentArray.fromList (explode (Option.getOpt ((TextIO.inputLine TextIO.stdIn), \"\\n\")))))
-fun output(l : char PersistentArray.array) = print (implode (PersistentArray.toList l));
+fun output(l : char PersistentArray.array) = print (implode (PersistentArray.toList l))
 fun panic(l : char PersistentArray.array) = raise Fail (implode (PersistentArray.toList l))
 ";
 
-const PRELUDE_PERSISTENT: &str = include_str!("persistent.sml");
+const PRELUDE_OCAML : &str = "
+let intrinsic_AddByte ((x, y) : char * char): char = Char.chr (((Char.code x + Char.code y) mod 256 + 256) mod 256)
+let intrinsic_SubByte ((x, y) : char * char): char = Char.chr (((Char.code x - Char.code y) mod 256 + 256) mod 256)
+let intrinsic_MulByte ((x, y) : char * char): char = Char.chr (((Char.code x * Char.code y) mod 256 + 256) mod 256)
+let intrinsic_DivByte ((x, y) : char * char): char = Char.chr (((Char.code x / Char.code y) mod 256 + 256) mod 256)
+let intrinsic_NegByte (x: char) = Char.chr (((-Char.code x) mod 256 + 256) mod 256)
+let intrinsic_EqByte ((x, y) : char * char): bool = x = y
+let intrinsic_LtByte ((x, y) : char * char): bool = x < y
+let intrinsic_LteByte ((x, y) : char * char): bool = x <= y
+let intrinsic_GtByte ((x, y) : char * char): bool = x > y
+let intrinsic_GteByte ((x, y) : char * char): bool = x >= y
+let intrinsic_AddInt ((x, y) : int64 * int64): int64 = Int64.add x y
+let intrinsic_SubInt ((x, y) : int64 * int64): int64 = Int64.sub x y
+let intrinsic_MulInt ((x, y) : int64 * int64): int64 = Int64.mul x y
+let intrinsic_DivInt ((x, y) : int64 * int64): int64 = Int64.div x y
+let intrinsic_NegInt (x : int64) : int64 = Int64.neg x
+let intrinsic_EqInt ((x, y) : int64 * int64): bool = x = y
+let intrinsic_LtInt ((x, y) : int64 * int64): bool = x < y
+let intrinsic_LteInt ((x, y) : int64 * int64): bool = x <= y
+let intrinsic_GtInt ((x, y) : int64 * int64): bool = x > y
+let intrinsic_GteInt ((x, y) : int64 * int64): bool = x >= y
+let intrinsic_AddFloat ((x, y) : float * float): float = x +. y
+let intrinsic_SubFloat ((x, y) : float * float): float = x -. y
+let intrinsic_MulFloat ((x, y) : float * float): float = x *. y
+let intrinsic_DivFloat ((x, y) : float * float): float = x /. y
+let intrinsic_NegFloat (x : float) : float = -.x
+let intrinsic_EqFloat ((x, y) : float * float): bool = x = y
+let intrinsic_LtFloat ((x, y) : float * float): bool = x < y
+let intrinsic_LteFloat ((x, y) : float * float): bool = x <= y
+let intrinsic_GtFloat ((x, y) : float * float): bool = x > y
+let intrinsic_GteFloat ((x, y) : float * float): bool = x >= y
+let intrinsic_Not (x : bool) : bool = not x
+let intrinsic_ByteToInt (x : char) : int64 = Int64.of_int (Char.code x)
+let intrinsic_ByteToIntSigned (x : char) : int64 = Int64.sub (Int64.logxor (Int64.of_int (Char.code x)) 0x80L) 0x80L
+let intrinsic_IntToByte (x : int64) : char = Char.chr (Int64.to_int (Int64.rem (Int64.add (Int64.rem x 256L) 256L) 256L))
+let intrinsic_IntShiftLeft ((x, y) : int64 * int64): int64 = Int64.shift_left x (Int64.to_int y)
+let intrinsic_IntShiftRight ((x, y) : int64 * int64): int64 = Int64.shift_right_logical x (Int64.to_int y)
+let intrinsic_IntBitAnd ((x, y) : int64 * int64): int64 = Int64.logand x y
+let intrinsic_IntBitOr ((x, y) : int64 * int64): int64 = Int64.logor x y
+let intrinsic_IntBitXor ((x, y) : int64 * int64): int64 = Int64.logxor x y
+
+let intrinsic_get ((l, i) : 'a PersistentArray.array * int64): 'a = PersistentArray.sub (l, (Int64.to_int i))
+let intrinsic_extract ((l, i) : 'a PersistentArray.array * int64): 'a * ('a -> 'a PersistentArray.array) = (PersistentArray.sub (l, (Int64.to_int i)), fun new_ -> PersistentArray.update (l, Int64.to_int i, new_))
+let intrinsic_len (l : 'a PersistentArray.array): int64 = Int64.of_int (PersistentArray.length l)
+let intrinsic_push ((l, x) : 'a PersistentArray.array * 'a): 'a PersistentArray.array = PersistentArray.append (l, x)
+let intrinsic_pop (l : 'a PersistentArray.array): 'a PersistentArray.array * 'a = PersistentArray.popEnd(l)
+let intrinsic_reserve ((l, i) : 'a PersistentArray.array * int64): 'a PersistentArray.array = l
+
+let input (()) : char PersistentArray.array = let in_ = read_line () in PersistentArray.fromList (Array.init (String.length in_) (String.get in_))
+let output (l : char PersistentArray.array) = print_string (String.init (PersistentArray.length l) (fun i -> PersistentArray.sub (l, i)))
+let panic (l : char PersistentArray.array) = raise (Failure (String.init (PersistentArray.length l) (fun i -> PersistentArray.sub (l, i))))
+";
+
+const PRELUDE_PERSISTENT_SML: &str = include_str!("persistent.sml");
+const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");
 
 fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
     match expr {
@@ -712,8 +969,21 @@ fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
     }
 }
 
-pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
+pub fn write_sml_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
     let mut context = Context {
+        variant: MlVariant::SML,
+        writer: w,
+        indentation: 0,
+        num_locals: 0,
+        prog: program,
+    };
+    context.write_program(program)?;
+    Ok(())
+}
+
+pub fn write_ocaml_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
+    let mut context = Context {
+        variant: MlVariant::OCAML,
         writer: w,
         indentation: 0,
         num_locals: 0,
