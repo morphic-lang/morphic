@@ -253,7 +253,6 @@ impl<'a, 'b> Context<'a, 'b> {
                         self.write(")")?;
                     }
                 }
-
                 Ok(total_locals)
             }
             Pattern::Ctor(type_id, _type_args, variant_id, maybe_pattern) => {
@@ -828,6 +827,7 @@ fun intrinsic_len(l : 'a PersistentArray.array): LargeInt.int = Int.toLarge (Per
 fun intrinsic_push(l : 'a PersistentArray.array, x : 'a): 'a PersistentArray.array = PersistentArray.append (l, x)
 fun intrinsic_pop(l : 'a PersistentArray.array): 'a PersistentArray.array * 'a = PersistentArray.popEnd(l)
 fun intrinsic_reserve(l : 'a PersistentArray.array, i : LargeInt.int): 'a PersistentArray.array = l
+fun intrinsic_replace(f : 'a -> 'a PersistentArray.array, x : 'a): 'a PersistentArray.array = f x
 
 fun input(()) : char PersistentArray.array = #1 (intrinsic_pop (PersistentArray.fromList (explode (Option.getOpt ((TextIO.inputLine TextIO.stdIn), \"\\n\")))))
 fun output(l : char PersistentArray.array) = print (implode (PersistentArray.toList l))

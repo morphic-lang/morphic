@@ -286,7 +286,15 @@ fn compile(
         let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.sml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::first_order::write_program(&mut out_file, &first_order)
+        pretty_print::first_order::write_sml_program(&mut out_file, &first_order)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.ml"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::first_order::write_ocaml_program(&mut out_file, &first_order)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
