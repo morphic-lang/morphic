@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::util::graph::Scc;
 use crate::util::id_type::Id;
 use crate::util::id_vec::IdVec;
+use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
 pub trait Signature {
     type Sig;
@@ -82,39 +83,36 @@ where
                 .collect::<BTreeMap<_, _>>();
 
             loop {
-                let iterated_defs = funcs
-                    .iter()
-                    .map(|func| {
-                        (
-                            func.clone(),
-                            annot_func(
-                                &SignatureAssumptions {
-                                    known_defs,
-                                    provisional_defs: Some(&defs),
-                                },
-                                func,
-                            ),
-                        )
-                    })
-                    .collect::<BTreeMap<_, _>>();
+                let mut prev_defs = BTreeMap::new();
+
+                for func in funcs {
+                    let annotated_func_def = annot_func(
+                        &SignatureAssumptions {
+                            known_defs,
+                            provisional_defs: Some(&defs),
+                        },
+                        func,
+                    );
+                    let prev_func_def = defs.insert(func.clone(), annotated_func_def).unwrap();
+                    prev_defs.insert(func.clone(), prev_func_def);
+                }
 
                 if funcs
                     .iter()
-                    .all(|func| iterated_defs[func].signature() == defs[func].signature())
+                    .all(|func| defs[func].signature() == prev_defs[func].signature())
                 {
-                    return iterated_defs;
+                    return defs;
                 }
-
-                defs = iterated_defs;
             }
         }
     }
 }
 
-pub fn annot_all<FuncId, FuncDef>(
+pub fn annot_all<FuncId, FuncDef, P: ProgressLogger>(
     num_funcs: usize,
     annot_func: impl for<'a> Fn(&'a SignatureAssumptions<'a, FuncId, FuncDef>, &'a FuncId) -> FuncDef,
     sccs: &[Scc<FuncId>],
+    progress_logger: P,
 ) -> IdVec<FuncId, FuncDef>
 where
     FuncId: Id + Ord,
@@ -123,14 +121,21 @@ where
 {
     let mut annotated = IdVec::from_items((0..num_funcs).map(|_| None).collect());
 
+    let mut progress = progress_logger.start_session(Some(num_funcs));
+
     for scc in sccs {
         let annotated_defs = iterate_fixed_point(&annotated, &annot_func, scc);
+        let def_count = annotated_defs.len();
 
         for (func, annotated_def) in annotated_defs {
             debug_assert!(annotated[&func].is_none());
             annotated[func] = Some(annotated_def);
         }
+
+        progress.update(def_count);
     }
+
+    progress.finish();
 
     annotated.into_mapped(|_, func_def| func_def.unwrap())
 }

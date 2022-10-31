@@ -3,9 +3,13 @@ import Iter expose { Iter }
 // TODO: This is a temporary workaround.  We should have a namespacing system for builtins.
 module NoShadow = {
   pub get_: (Array a, Int) -> a = get
+  pub len_: Array a -> Int = len
+  pub push_: (Array a, a) -> Array a = push
 }
 
 pub get: (Array a, Int) -> a = NoShadow.get_
+pub len: Array a -> Int = NoShadow.len_
+pub push: (Array a, a) -> Array a = NoShadow.push_
 
 pub set(arr: Array a, i: Int, val: a): Array a =
   let (_, hole) = extract(arr, i) in

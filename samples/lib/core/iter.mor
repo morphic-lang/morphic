@@ -159,6 +159,16 @@ pub equal(it1: Iter a, it2: Iter a, eq: (a, a) -> Bool): Bool =
     (_, _) -> False,
   }
 
+pub find(it: Iter a, f: a -> Bool): Option a =
+  match next(it) {
+    Some(x, xs) -> if f(x) {
+      Some(x)
+    } else {
+      find(xs, f)
+    },
+    None -> None,
+  }
+
 pub proc for_each(it: Iter a, f: proc a -> ()): () =
   match next(it) {
     Some(x, xs) ->

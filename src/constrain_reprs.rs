@@ -10,6 +10,7 @@ use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::mutation_status::translate_callee_status_cond_disj_post_rc;
 use crate::util::disjunction::Disj;
 use crate::util::id_vec::IdVec;
+use crate::util::progress_logger::ProgressLogger;
 
 impl Signature for constrain::FuncRepConstraints {
     type Sig = IdVec<unif::RepParamId, constrain::ParamConstraints>;
@@ -82,8 +83,11 @@ fn constrain_path(
                     alias::Field::Custom(custom_id),
                     unif::Type::Custom(custom_id_2, custom_params),
                 ) => {
-                    debug_assert_eq!(custom_id, custom_id_2);
+                    // Note: the custom type ids are *not* guaranteed to match -- they are only
+                    // guaranteed to belong to the same SCC! This is safe because all custom types
+                    // in an SCC share a common parameterization.
                     debug_assert_eq!(custom_params.len(), typedefs[custom_id].num_params);
+                    debug_assert_eq!(custom_params.len(), typedefs[custom_id_2].num_params);
                     State::Inner {
                         curr_type: &typedefs[custom_id].content,
                         param_mapping: custom_params.clone(),
@@ -95,13 +99,20 @@ fn constrain_path(
                         curr_type: item_type,
                     }
                 }
+                (alias::Field::CustomScc(_, _), custom @ unif::Type::Custom(_, _)) => {
+                    // Note: here was have the constraint that the custom type must belong to the
+                    // SCC listed in the field. It would be nice to have an assertion for that
+                    // constraint, but we don't because it's cumbersome to check.
+                    State::Outer { curr_type: custom }
+                }
                 // We explicitly enumerate these cases to trigger an exhaustivity error if we ever
                 // add a new field variant.
                 (alias::Field::Field(_), _)
                 | (alias::Field::Variant(_), _)
                 | (alias::Field::Boxed, _)
                 | (alias::Field::Custom(_), _)
-                | (alias::Field::ArrayMembers, _) => unreachable!(),
+                | (alias::Field::ArrayMembers, _)
+                | (alias::Field::CustomScc(_, _), _) => unreachable!(),
             },
             State::Inner {
                 curr_type,
@@ -125,8 +136,10 @@ fn constrain_path(
                     alias::Field::Custom(custom_id),
                     unif::Type::Custom(custom_id_2, custom_params),
                 ) => {
-                    debug_assert_eq!(custom_id, custom_id_2);
+                    // Note: the custom type ids are *not* guaranteed to match! See the comment on
+                    // the State::Outer arm above.
                     debug_assert_eq!(custom_params.len(), typedefs[custom_id].num_params);
+                    debug_assert_eq!(custom_params.len(), typedefs[custom_id_2].num_params);
                     State::Inner {
                         curr_type: &typedefs[custom_id].content,
                         param_mapping: custom_params.map(|_, param| param_mapping[param]),
@@ -139,13 +152,21 @@ fn constrain_path(
                         param_mapping,
                     }
                 }
+                (alias::Field::CustomScc(_, _), custom @ unif::Type::Custom(_, _)) => {
+                    State::Inner {
+                        // See the comment on the State::Outer arm above.
+                        curr_type: custom,
+                        param_mapping,
+                    }
+                }
                 // We explicitly enumerate these cases to trigger an exhaustivity error if we ever
                 // add a new field variant.
                 (alias::Field::Field(_), _)
                 | (alias::Field::Variant(_), _)
                 | (alias::Field::Boxed, _)
                 | (alias::Field::Custom(_), _)
-                | (alias::Field::ArrayMembers, _) => unreachable!(),
+                | (alias::Field::ArrayMembers, _)
+                | (alias::Field::CustomScc(_, _), _) => unreachable!(),
             },
         };
     }
@@ -329,11 +350,15 @@ fn constrain_func(
     }
 }
 
-pub fn constrain_reprs(program: unif::Program) -> constrain::Program {
+pub fn constrain_reprs(
+    program: unif::Program,
+    progress: impl ProgressLogger,
+) -> constrain::Program {
     let rep_constraints = annot_all(
         program.funcs.len(),
         |sigs, func| constrain_func(&program.custom_types, sigs, &program.funcs[func]),
         &program.sccs,
+        progress,
     );
 
     constrain::Program {

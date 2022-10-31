@@ -9,6 +9,7 @@ use crate::data::alias_annot_ast as alias;
 use crate::data::anon_sum_ast as anon;
 use crate::data::fate_annot_ast as fate;
 use crate::data::first_order_ast as first_ord;
+use crate::data::flat_ast as flat;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -62,7 +63,7 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
+    pub custom_types: flat::CustomTypes,
     pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,

@@ -33,7 +33,13 @@ pub and_then(opt: Option a, fn: a -> Option b): Option b =
     None -> None,
   }
 
-pub identity(x: a): a = x
+pub or_else(opt: Option a, fn: () -> Option a): Option a =
+  match opt {
+    Some(x) -> Some(x),
+    None -> fn(),
+  }
+
+identity(x: a): a = x
 
 pub flatten(opt: Option (Option a)): Option a =
   and_then(opt, identity)

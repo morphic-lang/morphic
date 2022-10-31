@@ -1,18 +1,26 @@
+use std::collections::BTreeSet;
+
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::intrinsics as intrs;
 use crate::intrinsic_config::intrinsic_sig;
+use crate::util::graph::{strongly_connected, Graph};
 use crate::util::id_vec::IdVec;
+use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
-pub fn flatten(program: anon::Program) -> flat::Program {
-    let flat_funcs = program
-        .funcs
-        .map(|_, func_def| flatten_func_def(&program, func_def));
+pub fn flatten(program: anon::Program, progress: impl ProgressLogger) -> flat::Program {
+    let mut progress = progress.start_session(Some(program.funcs.len()));
+    let flat_funcs = program.funcs.map(|_, func_def| {
+        let func_def_flat = flatten_func_def(&program, func_def);
+        progress.update(1);
+        func_def_flat
+    });
+    progress.finish();
 
     flat::Program {
         mod_symbols: program.mod_symbols,
-        custom_types: program.custom_types,
+        custom_types: mark_custom_type_sccs(&program.custom_types),
         custom_type_symbols: program.custom_type_symbols,
         funcs: flat_funcs,
         func_symbols: program.func_symbols,
@@ -579,5 +587,59 @@ fn flatten_func_def(orig: &anon::Program, func_def: &anon::FuncDef) -> flat::Fun
         ret_type: func_def.ret_type.clone(),
         body: root_builder.to_expr(ret_local),
         profile_point: func_def.profile_point,
+    }
+}
+
+fn mark_custom_type_sccs(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+) -> flat::CustomTypes {
+    fn add_type_deps(type_: &anon::Type, deps: &mut BTreeSet<first_ord::CustomTypeId>) {
+        match type_ {
+            anon::Type::Bool | anon::Type::Num(_) => {}
+            anon::Type::Array(item_type) => add_type_deps(item_type, deps),
+            anon::Type::HoleArray(item_type) => add_type_deps(item_type, deps),
+            anon::Type::Tuple(items) => {
+                for item in items {
+                    add_type_deps(item, deps);
+                }
+            }
+            anon::Type::Variants(variants) => {
+                for (_, variant) in variants {
+                    add_type_deps(variant, deps);
+                }
+            }
+            anon::Type::Boxed(content) => {
+                add_type_deps(content, deps);
+            }
+            anon::Type::Custom(custom) => {
+                deps.insert(*custom);
+            }
+        }
+    }
+
+    let type_deps = Graph {
+        edges_out: typedefs.map(|_, content| {
+            let mut deps = BTreeSet::new();
+            add_type_deps(content, &mut deps);
+            deps.into_iter().collect()
+        }),
+    };
+
+    let sccs = IdVec::<flat::CustomTypeSccId, _>::from_items(strongly_connected(&type_deps));
+
+    let mut types = typedefs.map(|_, _| None);
+    for (scc_id, scc) in &sccs {
+        for type_ in scc {
+            debug_assert!(types[type_].is_none());
+            types[type_] = Some(flat::CustomTypeDef {
+                content: typedefs[type_].clone(),
+                scc: scc_id,
+            });
+        }
+    }
+
+    flat::CustomTypes {
+        types: types.into_mapped(|_, type_def| type_def.unwrap()),
+        sccs,
     }
 }

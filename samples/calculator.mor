@@ -1,0 +1,103 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io,
+    module String,
+    module Option expose { Option { Some, None } },
+  }
+module Parse = file "lib/parse.mor"
+  with { Core }
+  expose { Parse }
+
+type Expr {
+  Const(Int),
+  Add(Expr, Expr),
+  Sub(Expr, Expr),
+  Mul(Expr, Expr),
+  Div(Expr, Expr),
+}
+
+eval(e: Expr): Int =
+  match e {
+    Const(x) -> x,
+    Add(x, y) -> eval(x) + eval(y),
+    Sub(x, y) -> eval(x) - eval(y),
+    Mul(x, y) -> eval(x) * eval(y),
+    Div(x, y) -> eval(x) / eval(y),
+  }
+
+ascii_zero: Byte = 48b
+ascii_nine: Byte = 57b
+ascii_space: Byte = 32b
+ascii_newline: Byte = 10b
+ascii_tab: Byte = 9b
+ascii_asterisk: Byte = 42b
+ascii_slash: Byte = 47b
+ascii_plus: Byte = 43b
+ascii_minus: Byte = 45b
+ascii_open_paren: Byte = 40b
+ascii_close_paren: Byte = 41b
+
+digit: Parse Int =
+  Parse.byte_range(ascii_zero, ascii_nine)
+  |> Parse.map(\x -> byte_to_int(x -& ascii_zero))
+
+int: Parse Int =
+  Parse.many1_fold(digit, 0, \(x, y) -> x * 10 + y)
+
+space: Parse () =
+  (
+    Parse.or(Parse.byte_eq(ascii_space)) <|
+    Parse.or(Parse.byte_eq(ascii_newline)) <|
+    Parse.byte_eq(ascii_tab)
+  ) |> Parse.map(\_ -> ())
+
+spaces: Parse () =
+  Parse.skip_many0(space)
+
+spaced(p: Parse a): Parse a =
+  Parse.skip_pre(spaces) <|
+  Parse.skip_post(p, spaces)
+
+atomic_expr: Parse Expr =
+  Parse.or(Parse.map(int, Const)) <|
+  Parse.lazy() <| \() ->
+  Parse.skip_pre(Parse.byte_eq(ascii_open_paren)) <|
+  Parse.skip_post(spaced(expr), Parse.byte_eq(ascii_close_paren))
+
+operator_chain(
+  elem: Parse Expr,
+  operator: Parse ((Expr, Expr) -> Expr),
+): Parse Expr =
+  Parse.and_then(elem) <| \lhs ->
+  Parse.or(
+    (
+      Parse.and_then(spaced(operator)) <| \op ->
+      Parse.and_then(operator_chain(elem, operator)) <| \rhs ->
+      Parse.pure(op(lhs, rhs))
+    ),
+    Parse.pure(lhs),
+  )
+
+mul_level_operator: Parse ((Expr, Expr) -> Expr) =
+  Parse.or(Parse.byte_eq(ascii_asterisk) |> Parse.map(\_ -> Mul)) <|
+  (Parse.byte_eq(ascii_slash) |> Parse.map(\_ -> Div))
+
+mul_level_expr: Parse Expr =
+  operator_chain(atomic_expr, mul_level_operator)
+
+add_level_operator: Parse ((Expr, Expr) -> Expr) =
+  Parse.or(Parse.byte_eq(ascii_plus) |> Parse.map(\_ -> Add)) <|
+  (Parse.byte_eq(ascii_minus) |> Parse.map(\_ -> Sub))
+
+add_level_expr: Parse Expr =
+  operator_chain(mul_level_expr, add_level_operator)
+
+expr: Parse Expr =
+  spaced(add_level_expr)
+
+pub proc main(): () =
+  let s = do input() in
+  match Parse.parse_all(s, expr) {
+    Some(e) -> do Io.writeln(String.int_to_string(eval(e))),
+    None -> do Io.writeln("Parse error"),
+  }

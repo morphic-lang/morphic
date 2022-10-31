@@ -7,8 +7,14 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
+use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
-pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
+pub fn split_custom_types(
+    program: &first_ord::Program,
+    progress: impl ProgressLogger,
+) -> anon::Program {
+    let mut progress = progress.start_session(Some(program.funcs.len()));
+
     let boxed_variants = find_boxed_variants(&program.custom_types);
 
     let custom_types = program.custom_types.map(|custom, typedef| {
@@ -26,14 +32,20 @@ pub fn split_custom_types(program: &first_ord::Program) -> anon::Program {
         }
     });
 
-    let funcs = program.funcs.map(|_, func_def| anon::FuncDef {
-        purity: func_def.purity,
-        arg_type: trans_type(&func_def.arg_type),
-        ret_type: trans_type(&func_def.ret_type),
-        arg: trans_pattern(&program.custom_types, &boxed_variants, &func_def.arg),
-        body: trans_expr(&program.custom_types, &boxed_variants, &func_def.body),
-        profile_point: func_def.profile_point,
+    let funcs = program.funcs.map(|_, func_def| {
+        let func_def_trans = anon::FuncDef {
+            purity: func_def.purity,
+            arg_type: trans_type(&func_def.arg_type),
+            ret_type: trans_type(&func_def.ret_type),
+            arg: trans_pattern(&program.custom_types, &boxed_variants, &func_def.arg),
+            body: trans_expr(&program.custom_types, &boxed_variants, &func_def.body),
+            profile_point: func_def.profile_point,
+        };
+        progress.update(1);
+        func_def_trans
     });
+
+    progress.finish();
 
     anon::Program {
         mod_symbols: program.mod_symbols.clone(),

@@ -3,6 +3,7 @@ use inkwell::OptimizationLevel;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::progress_ui::ProgressMode;
 use crate::pseudoprocess::{Stdio, ValgrindConfig};
 
 #[derive(Clone, Debug)]
@@ -39,6 +40,12 @@ pub enum TargetConfig {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SymbolName(pub String);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SpecializationMode {
+    Specialize,
+    Single,
+}
+
 #[derive(Debug)]
 pub struct BuildConfig {
     pub src_path: PathBuf,
@@ -49,6 +56,9 @@ pub struct BuildConfig {
 
     pub output_path: PathBuf,
     pub artifact_dir: Option<ArtifactDir>,
+    pub progress: ProgressMode,
+
+    pub defunc_mode: SpecializationMode,
 }
 
 #[derive(Debug)]
@@ -157,6 +167,18 @@ impl Config {
                             )
                             .multiple(true)
                             .number_of_values(1),
+                    )
+                    .arg(
+                        Arg::with_name("defunc-mode")
+                            .long("defunc-mode")
+                            .help("Set whether or not to specialize during defunctionalization")
+                            .possible_values(&["specialize", "single"])
+                            .default_value("specialize"),
+                    )
+                    .arg(
+                        Arg::with_name("progress")
+                            .long("progress")
+                            .help("Set whether or not to show progress"),
                     ),
             )
             .get_matches();
@@ -230,6 +252,18 @@ impl Config {
                 None => Vec::new(),
             };
 
+            let defunc_mode = match matches.value_of("defunc-mode").unwrap() {
+                "specialize" => SpecializationMode::Specialize,
+                "single" => SpecializationMode::Single,
+                _ => unreachable!(),
+            };
+
+            let progress = if matches.is_present("progress") {
+                ProgressMode::Visible
+            } else {
+                ProgressMode::Hidden
+            };
+
             let build_config = BuildConfig {
                 src_path,
                 profile_syms,
@@ -237,6 +271,8 @@ impl Config {
                 llvm_opt_level,
                 output_path: output_path.into(),
                 artifact_dir,
+                defunc_mode,
+                progress,
             };
             return Self::BuildConfig(build_config);
         }

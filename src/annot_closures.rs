@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::cli::SpecializationMode;
 use crate::data::closure_annot_ast as annot;
 use crate::data::intrinsics as intrs;
 use crate::data::lambda_lifted_ast as lifted;
@@ -14,6 +15,8 @@ use crate::util::graph::{self, Graph};
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
+use crate::util::progress_logger::ProgressLogger;
+use crate::util::progress_logger::ProgressSession;
 
 fn count_params(
     parameterized: &IdVec<mono::CustomTypeId, Option<annot::TypeDef>>,
@@ -2078,7 +2081,13 @@ fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
         .collect()
 }
 
-pub fn annot_closures(program: lifted::Program) -> annot::Program {
+pub fn annot_closures(
+    program: lifted::Program,
+    mode: SpecializationMode,
+    progress: impl ProgressLogger,
+) -> annot::Program {
+    let mut progress = progress.start_session(Some(program.vals.len() + program.lams.len()));
+
     let typedefs = parameterize_typedefs(&program.custom_types);
 
     let mut annot_vals = IdVec::from_items(vec![None; program.vals.len()]);
@@ -2086,7 +2095,15 @@ pub fn annot_closures(program: lifted::Program) -> annot::Program {
 
     let mut templates = IdVec::new();
 
-    let sccs = item_sccs(&program);
+    let sccs = match mode {
+        SpecializationMode::Specialize => item_sccs(&program),
+        SpecializationMode::Single => {
+            vec![ItemScc {
+                vals: (0..program.vals.len()).map(mono::CustomGlobalId).collect(),
+                lams: (0..program.lams.len()).map(lifted::LamId).collect(),
+            }]
+        }
+    };
 
     for scc in sccs {
         solve_scc(
@@ -2099,7 +2116,10 @@ pub fn annot_closures(program: lifted::Program) -> annot::Program {
             &scc.vals,
             &scc.lams,
         );
+        progress.update(scc.vals.len() + scc.lams.len());
     }
+
+    progress.finish();
 
     annot::Program {
         mod_symbols: program.mod_symbols.clone(),

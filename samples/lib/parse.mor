@@ -1,0 +1,136 @@
+import Core expose {
+  module Option expose {
+    Option { Some, None },
+  },
+  module Array,
+}
+
+pub type Parse a {
+  Parse((Int, Array Byte) -> Option (Int, a)),
+}
+
+pub parse_from(i: Int, s: Array Byte, p: Parse a): Option (Int, a) =
+  let Parse(f) = p in f(i, s)
+
+pub parse_prefix(s: Array Byte, p: Parse a): Option (Int, a) =
+  parse_from(0, s, p)
+
+pub parse_all(s: Array Byte, p: Parse a): Option a =
+  s
+  |> parse_prefix(p)
+  |> Option.and_then(\(i, x) -> if i = Array.len(s) { Some(x) } else { None })
+
+pub pure(x: a): Parse a =
+  Parse(\(i, s) -> Some(i, x))
+
+pub fail: Parse a =
+  Parse(\(_, _) -> None)
+
+pub lazy(f: () -> Parse a): Parse a =
+  Parse(\(i, s) -> parse_from(i, s, f()))
+
+pub map(p: Parse a, f: a -> b): Parse b =
+  Parse(\(i, s) -> parse_from(i, s, p) |> Option.map(\(j, x) -> (j, f(x))))
+
+pub and_then(p: Parse a, f: a -> Parse b): Parse b =
+  Parse(\(i, s) -> parse_from(i, s, p) |> Option.and_then(\(j, x) -> parse_from(j, s, f(x))))
+
+pub skip_pre(p: Parse a, q: Parse b): Parse b =
+  Parse(\(i, s) -> parse_from(i, s, p) |> Option.and_then(\(j, _) -> parse_from(j, s, q)))
+
+pub skip_post(p: Parse a, q: Parse b): Parse a =
+  Parse(\(i, s) ->
+    parse_from(i, s, p)
+    |> Option.and_then(\(j, x) -> parse_from(j, s, q) |> Option.map(\(k, _) -> (k, x)))
+  )
+
+pub or(p: Parse a, q: Parse a): Parse a =
+  Parse(\(i, s) -> parse_from(i, s, p) |> Option.or_else(\() -> parse_from(i, s, q)))
+
+pub many0_fold(p: Parse a, init: b, combine: (b, a) -> b): Parse b =
+  or(
+    and_then(p, \x -> many0_fold(p, combine(init, x), combine)),
+    pure(init),
+  )
+
+pub many0(p: Parse a): Parse (Array a) =
+  // lazy to ensure a fresh array is allocated each time
+  lazy(\() -> many0_fold(p, [], Array.push))
+
+pub skip_many0(p: Parse a): Parse () =
+  lazy(\() -> many0_fold(p, (), \(_, _) -> ()))
+
+pub many1_fold(p: Parse a, init: b, combine: (b, a) -> b): Parse b =
+  and_then(p, \x -> many0_fold(p, combine(init, x), combine))
+
+pub many1(p: Parse a): Parse (Array a) =
+  // lazy to ensure a fresh array is allocated each time
+  lazy(\() -> many1_fold(p, [], Array.push))
+
+pub skip_many1(p: Parse a): Parse () =
+  lazy(\() -> many1_fold(p, (), \(_, _) -> ()))
+
+pub sep0_fold(p: Parse a, sep: Parse s, init: b, combine: (b, a) -> b): Parse b =
+  or(
+    and_then(p, \x -> many0_fold(skip_pre(sep, p), combine(init, x), combine)),
+    pure(init),
+  )
+
+pub sep0(p: Parse a, sep: Parse s): Parse (Array a) =
+  // lazy to ensure a fresh array is allocated each time
+  lazy(\() -> sep0_fold(p, sep, [], Array.push))
+
+pub sep1_fold(p: Parse a, sep: Parse s, init: b, combine: (b, a) -> b): Parse b =
+  and_then(p, \x -> many0_fold(skip_pre(sep, p), combine(init, x), combine))
+
+pub sep1(p: Parse a, sep: Parse s): Parse (Array a) =
+  // lazy to ensure a fresh array is allocated each time
+  lazy(\() -> sep1_fold(p, sep, [], Array.push))
+
+pub optional(p: Parse a): Parse (Option a) =
+  or(map(p, Some), lazy(\() -> pure(None)))
+
+pub lookahead(p: Parse a): Parse a =
+  Parse(\(i, s) -> parse_from(i, s, p) |> Option.map(\(j, x) -> (i, x)))
+
+pub not_followed_by(p: Parse a): Parse () =
+  Parse(\(i, s) -> match parse_from(i, s, p) {
+    Some(_) -> None,
+    None -> Some(i, ()),
+  })
+
+pub between(open: Parse a, close: Parse b, p: Parse c): Parse c =
+  skip_pre(open, skip_post(p, close))
+
+pub guard(p: Parse a, f: a -> Bool): Parse a =
+  and_then(p, \x -> if f(x) { pure(x) } else { fail })
+
+pub byte: Parse Byte =
+  Parse(\(i, s) ->
+    if i < Array.len(s) {
+      Some(i + 1, Array.get(s, i))
+    } else {
+      None
+    }
+  )
+
+pub byte_eq(b: Byte): Parse Byte =
+  guard(byte, \x -> x =& b)
+
+pub byte_ne(b: Byte): Parse Byte =
+  guard(byte, \x -> ! (x =& b))
+
+pub byte_range(lo: Byte, hi: Byte): Parse Byte =
+  guard(byte, \x -> lo <=& x && x <=& hi)
+
+lit_from(s: Array Byte, i: Int): Parse (Array Byte) =
+  lazy(\() ->
+    if i = Array.len(s) {
+      pure(s)
+    } else {
+      skip_pre(byte_eq(Array.get(s, i)), lit_from(s, i + 1))
+    }
+  )
+
+pub lit(s: Array Byte): Parse (Array Byte) =
+  lit_from(s, 0)

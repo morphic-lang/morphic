@@ -1,0 +1,298 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io,
+    module String,
+    module Option expose { Option { Some, None } },
+    module Math expose { float_pow, int_to_float },
+    module Array,
+    module Iter expose { Iter },
+    module Control,
+  }
+module Parse = file "lib/parse.mor"
+  with { Core }
+  expose { Parse }
+module Diff = file "lib/diff_list.mor"
+  with { Core }
+  expose { Diff }
+
+ascii_zero: Byte = 48b
+ascii_nine: Byte = 57b
+ascii_space: Byte = 32b
+ascii_line_feed: Byte = 10b
+ascii_carriage_return: Byte = 13b
+ascii_tab: Byte = 9b
+ascii_plus: Byte = 43b
+ascii_minus: Byte = 45b
+ascii_dot: Byte = 46b
+ascii_e: Byte = 101b
+ascii_E: Byte = 69b
+ascii_backslash: Byte = 92b
+ascii_quote: Byte = 34b
+ascii_slash: Byte = 47b
+ascii_b: Byte = 98b
+ascii_backspace: Byte = 8b
+ascii_f: Byte = 102b
+ascii_form_feed: Byte = 12b
+ascii_n: Byte = 110b
+ascii_u: Byte = 117b
+ascii_a: Byte = 97b
+ascii_A: Byte = 65b
+ascii_F: Byte = 70b
+ascii_r: Byte = 114b
+ascii_t: Byte = 116b
+ascii_left_square_bracket: Byte = 91b
+ascii_right_square_bracket: Byte = 93b
+ascii_left_curly_bracket: Byte = 123b
+ascii_right_curly_bracket: Byte = 125b
+ascii_comma: Byte = 44b
+ascii_colon: Byte = 58b
+
+digit: Parse Int =
+  Parse.byte_range(ascii_zero, ascii_nine)
+  |> Parse.map(\x -> byte_to_int(x -& ascii_zero))
+
+hex_digit: Parse Int =
+  Parse.or(Parse.map(Parse.byte_range(ascii_zero, ascii_nine), \d -> byte_to_int(d -& ascii_zero))) <|
+  Parse.or(Parse.map(Parse.byte_range(ascii_A, ascii_F), \d -> byte_to_int(d -& ascii_A) + 10)) <|
+  Parse.map(Parse.byte_range(ascii_a, ascii_f), \d -> byte_to_int(d -& ascii_a) + 10)
+
+int: Parse Int =
+  Parse.skip_pre(Parse.not_followed_by(Parse.byte_eq(ascii_zero))) <|
+  Parse.many1_fold(digit, 0, \(accum, d) -> accum * 10 + d)
+
+fractional_part: Parse Float =
+  Parse.skip_pre(Parse.byte_eq(ascii_dot)) <|
+  Parse.map(
+    Parse.many1_fold(
+      digit,
+      (0.0, 0.1),
+      \((accum, place), d) -> (accum +. int_to_float(d) *. place, place /. 10.0)
+    ),
+    \(accum, _) -> accum,
+  )
+
+opt_sign: Parse Int =
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_minus), Parse.pure(-1))) <|
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_plus), Parse.pure(1))) <|
+  Parse.pure(1)
+
+exponent_part: Parse Float =
+  Parse.skip_pre(Parse.or(Parse.byte_eq(ascii_e), Parse.byte_eq(ascii_E))) <|
+  Parse.and_then(opt_sign) <| \sign ->
+  Parse.and_then(int) <| \exp ->
+  Parse.pure(float_pow(10.0, sign * exp))
+
+opt_minus: Parse Float =
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_minus), Parse.pure(-.1.0))) <|
+  Parse.pure(1.0)
+
+number: Parse Float =
+  Parse.and_then(opt_minus) <| \sign ->
+  Parse.and_then(int) <| \int_part ->
+  Parse.and_then(Parse.or(fractional_part, Parse.pure(0.0))) <| \frac_part ->
+  Parse.and_then(Parse.or(exponent_part, Parse.pure(1.0))) <| \exp_part ->
+  Parse.pure(sign *. (int_to_float(int_part) +. frac_part) *. exp_part)
+
+space: Parse () =
+  Parse.skip_post(Parse.pure(())) <|
+  Parse.or(Parse.byte_eq(ascii_space)) <|
+  Parse.or(Parse.byte_eq(ascii_line_feed)) <|
+  Parse.or(Parse.byte_eq(ascii_carriage_return)) <|
+  Parse.byte_eq(ascii_tab)
+
+spaces: Parse () =
+  Parse.skip_many0(space)
+
+spaced(p: Parse a): Parse a =
+  Parse.between(spaces, spaces, p)
+
+parse_ascii_escape: Parse Byte =
+  Parse.skip_pre(Parse.byte_eq(ascii_backslash)) <|
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_quote), Parse.pure(ascii_quote))) <|
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_backslash), Parse.pure(ascii_backslash))) <|
+  // why does JSON let you escape a forward slash?
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_slash), Parse.pure(ascii_slash))) <|
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_b), Parse.pure(ascii_backspace))) <|
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_f), Parse.pure(ascii_form_feed))) <|
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_n), Parse.pure(ascii_line_feed))) <|
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_r), Parse.pure(ascii_carriage_return))) <|
+  Parse.skip_pre(Parse.byte_eq(ascii_t), Parse.pure(ascii_tab))
+
+parse_16_bit_unicode_escape: Parse Int =
+  Parse.skip_pre(Parse.byte_eq(ascii_backslash)) <|
+  Parse.skip_pre(Parse.byte_eq(ascii_u)) <|
+  Parse.and_then(hex_digit) <| \d1 ->
+  Parse.and_then(hex_digit) <| \d2 ->
+  Parse.and_then(hex_digit) <| \d3 ->
+  Parse.and_then(hex_digit) <| \d4 ->
+  Parse.pure(d1 * 16 * 16 * 16 + d2 * 16 * 16 + d3 * 16 + d4)
+
+parse_unicode_escape: Parse Int =
+  Parse.and_then(parse_16_bit_unicode_escape) <| \code_unit ->
+  // Check if this is the first code unit of a surrogate pair
+  if 55296 <= code_unit && code_unit < 56320 {
+    Parse.and_then(parse_16_bit_unicode_escape) <| \code_unit2 ->
+    if 56320 <= code_unit2 && code_unit2 < 57344 {
+      Parse.pure(65536 + (code_unit - 55296) * 1024 + (code_unit2 - 56320))
+    } else {
+      Parse.fail
+    }
+  } else {
+    Parse.pure(code_unit)
+  }
+
+encode_utf8(s: Array Byte, x: Int): Array Byte =
+  if x < 128 {
+    s
+    |> Array.push(int_to_byte(x))
+  } else if x < 2048 {
+    s
+    |> Array.push(int_to_byte(int_bit_or(192, int_shift_right(x, 6))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(x, 63))))
+  } else if x < 65536 {
+    s
+    |> Array.push(int_to_byte(int_bit_or(224, int_shift_right(x, 12))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 6), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(x, 63))))
+  } else if x < 2097152 {
+    s
+    |> Array.push(int_to_byte(int_bit_or(240, int_shift_right(x, 18))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 12), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 6), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(x, 63))))
+  } else if x < 67108864 {
+    s
+    |> Array.push(int_to_byte(int_bit_or(248, int_shift_right(x, 24))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 18), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 12), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 6), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(x, 63))))
+  } else {
+    s
+    |> Array.push(int_to_byte(int_bit_or(252, int_shift_right(x, 30))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 24), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 18), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 12), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(int_shift_right(x, 6), 63))))
+    |> Array.push(int_to_byte(int_bit_or(128, int_bit_and(x, 63))))
+  }
+
+string: Parse (Array Byte) =
+  Parse.between(Parse.byte_eq(ascii_quote), Parse.byte_eq(ascii_quote)) <|
+  Parse.many0_fold(
+    Parse.or(
+      Parse.byte
+      |> Parse.guard(\x -> x >=& 20b && ! (x =& ascii_quote || x =& ascii_backslash))
+      |> Parse.map(\x -> \s -> Array.push(s, x)),
+    ) <|
+    Parse.or(Parse.map(parse_ascii_escape, \x -> \s -> Array.push(s, x))) <|
+    Parse.map(parse_unicode_escape, \x -> \s -> encode_utf8(s, x)),
+    "",
+    \(s, f) -> f(s),
+  )
+
+type Value {
+  Null,
+  Bool(Bool),
+  Number(Float),
+  String(Array Byte),
+  Array(Array Value),
+  Object(Array (Array Byte, Value)),
+}
+
+null: Parse () =
+  Parse.lazy(\() -> Parse.skip_pre(Parse.lit("null"), Parse.pure(())))
+
+bool: Parse Bool =
+  Parse.lazy() <| \() ->
+  Parse.or(
+    Parse.skip_pre(Parse.lit("true"), Parse.pure(True)),
+    Parse.skip_pre(Parse.lit("false"), Parse.pure(False)),
+  )
+
+value: Parse Value =
+  Parse.or(Parse.map(number, Number)) <|
+  Parse.or(Parse.map(string, String)) <|
+  Parse.or(Parse.map(array, Array)) <|
+  Parse.or(Parse.map(object, Object)) <|
+  Parse.or(Parse.map(null, \() -> Null)) <|
+  Parse.map(bool, Bool)
+
+array: Parse (Array Value) =
+  Parse.between(Parse.byte_eq(ascii_left_square_bracket), Parse.byte_eq(ascii_right_square_bracket)) <|
+  spaced() <|
+  Parse.sep0(value, spaced(Parse.byte_eq(ascii_comma)))
+
+object: Parse (Array (Array Byte, Value)) =
+  Parse.between(Parse.byte_eq(ascii_left_curly_bracket), Parse.byte_eq(ascii_right_curly_bracket)) <|
+  spaced() <|
+  Parse.sep0(
+    Parse.and_then(string) <| \k ->
+    Parse.and_then(spaced(Parse.byte_eq(ascii_colon))) <| \_ ->
+    Parse.and_then(value) <| \v ->
+    Parse.pure((k, v)),
+    spaced(Parse.byte_eq(ascii_comma)),
+  )
+
+type PathComponent {
+  Key(Array Byte),
+  Index(Int),
+}
+
+path: Parse (Array PathComponent) =
+  Parse.many0(
+    spaced() <|
+    Parse.between(
+      Parse.byte_eq(ascii_left_square_bracket),
+      Parse.byte_eq(ascii_right_square_bracket),
+    ) <|
+    spaced() <|
+    Parse.or(Parse.map(string, Key), Parse.map(int, Index)),
+  )
+
+traverse(v: Value, path: Iter PathComponent): Option Value =
+  match Iter.next(path) {
+    None -> Some(v),
+    Some(Key(path_k), rest) ->
+      match v {
+        Object(o) ->
+          match Iter.find(Iter.items(o), \(k, _) -> String.equal(k, path_k)) {
+            None -> None,
+            Some(_, entry) -> traverse(entry, rest),
+          },
+        _ -> None,
+      },
+    Some(Index(i), rest) ->
+      match v {
+        Array(a) ->
+          if i < Array.len(a) {
+            traverse(Array.get(a, i), rest)
+          } else {
+            None
+          },
+        _ -> None,
+      },
+  }
+
+pub proc main(): () =
+  let json = Option.unwrap(Parse.parse_all(do input(), value)) in
+  do Control.forever() <| proc \() ->
+    do output("> ") then
+    match Parse.parse_all(do input(), path) {
+      None -> do Io.writeln("Invalid path"),
+      Some(path) ->
+        match traverse(json, Iter.items(path)) {
+          None -> do Io.writeln("Not found"),
+          Some(v) ->
+            let type_name = match v {
+                Null -> "null",
+                Bool(_) -> "bool",
+                Number(_) -> "number",
+                String(_) -> "string",
+                Array(_) -> "array",
+                Object(_) -> "object",
+              }
+            in
+            do Io.writeln(type_name),
+        },
+    }

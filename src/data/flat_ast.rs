@@ -8,6 +8,8 @@ use crate::util::id_vec::IdVec;
 
 id_type!(pub LocalId);
 
+id_type!(pub CustomTypeSccId);
+
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Get(
@@ -121,10 +123,26 @@ pub struct FuncDef {
     pub profile_point: Option<prof::ProfilePointId>,
 }
 
+// Annotating each custom type with an id representing the SCC it belongs to isn't particularly
+// related to the main purpose of this pass, but it's convenient to do it here, because alias
+// analysis needs it.
+
+#[derive(Clone, Debug)]
+pub struct CustomTypeDef {
+    pub content: anon::Type,
+    pub scc: CustomTypeSccId,
+}
+
+#[derive(Clone, Debug)]
+pub struct CustomTypes {
+    pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
+    pub sccs: IdVec<CustomTypeSccId, Vec<first_ord::CustomTypeId>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
+    pub custom_types: CustomTypes,
     pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,

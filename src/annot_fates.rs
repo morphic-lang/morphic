@@ -14,6 +14,7 @@ use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::im_rc_ext::VectorExtensions;
 use crate::util::local_context::LocalContext;
+use crate::util::progress_logger::ProgressLogger;
 
 impl Signature for fate::FuncDef {
     type Sig = BTreeMap<alias::ArgName, fate::ArgFieldFate>;
@@ -73,10 +74,7 @@ fn add_occurence(
     fate::Local(occur_id, local)
 }
 
-fn empty_fate(
-    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
-    type_: &anon::Type,
-) -> fate::Fate {
+fn empty_fate(typedefs: &flat::CustomTypes, type_: &anon::Type) -> fate::Fate {
     fate::Fate {
         fates: get_refs_in(typedefs, type_)
             .into_iter()
@@ -86,7 +84,7 @@ fn empty_fate(
 }
 
 fn consumed_fate(
-    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    typedefs: &flat::CustomTypes,
     type_: &anon::Type,
     expr_event: &event::Horizon,
 ) -> fate::Fate {
@@ -439,13 +437,18 @@ fn annot_expr(
         mutation::ExprKind::WrapCustom(custom_id, content) => {
             let mut content_fate = fate::Fate::new();
 
-            let content_type = &orig.custom_types[custom_id];
+            let content_type = &orig.custom_types.types[custom_id].content;
+            let scc_id = orig.custom_types.types[custom_id].scc;
             for (content_path, _) in get_refs_in(&orig.custom_types, content_type) {
-                let (_, alias::SubPath(sub_path)) = split_at_fold(*custom_id, content_path.clone());
+                let (_, in_custom, alias::SubPath(sub_path)) =
+                    split_at_fold(scc_id, *custom_id, content_path.clone());
 
                 content_fate.fates.insert(
                     content_path,
-                    val_fate.fates[&sub_path.add_front(alias::Field::Custom(*custom_id))].clone(),
+                    val_fate.fates[&sub_path
+                        .add_front(alias::Field::Custom(in_custom))
+                        .add_front(alias::Field::CustomScc(scc_id, *custom_id))]
+                        .clone(),
                 );
             }
 
@@ -459,14 +462,20 @@ fn annot_expr(
             let wrapped_type = anon::Type::Custom(*custom_id);
             let mut wrapped_fate = empty_fate(&orig.custom_types, &wrapped_type);
 
-            let content_type = &orig.custom_types[custom_id];
+            let content_type = &orig.custom_types.types[custom_id].content;
+            let scc_id = orig.custom_types.types[custom_id].scc;
             for (content_path, _) in get_refs_in(&orig.custom_types, content_type) {
-                let (_, alias::SubPath(sub_path)) = split_at_fold(*custom_id, content_path.clone());
+                let (_, in_custom, alias::SubPath(sub_path)) =
+                    split_at_fold(scc_id, *custom_id, content_path.clone());
 
                 merge_field_fates(
                     wrapped_fate
                         .fates
-                        .get_mut(&sub_path.add_front(alias::Field::Custom(*custom_id)))
+                        .get_mut(
+                            &sub_path
+                                .add_front(alias::Field::Custom(in_custom))
+                                .add_front(alias::Field::CustomScc(scc_id, *custom_id)),
+                        )
                         .unwrap(),
                     &val_fate.fates[&content_path],
                 );
@@ -786,11 +795,12 @@ fn annot_func(
     }
 }
 
-pub fn annot_fates(program: mutation::Program) -> fate::Program {
+pub fn annot_fates(program: mutation::Program, progress: impl ProgressLogger) -> fate::Program {
     let funcs = annot_all(
         program.funcs.len(),
         |sig_assumptions, func| annot_func(&program, sig_assumptions, &program.funcs[func]),
         &program.sccs,
+        progress,
     );
 
     fate::Program {

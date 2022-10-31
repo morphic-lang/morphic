@@ -2,6 +2,7 @@ use find_clang::find_default_clang;
 use morphic::build;
 use morphic::cli;
 use morphic::file_cache::FileCache;
+use morphic::progress_ui::ProgressMode;
 
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, Criterion};
@@ -182,6 +183,8 @@ fn bench_sample(
                         llvm_opt_level: cli::default_llvm_opt_level(),
                         output_path: exe_path.to_owned(),
                         artifact_dir: None,
+                        defunc_mode: cli::SpecializationMode::Specialize,
+                        progress: ProgressMode::Hidden,
                     },
                     &mut files,
                 )
@@ -520,7 +523,10 @@ fn sample_quicksort(c: &mut Criterion) {
         let line = format!("{}\n", int);
         stdin.push_str(&line);
     }
-    let stdout = format!("The sorted version of\n  {:?}\nis\n  {:?}\n", input_ints, output_ints);
+    let stdout = format!(
+        "The sorted version of\n  {:?}\nis\n  {:?}\n",
+        input_ints, output_ints
+    );
 
     bench_sample(
         &mut g,

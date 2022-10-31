@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod file_cache;
+pub mod progress_ui;
 pub mod pseudoprocess;
 
 #[macro_use]
@@ -190,7 +191,14 @@ pub fn run(
     config: cli::RunConfig,
     files: &mut file_cache::FileCache,
 ) -> Result<pseudoprocess::Child, Error> {
-    let lowered = compile(&config.src_path, &[], None, files)?;
+    let lowered = compile(
+        &config.src_path,
+        &[],
+        None,
+        cli::SpecializationMode::Specialize,
+        files,
+        progress_ui::ProgressMode::Hidden,
+    )?;
 
     match config.mode {
         cli::RunMode::Compile { valgrind } => {
@@ -205,7 +213,9 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
         &config.src_path,
         &config.profile_syms,
         config.artifact_dir.as_ref(),
+        config.defunc_mode,
         files,
+        config.progress,
     )?;
 
     Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
@@ -215,7 +225,9 @@ fn compile(
     src_path: &Path,
     profile_syms: &[cli::SymbolName],
     artifact_dir: Option<&cli::ArtifactDir>,
+    defunc_mode: cli::SpecializationMode,
     files: &mut file_cache::FileCache,
+    progress: progress_ui::ProgressMode,
 ) -> Result<data::low_ast::Program, Error> {
     let resolved = resolve::resolve_program(files, src_path, profile_syms)
         .map_err(ErrorKind::ResolveFailed)?;
@@ -237,36 +249,60 @@ fn compile(
 
     let lifted = lambda_lift::lambda_lift(shielded);
 
-    let annot = annot_closures::annot_closures(lifted);
+    let annot = annot_closures::annot_closures(
+        lifted,
+        defunc_mode,
+        progress_ui::bar(progress, "annot_closures"),
+    );
 
-    let special = closure_specialize::closure_specialize(annot);
+    let special = closure_specialize::closure_specialize(
+        annot,
+        progress_ui::bar(progress, "closure_specialize"),
+    );
     closure_specialize::check_patterns(&special);
 
-    let first_order = lower_closures::lower_closures(special);
+    let first_order =
+        lower_closures::lower_closures(special, progress_ui::bar(progress, "lower_closures"));
 
     typecheck_first_order::typecheck(&first_order);
 
-    let split = split_custom_types::split_custom_types(&first_order);
+    let split = split_custom_types::split_custom_types(
+        &first_order,
+        progress_ui::bar(progress, "split_custom_types"),
+    );
 
-    let flat = flatten::flatten(split);
+    let flat = flatten::flatten(split, progress_ui::bar(progress, "flatten"));
 
-    let alias_annot = annot_aliases::annot_aliases(flat);
+    let alias_annot =
+        annot_aliases::annot_aliases(flat, progress_ui::bar(progress, "annot_aliases"));
 
-    let mut_annot = annot_mutation::annot_mutation(alias_annot);
+    let mut_annot =
+        annot_mutation::annot_mutation(alias_annot, progress_ui::bar(progress, "annot_mutation"));
 
-    let fate_annot = annot_fates::annot_fates(mut_annot);
+    let fate_annot = annot_fates::annot_fates(mut_annot, progress_ui::bar(progress, "annot_fates"));
 
-    let alias_spec = specialize_aliases::specialize_aliases(fate_annot);
+    let alias_spec = specialize_aliases::specialize_aliases(
+        fate_annot,
+        progress_ui::bar(progress, "specialize_aliases"),
+    );
 
-    let mode_annot = annot_modes::annot_modes(alias_spec);
+    let mode_annot =
+        annot_modes::annot_modes(alias_spec, progress_ui::bar(progress, "annot_modes"));
 
-    let rc_spec = rc_specialize::rc_specialize(mode_annot);
+    let rc_spec =
+        rc_specialize::rc_specialize(mode_annot, progress_ui::bar(progress, "rc_specialize"));
 
-    let repr_unified = unify_reprs::unify_reprs(rc_spec);
+    let repr_unified = unify_reprs::unify_reprs(rc_spec, progress_ui::bar(progress, "unify_reprs"));
 
-    let repr_constrained = constrain_reprs::constrain_reprs(repr_unified);
+    let repr_constrained = constrain_reprs::constrain_reprs(
+        repr_unified,
+        progress_ui::bar(progress, "constrain_reprs"),
+    );
 
-    let repr_specialized = specialize_reprs::specialize_reprs(repr_constrained);
+    let repr_specialized = specialize_reprs::specialize_reprs(
+        repr_constrained,
+        progress_ui::bar(progress, "specialize_reprs"),
+    );
 
     if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("repr-spec-ir"))
@@ -276,9 +312,15 @@ fn compile(
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    let tail_rec = tail_call_elim::tail_call_elim(repr_specialized.clone());
+    let tail_rec = tail_call_elim::tail_call_elim(
+        repr_specialized.clone(),
+        progress_ui::bar(progress, "tail_call_elim"),
+    );
 
-    let lowered = lower_structures::lower_structures(tail_rec);
+    let lowered = lower_structures::lower_structures(
+        tail_rec,
+        progress_ui::bar(progress, "lower_structures"),
+    );
 
     if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("low-ir"))
