@@ -2,7 +2,7 @@ use ansi_term::Color;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use textwrap::{NoHyphenation, Wrapper};
+use textwrap::{wrap, Options, WordSplitter};
 
 use crate::file_cache::FileCache;
 
@@ -286,10 +286,13 @@ pub fn report_error(
             let indentation = line.chars().take_while(|&c| c == ' ').count();
             let indent_str = &line[..indentation];
 
-            let wrapped = Wrapper::with_splitter(MESSAGE_WIDTH, NoHyphenation)
-                .initial_indent(indent_str)
-                .subsequent_indent(indent_str)
-                .wrap(&line[indentation..]);
+            let wrapped = wrap(
+                &line[indentation..],
+                Options::new(MESSAGE_WIDTH)
+                    .word_splitter(WordSplitter::NoHyphenation)
+                    .initial_indent(indent_str)
+                    .subsequent_indent(indent_str),
+            );
 
             if wrapped.is_empty() {
                 writeln!(dest)?;

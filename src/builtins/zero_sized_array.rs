@@ -4,7 +4,7 @@ use crate::builtins::tal::Tal;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
-use inkwell::types::{BasicType, BasicTypeEnum};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 
 pub struct ZeroSizedArrayImpl<'a> {
@@ -25,7 +25,7 @@ impl<'a> ZeroSizedArrayImpl<'a> {
         let hole_array_type = i64_type.into();
 
         // Convenience utilities
-        let fun = |name: &str, ret: BasicTypeEnum<'a>, args: &[BasicTypeEnum<'a>]| {
+        let fun = |name: &str, ret: BasicTypeEnum<'a>, args: &[BasicMetadataTypeEnum<'a>]| {
             module.add_function(
                 &format!("builtin_zero_array_{}", name),
                 ret.fn_type(args, false),
@@ -33,7 +33,7 @@ impl<'a> ZeroSizedArrayImpl<'a> {
             )
         };
 
-        let void_fun = |name: &str, args: &[BasicTypeEnum<'a>]| {
+        let void_fun = |name: &str, args: &[BasicMetadataTypeEnum<'a>]| {
             module.add_function(
                 &format!("builtin_zero_array_{}", name),
                 void_type.fn_type(args, false),

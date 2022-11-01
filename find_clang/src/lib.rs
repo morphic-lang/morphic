@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::process::Command as Cmd;
 
-pub const DEFAULT_CLANG_VERSION: u32 = 10;
+pub const DEFAULT_CLANG_VERSION: u32 = 14;
 
 pub struct Clang {
     pub path: String,

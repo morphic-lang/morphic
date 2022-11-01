@@ -750,14 +750,14 @@ fn gen_rc_op<'a, 'b>(
                     .get_flat_array(globals, item_type)
                     .interface()
                     .retain_array;
-                builder.build_call(retain_func, &[arg], "retain_flat_array");
+                builder.build_call(retain_func, &[arg.into()], "retain_flat_array");
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_flat_array(globals, item_type)
                     .interface()
                     .release_array;
-                builder.build_call(release_func, &[arg], "release_flat_array");
+                builder.build_call(release_func, &[arg.into()], "release_flat_array");
             }
         },
         low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => match op {
@@ -766,14 +766,14 @@ fn gen_rc_op<'a, 'b>(
                     .get_persistent_array(globals, item_type)
                     .interface()
                     .retain_array;
-                builder.build_call(retain_func, &[arg], "retain_pers_array");
+                builder.build_call(retain_func, &[arg.into()], "retain_pers_array");
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_persistent_array(globals, item_type)
                     .interface()
                     .release_array;
-                builder.build_call(release_func, &[arg], "release_pers_array");
+                builder.build_call(release_func, &[arg.into()], "release_pers_array");
             }
         },
         low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => match op {
@@ -782,14 +782,14 @@ fn gen_rc_op<'a, 'b>(
                     .get_flat_array(globals, item_type)
                     .interface()
                     .retain_hole;
-                builder.build_call(retain_func, &[arg], "retain_flat_hole_array");
+                builder.build_call(retain_func, &[arg.into()], "retain_flat_hole_array");
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_flat_array(globals, item_type)
                     .interface()
                     .release_hole;
-                builder.build_call(release_func, &[arg], "release_flat_hole_array");
+                builder.build_call(release_func, &[arg.into()], "release_flat_hole_array");
             }
         },
         low::Type::HoleArray(constrain::RepChoice::FallbackImmut, item_type) => match op {
@@ -798,14 +798,14 @@ fn gen_rc_op<'a, 'b>(
                     .get_persistent_array(globals, item_type)
                     .interface()
                     .retain_hole;
-                builder.build_call(retain_func, &[arg], "retain_pers_hole_array");
+                builder.build_call(retain_func, &[arg.into()], "retain_pers_hole_array");
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_persistent_array(globals, item_type)
                     .interface()
                     .release_hole;
-                builder.build_call(release_func, &[arg], "release_pers_hole_array");
+                builder.build_call(release_func, &[arg.into()], "release_pers_hole_array");
             }
         },
         low::Type::Tuple(item_types) => {
@@ -880,21 +880,21 @@ fn gen_rc_op<'a, 'b>(
         low::Type::Boxed(inner_type) => match op {
             RcOp::Retain => {
                 let retain_func = instances.get_rc(globals, inner_type).retain;
-                builder.build_call(retain_func, &[arg], "retain_boxed");
+                builder.build_call(retain_func, &[arg.into()], "retain_boxed");
             }
             RcOp::Release => {
                 let release_func = instances.get_rc(globals, inner_type).release;
-                builder.build_call(release_func, &[arg], "release_boxed");
+                builder.build_call(release_func, &[arg.into()], "release_boxed");
             }
         },
         low::Type::Custom(type_id) => match op {
             RcOp::Retain => {
                 let retain_func = globals.custom_types[type_id].retain;
-                builder.build_call(retain_func, &[arg], "retain_boxed");
+                builder.build_call(retain_func, &[arg.into()], "retain_boxed");
             }
             RcOp::Release => {
                 let release_func = globals.custom_types[type_id].release;
-                builder.build_call(release_func, &[arg], "release_boxed");
+                builder.build_call(release_func, &[arg.into()], "release_boxed");
             }
         },
     }
@@ -1081,9 +1081,9 @@ fn gen_expr<'a, 'b>(
     use low::Expr as E;
     let context = globals.context;
     match expr {
-        E::Local(local_id) => locals[local_id],
+        E::Local(local_id) => locals[local_id].into(),
         E::Call(func_id, local_id) => builder
-            .build_call(funcs[func_id], &[locals[local_id]], "result")
+            .build_call(funcs[func_id], &[locals[local_id].into()], "result")
             .try_as_basic_value()
             .left()
             .unwrap(),
@@ -1271,7 +1271,7 @@ fn gen_expr<'a, 'b>(
         E::WrapBoxed(local_id, inner_type) => {
             let builtin = instances.get_rc(globals, inner_type);
             builder
-                .build_call(builtin.new, &[locals[local_id]], "new_box")
+                .build_call(builtin.new, &[locals[local_id].into()], "new_box")
                 .try_as_basic_value()
                 .left()
                 .unwrap()
@@ -1279,7 +1279,7 @@ fn gen_expr<'a, 'b>(
         E::UnwrapBoxed(local_id, inner_type) => {
             let builtin = instances.get_rc(globals, inner_type);
             let ptr = builder
-                .build_call(builtin.get, &[locals[local_id]], "unbox")
+                .build_call(builtin.get, &[locals[local_id].into()], "unbox")
                 .try_as_basic_value()
                 .left()
                 .unwrap()
@@ -1544,7 +1544,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Get(array_id, index_id) => builder
                         .build_call(
                             builtin.interface().get,
-                            &[locals[array_id], locals[index_id]],
+                            &[locals[array_id].into(), locals[index_id].into()],
                             "flat_array_get",
                         )
                         .try_as_basic_value()
@@ -1553,7 +1553,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Extract(array_id, index_id) => builder
                         .build_call(
                             builtin.interface().extract,
-                            &[locals[array_id], locals[index_id]],
+                            &[locals[array_id].into(), locals[index_id].into()],
                             "flat_array_extract",
                         )
                         .try_as_basic_value()
@@ -1562,7 +1562,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Len(array_id) => builder
                         .build_call(
                             builtin.interface().len,
-                            &[locals[array_id]],
+                            &[locals[array_id].into()],
                             "flat_array_len",
                         )
                         .try_as_basic_value()
@@ -1571,7 +1571,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Push(array_id, item_id) => builder
                         .build_call(
                             builtin.interface().push,
-                            &[locals[array_id], locals[item_id]],
+                            &[locals[array_id].into(), locals[item_id].into()],
                             "flat_array_push",
                         )
                         .try_as_basic_value()
@@ -1580,7 +1580,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Pop(array_id) => builder
                         .build_call(
                             builtin.interface().pop,
-                            &[locals[array_id]],
+                            &[locals[array_id].into()],
                             "flat_array_pop",
                         )
                         .try_as_basic_value()
@@ -1589,7 +1589,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Replace(array_id, item_id) => builder
                         .build_call(
                             builtin.interface().replace,
-                            &[locals[array_id], locals[item_id]],
+                            &[locals[array_id].into(), locals[item_id].into()],
                             "flat_array_replace",
                         )
                         .try_as_basic_value()
@@ -1598,7 +1598,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Reserve(array_id, capacity_id) => builder
                         .build_call(
                             builtin.interface().reserve,
-                            &[locals[array_id], locals[capacity_id]],
+                            &[locals[array_id].into(), locals[capacity_id].into()],
                             "flat_array_reserve",
                         )
                         .try_as_basic_value()
@@ -1617,7 +1617,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Get(array_id, index_id) => builder
                         .build_call(
                             builtin.interface().get,
-                            &[locals[array_id], locals[index_id]],
+                            &[locals[array_id].into(), locals[index_id].into()],
                             "pers_array_get",
                         )
                         .try_as_basic_value()
@@ -1626,7 +1626,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Extract(array_id, index_id) => builder
                         .build_call(
                             builtin.interface().extract,
-                            &[locals[array_id], locals[index_id]],
+                            &[locals[array_id].into(), locals[index_id].into()],
                             "pers_array_extract",
                         )
                         .try_as_basic_value()
@@ -1635,7 +1635,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Len(array_id) => builder
                         .build_call(
                             builtin.interface().len,
-                            &[locals[array_id]],
+                            &[locals[array_id].into()],
                             "pers_array_len",
                         )
                         .try_as_basic_value()
@@ -1644,7 +1644,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Push(array_id, item_id) => builder
                         .build_call(
                             builtin.interface().push,
-                            &[locals[array_id], locals[item_id]],
+                            &[locals[array_id].into(), locals[item_id].into()],
                             "pers_array_push",
                         )
                         .try_as_basic_value()
@@ -1653,7 +1653,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Pop(array_id) => builder
                         .build_call(
                             builtin.interface().pop,
-                            &[locals[array_id]],
+                            &[locals[array_id].into()],
                             "pers_array_pop",
                         )
                         .try_as_basic_value()
@@ -1662,7 +1662,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Replace(array_id, item_id) => builder
                         .build_call(
                             builtin.interface().replace,
-                            &[locals[array_id], locals[item_id]],
+                            &[locals[array_id].into(), locals[item_id].into()],
                             "pers_array_replace",
                         )
                         .try_as_basic_value()
@@ -1671,7 +1671,7 @@ fn gen_expr<'a, 'b>(
                     low::ArrayOp::Reserve(array_id, capacity_id) => builder
                         .build_call(
                             builtin.interface().reserve,
-                            &[locals[array_id], locals[capacity_id]],
+                            &[locals[array_id].into(), locals[capacity_id].into()],
                             "pers_array_reserve",
                         )
                         .try_as_basic_value()
@@ -1692,7 +1692,7 @@ fn gen_expr<'a, 'b>(
                     low::IoOp::Output(array_id) => {
                         builder.build_call(
                             builtin_io.output,
-                            &[locals[array_id]],
+                            &[locals[array_id].into()],
                             "flat_array_output",
                         );
 
@@ -1711,7 +1711,7 @@ fn gen_expr<'a, 'b>(
                     low::IoOp::Output(array_id) => {
                         builder.build_call(
                             builtin_io.output,
-                            &[locals[array_id]],
+                            &[locals[array_id].into()],
                             "pers_array_output",
                         );
 
@@ -1726,7 +1726,7 @@ fn gen_expr<'a, 'b>(
                     let builtin_io = instances.flat_array_io;
                     builder.build_call(
                         builtin_io.output_error,
-                        &[locals[message_id]],
+                        &[locals[message_id].into()],
                         "flat_array_panic",
                     );
                 }
@@ -1735,7 +1735,7 @@ fn gen_expr<'a, 'b>(
                     let builtin_io = instances.persistent_array_io;
                     builder.build_call(
                         builtin_io.output_error,
-                        &[locals[message_id]],
+                        &[locals[message_id].into()],
                         "pers_array_panic",
                     );
                 }
@@ -2093,7 +2093,7 @@ fn gen_program<'a>(
 
         module.add_function(
             &format!("func_{}", func_id.0),
-            return_type.fn_type(&[arg_type], false),
+            return_type.fn_type(&[arg_type.into()], false),
             Some(Linkage::Internal),
         )
     });

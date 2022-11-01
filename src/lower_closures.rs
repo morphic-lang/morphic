@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::iter::repeat_with;
 
 use crate::data::closure_specialized_ast as special;
-use crate::data::first_order_ast::{self as first_ord};
+use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics as intrs;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;

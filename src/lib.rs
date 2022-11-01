@@ -243,6 +243,14 @@ fn compile(
         fs::create_dir(&artifact_dir.dir_path).map_err(ErrorKind::CreateArtifactsFailed)?;
     }
 
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("typed.sml"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::typed::write_program(&mut out_file, &typed)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
     let mono = monomorphize::monomorphize(typed);
 
     let shielded = shield_functions::shield_functions(mono);
@@ -265,6 +273,14 @@ fn compile(
         lower_closures::lower_closures(special, progress_ui::bar(progress, "lower_closures"));
 
     typecheck_first_order::typecheck(&first_order);
+
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.sml"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::first_order::write_program(&mut out_file, &first_order)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
 
     let split = split_custom_types::split_custom_types(
         &first_order,

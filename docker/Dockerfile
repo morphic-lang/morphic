@@ -27,16 +27,21 @@ RUN apt-get update \
 
 RUN gpg-agent --daemon \
   && curl -L https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - \
-  && echo "deb http://apt.llvm.org/buster/ llvm-toolchain-buster-10 main" >> /etc/apt/sources.list \
-  && echo "deb-src http://apt.llvm.org/buster/ llvm-toolchain-buster-10 main" >> /etc/apt/sources.list \
+  && echo "deb http://apt.llvm.org/buster/ llvm-toolchain-buster-14 main" >> /etc/apt/sources.list \
+  && echo "deb-src http://apt.llvm.org/buster/ llvm-toolchain-buster-14 main" >> /etc/apt/sources.list \
   && apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    clang-10 \
-    lld-10 \
-    llvm-10-dev \
+    clang-14 \
+    lld-14 \
+    llvm-14-dev \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/* \
-  && ln -s /usr/bin/wasm-ld-10 /usr/bin/wasm-ld
+  && ln -s /usr/bin/wasm-ld-14 /usr/bin/wasm-ld
+
+RUN curl -LJo /tmp/mlton.tgz https://github.com/MLton/mlton/releases/download/on-20201002-release/mlton-20201002-1.amd64-linux.tgz \
+  && tar xf /tmp/mlton.tgz -C /tmp \
+  && cd /tmp/mlton-20201002-1.amd64-linux \
+  && make install
 
 USER "$USERNAME"
 

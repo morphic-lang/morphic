@@ -10,8 +10,8 @@ edition = "2018"
 morphic = { path = ".." }
 find_clang = { path = "../find_clang" }
 criterion = { git = "https://github.com/morphic-lang/criterion.rs", tag = "default-cli-mode-funcs" }
-tempfile = "3.1.0"
-serde = "1.0.11"
-serde_json = "1.0.53"
-rand = { version = "0.8", features = [ "std" ] }
+tempfile = "3.3.0"
+serde = { version = "1.0.145", features = [ "derive" ]}
+serde_json = "1.0.87"
+rand = { version = "0.8.5", features = [ "std" ] }
 rand_pcg = "0.3"

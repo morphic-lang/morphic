@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use find_clang::find_default_clang;
 use morphic::build;
 use morphic::cli;
