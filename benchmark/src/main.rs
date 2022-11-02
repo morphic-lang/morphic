@@ -797,6 +797,51 @@ fn sample_words_trie(c: &mut Criterion) {
     );
 }
 
+fn sample_parse_json(c: &mut Criterion) {
+    let mut g = c.benchmark_group("parse_json");
+    g.sample_size(10);
+
+    let stdin = concat!(
+        include_str!("../../samples/sample-input/citm_catalog.json"),
+        "\n"
+    );
+    let stdout = "-7199371743916571250\n";
+
+    bench_sample(
+        &mut g,
+        "bench_parse_json.mor",
+        "samples/bench_parse_json.mor",
+        &[],
+        "parse_json",
+        stdin,
+        &stdout,
+    );
+}
+
+fn sample_calc(c: &mut Criterion) {
+    let mut g = c.benchmark_group("calc");
+    g.sample_size(20);
+
+    let stdin = concat!(
+        include_str!("../../samples/sample-input/calc_exprs.txt"),
+        "\n"
+    );
+    let stdout = concat!(
+        include_str!("../../samples/expected-output/calc_values.txt"),
+        "\n"
+    );
+
+    bench_sample(
+        &mut g,
+        "bench_calc.mor",
+        "samples/bench_calc.mor",
+        &[],
+        "eval_exprs",
+        stdin,
+        stdout,
+    );
+}
+
 fn main() {
     if !Path::new("samples").exists() {
         eprintln!();
@@ -820,4 +865,8 @@ fn main() {
     sample_primes_sieve(&mut c);
 
     sample_words_trie(&mut c);
+
+    sample_parse_json(&mut c);
+
+    sample_calc(&mut c);
 }

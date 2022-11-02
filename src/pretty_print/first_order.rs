@@ -535,6 +535,8 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write("'")?;
                 if *byte == '\'' as u8 {
                     self.write("\\\'")?;
+                } else if *byte == '\\' as u8 {
+                    self.write("\\\\")?;
                 } else if !byte.is_ascii_control() {
                     self.write(*byte as char)?;
                 } else {
@@ -546,6 +548,8 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write("#\"")?;
                 if *byte == '\"' as u8 {
                     self.write("\\\"")?;
+                } else if *byte == '\\' as u8 {
+                    self.write("\\\\")?;
                 } else if !byte.is_ascii_control() {
                     self.write(*byte as char)?;
                 } else {
@@ -910,7 +914,9 @@ impl<'a, 'b> Context<'a, 'b> {
 const PRELUDE_SML: &str = include_str!("prelude.sml");
 const PRELUDE_OCAML: &str = include_str!("prelude.ml");
 
-const PRELUDE_PERSISTENT_SML: &str = include_str!("persistent.sml");
+// TODO: Add a flag to control whether we use immutable/mutable arrays in the generated SML code.
+// We hard-code mutable for now because it's sufficient for the benchmarks we're interested in.
+const PRELUDE_PERSISTENT_SML: &str = include_str!("mut.sml");
 const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");
 
 fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {

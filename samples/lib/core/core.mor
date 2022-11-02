@@ -15,3 +15,5 @@ pub module Math = file "math.mor"
 pub module Control = file "control.mor"
 
 pub module Rand = file "rand.mor" with { Array, Math }
+
+pub module State = file "state.mor" with { Iter }

@@ -3,10 +3,14 @@ module Core = file "lib/core/core.mor"
     module Io,
     module String,
     module Option expose { Option { Some, None } },
+    module Iter expose { Iter },
+    module Array,
   }
 module Parse = file "lib/parse.mor"
   with { Core }
   expose { Parse }
+module Bench = file "lib/bench_common.mor"
+  with { Core }
 
 type Expr {
   Const(Int),
@@ -69,13 +73,14 @@ operator_chain(
   operator: Parse ((Expr, Expr) -> Expr),
 ): Parse Expr =
   Parse.and_then(elem) <| \lhs ->
-  Parse.or(
+  Parse.many0_fold(
     (
       Parse.and_then(spaced(operator)) <| \op ->
-      Parse.and_then(operator_chain(elem, operator)) <| \rhs ->
-      Parse.pure(op(lhs, rhs))
+      Parse.and_then(elem) <| \rhs ->
+      Parse.pure(op, rhs)
     ),
-    Parse.pure(lhs),
+    lhs,
+    \(accum, (op, rhs)) -> op(accum, rhs),
   )
 
 mul_level_operator: Parse ((Expr, Expr) -> Expr) =
@@ -95,9 +100,37 @@ add_level_expr: Parse Expr =
 expr: Parse Expr =
   spaced(add_level_expr)
 
+eval_exprs(inputs: Iter (Array Byte)): Array Int =
+  inputs
+  |> Iter.map(\str ->
+    str
+    |> Parse.parse_all(expr)
+    |> Option.unwrap()
+    |> eval()
+  )
+  |> Array.from_iter()
+
+proc read_input_rec(exprs: Array (Array Byte)): Array (Array Byte) =
+  let line = do input() in
+  if Array.len(line) = 0 {
+    exprs
+  } else {
+    do read_input_rec(Array.push(exprs, line))
+  }
+
+proc read_input(): Array (Array Byte) =
+  do read_input_rec([])
+
 pub proc main(): () =
-  let s = do input() in
-  match Parse.parse_all(s, expr) {
-    Some(e) -> do Io.writeln(String.int_to_string(eval(e))),
-    None -> do Io.writeln("Parse error"),
+  match (String.string_to_nat(do input())) {
+    Some(iters) ->
+      let exprs = do read_input() in
+      match Bench.repeat(iters, \() -> eval_exprs(Iter.items(exprs))) {
+        Some(results) ->
+          Iter.items(results)
+          |> do Iter.for_each(proc \result -> do Io.writeln(String.int_to_string(result))),
+        None -> (),
+      },
+    None ->
+      do Io.writeln("Please enter an iteration count"),
   }

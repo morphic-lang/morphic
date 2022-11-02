@@ -1,3 +1,5 @@
+import Iter expose { Iter }
+
 pub type State s r {
   State(s -> (s, r)),
 }
@@ -26,3 +28,11 @@ pub bind(fst: State s a, cont: a -> State s b): State s b =
 
 pub seq(fst: State s a, snd: State s b): State s b =
   bind(fst, \_ -> snd)
+
+pub for_each(it: Iter a, f: a -> State s ()): State s () =
+  State(\init ->
+    let final =
+      Iter.foldl(it, init, \(accum, x) -> let (new_accum, _) = run(f(x), accum) in new_accum)
+    in
+    (final, ())
+  )

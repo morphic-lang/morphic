@@ -1,3 +1,5 @@
 /tal/wasm/src/dlmalloc.inc linguist-vendored
+/samples/sample-input/citm_catalog.json linguist-vendored
+/samples/sample-input/twitter.json linguist-vendored
 /samples/expected-output/* linguist-generated
 /src/pretty_print/persistent.sml linguist-vendored

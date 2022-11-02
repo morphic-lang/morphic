@@ -157,6 +157,16 @@ impl Config {
                             .help("Compile to wasm instead of a native binary."),
                     )
                     .arg(
+                        Arg::with_name("sml")
+                            .long("sml")
+                            .help("Compile to SML instead of a native binary."),
+                    )
+                    .arg(
+                        Arg::with_name("ocaml")
+                            .long("ocaml")
+                            .help("Compile to OCaml instead of a native binary."),
+                    )
+                    .arg(
                         Arg::with_name("output-path")
                             .short("o")
                             .long("output-path")

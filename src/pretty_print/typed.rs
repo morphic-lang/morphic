@@ -556,6 +556,8 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write("'")?;
                 if *byte == '\'' as u8 {
                     self.write("\\\'")?;
+                } else if *byte == '\\' as u8 {
+                    self.write("\\\\")?;
                 } else if !byte.is_ascii_control() {
                     self.write(*byte as char)?;
                 } else {
@@ -567,6 +569,8 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write("#\"")?;
                 if *byte == '\"' as u8 {
                     self.write("\\\"")?;
+                } else if *byte == '\\' as u8 {
+                    self.write("\\\\")?;
                 } else if !byte.is_ascii_control() {
                     self.write(*byte as char)?;
                 } else {
@@ -716,8 +720,12 @@ impl<'a, 'b> Context<'a, 'b> {
 
         for scc in val_sccs {
             for (i, id) in scc.iter().enumerate() {
+                if id.0 == 194 {
+                    dbg!(id);
+                }
                 let val = &prog.vals[id];
                 if let Expr::Lam(_purity, _arg_type, ret_type, pattern, body, prof) = &val.body {
+                    self.write(&format!("(* function branch: saw value {:?} *)", id))?;
                     if let Some(prof_id) = prof {
                         profile_points.insert(*prof_id, *id);
                         match self.variant {
@@ -809,13 +817,21 @@ impl<'a, 'b> Context<'a, 'b> {
                         }
                     }
                 } else {
-                    match self.variant {
-                        MlVariant::OCAML => {
-                            self.write("let rec ")?;
+                    self.write(&format!("(* constant branch: saw value {:?} *)\n", id))?;
+                    if id.0 == 194 {
+                        dbg!(id);
+                    }
+                    if i == 0 {
+                        match self.variant {
+                            MlVariant::OCAML => {
+                                self.write("let rec ")?;
+                            }
+                            MlVariant::SML => {
+                                self.write("fun ")?;
+                            }
                         }
-                        MlVariant::SML => {
-                            self.write("fun ")?;
-                        }
+                    } else {
+                        self.write("and ")?;
                     }
                     self.write_identifier(*id)?;
                     self.write(" (): ")?;
@@ -827,6 +843,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     self.write_expr(&val.body, Precedence::Top)?;
                     self.remove_indent();
                 }
+                self.writeln()?;
             }
             self.writeln()?;
             self.writeln()?;
@@ -926,7 +943,9 @@ impl<'a, 'b> Context<'a, 'b> {
 const PRELUDE_SML: &str = include_str!("prelude.sml");
 const PRELUDE_OCAML: &str = include_str!("prelude.ml");
 
-const PRELUDE_PERSISTENT_SML: &str = include_str!("persistent.sml");
+// TODO: Add a flag to control whether we use immutable/mutable arrays in the generated SML code.
+// We hard-code mutable for now because it's sufficient for the benchmarks we're interested in.
+const PRELUDE_PERSISTENT_SML: &str = include_str!("mut.sml");
 const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");
 
 fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {

@@ -7,13 +7,13 @@ module Core = file "lib/core/core.mor"
     module Array,
     module Iter expose { Iter },
     module Control,
+    module State expose { State },
   }
 module Parse = file "lib/parse.mor"
   with { Core }
   expose { Parse }
-module Diff = file "lib/diff_list.mor"
+module Bench = file "lib/bench_common.mor"
   with { Core }
-  expose { Diff }
 
 ascii_zero: Byte = 48b
 ascii_nine: Byte = 57b
@@ -178,6 +178,7 @@ encode_utf8(s: Array Byte, x: Int): Array Byte =
   }
 
 string: Parse (Array Byte) =
+  Parse.lazy() <| \() ->
   Parse.between(Parse.byte_eq(ascii_quote), Parse.byte_eq(ascii_quote)) <|
   Parse.many0_fold(
     Parse.or(
@@ -211,6 +212,7 @@ bool: Parse Bool =
   )
 
 value: Parse Value =
+  Parse.lazy() <| \() ->
   Parse.or(Parse.map(number, Number)) <|
   Parse.or(Parse.map(string, String)) <|
   Parse.or(Parse.map(array, Array)) <|
@@ -234,65 +236,65 @@ object: Parse (Array (Array Byte, Value)) =
     spaced(Parse.byte_eq(ascii_comma)),
   )
 
-type PathComponent {
-  Key(Array Byte),
-  Index(Int),
-}
+parse_json(s: Array Byte): Option Value =
+  Parse.parse_all(s, spaced(value))
 
-path: Parse (Array PathComponent) =
-  Parse.many0(
-    spaced() <|
-    Parse.between(
-      Parse.byte_eq(ascii_left_square_bracket),
-      Parse.byte_eq(ascii_right_square_bracket),
-    ) <|
-    spaced() <|
-    Parse.or(Parse.map(string, Key), Parse.map(int, Index)),
-  )
+hash_combine(a: Int, b: Int): Int =
+  int_bit_xor(a, b + 2654435769 + int_shift_left(a, 6) + int_shift_right(a, 2))
 
-traverse(v: Value, path: Iter PathComponent): Option Value =
-  match Iter.next(path) {
-    None -> Some(v),
-    Some(Key(path_k), rest) ->
-      match v {
-        Object(o) ->
-          match Iter.find(Iter.items(o), \(k, _) -> String.equal(k, path_k)) {
-            None -> None,
-            Some(_, entry) -> traverse(entry, rest),
-          },
-        _ -> None,
-      },
-    Some(Index(i), rest) ->
-      match v {
-        Array(a) ->
-          if i < Array.len(a) {
-            traverse(Array.get(a, i), rest)
-          } else {
-            None
-          },
-        _ -> None,
-      },
+update_hash(x: Int): State Int () =
+  State.modify(\h -> hash_combine(h, x))
+
+hash_string(s: Array Byte): State Int () =
+  State.seq(update_hash(Array.len(s))) <|
+  State.for_each(Iter.items(s), \x -> update_hash(byte_to_int(x)))
+
+hash_value(val: Value): State Int () =
+  match val {
+    Null -> update_hash(0),
+    Bool(b) -> update_hash(if b { 1 } else { 2 }),
+    Number(n) -> update_hash(3), // TODO: consider the numerical value when computing the hash
+    String(s) ->
+      State.seq(update_hash(4)) <|
+      hash_string(s),
+    Array(a) ->
+      State.seq(update_hash(5)) <|
+      State.seq(update_hash(Array.len(a))) <|
+      State.for_each(Iter.items(a), hash_value),
+    Object(o) ->
+      State.seq(update_hash(6)) <|
+      State.seq(update_hash(Array.len(o))) <|
+      State.for_each(Iter.items(o), \(k, v) ->
+        State.seq(hash_string(k)) <|
+        hash_value(v),
+      ),
   }
 
+proc read_input_rec(content: Array Byte): Array Byte =
+  let line = do input() in
+  if Array.len(line) = 0 {
+    content
+  } else {
+    content
+    |> Array.concat(line)
+    |> Array.push(ascii_line_feed)
+    |> do read_input_rec()
+  }
+
+proc read_input(): Array Byte =
+  do read_input_rec("")
+
 pub proc main(): () =
-  let json = Option.unwrap(Parse.parse_all(do input(), value)) in
-  do Control.forever() <| proc \() ->
-    do output("> ") then
-    match Parse.parse_all(do input(), path) {
-      None -> do Io.writeln("Invalid path"),
-      Some(path) ->
-        match traverse(json, Iter.items(path)) {
-          None -> do Io.writeln("Not found"),
-          Some(v) ->
-            let type_name = match v {
-                Null -> "null",
-                Bool(_) -> "bool",
-                Number(_) -> "number",
-                String(_) -> "string",
-                Array(_) -> "array",
-                Object(_) -> "object",
-              }
-            in
-            do Io.writeln(type_name),
-        },
-    }
+  match (String.string_to_nat(do input())) {
+    Some(iters) ->
+      let content = do read_input() in
+      match Bench.repeat(iters, \() -> parse_json(content)) {
+        Some(None) -> do Io.writeln("Invalid JSON"),
+        Some(Some(json)) ->
+          let (hash, ()) = State.run(hash_value(json), 0) in
+          do Io.writeln(String.int_to_string(hash)),
+        None -> (),
+      },
+    None ->
+      do Io.writeln("Please enter an iteration count"),
+  }

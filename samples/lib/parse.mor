@@ -48,10 +48,11 @@ pub or(p: Parse a, q: Parse a): Parse a =
   Parse(\(i, s) -> parse_from(i, s, p) |> Option.or_else(\() -> parse_from(i, s, q)))
 
 pub many0_fold(p: Parse a, init: b, combine: (b, a) -> b): Parse b =
-  or(
-    and_then(p, \x -> many0_fold(p, combine(init, x), combine)),
-    pure(init),
-  )
+  and_then(optional(p)) <| \opt_x ->
+  match opt_x {
+    None -> pure(init),
+    Some(x) -> many0_fold(p, combine(init, x), combine),
+  }
 
 pub many0(p: Parse a): Parse (Array a) =
   // lazy to ensure a fresh array is allocated each time
@@ -71,10 +72,11 @@ pub skip_many1(p: Parse a): Parse () =
   lazy(\() -> many1_fold(p, (), \(_, _) -> ()))
 
 pub sep0_fold(p: Parse a, sep: Parse s, init: b, combine: (b, a) -> b): Parse b =
-  or(
-    and_then(p, \x -> many0_fold(skip_pre(sep, p), combine(init, x), combine)),
-    pure(init),
-  )
+  and_then(optional(p)) <| \opt_x ->
+  match opt_x {
+    None -> pure(init),
+    Some(x) -> many0_fold(skip_pre(sep, p), combine(init, x), combine),
+  }
 
 pub sep0(p: Parse a, sep: Parse s): Parse (Array a) =
   // lazy to ensure a fresh array is allocated each time
