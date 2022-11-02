@@ -98,6 +98,7 @@ use std::path::Path;
 
 #[derive(Debug)]
 enum ErrorKind {
+    ArtifactDirMissing,
     ResolveFailed(resolve::Error),
     PurityCheckFailed(check_purity::Error),
     TypeInferFailed(type_infer::Error),
@@ -131,6 +132,9 @@ impl Error {
     ) -> io::Result<()> {
         use ErrorKind::*;
         match &self.kind {
+            ArtifactDirMissing => {
+                writeln!(dest, "Compilation to ML requires an artifact directory")
+            }
             ResolveFailed(err) => err.report(dest, files),
             PurityCheckFailed(err) => err.report(dest, files),
             TypeInferFailed(err) => err.report(dest, files),
@@ -191,7 +195,7 @@ pub fn run(
     config: cli::RunConfig,
     files: &mut file_cache::FileCache,
 ) -> Result<pseudoprocess::Child, Error> {
-    let lowered = compile(
+    let lowered = compile_to_low_ast(
         &config.src_path,
         &[],
         None,
@@ -209,26 +213,45 @@ pub fn run(
 }
 
 pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Result<(), Error> {
-    let lowered = compile(
-        &config.src_path,
-        &config.profile_syms,
-        config.artifact_dir.as_ref(),
-        config.defunc_mode,
-        files,
-        config.progress,
-    )?;
-
-    Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
+    match config.target {
+        cli::TargetConfig::Llvm(_) => {
+            let lowered = compile_to_low_ast(
+                &config.src_path,
+                &config.profile_syms,
+                config.artifact_dir.as_ref(),
+                config.defunc_mode,
+                files,
+                config.progress,
+            )?;
+            Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
+        }
+        cli::TargetConfig::Ml(_) => match config.artifact_dir {
+            None => Err(Error {
+                kind: ErrorKind::ArtifactDirMissing,
+            }),
+            Some(_) => {
+                compile_to_first_order_ast(
+                    &config.src_path,
+                    &config.profile_syms,
+                    config.artifact_dir.as_ref(),
+                    config.defunc_mode,
+                    files,
+                    config.progress,
+                )?;
+                Ok(())
+            }
+        },
+    }
 }
 
-fn compile(
+fn compile_to_first_order_ast(
     src_path: &Path,
     profile_syms: &[cli::SymbolName],
     artifact_dir: Option<&cli::ArtifactDir>,
     defunc_mode: cli::SpecializationMode,
     files: &mut file_cache::FileCache,
     progress: progress_ui::ProgressMode,
-) -> Result<data::low_ast::Program, Error> {
+) -> Result<data::first_order_ast::Program, Error> {
     let resolved = resolve::resolve_program(files, src_path, profile_syms)
         .map_err(ErrorKind::ResolveFailed)?;
     // Check obvious errors and infer types
@@ -297,6 +320,26 @@ fn compile(
         pretty_print::first_order::write_ocaml_program(&mut out_file, &first_order)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
+
+    Ok(first_order)
+}
+
+fn compile_to_low_ast(
+    src_path: &Path,
+    profile_syms: &[cli::SymbolName],
+    artifact_dir: Option<&cli::ArtifactDir>,
+    defunc_mode: cli::SpecializationMode,
+    files: &mut file_cache::FileCache,
+    progress: progress_ui::ProgressMode,
+) -> Result<data::low_ast::Program, Error> {
+    let first_order = compile_to_first_order_ast(
+        src_path,
+        profile_syms,
+        artifact_dir,
+        defunc_mode,
+        files,
+        progress,
+    )?;
 
     let split = split_custom_types::split_custom_types(
         &first_order,

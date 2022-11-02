@@ -32,9 +32,21 @@ pub struct RunConfig {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum TargetConfig {
+pub enum LlvmConfig {
     Native,
     Wasm,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum MlConfig {
+    Sml,
+    Ocaml,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TargetConfig {
+    Llvm(LlvmConfig),
+    Ml(MlConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -212,9 +224,13 @@ impl Config {
             let src_path: PathBuf = matches.value_of_os("src-path").unwrap().to_owned().into();
 
             let target = if matches.is_present("wasm") {
-                TargetConfig::Wasm
+                TargetConfig::Llvm(LlvmConfig::Wasm)
+            } else if matches.is_present("sml") {
+                TargetConfig::Ml(MlConfig::Sml)
+            } else if matches.is_present("ocaml") {
+                TargetConfig::Ml(MlConfig::Ocaml)
             } else {
-                TargetConfig::Native
+                TargetConfig::Llvm(LlvmConfig::Native)
             };
 
             let llvm_opt_level = match matches.value_of("llvm-opt-level").unwrap() {

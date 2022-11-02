@@ -3,6 +3,10 @@
 use find_clang::find_default_clang;
 use morphic::build;
 use morphic::cli;
+use morphic::cli::ArtifactDir;
+use morphic::cli::LlvmConfig;
+use morphic::cli::MlConfig;
+use morphic::cli::SpecializationMode;
 use morphic::file_cache::FileCache;
 use morphic::progress_ui::ProgressMode;
 
@@ -37,8 +41,9 @@ fn drive_subprocess(
 
     assert!(
         output.status.success(),
-        "Child process did not exit successfully: exit status {:?}",
-        output.status
+        "Child process did not exit successfully: exit status {:?}, stderr:\n{}",
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
     );
     assert!(
         &output.stdout as &[u8] == expected_stdout.as_bytes(),
@@ -68,7 +73,7 @@ fn run_exe<Report: for<'a> Deserialize<'a>>(
         .env("MORPHIC_PROFILE_PATH", &report_path)
         .stdin(process::Stdio::piped())
         .stdout(process::Stdio::piped())
-        .stderr(process::Stdio::null())
+        .stderr(process::Stdio::piped())
         .spawn()
         .expect("Could not spawn child process");
 
@@ -118,6 +123,14 @@ fn run_ghc_exe(
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MlProfReport {
+    func_id: u64,
+    total_calls: u64,
+    total_clock_nanos: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProfReport {
     clock_res_nanos: u64,
     timings: Vec<ProfTiming>,
@@ -150,13 +163,26 @@ struct ProfSkippedTail {
 fn bench_sample(
     g: &mut BenchmarkGroup<WallTime>,
     bench_name: &str,
-    src_path: impl AsRef<Path>,
+    src_path: impl AsRef<Path> + Clone,
     profile_mod: &[&str],
     profile_func: &str,
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
     let mut exe_path_cache = None;
+
+    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+        bench_ml_sample(
+            g,
+            bench_name,
+            ml_variant,
+            src_path.clone(),
+            profile_mod,
+            profile_func,
+            extra_stdin,
+            expected_stdout,
+        )
+    }
 
     g.bench_function(bench_name, |b| {
         b.iter_custom(|iters| {
@@ -181,11 +207,11 @@ fn bench_sample(
                                 .concat(),
                             func = profile_func,
                         ))],
-                        target: cli::TargetConfig::Native,
+                        target: cli::TargetConfig::Llvm(LlvmConfig::Native),
                         llvm_opt_level: cli::default_llvm_opt_level(),
                         output_path: exe_path.to_owned(),
                         artifact_dir: None,
-                        defunc_mode: cli::SpecializationMode::Specialize,
+                        defunc_mode: SpecializationMode::Specialize,
                         progress: ProgressMode::Hidden,
                     },
                     &mut files,
@@ -213,6 +239,116 @@ fn bench_sample(
             Duration::from_nanos(total_nanos)
         })
     });
+}
+
+fn bench_ml_sample(
+    g: &mut BenchmarkGroup<WallTime>,
+    bench_name: &str,
+    ml_variant: cli::MlConfig,
+    src_path: impl AsRef<Path>,
+    profile_mod: &[&str],
+    profile_func: &str,
+    extra_stdin: &str,
+    expected_stdout: &str,
+) {
+    let mut artifact_cache = None;
+
+    let ml_variant_str = match ml_variant {
+        cli::MlConfig::Sml => "sml",
+        cli::MlConfig::Ocaml => "ocaml",
+    };
+
+    for ast in vec!["typed", "first_order"] {
+        g.bench_function(format!("{bench_name}_{ml_variant_str}_{ast}"), |b| {
+            b.iter_custom(|iters| {
+                let artifacts = artifact_cache.get_or_insert_with(|| {
+                    let temp_dir = tempfile::Builder::new()
+                        .prefix(".tmp-artifact-")
+                        .tempdir_in("")
+                        .expect("Could not create temp file");
+
+                    let mut files = FileCache::new();
+
+                    let artifact_dir = ArtifactDir {
+                        dir_path: temp_dir.path().to_path_buf(),
+                        filename_prefix: src_path.as_ref().file_name().unwrap().into(),
+                    };
+
+                    build(
+                        cli::BuildConfig {
+                            src_path: src_path.as_ref().into(),
+                            profile_syms: vec![cli::SymbolName(format!(
+                                "{mod_}{func}",
+                                mod_ = profile_mod
+                                    .iter()
+                                    .map(|component| format!("{}.", component))
+                                    .collect::<Vec<_>>()
+                                    .concat(),
+                                func = profile_func,
+                            ))],
+                            target: cli::TargetConfig::Ml(ml_variant),
+                            llvm_opt_level: cli::default_llvm_opt_level(),
+                            output_path: "".into(),
+                            artifact_dir: Some(artifact_dir.clone()),
+                            progress: ProgressMode::Hidden,
+                            defunc_mode: SpecializationMode::Specialize,
+                        },
+                        &mut files,
+                    )
+                    .expect("Compilation failed");
+
+                    (temp_dir, artifact_dir)
+                });
+
+                match ml_variant {
+                    cli::MlConfig::Sml => {
+                        let mlton_output = process::Command::new("mlton")
+                            .arg("-output")
+                            .arg(artifacts.1.artifact_path(&format!("{ast}")))
+                            .arg(artifacts.1.artifact_path(&format!("{ast}.sml")))
+                            .output()
+                            .expect("Compilation failed");
+
+                        assert!(
+                            mlton_output.status.success(),
+                            "Compilation failed:\n{}",
+                            String::from_utf8_lossy(&mlton_output.stderr)
+                        );
+                    }
+                    cli::MlConfig::Ocaml => {
+                        let ocaml_output = process::Command::new("ocamlopt")
+                            .arg("unix.cmxa")
+                            .arg("-O3")
+                            .arg(artifacts.1.artifact_path(&format!("{ast}.ml")))
+                            .arg("-o")
+                            .arg(artifacts.1.artifact_path(&format!("{ast}")))
+                            .output()
+                            .expect("Compilation failed");
+
+                        assert!(
+                            ocaml_output.status.success(),
+                            "Compilation failed:\n{}",
+                            String::from_utf8_lossy(&ocaml_output.stderr)
+                        );
+                    }
+                }
+
+                let report: Vec<MlProfReport> = run_exe(
+                    artifacts.1.artifact_path(&format!("{ast}")),
+                    iters,
+                    extra_stdin,
+                    expected_stdout,
+                );
+
+                assert_eq!(report.len(), 1);
+
+                assert_eq!(report[0].total_calls, iters);
+                let total_nanos = report[0].total_clock_nanos;
+
+                Duration::from_nanos(total_nanos)
+            })
+        });
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

@@ -1,3 +1,4 @@
+use crate::data::profile::ProfilePointId;
 use crate::data::resolved_ast::{
     ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeDef, TypeId, TypeParamId,
     VariantId,
@@ -5,7 +6,7 @@ use crate::data::resolved_ast::{
 use crate::data::typed_ast::*;
 use crate::util::graph::{self, Graph};
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::io::Write;
 
@@ -107,7 +108,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     Precedence::App
                 }
             }
-            Type::Tuple(_) => Precedence::App,
+            Type::Tuple(_) => Precedence::Fun,
             Type::Func(_, _, _) => Precedence::Fun,
         };
         if precedence > my_precedence {
@@ -360,7 +361,7 @@ impl<'a, 'b> Context<'a, 'b> {
             Expr::Lam(_, _, _, _, _, _) => Precedence::Top,
             Expr::App(_, _, _) => Precedence::App,
             Expr::Match(_, _, _) => Precedence::Top,
-            Expr::LetMany(_, _) => Precedence::App,
+            Expr::LetMany(_, _) => Precedence::Top,
             Expr::ArrayLit(_, _) => Precedence::App,
             Expr::ByteLit(_) => Precedence::Var,
             Expr::IntLit(_) => Precedence::Var,
@@ -478,7 +479,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     let num_locals = self.write_pattern(&binding.0)?;
                     total_locals = total_locals + num_locals;
                     self.write(" = ")?;
-                    self.write_expr(&binding.1, Precedence::Top)?;
+                    self.write_expr(&binding.1, Precedence::Fun)?;
                     self.add_locals(num_locals);
                 }
                 self.remove_indent();
@@ -487,7 +488,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.add_indent();
 
                 self.writeln()?;
-                self.write_expr(expr, Precedence::Top)?;
+                self.write_expr(expr, Precedence::Fun)?;
 
                 self.remove_indent();
                 self.remove_locals(total_locals);
@@ -711,10 +712,38 @@ impl<'a, 'b> Context<'a, 'b> {
             }),
         });
 
+        let mut profile_points: BTreeMap<ProfilePointId, CustomGlobalId> = BTreeMap::new();
+
         for scc in val_sccs {
             for (i, id) in scc.iter().enumerate() {
                 let val = &prog.vals[id];
-                if let Expr::Lam(_purity, _arg_type, ret_type, pattern, body, _prof) = &val.body {
+                if let Expr::Lam(_purity, _arg_type, ret_type, pattern, body, prof) = &val.body {
+                    if let Some(prof_id) = prof {
+                        profile_points.insert(*prof_id, *id);
+                        match self.variant {
+                            MlVariant::OCAML => {
+                                self.write("let total_calls_")?;
+                                self.write(id.0)?;
+                                self.write(" = ref 0")?;
+                                self.writeln()?;
+                                self.write("let total_clock_nanos_")?;
+                                self.write(id.0)?;
+                                self.write(" = ref 0")?;
+                                self.writeln()?;
+                            }
+                            MlVariant::SML => {
+                                self.write("val total_calls_")?;
+                                self.write(id.0)?;
+                                self.write(" = ref 0")?;
+                                self.writeln()?;
+                                self.write("val total_clock_nanos_")?;
+                                self.write(id.0)?;
+                                self.write(" = ref 0")?;
+                                self.writeln()?;
+                            }
+                        }
+                    }
+
                     if i == 0 {
                         match self.variant {
                             MlVariant::OCAML => {
@@ -732,7 +761,18 @@ impl<'a, 'b> Context<'a, 'b> {
                     let num_locals = self.write_pattern(&pattern)?;
                     self.write("): ")?;
                     self.write_type(&ret_type, Precedence::Top)?;
-                    self.write(" =")?;
+                    if let Some(_) = prof {
+                        match self.variant {
+                            MlVariant::OCAML => {
+                                self.write(" = let start = Unix.gettimeofday () in let res =")?;
+                            }
+                            MlVariant::SML => {
+                                self.write(" = let val start = Time.now () val res =")?;
+                            }
+                        }
+                    } else {
+                        self.write(" =")?;
+                    }
                     self.add_indent();
                     self.add_locals(num_locals);
 
@@ -741,6 +781,33 @@ impl<'a, 'b> Context<'a, 'b> {
 
                     self.remove_indent();
                     self.remove_locals(num_locals);
+
+                    if let Some(_) = prof {
+                        match self.variant {
+                            MlVariant::OCAML => {
+                                self.write("in let stop = Unix.gettimeofday () in let _ = incr total_calls_")?;
+                                self.write(id.0)?;
+                                self.write(" in let _ = total_clock_nanos_")?;
+                                self.write(id.0)?;
+                                self.write(" := int_of_float ((stop -. start) *. 1000000000.0) + !total_clock_nanos_")?;
+                                self.write(id.0)?;
+                                self.write(" in res")?;
+                            }
+                            MlVariant::SML => {
+                                self.write(" val stop = Time.now () val _ = total_calls_")?;
+                                self.write(id.0)?;
+                                self.write(" := !total_calls_")?;
+                                self.write(id.0)?;
+                                self.write("+ 1 val _ = total_clock_nanos_")?;
+                                self.write(id.0)?;
+                                self.write(
+                                    " := Time.toNanoseconds (Time.- (stop, start)) + !total_clock_nanos_",
+                                )?;
+                                self.write(id.0)?;
+                                self.write(" in res end")?;
+                            }
+                        }
+                    }
                 } else {
                     match self.variant {
                         MlVariant::OCAML => {
@@ -776,116 +843,88 @@ impl<'a, 'b> Context<'a, 'b> {
         self.write(prog.main.0)?;
         self.write(" ();")?;
         self.writeln()?;
+
+        if !profile_points.is_empty() {
+            match self.variant {
+                MlVariant::OCAML => {
+                    self.write("let profile_path = Sys.getenv_opt(\"MORPHIC_PROFILE_PATH\");")?;
+                    self.writeln()?;
+                    self.write("in match profile_path with")?;
+                    self.writeln()?;
+                    self.write("  Some (profile_path) ->")?;
+                    self.writeln()?;
+                    self.write("    let profile_file = open_out profile_path;")?;
+                    self.writeln()?;
+                    self.write("    in Out_channel.output_string profile_file \"[\";")?;
+                    self.writeln()?;
+                    for profile_point in profile_points {
+                        self.write("Printf.fprintf profile_file ")?;
+                        let func_id = profile_point.1 .0;
+                        let json_object = format!(
+                            r#""{{\"func_id\": {func_id}, \"total_calls\": %d, \"total_clock_nanos\": %d}}""#
+                        );
+                        self.write(&json_object)?;
+                        self.write(&format!(
+                            " !total_calls_{func_id} !total_clock_nanos_{func_id};"
+                        ))?;
+                        self.writeln()?;
+                    }
+                    self.write("    Out_channel.output_string profile_file \"]\";")?;
+                    self.writeln()?;
+                    self.write(
+                        "  | None -> Printf.eprintf \"Warning: no MORPHIC_PROFILE_PATH provided\"",
+                    )?;
+                    self.writeln()?;
+                }
+                MlVariant::SML => {
+                    self.write("val profile_path = OS.Process.getEnv(\"MORPHIC_PROFILE_PATH\");")?;
+                    self.writeln()?;
+                    self.write("val _ = case profile_path of")?;
+                    self.writeln()?;
+                    self.write("  SOME (profile_path) =>")?;
+                    self.writeln()?;
+                    self.write("    let val profile_file = TextIO.openOut profile_path;")?;
+                    self.writeln()?;
+                    self.write("    in TextIO.output (profile_file, \"[\");")?;
+                    self.writeln()?;
+                    for profile_point in profile_points {
+                        let func_id = profile_point.1 .0;
+                        self.write(r#"    TextIO.output (profile_file, "{\"func_id\": "#)?;
+                        self.write(func_id)?;
+                        self.write(r#", \"total_calls\": ");"#)?;
+                        self.writeln()?;
+                        self.write(&format!(
+                            "    TextIO.output (profile_file, (Int.toString (!total_calls_{func_id})));"
+                        ))?;
+                        self.writeln()?;
+                        self.write(
+                            r#"    TextIO.output (profile_file, ", \"total_clock_nanos\": ");"#,
+                        )?;
+                        self.writeln()?;
+                        self.write(&format!(
+                            "    TextIO.output (profile_file, (LargeInt.toString (!total_clock_nanos_{func_id})));"
+                        ))?;
+                        self.writeln()?;
+                        self.write("    TextIO.output (profile_file, \"}\");")?;
+                        self.writeln()?;
+                    }
+                    self.write("    TextIO.output (profile_file, \"]\")")?;
+                    self.writeln()?;
+                    self.write("    end")?;
+                    self.writeln()?;
+                    self.write(
+                        "  | NONE => TextIO.output (TextIO.stdErr, \"Warning: no MORPHIC_PROFILE_PATH provided\")",
+                    )?;
+                    self.writeln()?;
+                }
+            }
+        }
         Ok(())
     }
 }
 
-const PRELUDE_SML : &str = "
-fun intrinsic_AddByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) + Word8.fromInt (ord y)))
-fun intrinsic_SubByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) - Word8.fromInt (ord y)))
-fun intrinsic_MulByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) * Word8.fromInt (ord y)))
-fun intrinsic_DivByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) div Word8.fromInt (ord y)))
-fun intrinsic_NegByte(x : char): char = chr (Word8.toInt (~ (Word8.fromInt (ord x))))
-fun intrinsic_EqByte(x : char, y : char): bool = x = y
-fun intrinsic_LtByte(x : char, y : char): bool = x < y
-fun intrinsic_LteByte(x : char, y : char): bool = x <= y
-fun intrinsic_GtByte(x : char, y : char): bool = x > y
-fun intrinsic_GteByte(x : char, y : char): bool = x >= y
-fun intrinsic_AddInt(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.fromLargeInt x + Word64.fromLargeInt y)
-fun intrinsic_SubInt(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.fromLargeInt x - Word64.fromLargeInt y)
-fun intrinsic_MulInt(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.fromLargeInt x * Word64.fromLargeInt y)
-fun intrinsic_DivInt(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.fromLargeInt x div Word64.fromLargeInt y)
-fun intrinsic_NegInt(x : LargeInt.int): LargeInt.int = Word64.toLargeIntX (~ (Word64.fromLargeInt x))
-fun intrinsic_EqInt(x : LargeInt.int, y : LargeInt.int): bool = x = y
-fun intrinsic_LtInt(x : LargeInt.int, y : LargeInt.int): bool = x < y
-fun intrinsic_LteInt(x : LargeInt.int, y : LargeInt.int): bool = x <= y
-fun intrinsic_GtInt(x : LargeInt.int, y : LargeInt.int): bool = x > y
-fun intrinsic_GteInt(x : LargeInt.int, y : LargeInt.int): bool = x >= y
-fun intrinsic_AddFloat(x : real, y : real): real = x + y
-fun intrinsic_SubFloat(x : real, y : real): real = x - y
-fun intrinsic_MulFloat(x : real, y : real): real = x * y
-fun intrinsic_DivFloat(x : real, y : real): real = x / y
-fun intrinsic_NegFloat(x : real): real = ~ x
-fun intrinsic_EqFloat(x : real, y : real): bool = Real.== (x, y)
-fun intrinsic_LtFloat(x : real, y : real): bool = x < y
-fun intrinsic_LteFloat(x : real, y : real): bool = x <= y
-fun intrinsic_GtFloat(x : real, y : real): bool = x > y
-fun intrinsic_GteFloat(x : real, y : real): bool = x >= y
-fun intrinsic_Not(x : bool): bool = not x
-fun intrinsic_ByteToInt(x : char): LargeInt.int = Int.toLarge (ord x)
-fun intrinsic_ByteToIntSigned(x : char): LargeInt.int = Word8.toLargeIntX (Word8.fromInt (ord x))
-fun intrinsic_IntToByte(x : LargeInt.int): char = chr (Word8.toInt (Word8.fromLargeInt x))
-fun intrinsic_IntShiftLeft(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.<< (Word64.fromLargeInt x, Word.fromLargeInt (y mod 64)))
-fun intrinsic_IntShiftRight(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.>> (Word64.fromLargeInt x, Word.fromLargeInt (y mod 64)))
-fun intrinsic_IntBitAnd(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.andb (Word64.fromLargeInt x, Word64.fromLargeInt y))
-fun intrinsic_IntBitOr(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.orb (Word64.fromLargeInt x, Word64.fromLargeInt y))
-fun intrinsic_IntBitXor(x : LargeInt.int, y : LargeInt.int): LargeInt.int = Word64.toLargeIntX (Word64.xorb (Word64.fromLargeInt x, Word64.fromLargeInt y))
-
-fun intrinsic_get(l : 'a PersistentArray.array, i : LargeInt.int): 'a = PersistentArray.sub (l, (Int.fromLarge i))
-fun intrinsic_extract(l : 'a PersistentArray.array, i : LargeInt.int): 'a * ('a -> 'a PersistentArray.array) = (PersistentArray.sub (l, (Int.fromLarge i)), fn new => PersistentArray.update (l, Int.fromLarge i, new))
-fun intrinsic_len(l : 'a PersistentArray.array): LargeInt.int = Int.toLarge (PersistentArray.length l)
-fun intrinsic_push(l : 'a PersistentArray.array, x : 'a): 'a PersistentArray.array = PersistentArray.append (l, x)
-fun intrinsic_pop(l : 'a PersistentArray.array): 'a PersistentArray.array * 'a = PersistentArray.popEnd(l)
-fun intrinsic_reserve(l : 'a PersistentArray.array, i : LargeInt.int): 'a PersistentArray.array = l
-fun intrinsic_replace(f : 'a -> 'a PersistentArray.array, x : 'a): 'a PersistentArray.array = f x
-
-fun input(()) : char PersistentArray.array = #1 (intrinsic_pop (PersistentArray.fromList (explode (Option.getOpt ((TextIO.inputLine TextIO.stdIn), \"\\n\")))))
-fun output(l : char PersistentArray.array) = print (implode (PersistentArray.toList l))
-fun panic(l : char PersistentArray.array) = raise Fail (implode (PersistentArray.toList l))
-";
-
-const PRELUDE_OCAML : &str = "
-let intrinsic_AddByte ((x, y) : char * char): char = Char.chr (((Char.code x + Char.code y) mod 256 + 256) mod 256)
-let intrinsic_SubByte ((x, y) : char * char): char = Char.chr (((Char.code x - Char.code y) mod 256 + 256) mod 256)
-let intrinsic_MulByte ((x, y) : char * char): char = Char.chr (((Char.code x * Char.code y) mod 256 + 256) mod 256)
-let intrinsic_DivByte ((x, y) : char * char): char = Char.chr (((Char.code x / Char.code y) mod 256 + 256) mod 256)
-let intrinsic_NegByte (x: char) = Char.chr (((-Char.code x) mod 256 + 256) mod 256)
-let intrinsic_EqByte ((x, y) : char * char): bool = x = y
-let intrinsic_LtByte ((x, y) : char * char): bool = x < y
-let intrinsic_LteByte ((x, y) : char * char): bool = x <= y
-let intrinsic_GtByte ((x, y) : char * char): bool = x > y
-let intrinsic_GteByte ((x, y) : char * char): bool = x >= y
-let intrinsic_AddInt ((x, y) : int64 * int64): int64 = Int64.add x y
-let intrinsic_SubInt ((x, y) : int64 * int64): int64 = Int64.sub x y
-let intrinsic_MulInt ((x, y) : int64 * int64): int64 = Int64.mul x y
-let intrinsic_DivInt ((x, y) : int64 * int64): int64 = Int64.div x y
-let intrinsic_NegInt (x : int64) : int64 = Int64.neg x
-let intrinsic_EqInt ((x, y) : int64 * int64): bool = x = y
-let intrinsic_LtInt ((x, y) : int64 * int64): bool = x < y
-let intrinsic_LteInt ((x, y) : int64 * int64): bool = x <= y
-let intrinsic_GtInt ((x, y) : int64 * int64): bool = x > y
-let intrinsic_GteInt ((x, y) : int64 * int64): bool = x >= y
-let intrinsic_AddFloat ((x, y) : float * float): float = x +. y
-let intrinsic_SubFloat ((x, y) : float * float): float = x -. y
-let intrinsic_MulFloat ((x, y) : float * float): float = x *. y
-let intrinsic_DivFloat ((x, y) : float * float): float = x /. y
-let intrinsic_NegFloat (x : float) : float = -.x
-let intrinsic_EqFloat ((x, y) : float * float): bool = x = y
-let intrinsic_LtFloat ((x, y) : float * float): bool = x < y
-let intrinsic_LteFloat ((x, y) : float * float): bool = x <= y
-let intrinsic_GtFloat ((x, y) : float * float): bool = x > y
-let intrinsic_GteFloat ((x, y) : float * float): bool = x >= y
-let intrinsic_Not (x : bool) : bool = not x
-let intrinsic_ByteToInt (x : char) : int64 = Int64.of_int (Char.code x)
-let intrinsic_ByteToIntSigned (x : char) : int64 = Int64.sub (Int64.logxor (Int64.of_int (Char.code x)) 0x80L) 0x80L
-let intrinsic_IntToByte (x : int64) : char = Char.chr (Int64.to_int (Int64.rem (Int64.add (Int64.rem x 256L) 256L) 256L))
-let intrinsic_IntShiftLeft ((x, y) : int64 * int64): int64 = Int64.shift_left x (Int64.to_int y)
-let intrinsic_IntShiftRight ((x, y) : int64 * int64): int64 = Int64.shift_right_logical x (Int64.to_int y)
-let intrinsic_IntBitAnd ((x, y) : int64 * int64): int64 = Int64.logand x y
-let intrinsic_IntBitOr ((x, y) : int64 * int64): int64 = Int64.logor x y
-let intrinsic_IntBitXor ((x, y) : int64 * int64): int64 = Int64.logxor x y
-
-let intrinsic_get ((l, i) : 'a PersistentArray.array * int64): 'a = PersistentArray.sub (l, (Int64.to_int i))
-let intrinsic_extract ((l, i) : 'a PersistentArray.array * int64): 'a * ('a -> 'a PersistentArray.array) = (PersistentArray.sub (l, (Int64.to_int i)), fun new_ -> PersistentArray.update (l, Int64.to_int i, new_))
-let intrinsic_len (l : 'a PersistentArray.array): int64 = Int64.of_int (PersistentArray.length l)
-let intrinsic_push ((l, x) : 'a PersistentArray.array * 'a): 'a PersistentArray.array = PersistentArray.append (l, x)
-let intrinsic_pop (l : 'a PersistentArray.array): 'a PersistentArray.array * 'a = PersistentArray.popEnd(l)
-let intrinsic_reserve ((l, i) : 'a PersistentArray.array * int64): 'a PersistentArray.array = l
-
-let input (()) : char PersistentArray.array = let in_ = read_line () in PersistentArray.fromList (Array.init (String.length in_) (String.get in_))
-let output (l : char PersistentArray.array) = print_string (String.init (PersistentArray.length l) (fun i -> PersistentArray.sub (l, i)))
-let panic (l : char PersistentArray.array) = raise (Failure (String.init (PersistentArray.length l) (fun i -> PersistentArray.sub (l, i))))
-";
+const PRELUDE_SML: &str = include_str!("prelude.sml");
+const PRELUDE_OCAML: &str = include_str!("prelude.ml");
 
 const PRELUDE_PERSISTENT_SML: &str = include_str!("persistent.sml");
 const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");

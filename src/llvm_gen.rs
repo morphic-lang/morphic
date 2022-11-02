@@ -1893,18 +1893,18 @@ fn gen_function<'a, 'b>(
 }
 
 fn get_target_machine(
-    target: cli::TargetConfig,
+    target: cli::LlvmConfig,
     opt_level: OptimizationLevel,
 ) -> Result<TargetMachine> {
     Target::initialize_all(&InitializationConfig::default());
 
     let (target_triple, target_cpu, target_features) = match target {
-        cli::TargetConfig::Native => (
+        cli::LlvmConfig::Native => (
             TargetMachine::get_default_triple(),
             TargetMachine::get_host_cpu_name().to_string(),
             TargetMachine::get_host_cpu_features().to_string(),
         ),
-        cli::TargetConfig::Wasm => (
+        cli::LlvmConfig::Wasm => (
             TargetTriple::create("wasm32-unknown-unknown"),
             "".to_owned(),
             "".to_owned(),
@@ -2196,9 +2196,9 @@ fn check_valid_dir_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) -> Result<()> {
+fn run_cc(target: cli::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<()> {
     match target {
-        cli::TargetConfig::Native => {
+        cli::LlvmConfig::Native => {
             check_valid_file_path(obj_path)?;
             check_valid_file_path(exe_path)?;
 
@@ -2225,7 +2225,7 @@ fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) -> Result
                 .status()
                 .map_err(Error::ClangFailed)?;
         }
-        cli::TargetConfig::Wasm => {
+        cli::LlvmConfig::Wasm => {
             // materialize files to link with
             let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
@@ -2302,7 +2302,7 @@ struct ArtifactPaths<'a> {
 
 fn compile_to_executable(
     program: low::Program,
-    target: cli::TargetConfig,
+    target: cli::LlvmConfig,
     opt_level: OptimizationLevel,
     artifact_paths: ArtifactPaths,
     progress: progress_ui::ProgressMode,
@@ -2380,7 +2380,7 @@ fn compile_to_executable(
 }
 
 pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>) -> Result<Child> {
-    let target = cli::TargetConfig::Native;
+    let target = cli::LlvmConfig::Native;
     let opt_level = cli::default_llvm_opt_level();
 
     let obj_path = tempfile::Builder::new()
@@ -2415,10 +2415,16 @@ pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>
 }
 
 pub fn build(program: low::Program, config: &cli::BuildConfig) -> Result<()> {
+    let target = if let cli::TargetConfig::Llvm(target) = config.target {
+        target
+    } else {
+        unreachable!("not an llvm target")
+    };
+
     if let Some(artifact_dir) = &config.artifact_dir {
         compile_to_executable(
             program,
-            config.target,
+            target,
             config.llvm_opt_level,
             ArtifactPaths {
                 ll: Some(&artifact_dir.artifact_path("ll")),
@@ -2438,7 +2444,7 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) -> Result<()> {
 
         compile_to_executable(
             program,
-            config.target,
+            target,
             config.llvm_opt_level,
             ArtifactPaths {
                 ll: None,
