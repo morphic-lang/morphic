@@ -917,7 +917,7 @@ const PRELUDE_OCAML: &str = include_str!("prelude.ml");
 // TODO: Add a flag to control whether we use immutable/mutable arrays in the generated SML code.
 // We hard-code mutable for now because it's sufficient for the benchmarks we're interested in.
 const PRELUDE_PERSISTENT_SML: &str = include_str!("mut.sml");
-const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");
+const PRELUDE_PERSISTENT_OCAML: &str = include_str!("mut.ml");
 
 fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
     match type_ {
