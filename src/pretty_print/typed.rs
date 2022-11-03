@@ -720,12 +720,8 @@ impl<'a, 'b> Context<'a, 'b> {
 
         for scc in val_sccs {
             for (i, id) in scc.iter().enumerate() {
-                if id.0 == 194 {
-                    dbg!(id);
-                }
                 let val = &prog.vals[id];
                 if let Expr::Lam(_purity, _arg_type, ret_type, pattern, body, prof) = &val.body {
-                    self.write(&format!("(* function branch: saw value {:?} *)", id))?;
                     if let Some(prof_id) = prof {
                         profile_points.insert(*prof_id, *id);
                         match self.variant {
@@ -817,10 +813,6 @@ impl<'a, 'b> Context<'a, 'b> {
                         }
                     }
                 } else {
-                    self.write(&format!("(* constant branch: saw value {:?} *)\n", id))?;
-                    if id.0 == 194 {
-                        dbg!(id);
-                    }
                     if i == 0 {
                         match self.variant {
                             MlVariant::OCAML => {
