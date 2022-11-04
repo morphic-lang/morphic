@@ -63,7 +63,7 @@ spaced(p: Parse a): Parse a =
   Parse.skip_post(p, spaces)
 
 atomic_expr: Parse Expr =
-  Parse.or(Parse.map(int, Const)) <|
+  Parse.or(Parse.map(int, \x -> Const(x))) <|
   Parse.lazy() <| \() ->
   Parse.skip_pre(Parse.byte_eq(ascii_open_paren)) <|
   Parse.skip_post(spaced(expr), Parse.byte_eq(ascii_close_paren))
@@ -84,15 +84,15 @@ operator_chain(
   )
 
 mul_level_operator: Parse ((Expr, Expr) -> Expr) =
-  Parse.or(Parse.byte_eq(ascii_asterisk) |> Parse.map(\_ -> Mul)) <|
-  (Parse.byte_eq(ascii_slash) |> Parse.map(\_ -> Div))
+  Parse.or(Parse.byte_eq(ascii_asterisk) |> Parse.map(\_ -> \x -> Mul(x))) <|
+  (Parse.byte_eq(ascii_slash) |> Parse.map(\_ -> \x -> Div(x)))
 
 mul_level_expr: Parse Expr =
   operator_chain(atomic_expr, mul_level_operator)
 
 add_level_operator: Parse ((Expr, Expr) -> Expr) =
-  Parse.or(Parse.byte_eq(ascii_plus) |> Parse.map(\_ -> Add)) <|
-  (Parse.byte_eq(ascii_minus) |> Parse.map(\_ -> Sub))
+  Parse.or(Parse.byte_eq(ascii_plus) |> Parse.map(\_ -> \x -> Add(x))) <|
+  (Parse.byte_eq(ascii_minus) |> Parse.map(\_ -> \x -> Sub(x)))
 
 add_level_expr: Parse Expr =
   operator_chain(mul_level_expr, add_level_operator)
