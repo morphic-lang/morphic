@@ -90,7 +90,7 @@ pub sep1(p: Parse a, sep: Parse s): Parse (Array a) =
   lazy(\() -> sep1_fold(p, sep, [], Array.push))
 
 pub optional(p: Parse a): Parse (Option a) =
-  or(map(p, Some), lazy(\() -> pure(None)))
+  or(map(p, \x -> Some(x)), lazy(\() -> pure(None)))
 
 pub lookahead(p: Parse a): Parse a =
   Parse(\(i, s) -> parse_from(i, s, p) |> Option.map(\(j, x) -> (i, x)))

@@ -213,12 +213,12 @@ bool: Parse Bool =
 
 value: Parse Value =
   Parse.lazy() <| \() ->
-  Parse.or(Parse.map(number, Number)) <|
-  Parse.or(Parse.map(string, String)) <|
-  Parse.or(Parse.map(array, Array)) <|
-  Parse.or(Parse.map(object, Object)) <|
+  Parse.or(Parse.map(number, \x -> Number(x))) <|
+  Parse.or(Parse.map(string, \x -> String(x))) <|
+  Parse.or(Parse.map(array, \x -> Array(x))) <|
+  Parse.or(Parse.map(object, \x -> Object(x))) <|
   Parse.or(Parse.map(null, \() -> Null)) <|
-  Parse.map(bool, Bool)
+  Parse.map(bool, \x -> Bool(x))
 
 array: Parse (Array Value) =
   Parse.between(Parse.byte_eq(ascii_left_square_bracket), Parse.byte_eq(ascii_right_square_bracket)) <|
