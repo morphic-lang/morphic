@@ -36,17 +36,17 @@ def parse_mean_interval(path: str) -> Interval:
     )
 
 
-def parse_sml_benchmarks(criterion_path: str) -> Results:
+def parse_benchmarks(tag: str, criterion_path: str) -> Results:
     results = []
     for group in os.listdir(criterion_path):
         benchmarks = set(os.listdir(os.path.join(criterion_path, group)))
         for baseline_dir in benchmarks:
-            regex = r"^(?P<name>[^\.]+)\.mor_sml_typed$"
+            regex = r"^(?P<name>[^\.]+)\.mor_(?P<tag>[a-zA-Z0-9_]+)_typed$"
             match = re.match(regex, baseline_dir)
-            if not match:
+            if not match or match.group("tag") != tag:
                 continue
             name = match.group("name")
-            defunc_dir = f"{name}.mor_sml_first_order"
+            defunc_dir = f"{name}.mor_{tag}_first_order"
             if defunc_dir not in benchmarks:
                 continue
             baseline_nanos = parse_mean_interval(
@@ -95,14 +95,19 @@ def plot_results(title: str, results: Results, out_path: str) -> None:
 
 def main():
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    results = parse_sml_benchmarks(os.path.join(script_dir, "..", "target", "criterion"))
-    out_dir = os.path.join(script_dir, "out")
-    os.makedirs(out_dir, exist_ok=True)
-    plot_results(
-        "MLton Benchmarks",
-        results,
-        os.path.join(out_dir, "sml_benchmarks.png"),
-    )
+    for tag in ["sml", "ocaml"]:
+        results = parse_benchmarks(tag, os.path.join(script_dir, "..", "target", "criterion"))
+        out_dir = os.path.join(script_dir, "out")
+        os.makedirs(out_dir, exist_ok=True)
+        if tag == "sml":
+            title = "MLton"
+        elif tag == "ocaml":
+            title = "OCaml"
+        plot_results(
+            f"{tag} Benchmarks",
+            results,
+            os.path.join(out_dir, f"{tag}_benchmarks.png"),
+        )
 
 
 if __name__ == "__main__":
