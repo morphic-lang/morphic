@@ -258,7 +258,7 @@ fn bench_ml_sample(
         cli::MlConfig::Ocaml => "ocaml",
     };
 
-    for ast in vec!["typed", "first_order"] {
+    for ast in vec!["typed", "mono", "first_order"] {
         g.bench_function(format!("{bench_name}_{ml_variant_str}_{ast}"), |b| {
             b.iter_custom(|iters| {
                 let artifacts = artifact_cache.get_or_insert_with(|| {
@@ -842,6 +842,27 @@ fn sample_calc(c: &mut Criterion) {
     );
 }
 
+fn sample_unify(c: &mut Criterion) {
+    let mut g = c.benchmark_group("unify");
+    g.sample_size(10);
+
+    let stdin = concat!(
+        include_str!("../../samples/sample-input/unify_problems.txt"),
+        "\n"
+    );
+    let stdout = include_str!("../../samples/expected-output/unify_solutions.txt");
+
+    bench_sample(
+        &mut g,
+        "bench_unify.mor",
+        "samples/bench_unify.mor",
+        &[],
+        "solve_problems",
+        stdin,
+        stdout,
+    );
+}
+
 fn main() {
     if !Path::new("samples").exists() {
         eprintln!();
@@ -869,4 +890,6 @@ fn main() {
     sample_parse_json(&mut c);
 
     sample_calc(&mut c);
+
+    sample_unify(&mut c);
 }
