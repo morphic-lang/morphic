@@ -284,6 +284,22 @@ fn compile_to_first_order_ast(
 
     let mono = monomorphize::monomorphize(typed);
 
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("mono.sml"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::mono::write_sml_program(&mut out_file, &mono)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("mono.ml"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::mono::write_ocaml_program(&mut out_file, &mono)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
     let shielded = shield_functions::shield_functions(mono);
 
     let lifted = lambda_lift::lambda_lift(shielded);
