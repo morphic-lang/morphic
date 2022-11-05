@@ -258,7 +258,7 @@ fn bench_ml_sample(
         cli::MlConfig::Ocaml => "ocaml",
     };
 
-    for ast in vec!["typed", "first_order"] {
+    for ast in vec!["typed", "mono", "first_order"] {
         g.bench_function(format!("{bench_name}_{ml_variant_str}_{ast}"), |b| {
             b.iter_custom(|iters| {
                 let artifacts = artifact_cache.get_or_insert_with(|| {
