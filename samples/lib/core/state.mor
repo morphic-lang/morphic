@@ -13,6 +13,9 @@ pub set(s: s): State s () =
 pub modify(f: s -> s): State s () =
   State(\s -> (f(s), ()))
 
+pub modify_ret(f: s -> (s, r)): State s r =
+  State(f)
+
 pub pure(x: r): State s r =
   State(\s -> (s, x))
 

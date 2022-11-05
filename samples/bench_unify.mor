@@ -1,0 +1,295 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io,
+    module String,
+    module Option expose { Option { Some, None } },
+    module Array,
+    module Iter expose { Iter },
+    module State expose { State },
+  }
+module Parse = file "lib/parse.mor"
+  with { Core }
+  expose { Parse }
+module Bench = file "lib/bench_common.mor"
+  with { Core }
+
+type VarId {
+  VarId(Int)
+}
+
+var_id_eq(v1: VarId, v2: VarId): Bool =
+  let VarId(id1) = v1 in
+  let VarId(id2) = v2 in
+  id1 = id2
+
+type HeadId {
+  HeadId(Int)
+}
+
+head_id_eq(h1: HeadId, h2: HeadId): Bool =
+  let HeadId(id1) = h1 in
+  let HeadId(id2) = h2 in
+  id1 = id2
+
+type Term {
+  Unknown,
+  Equal(VarId),
+  Term(HeadId, Array VarId),
+  Recursing,
+}
+
+type Terms {
+  Terms(Array Term),
+}
+
+get_term(var: VarId): State Terms Term =
+  State.bind(State.get) <| \terms ->
+  let VarId(id) = var in
+  let Terms(ts) = terms in
+  State.pure(Array.get(ts, id))
+
+set_term(var: VarId, new: Term): State Terms () =
+  State.modify() <| \terms ->
+  let VarId(id) = var in
+  let Terms(ts) = terms in
+  let new_ts = Array.set(ts, id, new) in
+  Terms(new_ts)
+
+follow(var: VarId): State Terms VarId =
+  State.bind(get_term(var)) <| \term ->
+  match term {
+    Equal(v1) ->
+      State.bind(follow(v1)) <| \v2 ->
+      if var_id_eq(v1, v2) {
+        State.pure(v2)
+      } else {
+        State.bind(set_term(var, Equal(v2))) <| \() ->
+        State.pure(v2)
+      },
+    _ -> State.pure(var),
+  }
+
+for_each_checked(it: Iter a, f: a -> State s Bool): State s Bool =
+  match Iter.next(it) {
+    Some(x, xs) ->
+      State.bind(f(x)) <| \b ->
+      if b {
+        for_each_checked(xs, f)
+      } else {
+        State.pure(False)
+      },
+    None -> State.pure(True),
+  }
+
+unify(v1: VarId, v2: VarId): State Terms Bool =
+  State.bind(follow(v1)) <| \v1_fol ->
+  State.bind(follow(v2)) <| \v2_fol ->
+  if var_id_eq(v1_fol, v2_fol) {
+    State.pure(True)
+  } else {
+    State.bind(get_term(v1_fol)) <| \t1 ->
+    State.bind(get_term(v2_fol)) <| \t2 ->
+    match (t1, t2) {
+      (Equal(_), _) -> panic("follow should never return a pointer to an Equal"),
+      (_, Equal(_)) -> panic("follow should never return a pointer to an Equal"),
+      (Unknown, _) ->
+        State.bind(set_term(v1_fol, Equal(v2_fol))) <| \() ->
+        State.pure(True),
+      (_, Unknown) ->
+        State.bind(set_term(v2_fol, Equal(v1_fol))) <| \() ->
+        State.pure(True),
+      (Term(h1, args1), Term(h2, args2)) ->
+        State.bind(set_term(v1_fol, Recursing)) <| \() ->
+        State.bind(set_term(v2_fol, Recursing)) <| \() ->
+        if ! (head_id_eq(h1, h2) && Array.len(args1) = Array.len(args2)) {
+          State.pure(False)
+        } else {
+          let it = Iter.zip(Iter.items(args1), Iter.items(args2)) in
+          State.bind(for_each_checked(it, unify)) <| \b ->
+          if b {
+            State.bind(set_term(v1_fol, Equal(v2_fol))) <| \() ->
+            State.bind(set_term(v2_fol, Term(h2, args2))) <| \() ->
+            State.pure(True)
+          } else {
+            State.pure(False)
+          }
+        },
+      // This implements the "occurs check":
+      (Recursing, _) -> State.pure(False),
+      (_, Recursing) -> State.pure(False),
+    }
+  }
+
+new_term(term: Term): State Terms VarId =
+  State.modify_ret() <| \terms ->
+  let Terms(ts) = terms in
+  let new_id = VarId(Array.len(ts)) in
+  let new_ts = Array.push(ts, term) in
+  (Terms(new_ts), new_id)
+
+type Expr {
+  EVar(VarId),
+  EHead(HeadId, Array Expr),
+}
+
+type Problem {
+  Problem(Int, VarId, Array (VarId, Expr)),
+}
+
+for_each_accum(it: Iter a, init: b, f: (b, a) -> State s b): State s b =
+  match Iter.next(it) {
+    Some(x, xs) ->
+      State.bind(f(init, x)) <| \new_init ->
+      for_each_accum(xs, new_init, f),
+    None -> State.pure(init),
+  }
+
+get_expr(var: VarId): State Terms Expr =
+  State.bind(follow(var)) <| \var_fol ->
+  State.bind(get_term(var_fol)) <| \term ->
+  match term {
+    Equal(_) -> panic("follow should never return a pointer to an Equal"),
+    Recursing -> panic("Recursing should not occur in a valid solution"),
+    Unknown -> State.pure(EVar(var_fol)),
+    Term(h, args) ->
+      State.bind(for_each_accum(Iter.items(args), []) <| \(acc, arg) ->
+        State.bind(get_expr(arg)) <| \expr ->
+        State.pure(Array.push(acc, expr))
+      ) <| \exprs ->
+      State.pure(EHead(h, exprs)),
+  }
+
+mk_expr(expr: Expr): State Terms VarId =
+  match expr {
+    EVar(v) -> State.pure(v),
+    EHead(h, args) ->
+      State.bind(for_each_accum(Iter.items(args), [], \(acc, arg) ->
+        State.bind(mk_expr(arg)) <| \var ->
+        State.pure(Array.push(acc, var))
+      )) <| \vars ->
+      new_term(Term(h, vars)),
+  }
+
+solve(problem: Problem): Option Expr =
+  let Problem(num_vars, root_var, constraints) = problem in
+  let go =
+    State.bind(for_each_checked(Iter.items(constraints)) <| \(var, expr) ->
+      State.bind(mk_expr(expr)) <| \var2 ->
+      unify(var, var2)
+    ) <| \b ->
+    if b {
+      State.bind(get_expr(root_var)) <| \expr ->
+      State.pure(Some(expr))
+    } else {
+      State.pure(None)
+    }
+  in
+  let init_terms = Array.fill_with(num_vars, \_ -> Unknown) in
+  let (_, result) = State.run(go, Terms(init_terms)) in
+  result
+
+solve_problems(problems: Iter Problem): Array (Option Expr) =
+  problems
+  |> Iter.map(solve)
+  |> Array.from_iter()
+
+ascii_question: Byte = 63b
+ascii_excalam: Byte = 33b
+ascii_open_paren: Byte = 40b
+ascii_close_paren: Byte = 41b
+ascii_tilde: Byte = 126b
+ascii_zero: Byte = 48b
+ascii_nine: Byte = 57b
+ascii_semicolon: Byte = 59b
+ascii_comma: Byte = 44b
+
+parse_digit: Parse Int =
+  Parse.byte_range(ascii_zero, ascii_nine)
+  |> Parse.map(\x -> byte_to_int(x -& ascii_zero))
+
+parse_int: Parse Int =
+  Parse.many1_fold(parse_digit, 0, \(x, y) -> x * 10 + y)
+
+parse_var: Parse VarId =
+  Parse.skip_pre(Parse.byte_eq(ascii_question)) <|
+  Parse.map(parse_int, VarId)
+
+parse_head: Parse HeadId =
+  Parse.skip_pre(Parse.byte_eq(ascii_excalam)) <|
+  Parse.map(parse_int, HeadId)
+
+parse_expr: Parse Expr =
+  Parse.lazy() <| \() ->
+  Parse.or(Parse.map(parse_var, \id -> EVar(id))) <|
+  Parse.and_then(parse_head) <| \head ->
+  Parse.between(Parse.byte_eq(ascii_open_paren), Parse.byte_eq(ascii_close_paren)) <|
+  Parse.and_then(Parse.many0(parse_expr)) <| \args ->
+  Parse.pure(EHead(head, args))
+
+parse_command: Parse (VarId, Expr) =
+  Parse.and_then(parse_var) <| \var ->
+  Parse.skip_pre(Parse.byte_eq(ascii_tilde)) <|
+  Parse.and_then(parse_expr) <| \expr ->
+  Parse.pure((var, expr))
+
+parse_problem: Parse Problem =
+  Parse.and_then(parse_int) <| \num_vars ->
+  Parse.skip_pre(Parse.byte_eq(ascii_semicolon)) <|
+  Parse.and_then(parse_var) <| \root_var ->
+  Parse.skip_pre(Parse.byte_eq(ascii_semicolon)) <|
+  Parse.and_then(Parse.sep0(parse_command, Parse.byte_eq(ascii_comma))) <| \constraints ->
+  Parse.pure(Problem(num_vars, root_var, constraints))
+
+proc read_problems_rec(problems: Array Problem): Array Problem =
+  let line = do input() in
+  if Array.len(line) = 0 {
+    problems
+  } else {
+    match Parse.parse_all(line, parse_problem) {
+      Some(problem) ->
+        problems
+        |> Array.push(problem)
+        |> do read_problems_rec(),
+      None -> panic("parse error"),
+    }
+  }
+
+proc read_problems(): Array Problem =
+  do read_problems_rec([])
+
+proc output_expr(expr: Expr): () =
+  match expr {
+    EVar(VarId(id)) ->
+      do output("?") then
+      do output(String.int_to_string(id)),
+    EHead(HeadId(id), args) ->
+      do output("!") then
+      do output(String.int_to_string(id)) then
+      do output("(") then
+      do Iter.for_each(Iter.items(args), output_expr) then
+      do output(")"),
+  }
+
+pub proc main(): () =
+  match String.string_to_nat(do input()) {
+    Some(iters) ->
+      let problems = do read_problems() in
+      let opt_results = Bench.repeat(
+        iters,
+        \() -> solve_problems(Iter.items(problems)),
+      )
+      in match opt_results {
+        Some(results) ->
+          do Iter.for_each(Iter.items(results), proc \opt ->
+            match opt {
+              Some(expr) ->
+                do output_expr(expr) then
+                do output("\n"),
+              None ->
+                do output("unsat\n"),
+            }
+          ),
+        None -> (),
+      },
+    None -> do Io.writeln("Please enter an iteration count"),
+  }
