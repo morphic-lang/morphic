@@ -41,12 +41,20 @@ def parse_benchmarks(tag: str, criterion_path: str) -> Results:
     for group in os.listdir(criterion_path):
         benchmarks = set(os.listdir(os.path.join(criterion_path, group)))
         for baseline_dir in benchmarks:
-            regex = r"^(?P<name>[^\.]+)\.mor_(?P<tag>[a-zA-Z0-9_]+)_typed$"
+            if tag == "sml" or tag == "ocaml":
+                baseline_tag = f"{tag}_typed"
+                defunc_tag = f"{tag}_first_order"
+            elif tag == "native":
+                baseline_tag = "native_single"
+                defunc_tag = "native_specialize"
+            else:
+                raise ValueError(f"Unknown tag {tag}")
+            regex = r"^(?P<name>[^\.]+)\.mor_(?P<baseline_tag>[a-zA-Z0-9_]+)$"
             match = re.match(regex, baseline_dir)
-            if not match or match.group("tag") != tag:
+            if not match or match.group("baseline_tag") != baseline_tag:
                 continue
             name = match.group("name")
-            defunc_dir = f"{name}.mor_{tag}_first_order"
+            defunc_dir = f"{name}.mor_{defunc_tag}"
             if defunc_dir not in benchmarks:
                 continue
             baseline_nanos = parse_mean_interval(
@@ -75,11 +83,13 @@ def plot_results(title: str, results: Results, out_path: str) -> None:
     baseline_nanos = [e.baseline_nanos.estimate for e in results.experiments]
     defunc_nanos = [e.defunc_nanos.estimate for e in results.experiments]
     speedups = [b / d - 1.0 for b, d in zip(baseline_nanos, defunc_nanos)]
+    x_range = int(np.ceil(max(speedups) * 1.1))
     # Sort by speedup.
     names, speedups = zip(*sorted(zip(names, speedups), key=lambda x: x[1]))
     # label the x axis with ticks of the form "+percent%", computed programmatically
-    x_range = 5
-    x_ticks = np.linspace(0, x_range, x_range + 1)
+    base = 5
+    nearest_power = base ** int(np.ceil(np.log(x_range) / np.log(base)))
+    x_ticks = np.linspace(0, nearest_power, 6)
     x_tick_labels = [f"+{int(100 * x)}%" for x in x_ticks]
     ax.set_xlim(0.0, x_range)
     ax.set_xticks(x_ticks)
@@ -95,16 +105,20 @@ def plot_results(title: str, results: Results, out_path: str) -> None:
 
 def main():
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    for tag in ["sml", "ocaml"]:
+    for tag in ["sml", "ocaml", "native"]:
         results = parse_benchmarks(tag, os.path.join(script_dir, "..", "target", "criterion"))
+        if not results.experiments:
+            continue
         out_dir = os.path.join(script_dir, "out")
         os.makedirs(out_dir, exist_ok=True)
         if tag == "sml":
             title = "MLton"
         elif tag == "ocaml":
             title = "OCaml"
+        elif tag == "native":
+            title = "Native"
         plot_results(
-            f"{tag} Benchmarks",
+            f"{title} Benchmarks",
             results,
             os.path.join(out_dir, f"{tag}_benchmarks.png"),
         )

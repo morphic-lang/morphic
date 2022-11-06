@@ -6,6 +6,8 @@ use morphic::cli;
 use morphic::cli::ArtifactDir;
 use morphic::cli::LlvmConfig;
 use morphic::cli::MlConfig;
+use morphic::cli::PassOptions;
+use morphic::cli::RcMode;
 use morphic::cli::SpecializationMode;
 use morphic::file_cache::FileCache;
 use morphic::progress_ui::ProgressMode;
@@ -160,6 +162,27 @@ struct ProfSkippedTail {
     tail_func_id: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum DefuncBenchMode {
+    SpecializeOnly,
+    Both,
+}
+
+#[derive(Clone, Debug)]
+struct SampleOptions {
+    defunc_bench_mode: DefuncBenchMode,
+    rc_mode: RcMode,
+}
+
+impl Default for SampleOptions {
+    fn default() -> Self {
+        Self {
+            defunc_bench_mode: DefuncBenchMode::Both,
+            rc_mode: RcMode::Elide,
+        }
+    }
+}
+
 fn bench_sample(
     g: &mut BenchmarkGroup<WallTime>,
     bench_name: &str,
@@ -168,10 +191,9 @@ fn bench_sample(
     profile_func: &str,
     extra_stdin: &str,
     expected_stdout: &str,
+    options: &SampleOptions,
 ) {
-    let mut exe_path_cache = None;
-
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+    for ml_variant in [MlConfig::Sml] {
         bench_ml_sample(
             g,
             bench_name,
@@ -184,61 +206,77 @@ fn bench_sample(
         )
     }
 
-    g.bench_function(bench_name, |b| {
-        b.iter_custom(|iters| {
-            let exe_path = exe_path_cache.get_or_insert_with(|| {
-                let exe_path = tempfile::Builder::new()
-                    .prefix(".tmp-exe-")
-                    .tempfile_in("")
-                    .expect("Could not create temp file")
-                    .into_temp_path();
+    let defunc_modes: &[_] = match options.defunc_bench_mode {
+        DefuncBenchMode::SpecializeOnly => &[SpecializationMode::Specialize],
+        DefuncBenchMode::Both => &[SpecializationMode::Specialize, SpecializationMode::Single],
+    };
 
-                let mut files = FileCache::new();
+    for &defunc_mode in defunc_modes {
+        let tag = match defunc_mode {
+            SpecializationMode::Specialize => "native_specialize",
+            SpecializationMode::Single => "native_single",
+        };
+        let variant_name = format!("{bench_name}_{tag}");
+        let mut exe_path_cache = None;
+        g.bench_function(&variant_name, |b| {
+            b.iter_custom(|iters| {
+                let exe_path = exe_path_cache.get_or_insert_with(|| {
+                    let exe_path = tempfile::Builder::new()
+                        .prefix(".tmp-exe-")
+                        .tempfile_in("")
+                        .expect("Could not create temp file")
+                        .into_temp_path();
 
-                build(
-                    cli::BuildConfig {
-                        src_path: src_path.as_ref().into(),
-                        profile_syms: vec![cli::SymbolName(format!(
-                            "{mod_}{func}",
-                            mod_ = profile_mod
-                                .iter()
-                                .map(|component| format!("{}.", component))
-                                .collect::<Vec<_>>()
-                                .concat(),
-                            func = profile_func,
-                        ))],
-                        target: cli::TargetConfig::Llvm(LlvmConfig::Native),
-                        llvm_opt_level: cli::default_llvm_opt_level(),
-                        output_path: exe_path.to_owned(),
-                        artifact_dir: None,
-                        defunc_mode: SpecializationMode::Specialize,
-                        progress: ProgressMode::Hidden,
-                    },
-                    &mut files,
-                )
-                .expect("Compilation failed");
+                    let mut files = FileCache::new();
 
-                exe_path
-            });
+                    build(
+                        cli::BuildConfig {
+                            src_path: src_path.as_ref().into(),
+                            profile_syms: vec![cli::SymbolName(format!(
+                                "{mod_}{func}",
+                                mod_ = profile_mod
+                                    .iter()
+                                    .map(|component| format!("{}.", component))
+                                    .collect::<Vec<_>>()
+                                    .concat(),
+                                func = profile_func,
+                            ))],
+                            target: cli::TargetConfig::Llvm(LlvmConfig::Native),
+                            llvm_opt_level: cli::default_llvm_opt_level(),
+                            output_path: exe_path.to_owned(),
+                            artifact_dir: None,
+                            progress: ProgressMode::Hidden,
+                            pass_options: PassOptions {
+                                defunc_mode,
+                                ..Default::default()
+                            },
+                        },
+                        &mut files,
+                    )
+                    .expect("Compilation failed");
 
-            let report: ProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
+                    exe_path
+                });
 
-            let timing = &report.timings[0];
+                let report: ProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
 
-            assert_eq!(&timing.module as &[String], profile_mod as &[&str]);
-            assert_eq!(&timing.function, profile_func);
-            assert_eq!(timing.specializations.len(), 1);
-            assert_eq!(timing.skipped_tail_rec_specializations.len(), 0);
+                let timing = &report.timings[0];
 
-            let specialization = &timing.specializations[0];
+                assert_eq!(&timing.module as &[String], profile_mod as &[&str]);
+                assert_eq!(&timing.function, profile_func);
+                assert_eq!(timing.specializations.len(), 1);
+                assert_eq!(timing.skipped_tail_rec_specializations.len(), 0);
 
-            assert_eq!(specialization.total_calls, iters);
+                let specialization = &timing.specializations[0];
 
-            let total_nanos = specialization.total_clock_nanos;
+                assert_eq!(specialization.total_calls, iters);
 
-            Duration::from_nanos(total_nanos)
-        })
-    });
+                let total_nanos = specialization.total_clock_nanos;
+
+                Duration::from_nanos(total_nanos)
+            })
+        });
+    }
 }
 
 fn bench_ml_sample(
@@ -291,7 +329,7 @@ fn bench_ml_sample(
                             output_path: "".into(),
                             artifact_dir: Some(artifact_dir.clone()),
                             progress: ProgressMode::Hidden,
-                            defunc_mode: SpecializationMode::Specialize,
+                            pass_options: PassOptions::default(),
                         },
                         &mut files,
                     )
@@ -601,6 +639,7 @@ fn sample_primes(c: &mut Criterion) {
         "count_primes",
         stdin,
         stdout,
+        &SampleOptions::default(),
     );
 
     bench_sample(
@@ -611,6 +650,7 @@ fn sample_primes(c: &mut Criterion) {
         "count_primes",
         stdin,
         stdout,
+        &SampleOptions::default(),
     );
 
     bench_c_sample(
@@ -674,6 +714,7 @@ fn sample_quicksort(c: &mut Criterion) {
         "quicksort",
         &stdin,
         &stdout,
+        &SampleOptions::default(),
     );
 
     bench_rust_sample(
@@ -700,6 +741,7 @@ fn sample_primes_sieve(c: &mut Criterion) {
         "sieve",
         stdin,
         stdout,
+        &SampleOptions::default(),
     );
 
     bench_c_sample(
@@ -786,6 +828,7 @@ fn sample_words_trie(c: &mut Criterion) {
         "count_words",
         stdin,
         stdout,
+        &SampleOptions::default(),
     );
 
     bench_rust_sample(
@@ -815,6 +858,10 @@ fn sample_parse_json(c: &mut Criterion) {
         "parse_json",
         stdin,
         &stdout,
+        &SampleOptions {
+            defunc_bench_mode: DefuncBenchMode::SpecializeOnly,
+            ..Default::default()
+        },
     );
 }
 
@@ -839,6 +886,7 @@ fn sample_calc(c: &mut Criterion) {
         "eval_exprs",
         stdin,
         stdout,
+        &SampleOptions::default(),
     );
 }
 
@@ -860,6 +908,10 @@ fn sample_unify(c: &mut Criterion) {
         "solve_problems",
         stdin,
         stdout,
+        &SampleOptions {
+            rc_mode: RcMode::Trivial,
+            ..Default::default()
+        },
     );
 }
 

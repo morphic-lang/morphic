@@ -2,6 +2,7 @@ use im_rc::{OrdMap, OrdSet, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::alias_spec_flag::lookup_concrete_cond;
+use crate::cli;
 use crate::data::alias_annot_ast as alias;
 use crate::data::alias_specialized_ast as spec;
 use crate::data::anon_sum_ast as anon;
@@ -1570,6 +1571,7 @@ fn annot_drops(
 
 // TODO: This type signature *really* needs to not be like this
 fn annot_expr<'a>(
+    elision_mode: cli::RcMode,
     typedefs: &flat::CustomTypes,
     known_annots: &IdVec<
         first_ord::CustomFuncId,
@@ -1645,13 +1647,14 @@ fn annot_expr<'a>(
                         // variable may outlive its source, the destination needs to have the same mode
                         // as the source (which may still end up being `Borrowed` if the source is
                         // itself borrowed from another variable).
-                        let dest_mode_var = if borrow_would_outlive_src {
-                            *src_mode_var
-                        } else {
-                            let var = constraints.new_var();
-                            constraints.require_lte(*src_mode_var, var);
-                            var
-                        };
+                        let dest_mode_var =
+                            if elision_mode == cli::RcMode::Trivial || borrow_would_outlive_src {
+                                *src_mode_var
+                            } else {
+                                let var = constraints.new_var();
+                                constraints.require_lte(*src_mode_var, var);
+                                var
+                            };
 
                         (
                             SolverPathOccurMode::Intermediate {
@@ -1731,6 +1734,7 @@ fn annot_expr<'a>(
 
             for (block_id, _cond, body, _final_ctx) in cases {
                 let body_modes = annot_expr(
+                    elision_mode,
                     typedefs,
                     known_annots,
                     occur_fates,
@@ -1763,6 +1767,7 @@ fn annot_expr<'a>(
                 debug_assert_eq!(binding_horizons.len(), bindings.len());
                 for ((type_, rhs), move_horizon) in bindings.iter().zip(binding_horizons.iter()) {
                     let binding_modes = annot_expr(
+                        elision_mode,
                         typedefs,
                         known_annots,
                         occur_fates,
@@ -2245,6 +2250,7 @@ fn extract_occur_modes(
 }
 
 fn annot_scc(
+    elision_mode: cli::RcMode,
     orig: &spec::Program,
     func_annots: &mut IdVec<
         first_ord::CustomFuncId,
@@ -2329,6 +2335,7 @@ fn annot_scc(
             };
 
             let ret_val_modes = annot_expr(
+                elision_mode,
                 &orig.custom_types,
                 func_annots,
                 &func_def.occur_fates,
@@ -2419,7 +2426,11 @@ fn annot_scc(
     }
 }
 
-pub fn annot_modes(program: spec::Program, progress: impl ProgressLogger) -> mode::Program {
+pub fn annot_modes(
+    program: spec::Program,
+    elision_mode: cli::RcMode,
+    progress: impl ProgressLogger,
+) -> mode::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
     let sccs = find_sccs(&program.funcs);
@@ -2429,7 +2440,7 @@ pub fn annot_modes(program: spec::Program, progress: impl ProgressLogger) -> mod
         .map(|_, func_def| func_def.versions.map(|_, _| None));
 
     for scc in sccs {
-        annot_scc(&program, &mut func_annots, &scc);
+        annot_scc(elision_mode, &program, &mut func_annots, &scc);
         progress.update(scc.len());
     }
 

@@ -39,3 +39,20 @@ pub for_each(it: Iter a, f: a -> State s ()): State s () =
     in
     (final, ())
   )
+
+pub log(msg: () -> Array Byte, body: State s a): State s a =
+  body
+  // State(\s ->
+    // do output("BEGIN ") then
+    // do output(msg()) then
+    // do output("\n") then
+    // let result = run(body, s) in
+    // do output("END ") then
+    // do output(msg()) then
+    // do output("\n") then
+    // result
+  // )
+
+pub lazy(body: () -> State s a): State s a =
+  body()
+  // State(\s -> run(body(), s))

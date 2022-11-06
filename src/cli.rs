@@ -58,6 +58,27 @@ pub enum SpecializationMode {
     Single,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RcMode {
+    Elide,
+    Trivial,
+}
+
+#[derive(Clone, Debug)]
+pub struct PassOptions {
+    pub defunc_mode: SpecializationMode,
+    pub rc_mode: RcMode,
+}
+
+impl Default for PassOptions {
+    fn default() -> Self {
+        Self {
+            defunc_mode: SpecializationMode::Specialize,
+            rc_mode: RcMode::Elide,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct BuildConfig {
     pub src_path: PathBuf,
@@ -70,7 +91,7 @@ pub struct BuildConfig {
     pub artifact_dir: Option<ArtifactDir>,
     pub progress: ProgressMode,
 
-    pub defunc_mode: SpecializationMode,
+    pub pass_options: PassOptions,
 }
 
 #[derive(Debug)]
@@ -198,6 +219,16 @@ impl Config {
                             .default_value("specialize"),
                     )
                     .arg(
+                        Arg::with_name("rc-mode")
+                        .long("rc-mode")
+                        .help(
+                            "Set whether or not to elide reference counting operations. This is \
+                            mostly useful for working around compiler bugs."
+                        )
+                        .possible_values(&["elide", "trivial"])
+                        .default_value("elide"),
+                    )
+                    .arg(
                         Arg::with_name("progress")
                             .long("progress")
                             .help("Set whether or not to show progress"),
@@ -284,6 +315,12 @@ impl Config {
                 _ => unreachable!(),
             };
 
+            let rc_mode = match matches.value_of("rc-mode").unwrap() {
+                "elide" => RcMode::Elide,
+                "trivial" => RcMode::Trivial,
+                _ => unreachable!(),
+            };
+
             let progress = if matches.is_present("progress") {
                 ProgressMode::Visible
             } else {
@@ -297,8 +334,11 @@ impl Config {
                 llvm_opt_level,
                 output_path: output_path.into(),
                 artifact_dir,
-                defunc_mode,
                 progress,
+                pass_options: PassOptions {
+                    defunc_mode,
+                    rc_mode,
+                },
             };
             return Self::BuildConfig(build_config);
         }

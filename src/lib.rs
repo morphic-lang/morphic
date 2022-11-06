@@ -91,6 +91,7 @@ mod llvm_gen;
 #[cfg(test)]
 mod test;
 
+use cli::PassOptions;
 use lalrpop_util::lalrpop_mod;
 use std::fs;
 use std::io;
@@ -199,9 +200,9 @@ pub fn run(
         &config.src_path,
         &[],
         None,
-        cli::SpecializationMode::Specialize,
         files,
         progress_ui::ProgressMode::Hidden,
+        &PassOptions::default(),
     )?;
 
     match config.mode {
@@ -219,9 +220,9 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
                 &config.src_path,
                 &config.profile_syms,
                 config.artifact_dir.as_ref(),
-                config.defunc_mode,
                 files,
                 config.progress,
+                &config.pass_options,
             )?;
             Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
         }
@@ -234,9 +235,9 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
                     &config.src_path,
                     &config.profile_syms,
                     config.artifact_dir.as_ref(),
-                    config.defunc_mode,
                     files,
                     config.progress,
+                    &config.pass_options,
                 )?;
                 Ok(())
             }
@@ -248,9 +249,9 @@ fn compile_to_first_order_ast(
     src_path: &Path,
     profile_syms: &[cli::SymbolName],
     artifact_dir: Option<&cli::ArtifactDir>,
-    defunc_mode: cli::SpecializationMode,
     files: &mut file_cache::FileCache,
     progress: progress_ui::ProgressMode,
+    pass_options: &cli::PassOptions,
 ) -> Result<data::first_order_ast::Program, Error> {
     let resolved = resolve::resolve_program(files, src_path, profile_syms)
         .map_err(ErrorKind::ResolveFailed)?;
@@ -306,7 +307,7 @@ fn compile_to_first_order_ast(
 
     let annot = annot_closures::annot_closures(
         lifted,
-        defunc_mode,
+        pass_options.defunc_mode,
         progress_ui::bar(progress, "annot_closures"),
     );
 
@@ -344,17 +345,17 @@ fn compile_to_low_ast(
     src_path: &Path,
     profile_syms: &[cli::SymbolName],
     artifact_dir: Option<&cli::ArtifactDir>,
-    defunc_mode: cli::SpecializationMode,
     files: &mut file_cache::FileCache,
     progress: progress_ui::ProgressMode,
+    pass_options: &cli::PassOptions,
 ) -> Result<data::low_ast::Program, Error> {
     let first_order = compile_to_first_order_ast(
         src_path,
         profile_syms,
         artifact_dir,
-        defunc_mode,
         files,
         progress,
+        pass_options,
     )?;
 
     let split = split_custom_types::split_custom_types(
@@ -377,8 +378,11 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "specialize_aliases"),
     );
 
-    let mode_annot =
-        annot_modes::annot_modes(alias_spec, progress_ui::bar(progress, "annot_modes"));
+    let mode_annot = annot_modes::annot_modes(
+        alias_spec,
+        pass_options.rc_mode,
+        progress_ui::bar(progress, "annot_modes"),
+    );
 
     let rc_spec =
         rc_specialize::rc_specialize(mode_annot, progress_ui::bar(progress, "rc_specialize"));
