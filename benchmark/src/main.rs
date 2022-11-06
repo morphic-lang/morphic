@@ -20,8 +20,10 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufReader, Write};
 use std::path::Path;
+use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
+use tempfile::TempPath;
 
 fn drive_subprocess(
     mut child: process::Child,
@@ -162,22 +164,25 @@ struct ProfSkippedTail {
     tail_func_id: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum DefuncBenchMode {
-    SpecializeOnly,
-    Both,
+#[derive(Clone, Debug)]
+enum NativeBinary {
+    Fresh,
+    Precompiled { binary_path: PathBuf },
+    Skip,
 }
 
 #[derive(Clone, Debug)]
 struct SampleOptions {
-    defunc_bench_mode: DefuncBenchMode,
+    single_binary: NativeBinary,
+    specialize_binary: NativeBinary,
     rc_mode: RcMode,
 }
 
 impl Default for SampleOptions {
     fn default() -> Self {
         Self {
-            defunc_bench_mode: DefuncBenchMode::Both,
+            single_binary: NativeBinary::Fresh,
+            specialize_binary: NativeBinary::Fresh,
             rc_mode: RcMode::Elide,
         }
     }
@@ -206,18 +211,41 @@ fn bench_sample(
         )
     }
 
-    let defunc_modes: &[_] = match options.defunc_bench_mode {
-        DefuncBenchMode::SpecializeOnly => &[SpecializationMode::Specialize],
-        DefuncBenchMode::Both => &[SpecializationMode::Specialize, SpecializationMode::Single],
-    };
+    let variants = [
+        ("single", SpecializationMode::Single, &options.single_binary),
+        (
+            "specialize",
+            SpecializationMode::Specialize,
+            &options.specialize_binary,
+        ),
+    ];
 
-    for &defunc_mode in defunc_modes {
-        let tag = match defunc_mode {
-            SpecializationMode::Specialize => "native_specialize",
-            SpecializationMode::Single => "native_single",
+    for (tag, defunc_mode, binary) in variants {
+        let variant_name = format!("{bench_name}_native_{tag}");
+        enum ExePath {
+            Fresh(TempPath),
+            Precompiled(PathBuf),
+        }
+        impl AsRef<Path> for ExePath {
+            fn as_ref(&self) -> &Path {
+                match self {
+                    ExePath::Fresh(p) => p.as_ref(),
+                    ExePath::Precompiled(p) => p.as_ref(),
+                }
+            }
+        }
+        let mut exe_path_cache: Option<ExePath> = match binary {
+            NativeBinary::Fresh => None,
+            NativeBinary::Precompiled { binary_path } => {
+                if !binary_path.exists() {
+                    continue;
+                }
+                Some(ExePath::Precompiled(binary_path.clone()))
+            }
+            NativeBinary::Skip => {
+                continue;
+            }
         };
-        let variant_name = format!("{bench_name}_{tag}");
-        let mut exe_path_cache = None;
         g.bench_function(&variant_name, |b| {
             b.iter_custom(|iters| {
                 let exe_path = exe_path_cache.get_or_insert_with(|| {
@@ -255,7 +283,7 @@ fn bench_sample(
                     )
                     .expect("Compilation failed");
 
-                    exe_path
+                    ExePath::Fresh(exe_path)
                 });
 
                 let report: ProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
@@ -828,7 +856,15 @@ fn sample_words_trie(c: &mut Criterion) {
         "count_words",
         stdin,
         stdout,
-        &SampleOptions::default(),
+        &SampleOptions {
+            single_binary: NativeBinary::Precompiled {
+                binary_path: "out/bench_words_trie_single".into(),
+            },
+            specialize_binary: NativeBinary::Precompiled {
+                binary_path: "out/bench_words_trie_specialize".into(),
+            },
+            ..Default::default()
+        },
     );
 
     bench_rust_sample(
@@ -859,7 +895,9 @@ fn sample_parse_json(c: &mut Criterion) {
         stdin,
         &stdout,
         &SampleOptions {
-            defunc_bench_mode: DefuncBenchMode::SpecializeOnly,
+            single_binary: NativeBinary::Precompiled {
+                binary_path: "out/bench_parse_json_single".into(),
+            },
             ..Default::default()
         },
     );
