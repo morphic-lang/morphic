@@ -276,6 +276,7 @@ fn bench_sample(
                             progress: ProgressMode::Hidden,
                             pass_options: PassOptions {
                                 defunc_mode,
+                                rc_mode: options.rc_mode,
                                 ..Default::default()
                             },
                         },
