@@ -45,6 +45,8 @@ mod closure_specialize;
 
 mod lower_closures;
 
+mod remove_unit;
+
 mod typecheck_first_order;
 
 mod split_custom_types;
@@ -322,11 +324,13 @@ fn compile_to_first_order_ast(
 
     typecheck_first_order::typecheck(&first_order);
 
+    let first_order_cleaned = remove_unit::remove_unit(&first_order);
+
     if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.sml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::first_order::write_sml_program(&mut out_file, &first_order)
+        pretty_print::first_order::write_sml_program(&mut out_file, &first_order_cleaned)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
@@ -334,11 +338,13 @@ fn compile_to_first_order_ast(
         let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.ml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::first_order::write_ocaml_program(&mut out_file, &first_order)
+        pretty_print::first_order::write_ocaml_program(&mut out_file, &first_order_cleaned)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    Ok(first_order)
+    typecheck_first_order::typecheck(&first_order_cleaned);
+
+    Ok(first_order_cleaned)
 }
 
 fn compile_to_low_ast(

@@ -212,11 +212,11 @@ parse_int: Parse Int =
 
 parse_var: Parse VarId =
   Parse.skip_pre(Parse.byte_eq(ascii_question)) <|
-  Parse.map(parse_int, VarId)
+  Parse.map(parse_int, \x -> VarId(x))
 
 parse_head: Parse HeadId =
   Parse.skip_pre(Parse.byte_eq(ascii_excalam)) <|
-  Parse.map(parse_int, HeadId)
+  Parse.map(parse_int, \x -> HeadId(x))
 
 parse_expr: Parse Expr =
   Parse.lazy() <| \() ->

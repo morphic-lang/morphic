@@ -417,7 +417,9 @@ impl<'a, 'b> Context<'a, 'b> {
                         self.write("| ")?;
                     }
 
+                    self.write("(")?;
                     let num_locals = self.write_pattern(pattern)?;
+                    self.write(")")?;
 
                     self.add_indent();
                     self.add_locals(num_locals);
@@ -583,6 +585,10 @@ impl<'a, 'b> Context<'a, 'b> {
         def: &TypeDef,
         is_first: bool,
     ) -> io::Result<()> {
+        if def.variants.len() == 0 {
+            return Ok(());
+        }
+
         if is_first {
             match self.variant {
                 MlVariant::OCAML => self.write("type ")?,
