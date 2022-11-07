@@ -6,8 +6,11 @@ import Core
 pub repeat(count: Int, body: () -> a): Option a =
   if count < 1 {
     None
-  } else if count = 1 {
-    Some(body())
   } else {
-    body() then repeat(count - 1, body)
+    let result = body() in
+    if count = 1 {
+      Some(result)
+    } else {
+      repeat(count - 1, body)
+    }
   }
