@@ -18,9 +18,6 @@ use crate::util::inequality_graph::{ExternalVarId, Infimum, UpperBound};
 pub enum StackField {
     Field(usize),
     Variant(first_ord::VariantId),
-    // Including 'CustomScc' in stack paths doesn't actually achieve much for RC elision, but it's
-    // convenient for compatibility with the path format used for alias analysis.
-    CustomScc(flat::CustomTypeSccId, first_ord::CustomTypeId),
     Custom(first_ord::CustomTypeId),
 }
 
@@ -159,7 +156,7 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: flat::CustomTypes,
+    pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
     pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,

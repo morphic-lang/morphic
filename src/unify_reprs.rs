@@ -17,8 +17,6 @@ use crate::util::graph::{
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
-use crate::util::progress_logger::ProgressLogger;
-use crate::util::progress_logger::ProgressSession;
 
 fn add_type_deps(type_: &anon::Type, deps: &mut BTreeSet<first_ord::CustomTypeId>) {
     match type_ {
@@ -1504,9 +1502,7 @@ fn func_dependency_graph(program: &rc::Program) -> Graph<rc::CustomFuncId> {
     }
 }
 
-pub fn unify_reprs(program: rc::Program, progress: impl ProgressLogger) -> unif::Program {
-    let mut progress = progress.start_session(Some(program.funcs.len()));
-
+pub fn unify_reprs(program: rc::Program) -> unif::Program {
     let typedefs = parameterize_typedefs(&program.custom_types);
 
     let sccs = acyclic_and_cyclic_sccs(&func_dependency_graph(&program));
@@ -1518,17 +1514,11 @@ pub fn unify_reprs(program: rc::Program, progress: impl ProgressLogger) -> unif:
             Scc::Cyclic(funcs) => unify_func_scc(&typedefs, &program.funcs, &funcs_annot, funcs),
         };
 
-        let scc_len = scc_annot.len();
-
         for (func_id, func_annot) in scc_annot {
             debug_assert!(funcs_annot[func_id].is_none());
             funcs_annot[func_id] = Some(func_annot);
         }
-
-        progress.update(scc_len);
     }
-
-    progress.finish();
 
     unif::Program {
         mod_symbols: program.mod_symbols,

@@ -2,7 +2,6 @@ use im_rc::{OrdMap, OrdSet, Vector};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::alias_spec_flag::lookup_concrete_cond;
-use crate::cli;
 use crate::data::alias_annot_ast as alias;
 use crate::data::alias_specialized_ast as spec;
 use crate::data::anon_sum_ast as anon;
@@ -19,7 +18,6 @@ use crate::util::id_vec::IdVec;
 use crate::util::im_rc_ext::VectorExtensions;
 use crate::util::inequality_graph as ineq;
 use crate::util::local_context::LocalContext;
-use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum OccurKind {
@@ -101,7 +99,7 @@ struct MarkOccurLocalInfo<'a> {
 type MarkOccurContext<'a> = LocalContext<flat::LocalId, MarkOccurLocalInfo<'a>>;
 
 fn mark_occur(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     local_info: &MarkOccurLocalInfo,
     fate: &fate::Fate,
     ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
@@ -175,7 +173,7 @@ fn mark_occur(
 }
 
 fn mark_occur_mut<'a>(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     locals: &MarkOccurContext<'a>,
     occur_fates: &IdVec<fate::OccurId, fate::Fate>,
     ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
@@ -255,21 +253,17 @@ fn mark_tentative_prologue_drops(
 }
 
 fn mutations_from_aliases(
-    typedefs: &flat::CustomTypes,
     version_aliases: &BTreeMap<alias::AliasCondition, spec::ConcreteAlias>,
     aliases: &alias::LocalAliases,
 ) -> BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>> {
     let mut result = BTreeMap::new();
     for ((other, other_path), cond) in &aliases.aliases {
-        for other_stack_path in
-            stack_path::split_stack_heap_3(typedefs, other_path.clone()).stack_paths()
-        {
-            if lookup_concrete_cond(version_aliases, cond) {
-                result
-                    .entry(*other)
-                    .or_insert_with(BTreeSet::new)
-                    .insert(other_stack_path.clone());
-            }
+        let (other_stack_path, _) = stack_path::split_stack_heap(other_path.clone());
+        if lookup_concrete_cond(version_aliases, cond) {
+            result
+                .entry(*other)
+                .or_insert_with(BTreeSet::new)
+                .insert(other_stack_path.clone());
         }
     }
     result
@@ -396,17 +390,13 @@ fn mark_expr_occurs<'a>(
                                     lookup_concrete_cond(&this_version.aliases, symbolic_cond);
 
                                 if concretely_aliased {
-                                    for other_stack_path in stack_path::split_stack_heap_3(
-                                        &orig.custom_types,
-                                        other_field_path.clone(),
-                                    )
-                                    .stack_paths()
-                                    {
-                                        to_be_mutated
-                                            .entry(*other_local)
-                                            .or_insert_with(BTreeSet::new)
-                                            .insert(other_stack_path);
-                                    }
+                                    let (other_stack_path, _) =
+                                        stack_path::split_stack_heap(other_field_path.clone());
+
+                                    to_be_mutated
+                                        .entry(*other_local)
+                                        .or_insert_with(BTreeSet::new)
+                                        .insert(other_stack_path);
                                 }
                             }
                         }
@@ -586,8 +576,7 @@ fn mark_expr_occurs<'a>(
             array,
             index,
         )) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *index, &to_be_mutated);
             mark_tentative_prologue_drops(
@@ -603,8 +592,7 @@ fn mark_expr_occurs<'a>(
         }
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_item_type, array_aliases, array, item)) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
             mark_tentative_prologue_drops(
@@ -616,8 +604,7 @@ fn mark_expr_occurs<'a>(
         }
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_item_type, array_aliases, array)) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_tentative_prologue_drops(
                 future_uses,
@@ -633,11 +620,7 @@ fn mark_expr_occurs<'a>(
             hole_array,
             item,
         )) => {
-            let to_be_mutated = mutations_from_aliases(
-                &orig.custom_types,
-                &this_version.aliases,
-                hole_array_aliases,
-            );
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, hole_array_aliases);
             mark_with_extra_owned(
                 locals,
                 occur_kinds,
@@ -660,8 +643,7 @@ fn mark_expr_occurs<'a>(
             array,
             capacity,
         )) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_with_extra_owned(
                 locals,
@@ -801,7 +783,7 @@ fn add_move(
 }
 
 fn get_missing_drops(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     moves_for_local: Option<&OrdSet<mode::StackPath>>,
     type_: &anon::Type,
 ) -> BTreeSet<mode::StackPath> {
@@ -818,7 +800,7 @@ fn get_missing_drops(
 }
 
 fn repair_expr_drops<'a>(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     num_locals: usize,
     occur_kinds: &IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
     drop_prologues: &mut IdVec<fate::ExprId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
@@ -1082,7 +1064,7 @@ struct MarkedDrops {
 }
 
 fn repair_func_drops(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     func_def: &spec::FuncDef,
     marked_occurs: MarkedOccurs,
 ) -> MarkedDrops {
@@ -1481,7 +1463,7 @@ struct SolverSccSigs<'a> {
 }
 
 fn instantiate_sig_type(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     constraints: &mut ineq::ConstraintGraph<mode::Mode>,
     extern_vars: &mut IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
     type_: &anon::Type,
@@ -1496,7 +1478,7 @@ fn instantiate_sig_type(
 }
 
 fn instantiate_type(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     constraints: &mut ineq::ConstraintGraph<mode::Mode>,
     type_: &anon::Type,
 ) -> SolverValModes {
@@ -1571,8 +1553,7 @@ fn annot_drops(
 
 // TODO: This type signature *really* needs to not be like this
 fn annot_expr<'a>(
-    elision_mode: cli::RcMode,
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     known_annots: &IdVec<
         first_ord::CustomFuncId,
         IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
@@ -1604,75 +1585,71 @@ fn annot_expr<'a>(
         let occur_kinds = &marked_drops.occur_kinds[occur.0];
 
         for (path, src_mode_var) in &binding.val_modes.path_modes {
-            let truncation = stack_path::split_stack_heap_3(typedefs, path.clone());
+            let (stack, heap) = stack_path::split_stack_heap(path.clone());
 
-            for stack in truncation.clone().stack_paths() {
-                let (dest_mode, dest_mode_var) = match &occur_kinds[&stack] {
-                    OccurKind::Unused => {
-                        // TODO: When we monomorphize, `dest_mode_var` should always be `Borrowed`. Is
-                        // there some way to add an assertion for this invariant?
-                        //
-                        // TODO [critical]: It may actually be possible to break this.  We should
-                        // definintely implement the assertion defined above, and try hard to either
-                        // rigorously prove that it will always succeed, or find a counterexample that
-                        // causes it to fail.
-                        let dest_mode_var = constraints.new_var();
-                        (SolverPathOccurMode::Unused, dest_mode_var)
-                    }
-                    OccurKind::Final => (SolverPathOccurMode::Final, *src_mode_var),
-                    OccurKind::Intermediate => {
-                        let occur_fate = &occur_fates[occur.0].fates[path];
-
-                        let escapes_to_used_ret_path = occur_fate
-                            .ret_destinations
-                            .iter()
-                            .any(|ret_path| ret_fates[ret_path] == spec::RetFate::MaybeUsed);
-
-                        let path_move_horizon = &binding.move_horizon.path_move_horizons[&stack];
-                        let path_access_horizon =
-                            &occur_fates[occur.0].fates[path].last_internal_use;
-
-                        let borrow_would_outlive_src = escapes_to_used_ret_path
-                            || path_move_horizon.can_occur_before(path_access_horizon);
-
-                        // This is where the magic happens.
-                        //
-                        // The entire horizon-based borrow checking system exists to support this
-                        // conditional right here.  When an occurrence of a variable path will not be
-                        // accessed beyond the end of its source's lifetime, we allow the occurrence to
-                        // have mode `Borrowed` even if the source has mode `Owned` (although the
-                        // destination may still end up having the mode `Owned` if something else about
-                        // the way it's used later forces it to be owned, such as unifying with an
-                        // unconditionally owned variable).  On the other hand, when an occurrence of a
-                        // variable may outlive its source, the destination needs to have the same mode
-                        // as the source (which may still end up being `Borrowed` if the source is
-                        // itself borrowed from another variable).
-                        let dest_mode_var =
-                            if elision_mode == cli::RcMode::Trivial || borrow_would_outlive_src {
-                                *src_mode_var
-                            } else {
-                                let var = constraints.new_var();
-                                constraints.require_lte(*src_mode_var, var);
-                                var
-                            };
-
-                        (
-                            SolverPathOccurMode::Intermediate {
-                                src: *src_mode_var,
-                                dest: dest_mode_var,
-                            },
-                            dest_mode_var,
-                        )
-                    }
-                };
-
-                if !matches!(&truncation, stack_path::PathTruncation::Heap(_)) {
-                    let existing = occur_modes.insert(stack, dest_mode);
-                    debug_assert!(existing.is_none());
+            let (dest_mode, dest_mode_var) = match &occur_kinds[&stack] {
+                OccurKind::Unused => {
+                    // TODO: When we monomorphize, `dest_mode_var` should always be `Borrowed`. Is
+                    // there some way to add an assertion for this invariant?
+                    //
+                    // TODO [critical]: It may actually be possible to break this.  We should
+                    // definintely implement the assertion defined above, and try hard to either
+                    // rigorously prove that it will always succeed, or find a counterexample that
+                    // causes it to fail.
+                    let dest_mode_var = constraints.new_var();
+                    (SolverPathOccurMode::Unused, dest_mode_var)
                 }
+                OccurKind::Final => (SolverPathOccurMode::Final, *src_mode_var),
+                OccurKind::Intermediate => {
+                    let occur_fate = &occur_fates[occur.0].fates[path];
 
-                occur_val_modes.insert(path.clone(), dest_mode_var);
+                    let escapes_to_used_ret_path = occur_fate
+                        .ret_destinations
+                        .iter()
+                        .any(|ret_path| ret_fates[ret_path] == spec::RetFate::MaybeUsed);
+
+                    let path_move_horizon = &binding.move_horizon.path_move_horizons[&stack];
+                    let path_access_horizon = &occur_fates[occur.0].fates[path].last_internal_use;
+
+                    let borrow_would_outlive_src = escapes_to_used_ret_path
+                        || path_move_horizon.can_occur_before(path_access_horizon);
+
+                    // This is where the magic happens.
+                    //
+                    // The entire horizon-based borrow checking system exists to support this
+                    // conditional right here.  When an occurrence of a variable path will not be
+                    // accessed beyond the end of its source's lifetime, we allow the occurrence to
+                    // have mode `Borrowed` even if the source has mode `Owned` (although the
+                    // destination may still end up having the mode `Owned` if something else about
+                    // the way it's used later forces it to be owned, such as unifying with an
+                    // unconditionally owned variable).  On the other hand, when an occurrence of a
+                    // variable may outlive its source, the destination needs to have the same mode
+                    // as the source (which may still end up being `Borrowed` if the source is
+                    // itself borrowed from another variable).
+                    let dest_mode_var = if borrow_would_outlive_src {
+                        *src_mode_var
+                    } else {
+                        let var = constraints.new_var();
+                        constraints.require_lte(*src_mode_var, var);
+                        var
+                    };
+
+                    (
+                        SolverPathOccurMode::Intermediate {
+                            src: *src_mode_var,
+                            dest: dest_mode_var,
+                        },
+                        dest_mode_var,
+                    )
+                }
+            };
+
+            if heap.0.is_empty() {
+                let existing = occur_modes.insert(stack, dest_mode);
+                debug_assert!(existing.is_none());
             }
+
+            occur_val_modes.insert(path.clone(), dest_mode_var);
         }
 
         debug_assert!(solver_annots.occur_modes[occur.0].is_none());
@@ -1734,7 +1711,6 @@ fn annot_expr<'a>(
 
             for (block_id, _cond, body, _final_ctx) in cases {
                 let body_modes = annot_expr(
-                    elision_mode,
                     typedefs,
                     known_annots,
                     occur_fates,
@@ -1767,7 +1743,6 @@ fn annot_expr<'a>(
                 debug_assert_eq!(binding_horizons.len(), bindings.len());
                 for ((type_, rhs), move_horizon) in bindings.iter().zip(binding_horizons.iter()) {
                     let binding_modes = annot_expr(
-                        elision_mode,
                         typedefs,
                         known_annots,
                         occur_fates,
@@ -1926,15 +1901,12 @@ fn annot_expr<'a>(
 
             let content_modes = annot_occur(constraints, locals, solver_annots, *content);
 
-            let scc_id = typedefs.types[custom_id].scc;
             for (content_path, content_mode) in content_modes.path_modes {
-                let (_, in_custom, alias::SubPath(sub_path)) =
-                    field_path::split_at_fold(scc_id, *custom_id, content_path);
+                let (_, alias::SubPath(sub_path)) =
+                    field_path::split_at_fold(*custom_id, content_path);
 
                 constraints.require_eq(
-                    result_modes.path_modes[&sub_path
-                        .add_front(alias::Field::Custom(in_custom))
-                        .add_front(alias::Field::CustomScc(scc_id, *custom_id))],
+                    result_modes.path_modes[&sub_path.add_front(alias::Field::Custom(*custom_id))],
                     content_mode,
                 );
             }
@@ -1942,22 +1914,18 @@ fn annot_expr<'a>(
         }
 
         fate::ExprKind::UnwrapCustom(custom_id, wrapped) => {
-            let result_modes =
-                instantiate_type(typedefs, constraints, &typedefs.types[custom_id].content);
+            let result_modes = instantiate_type(typedefs, constraints, &typedefs[custom_id]);
 
             let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
 
-            let scc_id = typedefs.types[custom_id].scc;
             for (content_path, content_mode) in &result_modes.path_modes {
-                let (_, in_custom, alias::SubPath(sub_path)) =
-                    field_path::split_at_fold(scc_id, *custom_id, content_path.clone());
+                let (_, alias::SubPath(sub_path)) =
+                    field_path::split_at_fold(*custom_id, content_path.clone());
 
                 constraints.require_eq(
                     *content_mode,
-                    wrapped_modes.path_modes[&sub_path
-                        .clone()
-                        .add_front(alias::Field::Custom(in_custom))
-                        .add_front(alias::Field::CustomScc(scc_id, *custom_id))],
+                    wrapped_modes.path_modes
+                        [&sub_path.clone().add_front(alias::Field::Custom(*custom_id))],
                 );
             }
             result_modes
@@ -2250,7 +2218,6 @@ fn extract_occur_modes(
 }
 
 fn annot_scc(
-    elision_mode: cli::RcMode,
     orig: &spec::Program,
     func_annots: &mut IdVec<
         first_ord::CustomFuncId,
@@ -2335,7 +2302,6 @@ fn annot_scc(
             };
 
             let ret_val_modes = annot_expr(
-                elision_mode,
                 &orig.custom_types,
                 func_annots,
                 &func_def.occur_fates,
@@ -2426,13 +2392,7 @@ fn annot_scc(
     }
 }
 
-pub fn annot_modes(
-    program: spec::Program,
-    elision_mode: cli::RcMode,
-    progress: impl ProgressLogger,
-) -> mode::Program {
-    let mut progress = progress.start_session(Some(program.funcs.len()));
-
+pub fn annot_modes(program: spec::Program) -> mode::Program {
     let sccs = find_sccs(&program.funcs);
 
     let mut func_annots = program
@@ -2440,11 +2400,8 @@ pub fn annot_modes(
         .map(|_, func_def| func_def.versions.map(|_, _| None));
 
     for scc in sccs {
-        annot_scc(elision_mode, &program, &mut func_annots, &scc);
-        progress.update(scc.len());
+        annot_scc(&program, &mut func_annots, &scc);
     }
-
-    progress.finish();
 
     mode::Program {
         mod_symbols: program.mod_symbols,

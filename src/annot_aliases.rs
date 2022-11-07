@@ -6,16 +6,14 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::field_path::{
-    get_fold_points_in, get_names_in, get_sub_names_in, group_unfolded_names_by_folded_form,
-    split_at_all_fold_points, split_at_fold, split_fold_at_fold, translate_callee_cond,
-    translate_callee_cond_disj, FoldPoint,
+    get_fold_points_in, get_names_in, get_names_in_excluding, group_unfolded_names_by_folded_form,
+    split_at_fold, translate_callee_cond, translate_callee_cond_disj,
 };
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::util::disjunction::Disj;
 use crate::util::graph::{self, Graph};
-use crate::util::im_rc_ext::VectorExtensions;
+use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
-use crate::util::progress_logger::ProgressLogger;
 
 impl Signature for annot::FuncDef {
     type Sig = annot::AliasSig;
@@ -25,7 +23,7 @@ impl Signature for annot::FuncDef {
     }
 }
 
-pub fn annot_aliases(program: flat::Program, progress: impl ProgressLogger) -> annot::Program {
+pub fn annot_aliases(program: flat::Program) -> annot::Program {
     let dep_graph = func_dependency_graph(&program);
 
     let sccs = graph::acyclic_and_cyclic_sccs(&dep_graph);
@@ -34,7 +32,6 @@ pub fn annot_aliases(program: flat::Program, progress: impl ProgressLogger) -> a
         program.funcs.len(),
         |sig_assumptions, func| annot_func(&program, sig_assumptions, &program.funcs[func]),
         &sccs,
-        progress,
     );
 
     annot::Program {
@@ -285,7 +282,10 @@ mod val_info {
 
 use val_info::ValInfo;
 
-fn empty_info(typedefs: &flat::CustomTypes, type_: &anon::Type) -> ValInfo {
+fn empty_info(
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &anon::Type,
+) -> ValInfo {
     let mut result = ValInfo::new();
 
     for (path, _) in get_names_in(typedefs, type_) {
@@ -1109,20 +1109,16 @@ fn annot_expr(
         flat::Expr::WrapCustom(custom_id, content) => {
             let mut expr_info = empty_info(&orig.custom_types, &anon::Type::Custom(*custom_id));
 
-            let custom_scc = orig.custom_types.types[custom_id].scc;
-            let content_type = &orig.custom_types.types[custom_id].content;
-
             let content_info = &ctx[content];
 
-            debug_assert_eq!(&content_info.type_, content_type);
+            debug_assert_eq!(&content_info.type_, &orig.custom_types[custom_id]);
 
-            for (content_path, _) in get_names_in(&orig.custom_types, content_type) {
-                let (fold_point, in_custom, normalized) =
-                    split_at_fold(custom_scc, *custom_id, content_path.clone());
+            for (content_path, _) in get_names_in(&orig.custom_types, &orig.custom_types[custom_id])
+            {
+                let (fold_point, normalized) = split_at_fold(*custom_id, content_path.clone());
 
                 let mut wrapped_path = normalized.0.clone();
-                wrapped_path.push_front(annot::Field::Custom(in_custom));
-                wrapped_path.push_front(annot::Field::CustomScc(custom_scc, *custom_id));
+                wrapped_path.push_front(annot::Field::Custom(*custom_id));
 
                 // Wire up directly
                 expr_info.add_edge_to_local(
@@ -1134,14 +1130,12 @@ fn annot_expr(
                 for ((other, other_path), cond) in &content_info.aliases[&content_path].aliases {
                     if other == content {
                         // Wire up transitive self edges (tricky)
-                        let (other_fold_point, other_in_custom, other_normalized) =
-                            split_at_fold(custom_scc, *custom_id, other_path.clone());
+                        let (other_fold_point, other_normalized) =
+                            split_at_fold(*custom_id, other_path.clone());
 
                         if other_fold_point == fold_point {
                             let mut other_wrapped = other_normalized.0;
-                            other_wrapped.push_front(annot::Field::Custom(other_in_custom));
-                            other_wrapped
-                                .push_front(annot::Field::CustomScc(custom_scc, *custom_id));
+                            other_wrapped.push_front(annot::Field::Custom(*custom_id));
 
                             expr_info.add_self_edge(
                                 wrapped_path.clone(),
@@ -1149,33 +1143,20 @@ fn annot_expr(
                                 cond.clone(),
                             );
                         } else {
-                            // TODO: Are we absolutely certain that adding a cross-edge is
-                            // *all* we need to do in this case?  Is it ever necessary to
-                            // also add a normal edge here?
+                            // TODO: Are we absolutely certain that adding a cross-edge is *all* we
+                            // need to do in this case?  Is it ever necessary to also add a normal
+                            // edge here?
 
                             // "Cross-edge" between folded copies
                             expr_info.add_folded_alias(
-                                &vector![annot::Field::CustomScc(custom_scc, *custom_id)],
-                                NormPair::new(
-                                    annot::SubPath(
-                                        normalized
-                                            .0
-                                            .clone()
-                                            .add_front(annot::Field::Custom(in_custom)),
-                                    ),
-                                    annot::SubPath(
-                                        other_normalized
-                                            .0
-                                            .clone()
-                                            .add_front(annot::Field::Custom(other_in_custom)),
-                                    ),
-                                ),
+                                &vector![annot::Field::Custom(*custom_id)],
+                                NormPair::new(normalized.clone(), other_normalized.clone()),
                                 cond.clone(),
                             );
                         }
                     }
 
-                    // Write up transitive external edges
+                    // Wire up transitive external edges
                     expr_info.add_edge_to_local(
                         wrapped_path.clone(),
                         (*other, other_path.clone()),
@@ -1184,25 +1165,17 @@ fn annot_expr(
                 }
             }
 
-            for (content_fold_point, _) in get_fold_points_in(&orig.custom_types, content_type) {
-                let wrapped_path =
-                    split_fold_at_fold(custom_scc, *custom_id, content_fold_point.clone())
-                        .add_front(annot::Field::CustomScc(custom_scc, *custom_id));
+            for (content_fold_point, _) in
+                get_fold_points_in(&orig.custom_types, &orig.custom_types[custom_id])
+            {
+                let (_, normalized) = split_at_fold(*custom_id, content_fold_point.clone());
 
-                'copy_folded: for (pair, cond) in
+                let mut wrapped_path = normalized.0.clone();
+                wrapped_path.push_front(annot::Field::Custom(*custom_id));
+
+                for (pair, cond) in
                     &content_info.folded_aliases[&content_fold_point].inter_elem_aliases
                 {
-                    for pair_path in [pair.fst(), pair.snd()] {
-                        if pair_path.0.iter().any(|field| matches!(field, annot::Field::CustomScc(scc, _) if *scc == custom_scc)) {
-                                    // This sub-path doesn't exist in the corresponding fold point
-                                    // in the wrapped type, so we can't copy it over directly.
-                                    //
-                                    // TODO: Do we need to add an SCC-level cross-edge here?
-                                    // (probably yes!)
-                                    continue 'copy_folded;
-                                }
-                    }
-
                     expr_info.add_folded_alias(&wrapped_path, pair.clone(), cond.clone());
                 }
             }
@@ -1211,22 +1184,18 @@ fn annot_expr(
         }
 
         flat::Expr::UnwrapCustom(custom_id, wrapped) => {
-            let custom_scc = orig.custom_types.types[custom_id].scc;
-            let content_type = &orig.custom_types.types[custom_id].content;
-
-            let mut expr_info = empty_info(&orig.custom_types, content_type);
+            let mut expr_info = empty_info(&orig.custom_types, &orig.custom_types[custom_id]);
 
             let wrapped_info = &ctx[wrapped];
 
-            for (content_path, _) in get_names_in(&orig.custom_types, content_type) {
+            for (content_path, _) in get_names_in(&orig.custom_types, &orig.custom_types[custom_id])
+            {
                 // This "fold_point" is a path prefix within the *content*, not the wrapped value.
                 // As such, it does not begin with a leading `Custom(custom_id)` field.
-                let (fold_point, in_custom, wrapped_subpath) =
-                    split_at_fold(custom_scc, *custom_id, content_path.clone());
+                let (fold_point, wrapped_subpath) = split_at_fold(*custom_id, content_path.clone());
 
                 let mut wrapped_path = wrapped_subpath.0.clone();
-                wrapped_path.push_front(annot::Field::Custom(in_custom));
-                wrapped_path.push_front(annot::Field::CustomScc(custom_scc, *custom_id));
+                wrapped_path.push_front(annot::Field::Custom(*custom_id));
 
                 // Wire up directly
                 expr_info.add_edge_to_local(
@@ -1237,35 +1206,23 @@ fn annot_expr(
 
                 for ((other, other_path), cond) in &wrapped_info.aliases[&wrapped_path].aliases {
                     if other == wrapped {
+                        debug_assert_eq!(&other_path[0], &annot::Field::Custom(*custom_id));
+
+                        let other_content_subpath = other_path.skip(1);
+
+                        let mut other_content_path = fold_point.clone();
+                        other_content_path.append(other_content_subpath);
+
                         debug_assert_eq!(
-                            &other_path[0],
-                            &annot::Field::CustomScc(custom_scc, *custom_id),
+                            split_at_fold(*custom_id, content_path.clone()).0,
+                            split_at_fold(*custom_id, other_content_path.clone()).0
                         );
 
-                        debug_assert!(matches!(&other_path[1], annot::Field::Custom(_)));
-                        if other_path[1] == annot::Field::Custom(*custom_id) {
-                            let other_inner_subpath = other_path.skip(1);
-
-                            let other_content_path = if fold_point.is_empty() {
-                                debug_assert_eq!(in_custom, *custom_id);
-                                other_inner_subpath.skip(1)
-                            } else {
-                                let mut other_content_path = fold_point.clone();
-                                other_content_path.append(other_inner_subpath);
-                                other_content_path
-                            };
-
-                            debug_assert_eq!(
-                                split_at_fold(custom_scc, *custom_id, content_path.clone()).0,
-                                split_at_fold(custom_scc, *custom_id, other_content_path.clone()).0,
-                            );
-
-                            expr_info.add_self_edge(
-                                content_path.clone(),
-                                other_content_path.clone(),
-                                cond.clone(),
-                            );
-                        }
+                        expr_info.add_self_edge(
+                            content_path.clone(),
+                            other_content_path,
+                            cond.clone(),
+                        );
                     }
 
                     expr_info.add_edge_to_local(
@@ -1277,63 +1234,34 @@ fn annot_expr(
             }
 
             // Copy all internal fold points
-            for (content_fold_point, _) in get_fold_points_in(&orig.custom_types, content_type) {
-                let wrapped_path =
-                    split_fold_at_fold(custom_scc, *custom_id, content_fold_point.clone())
-                        .add_front(annot::Field::CustomScc(custom_scc, *custom_id));
+            for (content_path, _) in
+                get_fold_points_in(&orig.custom_types, &orig.custom_types[custom_id])
+            {
+                let (_, wrapped_subpath) = split_at_fold(*custom_id, content_path.clone());
+
+                let mut wrapped_path = wrapped_subpath.0;
+                wrapped_path.push_front(annot::Field::Custom(*custom_id));
 
                 expr_info.set_folded_aliases(
-                    content_fold_point.clone(),
+                    content_path,
                     wrapped_info.folded_aliases[&wrapped_path].clone(),
                 );
             }
 
             // Unfurl folded edges
+            let fold_groups = group_unfolded_names_by_folded_form(&orig.custom_types, *custom_id);
+            for (pair, cond) in &wrapped_info.folded_aliases
+                [&vector![annot::Field::Custom(*custom_id)]]
+                .inter_elem_aliases
             {
-                let fold_groups =
-                    group_unfolded_names_by_folded_form(&orig.custom_types, *custom_id);
-
-                let mut content_fold_points = BTreeMap::<_, BTreeMap<_, _>>::new();
-                for (_, content_paths) in &fold_groups {
-                    for content_path in content_paths {
-                        content_fold_points
-                            .entry(content_path)
-                            .or_insert_with(|| split_at_all_fold_points(content_path));
-                    }
-                }
-
-                for (pair, cond) in &wrapped_info.folded_aliases
-                    [&vector![annot::Field::CustomScc(custom_scc, *custom_id)]]
-                    .inter_elem_aliases
-                {
-                    for content_path_1 in &fold_groups[pair.fst()] {
-                        for content_path_2 in &fold_groups[pair.snd()] {
-                            if content_path_1 != content_path_2 {
-                                expr_info.add_self_edge(
-                                    content_path_1.clone(),
-                                    content_path_2.clone(),
-                                    cond.clone(),
-                                );
-
-                                // We need to fill in cross-edges between sub-paths which
-                                // are not expressible in the wrapped type because they
-                                // recursively mention the SCC.
-                                let fold_points_1 = &content_fold_points[content_path_1];
-                                let fold_points_2 = &content_fold_points[content_path_2];
-                                for (fold_point, content_sub_path_1) in fold_points_1 {
-                                    if let Some(content_sub_path_2) = fold_points_2.get(fold_point)
-                                    {
-                                        expr_info.add_folded_alias(
-                                            fold_point,
-                                            NormPair::new(
-                                                content_sub_path_1.clone(),
-                                                content_sub_path_2.clone(),
-                                            ),
-                                            cond.clone(),
-                                        );
-                                    }
-                                }
-                            }
+                for content_path1 in &fold_groups[pair.fst()] {
+                    for content_path2 in &fold_groups[pair.snd()] {
+                        if content_path1 != content_path2 {
+                            expr_info.add_self_edge(
+                                content_path1.clone(),
+                                content_path2.clone(),
+                                cond.clone(),
+                            );
                         }
                     }
                 }
@@ -1657,40 +1585,33 @@ fn annot_expr(
     }
 }
 
-fn group_by_item_type<'a>(
-    paths: impl Iterator<Item = (annot::FieldPath, &'a anon::Type)>,
+fn get_aliasable_name_groups_in_excluding(
+    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    type_: &anon::Type,
+    exclude: BTreeSet<first_ord::CustomTypeId>,
 ) -> Vec<Vec<annot::FieldPath>> {
     let mut paths_by_type = BTreeMap::<&anon::Type, Vec<annot::FieldPath>>::new();
-    for (path, type_) in paths {
-        match type_ {
-            anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => {
-                paths_by_type.entry(item_type).or_default().push(path)
-            }
+
+    for (path, type_) in get_names_in_excluding(type_defs, type_, exclude) {
+        let item_type = match type_ {
+            anon::Type::Array(item_type) | anon::Type::HoleArray(item_type) => item_type,
             _ => unreachable!(),
-        }
+        };
+
+        paths_by_type.entry(item_type).or_default().push(path);
     }
-    paths_by_type.into_iter().map(|(_, paths)| paths).collect()
+
+    paths_by_type
+        .into_iter()
+        .map(|(_item_type, paths)| paths)
+        .collect()
 }
 
 fn get_aliasable_name_groups_in(
-    typedefs: &flat::CustomTypes,
+    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &anon::Type,
 ) -> Vec<Vec<annot::FieldPath>> {
-    group_by_item_type(get_names_in(typedefs, type_).into_iter())
-}
-
-fn get_aliasable_name_groups_in_fold_point(
-    typedefs: &flat::CustomTypes,
-    fold_point: &FoldPoint<'_>,
-) -> Vec<Vec<annot::SubPath>> {
-    group_by_item_type(
-        get_sub_names_in(typedefs, fold_point)
-            .into_iter()
-            .map(|(path, type_)| (path.0, type_)),
-    )
-    .into_iter()
-    .map(|paths| paths.into_iter().map(annot::SubPath).collect())
-    .collect()
+    get_aliasable_name_groups_in_excluding(type_defs, type_, BTreeSet::new())
 }
 
 fn annot_func(
@@ -1728,17 +1649,31 @@ fn annot_func(
 
     let arg_folded_aliases = get_fold_points_in(&orig.custom_types, &func_def.arg_type)
         .into_iter()
-        .map(|(fold_point, fold_point_info)| {
+        .map(|(fold_point, folded_type)| {
+            let exclude = fold_point
+                .iter()
+                .filter_map(|field| {
+                    if let &annot::Field::Custom(custom_id) = field {
+                        Some(custom_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+
             let mut folded_aliases = OrdMap::new();
             for paths in
-                get_aliasable_name_groups_in_fold_point(&orig.custom_types, &fold_point_info)
+                get_aliasable_name_groups_in_excluding(&orig.custom_types, folded_type, exclude)
             {
                 for (i, path1) in paths.iter().enumerate() {
                     // Folded edges are symmetric, so we only need to insert each edge in one
                     // direction.  This means it's enough to wire each sub-path up to all the
                     // sub-paths appearing after it in the list (including itself).
                     for path2 in &paths[i..] {
-                        let pair = NormPair::new(path1.clone(), path2.clone());
+                        let pair = NormPair::new(
+                            annot::SubPath(path1.clone()),
+                            annot::SubPath(path2.clone()),
+                        );
 
                         folded_aliases.insert(
                             pair.clone(),

@@ -18,9 +18,6 @@ pub enum Field {
     Field(usize),
     Variant(first_ord::VariantId),
     Boxed,
-    // Second field is the "entry point"
-    CustomScc(flat::CustomTypeSccId, first_ord::CustomTypeId),
-    // 'Custom' should always be paired with a preceding 'CustomScc' field which matches its SCC.
     Custom(first_ord::CustomTypeId),
     ArrayMembers,
 }
@@ -33,9 +30,6 @@ impl fmt::Debug for Field {
             Field::Variant(variant_id) => write!(f, "Variant({:?})", variant_id),
             Field::Boxed => write!(f, "Boxed"),
             Field::Custom(custom_id) => write!(f, "Custom({:?})", custom_id),
-            Field::CustomScc(scc_id, custom_id) => {
-                write!(f, "CustomScc({:?}, {:?})", scc_id, custom_id)
-            }
             Field::ArrayMembers => write!(f, "ArrayMembers"),
         }
     }
@@ -203,7 +197,7 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: flat::CustomTypes,
+    pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
     pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,

@@ -19,7 +19,6 @@ use crate::util::inequality_graph as ineq;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::local_context::LocalContext;
 use crate::util::norm_pair::NormPair;
-use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
 id_type!(ModeSpecFuncId);
 
@@ -434,7 +433,6 @@ impl RcOpPlan {
                 *curr = match field {
                     mode::StackField::Field(_) => RcOpPlan::OnTupleFields(BTreeMap::new()),
                     mode::StackField::Variant(_) => RcOpPlan::OnVariantCases(BTreeMap::new()),
-                    mode::StackField::CustomScc(_, _) => RcOpPlan::NoOp, // next field will be 'Custom'
                     mode::StackField::Custom(custom_id) => {
                         RcOpPlan::OnCustom(*custom_id, Box::new(RcOpPlan::NoOp))
                     }
@@ -448,19 +446,12 @@ impl RcOpPlan {
                 (RcOpPlan::OnVariantCases(sub_plans), mode::StackField::Variant(variant_id)) => {
                     sub_plans.entry(*variant_id).or_insert(RcOpPlan::NoOp)
                 }
-                (RcOpPlan::OnCustom(_, sub_plan), mode::StackField::Custom(_)) => {
-                    // if custom_id != field_custom_id {
-                    //     // If this is a path to a different custom type in this SCC than the custom
-                    //     // type that's stored directly on the stack, then we don't need to do
-                    //     // anything, because it's impossible for two custom types in the same SCC to
-                    //     // appear nested inside each other on the stack without any indirection.
-                    //     return;
-                    // }
+                (
+                    RcOpPlan::OnCustom(custom_id, sub_plan),
+                    mode::StackField::Custom(field_custom_id),
+                ) => {
+                    debug_assert_eq!(custom_id, field_custom_id);
                     &mut **sub_plan
-                }
-                (curr, mode::StackField::CustomScc(_, _)) => {
-                    // next field will be 'Custom'
-                    curr
                 }
                 _ => unreachable!(),
             };
@@ -471,7 +462,7 @@ impl RcOpPlan {
 }
 
 fn build_plan(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     rc_op: rc::RcOp,
     root: rc::LocalId,
     root_type: &anon::Type,
@@ -588,8 +579,7 @@ fn build_plan(
         RcOpPlan::OnCustom(custom_id, sub_plan) => {
             debug_assert_eq!(root_type, &anon::Type::Custom(*custom_id));
 
-            let content_type = &typedefs.types[custom_id].content;
-            let scc_id = typedefs.types[custom_id].scc;
+            let content_type = &typedefs[custom_id];
 
             let content_id = builder.add_binding(
                 content_type.clone(),
@@ -601,9 +591,7 @@ fn build_plan(
                 content_id,
                 content_type,
                 sub_plan,
-                prefix
-                    .add_back(alias::Field::CustomScc(scc_id, *custom_id))
-                    .add_back(alias::Field::Custom(*custom_id)),
+                prefix.add_back(alias::Field::Custom(*custom_id)),
                 local_statuses,
                 builder,
             );
@@ -612,7 +600,7 @@ fn build_plan(
 }
 
 fn build_rc_ops(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     rc_op: rc::RcOp,
     local: rc::LocalId,
     local_type: &anon::Type,
@@ -637,7 +625,7 @@ fn build_rc_ops(
 }
 
 fn build_releases(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     locals: &LocalContext<flat::LocalId, LocalInfo>,
     mutation_ctx: &mutation::ContextSnapshot,
     releases: &Vec<(flat::LocalId, ReleasePaths)>,
@@ -658,7 +646,7 @@ fn build_releases(
 }
 
 fn build_expr_kind<'a>(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     ops: &ConcreteRcOps<rc::CustomFuncId>,
     locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
     mutation_ctx: &mutation::ContextSnapshot,
@@ -961,7 +949,7 @@ fn build_expr_kind<'a>(
 }
 
 fn build_expr<'a>(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     ops: &ConcreteRcOps<rc::CustomFuncId>,
     locals: &mut LocalContext<flat::LocalId, LocalInfo<'a>>,
     expr: &'a fate::Expr,
@@ -990,7 +978,7 @@ fn build_expr<'a>(
 }
 
 fn build_func(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     func_def: &mode::FuncDef,
     ops: &ConcreteRcOps<rc::CustomFuncId>,
 ) -> rc::FuncDef {
@@ -1054,9 +1042,7 @@ fn build_func(
     }
 }
 
-pub fn rc_specialize(program: mode::Program, progress: impl ProgressLogger) -> rc::Program {
-    let progress = progress.start_session(None);
-
+pub fn rc_specialize(program: mode::Program) -> rc::Program {
     let (specializations, main_spec) =
         specialize_modes(&program.funcs, program.main, program.main_version);
 
@@ -1068,14 +1054,9 @@ pub fn rc_specialize(program: mode::Program, progress: impl ProgressLogger) -> r
     let rc_funcs =
         concrete_ops.map(|_, ops| build_func(&program.custom_types, &program.funcs[ops.func], ops));
 
-    progress.finish();
-
     rc::Program {
         mod_symbols: program.mod_symbols,
-        custom_types: program
-            .custom_types
-            .types
-            .into_mapped(|_, type_def| type_def.content),
+        custom_types: program.custom_types,
         custom_type_symbols: program.custom_type_symbols,
         funcs: rc_funcs,
         func_symbols: rc_func_symbols,

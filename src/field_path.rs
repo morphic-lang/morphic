@@ -1,32 +1,32 @@
-use im_rc::OrdSet;
 use im_rc::{OrdMap, Vector};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::alias_annot_ast as annot;
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::util::disjunction::Disj;
+use crate::util::id_vec::IdVec;
 use crate::util::im_rc_ext::VectorExtensions;
 
 // Computes the fields in `type_` at which there is a name
 //
 // Currently, a 'name' means a field containing a heap structure participating in mutation
 // optimization (which includes arrays and hole arrays, but excludes boxes).
-fn get_names_in_excluding<'a>(
-    type_defs: &'a flat::CustomTypes,
+pub fn get_names_in_excluding<'a>(
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
-    exclude: &OrdSet<flat::CustomTypeSccId>,
+    mut exclude: BTreeSet<first_ord::CustomTypeId>,
 ) -> Vec<(annot::FieldPath, &'a anon::Type)> {
     let mut names = Vec::new();
-    add_names_from_type(type_defs, &mut names, exclude, type_, Vector::new());
+    add_names_from_type(type_defs, &mut names, &mut exclude, type_, Vector::new());
     return names;
 
     // Recursively appends paths to names in `type_` to `names`
     fn add_names_from_type<'a>(
-        type_defs: &'a flat::CustomTypes,
+        type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
         names: &mut Vec<(annot::FieldPath, &'a anon::Type)>,
-        typedefs_on_path: &OrdSet<flat::CustomTypeSccId>,
+        typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
         type_: &'a anon::Type,
         prefix: annot::FieldPath,
     ) {
@@ -76,38 +76,21 @@ fn get_names_in_excluding<'a>(
                 );
             }
             anon::Type::Custom(id) => {
-                let scc_id = type_defs.types[id].scc;
-                if !typedefs_on_path.contains(&scc_id) {
-                    let mut sub_typedefs_on_path = typedefs_on_path.clone();
-                    sub_typedefs_on_path.insert(scc_id);
-                    for scc_type in &type_defs.sccs[scc_id] {
-                        add_names_from_type(
-                            type_defs,
-                            names,
-                            &sub_typedefs_on_path,
-                            &type_defs.types[scc_type].content,
-                            prefix
-                                .clone()
-                                .add_back(annot::Field::CustomScc(scc_id, *id))
-                                .add_back(annot::Field::Custom(*scc_type)),
-                        );
-                    }
+                if !typedefs_on_path.contains(id) {
+                    typedefs_on_path.insert(*id);
+                    add_names_from_type(
+                        type_defs,
+                        names,
+                        typedefs_on_path,
+                        &type_defs[id],
+                        prefix.add_back(annot::Field::Custom(*id)),
+                    );
+                    // Remove if we added it
+                    typedefs_on_path.remove(id);
                 }
             }
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum FoldPointKind<'a> {
-    ArrayItems(&'a anon::Type),
-    CustomScc(flat::CustomTypeSccId),
-}
-
-#[derive(Clone, Debug)]
-pub struct FoldPoint<'a> {
-    pub exclude: OrdSet<flat::CustomTypeSccId>,
-    pub kind: FoldPointKind<'a>,
 }
 
 // TODO: We currently introduce fold points even when their associated set of sub-paths is empty.
@@ -117,17 +100,23 @@ pub struct FoldPoint<'a> {
 // This is fine from a correctness standpoint, but it incurs a performance cost, and may be
 // confusing during debugging.
 pub fn get_fold_points_in<'a>(
-    type_defs: &'a flat::CustomTypes,
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
-) -> Vec<(annot::FieldPath, FoldPoint<'a>)> {
+) -> Vec<(annot::FieldPath, &'a anon::Type)> {
     let mut points = Vec::new();
-    add_points_from_type(type_defs, &mut points, &OrdSet::new(), type_, Vector::new());
+    add_points_from_type(
+        type_defs,
+        &mut points,
+        &mut BTreeSet::new(),
+        type_,
+        Vector::new(),
+    );
     return points;
 
     fn add_points_from_type<'a>(
-        type_defs: &'a flat::CustomTypes,
-        points: &mut Vec<(annot::FieldPath, FoldPoint<'a>)>,
-        typedefs_on_path: &OrdSet<flat::CustomTypeSccId>,
+        type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
+        points: &mut Vec<(annot::FieldPath, &'a anon::Type)>,
+        typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
         type_: &'a anon::Type,
         prefix: annot::FieldPath,
     ) {
@@ -138,13 +127,7 @@ pub fn get_fold_points_in<'a>(
                 new_prefix.push_back(annot::Field::ArrayMembers);
 
                 // The array's elements are a fold point
-                points.push((
-                    new_prefix.clone(),
-                    FoldPoint {
-                        exclude: typedefs_on_path.clone(),
-                        kind: FoldPointKind::ArrayItems(item_type),
-                    },
-                ));
+                points.push((new_prefix.clone(), item_type));
 
                 add_points_from_type(type_defs, points, typedefs_on_path, item_type, new_prefix);
             }
@@ -178,32 +161,25 @@ pub fn get_fold_points_in<'a>(
                 prefix.add_back(annot::Field::Boxed),
             ),
             anon::Type::Custom(id) => {
-                let scc_id = type_defs.types[id].scc;
-                if !typedefs_on_path.contains(&scc_id) {
-                    let mut sub_typedefs_on_path = typedefs_on_path.clone();
-                    sub_typedefs_on_path.insert(scc_id);
+                if !typedefs_on_path.contains(id) {
+                    typedefs_on_path.insert(*id);
 
                     let mut new_prefix = prefix.clone();
-                    new_prefix.push_back(annot::Field::CustomScc(scc_id, *id));
+                    new_prefix.push_back(annot::Field::Custom(*id));
 
-                    // This SCC induces a fold point
-                    points.push((
-                        new_prefix.clone(),
-                        FoldPoint {
-                            exclude: sub_typedefs_on_path.clone(),
-                            kind: FoldPointKind::CustomScc(scc_id),
-                        },
-                    ));
+                    // This is a fold point
+                    points.push((new_prefix.clone(), &type_defs[id]));
 
-                    for scc_type in &type_defs.sccs[scc_id] {
-                        add_points_from_type(
-                            type_defs,
-                            points,
-                            &sub_typedefs_on_path,
-                            &type_defs.types[scc_type].content,
-                            new_prefix.clone().add_back(annot::Field::Custom(*scc_type)),
-                        );
-                    }
+                    add_points_from_type(
+                        type_defs,
+                        points,
+                        typedefs_on_path,
+                        &type_defs[id],
+                        new_prefix,
+                    );
+
+                    // Remove if we added it
+                    typedefs_on_path.remove(id);
                 }
             }
         }
@@ -212,44 +188,10 @@ pub fn get_fold_points_in<'a>(
 
 /// See `get_names_in_excluding`.
 pub fn get_names_in<'a>(
-    type_defs: &'a flat::CustomTypes,
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
 ) -> Vec<(annot::FieldPath, &'a anon::Type)> {
-    get_names_in_excluding(type_defs, type_, &OrdSet::new())
-}
-
-pub fn get_sub_names_in<'a>(
-    type_defs: &'a flat::CustomTypes,
-    fold_point: &FoldPoint<'a>,
-) -> Vec<(annot::SubPath, &'a anon::Type)> {
-    match &fold_point.kind {
-        FoldPointKind::ArrayItems(item_type) => {
-            get_names_in_excluding(type_defs, item_type, &fold_point.exclude)
-                .into_iter()
-                .map(|(path, type_)| (annot::SubPath(path), type_))
-                .collect()
-        }
-        FoldPointKind::CustomScc(scc_id) => {
-            let mut sub_names = Vec::new();
-            for scc_type in &type_defs.sccs[*scc_id] {
-                sub_names.extend(
-                    get_names_in_excluding(
-                        type_defs,
-                        &type_defs.types[scc_type].content,
-                        &fold_point.exclude,
-                    )
-                    .into_iter()
-                    .map(|(path, type_)| {
-                        (
-                            annot::SubPath(path.add_front(annot::Field::Custom(*scc_type))),
-                            type_,
-                        )
-                    }),
-                );
-            }
-            sub_names
-        }
-    }
+    get_names_in_excluding(type_defs, type_, BTreeSet::new())
 }
 
 // Compute the fields in `type_` at which there is a heap reference participating in RC elision.
@@ -262,19 +204,19 @@ pub fn get_sub_names_in<'a>(
 // references inside other heap structures (which are tracked for the purpose of determining when
 // it's safe for an item access to be borrowed rather than owned).
 pub fn get_refs_in_excluding<'a>(
-    type_defs: &'a flat::CustomTypes,
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
-    exclude: &OrdSet<flat::CustomTypeSccId>,
+    mut exclude: BTreeSet<first_ord::CustomTypeId>,
 ) -> Vec<(annot::FieldPath, &'a anon::Type)> {
     let mut refs = Vec::new();
-    add_refs_from_type(type_defs, &mut refs, exclude, type_, Vector::new());
+    add_refs_from_type(type_defs, &mut refs, &mut exclude, type_, Vector::new());
     return refs;
 
     // Recursively appends paths to refs in `type_` to `refs`
     fn add_refs_from_type<'a>(
-        type_defs: &'a flat::CustomTypes,
+        type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
         refs: &mut Vec<(annot::FieldPath, &'a anon::Type)>,
-        typedefs_on_path: &OrdSet<flat::CustomTypeSccId>,
+        typedefs_on_path: &mut BTreeSet<first_ord::CustomTypeId>,
         type_: &'a anon::Type,
         prefix: annot::FieldPath,
     ) {
@@ -327,22 +269,17 @@ pub fn get_refs_in_excluding<'a>(
                 );
             }
             anon::Type::Custom(id) => {
-                let scc_id = type_defs.types[id].scc;
-                if !typedefs_on_path.contains(&scc_id) {
-                    let mut sub_typedefs_on_path = typedefs_on_path.clone();
-                    sub_typedefs_on_path.insert(scc_id);
-                    for scc_type in &type_defs.sccs[scc_id] {
-                        add_refs_from_type(
-                            type_defs,
-                            refs,
-                            &sub_typedefs_on_path,
-                            &type_defs.types[scc_type].content,
-                            prefix
-                                .clone()
-                                .add_back(annot::Field::CustomScc(scc_id, *id))
-                                .add_back(annot::Field::Custom(*scc_type)),
-                        );
-                    }
+                if !typedefs_on_path.contains(id) {
+                    typedefs_on_path.insert(*id);
+                    add_refs_from_type(
+                        type_defs,
+                        refs,
+                        typedefs_on_path,
+                        &type_defs[id],
+                        prefix.add_back(annot::Field::Custom(*id)),
+                    );
+                    // Remove if we added it
+                    typedefs_on_path.remove(id);
                 }
             }
         }
@@ -351,83 +288,35 @@ pub fn get_refs_in_excluding<'a>(
 
 /// See `get_refs_in_excluding`.
 pub fn get_refs_in<'a>(
-    type_defs: &'a flat::CustomTypes,
+    type_defs: &'a IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &'a anon::Type,
 ) -> Vec<(annot::FieldPath, &'a anon::Type)> {
-    get_refs_in_excluding(type_defs, type_, &OrdSet::new())
+    get_refs_in_excluding(type_defs, type_, BTreeSet::new())
 }
 
 pub fn split_at_fold(
-    scc: flat::CustomTypeSccId,
-    custom: first_ord::CustomTypeId,
+    to_fold: first_ord::CustomTypeId,
     path: annot::FieldPath,
-) -> (annot::FieldPath, first_ord::CustomTypeId, annot::SubPath) {
-    match path
-        .iter()
-        .enumerate()
-        .find(|(_, field)| matches!(field, annot::Field::CustomScc(scc_id, _) if *scc_id == scc))
-    {
-        Some((split_point, _)) => {
+) -> (annot::FieldPath, annot::SubPath) {
+    match path.index_of(&annot::Field::Custom(to_fold)) {
+        Some(split_point) => {
             let (fold_point, sub_path) = path.split_at(split_point + 1);
-            if let Some(annot::Field::Custom(id)) = sub_path.get(0) {
-                (fold_point, *id, annot::SubPath(sub_path.skip(1)))
-            } else {
-                panic!(
-                    "Expected a Custom field after CustomScc field in {:?}",
-                    fold_point
-                );
-            }
+            (fold_point, annot::SubPath(sub_path))
         }
-        None => (Vector::new(), custom, annot::SubPath(path)),
+        None => (Vector::new(), annot::SubPath(path)),
     }
 }
 
-pub fn split_fold_at_fold(
-    scc: flat::CustomTypeSccId,
-    custom: first_ord::CustomTypeId,
-    path: annot::FieldPath,
-) -> annot::FieldPath {
-    match path
-        .iter()
-        .enumerate()
-        .find(|(_, field)| matches!(field, annot::Field::CustomScc(scc_id, _) if *scc_id == scc))
-    {
-        Some((split_point, _)) => path.split_at(split_point + 1).1,
-        None => path.add_front(annot::Field::Custom(custom)),
-    }
-}
-
-pub fn group_unfolded_names_by_folded_form<'a>(
-    type_defs: &'a flat::CustomTypes,
-    custom: first_ord::CustomTypeId,
+pub fn group_unfolded_names_by_folded_form(
+    type_defs: &IdVec<first_ord::CustomTypeId, anon::Type>,
+    custom_id: first_ord::CustomTypeId,
 ) -> BTreeMap<annot::SubPath, Vec<annot::FieldPath>> {
     let mut groups = BTreeMap::<_, Vec<_>>::new();
-    for (path, _) in get_names_in(type_defs, &type_defs.types[custom].content) {
-        let (_fold_point, in_custom, sub_path) =
-            split_at_fold(type_defs.types[custom].scc, custom, path.clone());
-        groups
-            .entry(annot::SubPath(
-                sub_path.0.add_front(annot::Field::Custom(in_custom)),
-            ))
-            .or_default()
-            .push(path.clone());
+    for (path, _) in get_names_in(type_defs, &type_defs[custom_id]) {
+        let (_fold_point, sub_path) = split_at_fold(custom_id, path.clone());
+        groups.entry(sub_path).or_default().push(path.clone());
     }
     groups
-}
-
-pub fn split_at_all_fold_points(
-    path: &annot::FieldPath,
-) -> BTreeMap<annot::FieldPath, annot::SubPath> {
-    path.iter()
-        .enumerate()
-        .filter_map(|(i, field)| match field {
-            annot::Field::CustomScc(_, _) | annot::Field::ArrayMembers => {
-                let (fold_point, sub_path) = path.clone().split_at(i + 1);
-                Some((fold_point, annot::SubPath(sub_path)))
-            }
-            _ => None,
-        })
-        .collect()
 }
 
 pub fn translate_callee_cond(
@@ -466,4 +355,131 @@ pub fn translate_callee_cond_disj(
 ) -> Disj<annot::AliasCondition> {
     callee_cond
         .flat_map(|cond| translate_callee_cond(arg_id, arg_aliases, arg_folded_aliases, cond))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use im_rc::vector;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn test_get_names_in() {
+        fn set<T: Ord>(v: impl IntoIterator<Item = T>) -> BTreeSet<T> {
+            use std::iter::FromIterator;
+            BTreeSet::from_iter(v)
+        }
+        let with_single_recursive_type =
+            IdVec::from_items(vec![anon::Type::Variants(IdVec::from_items(vec![
+                anon::Type::Tuple(vec![
+                    anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+                    anon::Type::Custom(first_ord::CustomTypeId(0)),
+                ]),
+                anon::Type::Num(first_ord::NumType::Byte),
+                anon::Type::HoleArray(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+                anon::Type::Tuple(vec![]),
+            ]))]);
+        let mapping: Vec<(
+            IdVec<first_ord::CustomTypeId, anon::Type>,
+            anon::Type,
+            BTreeSet<annot::FieldPath>,
+        )> = vec![
+            // Types without names:
+            (
+                IdVec::new(),
+                anon::Type::Tuple(vec![
+                    anon::Type::Num(first_ord::NumType::Byte),
+                    anon::Type::Num(first_ord::NumType::Float),
+                ]),
+                set(vec![]),
+            ),
+            (
+                IdVec::from_items(vec![anon::Type::Variants(IdVec::from_items(vec![
+                    anon::Type::Num(first_ord::NumType::Byte),
+                    anon::Type::Tuple(vec![]),
+                ]))]),
+                anon::Type::Tuple(vec![anon::Type::Custom(first_ord::CustomTypeId(0))]),
+                set(vec![]),
+            ),
+            // Types with names, no typedefs:
+            (
+                IdVec::new(),
+                anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+                set(vec![vector![]]),
+            ),
+            (
+                IdVec::new(),
+                anon::Type::Array(Box::new(anon::Type::Array(Box::new(anon::Type::Num(
+                    first_ord::NumType::Int,
+                ))))),
+                set(vec![vector![], vector![annot::Field::ArrayMembers]]),
+            ),
+            // Recursive types:
+            (
+                IdVec::new(),
+                anon::Type::Tuple(vec![
+                    anon::Type::Num(first_ord::NumType::Float),
+                    anon::Type::Array(Box::new(anon::Type::Tuple(vec![
+                        anon::Type::Array(Box::new(anon::Type::Bool)),
+                        anon::Type::Num(first_ord::NumType::Byte),
+                        anon::Type::HoleArray(Box::new(anon::Type::Bool)),
+                    ]))),
+                ]),
+                set(vec![
+                    vector![annot::Field::Field(1)],
+                    vector![
+                        annot::Field::Field(1),
+                        annot::Field::ArrayMembers,
+                        annot::Field::Field(0)
+                    ],
+                    vector![
+                        annot::Field::Field(1),
+                        annot::Field::ArrayMembers,
+                        annot::Field::Field(2)
+                    ],
+                ]),
+            ),
+            (
+                with_single_recursive_type.clone(),
+                anon::Type::Custom(first_ord::CustomTypeId(0)),
+                set(vec![
+                    vector![
+                        annot::Field::Custom(first_ord::CustomTypeId(0)),
+                        annot::Field::Variant(first_ord::VariantId(0)),
+                        annot::Field::Field(0)
+                    ],
+                    vector![
+                        annot::Field::Custom(first_ord::CustomTypeId(0)),
+                        annot::Field::Variant(first_ord::VariantId(2))
+                    ],
+                ]),
+            ),
+            (
+                with_single_recursive_type.clone(),
+                anon::Type::Array(Box::new(anon::Type::Custom(first_ord::CustomTypeId(0)))),
+                set(vec![
+                    vector![],
+                    vector![
+                        annot::Field::ArrayMembers,
+                        annot::Field::Custom(first_ord::CustomTypeId(0)),
+                        annot::Field::Variant(first_ord::VariantId(0)),
+                        annot::Field::Field(0)
+                    ],
+                    vector![
+                        annot::Field::ArrayMembers,
+                        annot::Field::Custom(first_ord::CustomTypeId(0)),
+                        annot::Field::Variant(first_ord::VariantId(2))
+                    ],
+                ]),
+            ),
+        ];
+        for (typedefs, type_, expected_names) in mapping {
+            assert_eq!(
+                set(get_names_in(&typedefs, &type_)
+                    .into_iter()
+                    .map(|(name, _type)| name)),
+                expected_names
+            );
+        }
+    }
 }

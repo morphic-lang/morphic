@@ -123,16 +123,13 @@ pub fn acyclic_and_cyclic_sccs<NodeId: Id + Eq>(graph: &Graph<NodeId>) -> Vec<Sc
     let sccs = strongly_connected(graph);
 
     sccs.into_iter()
-        .map(|mut scc| {
+        .map(|scc| {
             if scc.len() == 1 {
                 let singleton = &scc[0];
                 if !graph.edges_out[singleton].contains(singleton) {
                     return Scc::Acyclic(singleton.clone());
                 }
             }
-            // Reverse the SCC to get a more favorable ordering for fixed point iteration. This is
-            // purely a performance optimization, and has no bearing on correctness.
-            scc.reverse();
             Scc::Cyclic(scc)
         })
         .collect()

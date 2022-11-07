@@ -5,7 +5,6 @@ use crate::data::closure_specialized_ast as special;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::util::id_vec::IdVec;
-use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Request<T> {
@@ -558,12 +557,7 @@ impl<'a> Context<'a> {
     }
 }
 
-pub fn closure_specialize(
-    program: annot::Program,
-    progress: impl ProgressLogger,
-) -> special::Program {
-    let progress = progress.start_session(None);
-
+pub fn closure_specialize(program: annot::Program) -> special::Program {
     let mut ctx = Context::new(&program);
 
     let main_def = &program.vals[program.main];
@@ -632,8 +626,6 @@ pub fn closure_specialize(
     let lam_symbols = ctx
         .lams
         .map(|id, _| program.lam_symbols[lam_origin.get(&id).unwrap()].clone());
-
-    progress.finish();
 
     special::Program {
         mod_symbols: program.mod_symbols.clone(),

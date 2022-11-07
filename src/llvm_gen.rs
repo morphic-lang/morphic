@@ -7,6 +7,7 @@ use crate::builtins::prof_report::{
 use crate::builtins::rc::RcBoxBuiltin;
 use crate::builtins::tal::{self, Tal};
 use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
+use crate::cli;
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
@@ -16,8 +17,6 @@ use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
-use crate::util::progress_logger::{ProgressLogger, ProgressSession};
-use crate::{cli, progress_ui};
 use find_clang::find_default_clang;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -352,18 +351,11 @@ impl<'a> Instances<'a> {
         return new_builtin;
     }
 
-    fn define<'b>(
-        &self,
-        globals: &Globals<'a, 'b>,
-        rc_progress: impl ProgressLogger,
-        flat_progress: impl ProgressLogger,
-        persistent_progress: impl ProgressLogger,
-    ) {
+    fn define<'b>(&self, globals: &Globals<'a, 'b>) {
         let builder = globals.context.create_builder();
         let void_type = globals.context.void_type();
 
         // rcs
-        let mut rc_progress = rc_progress.start_session(Some(self.rcs.borrow().len()));
         for (i, (inner_type, rc_builtin)) in self.rcs.borrow().iter().enumerate() {
             let llvm_inner_type = get_llvm_type(globals, self, inner_type);
 
@@ -403,14 +395,9 @@ impl<'a> Instances<'a> {
                 &globals.tal,
                 Some(release_func),
             );
-
-            rc_progress.update(1);
         }
-        rc_progress.finish();
 
         // flat arrays
-        let mut flat_progress =
-            flat_progress.start_session(Some(self.flat_arrays.borrow().len() + 1));
         for (i, (inner_type, flat_array_builtin)) in self.flat_arrays.borrow().iter().enumerate() {
             let llvm_inner_type = get_llvm_type(globals, self, inner_type);
 
@@ -492,19 +479,12 @@ impl<'a> Instances<'a> {
                     Some(release_func),
                 );
             }
-
-            flat_progress.update(1);
         }
 
         self.flat_array_io
             .define(globals.context, globals.target, &globals.tal);
-        flat_progress.update(1);
-
-        flat_progress.finish();
 
         // persistent arrays
-        let mut persistent_progress =
-            persistent_progress.start_session(Some(self.persistent_arrays.borrow().len() + 1));
         for (i, (inner_type, persistent_array_builtin)) in
             self.persistent_arrays.borrow().iter().enumerate()
         {
@@ -588,15 +568,10 @@ impl<'a> Instances<'a> {
                     Some(release_func),
                 );
             }
-
-            persistent_progress.update(1);
         }
 
         self.persistent_array_io
             .define(globals.context, globals.target, &globals.tal);
-        persistent_progress.update(1);
-
-        persistent_progress.finish();
     }
 }
 
@@ -1893,18 +1868,18 @@ fn gen_function<'a, 'b>(
 }
 
 fn get_target_machine(
-    target: cli::LlvmConfig,
+    target: cli::TargetConfig,
     opt_level: OptimizationLevel,
 ) -> Result<TargetMachine> {
     Target::initialize_all(&InitializationConfig::default());
 
     let (target_triple, target_cpu, target_features) = match target {
-        cli::LlvmConfig::Native => (
+        cli::TargetConfig::Native => (
             TargetMachine::get_default_triple(),
             TargetMachine::get_host_cpu_name().to_string(),
             TargetMachine::get_host_cpu_features().to_string(),
         ),
-        cli::LlvmConfig::Wasm => (
+        cli::TargetConfig::Wasm => (
             TargetTriple::create("wasm32-unknown-unknown"),
             "".to_owned(),
             "".to_owned(),
@@ -2036,11 +2011,6 @@ fn gen_program<'a>(
     program: low::Program,
     target_machine: &TargetMachine,
     context: &'a Context,
-    func_progress: impl ProgressLogger,
-    rc_progress: impl ProgressLogger,
-    flat_progress: impl ProgressLogger,
-    persistent_progress: impl ProgressLogger,
-    type_progress: impl ProgressLogger,
 ) -> Module<'a> {
     let module = context.create_module("module");
     module.set_triple(&target_machine.get_triple());
@@ -2085,8 +2055,6 @@ fn gen_program<'a>(
         );
     }
 
-    let mut func_progress = func_progress.start_session(Some(program.funcs.len()));
-
     let funcs = program.funcs.map(|func_id, func_def| {
         let return_type = get_llvm_type(&globals, &instances, &func_def.ret_type);
         let arg_type = get_llvm_type(&globals, &instances, &func_def.arg_type);
@@ -2108,19 +2076,13 @@ fn gen_program<'a>(
             func_id,
             &program.funcs[func_id],
         );
-        func_progress.update(1);
     }
 
-    func_progress.finish();
+    instances.define(&globals);
 
-    instances.define(&globals, rc_progress, flat_progress, persistent_progress);
-
-    let mut type_progress = type_progress.start_session(Some(program.custom_types.len()));
     for (type_id, type_decls) in &globals.custom_types {
         type_decls.define(&globals, &instances, &program.custom_types[type_id]);
-        type_progress.update(1);
     }
-    type_progress.finish();
 
     let i32_type = context.i32_type();
     let unit_type = context.struct_type(&[], false);
@@ -2196,9 +2158,9 @@ fn check_valid_dir_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_cc(target: cli::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<()> {
+fn run_cc(target: cli::TargetConfig, obj_path: &Path, exe_path: &Path) -> Result<()> {
     match target {
-        cli::LlvmConfig::Native => {
+        cli::TargetConfig::Native => {
             check_valid_file_path(obj_path)?;
             check_valid_file_path(exe_path)?;
 
@@ -2225,7 +2187,7 @@ fn run_cc(target: cli::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
                 .status()
                 .map_err(Error::ClangFailed)?;
         }
-        cli::LlvmConfig::Wasm => {
+        cli::TargetConfig::Wasm => {
             // materialize files to link with
             let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
@@ -2302,24 +2264,14 @@ struct ArtifactPaths<'a> {
 
 fn compile_to_executable(
     program: low::Program,
-    target: cli::LlvmConfig,
+    target: cli::TargetConfig,
     opt_level: OptimizationLevel,
     artifact_paths: ArtifactPaths,
-    progress: progress_ui::ProgressMode,
 ) -> Result<()> {
     let target_machine = get_target_machine(target, opt_level)?;
     let context = Context::create();
 
-    let module = gen_program(
-        program,
-        &target_machine,
-        &context,
-        progress_ui::bar(progress, "gen_program: functions"),
-        progress_ui::bar(progress, "gen_program: rc boxes"),
-        progress_ui::bar(progress, "gen_program: flat arrays"),
-        progress_ui::bar(progress, "gen_program: persistent arrays"),
-        progress_ui::bar(progress, "gen_program: custom types"),
-    );
+    let module = gen_program(program, &target_machine, &context);
 
     // We output the ll file before verifying so that it can be inspected even if verification
     // fails.
@@ -2347,10 +2299,7 @@ fn compile_to_executable(
 
     let pass_manager = PassManager::create(());
     pass_manager_builder.populate_module_pass_manager(&pass_manager);
-
-    let opt_progress = progress_ui::bar(progress, "llvm opt").start_session(None);
     pass_manager.run_on(&module);
-    opt_progress.finish();
 
     if let Some(opt_ll_path) = artifact_paths.opt_ll {
         module
@@ -2362,8 +2311,6 @@ fn compile_to_executable(
     // it!
     verify_llvm(&module);
 
-    let codegen_progress = progress_ui::bar(progress, "llvm codegen").start_session(None);
-
     if let Some(asm_path) = artifact_paths.asm {
         target_machine
             .write_to_file(&module, FileType::Assembly, &asm_path)
@@ -2374,13 +2321,11 @@ fn compile_to_executable(
         .write_to_file(&module, FileType::Object, artifact_paths.obj)
         .map_err(Error::LlvmCompilationFailed)?;
 
-    codegen_progress.finish();
-
     run_cc(target, artifact_paths.obj, artifact_paths.exe)
 }
 
 pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>) -> Result<Child> {
-    let target = cli::LlvmConfig::Native;
+    let target = cli::TargetConfig::Native;
     let opt_level = cli::default_llvm_opt_level();
 
     let obj_path = tempfile::Builder::new()
@@ -2406,7 +2351,6 @@ pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>
             obj: &obj_path,
             exe: &output_path,
         },
-        progress_ui::ProgressMode::Hidden,
     )?;
 
     std::mem::drop(obj_path);
@@ -2415,16 +2359,10 @@ pub fn run(stdio: Stdio, program: low::Program, valgrind: Option<ValgrindConfig>
 }
 
 pub fn build(program: low::Program, config: &cli::BuildConfig) -> Result<()> {
-    let target = if let cli::TargetConfig::Llvm(target) = config.target {
-        target
-    } else {
-        unreachable!("not an llvm target")
-    };
-
     if let Some(artifact_dir) = &config.artifact_dir {
         compile_to_executable(
             program,
-            target,
+            config.target,
             config.llvm_opt_level,
             ArtifactPaths {
                 ll: Some(&artifact_dir.artifact_path("ll")),
@@ -2433,7 +2371,6 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) -> Result<()> {
                 obj: &artifact_dir.artifact_path("o"),
                 exe: &config.output_path,
             },
-            config.progress,
         )
     } else {
         let obj_path = tempfile::Builder::new()
@@ -2444,7 +2381,7 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) -> Result<()> {
 
         compile_to_executable(
             program,
-            target,
+            config.target,
             config.llvm_opt_level,
             ArtifactPaths {
                 ll: None,
@@ -2453,7 +2390,6 @@ pub fn build(program: low::Program, config: &cli::BuildConfig) -> Result<()> {
                 obj: &obj_path,
                 exe: &config.output_path,
             },
-            config.progress,
         )
     }
 }

@@ -3,7 +3,6 @@ use inkwell::OptimizationLevel;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::progress_ui::ProgressMode;
 use crate::pseudoprocess::{Stdio, ValgrindConfig};
 
 #[derive(Clone, Debug)]
@@ -32,21 +31,9 @@ pub struct RunConfig {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum LlvmConfig {
+pub enum TargetConfig {
     Native,
     Wasm,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum MlConfig {
-    Sml,
-    Ocaml,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum TargetConfig {
-    Llvm(LlvmConfig),
-    Ml(MlConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -58,23 +45,15 @@ pub enum SpecializationMode {
     Single,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RcMode {
-    Elide,
-    Trivial,
-}
-
 #[derive(Clone, Debug)]
 pub struct PassOptions {
     pub defunc_mode: SpecializationMode,
-    pub rc_mode: RcMode,
 }
 
 impl Default for PassOptions {
     fn default() -> Self {
         Self {
             defunc_mode: SpecializationMode::Specialize,
-            rc_mode: RcMode::Elide,
         }
     }
 }
@@ -89,7 +68,6 @@ pub struct BuildConfig {
 
     pub output_path: PathBuf,
     pub artifact_dir: Option<ArtifactDir>,
-    pub progress: ProgressMode,
 
     pub pass_options: PassOptions,
 }
@@ -178,16 +156,6 @@ impl Config {
                             .help("Compile to wasm instead of a native binary."),
                     )
                     .arg(
-                        Arg::with_name("sml")
-                            .long("sml")
-                            .help("Compile to SML instead of a native binary."),
-                    )
-                    .arg(
-                        Arg::with_name("ocaml")
-                            .long("ocaml")
-                            .help("Compile to OCaml instead of a native binary."),
-                    )
-                    .arg(
                         Arg::with_name("output-path")
                             .short("o")
                             .long("output-path")
@@ -217,21 +185,6 @@ impl Config {
                             .help("Set whether or not to specialize during defunctionalization")
                             .possible_values(&["specialize", "single"])
                             .default_value("specialize"),
-                    )
-                    .arg(
-                        Arg::with_name("rc-mode")
-                        .long("rc-mode")
-                        .help(
-                            "Set whether or not to elide reference counting operations. This is \
-                            mostly useful for working around compiler bugs."
-                        )
-                        .possible_values(&["elide", "trivial"])
-                        .default_value("elide"),
-                    )
-                    .arg(
-                        Arg::with_name("progress")
-                            .long("progress")
-                            .help("Set whether or not to show progress"),
                     ),
             )
             .get_matches();
@@ -265,13 +218,9 @@ impl Config {
             let src_path: PathBuf = matches.value_of_os("src-path").unwrap().to_owned().into();
 
             let target = if matches.is_present("wasm") {
-                TargetConfig::Llvm(LlvmConfig::Wasm)
-            } else if matches.is_present("sml") {
-                TargetConfig::Ml(MlConfig::Sml)
-            } else if matches.is_present("ocaml") {
-                TargetConfig::Ml(MlConfig::Ocaml)
+                TargetConfig::Wasm
             } else {
-                TargetConfig::Llvm(LlvmConfig::Native)
+                TargetConfig::Native
             };
 
             let llvm_opt_level = match matches.value_of("llvm-opt-level").unwrap() {
@@ -315,18 +264,6 @@ impl Config {
                 _ => unreachable!(),
             };
 
-            let rc_mode = match matches.value_of("rc-mode").unwrap() {
-                "elide" => RcMode::Elide,
-                "trivial" => RcMode::Trivial,
-                _ => unreachable!(),
-            };
-
-            let progress = if matches.is_present("progress") {
-                ProgressMode::Visible
-            } else {
-                ProgressMode::Hidden
-            };
-
             let build_config = BuildConfig {
                 src_path,
                 profile_syms,
@@ -334,11 +271,7 @@ impl Config {
                 llvm_opt_level,
                 output_path: output_path.into(),
                 artifact_dir,
-                progress,
-                pass_options: PassOptions {
-                    defunc_mode,
-                    rc_mode,
-                },
+                pass_options: PassOptions { defunc_mode },
             };
             return Self::BuildConfig(build_config);
         }

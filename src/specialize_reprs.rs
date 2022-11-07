@@ -5,8 +5,6 @@ use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
 use crate::util::id_vec::IdVec;
 use crate::util::instance_queue::InstanceQueue;
-use crate::util::progress_logger::ProgressLogger;
-use crate::util::progress_logger::ProgressSession;
 
 type ValInstances = InstanceQueue<
     (
@@ -299,12 +297,7 @@ fn resolve_expr(
     }
 }
 
-pub fn specialize_reprs(
-    program: constrain::Program,
-    progress: impl ProgressLogger,
-) -> special::Program {
-    let progress = progress.start_session(None);
-
+pub fn specialize_reprs(program: constrain::Program) -> special::Program {
     let mut func_insts = InstanceQueue::new();
     let mut type_insts = InstanceQueue::new();
 
@@ -361,8 +354,6 @@ pub fn specialize_reprs(
         assert_eq!(new_id, pushed_type_id);
         assert_eq!(new_id, pushed_symbols_id);
     }
-
-    progress.finish();
 
     special::Program {
         mod_symbols: program.mod_symbols.clone(),

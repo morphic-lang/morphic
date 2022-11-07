@@ -7,7 +7,6 @@ use crate::data::repr_specialized_ast as special;
 use crate::data::tail_rec_ast as tail;
 use crate::util::graph::{self, Graph};
 use crate::util::id_vec::IdVec;
-use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
 fn last_index<T>(slice: &[T]) -> Option<usize> {
     if slice.is_empty() {
@@ -259,9 +258,7 @@ fn trans_expr(
     }
 }
 
-pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) -> tail::Program {
-    let progress = progress.start_session(None);
-
+pub fn tail_call_elim(program: special::Program) -> tail::Program {
     let tail_call_deps = Graph {
         edges_out: program.funcs.map(|_, func| {
             let mut deps = BTreeSet::new();
@@ -538,8 +535,6 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
             new_funcs.push(main_wrapper)
         }
     };
-
-    progress.finish();
 
     tail::Program {
         mod_symbols: program.mod_symbols.clone(),

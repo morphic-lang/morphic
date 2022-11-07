@@ -10,7 +10,7 @@ use crate::field_path::{get_names_in, split_at_fold, translate_callee_cond_disj}
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::mutation_status::translate_callee_status_cond_disj;
 use crate::util::disjunction::Disj;
-use crate::util::progress_logger::ProgressLogger;
+use crate::util::id_vec::IdVec;
 
 impl Signature for annot::FuncDef {
     type Sig = annot::MutationSig;
@@ -20,12 +20,11 @@ impl Signature for annot::FuncDef {
     }
 }
 
-pub fn annot_mutation(program: alias::Program, progress: impl ProgressLogger) -> annot::Program {
+pub fn annot_mutation(program: alias::Program) -> annot::Program {
     let funcs = annot_all(
         program.funcs.len(),
         |sig_assumptions, func| annot_func(&program, sig_assumptions, &program.funcs[func]),
         &program.sccs,
-        progress,
     );
 
     annot::Program {
@@ -54,7 +53,7 @@ fn trivial_info() -> ExprInfo {
 }
 
 fn empty_statuses(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     type_: &anon::Type,
 ) -> OrdMap<alias::FieldPath, annot::LocalStatus> {
     get_names_in(typedefs, type_)
@@ -511,22 +510,16 @@ fn annot_expr(
         alias::Expr::WrapCustom(custom_id, content) => {
             let content_info = &ctx[content];
 
-            debug_assert_eq!(
-                &*content_info.type_,
-                &orig.custom_types.types[custom_id].content
-            );
+            debug_assert_eq!(&*content_info.type_, &orig.custom_types[custom_id]);
 
             let mut wrapped_statuses =
                 empty_statuses(&orig.custom_types, &anon::Type::Custom(*custom_id));
 
-            let scc_id = orig.custom_types.types[custom_id].scc;
             for (content_path, _) in get_names_in(&orig.custom_types, &content_info.type_) {
-                let (_, in_custom, sub_path) =
-                    split_at_fold(scc_id, *custom_id, content_path.clone());
+                let (_, sub_path) = split_at_fold(*custom_id, content_path.clone());
 
                 let mut wrapped_path = sub_path.0.clone();
-                wrapped_path.push_front(alias::Field::Custom(in_custom));
-                wrapped_path.push_front(alias::Field::CustomScc(scc_id, *custom_id));
+                wrapped_path.push_front(alias::Field::Custom(*custom_id));
 
                 wrapped_statuses[&wrapped_path]
                     .mutated_cond
@@ -547,17 +540,14 @@ fn annot_expr(
 
             debug_assert_eq!(&*wrapped_info.type_, &anon::Type::Custom(*custom_id));
 
-            let content_type = &orig.custom_types.types[custom_id].content;
-            let scc_id = orig.custom_types.types[custom_id].scc;
+            let content_type = &orig.custom_types[custom_id];
 
             let mut content_statuses = OrdMap::new();
             for (content_path, _) in get_names_in(&orig.custom_types, content_type) {
-                let (_, in_custom, sub_path) =
-                    split_at_fold(scc_id, *custom_id, content_path.clone());
+                let (_, sub_path) = split_at_fold(*custom_id, content_path.clone());
 
                 let mut wrapped_path = sub_path.0.clone();
-                wrapped_path.push_front(alias::Field::Custom(in_custom));
-                wrapped_path.push_front(alias::Field::CustomScc(scc_id, *custom_id));
+                wrapped_path.push_front(alias::Field::Custom(*custom_id));
 
                 content_statuses.insert(content_path, wrapped_info.statuses[&wrapped_path].clone());
             }

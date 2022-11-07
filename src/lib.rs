@@ -2,7 +2,6 @@
 
 pub mod cli;
 pub mod file_cache;
-pub mod progress_ui;
 pub mod pseudoprocess;
 
 #[macro_use]
@@ -91,7 +90,6 @@ mod llvm_gen;
 #[cfg(test)]
 mod test;
 
-use cli::PassOptions;
 use lalrpop_util::lalrpop_mod;
 use std::fs;
 use std::io;
@@ -99,7 +97,6 @@ use std::path::Path;
 
 #[derive(Debug)]
 enum ErrorKind {
-    ArtifactDirMissing,
     ResolveFailed(resolve::Error),
     PurityCheckFailed(check_purity::Error),
     TypeInferFailed(type_infer::Error),
@@ -133,9 +130,6 @@ impl Error {
     ) -> io::Result<()> {
         use ErrorKind::*;
         match &self.kind {
-            ArtifactDirMissing => {
-                writeln!(dest, "Compilation to ML requires an artifact directory")
-            }
             ResolveFailed(err) => err.report(dest, files),
             PurityCheckFailed(err) => err.report(dest, files),
             TypeInferFailed(err) => err.report(dest, files),
@@ -196,13 +190,12 @@ pub fn run(
     config: cli::RunConfig,
     files: &mut file_cache::FileCache,
 ) -> Result<pseudoprocess::Child, Error> {
-    let lowered = compile_to_low_ast(
+    let lowered = compile(
         &config.src_path,
         &[],
         None,
         files,
-        progress_ui::ProgressMode::Hidden,
-        &PassOptions::default(),
+        &cli::PassOptions::default(),
     )?;
 
     match config.mode {
@@ -214,45 +207,24 @@ pub fn run(
 }
 
 pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Result<(), Error> {
-    match config.target {
-        cli::TargetConfig::Llvm(_) => {
-            let lowered = compile_to_low_ast(
-                &config.src_path,
-                &config.profile_syms,
-                config.artifact_dir.as_ref(),
-                files,
-                config.progress,
-                &config.pass_options,
-            )?;
-            Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
-        }
-        cli::TargetConfig::Ml(_) => match config.artifact_dir {
-            None => Err(Error {
-                kind: ErrorKind::ArtifactDirMissing,
-            }),
-            Some(_) => {
-                compile_to_first_order_ast(
-                    &config.src_path,
-                    &config.profile_syms,
-                    config.artifact_dir.as_ref(),
-                    files,
-                    config.progress,
-                    &config.pass_options,
-                )?;
-                Ok(())
-            }
-        },
-    }
+    let lowered = compile(
+        &config.src_path,
+        &config.profile_syms,
+        config.artifact_dir.as_ref(),
+        files,
+        &config.pass_options,
+    )?;
+
+    Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
 }
 
-fn compile_to_first_order_ast(
+fn compile(
     src_path: &Path,
     profile_syms: &[cli::SymbolName],
     artifact_dir: Option<&cli::ArtifactDir>,
     files: &mut file_cache::FileCache,
-    progress: progress_ui::ProgressMode,
     pass_options: &cli::PassOptions,
-) -> Result<data::first_order_ast::Program, Error> {
+) -> Result<data::low_ast::Program, Error> {
     let resolved = resolve::resolve_program(files, src_path, profile_syms)
         .map_err(ErrorKind::ResolveFailed)?;
     // Check obvious errors and infer types
@@ -271,54 +243,22 @@ fn compile_to_first_order_ast(
         let mut out_file = fs::File::create(artifact_dir.artifact_path("typed.sml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::typed::write_sml_program(&mut out_file, &typed)
-            .map_err(ErrorKind::WriteIrFailed)?;
-    }
-
-    if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("typed.ml"))
-            .map_err(ErrorKind::WriteIrFailed)?;
-
-        pretty_print::typed::write_ocaml_program(&mut out_file, &typed)
+        pretty_print::typed::write_program(&mut out_file, &typed)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
     let mono = monomorphize::monomorphize(typed);
 
-    if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("mono.sml"))
-            .map_err(ErrorKind::WriteIrFailed)?;
-
-        pretty_print::mono::write_sml_program(&mut out_file, &mono)
-            .map_err(ErrorKind::WriteIrFailed)?;
-    }
-
-    if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("mono.ml"))
-            .map_err(ErrorKind::WriteIrFailed)?;
-
-        pretty_print::mono::write_ocaml_program(&mut out_file, &mono)
-            .map_err(ErrorKind::WriteIrFailed)?;
-    }
-
     let shielded = shield_functions::shield_functions(mono);
 
     let lifted = lambda_lift::lambda_lift(shielded);
 
-    let annot = annot_closures::annot_closures(
-        lifted,
-        pass_options.defunc_mode,
-        progress_ui::bar(progress, "annot_closures"),
-    );
+    let annot = annot_closures::annot_closures(lifted, pass_options.defunc_mode);
 
-    let special = closure_specialize::closure_specialize(
-        annot,
-        progress_ui::bar(progress, "closure_specialize"),
-    );
+    let special = closure_specialize::closure_specialize(annot);
     closure_specialize::check_patterns(&special);
 
-    let first_order =
-        lower_closures::lower_closures(special, progress_ui::bar(progress, "lower_closures"));
+    let first_order = lower_closures::lower_closures(special);
 
     typecheck_first_order::typecheck(&first_order);
 
@@ -326,78 +266,31 @@ fn compile_to_first_order_ast(
         let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.sml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::first_order::write_sml_program(&mut out_file, &first_order)
+        pretty_print::first_order::write_program(&mut out_file, &first_order)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.ml"))
-            .map_err(ErrorKind::WriteIrFailed)?;
+    let split = split_custom_types::split_custom_types(&first_order);
 
-        pretty_print::first_order::write_ocaml_program(&mut out_file, &first_order)
-            .map_err(ErrorKind::WriteIrFailed)?;
-    }
+    let flat = flatten::flatten(split);
 
-    Ok(first_order)
-}
+    let alias_annot = annot_aliases::annot_aliases(flat);
 
-fn compile_to_low_ast(
-    src_path: &Path,
-    profile_syms: &[cli::SymbolName],
-    artifact_dir: Option<&cli::ArtifactDir>,
-    files: &mut file_cache::FileCache,
-    progress: progress_ui::ProgressMode,
-    pass_options: &cli::PassOptions,
-) -> Result<data::low_ast::Program, Error> {
-    let first_order = compile_to_first_order_ast(
-        src_path,
-        profile_syms,
-        artifact_dir,
-        files,
-        progress,
-        pass_options,
-    )?;
+    let mut_annot = annot_mutation::annot_mutation(alias_annot);
 
-    let split = split_custom_types::split_custom_types(
-        &first_order,
-        progress_ui::bar(progress, "split_custom_types"),
-    );
+    let fate_annot = annot_fates::annot_fates(mut_annot);
 
-    let flat = flatten::flatten(split, progress_ui::bar(progress, "flatten"));
+    let alias_spec = specialize_aliases::specialize_aliases(fate_annot);
 
-    let alias_annot =
-        annot_aliases::annot_aliases(flat, progress_ui::bar(progress, "annot_aliases"));
+    let mode_annot = annot_modes::annot_modes(alias_spec);
 
-    let mut_annot =
-        annot_mutation::annot_mutation(alias_annot, progress_ui::bar(progress, "annot_mutation"));
+    let rc_spec = rc_specialize::rc_specialize(mode_annot);
 
-    let fate_annot = annot_fates::annot_fates(mut_annot, progress_ui::bar(progress, "annot_fates"));
+    let repr_unified = unify_reprs::unify_reprs(rc_spec);
 
-    let alias_spec = specialize_aliases::specialize_aliases(
-        fate_annot,
-        progress_ui::bar(progress, "specialize_aliases"),
-    );
+    let repr_constrained = constrain_reprs::constrain_reprs(repr_unified);
 
-    let mode_annot = annot_modes::annot_modes(
-        alias_spec,
-        pass_options.rc_mode,
-        progress_ui::bar(progress, "annot_modes"),
-    );
-
-    let rc_spec =
-        rc_specialize::rc_specialize(mode_annot, progress_ui::bar(progress, "rc_specialize"));
-
-    let repr_unified = unify_reprs::unify_reprs(rc_spec, progress_ui::bar(progress, "unify_reprs"));
-
-    let repr_constrained = constrain_reprs::constrain_reprs(
-        repr_unified,
-        progress_ui::bar(progress, "constrain_reprs"),
-    );
-
-    let repr_specialized = specialize_reprs::specialize_reprs(
-        repr_constrained,
-        progress_ui::bar(progress, "specialize_reprs"),
-    );
+    let repr_specialized = specialize_reprs::specialize_reprs(repr_constrained);
 
     if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("repr-spec-ir"))
@@ -407,15 +300,9 @@ fn compile_to_low_ast(
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    let tail_rec = tail_call_elim::tail_call_elim(
-        repr_specialized.clone(),
-        progress_ui::bar(progress, "tail_call_elim"),
-    );
+    let tail_rec = tail_call_elim::tail_call_elim(repr_specialized.clone());
 
-    let lowered = lower_structures::lower_structures(
-        tail_rec,
-        progress_ui::bar(progress, "lower_structures"),
-    );
+    let lowered = lower_structures::lower_structures(tail_rec);
 
     if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("low-ir"))

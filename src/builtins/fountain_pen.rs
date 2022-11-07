@@ -474,11 +474,9 @@ impl<'a, 'b> Scope<'a, 'b> {
         ty: BasicTypeEnum<'a>,
         tal: &Tal<'a>,
     ) -> BasicValueEnum<'a> {
-        let size = self.size(ty);
-
         let alloc_size_umul_result = self.call(
             tal.umul_with_overflow_i64,
-            &[num, self.int_cast(self.usize_t(), size)],
+            &[num, self.int_cast(self.usize_t(), self.size(ty))],
         );
 
         let is_overflow = self.field(alloc_size_umul_result, 1);

@@ -10,7 +10,6 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use crate::util::id_vec::IdVec;
-use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum LeafFuncCase {
@@ -1081,12 +1080,7 @@ impl<'a> Context<'a> {
     }
 }
 
-pub fn lower_closures(
-    program: special::Program,
-    progress: impl ProgressLogger,
-) -> first_ord::Program {
-    let mut progress = progress.start_session(Some(program.vals.len() + program.lams.len()));
-
+pub fn lower_closures(program: special::Program) -> first_ord::Program {
     let mapping = IdMapping {
         num_orig_custom_types: program.custom_types.len(),
         num_orig_globals: program.vals.len(),
@@ -1099,19 +1093,11 @@ pub fn lower_closures(
         .custom_types
         .map(|_, typedef| ctx.lower_custom_type(typedef));
 
-    let lowered_globals = program.vals.map(|_, val_def| {
-        let result = ctx.lower_global(val_def);
-        progress.update(1);
-        result
-    });
+    let lowered_globals = program.vals.map(|_, val_def| ctx.lower_global(val_def));
 
     let lowered_global_symbols = program.val_symbols.clone();
 
-    let lowered_lam_bodies = program.lams.map(|_, lam_def| {
-        let result = ctx.lower_lam_body(lam_def);
-        progress.update(1);
-        result
-    });
+    let lowered_lam_bodies = program.lams.map(|_, lam_def| ctx.lower_lam_body(lam_def));
 
     let lowered_lam_symbols = program.lam_symbols.clone();
 
@@ -1140,7 +1126,5 @@ pub fn lower_closures(
         profile_points: program.profile_points,
     };
 
-    let result = mapping.assemble_program(parts);
-    progress.finish();
-    result
+    mapping.assemble_program(parts)
 }

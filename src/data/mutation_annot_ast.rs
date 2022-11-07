@@ -183,7 +183,7 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: flat::CustomTypes,
+    pub custom_types: IdVec<first_ord::CustomTypeId, anon::Type>,
     pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,

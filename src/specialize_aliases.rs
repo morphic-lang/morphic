@@ -18,7 +18,6 @@ use crate::util::graph::Scc;
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
-use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 
 #[derive(Clone, Debug)]
 struct SccCallSite {
@@ -228,7 +227,7 @@ fn filter_internal_mutation_cond(
 // TODO: The algorithm here does not use type information to prune edges, so it may introduce
 // (harmless, but inefficient) spurious edges.  We should optimize this.
 fn relevant_alias_conds(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     arg_type: &anon::Type,
     sig: &mutation::MutationSig,
 ) -> BTreeSet<alias::AliasCondition> {
@@ -253,9 +252,16 @@ fn relevant_alias_conds(
     }
 
     for (fold_point, folded_type) in field_path::get_fold_points_in(typedefs, arg_type) {
-        let sub_paths = field_path::get_sub_names_in(typedefs, &folded_type);
+        let mut customs_on_path = BTreeSet::new();
+        for field in &fold_point {
+            if let alias::Field::Custom(custom_id) = field {
+                customs_on_path.insert(*custom_id);
+            }
+        }
+
+        let sub_paths = field_path::get_names_in_excluding(typedefs, folded_type, customs_on_path);
         for (sub_path, _) in &sub_paths {
-            let full_path = fold_point.clone() + sub_path.0.clone();
+            let full_path = fold_point.clone() + sub_path.clone();
             if matches!(
                 &sig.arg_mutation_conds[&alias::ArgName(full_path.clone())],
                 Disj::True
@@ -263,7 +269,10 @@ fn relevant_alias_conds(
                 for (other_sub_path, _) in &sub_paths {
                     relevant.insert(alias::AliasCondition::FoldedAliasInArg(
                         alias::ArgName(fold_point.clone()),
-                        NormPair::new(sub_path.clone(), other_sub_path.clone()),
+                        NormPair::new(
+                            alias::SubPath(sub_path.clone()),
+                            alias::SubPath(other_sub_path.clone()),
+                        ),
                     ));
                 }
             }
@@ -274,7 +283,7 @@ fn relevant_alias_conds(
 }
 
 fn callee_inst_for_call_site(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     caller_inst: &FuncInstance,
     caller_arg_local: flat::LocalId,
     callee_def: &fate::FuncDef,
@@ -316,9 +325,8 @@ fn callee_inst_for_call_site(
             // heap structure for the purposes of RC elision, because a release
             // operation on a heap structure counts as an access of that structure *and
             // all of its children* for the purposes of mutation optimization.
-            for path in stack_path::split_stack_heap_3(typedefs, ret_name.0.clone()).stack_paths() {
-                internally_mutated_ret_paths.insert(stack_path::to_field_path(&path));
-            }
+            let (path, _) = stack_path::split_stack_heap(ret_name.0.clone());
+            internally_mutated_ret_paths.insert(stack_path::to_field_path(&path));
         }
     }
 
@@ -364,7 +372,7 @@ fn callee_inst_for_call_site(
 }
 
 fn resolve_expr(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     funcs: &IdVec<first_ord::CustomFuncId, fate::FuncDef>,
     insts: &mut InstanceQueue,
     inst: &FuncInstance,
@@ -459,7 +467,7 @@ impl Signature for Option<FuncInstance> {
 // SCC might be invoked, which is similar to knowing all the contexts in which a block might be
 // jumped to in SSA.
 fn solve_scc_fixed_point(
-    typedefs: &flat::CustomTypes,
+    typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
     funcs: &IdVec<first_ord::CustomFuncId, fate::FuncDef>,
     entry_func: first_ord::CustomFuncId,
     entry_inst: &FuncInstance,
@@ -517,9 +525,7 @@ fn solve_scc_fixed_point(
     .collect()
 }
 
-pub fn specialize_aliases(program: fate::Program, progress: impl ProgressLogger) -> spec::Program {
-    let progress = progress.start_session(None);
-
+pub fn specialize_aliases(program: fate::Program) -> spec::Program {
     let (func_to_scc, sccs) = collect_sccs(&program.funcs, program.sccs);
 
     let mut insts = InstanceQueue::new(program.funcs.len());
@@ -626,8 +632,6 @@ pub fn specialize_aliases(program: fate::Program, progress: impl ProgressLogger)
     );
 
     debug_assert_eq!(orig_num_funcs, resolved_funcs.len());
-
-    progress.finish();
 
     spec::Program {
         mod_symbols: program.mod_symbols,

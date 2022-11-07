@@ -7,8 +7,6 @@ use crate::data::repr_unified_ast as unif;
 use crate::data::tail_rec_ast as tail;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
-use crate::util::progress_logger::ProgressLogger;
-use crate::util::progress_logger::ProgressSession;
 
 // we need to change branches to ifs
 // we need to unwrap array literals
@@ -519,23 +517,15 @@ fn lower_function(
     }
 }
 
-pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -> low::Program {
-    let mut progress = progress.start_session(Some(program.funcs.len()));
-
+pub fn lower_structures(program: tail::Program) -> low::Program {
     let typedefs = program.custom_types;
 
     let lowered_funcs = program
         .funcs
         .items
         .into_iter()
-        .map(|func| {
-            let lowered = lower_function(func, &typedefs);
-            progress.update(1);
-            lowered
-        })
+        .map(|func| lower_function(func, &typedefs))
         .collect();
-
-    progress.finish();
 
     low::Program {
         mod_symbols: program.mod_symbols.clone(),

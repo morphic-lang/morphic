@@ -15,8 +15,6 @@ use crate::util::graph::{self, Graph};
 use crate::util::id_gen::IdGen;
 use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
-use crate::util::progress_logger::ProgressLogger;
-use crate::util::progress_logger::ProgressSession;
 
 fn count_params(
     parameterized: &IdVec<mono::CustomTypeId, Option<annot::TypeDef>>,
@@ -2081,13 +2079,7 @@ fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
         .collect()
 }
 
-pub fn annot_closures(
-    program: lifted::Program,
-    mode: SpecializationMode,
-    progress: impl ProgressLogger,
-) -> annot::Program {
-    let mut progress = progress.start_session(Some(program.vals.len() + program.lams.len()));
-
+pub fn annot_closures(program: lifted::Program, mode: SpecializationMode) -> annot::Program {
     let typedefs = parameterize_typedefs(&program.custom_types);
 
     let mut annot_vals = IdVec::from_items(vec![None; program.vals.len()]);
@@ -2116,10 +2108,7 @@ pub fn annot_closures(
             &scc.vals,
             &scc.lams,
         );
-        progress.update(scc.vals.len() + scc.lams.len());
     }
-
-    progress.finish();
 
     annot::Program {
         mod_symbols: program.mod_symbols.clone(),
