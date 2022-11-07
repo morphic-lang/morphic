@@ -125,6 +125,23 @@ fn run_ghc_exe(
     .expect("Failed to read child performance report file")
 }
 
+const BINARY_SIZES_DIR: &str = "target/binary_sizes";
+
+fn write_binary_size(benchmark_name: &str, exe_path: impl AsRef<Path>) {
+    let size = exe_path
+        .as_ref()
+        .metadata()
+        .expect("Could not get metadata for binary")
+        .len();
+
+    std::fs::create_dir_all(BINARY_SIZES_DIR).expect("Could not create binary sizes directory");
+
+    let mut file = File::create(format!("{}/{}.txt", BINARY_SIZES_DIR, benchmark_name))
+        .expect("Could not create binary size file");
+
+    writeln!(file, "{}", size).expect("Could not write binary size to file");
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MlProfReport {
@@ -198,7 +215,7 @@ fn bench_sample(
     expected_stdout: &str,
     options: &SampleOptions,
 ) {
-    for ml_variant in [MlConfig::Sml] {
+    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
         bench_ml_sample(
             g,
             bench_name,
@@ -240,6 +257,7 @@ fn bench_sample(
                 if !binary_path.exists() {
                     continue;
                 }
+                write_binary_size(&variant_name, &binary_path);
                 Some(ExePath::Precompiled(binary_path.clone()))
             }
             NativeBinary::Skip => {
@@ -284,6 +302,8 @@ fn bench_sample(
                     )
                     .expect("Compilation failed");
 
+                    write_binary_size(&variant_name, &exe_path);
+
                     ExePath::Fresh(exe_path)
                 });
 
@@ -326,7 +346,8 @@ fn bench_ml_sample(
     };
 
     for ast in vec!["typed", "mono", "first_order"] {
-        g.bench_function(format!("{bench_name}_{ml_variant_str}_{ast}"), |b| {
+        let variant_name = format!("{bench_name}_{ml_variant_str}_{ast}");
+        g.bench_function(&variant_name, |b| {
             b.iter_custom(|iters| {
                 let artifacts = artifact_cache.get_or_insert_with(|| {
                     let temp_dir = tempfile::Builder::new()
@@ -367,11 +388,13 @@ fn bench_ml_sample(
                     (temp_dir, artifact_dir)
                 });
 
+                let output_path = artifacts.1.artifact_path(&format!("{ast}"));
+
                 match ml_variant {
                     cli::MlConfig::Sml => {
                         let mlton_output = process::Command::new("mlton")
                             .arg("-output")
-                            .arg(artifacts.1.artifact_path(&format!("{ast}")))
+                            .arg(&output_path)
                             .arg(artifacts.1.artifact_path(&format!("{ast}.sml")))
                             .output()
                             .expect("Compilation failed");
@@ -388,7 +411,7 @@ fn bench_ml_sample(
                             .arg("-O3")
                             .arg(artifacts.1.artifact_path(&format!("{ast}.ml")))
                             .arg("-o")
-                            .arg(artifacts.1.artifact_path(&format!("{ast}")))
+                            .arg(&output_path)
                             .output()
                             .expect("Compilation failed");
 
@@ -400,12 +423,10 @@ fn bench_ml_sample(
                     }
                 }
 
-                let report: Vec<MlProfReport> = run_exe(
-                    artifacts.1.artifact_path(&format!("{ast}")),
-                    iters,
-                    extra_stdin,
-                    expected_stdout,
-                );
+                write_binary_size(&variant_name, &output_path);
+
+                let report: Vec<MlProfReport> =
+                    run_exe(&output_path, iters, extra_stdin, expected_stdout);
 
                 assert_eq!(report.len(), 1);
 
