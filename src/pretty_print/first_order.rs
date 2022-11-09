@@ -711,18 +711,42 @@ impl<'a, 'b> Context<'a, 'b> {
             }
         }
 
-        let func_sccs = graph::strongly_connected(&Graph {
+        let func_graph = Graph {
             edges_out: prog.funcs.map(|_, func_def| {
                 let mut deps = BTreeSet::new();
                 add_func_deps(&mut deps, &func_def.body);
                 deps.into_iter().collect()
             }),
-        });
+        };
+
+        let mut reachable: BTreeSet<CustomFuncId> = BTreeSet::new();
+
+        fn set_reachable(
+            graph: &Graph<CustomFuncId>,
+            reachable: &mut BTreeSet<CustomFuncId>,
+            id: CustomFuncId,
+        ) {
+            reachable.insert(id);
+
+            for reachable_id in &graph.edges_out[id] {
+                if !reachable.contains(&reachable_id) {
+                    set_reachable(graph, reachable, *reachable_id);
+                }
+            }
+        }
+
+        set_reachable(&func_graph, &mut reachable, prog.main);
+
+        let func_sccs = graph::strongly_connected(&func_graph);
 
         let mut profile_points: BTreeMap<ProfilePointId, CustomFuncId> = BTreeMap::new();
 
         for scc in func_sccs {
             for (i, id) in scc.iter().enumerate() {
+                if !reachable.contains(id) {
+                    continue;
+                }
+
                 let func = &prog.funcs[id];
 
                 if let Some(prof_id) = func.profile_point {
