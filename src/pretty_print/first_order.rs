@@ -95,7 +95,7 @@ impl<'a, 'b> Context<'a, 'b> {
                         self.write("int64")?;
                     }
                     MlVariant::SML => {
-                        self.write("LargeInt.int")?;
+                        self.write("int")?;
                     }
                 },
                 NumType::Float => match self.variant {

@@ -462,6 +462,8 @@ fn compile_ml_sample(
     match ml_variant {
         cli::MlConfig::Sml => {
             let mlton_output = process::Command::new("mlton")
+                .arg("-default-type")
+                .arg("int64")
                 .arg("-output")
                 .arg(&output_path)
                 .arg(artifacts.artifact_path(&format!("{ast_str}.sml")))

@@ -80,7 +80,7 @@ impl<'a, 'b> Context<'a, 'b> {
             Type::Byte => self.write("char")?,
             Type::Int => match self.variant {
                 MlVariant::OCAML => self.write("int64")?,
-                MlVariant::SML => self.write("LargeInt.int")?,
+                MlVariant::SML => self.write("int")?,
             },
             Type::Float => match self.variant {
                 MlVariant::OCAML => self.write("float")?,
