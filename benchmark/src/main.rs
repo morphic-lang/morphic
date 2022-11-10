@@ -259,7 +259,7 @@ fn build_exe(
 }
 
 fn bench_sample(
-    iters: u64,
+    iters: (u64, u64),
     bench_name: &str,
     profile_mod: &[&str],
     profile_func: &str,
@@ -312,8 +312,8 @@ fn bench_sample(
             .join(variant_name.clone());
 
         let mut results = Vec::new();
-        for _ in 0..iters {
-            let report: ProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
+        for _ in 0..iters.0 {
+            let report: ProfReport = run_exe(&exe_path, iters.1, extra_stdin, expected_stdout);
 
             let timing = &report.timings[0];
 
@@ -324,7 +324,7 @@ fn bench_sample(
 
             let specialization = &timing.specializations[0];
 
-            assert_eq!(specialization.total_calls, iters);
+            assert_eq!(specialization.total_calls, iters.1);
 
             let total_nanos = specialization.total_clock_nanos;
 
@@ -349,7 +349,7 @@ fn compile_sample(
 
     for (tag, defunc_mode) in variants {
         println!("compiling {bench_name}-native-{tag}");
-        let (_exe_path, _artifact_dir) = build_exe(
+        let (exe_path, _artifact_dir) = build_exe(
             bench_name,
             tag,
             src_path.clone(),
@@ -361,6 +361,8 @@ fn compile_sample(
                 rc_mode,
             },
         );
+
+        write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
     }
 
     println!("compiling ml artifacts for {bench_name}",);
@@ -386,7 +388,7 @@ fn compile_sample(
 }
 
 fn bench_ml_sample(
-    iters: u64,
+    iters: (u64, u64),
     bench_name: &str,
     ml_variant: cli::MlConfig,
     ast: MlAst,
@@ -410,12 +412,13 @@ fn bench_ml_sample(
     let output_path = artifacts.artifact_path(&format!("{ast}-{ml_variant_str}"));
 
     let mut results = Vec::new();
-    for _ in 0..iters {
-        let report: Vec<MlProfReport> = run_exe(&output_path, iters, extra_stdin, expected_stdout);
+    for _ in 0..iters.0 {
+        let report: Vec<MlProfReport> =
+            run_exe(&output_path, iters.1, extra_stdin, expected_stdout);
 
         assert_eq!(report.len(), 1);
 
-        assert_eq!(report[0].total_calls, iters);
+        assert_eq!(report[0].total_calls, iters.1);
         let total_nanos = report[0].total_clock_nanos;
 
         results.push(Duration::from_nanos(total_nanos));
@@ -500,7 +503,7 @@ struct BasicProfReport {
 }
 
 fn sample_primes() {
-    let iters = 20;
+    let iters = (10, 20);
 
     let stdin = "100000\n";
     let stdout = "There are 9592 primes <= 100000\n";
@@ -524,7 +527,7 @@ fn sample_primes() {
 }
 
 fn sample_quicksort() {
-    let iters = 10;
+    let iters = (10, 10);
 
     let length = 1000;
 
@@ -569,7 +572,7 @@ fn sample_quicksort() {
 }
 
 fn sample_primes_sieve() {
-    let iters = 20;
+    let iters = (10, 10);
 
     let stdin = "10000\n";
     let stdout = include_str!("../../samples/expected-output/primes_10000.txt");
@@ -586,7 +589,7 @@ fn sample_primes_sieve() {
 }
 
 fn sample_parse_json() {
-    let iters = 10;
+    let iters = (10, 10);
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/citm_catalog.json"),
@@ -613,7 +616,7 @@ fn sample_parse_json() {
 }
 
 fn sample_calc() {
-    let iters = 20;
+    let iters = (10, 10);
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/calc_exprs.txt"),
@@ -636,7 +639,7 @@ fn sample_calc() {
 }
 
 fn sample_unify() {
-    let iters = 10;
+    let iters = (10, 10);
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/unify_problems.txt"),
