@@ -9,7 +9,6 @@ edition = "2018"
 [dependencies]
 morphic = { path = ".." }
 find_clang = { path = "../find_clang" }
-criterion = { git = "https://github.com/morphic-lang/criterion.rs", tag = "default-cli-mode-funcs" }
 tempfile = "3.3.0"
 serde = { version = "1.0.145", features = [ "derive" ]}
 serde_json = "1.0.87"
