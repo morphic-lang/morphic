@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use find_clang::find_default_clang;
 use morphic::build;
 use morphic::cli;
 use morphic::cli::ArtifactDir;
@@ -12,8 +11,6 @@ use morphic::cli::SpecializationMode;
 use morphic::file_cache::FileCache;
 use morphic::progress_ui::ProgressMode;
 
-use criterion::measurement::WallTime;
-use criterion::{BenchmarkGroup, Criterion};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use serde::Deserialize;
@@ -23,7 +20,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
-use tempfile::TempPath;
 
 fn drive_subprocess(
     mut child: process::Child,
@@ -91,40 +87,6 @@ fn run_exe<Report: for<'a> Deserialize<'a>>(
     report
 }
 
-fn run_ghc_exe(
-    exe_path: impl AsRef<Path>,
-    iters: u64,
-    extra_stdin: &str,
-    expected_stdout: &str,
-) -> GhcProfReport {
-    let report_path = tempfile::Builder::new()
-        .prefix(".tmp-report-")
-        .suffix(".prof")
-        .tempfile_in("")
-        .expect("Could not create temp file")
-        .into_temp_path();
-
-    let child = process::Command::new(exe_path.as_ref().canonicalize().unwrap())
-        .arg("+RTS")
-        .arg("-pj")
-        .arg(format!(
-            "-po{}",
-            report_path.file_stem().unwrap().to_str().unwrap()
-        ))
-        .stdin(process::Stdio::piped())
-        .stdout(process::Stdio::piped())
-        .stderr(process::Stdio::null())
-        .spawn()
-        .expect("Could not spawn child process");
-
-    drive_subprocess(child, iters, extra_stdin, expected_stdout);
-
-    serde_json::from_reader(BufReader::new(
-        File::open(&report_path).expect("Failed to open child performance report file"),
-    ))
-    .expect("Failed to read child performance report file")
-}
-
 const BINARY_SIZES_DIR: &str = "target/binary_sizes";
 
 fn write_binary_size(benchmark_name: &str, exe_path: impl AsRef<Path>) {
@@ -140,6 +102,20 @@ fn write_binary_size(benchmark_name: &str, exe_path: impl AsRef<Path>) {
         .expect("Could not create binary size file");
 
     writeln!(file, "{}", size).expect("Could not write binary size to file");
+}
+
+const RUN_TIME_DIR: &str = "target/run_time";
+
+fn write_run_time(benchmark_name: &str, data: Vec<Duration>) {
+    std::fs::create_dir_all(RUN_TIME_DIR).expect("Could not create run_time directory");
+
+    let mut file = File::create(format!("{}/{}.txt", RUN_TIME_DIR, benchmark_name))
+        .expect("Could not create run time file");
+
+    let nanoseconds: Vec<u128> = data.iter().map(|d| d.as_nanos()).collect();
+
+    writeln!(file, "{}", serde_json::to_string(&nanoseconds).unwrap())
+        .expect("Could not write binary size to file");
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -181,262 +157,339 @@ struct ProfSkippedTail {
     tail_func_id: u64,
 }
 
-#[derive(Clone, Debug)]
-enum NativeBinary {
-    Fresh,
-    Precompiled { binary_path: PathBuf },
-    Skip,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 struct SampleOptions {
-    single_binary: NativeBinary,
-    specialize_binary: NativeBinary,
+    is_native: bool,
     rc_mode: RcMode,
 }
 
 impl Default for SampleOptions {
     fn default() -> Self {
         Self {
-            single_binary: NativeBinary::Fresh,
-            specialize_binary: NativeBinary::Fresh,
+            is_native: true,
             rc_mode: RcMode::Elide,
         }
     }
 }
 
+const OUT_DIR: &str = "out2";
+
+fn build_exe(
+    bench_name: &str,
+    tag: &str,
+    src_path: impl AsRef<Path> + Clone,
+    profile_mod: &[&str],
+    profile_func: &str,
+    defunc_mode: SpecializationMode,
+    options: SampleOptions,
+) -> (PathBuf, ArtifactDir) {
+    let variant_name = format!("{bench_name}_{tag}");
+
+    if !std::env::current_dir().unwrap().join("out2").exists() {
+        std::fs::create_dir(std::env::current_dir().unwrap().join("out2")).unwrap();
+    }
+
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .join("out2")
+        .join(variant_name.clone());
+
+    let artifact_path = std::env::current_dir()
+        .unwrap()
+        .join("out2")
+        .join(format!("{bench_name}-{tag}-artifacts"));
+
+    let artifact_dir = ArtifactDir {
+        dir_path: artifact_path.clone(),
+        filename_prefix: binary_path.file_name().unwrap().into(),
+    };
+
+    if options.is_native {
+        if binary_path.exists() {
+            return (binary_path, artifact_dir);
+        }
+    } else {
+        if artifact_dir.dir_path.exists() {
+            return (binary_path, artifact_dir);
+        } else {
+            std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
+        }
+    }
+
+    let mut files = FileCache::new();
+
+    build(
+        cli::BuildConfig {
+            src_path: src_path.as_ref().to_path_buf(),
+            profile_syms: vec![cli::SymbolName(format!(
+                "{mod_}{func}",
+                mod_ = profile_mod
+                    .iter()
+                    .map(|component| format!("{}.", component))
+                    .collect::<Vec<_>>()
+                    .concat(),
+                func = profile_func,
+            ))],
+            target: {
+                if options.is_native {
+                    cli::TargetConfig::Llvm(LlvmConfig::Native)
+                } else {
+                    cli::TargetConfig::Ml(MlConfig::Ocaml) // both do the same thing
+                }
+            },
+            llvm_opt_level: cli::default_llvm_opt_level(),
+            output_path: binary_path.to_owned(),
+            artifact_dir: if options.is_native {
+                None
+            } else {
+                Some(artifact_dir.clone())
+            },
+            progress: ProgressMode::Hidden,
+            pass_options: PassOptions {
+                defunc_mode,
+                rc_mode: options.rc_mode,
+                ..Default::default()
+            },
+        },
+        &mut files,
+    )
+    .expect("Compilation failed");
+
+    (binary_path, artifact_dir)
+}
+
 fn bench_sample(
-    g: &mut BenchmarkGroup<WallTime>,
+    iters: u64,
+    bench_name: &str,
+    profile_mod: &[&str],
+    profile_func: &str,
+    extra_stdin: &str,
+    expected_stdout: &str,
+) {
+    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+        let tag = match ml_variant {
+            MlConfig::Sml => "sml",
+            MlConfig::Ocaml => "ocaml",
+        };
+
+        let artifact_path = std::env::current_dir()
+            .unwrap()
+            .join("out2")
+            .join(format!("{bench_name}-ml-artifacts"));
+
+        let artifact_dir = ArtifactDir {
+            dir_path: artifact_path.clone(),
+            filename_prefix: Path::new(bench_name).to_path_buf(),
+        };
+
+        for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
+            let ast_str = match ast {
+                MlAst::Typed => "typed",
+                MlAst::Mono => "mono",
+                MlAst::FirstOrder => "first_order",
+            };
+            println!("benchmarking ml {bench_name} {tag} {ast_str}");
+            bench_ml_sample(
+                iters,
+                bench_name,
+                ml_variant,
+                ast,
+                &artifact_dir,
+                extra_stdin,
+                expected_stdout,
+            );
+        }
+    }
+
+    let variants = ["native_single", "native_specialize"];
+
+    for tag in variants {
+        let variant_name = format!("{bench_name}_{tag}");
+
+        let exe_path = std::env::current_dir()
+            .unwrap()
+            .join("out2")
+            .join(variant_name.clone());
+
+        let mut results = Vec::new();
+        for _ in 0..iters {
+            let report: ProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
+
+            let timing = &report.timings[0];
+
+            assert_eq!(&timing.module as &[String], profile_mod as &[&str]);
+            assert_eq!(&timing.function, profile_func);
+            assert_eq!(timing.specializations.len(), 1);
+            assert_eq!(timing.skipped_tail_rec_specializations.len(), 0);
+
+            let specialization = &timing.specializations[0];
+
+            assert_eq!(specialization.total_calls, iters);
+
+            let total_nanos = specialization.total_clock_nanos;
+
+            results.push(Duration::from_nanos(total_nanos));
+        }
+
+        write_run_time(&variant_name, results);
+    }
+}
+
+fn compile_sample(
     bench_name: &str,
     src_path: impl AsRef<Path> + Clone,
     profile_mod: &[&str],
     profile_func: &str,
-    extra_stdin: &str,
-    expected_stdout: &str,
-    options: &SampleOptions,
+    rc_mode: RcMode,
 ) {
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-        bench_ml_sample(
-            g,
+    let variants = [
+        ("native_single", SpecializationMode::Single),
+        ("native_specialize", SpecializationMode::Specialize),
+    ];
+
+    for (tag, defunc_mode) in variants {
+        println!("compiling {bench_name}-native-{tag}");
+        let (_exe_path, _artifact_dir) = build_exe(
             bench_name,
-            ml_variant,
+            tag,
             src_path.clone(),
             profile_mod,
             profile_func,
-            extra_stdin,
-            expected_stdout,
-        )
+            defunc_mode,
+            SampleOptions {
+                is_native: true,
+                rc_mode,
+            },
+        );
     }
 
-    let variants = [
-        ("single", SpecializationMode::Single, &options.single_binary),
-        (
-            "specialize",
-            SpecializationMode::Specialize,
-            &options.specialize_binary,
-        ),
-    ];
+    println!("compiling ml artifacts for {bench_name}",);
 
-    for (tag, defunc_mode, binary) in variants {
-        let variant_name = format!("{bench_name}_native_{tag}");
-        enum ExePath {
-            Fresh(TempPath),
-            Precompiled(PathBuf),
+    let (_exe_path, artifact_dir) = build_exe(
+        bench_name,
+        "ml",
+        src_path.clone(),
+        profile_mod,
+        profile_func,
+        SpecializationMode::Specialize,
+        SampleOptions {
+            is_native: false,
+            rc_mode,
+        },
+    );
+
+    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+        for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
+            compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
         }
-        impl AsRef<Path> for ExePath {
-            fn as_ref(&self) -> &Path {
-                match self {
-                    ExePath::Fresh(p) => p.as_ref(),
-                    ExePath::Precompiled(p) => p.as_ref(),
-                }
-            }
-        }
-        let mut exe_path_cache: Option<ExePath> = match binary {
-            NativeBinary::Fresh => None,
-            NativeBinary::Precompiled { binary_path } => {
-                if !binary_path.exists() {
-                    continue;
-                }
-                write_binary_size(&variant_name, &binary_path);
-                Some(ExePath::Precompiled(binary_path.clone()))
-            }
-            NativeBinary::Skip => {
-                continue;
-            }
-        };
-        g.bench_function(&variant_name, |b| {
-            b.iter_custom(|iters| {
-                let exe_path = exe_path_cache.get_or_insert_with(|| {
-                    let exe_path = tempfile::Builder::new()
-                        .prefix(".tmp-exe-")
-                        .tempfile_in("")
-                        .expect("Could not create temp file")
-                        .into_temp_path();
-
-                    let mut files = FileCache::new();
-
-                    build(
-                        cli::BuildConfig {
-                            src_path: src_path.as_ref().into(),
-                            profile_syms: vec![cli::SymbolName(format!(
-                                "{mod_}{func}",
-                                mod_ = profile_mod
-                                    .iter()
-                                    .map(|component| format!("{}.", component))
-                                    .collect::<Vec<_>>()
-                                    .concat(),
-                                func = profile_func,
-                            ))],
-                            target: cli::TargetConfig::Llvm(LlvmConfig::Native),
-                            llvm_opt_level: cli::default_llvm_opt_level(),
-                            output_path: exe_path.to_owned(),
-                            artifact_dir: None,
-                            progress: ProgressMode::Hidden,
-                            pass_options: PassOptions {
-                                defunc_mode,
-                                rc_mode: options.rc_mode,
-                                ..Default::default()
-                            },
-                        },
-                        &mut files,
-                    )
-                    .expect("Compilation failed");
-
-                    write_binary_size(&variant_name, &exe_path);
-
-                    ExePath::Fresh(exe_path)
-                });
-
-                let report: ProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
-
-                let timing = &report.timings[0];
-
-                assert_eq!(&timing.module as &[String], profile_mod as &[&str]);
-                assert_eq!(&timing.function, profile_func);
-                assert_eq!(timing.specializations.len(), 1);
-                assert_eq!(timing.skipped_tail_rec_specializations.len(), 0);
-
-                let specialization = &timing.specializations[0];
-
-                assert_eq!(specialization.total_calls, iters);
-
-                let total_nanos = specialization.total_clock_nanos;
-
-                Duration::from_nanos(total_nanos)
-            })
-        });
     }
 }
 
 fn bench_ml_sample(
-    g: &mut BenchmarkGroup<WallTime>,
+    iters: u64,
     bench_name: &str,
     ml_variant: cli::MlConfig,
-    src_path: impl AsRef<Path>,
-    profile_mod: &[&str],
-    profile_func: &str,
+    ast: MlAst,
+    artifacts: &ArtifactDir,
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    let mut artifact_cache = None;
-
     let ml_variant_str = match ml_variant {
         cli::MlConfig::Sml => "sml",
         cli::MlConfig::Ocaml => "ocaml",
     };
 
-    for ast in vec!["typed", "mono", "first_order"] {
-        let variant_name = format!("{bench_name}_{ml_variant_str}_{ast}");
-        g.bench_function(&variant_name, |b| {
-            b.iter_custom(|iters| {
-                let artifacts = artifact_cache.get_or_insert_with(|| {
-                    let temp_dir = tempfile::Builder::new()
-                        .prefix(".tmp-artifact-")
-                        .tempdir_in("")
-                        .expect("Could not create temp file");
+    let ast = match ast {
+        MlAst::Typed => "typed",
+        MlAst::Mono => "mono",
+        MlAst::FirstOrder => "first_order",
+    };
 
-                    let mut files = FileCache::new();
+    let variant_name = format!("{bench_name}_{ml_variant_str}_{ast}");
 
-                    let artifact_dir = ArtifactDir {
-                        dir_path: temp_dir.path().to_path_buf(),
-                        filename_prefix: src_path.as_ref().file_name().unwrap().into(),
-                    };
+    let output_path = artifacts.artifact_path(&format!("{ast}-{ml_variant_str}"));
 
-                    build(
-                        cli::BuildConfig {
-                            src_path: src_path.as_ref().into(),
-                            profile_syms: vec![cli::SymbolName(format!(
-                                "{mod_}{func}",
-                                mod_ = profile_mod
-                                    .iter()
-                                    .map(|component| format!("{}.", component))
-                                    .collect::<Vec<_>>()
-                                    .concat(),
-                                func = profile_func,
-                            ))],
-                            target: cli::TargetConfig::Ml(ml_variant),
-                            llvm_opt_level: cli::default_llvm_opt_level(),
-                            output_path: "".into(),
-                            artifact_dir: Some(artifact_dir.clone()),
-                            progress: ProgressMode::Hidden,
-                            pass_options: PassOptions::default(),
-                        },
-                        &mut files,
-                    )
-                    .expect("Compilation failed");
+    let mut results = Vec::new();
+    for _ in 0..iters {
+        let report: Vec<MlProfReport> = run_exe(&output_path, iters, extra_stdin, expected_stdout);
 
-                    (temp_dir, artifact_dir)
-                });
+        assert_eq!(report.len(), 1);
 
-                let output_path = artifacts.1.artifact_path(&format!("{ast}"));
+        assert_eq!(report[0].total_calls, iters);
+        let total_nanos = report[0].total_clock_nanos;
 
-                match ml_variant {
-                    cli::MlConfig::Sml => {
-                        let mlton_output = process::Command::new("mlton")
-                            .arg("-output")
-                            .arg(&output_path)
-                            .arg(artifacts.1.artifact_path(&format!("{ast}.sml")))
-                            .output()
-                            .expect("Compilation failed");
-
-                        assert!(
-                            mlton_output.status.success(),
-                            "Compilation failed:\n{}",
-                            String::from_utf8_lossy(&mlton_output.stderr)
-                        );
-                    }
-                    cli::MlConfig::Ocaml => {
-                        let ocaml_output = process::Command::new("ocamlopt")
-                            .arg("unix.cmxa")
-                            .arg("-O3")
-                            .arg(artifacts.1.artifact_path(&format!("{ast}.ml")))
-                            .arg("-o")
-                            .arg(&output_path)
-                            .output()
-                            .expect("Compilation failed");
-
-                        assert!(
-                            ocaml_output.status.success(),
-                            "Compilation failed:\n{}",
-                            String::from_utf8_lossy(&ocaml_output.stderr)
-                        );
-                    }
-                }
-
-                write_binary_size(&variant_name, &output_path);
-
-                let report: Vec<MlProfReport> =
-                    run_exe(&output_path, iters, extra_stdin, expected_stdout);
-
-                assert_eq!(report.len(), 1);
-
-                assert_eq!(report[0].total_calls, iters);
-                let total_nanos = report[0].total_clock_nanos;
-
-                Duration::from_nanos(total_nanos)
-            })
-        });
+        results.push(Duration::from_nanos(total_nanos));
     }
+
+    write_run_time(&variant_name, results);
+}
+
+#[derive(Copy, Clone, Debug)]
+enum MlAst {
+    Typed,
+    Mono,
+    FirstOrder,
+}
+
+fn compile_ml_sample(
+    bench_name: &str,
+    ml_variant: cli::MlConfig,
+    ast: MlAst,
+    artifacts: &ArtifactDir,
+) {
+    let ml_variant_str = match ml_variant {
+        cli::MlConfig::Sml => "sml",
+        cli::MlConfig::Ocaml => "ocaml",
+    };
+
+    let ast_str = match ast {
+        MlAst::Typed => "typed",
+        MlAst::Mono => "mono",
+        MlAst::FirstOrder => "first_order",
+    };
+
+    let variant_name = format!("{bench_name}_{ml_variant_str}_{ast_str}");
+
+    let output_path = artifacts.artifact_path(&format!("{ast_str}-{ml_variant_str}"));
+
+    if output_path.exists() {
+        return;
+    }
+
+    match ml_variant {
+        cli::MlConfig::Sml => {
+            let mlton_output = process::Command::new("mlton")
+                .arg("-output")
+                .arg(&output_path)
+                .arg(artifacts.artifact_path(&format!("{ast_str}.sml")))
+                .output()
+                .expect("Compilation failed");
+
+            assert!(
+                mlton_output.status.success(),
+                "Compilation failed:\n{}",
+                String::from_utf8_lossy(&mlton_output.stderr)
+            );
+        }
+        cli::MlConfig::Ocaml => {
+            let ocaml_output = process::Command::new("ocamlopt")
+                .arg("unix.cmxa")
+                .arg("-O3")
+                .arg(artifacts.artifact_path(&format!("{ast_str}.ml")))
+                .arg("-o")
+                .arg(&output_path)
+                .output()
+                .expect("Compilation failed");
+
+            assert!(
+                ocaml_output.status.success(),
+                "Compilation failed:\n{}",
+                String::from_utf8_lossy(&ocaml_output.stderr)
+            );
+        }
+    }
+
+    write_binary_size(&variant_name, &output_path);
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -446,291 +499,32 @@ struct BasicProfReport {
     total_clock_nanos: u64,
 }
 
-fn bench_c_sample(
-    g: &mut BenchmarkGroup<WallTime>,
-    bench_name: &str,
-    src_path: impl AsRef<Path>,
-    extra_stdin: &str,
-    expected_stdout: &str,
-) {
-    let mut exe_path_cache = None;
-
-    g.bench_function(bench_name, |b| {
-        b.iter_custom(|iters| {
-            let exe_path = exe_path_cache.get_or_insert_with(|| {
-                let exe_path = tempfile::Builder::new()
-                    .prefix(".tmp-exe-")
-                    .tempfile_in("")
-                    .expect("Could not create temp file")
-                    .into_temp_path();
-
-                let clang = find_default_clang().expect("clang must be present to run benchmarks");
-
-                let clang_output = process::Command::new(&clang.path)
-                    .arg(src_path.as_ref())
-                    .arg(format!("-o{}", exe_path.to_str().unwrap()))
-                    .arg("-O3")
-                    .arg("-march=native")
-                    .arg("-Wall")
-                    .arg("-Werror")
-                    .output()
-                    .expect("Compilation failed");
-
-                assert!(
-                    clang_output.status.success(),
-                    "Compilation failed:\n{}",
-                    String::from_utf8_lossy(&clang_output.stderr)
-                );
-
-                exe_path
-            });
-
-            let report: BasicProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
-
-            assert_eq!(report.total_calls, iters);
-
-            Duration::from_nanos(report.total_clock_nanos)
-        })
-    });
-}
-
-fn bench_rust_sample(
-    g: &mut BenchmarkGroup<WallTime>,
-    bench_name: &str,
-    src_path: impl AsRef<Path>,
-    extra_stdin: &str,
-    expected_stdout: &str,
-) {
-    let mut exe_path_cache = None;
-
-    g.bench_function(bench_name, |b| {
-        b.iter_custom(|iters| {
-            let exe_path = exe_path_cache.get_or_insert_with(|| {
-                let exe_path = tempfile::Builder::new()
-                    .prefix(".tmp-exe-")
-                    .tempfile_in("")
-                    .expect("Could not create temp file")
-                    .into_temp_path();
-
-                let rustc_output = process::Command::new("rustc")
-                    .arg(format!("-o{}", exe_path.to_str().unwrap()))
-                    .arg("-Ctarget-cpu=native")
-                    .arg("-Copt-level=3")
-                    .arg("--edition=2018")
-                    .arg("--deny=warnings")
-                    .arg("--")
-                    .arg(src_path.as_ref())
-                    .output()
-                    .expect("Compilation failed");
-
-                assert!(
-                    rustc_output.status.success(),
-                    "Compilation failed:\n{}",
-                    String::from_utf8_lossy(&rustc_output.stderr)
-                );
-
-                exe_path
-            });
-
-            let report: BasicProfReport = run_exe(&exe_path, iters, extra_stdin, expected_stdout);
-
-            assert_eq!(report.total_calls, iters);
-
-            Duration::from_nanos(report.total_clock_nanos)
-        })
-    });
-}
-
-// N.B. GHC uses the British English spelling 'centre'
-
-#[derive(Clone, Debug, Deserialize)]
-struct GhcProfReport {
-    total_time: f64,
-    total_ticks: u64,
-    tick_interval: f64,
-    cost_centres: Vec<GhcCostCentre>,
-    profile: GhcProfileTree,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct GhcCostCentre {
-    id: u32,
-    label: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct GhcProfileTree {
-    id: u32,
-    entries: u64,
-    ticks: u64,
-    children: Vec<GhcProfileTree>,
-}
-
-fn find_ghc_cost_centre_in_tree(tree: &GhcProfileTree, id: u32) -> Option<&GhcProfileTree> {
-    if tree.id == id {
-        return Some(tree);
-    }
-
-    for child in &tree.children {
-        if let Some(found) = find_ghc_cost_centre_in_tree(child, id) {
-            return Some(found);
-        }
-    }
-
-    None
-}
-
-fn find_labeled_ghc_cost_centre<'a>(report: &'a GhcProfReport, label: &str) -> &'a GhcProfileTree {
-    let id = report
-        .cost_centres
-        .iter()
-        .find(|cost_centre| &cost_centre.label == label)
-        .unwrap_or_else(|| panic!("Could not find cost centre with label {}", label))
-        .id;
-
-    find_ghc_cost_centre_in_tree(&report.profile, id)
-        .unwrap_or_else(|| panic!("Cost centre with id {} not found", id))
-}
-
-fn bench_haskell_sample(
-    g: &mut BenchmarkGroup<WallTime>,
-    bench_name: &str,
-    src_path: impl AsRef<Path>,
-    cost_centre: &str,
-    extra_stdin: &str,
-    expected_stdout: &str,
-) {
-    let mut exe_path_cache = None;
-
-    g.bench_function(bench_name, |b| {
-        b.iter_custom(|iters| {
-            let exe_path = exe_path_cache.get_or_insert_with(|| {
-                let exe_path = tempfile::Builder::new()
-                    .prefix(".tmp-exe-")
-                    .tempfile_in("")
-                    .expect("Could not create temp file")
-                    .into_temp_path();
-
-                let out_dir = tempfile::Builder::new()
-                    .prefix(".tmp-ghc-out-")
-                    .tempdir_in("")
-                    .expect("Could not create temp directory");
-
-                let ghc_output = process::Command::new("ghc")
-                    .arg("-o")
-                    .arg(&exe_path)
-                    .arg("-odir")
-                    .arg(out_dir.as_ref())
-                    .arg("-hidir")
-                    .arg(out_dir.as_ref())
-                    .arg("-O2")
-                    .arg("-prof")
-                    .arg("-rtsopts")
-                    .arg("-Wall")
-                    .arg("-Werror")
-                    .arg("samples/haskell_samples/BenchCommon.hs")
-                    .arg(src_path.as_ref())
-                    .arg("-main-is")
-                    .arg(
-                        src_path
-                            .as_ref()
-                            .file_stem()
-                            .expect("Source path should have stem"),
-                    )
-                    .output()
-                    .expect("Compilation failed");
-
-                assert!(
-                    ghc_output.status.success(),
-                    "Compilation failed:\n{}",
-                    String::from_utf8_lossy(&ghc_output.stderr)
-                );
-
-                exe_path
-            });
-
-            let report: GhcProfReport = run_ghc_exe(&exe_path, iters, extra_stdin, expected_stdout);
-
-            let prof_tree = find_labeled_ghc_cost_centre(&report, cost_centre);
-
-            // 'tick_interval' appears to be measured in microseconds, although I can't find this
-            // documented anywhere.
-            assert!(
-                report.tick_interval * 1e-6 * (report.total_ticks as f64) - report.total_time
-                    <= 0.01
-            );
-
-            assert!(prof_tree.children.is_empty());
-            assert_eq!(prof_tree.entries, iters);
-
-            // TODO: Should we have a check here to ensure the time resolution is sufficiently
-            // precise to obtain a meaningful estimate?
-            let tick_nanos = report.tick_interval * 1e3 * (prof_tree.ticks as f64);
-
-            assert!(tick_nanos.is_finite());
-
-            Duration::from_nanos(tick_nanos as u64)
-        })
-    });
-}
-
-fn sample_primes(c: &mut Criterion) {
-    let mut g = c.benchmark_group("primes");
-    g.sample_size(20);
+fn sample_primes() {
+    let iters = 20;
 
     let stdin = "100000\n";
     let stdout = "There are 9592 primes <= 100000\n";
 
-    bench_sample(
-        &mut g,
-        "bench_primes.mor",
-        "samples/bench_primes.mor",
-        &[],
-        "count_primes",
-        stdin,
-        stdout,
-        &SampleOptions::default(),
-    );
-
-    bench_sample(
-        &mut g,
+    compile_sample(
         "bench_primes_iter.mor",
         "samples/bench_primes_iter.mor",
         &[],
         "count_primes",
-        stdin,
-        stdout,
-        &SampleOptions::default(),
+        RcMode::default(),
     );
 
-    bench_c_sample(
-        &mut g,
-        "bench_primes.c",
-        "samples/c_samples/bench_primes.c",
-        stdin,
-        stdout,
-    );
-
-    bench_rust_sample(
-        &mut g,
-        "bench_primes.rs",
-        "samples/rust_samples/bench_primes.rs",
-        stdin,
-        stdout,
-    );
-
-    bench_rust_sample(
-        &mut g,
-        "bench_primes_iter.rs",
-        "samples/rust_samples/bench_primes_iter.rs",
+    bench_sample(
+        iters,
+        "bench_primes_iter.mor",
+        &[],
+        "count_primes",
         stdin,
         stdout,
     );
 }
 
-fn sample_quicksort(c: &mut Criterion) {
-    let mut g = c.benchmark_group("quicksort");
-    g.sample_size(10);
+fn sample_quicksort() {
+    let iters = 10;
 
     let length = 1000;
 
@@ -756,151 +550,43 @@ fn sample_quicksort(c: &mut Criterion) {
         input_ints, output_ints
     );
 
-    bench_sample(
-        &mut g,
+    compile_sample(
         "bench_quicksort.mor",
         "samples/bench_quicksort.mor",
         &[],
         "quicksort",
-        &stdin,
-        &stdout,
-        &SampleOptions::default(),
+        RcMode::default(),
     );
 
-    bench_rust_sample(
-        &mut g,
-        "bench_quicksort.rs",
-        "samples/rust_samples/bench_quicksort.rs",
+    bench_sample(
+        iters,
+        "bench_quicksort.mor",
+        &[],
+        "quicksort",
         &stdin,
         &stdout,
     );
 }
 
-fn sample_primes_sieve(c: &mut Criterion) {
-    let mut g = c.benchmark_group("primes_sieve");
-    g.sample_size(20);
+fn sample_primes_sieve() {
+    let iters = 20;
 
     let stdin = "10000\n";
     let stdout = include_str!("../../samples/expected-output/primes_10000.txt");
 
-    bench_sample(
-        &mut g,
+    compile_sample(
         "bench_primes_sieve.mor",
         "samples/bench_primes_sieve.mor",
         &[],
         "sieve",
-        stdin,
-        stdout,
-        &SampleOptions::default(),
+        RcMode::default(),
     );
 
-    bench_c_sample(
-        &mut g,
-        "bench_primes_sieve.c",
-        "samples/c_samples/bench_primes_sieve.c",
-        stdin,
-        stdout,
-    );
-
-    bench_c_sample(
-        &mut g,
-        "bench_primes_sieve_boxed.c",
-        "samples/c_samples/bench_primes_sieve_boxed.c",
-        stdin,
-        stdout,
-    );
-
-    bench_rust_sample(
-        &mut g,
-        "bench_primes_sieve.rs",
-        "samples/rust_samples/bench_primes_sieve.rs",
-        stdin,
-        stdout,
-    );
-
-    bench_rust_sample(
-        &mut g,
-        "bench_primes_sieve_boxed.rs",
-        "samples/rust_samples/bench_primes_sieve_boxed.rs",
-        stdin,
-        stdout,
-    );
-
-    g.measurement_time(Duration::from_secs(10));
-
-    bench_haskell_sample(
-        &mut g,
-        "BenchPrimesSieve.hs",
-        "samples/haskell_samples/BenchPrimesSieve.hs",
-        "BenchPrimesSieve.sieve",
-        stdin,
-        stdout,
-    );
-
-    bench_haskell_sample(
-        &mut g,
-        "BenchPrimesSieveSeq.hs",
-        "samples/haskell_samples/BenchPrimesSieveSeq.hs",
-        "BenchPrimesSieveSeq.sieve",
-        stdin,
-        stdout,
-    );
-
-    bench_haskell_sample(
-        &mut g,
-        "BenchPrimesSieveArray.hs",
-        "samples/haskell_samples/BenchPrimesSieveArray.hs",
-        "BenchPrimesSieveArray.sieve",
-        stdin,
-        stdout,
-    );
+    bench_sample(iters, "bench_primes_sieve.mor", &[], "sieve", stdin, stdout);
 }
 
-fn sample_words_trie(c: &mut Criterion) {
-    let mut g = c.benchmark_group("words_trie");
-    g.sample_size(20);
-    g.measurement_time(Duration::from_secs(75));
-
-    let stdin = concat!(
-        include_str!("../../samples/sample-input/udhr.txt"),
-        "\n",
-        include_str!("../../samples/sample-input/udhr_queries.txt"),
-        "\n",
-    );
-
-    let stdout = include_str!("../../samples/expected-output/udhr_query_counts.txt");
-
-    bench_sample(
-        &mut g,
-        "bench_words_trie.mor",
-        "samples/bench_words_trie.mor",
-        &[],
-        "count_words",
-        stdin,
-        stdout,
-        &SampleOptions {
-            single_binary: NativeBinary::Precompiled {
-                binary_path: "out/bench_words_trie_single".into(),
-            },
-            specialize_binary: NativeBinary::Precompiled {
-                binary_path: "out/bench_words_trie_specialize".into(),
-            },
-            ..Default::default()
-        },
-    );
-
-    bench_rust_sample(
-        &mut g,
-        "bench_words_trie.rs",
-        "samples/rust_samples/bench_words_trie.rs",
-        stdin,
-        stdout,
-    );
-}
-
-fn sample_parse_json(c: &mut Criterion) {
-    let mut g = c.benchmark_group("parse_json");
-    g.sample_size(10);
+fn sample_parse_json() {
+    let iters = 10;
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/citm_catalog.json"),
@@ -908,26 +594,26 @@ fn sample_parse_json(c: &mut Criterion) {
     );
     let stdout = "-7199371743916571250\n";
 
-    bench_sample(
-        &mut g,
+    compile_sample(
         "bench_parse_json.mor",
         "samples/bench_parse_json.mor",
         &[],
         "parse_json",
+        RcMode::default(),
+    );
+
+    bench_sample(
+        iters,
+        "bench_parse_json.mor",
+        &[],
+        "parse_json",
         stdin,
         &stdout,
-        &SampleOptions {
-            single_binary: NativeBinary::Precompiled {
-                binary_path: "out/bench_parse_json_single".into(),
-            },
-            ..Default::default()
-        },
     );
 }
 
-fn sample_calc(c: &mut Criterion) {
-    let mut g = c.benchmark_group("calc");
-    g.sample_size(20);
+fn sample_calc() {
+    let iters = 20;
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/calc_exprs.txt"),
@@ -938,21 +624,19 @@ fn sample_calc(c: &mut Criterion) {
         "\n"
     );
 
-    bench_sample(
-        &mut g,
+    compile_sample(
         "bench_calc.mor",
         "samples/bench_calc.mor",
         &[],
         "eval_exprs",
-        stdin,
-        stdout,
-        &SampleOptions::default(),
+        RcMode::default(),
     );
+
+    bench_sample(iters, "bench_calc.mor", &[], "eval_exprs", stdin, stdout);
 }
 
-fn sample_unify(c: &mut Criterion) {
-    let mut g = c.benchmark_group("unify");
-    g.sample_size(10);
+fn sample_unify() {
+    let iters = 10;
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/unify_problems.txt"),
@@ -960,18 +644,21 @@ fn sample_unify(c: &mut Criterion) {
     );
     let stdout = include_str!("../../samples/expected-output/unify_solutions.txt");
 
-    bench_sample(
-        &mut g,
+    compile_sample(
         "bench_unify.mor",
         "samples/bench_unify.mor",
         &[],
         "solve_problems",
+        RcMode::Trivial,
+    );
+
+    bench_sample(
+        iters,
+        "bench_unify.mor",
+        &[],
+        "solve_problems",
         stdin,
         stdout,
-        &SampleOptions {
-            rc_mode: RcMode::Trivial,
-            ..Default::default()
-        },
     );
 }
 
@@ -987,21 +674,15 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut c = Criterion::default()
-        .default_mode_bench()
-        .configure_from_args();
+    sample_quicksort();
 
-    sample_quicksort(&mut c);
+    sample_primes();
 
-    sample_primes(&mut c);
+    sample_primes_sieve();
 
-    sample_primes_sieve(&mut c);
+    sample_parse_json();
 
-    sample_words_trie(&mut c);
+    sample_calc();
 
-    sample_parse_json(&mut c);
-
-    sample_calc(&mut c);
-
-    sample_unify(&mut c);
+    sample_unify();
 }

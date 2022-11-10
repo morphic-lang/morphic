@@ -79,6 +79,12 @@ impl Default for PassOptions {
     }
 }
 
+impl Default for RcMode {
+    fn default() -> Self {
+        RcMode::Elide
+    }
+}
+
 #[derive(Debug)]
 pub struct BuildConfig {
     pub src_path: PathBuf,
