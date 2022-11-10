@@ -11,6 +11,7 @@
 **/*.hi
 **/*.o
 **/*.prof
+out2
 
 
 # Editor/system files

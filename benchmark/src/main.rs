@@ -348,7 +348,7 @@ fn compile_sample(
     ];
 
     for (tag, defunc_mode) in variants {
-        println!("compiling {bench_name}-native-{tag}");
+        println!("compiling {bench_name}_{tag}");
         let (exe_path, _artifact_dir) = build_exe(
             bench_name,
             tag,
@@ -503,7 +503,8 @@ struct BasicProfReport {
 }
 
 fn sample_primes() {
-    let iters = (10, 20);
+    // let iters = (10, 100);
+    let iters = (10, 10);
 
     let stdin = "100000\n";
     let stdout = "There are 9592 primes <= 100000\n";
@@ -527,9 +528,10 @@ fn sample_primes() {
 }
 
 fn sample_quicksort() {
-    let iters = (10, 10);
+    // let iters = (10, 1000);
+    let iters = (10, 100);
 
-    let length = 1000;
+    let length = 10000;
 
     let mut input_ints: Vec<i64> = Vec::new();
     let mut rng = Pcg64::seed_from_u64(7251862977019338101); // seed is arbitrary
@@ -572,7 +574,8 @@ fn sample_quicksort() {
 }
 
 fn sample_primes_sieve() {
-    let iters = (10, 10);
+    // let iters = (10, 1000);
+    let iters = (10, 100);
 
     let stdin = "10000\n";
     let stdout = include_str!("../../samples/expected-output/primes_10000.txt");
@@ -589,6 +592,7 @@ fn sample_primes_sieve() {
 }
 
 fn sample_parse_json() {
+    // let iters = (10, 100);
     let iters = (10, 10);
 
     let stdin = concat!(
@@ -616,7 +620,8 @@ fn sample_parse_json() {
 }
 
 fn sample_calc() {
-    let iters = (10, 10);
+    // let iters = (10, 2000);
+    let iters = (10, 200);
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/calc_exprs.txt"),
@@ -639,7 +644,7 @@ fn sample_calc() {
 }
 
 fn sample_unify() {
-    let iters = (10, 10);
+    let iters = (10, 1);
 
     let stdin = concat!(
         include_str!("../../samples/sample-input/unify_problems.txt"),
