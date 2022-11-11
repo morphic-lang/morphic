@@ -187,8 +187,41 @@ impl<'a> Context<'a> {
                         current_locals += 1;
                     }
 
-                    if result_arm.len() == new_cases.len() {
-                        Expr::Tuple(new_cases)
+                    fn pattern_noop(p: &Pattern, e: &Expr) -> bool {
+                        match (p, e) {
+                            (Pattern::Any(_), _) => true,
+                            (Pattern::Var(_), _) => true,
+                            (Pattern::Tuple(pats), Expr::Tuple(exps)) => {
+                                if pats.len() == exps.len() {
+                                    pats.iter()
+                                        .zip(exps)
+                                        .all(|(pat, exp)| pattern_noop(pat, &exp))
+                                } else {
+                                    false
+                                }
+                            }
+                            _ => false,
+                        }
+                    }
+
+                    fn flatten(e: Expr) -> Vec<Expr> {
+                        match e {
+                            Expr::Tuple(items) => items,
+                            t => vec![t.clone()],
+                        }
+                    }
+
+                    if pattern_noop(
+                        &Pattern::Tuple(pats.clone()),
+                        &Expr::Tuple(new_cases.clone()),
+                    ) {
+                        Expr::Tuple(
+                            new_cases
+                                .iter()
+                                .map(|x| flatten(x.clone()))
+                                .collect::<Vec<_>>()
+                                .concat(),
+                        )
                     } else {
                         Expr::Match(
                             Box::new(Expr::Tuple(new_cases)),
