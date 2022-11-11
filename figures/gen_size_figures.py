@@ -168,7 +168,8 @@ def plot_all_sizes(title: str, results: Dict[str, Results], out_path: str) -> No
     width = 0.8 / len(lang_names)
 
     plt.style.use("bmh")
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(5,4), dpi=600)
+    ax.tick_params(axis='y', length=0)
     ax.set_title(title)
     # ax.set_ylabel("Benchmark")
     ax.set_xlabel("Size Ratio (Lower is Better)")
@@ -183,15 +184,18 @@ def plot_all_sizes(title: str, results: Dict[str, Results], out_path: str) -> No
         ratios = [d / b for b, d in zip(baseline_sizes, defunc_sizes)]
         offset = -(i * width - width * (len(lang_names) - 1) / 2)
         lang_x = [bench_indices[e.name] + offset for e in lang_results.experiments]
-        ax.barh(lang_x, ratios, width * 0.9, label=lang_name, color=colors[lang_name])
-        # add text labels for each bar
-        for x, ratio in zip(lang_x, ratios):
-            if 0.9 < ratio < 1.0:
-                text_pos = 1.1
-            else:
-                text_pos = ratio + 0.08
-            # text_offset = 0.1 if 0.9 < ratio
-            ax.text(text_pos, x - width / 2, f"{ratio:.2f}×", ha="center", va="bottom", fontsize=10)
+
+        p1 = ax.barh(lang_x, ratios, width * 0.9, label=lang_name, color=colors[lang_name])
+        ax.bar_label(p1, padding=8, labels=[f'{r:.2f}' for r in ratios], zorder=100)
+
+        ## add text labels for each bar
+        #for x, ratio in zip(lang_x, ratios):
+        #    if 0.9 < ratio < 1.0:
+        #        text_pos = 1.1
+        #    else:
+        #        text_pos = ratio + 0.08
+        #    # text_offset = 0.1 if 0.9 < ratio
+        #    ax.text(text_pos, x - width / 2, f"{ratio:.2f}×", ha="center", va="bottom", fontsize=10)
 
     plt.axvline(x=1, color="black", linestyle="--")
 
@@ -259,7 +263,7 @@ def main() -> None:
         "Morphic": results_native,
     }
     plot_all_sizes(
-        "Binary Sizes: Effect of Specializing Defunc.",
+        "Binary Sizes: Effect of Lambda Set Specialization",
         results_all,
         os.path.join(out_dir, "all_sizes"),
     )

@@ -1,4 +1,5 @@
 from typing import List, Dict
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import os.path
@@ -173,6 +174,13 @@ colors = {
 
 
 def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
+    title_fontsize = 18
+    ylabel_fontsize = 16
+    xaxis_fontsize = 16
+    legend_fontsize = 14
+    blabel_fontsize = 12
+    xlabel_fontsize = 14
+
     width = 0.8 / 3
     llim = 8.5
 
@@ -184,10 +192,10 @@ def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
     bench_names = list(reversed(sorted(bench_names)))
     bench_indices = {name: i for i, name in enumerate(bench_names)}
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 6), gridspec_kw={"width_ratios": [2, 1]})
-    fig.subplots_adjust(top=0.925, bottom=0.2)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8), gridspec_kw={"width_ratios": [2, 1]}, dpi=600)
+    fig.subplots_adjust(top=0.9, bottom=0.2)
     ax1.set_yticks(np.arange(len(bench_names)))
-    ax1.set_yticklabels(bench_names)
+    ax1.set_yticklabels(bench_names, fontsize=ylabel_fontsize)
 
     for i, lang_name in enumerate(lang_names):
         offset = -(i * width - width * (len(lang_names) - 1) / 2)
@@ -222,8 +230,8 @@ def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
             label=lang_name,
             color=colors[lang_name],
         )
-        ax1.bar_label(p1, padding=8, labels=[f'{y:.2f}' for y in ys], zorder=200)
-        ax2.bar_label(p2, padding=8, labels=[f'{y:.2f}' for y in ys], zorder=100)
+        ax1.bar_label(p1, padding=8, labels=[f'{y:.2f}' for y in ys], zorder=200, fontsize=blabel_fontsize)
+        ax2.bar_label(p2, padding=8, labels=[f'{y:.2f}' for y in ys], zorder=100, fontsize=blabel_fontsize)
 
     fig.subplots_adjust(wspace=0.075)
     ax1.set_xlim(0.0, llim)
@@ -237,6 +245,8 @@ def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
     ax2.set_yticklabels([])
     ax1.axvline(x=1, color="black", linestyle="--")
 
+    ax1.tick_params(axis="x", labelsize=xlabel_fontsize)
+    ax2.tick_params(axis="x", labelsize=xlabel_fontsize)
 
     # https://stackoverflow.com/questions/59305080/formatting-a-broken-y-axis-in-python-matplotlib
     d = 0.9  # proportion of vertical to horizontal extent of the slanted line
@@ -250,9 +260,9 @@ def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
     #ax1.set_position([box.x0, box.y0 - box.height * 0.08, box.width, box.height * 1.08])
     # # display the legend below the chart, and make space so it doesn't overlap with the x axis title
     handles, labels = ax1.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.055), ncol=3, fontsize="small")
-    fig.suptitle(title)
-    fig.text(0.5, 0.13, 'Speedup Factor', ha='center', va='center')
+    fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.04), ncol=3, fontsize=legend_fontsize)
+    fig.suptitle(title, fontsize=title_fontsize)
+    fig.text(0.5, 0.13, 'Speedup Factor', ha='center', va='center', fontsize=xaxis_fontsize)
     fig.savefig(f"{out_path}.png")
     fig.savefig(f"{out_path}.pdf")
 
