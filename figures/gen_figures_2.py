@@ -174,7 +174,7 @@ colors = {
 
 def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
     width = 0.8 / 3
-    llim = 7.5
+    llim = 8.5
 
     lang_names = list(results.keys())
     bench_names = set()
@@ -184,18 +184,8 @@ def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
     bench_names = list(reversed(sorted(bench_names)))
     bench_indices = {name: i for i, name in enumerate(bench_names)}
 
-    # max_ratio = max(
-    #     experiment.baseline_nanos / experiment.defunc_nanos
-    #     for lang_results in results.values()
-    #     for experiment in lang_results.experiments
-    # )
-
-    # gs = gridspec.GridSpec(1, 2, width_ratios=[2,1])
-    # fig = plt.figure()
-    # ax1 = fig.add_subplot(gs[0])
-    # ax2 = fig.add_subplot(gs[1])
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 5), gridspec_kw={"width_ratios": [2, 1]})
-
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 6), gridspec_kw={"width_ratios": [2, 1]})
+    fig.subplots_adjust(top=0.925, bottom=0.2)
     ax1.set_yticks(np.arange(len(bench_names)))
     ax1.set_yticklabels(bench_names)
 
@@ -216,7 +206,7 @@ def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
             err_max.append(
                 experiment.max_baseline_nanos / experiment.min_defunc_nanos - y
             )
-        ax1.barh(
+        p1 = ax1.barh(
             xs,
             ys,
             width * 0.9,
@@ -224,7 +214,7 @@ def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
             label=lang_name,
             color=colors[lang_name],
         )
-        ax2.barh(
+        p2 = ax2.barh(
             xs,
             ys,
             width * 0.9,
@@ -232,52 +222,37 @@ def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
             label=lang_name,
             color=colors[lang_name],
         )
-        # put a text label on top of each bar displaying its height
-        for x, y, e in zip(xs, ys, err_max):
-            ax = None
-            offset = None
-            if y <= llim:
-                ax = ax1
-                offset = 1
-            else:
-                ax = ax2
-                offset = 10
-            ax.text(
-                y + e + offset,
-                x,
-                f"{y:.2f}×",
-                ha="left",
-                va="center",
-            )
+        ax1.bar_label(p1, padding=8, labels=[f'{y:.2f}' for y in ys], zorder=200)
+        ax2.bar_label(p2, padding=8, labels=[f'{y:.2f}' for y in ys], zorder=100)
 
-    fig.subplots_adjust(wspace=0.05)
+    fig.subplots_adjust(wspace=0.075)
     ax1.set_xlim(0.0, llim)
+    ax2.set_xlim(10.0, 110.0)
     ax1.yaxis.tick_left()
     ax1.spines['right'].set_visible(False)
     ax2.spines['left'].set_visible(False)
+    ax1.tick_params(axis='y', length=0)
+    ax2.tick_params(axis='y', length=0)
 
     ax2.set_yticklabels([])
-    ax2.set_xticklabels([])
-
     ax1.axvline(x=1, color="black", linestyle="--")
 
-    # draw break for upper axes
-    d = 0.01
-    kwargs = dict(transform=ax1.transAxes, color='k', clip_on=False, zorder=100)
-    ax1.plot((1-d,1+d), (-d,+d), **kwargs)
-    ax1.plot((1-d,1+d),(1-d,1+d), **kwargs)
-    # draw break for lower axes
-    kwargs.update(transform=ax2.transAxes)
-    ax2.plot((-d,+d), (1-d,1+d), **kwargs)
-    ax2.plot((-d,+d), (-d,+d), **kwargs)
+
+    # https://stackoverflow.com/questions/59305080/formatting-a-broken-y-axis-in-python-matplotlib
+    d = 0.9  # proportion of vertical to horizontal extent of the slanted line
+    kwargs = dict(marker=[(-1, -d), (1, d)], markersize=12,
+                linestyle="none", color='k', mec='k', mew=1, clip_on=False, zorder=100)
+    ax1.plot([1, 1], [1, 0], transform=ax1.transAxes, **kwargs)
+    ax2.plot([0, 0], [1, 0], transform=ax2.transAxes, **kwargs)
 
     # # shrink the plot to make room for the legend in the y direction
-    # box = ax1.get_position()
-    # ax1.set_position([box.x0, box.y0 - box.height * 0.08, box.width, box.height * 1.08])
+    #box = ax1.get_position()
+    #ax1.set_position([box.x0, box.y0 - box.height * 0.08, box.width, box.height * 1.08])
     # # display the legend below the chart, and make space so it doesn't overlap with the x axis title
-    # fig.legend(loc="lower center", bbox_to_anchor=(0.5, 0.01), ncol=3, fontsize="small")
+    handles, labels = ax1.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.055), ncol=3, fontsize="small")
     fig.suptitle(title)
-    fig.text(0.5, 0.04, 'Speedup Factor', ha='center', va='center')
+    fig.text(0.5, 0.13, 'Speedup Factor', ha='center', va='center')
     fig.savefig(f"{out_path}.png")
     fig.savefig(f"{out_path}.pdf")
 
@@ -331,6 +306,7 @@ def plot_log(title: str, results: Dict[str, Results], out_path: str) -> None:
         ax.bar_label(p1, padding=8, labels=[f'{y:.2f}' for y in ys])
         print(f'{lang_name}: {ys}')
 
+    ax.tick_params(axis='y', length=0)
     plt.axvline(x=1, color="black", linestyle="--")
 
     # shrink the plot to make room for the legend in the y direction
@@ -579,6 +555,16 @@ def main() -> None:
             "Morphic": results_native,
         },
         os.path.join(out_dir, "speedup_all_2"),
+    )
+
+    plot_broken(
+        "Speedup Due to Lambda Set Specialization",
+        {
+            "MLton": results_sml,
+            "OCaml": results_ocaml,
+            "Morphic": results_native,
+        },
+        os.path.join(out_dir, "speedup_all_broken_2"),
     )
 
 
