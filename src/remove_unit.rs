@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 // this pass does 2 things:
 // 1. for any 1 variant custom type, the custom type is removed and replaced with the variant
@@ -7,17 +7,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     data::{first_order_ast::*, intrinsics},
     intrinsic_config::intrinsic_sig,
-    util::{
-        graph::{self, Graph},
-        id_vec::IdVec,
-    },
+    util::id_vec::IdVec,
 };
 
 struct Context<'a> {
     locals: Vec<Type>,
     prog: &'a Program,
     type_reduction: BTreeMap<CustomTypeId, Type>,
-    current_local_id: BTreeMap<usize, Expr>,
+    current_local_id: BTreeMap<usize, usize>,
     new_local: usize,
     old_local: usize,
     remove_type_cache: BTreeMap<CustomTypeId, Type>,
@@ -41,17 +38,14 @@ impl<'a> Context<'a> {
                         continue;
                     } else {
                         let new_type = self.remove_type(type_);
-                        match new_type {
-                            Type::Tuple(inside) => new_types.push(inside),
-                            _ => new_types.push(vec![new_type]),
-                        }
+                        new_types.push(new_type);
                     }
                 }
 
-                if new_types.concat().len() == 1 {
-                    new_types.concat()[0].clone()
+                if new_types.len() == 1 {
+                    new_types.remove(0)
                 } else {
-                    Type::Tuple(new_types.concat())
+                    Type::Tuple(new_types)
                 }
             }
 
@@ -134,10 +128,7 @@ impl<'a> Context<'a> {
                 if self.is_unit(&self.locals[id.0].clone()) {
                     Expr::Tuple(Vec::new())
                 } else {
-                    match self.current_local_id.get(&id.0) {
-                        Some(t) => t.clone(),
-                        None => Expr::ByteLit(255),
-                    }
+                    Expr::Local(LocalId(self.current_local_id[&id.0]))
                 }
             }
             Expr::Tuple(exprs) => {
@@ -148,88 +139,14 @@ impl<'a> Context<'a> {
                         continue;
                     } else {
                         let new_expr = self.remove_expr(expr);
-                        new_exprs.push((self.remove_type(expr_type), new_expr));
+                        new_exprs.push(new_expr);
                     }
                 }
 
                 if new_exprs.len() == 1 {
-                    new_exprs.remove(0).1
+                    new_exprs.remove(0)
                 } else {
-                    let mut new_cases = Vec::new();
-                    let mut new_types = Vec::new();
-                    let mut pats = Vec::new();
-                    let mut num_vars = 0;
-
-                    let mut result_arm = Vec::new();
-
-                    for (expr_type, new_expr) in new_exprs {
-                        new_types.push(expr_type.clone());
-                        new_cases.push(new_expr);
-                        match expr_type {
-                            Type::Tuple(elem_types) => {
-                                let mut subpattern = Vec::new();
-                                for elem_type in elem_types {
-                                    subpattern.push(Pattern::Var(elem_type));
-                                    num_vars += 1;
-                                }
-                                pats.push(Pattern::Tuple(subpattern));
-                            }
-                            t => {
-                                num_vars += 1;
-                                pats.push(Pattern::Var(t));
-                            }
-                        }
-                    }
-
-                    let mut current_locals = self.old_local;
-                    for _ in 0..num_vars {
-                        result_arm.push(Expr::Local(LocalId(current_locals)));
-                        current_locals += 1;
-                    }
-
-                    fn pattern_noop(p: &Pattern, e: &Expr) -> bool {
-                        match (p, e) {
-                            (Pattern::Any(_), _) => true,
-                            (Pattern::Var(_), _) => true,
-                            (Pattern::Tuple(pats), Expr::Tuple(exps)) => {
-                                if pats.len() == exps.len() {
-                                    pats.iter()
-                                        .zip(exps)
-                                        .all(|(pat, exp)| pattern_noop(pat, &exp))
-                                } else {
-                                    false
-                                }
-                            }
-                            _ => false,
-                        }
-                    }
-
-                    fn flatten(e: Expr) -> Vec<Expr> {
-                        match e {
-                            Expr::Tuple(items) => items,
-                            t => vec![t.clone()],
-                        }
-                    }
-
-                    if pattern_noop(
-                        &Pattern::Tuple(pats.clone()),
-                        &Expr::Tuple(new_cases.clone()),
-                    ) {
-                        Expr::Tuple(
-                            new_cases
-                                .iter()
-                                .map(|x| flatten(x.clone()))
-                                .collect::<Vec<_>>()
-                                .concat(),
-                        )
-                    } else {
-                        Expr::Match(
-                            Box::new(Expr::Tuple(new_cases)),
-                            vec![(Pattern::Tuple(pats), Expr::Tuple(result_arm))],
-                            self.remove_type(Type::Tuple(new_types)),
-                        )
-                    }
-                    // match (f, g, h) with ((a b c) (d e) (f g)) -> (a b c d e f g)
+                    Expr::Tuple(new_exprs)
                 }
             }
             Expr::Call(purity, func_id, body) => {
@@ -264,9 +181,8 @@ impl<'a> Context<'a> {
             Expr::LetMany(bindings, result) => with_scope(self, |sub_ctx| {
                 let mut new_bindings = Vec::new();
                 for (lhs, rhs) in bindings {
-                    let expr = sub_ctx.remove_expr(rhs);
                     bind_pattern(sub_ctx, &lhs);
-                    new_bindings.push((sub_ctx.remove_pattern(lhs), expr));
+                    new_bindings.push((sub_ctx.remove_pattern(lhs), sub_ctx.remove_expr(rhs)));
                 }
 
                 Expr::LetMany(new_bindings, Box::new(sub_ctx.remove_expr(*result)))
@@ -312,84 +228,49 @@ impl<'a> Context<'a> {
                 Pattern::FloatConst(_) => 0,
             }
         }
-        fn remove_pattern_rec(ctx: &mut Context, p: Pattern) -> Vec<Pattern> {
-            if ctx.is_unit(&pat_to_type(&p)) {
-                ctx.new_local += count_bindings(&p);
-                return Vec::new();
+        match p {
+            Pattern::Any(p) => Pattern::Any(self.remove_type(p)),
+            Pattern::Var(p) => {
+                self.current_local_id.insert(self.new_local, self.old_local);
+                self.new_local += 1;
+                self.old_local += 1;
+                Pattern::Var(self.remove_type(p))
             }
-
-            let res = match p {
-                Pattern::Any(t) => match ctx.remove_type(t) {
-                    Type::Tuple(nested) => {
-                        let mut n = Vec::new();
-                        for nest in nested {
-                            n.push(Pattern::Any(nest));
-                        }
-                        n
-                    }
-                    a => vec![Pattern::Any(a)],
-                },
-                Pattern::Var(t) => {
-                    let real_type = ctx.remove_type(t.clone());
-                    match real_type {
-                        Type::Tuple(var_types) => {
-                            let mut new_vars = Vec::new();
-                            let mut result_vars = Vec::new();
-                            for new_var_type in var_types {
-                                new_vars.push(Pattern::Var(new_var_type));
-                                result_vars.push(Expr::Local(LocalId(ctx.old_local)));
-                                ctx.old_local += 1;
-                            }
-                            ctx.current_local_id
-                                .insert(ctx.new_local, Expr::Tuple(result_vars));
-                            ctx.new_local += 1;
-
-                            new_vars
-                        }
-                        t => {
-                            ctx.current_local_id
-                                .insert(ctx.new_local, Expr::Local(LocalId(ctx.old_local)));
-                            ctx.new_local += 1;
-                            ctx.old_local += 1;
-                            vec![Pattern::Var(ctx.remove_type(t))]
-                        }
-                    }
-                }
-                Pattern::Tuple(pats) => {
-                    let mut new_pats = Vec::new();
-                    for pat in pats {
-                        new_pats.push(remove_pattern_rec(ctx, pat));
-                    }
-                    new_pats.concat()
-                }
-                Pattern::Ctor(type_id, variant_id, maybe_pattern) => {
-                    if ctx.type_reduction.contains_key(&type_id) {
-                        match maybe_pattern {
-                            Some(pat) => remove_pattern_rec(ctx, *pat),
-                            None => Vec::new(),
-                        }
+            Pattern::Tuple(pats) => {
+                let mut new_pats = Vec::new();
+                for pat in pats {
+                    if self.is_unit(&pat_to_type(&pat)) {
+                        self.new_local += count_bindings(&pat)
                     } else {
-                        vec![Pattern::Ctor(
-                            type_id,
-                            variant_id,
-                            maybe_pattern.map(|pat| Box::new(ctx.remove_pattern(*pat))),
-                        )]
+                        let new_pat = self.remove_pattern(pat);
+                        new_pats.push(new_pat);
                     }
                 }
-                Pattern::BoolConst(b) => vec![Pattern::BoolConst(b)],
-                Pattern::ByteConst(b) => vec![Pattern::ByteConst(b)],
-                Pattern::IntConst(b) => vec![Pattern::IntConst(b)],
-                Pattern::FloatConst(b) => vec![Pattern::FloatConst(b)],
-            };
-            res
-        }
-        let result = remove_pattern_rec(self, p);
-        if result.len() == 0 {
-            Pattern::Tuple(Vec::new())
-        } else if result.len() == 1 {
-            result[0].clone()
-        } else {
-            Pattern::Tuple(result)
+
+                if new_pats.len() == 1 {
+                    new_pats.remove(0)
+                } else {
+                    Pattern::Tuple(new_pats)
+                }
+            }
+            Pattern::Ctor(type_id, variant_id, maybe_pattern) => {
+                if self.type_reduction.contains_key(&type_id) {
+                    match maybe_pattern {
+                        Some(pat) => self.remove_pattern(*pat),
+                        None => Pattern::Tuple(Vec::new()),
+                    }
+                } else {
+                    Pattern::Ctor(
+                        type_id,
+                        variant_id,
+                        maybe_pattern.map(|pat| Box::new(self.remove_pattern(*pat))),
+                    )
+                }
+            }
+            Pattern::BoolConst(b) => Pattern::BoolConst(b),
+            Pattern::ByteConst(b) => Pattern::ByteConst(b),
+            Pattern::IntConst(b) => Pattern::IntConst(b),
+            Pattern::FloatConst(b) => Pattern::FloatConst(b),
         }
     }
 
@@ -503,47 +384,24 @@ fn bind_pattern(ctx: &mut Context, pattern: &Pattern) {
 }
 
 pub fn remove_unit(prog: &Program) -> Program {
-    fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
-        match type_ {
-            Type::Bool => {}
-            Type::Num(_) => {}
-            Type::Array(elem_type) => {
-                add_type_deps(deps, elem_type);
-            }
-            Type::HoleArray(elem_type) => {
-                add_type_deps(deps, elem_type);
-            }
-            Type::Tuple(elem_types) => {
-                for elem_type in elem_types {
-                    add_type_deps(deps, elem_type);
-                }
-            }
-            Type::Custom(custom_type_id) => {
-                deps.insert(*custom_type_id);
-            }
-        }
-    }
-
     fn compute_reduction(
         prog: &Program,
         type_reduction: &mut BTreeMap<CustomTypeId, Type>,
         type_id: CustomTypeId,
-        recursive_types: &BTreeSet<CustomTypeId>,
     ) -> Type {
         if let Some(t) = type_reduction.get(&type_id) {
             return t.clone();
         }
 
         let type_def = &prog.custom_types[type_id];
-        if type_def.variants.len() == 1 && !recursive_types.contains(&type_id) {
+        if type_def.variants.len() == 1 {
             match &type_def.variants.items[0] {
                 None => {
                     type_reduction.insert(type_id, Type::Tuple(Vec::new()));
                     return Type::Tuple(Vec::new());
                 }
                 Some(Type::Custom(new_type_id)) => {
-                    let new_type =
-                        compute_reduction(prog, type_reduction, *new_type_id, recursive_types);
+                    let new_type = compute_reduction(prog, type_reduction, *new_type_id);
                     type_reduction.insert(type_id, new_type.clone());
                     return new_type;
                 }
@@ -557,40 +415,9 @@ pub fn remove_unit(prog: &Program) -> Program {
         return Type::Custom(type_id);
     }
 
-    let type_graph = Graph {
-        edges_out: prog.custom_types.map(|_, type_def| {
-            let mut deps = BTreeSet::new();
-            for variant in &type_def.variants {
-                match variant.1 {
-                    Some(type_) => {
-                        add_type_deps(&mut deps, &type_);
-                    }
-                    None => {}
-                }
-            }
-            deps.into_iter().collect()
-        }),
-    };
-
-    let type_sccs = graph::strongly_connected(&type_graph);
-
-    let mut recursive_types = BTreeSet::new();
-
-    for scc in type_sccs {
-        if scc.len() > 1 {
-            for component in scc {
-                recursive_types.insert(component);
-            }
-        } else {
-            if type_graph.edges_out[scc[0]].contains(&scc[0]) {
-                recursive_types.insert(scc[0]);
-            }
-        }
-    }
-
     let mut type_reduction = BTreeMap::new();
     for (type_id, _type_def) in &prog.custom_types {
-        compute_reduction(&prog, &mut type_reduction, type_id, &recursive_types);
+        compute_reduction(&prog, &mut type_reduction, type_id);
     }
 
     let mut ctx = Context {
