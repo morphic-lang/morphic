@@ -1,5 +1,6 @@
 from typing import List, Dict
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import os.path
 import re
 import json
@@ -171,8 +172,179 @@ colors = {
 #     fig.savefig(f"{out_path}.pdf")
 
 
+def plot_broken(title: str, results: Dict[str, Results], out_path: str) -> None:
+    width = 0.8 / 3
+    llim = 7.5
+
+    lang_names = list(results.keys())
+    bench_names = set()
+    for lang_results in results.values():
+        for experiment in lang_results.experiments:
+            bench_names.add(experiment.name)
+    bench_names = list(reversed(sorted(bench_names)))
+    bench_indices = {name: i for i, name in enumerate(bench_names)}
+
+    # max_ratio = max(
+    #     experiment.baseline_nanos / experiment.defunc_nanos
+    #     for lang_results in results.values()
+    #     for experiment in lang_results.experiments
+    # )
+
+    # gs = gridspec.GridSpec(1, 2, width_ratios=[2,1])
+    # fig = plt.figure()
+    # ax1 = fig.add_subplot(gs[0])
+    # ax2 = fig.add_subplot(gs[1])
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 5), gridspec_kw={"width_ratios": [2, 1]})
+
+    ax1.set_yticks(np.arange(len(bench_names)))
+    ax1.set_yticklabels(bench_names)
+
+    for i, lang_name in enumerate(lang_names):
+        offset = -(i * width - width * (len(lang_names) - 1) / 2)
+        lang_results = results[lang_name]
+        xs = []
+        ys = []
+        err_min = []
+        err_max = []
+        for experiment in lang_results.experiments:
+            xs.append(bench_indices[experiment.name] + offset)
+            y = experiment.baseline_nanos / experiment.defunc_nanos
+            ys.append(y)
+            err_min.append(
+                -(experiment.min_baseline_nanos / experiment.max_defunc_nanos - y)
+            )
+            err_max.append(
+                experiment.max_baseline_nanos / experiment.min_defunc_nanos - y
+            )
+        ax1.barh(
+            xs,
+            ys,
+            width * 0.9,
+            xerr=[err_min, err_max],
+            label=lang_name,
+            color=colors[lang_name],
+        )
+        ax2.barh(
+            xs,
+            ys,
+            width * 0.9,
+            xerr=[err_min, err_max],
+            label=lang_name,
+            color=colors[lang_name],
+        )
+        # put a text label on top of each bar displaying its height
+        for x, y, e in zip(xs, ys, err_max):
+            ax = None
+            offset = None
+            if y <= llim:
+                ax = ax1
+                offset = 1
+            else:
+                ax = ax2
+                offset = 10
+            ax.text(
+                y + e + offset,
+                x,
+                f"{y:.2f}×",
+                ha="left",
+                va="center",
+            )
+
+    fig.subplots_adjust(wspace=0.05)
+    ax1.set_xlim(0.0, llim)
+    ax1.yaxis.tick_left()
+    ax1.spines['right'].set_visible(False)
+    ax2.spines['left'].set_visible(False)
+
+    ax2.set_yticklabels([])
+    ax2.set_xticklabels([])
+
+    ax1.axvline(x=1, color="black", linestyle="--")
+
+    # draw break for upper axes
+    d = 0.01
+    kwargs = dict(transform=ax1.transAxes, color='k', clip_on=False, zorder=100)
+    ax1.plot((1-d,1+d), (-d,+d), **kwargs)
+    ax1.plot((1-d,1+d),(1-d,1+d), **kwargs)
+    # draw break for lower axes
+    kwargs.update(transform=ax2.transAxes)
+    ax2.plot((-d,+d), (1-d,1+d), **kwargs)
+    ax2.plot((-d,+d), (-d,+d), **kwargs)
+
+    # # shrink the plot to make room for the legend in the y direction
+    # box = ax1.get_position()
+    # ax1.set_position([box.x0, box.y0 - box.height * 0.08, box.width, box.height * 1.08])
+    # # display the legend below the chart, and make space so it doesn't overlap with the x axis title
+    # fig.legend(loc="lower center", bbox_to_anchor=(0.5, 0.01), ncol=3, fontsize="small")
+    fig.suptitle(title)
+    fig.text(0.5, 0.04, 'Speedup Factor', ha='center', va='center')
+    fig.savefig(f"{out_path}.png")
+    fig.savefig(f"{out_path}.pdf")
+
+
+def plot_log(title: str, results: Dict[str, Results], out_path: str) -> None:
+    width = 0.8 / 3
+
+    lang_names = list(results.keys())
+    bench_names = set()
+    for lang_results in results.values():
+        for experiment in lang_results.experiments:
+            bench_names.add(experiment.name)
+    bench_names = list(reversed(sorted(bench_names)))
+    bench_indices = {name: i for i, name in enumerate(bench_names)}
+
+    fig, ax = plt.subplots()
+    ax.set_title(title)
+    ax.set_xlabel("Speedup Factor")
+    ax.set_yticks(np.arange(len(bench_names)))
+    ax.set_yticklabels(bench_names)
+
+    ax.set_xscale("log")
+    ax.set_xlim(right=100)
+    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+
+    for i, lang_name in enumerate(lang_names):
+        offset = -(i * width - width * (len(lang_names) - 1) / 2)
+        lang_results = results[lang_name]
+        xs = []
+        ys = []
+        err_min = []
+        err_max = []
+        for experiment in lang_results.experiments:
+            xs.append(bench_indices[experiment.name] + offset)
+            y = experiment.baseline_nanos / experiment.defunc_nanos
+            ys.append(y)
+            err_min.append(
+                -(experiment.min_baseline_nanos / experiment.max_defunc_nanos - y)
+            )
+            err_max.append(
+                experiment.max_baseline_nanos / experiment.min_defunc_nanos - y
+            )
+        p1 = ax.barh(
+            xs,
+            ys,
+            width * 0.9,
+            xerr=[err_min, err_max],
+            label=lang_name,
+            color=colors[lang_name],
+        )
+        ax.bar_label(p1, padding=8, labels=[f'{y:.2f}' for y in ys])
+        print(f'{lang_name}: {ys}')
+
+    plt.axvline(x=1, color="black", linestyle="--")
+
+    # shrink the plot to make room for the legend in the y direction
+    box = ax.get_position()
+    ax.set_position([box.x0, box.y0 - box.height * 0.08, box.width, box.height * 1.08])
+    # display the legend below the chart, and make space so it doesn't overlap with the x axis title
+    fig.legend(loc="lower center", bbox_to_anchor=(0.5, 0.01), ncol=3, fontsize="small")
+    fig.tight_layout()
+    fig.savefig(f"{out_path}.png")
+    fig.savefig(f"{out_path}.pdf")
+
+
 def plot(title: str, results: Dict[str, Results], out_path: str) -> None:
-    width = 0.8 / 2
+    width = 0.8 / 3
 
     lang_names = list(results.keys())
     bench_names = set()
@@ -397,6 +569,16 @@ def main() -> None:
             "Morphic": results_native,
         },
         os.path.join(out_dir, "absolute_run_time_2"),
+    )
+
+    plot_log(
+        "Speedup Due to Lambda Set Specialization",
+        {
+            "MLton": results_sml,
+            "OCaml": results_ocaml,
+            "Morphic": results_native,
+        },
+        os.path.join(out_dir, "speedup_all_2"),
     )
 
 
