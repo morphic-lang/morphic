@@ -266,7 +266,7 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    for ml_variant in [/* MlConfig::Ocaml, */ MlConfig::Sml] {
+    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
         let tag = match ml_variant {
             MlConfig::Sml => "sml",
             MlConfig::Ocaml => "ocaml",
@@ -380,7 +380,7 @@ fn compile_sample(
         },
     );
 
-    for ml_variant in [/* MlConfig::Ocaml, */ MlConfig::Sml] {
+    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
         for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
             compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
         }
