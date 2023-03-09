@@ -417,8 +417,8 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.remove_indent();
                 self.remove_locals(total_locals);
 
-                self.writeln()?;
                 if let MlVariant::SML = self.variant {
+                    self.writeln()?;
                     self.write("end")?;
                 }
             }
@@ -608,8 +608,8 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 
     fn write_program(&mut self, prog: &Program) -> io::Result<()> {
-        self.write("(* Lines 1-600ish are prelude, included in every generated program. *)\n")?;
-        self.write("(* The generated program begins around line 600. *)")?;
+        self.write("(* Lines 1-150ish are prelude, included in every generated program. *)\n")?;
+        self.write("(* The generated program begins around line 150. *)")?;
         self.writeln()?;
         match self.variant {
             MlVariant::OCAML => {
@@ -687,7 +687,8 @@ impl<'a, 'b> Context<'a, 'b> {
                 if !reachable.contains(id) {
                     continue;
                 }
-
+            }
+            for (i, id) in scc.iter().enumerate() {
                 let val = &prog.vals[id];
                 if let Expr::Lam(_purity, _arg_type, ret_type, pattern, body, prof) = &val.body {
                     if let Some(prof_id) = prof {

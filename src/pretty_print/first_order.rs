@@ -470,8 +470,8 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.remove_indent();
                 self.remove_locals(total_locals);
 
-                self.writeln()?;
                 if let MlVariant::SML = self.variant {
+                    self.writeln()?;
                     self.write("end")?;
                 }
             }
@@ -584,9 +584,9 @@ impl<'a, 'b> Context<'a, 'b> {
         type_id: CustomTypeId,
         def: &TypeDef,
         is_first: bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         if def.variants.len() == 0 {
-            return Ok(());
+            return Ok(false);
         }
 
         if is_first {
@@ -620,7 +620,7 @@ impl<'a, 'b> Context<'a, 'b> {
             self.writeln()?;
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn write_custom_func_id(&mut self, func_id: CustomFuncId) -> io::Result<()> {
@@ -667,8 +667,8 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 
     fn write_program(&mut self, prog: &Program) -> io::Result<()> {
-        self.write("(* Lines 1-600ish are prelude, included in every generated program. *)\n")?;
-        self.write("(* The generated program begins around line 600. *)")?;
+        self.write("(* Lines 1-150ish are prelude, included in every generated program. *)\n")?;
+        self.write("(* The generated program begins around line 150. *)")?;
         self.writeln()?;
         match self.variant {
             MlVariant::OCAML => {
@@ -702,12 +702,14 @@ impl<'a, 'b> Context<'a, 'b> {
         for scc in type_sccs {
             for (i, id) in scc.iter().enumerate() {
                 let type_def = &prog.custom_types[id];
-                if i == 0 {
-                    self.write_custom_type(*id, type_def, true)?;
+                let written = if i == 0 {
+                    self.write_custom_type(*id, type_def, true)?
                 } else {
-                    self.write_custom_type(*id, type_def, false)?;
+                    self.write_custom_type(*id, type_def, false)?
+                };
+                if written {
+                    self.writeln()?;
                 }
-                self.writeln()?;
             }
         }
 
@@ -746,7 +748,9 @@ impl<'a, 'b> Context<'a, 'b> {
                 if !reachable.contains(id) {
                     continue;
                 }
+            }
 
+            for (i, id) in scc.iter().enumerate() {
                 let func = &prog.funcs[id];
 
                 if let Some(prof_id) = func.profile_point {
