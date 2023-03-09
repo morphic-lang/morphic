@@ -172,7 +172,7 @@ impl Default for SampleOptions {
     }
 }
 
-const OUT_DIR: &str = "out2";
+const OUT_DIR: &str = "benchmark_out";
 
 fn build_exe(
     bench_name: &str,
@@ -185,18 +185,18 @@ fn build_exe(
 ) -> (PathBuf, ArtifactDir) {
     let variant_name = format!("{bench_name}_{tag}");
 
-    if !std::env::current_dir().unwrap().join("out2").exists() {
-        std::fs::create_dir(std::env::current_dir().unwrap().join("out2")).unwrap();
+    if !std::env::current_dir().unwrap().join(OUT_DIR).exists() {
+        std::fs::create_dir(std::env::current_dir().unwrap().join(OUT_DIR)).unwrap();
     }
 
     let binary_path = std::env::current_dir()
         .unwrap()
-        .join("out2")
+        .join(OUT_DIR)
         .join(variant_name.clone());
 
     let artifact_path = std::env::current_dir()
         .unwrap()
-        .join("out2")
+        .join(OUT_DIR)
         .join(format!("{bench_name}-{tag}-artifacts"));
 
     let artifact_dir = ArtifactDir {
@@ -266,7 +266,7 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+    for ml_variant in [/* MlConfig::Ocaml, */ MlConfig::Sml] {
         let tag = match ml_variant {
             MlConfig::Sml => "sml",
             MlConfig::Ocaml => "ocaml",
@@ -274,7 +274,7 @@ fn bench_sample(
 
         let artifact_path = std::env::current_dir()
             .unwrap()
-            .join("out2")
+            .join(OUT_DIR)
             .join(format!("{bench_name}-ml-artifacts"));
 
         let artifact_dir = ArtifactDir {
@@ -308,7 +308,7 @@ fn bench_sample(
 
         let exe_path = std::env::current_dir()
             .unwrap()
-            .join("out2")
+            .join(OUT_DIR)
             .join(variant_name.clone());
 
         let mut results = Vec::new();
@@ -380,7 +380,7 @@ fn compile_sample(
         },
     );
 
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+    for ml_variant in [/* MlConfig::Ocaml, */ MlConfig::Sml] {
         for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
             compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
         }
@@ -505,7 +505,6 @@ struct BasicProfReport {
 }
 
 fn sample_primes() {
-    // let iters = (10, 100);
     let iters = (10, 10);
 
     let stdin = "100000\n";
@@ -530,7 +529,6 @@ fn sample_primes() {
 }
 
 fn sample_quicksort() {
-    // let iters = (10, 1000);
     let iters = (10, 100);
 
     let length = 10000;
@@ -576,7 +574,6 @@ fn sample_quicksort() {
 }
 
 fn sample_primes_sieve() {
-    // let iters = (10, 1000);
     let iters = (10, 100);
 
     let stdin = "10000\n";
@@ -594,7 +591,6 @@ fn sample_primes_sieve() {
 }
 
 fn sample_parse_json() {
-    // let iters = (10, 100);
     let iters = (10, 10);
 
     let stdin = concat!(
@@ -622,7 +618,6 @@ fn sample_parse_json() {
 }
 
 fn sample_calc() {
-    // let iters = (10, 2000);
     let iters = (10, 200);
 
     let stdin = concat!(
@@ -659,6 +654,9 @@ fn sample_unify() {
         "samples/bench_unify.mor",
         &[],
         "solve_problems",
+        // NOTE: Passing 'RcMode::Trivial' here disables an optimization pass unrelated to LSS which
+        // has buggy behavior on this benchmark. This only affects the compilation of the benchmark
+        // under Morphic, and has no effect on the generated code for SML or OCaml.
         RcMode::Trivial,
     );
 
@@ -684,13 +682,13 @@ fn main() {
         std::process::exit(1);
     }
 
+    sample_parse_json();
+
     sample_quicksort();
 
     sample_primes();
 
     sample_primes_sieve();
-
-    sample_parse_json();
 
     sample_calc();
 

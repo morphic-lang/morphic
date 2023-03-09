@@ -12,6 +12,7 @@
 **/*.o
 **/*.prof
 out2
+benchmark_out
 
 
 # Editor/system files

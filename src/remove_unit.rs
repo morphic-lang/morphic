@@ -53,7 +53,10 @@ impl<'a> Context<'a> {
                 Some(res) => res.clone(),
                 None => {
                     let res = match self.type_reduction.get(&type_id) {
-                        Some(t) => self.remove_type(t.clone()),
+                        Some(t) => {
+                            let t = t.clone();
+                            self.remove_type(t.clone())
+                        }
                         None => Type::Custom(type_id),
                     };
                     self.remove_type_cache.insert(type_id, res.clone());

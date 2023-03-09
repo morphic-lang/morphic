@@ -1900,9 +1900,9 @@ fn get_target_machine(
 
     let (target_triple, target_cpu, target_features) = match target {
         cli::LlvmConfig::Native => (
-            TargetMachine::get_default_triple(),
-            TargetMachine::get_host_cpu_name().to_string(),
-            TargetMachine::get_host_cpu_features().to_string(),
+            TargetTriple::create("x86_64-pc-linux-gnu"),
+            "sandybridge".to_owned(),
+            "+sse".to_owned(),
         ),
         cli::LlvmConfig::Wasm => (
             TargetTriple::create("wasm32-unknown-unknown"),
