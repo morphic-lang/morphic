@@ -1,0 +1,56 @@
+// based off https://github.com/koka-lang/koka/blob/b3122869ac74bfb6f432f7e76eeb723b1f69a491/test/bench/koka/nqueens.kk
+
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io expose { writeln },
+    module String expose { int_to_string },
+  }
+
+type Solution {
+  Solution(Array Int),
+}
+
+type Solutions {
+  Solutions(Array Solution),
+}
+
+safe(queen: Int, diag: Int, xs: Array Int): Bool =
+  if len(xs) = 0 {
+    True
+  } else {
+    let (qs, q) = pop(xs) in
+    !(queen = q) && !(queen = (q + diag)) && !(queen = (q - diag)) && safe(queen, diag + 1, qs)
+  }
+
+append_safe(queen: Int, xs: Array Int, xss: Array (Array Int)): Array (Array Int)=
+  if queen <= 0 {
+    xss
+  }
+  else {
+    if safe(queen, 1, xs) {
+      append_safe(queen - 1, xs, push(xss, push(xs, queen)))
+    } else {
+      append_safe(queen - 1, xs, xss)
+    }
+  }
+
+extend(queen: Int, acc: Array (Array Int), xss: Array (Array Int)): Array (Array Int) =
+  if len(xss) = 0 {
+    acc
+  } else {
+    let (rest, xs) = pop(xss) in
+    extend(queen, append_safe(queen, xs, acc), rest)
+  }
+
+find_solutions(n : Int, queen: Int): Array (Array Int) =
+  if queen = 0 {
+    [[]]
+  } else {
+    extend(n, [], find_solutions(n, queen - 1))
+  }
+
+queens(n : Int): Int =
+  len(find_solutions(n, n))
+
+proc main(): () =
+  do output(int_to_string(queens(13)))
