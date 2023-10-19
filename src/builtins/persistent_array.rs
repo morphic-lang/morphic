@@ -617,9 +617,14 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             });
 
             s.if_(s.eq(len, s.i64(1)), |s| {
-                let item = s.arr_get(s.gep(s.field(array, F_ARR_TAIL), F_LEAF_ITEMS), s.i64(0));
+                let result_tail = s.call(
+                    self.obtain_unique_tail,
+                    &[s.field(array, F_ARR_TAIL), s.i64(1)],
+                );
 
-                s.free(s.field(array, F_ARR_TAIL), tal);
+                let item = s.arr_get(s.gep(result_tail, F_LEAF_ITEMS), s.i64(0));
+
+                s.free(result_tail, tal);
 
                 let empty_arr = s.call(self.interface.new, &[]);
 
