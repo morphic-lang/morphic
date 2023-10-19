@@ -744,7 +744,7 @@ impl<'a, 'b> Context<'a, 'b> {
         let mut profile_points: BTreeMap<ProfilePointId, CustomFuncId> = BTreeMap::new();
 
         for scc in func_sccs {
-            for (i, id) in scc.iter().enumerate() {
+            for id in &scc {
                 if !reachable.contains(id) {
                     continue;
                 }
