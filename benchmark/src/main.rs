@@ -266,42 +266,42 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-        let tag = match ml_variant {
-            MlConfig::Sml => "sml",
-            MlConfig::Ocaml => "ocaml",
-        };
+    // for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+    //     let tag = match ml_variant {
+    //         MlConfig::Sml => "sml",
+    //         MlConfig::Ocaml => "ocaml",
+    //     };
 
-        let artifact_path = std::env::current_dir()
-            .unwrap()
-            .join("out2")
-            .join(format!("{bench_name}-ml-artifacts"));
+    //     let artifact_path = std::env::current_dir()
+    //         .unwrap()
+    //         .join("out2")
+    //         .join(format!("{bench_name}-ml-artifacts"));
 
-        let artifact_dir = ArtifactDir {
-            dir_path: artifact_path.clone(),
-            filename_prefix: Path::new(bench_name).to_path_buf(),
-        };
+    //     let artifact_dir = ArtifactDir {
+    //         dir_path: artifact_path.clone(),
+    //         filename_prefix: Path::new(bench_name).to_path_buf(),
+    //     };
 
-        for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
-            let ast_str = match ast {
-                MlAst::Typed => "typed",
-                MlAst::Mono => "mono",
-                MlAst::FirstOrder => "first_order",
-            };
-            println!("benchmarking ml {bench_name} {tag} {ast_str}");
-            bench_ml_sample(
-                iters,
-                bench_name,
-                ml_variant,
-                ast,
-                &artifact_dir,
-                extra_stdin,
-                expected_stdout,
-            );
-        }
-    }
+    //     for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
+    //         let ast_str = match ast {
+    //             MlAst::Typed => "typed",
+    //             MlAst::Mono => "mono",
+    //             MlAst::FirstOrder => "first_order",
+    //         };
+    //         println!("benchmarking ml {bench_name} {tag} {ast_str}");
+    //         bench_ml_sample(
+    //             iters,
+    //             bench_name,
+    //             ml_variant,
+    //             ast,
+    //             &artifact_dir,
+    //             extra_stdin,
+    //             expected_stdout,
+    //         );
+    //     }
+    // }
 
-    let variants = ["native_single", "native_specialize"];
+    let variants = ["native_elide", "native_trivial"];
 
     for tag in variants {
         let variant_name = format!("{bench_name}_{tag}");
@@ -340,14 +340,18 @@ fn compile_sample(
     src_path: impl AsRef<Path> + Clone,
     profile_mod: &[&str],
     profile_func: &str,
-    rc_mode: RcMode,
 ) {
+    // let variants = [
+    //     ("native_single", SpecializationMode::Single),
+    //     ("native_specialize", SpecializationMode::Specialize),
+    // ];
+
     let variants = [
-        ("native_single", SpecializationMode::Single),
-        ("native_specialize", SpecializationMode::Specialize),
+        ("native_elide", RcMode::Elide),
+        ("native_trivial", RcMode::Trivial),
     ];
 
-    for (tag, defunc_mode) in variants {
+    for (tag, rc_mode) in variants {
         println!("compiling {bench_name}_{tag}");
         let (exe_path, _artifact_dir) = build_exe(
             bench_name,
@@ -355,7 +359,7 @@ fn compile_sample(
             src_path.clone(),
             profile_mod,
             profile_func,
-            defunc_mode,
+            SpecializationMode::Specialize,
             SampleOptions {
                 is_native: true,
                 rc_mode,
@@ -365,137 +369,137 @@ fn compile_sample(
         write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
     }
 
-    println!("compiling ml artifacts for {bench_name}",);
+    // println!("compiling ml artifacts for {bench_name}",);
 
-    let (_exe_path, artifact_dir) = build_exe(
-        bench_name,
-        "ml",
-        src_path.clone(),
-        profile_mod,
-        profile_func,
-        SpecializationMode::Specialize,
-        SampleOptions {
-            is_native: false,
-            rc_mode,
-        },
-    );
+    // let (_exe_path, artifact_dir) = build_exe(
+    //     bench_name,
+    //     "ml",
+    //     src_path.clone(),
+    //     profile_mod,
+    //     profile_func,
+    //     SpecializationMode::Specialize,
+    //     SampleOptions {
+    //         is_native: false,
+    //         rc_mode,
+    //     },
+    // );
 
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-        for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
-            compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
-        }
-    }
+    // for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+    //     for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
+    //         compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
+    //     }
+    // }
 }
 
-fn bench_ml_sample(
-    iters: (u64, u64),
-    bench_name: &str,
-    ml_variant: cli::MlConfig,
-    ast: MlAst,
-    artifacts: &ArtifactDir,
-    extra_stdin: &str,
-    expected_stdout: &str,
-) {
-    let ml_variant_str = match ml_variant {
-        cli::MlConfig::Sml => "sml",
-        cli::MlConfig::Ocaml => "ocaml",
-    };
+// fn bench_ml_sample(
+//     iters: (u64, u64),
+//     bench_name: &str,
+//     ml_variant: cli::MlConfig,
+//     ast: MlAst,
+//     artifacts: &ArtifactDir,
+//     extra_stdin: &str,
+//     expected_stdout: &str,
+// ) {
+//     let ml_variant_str = match ml_variant {
+//         cli::MlConfig::Sml => "sml",
+//         cli::MlConfig::Ocaml => "ocaml",
+//     };
 
-    let ast = match ast {
-        MlAst::Typed => "typed",
-        MlAst::Mono => "mono",
-        MlAst::FirstOrder => "first_order",
-    };
+//     let ast = match ast {
+//         MlAst::Typed => "typed",
+//         MlAst::Mono => "mono",
+//         MlAst::FirstOrder => "first_order",
+//     };
 
-    let variant_name = format!("{bench_name}_{ml_variant_str}_{ast}");
+//     let variant_name = format!("{bench_name}_{ml_variant_str}_{ast}");
 
-    let output_path = artifacts.artifact_path(&format!("{ast}-{ml_variant_str}"));
+//     let output_path = artifacts.artifact_path(&format!("{ast}-{ml_variant_str}"));
 
-    let mut results = Vec::new();
-    for _ in 0..iters.0 {
-        let report: Vec<MlProfReport> =
-            run_exe(&output_path, iters.1, extra_stdin, expected_stdout);
+//     let mut results = Vec::new();
+//     for _ in 0..iters.0 {
+//         let report: Vec<MlProfReport> =
+//             run_exe(&output_path, iters.1, extra_stdin, expected_stdout);
 
-        assert_eq!(report.len(), 1);
+//         assert_eq!(report.len(), 1);
 
-        assert_eq!(report[0].total_calls, iters.1);
-        let total_nanos = report[0].total_clock_nanos;
+//         assert_eq!(report[0].total_calls, iters.1);
+//         let total_nanos = report[0].total_clock_nanos;
 
-        results.push(Duration::from_nanos(total_nanos));
-    }
+//         results.push(Duration::from_nanos(total_nanos));
+//     }
 
-    write_run_time(&variant_name, results);
-}
+//     write_run_time(&variant_name, results);
+// }
 
-#[derive(Copy, Clone, Debug)]
-enum MlAst {
-    Typed,
-    Mono,
-    FirstOrder,
-}
+// #[derive(Copy, Clone, Debug)]
+// enum MlAst {
+//     Typed,
+//     Mono,
+//     FirstOrder,
+// }
 
-fn compile_ml_sample(
-    bench_name: &str,
-    ml_variant: cli::MlConfig,
-    ast: MlAst,
-    artifacts: &ArtifactDir,
-) {
-    let ml_variant_str = match ml_variant {
-        cli::MlConfig::Sml => "sml",
-        cli::MlConfig::Ocaml => "ocaml",
-    };
+// fn compile_ml_sample(
+//     bench_name: &str,
+//     ml_variant: cli::MlConfig,
+//     ast: MlAst,
+//     artifacts: &ArtifactDir,
+// ) {
+//     let ml_variant_str = match ml_variant {
+//         cli::MlConfig::Sml => "sml",
+//         cli::MlConfig::Ocaml => "ocaml",
+//     };
 
-    let ast_str = match ast {
-        MlAst::Typed => "typed",
-        MlAst::Mono => "mono",
-        MlAst::FirstOrder => "first_order",
-    };
+//     let ast_str = match ast {
+//         MlAst::Typed => "typed",
+//         MlAst::Mono => "mono",
+//         MlAst::FirstOrder => "first_order",
+//     };
 
-    let variant_name = format!("{bench_name}_{ml_variant_str}_{ast_str}");
+//     let variant_name = format!("{bench_name}_{ml_variant_str}_{ast_str}");
 
-    let output_path = artifacts.artifact_path(&format!("{ast_str}-{ml_variant_str}"));
+//     let output_path = artifacts.artifact_path(&format!("{ast_str}-{ml_variant_str}"));
 
-    if output_path.exists() {
-        return;
-    }
+//     if output_path.exists() {
+//         return;
+//     }
 
-    match ml_variant {
-        cli::MlConfig::Sml => {
-            let mlton_output = process::Command::new("mlton")
-                .arg("-default-type")
-                .arg("int64")
-                .arg("-output")
-                .arg(&output_path)
-                .arg(artifacts.artifact_path(&format!("{ast_str}.sml")))
-                .output()
-                .expect("Compilation failed");
+//     match ml_variant {
+//         cli::MlConfig::Sml => {
+//             let mlton_output = process::Command::new("mlton")
+//                 .arg("-default-type")
+//                 .arg("int64")
+//                 .arg("-output")
+//                 .arg(&output_path)
+//                 .arg(artifacts.artifact_path(&format!("{ast_str}.sml")))
+//                 .output()
+//                 .expect("Compilation failed");
 
-            assert!(
-                mlton_output.status.success(),
-                "Compilation failed:\n{}",
-                String::from_utf8_lossy(&mlton_output.stderr)
-            );
-        }
-        cli::MlConfig::Ocaml => {
-            let ocaml_output = process::Command::new("ocamlopt")
-                .arg("unix.cmxa")
-                .arg("-O3")
-                .arg(artifacts.artifact_path(&format!("{ast_str}.ml")))
-                .arg("-o")
-                .arg(&output_path)
-                .output()
-                .expect("Compilation failed");
+//             assert!(
+//                 mlton_output.status.success(),
+//                 "Compilation failed:\n{}",
+//                 String::from_utf8_lossy(&mlton_output.stderr)
+//             );
+//         }
+//         cli::MlConfig::Ocaml => {
+//             let ocaml_output = process::Command::new("ocamlopt")
+//                 .arg("unix.cmxa")
+//                 .arg("-O3")
+//                 .arg(artifacts.artifact_path(&format!("{ast_str}.ml")))
+//                 .arg("-o")
+//                 .arg(&output_path)
+//                 .output()
+//                 .expect("Compilation failed");
 
-            assert!(
-                ocaml_output.status.success(),
-                "Compilation failed:\n{}",
-                String::from_utf8_lossy(&ocaml_output.stderr)
-            );
-        }
-    }
+//             assert!(
+//                 ocaml_output.status.success(),
+//                 "Compilation failed:\n{}",
+//                 String::from_utf8_lossy(&ocaml_output.stderr)
+//             );
+//         }
+//     }
 
-    write_binary_size(&variant_name, &output_path);
-}
+//     write_binary_size(&variant_name, &output_path);
+// }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -516,7 +520,6 @@ fn sample_primes() {
         "samples/bench_primes_iter.mor",
         &[],
         "count_primes",
-        RcMode::default(),
     );
 
     bench_sample(
@@ -562,7 +565,6 @@ fn sample_quicksort() {
         "samples/bench_quicksort.mor",
         &[],
         "quicksort",
-        RcMode::default(),
     );
 
     bench_sample(
@@ -587,7 +589,6 @@ fn sample_primes_sieve() {
         "samples/bench_primes_sieve.mor",
         &[],
         "sieve",
-        RcMode::default(),
     );
 
     bench_sample(iters, "bench_primes_sieve.mor", &[], "sieve", stdin, stdout);
@@ -608,7 +609,6 @@ fn sample_parse_json() {
         "samples/bench_parse_json.mor",
         &[],
         "parse_json",
-        RcMode::default(),
     );
 
     bench_sample(
@@ -639,7 +639,6 @@ fn sample_calc() {
         "samples/bench_calc.mor",
         &[],
         "eval_exprs",
-        RcMode::default(),
     );
 
     bench_sample(iters, "bench_calc.mor", &[], "eval_exprs", stdin, stdout);
@@ -659,7 +658,6 @@ fn sample_unify() {
         "samples/bench_unify.mor",
         &[],
         "solve_problems",
-        RcMode::Trivial,
     );
 
     bench_sample(
