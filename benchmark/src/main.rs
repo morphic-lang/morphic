@@ -670,6 +670,35 @@ fn sample_unify() {
     );
 }
 
+fn sample_words_trie() {
+    let iters = (10, 10);
+
+    let stdin = concat!(
+        include_str!("../../samples/sample-input/udhr.txt"),
+        "\n",
+        include_str!("../../samples/sample-input/udhr_queries.txt"),
+        "\n",
+    );
+
+    let stdout = include_str!("../../samples/expected-output/udhr_query_counts.txt");
+
+    compile_sample(
+        "bench_words_trie.mor",
+        "samples/bench_words_trie.mor",
+        &[],
+        "count_words",
+    );
+
+    bench_sample(
+        iters,
+        "bench_words_trie.mor",
+        &[],
+        "count_words",
+        stdin,
+        stdout,
+    );
+}
+
 fn main() {
     if !Path::new("samples").exists() {
         eprintln!();
@@ -682,15 +711,17 @@ fn main() {
         std::process::exit(1);
     }
 
-    sample_quicksort();
+    // sample_quicksort();
 
-    sample_primes();
+    // sample_primes();
 
-    sample_primes_sieve();
+    // sample_primes_sieve();
 
-    sample_parse_json();
+    // sample_parse_json();
 
-    sample_calc();
+    // sample_calc();
 
-    sample_unify();
+    // sample_unify();
+
+    sample_words_trie()
 }

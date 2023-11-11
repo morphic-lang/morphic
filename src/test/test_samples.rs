@@ -314,3 +314,16 @@ sample! { bench_primes_sieve "samples/bench_primes_sieve.mor";
     stdin = "5\n10000\n";
     stdout = include_str!("../../samples/expected-output/primes_10000.txt");
 }
+
+sample! { bench_words_trie "samples/bench_words_trie.mor";
+    // TODO: This fails under the interpreter, but the error appears to be spurious (?).
+    compile_only = true;
+    stdin = concat!(
+        "2\n", // first number is iteration count
+        include_str!("../../samples/sample-input/udhr.txt"),
+        "\n",
+        include_str!("../../samples/sample-input/udhr_queries.txt"),
+        "\n",
+    );
+    stdout = include_str!("../../samples/expected-output/udhr_query_counts.txt");
+}

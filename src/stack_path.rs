@@ -91,27 +91,6 @@ pub fn split_stack_heap_4(typedefs: &CustomTypes, path: FieldPath) -> PathTrunca
                 let (stack_path, _) = path.split_at(i);
                 return PathTruncation::Heap(vec![to_stack_path(&stack_path).unwrap()]);
             }
-            Field::CustomScc(_, entry_custom_id) if matches!(path[i + 1], Field::Custom(inner_custom_id) if inner_custom_id != entry_custom_id) =>
-            {
-                debug_assert!(matches!(path[i + 1], Field::Custom(_)));
-                // Any content inside other custom types in the same SCC as 'type_' will
-                // necessarily be stored on the heap.
-                //
-                // We over-approximate the relevant stack paths by simply taking all stack paths
-                // in 'type_'.
-                //
-                // TODO: This is an unecessarily coarse approximation! We should return just the
-                // stack paths that actually recursively mention other custom types in the SCC.
-                //
-                // TODO: Is this still correct after the stack path normalization changes?
-                let prefix = path.split_at(i).0;
-                return PathTruncation::Heap(
-                    stack_paths_in_2(typedefs, &Type::Custom(entry_custom_id))
-                        .into_iter()
-                        .map(|stack_path| to_stack_path(&prefix).unwrap() + stack_path)
-                        .collect(),
-                );
-            }
             Field::Field(_) | Field::Variant(_) | Field::CustomScc(_, _) | Field::Custom(_) => {}
         }
     }
