@@ -11,6 +11,7 @@ use crate::data::mode_annot_ast as mode;
 use crate::data::mutation_annot_ast as mutation;
 use crate::data::rc_specialized_ast as rc;
 use crate::field_path;
+use crate::stack_path;
 use crate::util::disjunction::Disj;
 use crate::util::graph::{strongly_connected, Graph};
 use crate::util::id_vec::IdVec;
@@ -622,7 +623,9 @@ fn build_rc_ops(
 ) {
     let mut plan = RcOpPlan::NoOp;
     for path in paths {
-        plan.add_leaf_path(path);
+        for unnormalized in stack_path::unfold_to_unnormalized(typedefs, path) {
+            plan.add_leaf_path(&unnormalized);
+        }
     }
     build_plan(
         typedefs,

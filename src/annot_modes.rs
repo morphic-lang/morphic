@@ -111,7 +111,7 @@ fn mark_occur(
 ) -> BTreeMap<mode::StackPath, OccurKind> {
     let mut result = BTreeMap::new();
 
-    for path in stack_path::stack_paths_in(typedefs, &local_info.type_) {
+    for path in stack_path::stack_paths_in_2(typedefs, &local_info.type_) {
         let used_after_expr = future_uses_after_expr
             .map(|uses| uses.contains_key(&path))
             .unwrap_or(false);
@@ -262,7 +262,7 @@ fn mutations_from_aliases(
     let mut result = BTreeMap::new();
     for ((other, other_path), cond) in &aliases.aliases {
         for other_stack_path in
-            stack_path::split_stack_heap_3(typedefs, other_path.clone()).stack_paths()
+            stack_path::split_stack_heap_4(typedefs, other_path.clone()).stack_paths()
         {
             if lookup_concrete_cond(version_aliases, cond) {
                 result
@@ -361,7 +361,7 @@ fn mark_expr_occurs<'a>(
                         let type_ = locals.local_binding(local_id).type_;
                         (
                             local_id,
-                            stack_path::stack_paths_in(&orig.custom_types, type_)
+                            stack_path::stack_paths_in_2(&orig.custom_types, type_)
                                 .into_iter()
                                 .collect(),
                         )
@@ -396,7 +396,7 @@ fn mark_expr_occurs<'a>(
                                     lookup_concrete_cond(&this_version.aliases, symbolic_cond);
 
                                 if concretely_aliased {
-                                    for other_stack_path in stack_path::split_stack_heap_3(
+                                    for other_stack_path in stack_path::split_stack_heap_4(
                                         &orig.custom_types,
                                         other_field_path.clone(),
                                     )
@@ -806,7 +806,7 @@ fn get_missing_drops(
     type_: &anon::Type,
 ) -> BTreeSet<mode::StackPath> {
     let mut result = BTreeSet::new();
-    for path in stack_path::stack_paths_in(typedefs, type_) {
+    for path in stack_path::stack_paths_in_2(typedefs, type_) {
         let already_moved = moves_for_local
             .map(|moves| moves.contains(&path))
             .unwrap_or(false);
@@ -1604,7 +1604,7 @@ fn annot_expr<'a>(
         let occur_kinds = &marked_drops.occur_kinds[occur.0];
 
         for (path, src_mode_var) in &binding.val_modes.path_modes {
-            let truncation = stack_path::split_stack_heap_3(typedefs, path.clone());
+            let truncation = stack_path::split_stack_heap_4(typedefs, path.clone());
 
             for stack in truncation.clone().stack_paths() {
                 let (dest_mode, dest_mode_var) = match &occur_kinds[&stack] {
@@ -1908,7 +1908,7 @@ fn annot_expr<'a>(
             let mut retain_epilogue = SolverRetainModes {
                 retained_paths: BTreeMap::new(),
             };
-            for content_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
+            for content_stack_path in stack_path::stack_paths_in_2(typedefs, item_type) {
                 let content_path = stack_path::to_field_path(&content_stack_path);
                 retain_epilogue
                     .retained_paths
@@ -1996,7 +1996,7 @@ fn annot_expr<'a>(
                 retained_paths: BTreeMap::new(),
             };
 
-            for item_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
+            for item_stack_path in stack_path::stack_paths_in_2(typedefs, item_type) {
                 let item_mode =
                     array_modes.path_modes[&stack_path::to_field_path(&item_stack_path)
                         .add_front(alias::Field::ArrayMembers)];
