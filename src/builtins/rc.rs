@@ -1,5 +1,5 @@
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::tal::Tal;
+use crate::builtins::tal::{ProfileRc, Tal};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -103,8 +103,13 @@ impl<'a> RcBoxBuiltin<'a> {
             let s = scope(self.retain, context, target);
             let rc = s.arg(0);
 
+            if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                s.call_void(record_retain, &[]);
+            }
+
             let new_refcount = s.add(s.arrow(rc, F_REFCOUNT), s.i64(1));
             s.arrow_set(rc, F_REFCOUNT, new_refcount);
+
             s.ret_void();
         }
 
@@ -112,6 +117,10 @@ impl<'a> RcBoxBuiltin<'a> {
         {
             let s = scope(self.release, context, target);
             let rc = s.arg(0);
+
+            if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
+                s.call_void(record_release, &[]);
+            }
 
             let new_refcount = s.sub(s.arrow(rc, F_REFCOUNT), s.i64(1));
             s.arrow_set(rc, F_REFCOUNT, new_refcount);

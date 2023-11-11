@@ -22,4 +22,10 @@ void prof_report_write_string(const char *str);
 void prof_report_write_u64(uint64_t val);
 void prof_report_done(void);
 
+void prof_rc_record_retain(void);
+void prof_rc_record_release(void);
+uint64_t prof_rc_get_retain_count(void);
+uint64_t prof_rc_get_release_count(void);
+
+
 #endif

@@ -148,6 +148,8 @@ struct ProfSpecialization {
     low_func_id: u64,
     total_calls: u64,
     total_clock_nanos: u64,
+    total_retain_count: Option<u64>,
+    total_release_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -230,6 +232,7 @@ fn build_exe(
                     .concat(),
                 func = profile_func,
             ))],
+            profile_record_rc: false,
             target: {
                 if options.is_native {
                     cli::TargetConfig::Llvm(LlvmConfig::Native)

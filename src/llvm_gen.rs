@@ -5,7 +5,7 @@ use crate::builtins::prof_report::{
     define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
 };
 use crate::builtins::rc::RcBoxBuiltin;
-use crate::builtins::tal::{self, Tal};
+use crate::builtins::tal::{self, ProfileRc, Tal};
 use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
@@ -29,7 +29,9 @@ use inkwell::targets::{
     TargetTriple,
 };
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
-use inkwell::values::{BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue};
+use inkwell::values::{
+    BasicValueEnum, CallSiteValue, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue,
+};
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -205,11 +207,34 @@ fn declare_profile_points<'a>(
             );
             total_clock_nanos.set_initializer(&context.i64_type().const_zero());
 
+            let (total_retain_count, total_release_count) =
+                if program.profile_points[prof_id].record_rc {
+                    let total_retain_count = module.add_global(
+                        context.i64_type(),
+                        None, // TODO: Is this the correct address space annotation?
+                        &format!("total_retain_count_{}", func_id.0),
+                    );
+                    total_retain_count.set_initializer(&context.i64_type().const_zero());
+
+                    let total_release_count = module.add_global(
+                        context.i64_type(),
+                        None, // TODO: Is this the correct address space annotation?
+                        &format!("total_release_count_{}", func_id.0),
+                    );
+                    total_release_count.set_initializer(&context.i64_type().const_zero());
+
+                    (Some(total_retain_count), Some(total_release_count))
+                } else {
+                    (None, None)
+                };
+
             let existing = decls[prof_id].counters.insert(
                 func_id,
                 ProfilePointCounters {
                     total_calls,
                     total_clock_nanos,
+                    total_retain_count,
+                    total_release_count,
                 },
             );
             debug_assert!(existing.is_none());
@@ -1782,18 +1807,43 @@ fn gen_function<'a, 'b>(
 
     builder.position_at_end(entry);
 
-    let start_clock_nanos = if func.profile_point.is_some() {
-        Some(
-            builder
+    let (start_clock_nanos, start_retain_count, start_release_count) =
+        if let Some(prof_id) = func.profile_point {
+            let start_clock_nanos = builder
                 .build_call(globals.tal.prof_clock_nanos, &[], "start_clock_nanos")
                 .try_as_basic_value()
                 .left()
                 .unwrap()
-                .into_int_value(),
-        )
-    } else {
-        None
-    };
+                .into_int_value();
+
+            let counters = &globals.profile_points[prof_id].counters[&func_id];
+            let start_retain_count = if counters.total_retain_count.is_some() {
+                Some(builder.build_call(
+                    globals.tal.prof_rc.unwrap().get_retain_count,
+                    &[],
+                    "start_retain_count",
+                ))
+            } else {
+                None
+            };
+            let start_release_count = if counters.total_release_count.is_some() {
+                Some(builder.build_call(
+                    globals.tal.prof_rc.unwrap().get_release_count,
+                    &[],
+                    "start_release_count",
+                ))
+            } else {
+                None
+            };
+
+            (
+                Some(start_clock_nanos),
+                start_retain_count,
+                start_release_count,
+            )
+        } else {
+            (None, None, None)
+        };
 
     // Declare tail call targets, but don't populate their bodies yet. Tail functions are
     // implemented via blocks which may be jumped to, and their arguments are implemented as mutable
@@ -1839,6 +1889,56 @@ fn gen_function<'a, 'b>(
             builder.build_store(
                 counters.total_clock_nanos.as_pointer_value(),
                 new_clock_nanos,
+            );
+
+            let gen_rc_count_update =
+                |start_rc_count: Option<CallSiteValue<'_>>,
+                 total_rc_count: Option<GlobalValue<'_>>,
+                 tal_fn: fn(ProfileRc) -> FunctionValue<'_>| match (
+                    start_rc_count,
+                    total_rc_count,
+                ) {
+                    (Some(start_rc_count), Some(total_rc_count)) => {
+                        let end_rc_count = builder.build_call(
+                            tal_fn(globals.tal.prof_rc.unwrap()),
+                            &[],
+                            "end_rc_count",
+                        );
+
+                        let diff_rc_count = builder.build_int_sub(
+                            end_rc_count
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_int_value(),
+                            start_rc_count
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_int_value(),
+                            "diff_rc_count",
+                        );
+
+                        let old_rc_count = builder
+                            .build_load(total_rc_count.as_pointer_value(), "old_rc_count")
+                            .into_int_value();
+
+                        let new_rc_count =
+                            builder.build_int_add(old_rc_count, diff_rc_count, "new_rc_count");
+
+                        builder.build_store(total_rc_count.as_pointer_value(), new_rc_count);
+                    }
+                    (None, None) => {}
+                    _ => unreachable!(),
+                };
+
+            gen_rc_count_update(start_retain_count, counters.total_retain_count, |prof_rc| {
+                prof_rc.get_retain_count
+            });
+            gen_rc_count_update(
+                start_release_count,
+                counters.total_release_count,
+                |prof_rc| prof_rc.get_release_count,
             );
 
             let old_calls = builder
@@ -2046,7 +2146,17 @@ fn gen_program<'a>(
     module.set_triple(&target_machine.get_triple());
     module.set_data_layout(&target_machine.get_target_data().get_data_layout());
 
-    let tal = Tal::declare(&context, &module, &target_machine.get_target_data());
+    let profile_record_rc = program
+        .profile_points
+        .iter()
+        .any(|(_, prof_point)| prof_point.record_rc);
+
+    let tal = Tal::declare(
+        &context,
+        &module,
+        &target_machine.get_target_data(),
+        profile_record_rc,
+    );
 
     let custom_types = program
         .custom_types

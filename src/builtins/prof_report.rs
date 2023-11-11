@@ -18,9 +18,11 @@ pub struct ProfilePointDecls<'a> {
 
 #[derive(Clone, Debug)]
 pub struct ProfilePointCounters<'a> {
-    // Both of these globals are of type i64
+    // All of these globals are of type i64
     pub total_calls: GlobalValue<'a>,
     pub total_clock_nanos: GlobalValue<'a>,
+    pub total_retain_count: Option<GlobalValue<'a>>,
+    pub total_release_count: Option<GlobalValue<'a>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -221,9 +223,7 @@ pub fn define_prof_report_fn<'a>(
                                                             .counters
                                                             .iter()
                                                             .map(|(low_id, counters)| {
-                                                                Object(
-                                                                    SingleLine,
-                                                                    vec![
+                                                                let mut entries = vec![
                                                                     (
                                                                         "low_func_id",
                                                                         ConstU64(low_id.0 as u64),
@@ -246,8 +246,35 @@ pub fn define_prof_report_fn<'a>(
                                                                                 .into(),
                                                                         )),
                                                                     ),
-                                                                ],
-                                                                )
+                                                                ];
+
+                                                                if let Some(total_retain_count) =
+                                                                    counters.total_retain_count
+                                                                {
+                                                                    entries.push((
+                                                                        "total_retain_count",
+                                                                        DynU64(s.ptr_get(
+                                                                            total_retain_count
+                                                                                .as_pointer_value()
+                                                                                .into(),
+                                                                        )),
+                                                                    ));
+                                                                }
+
+                                                                if let Some(total_release_count) =
+                                                                    counters.total_release_count
+                                                                {
+                                                                    entries.push((
+                                                                        "total_release_count",
+                                                                        DynU64(s.ptr_get(
+                                                                            total_release_count
+                                                                                .as_pointer_value()
+                                                                                .into(),
+                                                                        )),
+                                                                    ));
+                                                                }
+
+                                                                Object(SingleLine, entries)
                                                             })
                                                             .collect(),
                                                     ),

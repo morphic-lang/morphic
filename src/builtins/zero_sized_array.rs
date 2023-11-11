@@ -1,6 +1,6 @@
 use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::tal::Tal;
+use crate::builtins::tal::{ProfileRc, Tal};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -214,6 +214,11 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         {
             let s = scope(self.interface.retain_array, context, target);
             // let array = s.arg(0); UNUSED ARGUMENT
+
+            if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                s.call_void(record_retain, &[]);
+            }
+
             s.ret_void();
         }
 
@@ -221,6 +226,11 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         {
             let s = scope(self.interface.release_array, context, target);
             // let array = s.arg(0); UNUSED ARGUMENT
+
+            if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
+                s.call_void(record_release, &[]);
+            }
+
             s.ret_void();
         }
 
@@ -228,6 +238,11 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         {
             let s = scope(self.interface.retain_hole, context, target);
             // let hole = s.arg(0); UNUSED ARGUMENT
+
+            if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                s.call_void(record_retain, &[]);
+            }
+
             s.ret_void();
         }
 
@@ -235,6 +250,11 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         {
             let s = scope(self.interface.release_hole, context, target);
             // let hole = s.arg(0); UNUSED ARGUMENT
+
+            if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
+                s.call_void(record_release, &[]);
+            }
+
             s.ret_void();
         }
     }

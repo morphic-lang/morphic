@@ -88,7 +88,9 @@ impl Default for RcMode {
 #[derive(Debug)]
 pub struct BuildConfig {
     pub src_path: PathBuf,
+
     pub profile_syms: Vec<SymbolName>,
+    pub profile_record_rc: bool,
 
     pub target: TargetConfig,
     pub llvm_opt_level: OptimizationLevel,
@@ -218,6 +220,14 @@ impl Config {
                             .number_of_values(1),
                     )
                     .arg(
+                        Arg::with_name("profile-record-rc")
+                        .long("profile-record-rc")
+                        .help(
+                            "Record number of reference count increments and decrements for each \
+                             '--profile'd function."
+                        )
+                    )
+                    .arg(
                         Arg::with_name("defunc-mode")
                             .long("defunc-mode")
                             .help("Set whether or not to specialize during defunctionalization")
@@ -315,6 +325,8 @@ impl Config {
                 None => Vec::new(),
             };
 
+            let profile_record_rc = matches.is_present("profile-record-rc");
+
             let defunc_mode = match matches.value_of("defunc-mode").unwrap() {
                 "specialize" => SpecializationMode::Specialize,
                 "single" => SpecializationMode::Single,
@@ -336,6 +348,7 @@ impl Config {
             let build_config = BuildConfig {
                 src_path,
                 profile_syms,
+                profile_record_rc,
                 target,
                 llvm_opt_level,
                 output_path: output_path.into(),

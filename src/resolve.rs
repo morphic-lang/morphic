@@ -410,6 +410,7 @@ pub fn resolve_program(
     files: &mut FileCache,
     file_path: &Path,
     profile_syms: &[cli::SymbolName],
+    profile_record_rc: bool,
 ) -> Result<res::Program, Error> {
     let mut ctx = GlobalContext {
         mods: IdVec::new(),
@@ -450,6 +451,7 @@ pub fn resolve_program(
         main_mod,
         &mut vals,
         profile_syms,
+        profile_record_rc,
     )?;
 
     Ok(res::Program {
@@ -1361,6 +1363,7 @@ fn resolve_profile_points(
     main_mod: res::ModId,
     vals: &mut IdVec<res::CustomGlobalId, res::ValDef>,
     profile_syms: &[cli::SymbolName],
+    record_rc: bool,
 ) -> Result<IdVec<prof::ProfilePointId, prof::ProfilePoint>, Error> {
     let mut profile_points = IdVec::new();
 
@@ -1394,6 +1397,7 @@ fn resolve_profile_points(
             &mut vals[sym_val_id].body,
             path,
             val_name,
+            record_rc,
         )
         .map_err(locate_path(&mod_symbols[val_symbols[sym_val_id].mod_].file))?;
     }
@@ -1406,10 +1410,11 @@ fn annotate_profile_point(
     body: &mut res::Expr,
     path: raw::ModPath,
     val_name: raw::ValName,
+    record_rc: bool,
 ) -> Result<(), Error> {
     match body {
         res::Expr::Span(lo, hi, content) => {
-            annotate_profile_point(profile_points, content, path, val_name)
+            annotate_profile_point(profile_points, content, path, val_name, record_rc)
                 .map_err(locate_span(*lo, *hi))
         }
 
@@ -1417,6 +1422,7 @@ fn annotate_profile_point(
             let prof_id = opt_prof_id.get_or_insert_with(|| {
                 profile_points.push(prof::ProfilePoint {
                     reporting_names: BTreeSet::new(),
+                    record_rc,
                 })
             });
 

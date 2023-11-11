@@ -25,6 +25,14 @@ pub mod wasm {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct ProfileRc<'a> {
+    pub record_retain: FunctionValue<'a>,
+    pub record_release: FunctionValue<'a>,
+    pub get_retain_count: FunctionValue<'a>,
+    pub get_release_count: FunctionValue<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct Tal<'a> {
     pub memcpy: FunctionValue<'a>,
     pub exit: FunctionValue<'a>,
@@ -49,6 +57,7 @@ pub struct Tal<'a> {
     pub prof_report_write_string: FunctionValue<'a>,
     pub prof_report_write_u64: FunctionValue<'a>,
     pub prof_report_done: FunctionValue<'a>,
+    pub prof_rc: Option<ProfileRc<'a>>,
 
     // LLVM Intrinsics
     pub expect_i1: FunctionValue<'a>,
@@ -56,7 +65,12 @@ pub struct Tal<'a> {
 }
 
 impl<'a> Tal<'a> {
-    pub fn declare(context: &'a Context, module: &Module<'a>, target: &TargetData) -> Self {
+    pub fn declare(
+        context: &'a Context,
+        module: &Module<'a>,
+        target: &TargetData,
+        profile_record_rc: bool,
+    ) -> Self {
         let usize_t = fountain_pen::usize_t(context, target);
         let void_t = context.void_type();
         let i8_t = context.i8_type();
@@ -175,6 +189,37 @@ impl<'a> Tal<'a> {
             Some(Linkage::External),
         );
 
+        let prof_rc = if profile_record_rc {
+            let record_retain = module.add_function(
+                "prof_rc_record_retain",
+                void_t.fn_type(&[], false),
+                Some(Linkage::External),
+            );
+            let record_release = module.add_function(
+                "prof_rc_record_release",
+                void_t.fn_type(&[], false),
+                Some(Linkage::External),
+            );
+            let get_retain_count = module.add_function(
+                "prof_rc_get_retain_count",
+                i64_t.fn_type(&[], false),
+                Some(Linkage::External),
+            );
+            let get_release_count = module.add_function(
+                "prof_rc_get_release_count",
+                i64_t.fn_type(&[], false),
+                Some(Linkage::External),
+            );
+            Some(ProfileRc {
+                record_retain,
+                record_release,
+                get_retain_count,
+                get_release_count,
+            })
+        } else {
+            None
+        };
+
         Self {
             memcpy,
             exit,
@@ -197,6 +242,7 @@ impl<'a> Tal<'a> {
             prof_report_write_string,
             prof_report_write_u64,
             prof_report_done,
+            prof_rc,
 
             expect_i1,
             umul_with_overflow_i64,

@@ -1,6 +1,6 @@
 use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::{scope, Scope};
-use crate::builtins::tal::Tal;
+use crate::builtins::tal::{ProfileRc, Tal};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -379,6 +379,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let s = scope(self.interface.retain_array, context, target);
             let me = s.arg(0);
 
+            if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                s.call_void(record_retain, &[]);
+            }
+
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             s.if_(s.not(s.is_null(refcount_ptr)), |s| {
@@ -392,6 +396,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         {
             let s = scope(self.interface.release_array, context, target);
             let me = s.arg(0);
+
+            if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
+                s.call_void(record_release, &[]);
+            }
 
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
@@ -427,6 +435,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         {
             let s = scope(self.interface.release_hole, context, target);
             let me = s.arg(0);
+
+            if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
+                s.call_void(record_release, &[]);
+            }
 
             let hole_idx = s.field(me, F_HOLE_IDX);
             let arr = s.field(me, F_HOLE_ARR);

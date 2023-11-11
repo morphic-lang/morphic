@@ -1,6 +1,6 @@
 use crate::builtins::array::{ArrayImpl, ArrayInterface};
 use crate::builtins::fountain_pen::scope;
-use crate::builtins::tal::Tal;
+use crate::builtins::tal::{ProfileRc, Tal};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -746,6 +746,10 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
             let s = scope(self.interface.retain_array, context, target);
             let array = s.arg(0);
 
+            if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                s.call_void(record_retain, &[]);
+            }
+
             s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
                 s.call_void(self.retain_tail, &[s.field(array, F_ARR_TAIL)]);
             });
@@ -767,6 +771,10 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
         {
             let s = scope(self.interface.release_array, context, target);
             let array = s.arg(0);
+
+            if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
+                s.call_void(record_release, &[]);
+            }
 
             s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
                 s.call_void(
