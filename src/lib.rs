@@ -324,13 +324,15 @@ fn compile_to_first_order_ast(
 
     typecheck_first_order::typecheck(&first_order);
 
-    let first_order_cleaned = remove_unit::remove_unit(&first_order);
+    // // Temporarily disabled due to infinite recursion on `samples/recursive_array.mor`
+    // // TODO: Fix infinite recursion
+    // let first_order_cleaned = remove_unit::remove_unit(&first_order);
 
     if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.sml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::first_order::write_sml_program(&mut out_file, &first_order_cleaned)
+        pretty_print::first_order::write_sml_program(&mut out_file, &first_order)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
@@ -338,13 +340,13 @@ fn compile_to_first_order_ast(
         let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.ml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::first_order::write_ocaml_program(&mut out_file, &first_order_cleaned)
+        pretty_print::first_order::write_ocaml_program(&mut out_file, &first_order)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    typecheck_first_order::typecheck(&first_order_cleaned);
+    typecheck_first_order::typecheck(&first_order);
 
-    Ok(first_order_cleaned)
+    Ok(first_order)
 }
 
 fn compile_to_low_ast(

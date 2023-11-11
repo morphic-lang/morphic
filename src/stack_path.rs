@@ -236,7 +236,7 @@ pub fn stack_paths_in_excluding(
                             prefix
                                 .clone()
                                 .add_back(StackField::CustomScc(scc_id, *custom))
-                                .add_back(StackField::Custom(*custom)),
+                                .add_back(StackField::Custom(*scc_type)),
                         );
                     }
                 }
