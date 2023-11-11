@@ -255,15 +255,12 @@ fn mark_tentative_prologue_drops(
 }
 
 fn mutations_from_aliases(
-    typedefs: &flat::CustomTypes,
     version_aliases: &BTreeMap<alias::AliasCondition, spec::ConcreteAlias>,
     aliases: &alias::LocalAliases,
 ) -> BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>> {
     let mut result = BTreeMap::new();
     for ((other, other_path), cond) in &aliases.aliases {
-        for other_stack_path in
-            stack_path::split_stack_heap_4(typedefs, other_path.clone()).stack_paths()
-        {
+        for other_stack_path in stack_path::split_stack_heap_4(other_path.clone()).stack_paths() {
             if lookup_concrete_cond(version_aliases, cond) {
                 result
                     .entry(*other)
@@ -396,11 +393,9 @@ fn mark_expr_occurs<'a>(
                                     lookup_concrete_cond(&this_version.aliases, symbolic_cond);
 
                                 if concretely_aliased {
-                                    for other_stack_path in stack_path::split_stack_heap_4(
-                                        &orig.custom_types,
-                                        other_field_path.clone(),
-                                    )
-                                    .stack_paths()
+                                    for other_stack_path in
+                                        stack_path::split_stack_heap_4(other_field_path.clone())
+                                            .stack_paths()
                                     {
                                         to_be_mutated
                                             .entry(*other_local)
@@ -586,8 +581,7 @@ fn mark_expr_occurs<'a>(
             array,
             index,
         )) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *index, &to_be_mutated);
             mark_tentative_prologue_drops(
@@ -603,8 +597,7 @@ fn mark_expr_occurs<'a>(
         }
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_item_type, array_aliases, array, item)) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
             mark_tentative_prologue_drops(
@@ -616,8 +609,7 @@ fn mark_expr_occurs<'a>(
         }
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_item_type, array_aliases, array)) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_tentative_prologue_drops(
                 future_uses,
@@ -633,11 +625,7 @@ fn mark_expr_occurs<'a>(
             hole_array,
             item,
         )) => {
-            let to_be_mutated = mutations_from_aliases(
-                &orig.custom_types,
-                &this_version.aliases,
-                hole_array_aliases,
-            );
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, hole_array_aliases);
             mark_with_extra_owned(
                 locals,
                 occur_kinds,
@@ -660,8 +648,7 @@ fn mark_expr_occurs<'a>(
             array,
             capacity,
         )) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
+            let to_be_mutated = mutations_from_aliases(&this_version.aliases, array_aliases);
             mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
             mark_with_extra_owned(
                 locals,
@@ -1604,7 +1591,7 @@ fn annot_expr<'a>(
         let occur_kinds = &marked_drops.occur_kinds[occur.0];
 
         for (path, src_mode_var) in &binding.val_modes.path_modes {
-            let truncation = stack_path::split_stack_heap_4(typedefs, path.clone());
+            let truncation = stack_path::split_stack_heap_4(path.clone());
 
             for stack in truncation.clone().stack_paths() {
                 let (dest_mode, dest_mode_var) = match &occur_kinds[&stack] {

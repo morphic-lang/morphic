@@ -316,7 +316,7 @@ fn callee_inst_for_call_site(
             // heap structure for the purposes of RC elision, because a release
             // operation on a heap structure counts as an access of that structure *and
             // all of its children* for the purposes of mutation optimization.
-            for path in stack_path::split_stack_heap_4(typedefs, ret_name.0.clone()).stack_paths() {
+            for path in stack_path::split_stack_heap_4(ret_name.0.clone()).stack_paths() {
                 internally_mutated_ret_paths.insert(stack_path::to_field_path(&path));
             }
         }
