@@ -12,6 +12,7 @@
 **/*.o
 **/*.prof
 out2
+figure_out
 
 
 # Editor/system files

@@ -44,7 +44,8 @@ def plot_speedups(speedups):
     plt.axhline(1, color="black", linewidth=1, linestyle="--")
     plt.title("Speedup due to full borrow inference vs perceus")
     plt.tight_layout()
-    plt.savefig("speedups.png")
+    os.makedirs("figure_out", exist_ok=True)
+    plt.savefig("figure_out/speedups.png")
     plt.show()
 
 def main():
