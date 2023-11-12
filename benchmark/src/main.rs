@@ -163,15 +163,7 @@ struct ProfSkippedTail {
 struct SampleOptions {
     is_native: bool,
     rc_mode: RcMode,
-}
-
-impl Default for SampleOptions {
-    fn default() -> Self {
-        Self {
-            is_native: true,
-            rc_mode: RcMode::Elide,
-        }
-    }
+    profile_record_rc: bool,
 }
 
 const OUT_DIR: &str = "out2";
@@ -261,6 +253,33 @@ fn build_exe(
     (binary_path, artifact_dir)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Variant {
+    rc_mode: RcMode,
+    record_rc: bool,
+}
+
+impl Variant {
+    fn tag(&self) -> String {
+        let rc_mode_str = match self.rc_mode {
+            RcMode::Elide => "elide",
+            RcMode::Trivial => "trivial",
+        };
+        let record_rc_str = if self.record_rc { "rc" } else { "time" };
+        format!("{}_{}", rc_mode_str, record_rc_str)
+    }
+}
+
+fn variants() -> Vec<Variant> {
+    let mut variants = Vec::new();
+    for rc_mode in [RcMode::Elide, RcMode::Trivial] {
+        for record_rc in [false, true] {
+            variants.push(Variant { rc_mode, record_rc });
+        }
+    }
+    variants
+}
+
 fn bench_sample(
     iters: (u64, u64),
     bench_name: &str,
@@ -269,45 +288,8 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    // for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-    //     let tag = match ml_variant {
-    //         MlConfig::Sml => "sml",
-    //         MlConfig::Ocaml => "ocaml",
-    //     };
-
-    //     let artifact_path = std::env::current_dir()
-    //         .unwrap()
-    //         .join("out2")
-    //         .join(format!("{bench_name}-ml-artifacts"));
-
-    //     let artifact_dir = ArtifactDir {
-    //         dir_path: artifact_path.clone(),
-    //         filename_prefix: Path::new(bench_name).to_path_buf(),
-    //     };
-
-    //     for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
-    //         let ast_str = match ast {
-    //             MlAst::Typed => "typed",
-    //             MlAst::Mono => "mono",
-    //             MlAst::FirstOrder => "first_order",
-    //         };
-    //         println!("benchmarking ml {bench_name} {tag} {ast_str}");
-    //         bench_ml_sample(
-    //             iters,
-    //             bench_name,
-    //             ml_variant,
-    //             ast,
-    //             &artifact_dir,
-    //             extra_stdin,
-    //             expected_stdout,
-    //         );
-    //     }
-    // }
-
-    let variants = ["native_elide", "native_trivial"];
-
-    for tag in variants {
-        let variant_name = format!("{bench_name}_{tag}");
+    for variant in variants() {
+        let variant_name = format!("{bench_name}_{tag}", tag = variant.tag());
 
         let exe_path = std::env::current_dir()
             .unwrap()
@@ -344,165 +326,26 @@ fn compile_sample(
     profile_mod: &[&str],
     profile_func: &str,
 ) {
-    // let variants = [
-    //     ("native_single", SpecializationMode::Single),
-    //     ("native_specialize", SpecializationMode::Specialize),
-    // ];
-
-    let variants = [
-        ("native_elide", RcMode::Elide),
-        ("native_trivial", RcMode::Trivial),
-    ];
-
-    for (tag, rc_mode) in variants {
+    for variant in variants() {
+        let tag = variant.tag();
         println!("compiling {bench_name}_{tag}");
         let (exe_path, _artifact_dir) = build_exe(
             bench_name,
-            tag,
+            &tag,
             src_path.clone(),
             profile_mod,
             profile_func,
             SpecializationMode::Specialize,
             SampleOptions {
                 is_native: true,
-                rc_mode,
+                rc_mode: variant.rc_mode,
+                profile_record_rc: variant.record_rc,
             },
         );
 
         write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
     }
-
-    // println!("compiling ml artifacts for {bench_name}",);
-
-    // let (_exe_path, artifact_dir) = build_exe(
-    //     bench_name,
-    //     "ml",
-    //     src_path.clone(),
-    //     profile_mod,
-    //     profile_func,
-    //     SpecializationMode::Specialize,
-    //     SampleOptions {
-    //         is_native: false,
-    //         rc_mode,
-    //     },
-    // );
-
-    // for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-    //     for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
-    //         compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
-    //     }
-    // }
 }
-
-// fn bench_ml_sample(
-//     iters: (u64, u64),
-//     bench_name: &str,
-//     ml_variant: cli::MlConfig,
-//     ast: MlAst,
-//     artifacts: &ArtifactDir,
-//     extra_stdin: &str,
-//     expected_stdout: &str,
-// ) {
-//     let ml_variant_str = match ml_variant {
-//         cli::MlConfig::Sml => "sml",
-//         cli::MlConfig::Ocaml => "ocaml",
-//     };
-
-//     let ast = match ast {
-//         MlAst::Typed => "typed",
-//         MlAst::Mono => "mono",
-//         MlAst::FirstOrder => "first_order",
-//     };
-
-//     let variant_name = format!("{bench_name}_{ml_variant_str}_{ast}");
-
-//     let output_path = artifacts.artifact_path(&format!("{ast}-{ml_variant_str}"));
-
-//     let mut results = Vec::new();
-//     for _ in 0..iters.0 {
-//         let report: Vec<MlProfReport> =
-//             run_exe(&output_path, iters.1, extra_stdin, expected_stdout);
-
-//         assert_eq!(report.len(), 1);
-
-//         assert_eq!(report[0].total_calls, iters.1);
-//         let total_nanos = report[0].total_clock_nanos;
-
-//         results.push(Duration::from_nanos(total_nanos));
-//     }
-
-//     write_run_time(&variant_name, results);
-// }
-
-// #[derive(Copy, Clone, Debug)]
-// enum MlAst {
-//     Typed,
-//     Mono,
-//     FirstOrder,
-// }
-
-// fn compile_ml_sample(
-//     bench_name: &str,
-//     ml_variant: cli::MlConfig,
-//     ast: MlAst,
-//     artifacts: &ArtifactDir,
-// ) {
-//     let ml_variant_str = match ml_variant {
-//         cli::MlConfig::Sml => "sml",
-//         cli::MlConfig::Ocaml => "ocaml",
-//     };
-
-//     let ast_str = match ast {
-//         MlAst::Typed => "typed",
-//         MlAst::Mono => "mono",
-//         MlAst::FirstOrder => "first_order",
-//     };
-
-//     let variant_name = format!("{bench_name}_{ml_variant_str}_{ast_str}");
-
-//     let output_path = artifacts.artifact_path(&format!("{ast_str}-{ml_variant_str}"));
-
-//     if output_path.exists() {
-//         return;
-//     }
-
-//     match ml_variant {
-//         cli::MlConfig::Sml => {
-//             let mlton_output = process::Command::new("mlton")
-//                 .arg("-default-type")
-//                 .arg("int64")
-//                 .arg("-output")
-//                 .arg(&output_path)
-//                 .arg(artifacts.artifact_path(&format!("{ast_str}.sml")))
-//                 .output()
-//                 .expect("Compilation failed");
-
-//             assert!(
-//                 mlton_output.status.success(),
-//                 "Compilation failed:\n{}",
-//                 String::from_utf8_lossy(&mlton_output.stderr)
-//             );
-//         }
-//         cli::MlConfig::Ocaml => {
-//             let ocaml_output = process::Command::new("ocamlopt")
-//                 .arg("unix.cmxa")
-//                 .arg("-O3")
-//                 .arg(artifacts.artifact_path(&format!("{ast_str}.ml")))
-//                 .arg("-o")
-//                 .arg(&output_path)
-//                 .output()
-//                 .expect("Compilation failed");
-
-//             assert!(
-//                 ocaml_output.status.success(),
-//                 "Compilation failed:\n{}",
-//                 String::from_utf8_lossy(&ocaml_output.stderr)
-//             );
-//         }
-//     }
-
-//     write_binary_size(&variant_name, &output_path);
-// }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -714,17 +557,17 @@ fn main() {
         std::process::exit(1);
     }
 
-    // sample_quicksort();
+    sample_quicksort();
 
-    // sample_primes();
+    sample_primes();
 
-    // sample_primes_sieve();
+    sample_primes_sieve();
 
-    // sample_parse_json();
+    sample_parse_json();
 
-    // sample_calc();
+    sample_calc();
 
-    // sample_unify();
+    sample_unify();
 
     sample_words_trie()
 }
