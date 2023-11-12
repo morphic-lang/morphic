@@ -9,6 +9,7 @@ use std::path::Path;
 
 pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: AsRef<[u8]>>(
     mode: cli::RunMode,
+    rc_mode: cli::RcMode,
     path: SrcPath,
     given_in: In,
     expected_out: Out,
@@ -18,6 +19,7 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
     let config = cli::RunConfig {
         src_path: path.as_ref().to_owned(),
         mode,
+        rc_mode,
         stdio: Stdio::Piped,
     };
 
@@ -83,6 +85,7 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
 macro_rules! sample_interpret {
     (
         $name:ident $path:expr ;
+        $( rc_mode = $rc_mode:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -91,9 +94,15 @@ macro_rules! sample_interpret {
         #[test]
         fn interpret() {
             #[allow(unused_mut, unused_assignments)]
+            let mut rc_mode = crate::cli::RcMode::default();
+            #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
             let mut status = crate::pseudoprocess::ExitStatus::Success;
+
+            $(
+                rc_mode = $rc_mode;
+            )?
 
             $(
                 stderr = $stderr.into();
@@ -105,6 +114,7 @@ macro_rules! sample_interpret {
 
             crate::test::run_sample::run_sample(
                 crate::cli::RunMode::Interpret,
+                rc_mode,
                 $path,
                 $stdin,
                 $stdout,
@@ -118,6 +128,7 @@ macro_rules! sample_interpret {
 macro_rules! sample_compile {
     (
         $name:ident $path:expr ;
+        $( rc_mode = $rc_mode:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -127,9 +138,15 @@ macro_rules! sample_compile {
         #[test]
         fn compile() {
             #[allow(unused_mut, unused_assignments)]
+            let mut rc_mode = crate::cli::RcMode::default();
+            #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
             let mut status = crate::pseudoprocess::ExitStatus::Success;
+
+            $(
+                rc_mode = $rc_mode;
+            )?
 
             $(
                 stderr = $stderr.into();
@@ -147,7 +164,8 @@ macro_rules! sample_compile {
             )?
 
             crate::test::run_sample::run_sample(
-                crate::cli::RunMode::Compile { valgrind: Some(valgrind) },
+                crate::cli::RunMode::Compile { valgrind: None /* Some(valgrind) */ },
+                rc_mode,
                 $path,
                 $stdin,
                 $stdout,
@@ -161,6 +179,7 @@ macro_rules! sample_compile {
 macro_rules! sample {
     (
         $name:ident $path:expr ;
+        $( rc_mode = $rc_mode:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -173,6 +192,7 @@ macro_rules! sample {
 
             sample_interpret! {
                 $name $path ;
+                $( rc_mode = $rc_mode ; )?
                 stdin = $stdin ;
                 stdout = $stdout ;
                 $( stderr = $stderr ; )?
@@ -181,6 +201,7 @@ macro_rules! sample {
 
             sample_compile! {
                 $name $path ;
+                $( rc_mode = $rc_mode ; )?
                 stdin = $stdin ;
                 stdout = $stdout ;
                 $( stderr = $stderr ; )?
@@ -192,6 +213,7 @@ macro_rules! sample {
 
     (
         $name:ident $path:expr ;
+        $( rc_mode = $rc_mode:expr ; )?
         compile_only = true ;
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
@@ -205,6 +227,7 @@ macro_rules! sample {
 
             sample_compile! {
                 $name $path ;
+                $( rc_mode = $rc_mode ; )?
                 stdin = $stdin ;
                 stdout = $stdout ;
                 $( stderr = $stderr ; )?

@@ -22,6 +22,7 @@ pub enum RunMode {
 pub struct RunConfig {
     pub src_path: PathBuf,
     pub mode: RunMode,
+    pub rc_mode: RcMode,
 
     // This controls the stdio capture behavior of the *user* program.  Logging and error messages
     // from the compiler itself are unaffected.
@@ -62,6 +63,17 @@ pub enum SpecializationMode {
 pub enum RcMode {
     Elide,
     Trivial,
+}
+
+const RC_MODES: &[&str] = &["elide", "trivial"];
+const DEFAULT_RC_MODE: &str = "elide";
+
+fn parse_rc_mode(s: &str) -> RcMode {
+    match s {
+        "elide" => RcMode::Elide,
+        "trivial" => RcMode::Trivial,
+        _ => unreachable!(),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -149,7 +161,13 @@ impl Config {
                     .arg(Arg::with_name("interpret").long("interpret").help(
                         "Run the program using the reference interpreter instead of generating \
                          LLVM and running a fully compiled executable.",
-                    )),
+                    ))
+                    .arg(Arg::with_name("rc-mode")
+                        .long("rc-mode")
+                        .possible_values(RC_MODES)
+                        .default_value(DEFAULT_RC_MODE)
+                        .help("Same as '--rc-mode' for 'morphic build'."),
+                    ),
             )
             .subcommand(
                 SubCommand::with_name("build")
@@ -241,8 +259,8 @@ impl Config {
                             "Set whether or not to elide reference counting operations. This is \
                             mostly useful for working around compiler bugs."
                         )
-                        .possible_values(&["elide", "trivial"])
-                        .default_value("elide"),
+                        .possible_values(RC_MODES)
+                        .default_value(DEFAULT_RC_MODE),
                     )
                     .arg(
                         Arg::with_name("progress")
@@ -269,9 +287,12 @@ impl Config {
                 }
             };
 
+            let rc_mode = parse_rc_mode(matches.value_of("rc-mode").unwrap());
+
             let run_config = RunConfig {
                 src_path,
                 mode,
+                rc_mode,
                 stdio: Stdio::Inherit,
             };
             return Self::RunConfig(run_config);
@@ -333,11 +354,7 @@ impl Config {
                 _ => unreachable!(),
             };
 
-            let rc_mode = match matches.value_of("rc-mode").unwrap() {
-                "elide" => RcMode::Elide,
-                "trivial" => RcMode::Trivial,
-                _ => unreachable!(),
-            };
+            let rc_mode = parse_rc_mode(matches.value_of("rc-mode").unwrap());
 
             let progress = if matches.is_present("progress") {
                 ProgressMode::Visible
