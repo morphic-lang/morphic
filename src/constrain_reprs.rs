@@ -1,5 +1,6 @@
 use im_rc::OrdMap;
 
+use crate::cli::MutationMode;
 use crate::data::alias_annot_ast as alias;
 use crate::data::first_order_ast as first_ord;
 use crate::data::mutation_annot_ast as mutation;
@@ -323,6 +324,7 @@ fn constrain_func(
     typedefs: &IdVec<first_ord::CustomTypeId, unif::TypeDef>,
     sigs: &SignatureAssumptions<rc::CustomFuncId, constrain::FuncRepConstraints>,
     func_def: &unif::FuncDef,
+    mutation_mode: MutationMode,
 ) -> constrain::FuncRepConstraints {
     let mut param_constraints = IdVec::from_items(vec![
         constrain::ParamConstraints {
@@ -331,10 +333,12 @@ fn constrain_func(
         func_def.num_params
     ]);
 
-    let mut internal_vars = IdVec::from_items(vec![
-        constrain::RepChoice::OptimizedMut;
-        func_def.num_internal_vars
-    ]);
+    let default_rep_choice = match mutation_mode {
+        MutationMode::Optimize => constrain::RepChoice::OptimizedMut,
+        MutationMode::AlwaysImmut => constrain::RepChoice::FallbackImmut,
+    };
+
+    let mut internal_vars = IdVec::from_items(vec![default_rep_choice; func_def.num_internal_vars]);
 
     constrain_expr(
         typedefs,
@@ -353,10 +357,18 @@ fn constrain_func(
 pub fn constrain_reprs(
     program: unif::Program,
     progress: impl ProgressLogger,
+    mutation_mode: MutationMode,
 ) -> constrain::Program {
     let rep_constraints = annot_all(
         program.funcs.len(),
-        |sigs, func| constrain_func(&program.custom_types, sigs, &program.funcs[func]),
+        |sigs, func| {
+            constrain_func(
+                &program.custom_types,
+                sigs,
+                &program.funcs[func],
+                mutation_mode,
+            )
+        },
         &program.sccs,
         progress,
     );

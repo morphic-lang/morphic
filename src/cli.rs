@@ -23,6 +23,7 @@ pub struct RunConfig {
     pub src_path: PathBuf,
     pub mode: RunMode,
     pub rc_mode: RcMode,
+    pub mutation_mode: MutationMode,
 
     // This controls the stdio capture behavior of the *user* program.  Logging and error messages
     // from the compiler itself are unaffected.
@@ -59,10 +60,22 @@ pub enum SpecializationMode {
     Single,
 }
 
+impl Default for SpecializationMode {
+    fn default() -> Self {
+        SpecializationMode::Specialize
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RcMode {
     Elide,
     Trivial,
+}
+
+impl Default for RcMode {
+    fn default() -> Self {
+        RcMode::Elide
+    }
 }
 
 const RC_MODES: &[&str] = &["elide", "trivial"];
@@ -76,24 +89,43 @@ fn parse_rc_mode(s: &str) -> RcMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MutationMode {
+    Optimize,
+    AlwaysImmut,
+}
+
+impl Default for MutationMode {
+    fn default() -> Self {
+        MutationMode::Optimize
+    }
+}
+
+const MUTATION_MODES: &[&str] = &["optimize", "always-immut"];
+const DEFAULT_MUTATION_MODE: &str = "optimize";
+
+fn parse_mutation_mode(s: &str) -> MutationMode {
+    match s {
+        "optimize" => MutationMode::Optimize,
+        "always-immut" => MutationMode::AlwaysImmut,
+        _ => unreachable!(),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PassOptions {
     pub defunc_mode: SpecializationMode,
     pub rc_mode: RcMode,
+    pub mutation_mode: MutationMode,
 }
 
 impl Default for PassOptions {
     fn default() -> Self {
         Self {
-            defunc_mode: SpecializationMode::Specialize,
-            rc_mode: RcMode::Elide,
+            defunc_mode: SpecializationMode::default(),
+            rc_mode: RcMode::default(),
+            mutation_mode: MutationMode::default(),
         }
-    }
-}
-
-impl Default for RcMode {
-    fn default() -> Self {
-        RcMode::Elide
     }
 }
 
@@ -167,6 +199,11 @@ impl Config {
                         .possible_values(RC_MODES)
                         .default_value(DEFAULT_RC_MODE)
                         .help("Same as '--rc-mode' for 'morphic build'."),
+                    )
+                    .arg(Arg::with_name("mutation-mode")
+                        .long("mutation-mode")
+                        .possible_values(MUTATION_MODES)
+                        .default_value(DEFAULT_MUTATION_MODE),
                     ),
             )
             .subcommand(
@@ -263,6 +300,12 @@ impl Config {
                         .default_value(DEFAULT_RC_MODE),
                     )
                     .arg(
+                        Arg::with_name("mutation-mode")
+                        .long("mutation-mode")
+                        .possible_values(MUTATION_MODES)
+                        .default_value(DEFAULT_MUTATION_MODE),
+                    )
+                    .arg(
                         Arg::with_name("progress")
                             .long("progress")
                             .help("Set whether or not to show progress"),
@@ -289,10 +332,13 @@ impl Config {
 
             let rc_mode = parse_rc_mode(matches.value_of("rc-mode").unwrap());
 
+            let mutation_mode = parse_mutation_mode(matches.value_of("mutation-mode").unwrap());
+
             let run_config = RunConfig {
                 src_path,
                 mode,
                 rc_mode,
+                mutation_mode,
                 stdio: Stdio::Inherit,
             };
             return Self::RunConfig(run_config);
@@ -356,6 +402,8 @@ impl Config {
 
             let rc_mode = parse_rc_mode(matches.value_of("rc-mode").unwrap());
 
+            let mutation_mode = parse_mutation_mode(matches.value_of("mutation-mode").unwrap());
+
             let progress = if matches.is_present("progress") {
                 ProgressMode::Visible
             } else {
@@ -374,6 +422,7 @@ impl Config {
                 pass_options: PassOptions {
                     defunc_mode,
                     rc_mode,
+                    mutation_mode,
                 },
             };
             return Self::BuildConfig(build_config);

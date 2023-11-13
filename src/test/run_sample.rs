@@ -10,6 +10,7 @@ use std::path::Path;
 pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: AsRef<[u8]>>(
     mode: cli::RunMode,
     rc_mode: cli::RcMode,
+    mutation_mode: cli::MutationMode,
     path: SrcPath,
     given_in: In,
     expected_out: Out,
@@ -20,6 +21,7 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
         src_path: path.as_ref().to_owned(),
         mode,
         rc_mode,
+        mutation_mode,
         stdio: Stdio::Piped,
     };
 
@@ -86,6 +88,7 @@ macro_rules! sample_interpret {
     (
         $name:ident $path:expr ;
         $( rc_mode = $rc_mode:expr ; )?
+        $( mutation_mode = $mutation_mode:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -96,12 +99,18 @@ macro_rules! sample_interpret {
             #[allow(unused_mut, unused_assignments)]
             let mut rc_mode = crate::cli::RcMode::default();
             #[allow(unused_mut, unused_assignments)]
+            let mut mutation_mode = crate::cli::MutationMode::default();
+            #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
             let mut status = crate::pseudoprocess::ExitStatus::Success;
 
             $(
                 rc_mode = $rc_mode;
+            )?
+
+            $(
+                mutation_mode = $mutation_mode;
             )?
 
             $(
@@ -115,6 +124,7 @@ macro_rules! sample_interpret {
             crate::test::run_sample::run_sample(
                 crate::cli::RunMode::Interpret,
                 rc_mode,
+                mutation_mode,
                 $path,
                 $stdin,
                 $stdout,
@@ -129,6 +139,7 @@ macro_rules! sample_compile {
     (
         $name:ident $path:expr ;
         $( rc_mode = $rc_mode:expr ; )?
+        $( mutation_mode = $mutation_mode:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -140,12 +151,18 @@ macro_rules! sample_compile {
             #[allow(unused_mut, unused_assignments)]
             let mut rc_mode = crate::cli::RcMode::default();
             #[allow(unused_mut, unused_assignments)]
+            let mut mutation_mode = crate::cli::MutationMode::default();
+            #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
             let mut status = crate::pseudoprocess::ExitStatus::Success;
 
             $(
                 rc_mode = $rc_mode;
+            )?
+
+            $(
+                mutation_mode = $mutation_mode;
             )?
 
             $(
@@ -164,8 +181,9 @@ macro_rules! sample_compile {
             )?
 
             crate::test::run_sample::run_sample(
-                crate::cli::RunMode::Compile { valgrind: None /* Some(valgrind) */ },
+                crate::cli::RunMode::Compile { valgrind: Some(valgrind) },
                 rc_mode,
+                mutation_mode,
                 $path,
                 $stdin,
                 $stdout,
@@ -180,6 +198,7 @@ macro_rules! sample {
     (
         $name:ident $path:expr ;
         $( rc_mode = $rc_mode:expr ; )?
+        $( mutation_mode = $mutation_mode:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -193,6 +212,7 @@ macro_rules! sample {
             sample_interpret! {
                 $name $path ;
                 $( rc_mode = $rc_mode ; )?
+                $( mutation_mode = $mutation_mode ; )?
                 stdin = $stdin ;
                 stdout = $stdout ;
                 $( stderr = $stderr ; )?
@@ -202,6 +222,7 @@ macro_rules! sample {
             sample_compile! {
                 $name $path ;
                 $( rc_mode = $rc_mode ; )?
+                $( mutation_mode = $mutation_mode ; )?
                 stdin = $stdin ;
                 stdout = $stdout ;
                 $( stderr = $stderr ; )?
@@ -214,6 +235,7 @@ macro_rules! sample {
     (
         $name:ident $path:expr ;
         $( rc_mode = $rc_mode:expr ; )?
+        $( mutation_mode = $mutation_mode:expr ; )?
         compile_only = true ;
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
@@ -228,6 +250,7 @@ macro_rules! sample {
             sample_compile! {
                 $name $path ;
                 $( rc_mode = $rc_mode ; )?
+                $( mutation_mode = $mutation_mode ; )?
                 stdin = $stdin ;
                 stdout = $stdout ;
                 $( stderr = $stderr ; )?

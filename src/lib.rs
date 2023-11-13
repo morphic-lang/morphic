@@ -198,6 +198,12 @@ pub fn run(
     config: cli::RunConfig,
     files: &mut file_cache::FileCache,
 ) -> Result<pseudoprocess::Child, Error> {
+    let pass_options = PassOptions {
+        defunc_mode: cli::SpecializationMode::Specialize,
+        rc_mode: config.rc_mode,
+        mutation_mode: config.mutation_mode,
+    };
+
     let lowered = compile_to_low_ast(
         &config.src_path,
         &[],
@@ -205,7 +211,7 @@ pub fn run(
         None,
         files,
         progress_ui::ProgressMode::Hidden,
-        &PassOptions::default(),
+        &pass_options,
     )?;
 
     match config.mode {
@@ -329,8 +335,8 @@ fn compile_to_first_order_ast(
     typecheck_first_order::typecheck(&first_order);
 
     // // Temporarily disabled due to infinite recursion on `samples/recursive_array.mor`
-    // // TODO: Fix infinite recursion
-    // let first_order_cleaned = remove_unit::remove_unit(&first_order);
+    // TODO: Fix infinite recursion
+    // let first_order = remove_unit::remove_unit(&first_order);
 
     if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.sml"))
@@ -406,6 +412,7 @@ fn compile_to_low_ast(
     let repr_constrained = constrain_reprs::constrain_reprs(
         repr_unified,
         progress_ui::bar(progress, "constrain_reprs"),
+        pass_options.mutation_mode,
     );
 
     let repr_specialized = specialize_reprs::specialize_reprs(
