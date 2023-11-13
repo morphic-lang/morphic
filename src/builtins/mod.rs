@@ -2,6 +2,8 @@
 
 pub mod array;
 
+pub mod cow_array;
+
 pub mod flat_array;
 
 pub mod fountain_pen;
