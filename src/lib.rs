@@ -391,7 +391,11 @@ fn compile_to_low_ast(
     let mut_annot =
         annot_mutation::annot_mutation(alias_annot, progress_ui::bar(progress, "annot_mutation"));
 
-    let fate_annot = annot_fates::annot_fates(mut_annot, progress_ui::bar(progress, "annot_fates"));
+    let fate_annot = annot_fates::annot_fates(
+        mut_annot,
+        progress_ui::bar(progress, "annot_fates"),
+        pass_options.rc_mode,
+    );
 
     let alias_spec = specialize_aliases::specialize_aliases(
         fate_annot,

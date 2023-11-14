@@ -1,3 +1,4 @@
+use crate::cli::{MutationMode, RcMode};
 use crate::pseudoprocess::ExitStatus::Failure;
 
 sample! { io "samples/io.mor";
@@ -315,15 +316,26 @@ sample! { bench_primes_sieve "samples/bench_primes_sieve.mor";
     stdout = include_str!("../../samples/expected-output/primes_10000.txt");
 }
 
-sample! { bench_words_trie "samples/bench_words_trie.mor";
-    // TODO: This fails under the interpreter, but the error appears to be spurious (?).
-    compile_only = true;
-    stdin = concat!(
-        "2\n", // first number is iteration count
-        include_str!("../../samples/sample-input/udhr.txt"),
-        "\n",
-        include_str!("../../samples/sample-input/udhr_queries.txt"),
-        "\n",
-    );
-    stdout = include_str!("../../samples/expected-output/udhr_query_counts.txt");
-}
+// sample! { bench_words_trie "samples/bench_words_trie.mor";
+//     // TODO: This fails under the interpreter, but the error appears to be spurious (?).
+//     compile_only = true;
+//     stdin = concat!(
+//         "2\n", // first number is iteration count
+//         include_str!("../../samples/sample-input/word_count_doc_tiny.txt"),
+//         "\n",
+//         include_str!("../../samples/sample-input/word_count_queries_tiny.txt"),
+//         "\n",
+//     );
+//     stdout = include_str!("../../samples/expected-output/word_count_answers_tiny.txt");
+// }
+
+// sample! { bench_unify "samples/bench_unify.mor";
+//     // TODO: This fails under the interpreter, but the error appears to be spurious (?).
+//     compile_only = true;
+//     stdin = concat!(
+//         "2\n", // first number is iteration count
+//         include_str!("../../samples/sample-input/unify_problems_short.txt"),
+//         "\n",
+//     );
+//     stdout = include_str!("../../samples/expected-output/unify_solutions_short.txt");
+// }

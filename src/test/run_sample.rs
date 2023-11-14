@@ -194,7 +194,7 @@ macro_rules! sample_compile {
     };
 }
 
-macro_rules! sample {
+macro_rules! sample_rc_mode {
     (
         $name:ident $path:expr ;
         $( rc_mode = $rc_mode:expr ; )?
@@ -205,30 +205,25 @@ macro_rules! sample {
         $( status = $status:expr; )?
         $( leak_check = $leak_check:expr; )?
     ) => {
-        mod $name {
-            #[allow(unused_imports)]
-            use super::*;
+        sample_interpret! {
+            $name $path ;
+            $( rc_mode = $rc_mode ; )?
+            $( mutation_mode = $mutation_mode ; )?
+            stdin = $stdin ;
+            stdout = $stdout ;
+            $( stderr = $stderr ; )?
+            $( status = $status ; )?
+        }
 
-            sample_interpret! {
-                $name $path ;
-                $( rc_mode = $rc_mode ; )?
-                $( mutation_mode = $mutation_mode ; )?
-                stdin = $stdin ;
-                stdout = $stdout ;
-                $( stderr = $stderr ; )?
-                $( status = $status ; )?
-            }
-
-            sample_compile! {
-                $name $path ;
-                $( rc_mode = $rc_mode ; )?
-                $( mutation_mode = $mutation_mode ; )?
-                stdin = $stdin ;
-                stdout = $stdout ;
-                $( stderr = $stderr ; )?
-                $( status = $status ; )?
-                $( leak_check = $leak_check ; )?
-            }
+        sample_compile! {
+            $name $path ;
+            $( rc_mode = $rc_mode ; )?
+            $( mutation_mode = $mutation_mode ; )?
+            stdin = $stdin ;
+            stdout = $stdout ;
+            $( stderr = $stderr ; )?
+            $( status = $status ; )?
+            $( leak_check = $leak_check ; )?
         }
     };
 
@@ -243,14 +238,88 @@ macro_rules! sample {
         $( status = $status:expr; )?
         $( leak_check = $leak_check:expr; )?
     ) => {
+        sample_compile! {
+            $name $path ;
+            $( rc_mode = $rc_mode ; )?
+            $( mutation_mode = $mutation_mode ; )?
+            stdin = $stdin ;
+            stdout = $stdout ;
+            $( stderr = $stderr ; )?
+            $( status = $status ; )?
+            $( leak_check = $leak_check ; )?
+        }
+    };
+}
+
+macro_rules! sample {
+    (
+        $name:ident $path:expr ;
+        $( mutation_mode = $mutation_mode:expr ; )?
+        $( compile_only = $compile_only:tt ; )?
+        stdin = $stdin:expr ;
+        stdout = $stdout:expr ;
+        $( stderr = $stderr:expr; )?
+        $( status = $status:expr; )?
+        $( leak_check = $leak_check:expr; )?
+    ) => {
         mod $name {
             #[allow(unused_imports)]
             use super::*;
 
-            sample_compile! {
+            mod rc_elide {
+                #[allow(unused_imports)]
+                use super::*;
+                sample_rc_mode! {
+                    $name $path ;
+                    rc_mode = crate::cli::RcMode::Elide;
+                    $( mutation_mode = $mutation_mode ; )?
+                    $( compile_only = $compile_only ; )?
+                    stdin = $stdin ;
+                    stdout = $stdout ;
+                    $( stderr = $stderr ; )?
+                    $( status = $status ; )?
+                    $( leak_check = $leak_check ; )?
+                }
+            }
+
+            mod rc_trivial {
+                #[allow(unused_imports)]
+                use super::*;
+                sample_rc_mode! {
+                    $name $path ;
+                    rc_mode = crate::cli::RcMode::Trivial;
+                    $( mutation_mode = $mutation_mode ; )?
+                    $( compile_only = $compile_only ; )?
+                    stdin = $stdin ;
+                    stdout = $stdout ;
+                    $( stderr = $stderr ; )?
+                    $( status = $status ; )?
+                    $( leak_check = $leak_check ; )?
+                }
+            }
+        }
+    };
+
+    (
+        $name:ident $path:expr ;
+        rc_mode = $rc_mode:expr ;
+        $( mutation_mode = $mutation_mode:expr ; )?
+        $( compile_only = $compile_only:tt ; )?
+        stdin = $stdin:expr ;
+        stdout = $stdout:expr ;
+        $( stderr = $stderr:expr; )?
+        $( status = $status:expr; )?
+        $( leak_check = $leak_check:expr; )?
+    ) => {
+        mod $name {
+            #[allow(unused_imports)]
+            use super::*;
+
+            sample_rc_mode! {
                 $name $path ;
-                $( rc_mode = $rc_mode ; )?
+                rc_mode = $rc_mode;
                 $( mutation_mode = $mutation_mode ; )?
+                $( compile_only = $compile_only ; )?
                 stdin = $stdin ;
                 stdout = $stdout ;
                 $( stderr = $stderr ; )?
@@ -258,5 +327,5 @@ macro_rules! sample {
                 $( leak_check = $leak_check ; )?
             }
         }
-    };
+    }
 }

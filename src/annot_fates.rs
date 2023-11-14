@@ -1,6 +1,7 @@
 use im_rc::{OrdSet, Vector};
 use std::collections::btree_map::{self, BTreeMap};
 
+use crate::cli;
 use crate::data::alias_annot_ast as alias;
 use crate::data::anon_sum_ast as anon;
 use crate::data::fate_annot_ast as fate;
@@ -133,6 +134,7 @@ fn annot_expr(
     branch_block_end_events: &mut IdVec<fate::BranchBlockId, event::Horizon>,
     event_set: &mut event::EventSet,
     event_block: event::BlockId,
+    rc_mode: cli::RcMode,
 ) -> (fate::Expr, LocalUses) {
     let mut uses = LocalUses {
         uses: BTreeMap::new(),
@@ -209,6 +211,7 @@ fn annot_expr(
                         branch_block_end_events,
                         event_set,
                         case_event_block,
+                        rc_mode,
                     );
 
                     for (local, body_fate) in body_uses.uses {
@@ -294,6 +297,7 @@ fn annot_expr(
                         branch_block_end_events,
                         event_set,
                         event_block,
+                        rc_mode,
                     );
 
                     for (used_var, var_fate) in rhs_uses.uses {
@@ -338,6 +342,12 @@ fn annot_expr(
                         .insert(path, val_fate.fates[&val_path].clone());
                 }
 
+                if rc_mode == cli::RcMode::Trivial {
+                    for field_fate in item_fate.fates.values_mut() {
+                        field_fate.internal = fate::InternalFate::Owned;
+                    }
+                }
+
                 new_items.push(add_occurence(occurs, &mut uses, *item, item_fate));
             }
 
@@ -352,7 +362,11 @@ fn annot_expr(
                 // heap structure
                 debug_assert!(matches!(&path[0], alias::Field::Field(_)));
                 let path_fate = if &path[0] == &alias::Field::Field(*idx) {
-                    val_fate.fates[&path.clone().slice(1..)].clone()
+                    let mut path_fate = val_fate.fates[&path.clone().slice(1..)].clone();
+                    if rc_mode == cli::RcMode::Trivial {
+                        path_fate.internal = fate::InternalFate::Owned;
+                    }
+                    path_fate
                 } else {
                     fate::FieldFate::new()
                 };
@@ -368,9 +382,13 @@ fn annot_expr(
             debug_assert_eq!(&variant_types[variant_id], locals.local_binding(*content));
 
             for (path, _) in get_refs_in(&orig.custom_types, locals.local_binding(*content)) {
-                let path_fate = val_fate.fates
+                let mut path_fate = val_fate.fates
                     [&path.clone().add_front(alias::Field::Variant(*variant_id))]
                     .clone();
+
+                if rc_mode == cli::RcMode::Trivial {
+                    path_fate.internal = fate::InternalFate::Owned;
+                }
 
                 content_fate.fates.insert(path, path_fate);
             }
@@ -390,7 +408,11 @@ fn annot_expr(
                 // itself a heap structure
                 debug_assert!(matches!(&path[0], alias::Field::Variant(_)));
                 let path_fate = if &path[0] == &alias::Field::Variant(*variant_id) {
-                    val_fate.fates[&path.clone().slice(1..)].clone()
+                    let mut path_fate = val_fate.fates[&path.clone().slice(1..)].clone();
+                    if rc_mode == cli::RcMode::Trivial {
+                        path_fate.internal = fate::InternalFate::Owned;
+                    }
+                    path_fate
                 } else {
                     fate::FieldFate::new()
                 };
@@ -420,6 +442,14 @@ fn annot_expr(
                     path.clone().add_front(alias::Field::Boxed),
                     val_fate.fates[&path].clone(),
                 );
+            }
+
+            if rc_mode == cli::RcMode::Trivial {
+                for (path, field_fate) in &mut wrapped_fate.fates {
+                    if !path.is_empty() {
+                        field_fate.internal = fate::InternalFate::Owned;
+                    }
+                }
             }
 
             wrapped_fate
@@ -452,6 +482,12 @@ fn annot_expr(
                 );
             }
 
+            if rc_mode == cli::RcMode::Trivial {
+                for field_fate in content_fate.fates.values_mut() {
+                    field_fate.internal = fate::InternalFate::Owned;
+                }
+            }
+
             fate::ExprKind::WrapCustom(
                 *custom_id,
                 add_occurence(occurs, &mut uses, *content, content_fate),
@@ -479,6 +515,12 @@ fn annot_expr(
                         .unwrap(),
                     &val_fate.fates[&content_path],
                 );
+            }
+
+            if rc_mode == cli::RcMode::Trivial {
+                for field_fate in wrapped_fate.fates.values_mut() {
+                    field_fate.internal = fate::InternalFate::Owned;
+                }
             }
 
             fate::ExprKind::UnwrapCustom(
@@ -707,6 +749,7 @@ fn annot_func(
     orig: &mutation::Program,
     sigs: &SignatureAssumptions<first_ord::CustomFuncId, fate::FuncDef>,
     func_def: &mutation::FuncDef,
+    rc_mode: cli::RcMode,
 ) -> fate::FuncDef {
     let ret_fate = fate::Fate {
         fates: get_refs_in(&orig.custom_types, &func_def.ret_type)
@@ -715,7 +758,11 @@ fn annot_func(
                 (
                     path.clone(),
                     fate::FieldFate {
-                        internal: fate::InternalFate::Unused,
+                        internal: if rc_mode == cli::RcMode::Trivial {
+                            fate::InternalFate::Owned
+                        } else {
+                            fate::InternalFate::Unused
+                        },
                         last_internal_use: event::Horizon::new(),
                         blocks_escaped: OrdSet::new(),
                         ret_destinations: OrdSet::unit(alias::RetName(path)),
@@ -750,6 +797,7 @@ fn annot_func(
         &mut branch_block_end_events,
         &mut event_set,
         root_event_block,
+        rc_mode,
     );
 
     let arg_internal_fate = match body_uses.uses.get(&flat::ARG_LOCAL) {
@@ -770,7 +818,10 @@ fn annot_func(
             (
                 alias::ArgName(path),
                 fate::ArgFieldFate {
-                    internal: path_fate.internal,
+                    internal: match rc_mode {
+                        cli::RcMode::Elide => path_fate.internal,
+                        cli::RcMode::Trivial => fate::InternalFate::Owned,
+                    },
                     ret_destinations: path_fate.ret_destinations,
                 },
             )
@@ -795,10 +846,16 @@ fn annot_func(
     }
 }
 
-pub fn annot_fates(program: mutation::Program, progress: impl ProgressLogger) -> fate::Program {
+pub fn annot_fates(
+    program: mutation::Program,
+    progress: impl ProgressLogger,
+    rc_mode: cli::RcMode,
+) -> fate::Program {
     let funcs = annot_all(
         program.funcs.len(),
-        |sig_assumptions, func| annot_func(&program, sig_assumptions, &program.funcs[func]),
+        |sig_assumptions, func| {
+            annot_func(&program, sig_assumptions, &program.funcs[func], rc_mode)
+        },
         &program.sccs,
         progress,
     );

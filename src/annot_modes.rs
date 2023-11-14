@@ -1,5 +1,6 @@
 use im_rc::{OrdMap, OrdSet, Vector};
 use std::collections::{BTreeMap, BTreeSet};
+use std::iter::FromIterator;
 
 use crate::alias_spec_flag::lookup_concrete_cond;
 use crate::cli;
@@ -10,7 +11,7 @@ use crate::data::fate_annot_ast as fate;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::mode_annot_ast as mode;
-use crate::field_path;
+use crate::field_path::{self, get_refs_in};
 use crate::stack_path;
 use crate::util::disjunction::Disj;
 use crate::util::event_set as event;
@@ -1579,10 +1580,11 @@ fn annot_expr<'a>(
     debug_assert!(solver_annots.drop_prologues[expr.id].is_none());
     solver_annots.drop_prologues[expr.id] = Some(drop_prologue_modes);
 
-    let annot_occur = |constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-                       locals: &LocalContext<flat::LocalId, SolverLocalInfo>,
-                       solver_annots: &mut SolverModeAnnots,
-                       occur: fate::Local|
+    let annot_occur_precise = |constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+                               locals: &LocalContext<flat::LocalId, SolverLocalInfo>,
+                               solver_annots: &mut SolverModeAnnots,
+                               occur: fate::Local,
+                               precise_paths: &BTreeSet<alias::FieldPath>|
      -> SolverValModes {
         let mut occur_modes = BTreeMap::new();
         let mut occur_val_modes = OrdMap::new();
@@ -1634,14 +1636,16 @@ fn annot_expr<'a>(
                         // variable may outlive its source, the destination needs to have the same mode
                         // as the source (which may still end up being `Borrowed` if the source is
                         // itself borrowed from another variable).
-                        let dest_mode_var =
-                            if elision_mode == cli::RcMode::Trivial || borrow_would_outlive_src {
-                                *src_mode_var
-                            } else {
-                                let var = constraints.new_var();
-                                constraints.require_lte(*src_mode_var, var);
-                                var
-                            };
+                        let dest_mode_var = if (elision_mode == cli::RcMode::Trivial
+                            && !precise_paths.contains(path))
+                            || borrow_would_outlive_src
+                        {
+                            *src_mode_var
+                        } else {
+                            let var = constraints.new_var();
+                            constraints.require_lte(*src_mode_var, var);
+                            var
+                        };
 
                         (
                             SolverPathOccurMode::Intermediate {
@@ -1670,6 +1674,14 @@ fn annot_expr<'a>(
         SolverValModes {
             path_modes: occur_val_modes,
         }
+    };
+
+    let annot_occur = |constraints: &mut ineq::ConstraintGraph<mode::Mode>,
+                       locals: &LocalContext<flat::LocalId, SolverLocalInfo>,
+                       solver_annots: &mut SolverModeAnnots,
+                       occur: fate::Local|
+     -> SolverValModes {
+        annot_occur_precise(constraints, locals, solver_annots, occur, &BTreeSet::new())
     };
 
     let result_modes = match &expr.kind {
@@ -1715,7 +1727,12 @@ fn annot_expr<'a>(
         }
 
         fate::ExprKind::Branch(discrim, cases, result_type) => {
-            annot_occur(constraints, locals, solver_annots, *discrim);
+            let discrim_paths =
+                field_path::get_refs_in(typedefs, &locals.local_binding(discrim.1).type_)
+                    .into_iter()
+                    .map(|(path, _)| path)
+                    .collect::<BTreeSet<_>>();
+            annot_occur_precise(constraints, locals, solver_annots, *discrim, &discrim_paths);
 
             let result_modes = instantiate_type(typedefs, constraints, result_type);
 
@@ -1802,7 +1819,19 @@ fn annot_expr<'a>(
         fate::ExprKind::TupleField(tuple, idx) => {
             let mut result_modes = SolverValModes::new();
 
-            let tuple_modes = annot_occur(constraints, locals, solver_annots, *tuple);
+            let precise_paths = get_refs_in(typedefs, &locals.local_binding(tuple.1).type_)
+                .into_iter()
+                .filter_map(|(path, _)| {
+                    if path[0] == alias::Field::Field(*idx) {
+                        None
+                    } else {
+                        Some(path)
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+
+            let tuple_modes =
+                annot_occur_precise(constraints, locals, solver_annots, *tuple, &precise_paths);
 
             let tuple_info = locals.local_binding(tuple.1);
             let item_type = if let anon::Type::Tuple(item_types) = &tuple_info.type_ {
@@ -1842,7 +1871,19 @@ fn annot_expr<'a>(
         fate::ExprKind::UnwrapVariant(variant_id, wrapped) => {
             let mut result_modes = SolverValModes::new();
 
-            let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
+            let precise_paths = get_refs_in(typedefs, &locals.local_binding(wrapped.1).type_)
+                .into_iter()
+                .filter_map(|(path, _)| {
+                    if path[0] == alias::Field::Variant(*variant_id) {
+                        None
+                    } else {
+                        Some(path)
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+
+            let wrapped_modes =
+                annot_occur_precise(constraints, locals, solver_annots, *wrapped, &precise_paths);
 
             let wrapped_info = locals.local_binding(wrapped.1);
             let content_type = if let anon::Type::Variants(variant_types) = &wrapped_info.type_ {
@@ -1883,7 +1924,13 @@ fn annot_expr<'a>(
         fate::ExprKind::UnwrapBoxed(wrapped, item_type, _, retain_point) => {
             let mut result_modes = SolverValModes::new();
 
-            let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
+            let wrapped_modes = annot_occur_precise(
+                constraints,
+                locals,
+                solver_annots,
+                *wrapped,
+                &BTreeSet::from_iter([alias::FieldPath::new()]),
+            );
 
             for (content_path, _) in field_path::get_refs_in(typedefs, item_type) {
                 result_modes.path_modes.insert(
@@ -1967,7 +2014,13 @@ fn annot_expr<'a>(
         )) => {
             let mut result_modes = SolverValModes::new();
 
-            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
+            let array_modes = annot_occur_precise(
+                constraints,
+                locals,
+                solver_annots,
+                *array,
+                &BTreeSet::from_iter([alias::FieldPath::new()]),
+            );
             let index_modes = annot_occur(constraints, locals, solver_annots, *index);
             debug_assert!(index_modes.path_modes.is_empty());
 
@@ -2025,7 +2078,13 @@ fn annot_expr<'a>(
         }
 
         fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, array)) => {
-            annot_occur(constraints, locals, solver_annots, *array);
+            annot_occur_precise(
+                constraints,
+                locals,
+                solver_annots,
+                *array,
+                &BTreeSet::from_iter([alias::FieldPath::new()]),
+            );
             SolverValModes::new()
         }
 
@@ -2134,12 +2193,24 @@ fn annot_expr<'a>(
         }
 
         fate::ExprKind::IoOp(fate::IoOp::Output(_, byte_array)) => {
-            annot_occur(constraints, locals, solver_annots, *byte_array);
+            annot_occur_precise(
+                constraints,
+                locals,
+                solver_annots,
+                *byte_array,
+                &BTreeSet::from_iter([alias::FieldPath::new()]),
+            );
             SolverValModes::new()
         }
 
         fate::ExprKind::Panic(result_type, message) => {
-            annot_occur(constraints, locals, solver_annots, *message);
+            annot_occur_precise(
+                constraints,
+                locals,
+                solver_annots,
+                *message,
+                &BTreeSet::from_iter([alias::FieldPath::new()]),
+            );
             instantiate_type(typedefs, constraints, result_type)
         }
 
@@ -2336,6 +2407,12 @@ fn annot_scc(
                 &func_def.body,
                 &mut solver_annots,
             );
+
+            if elision_mode == cli::RcMode::Trivial {
+                for mode in ret_val_modes.path_modes.values() {
+                    constraints.require_lte_const(*mode, &mode::Mode::Owned);
+                }
+            }
 
             equate_modes(
                 &mut constraints,
