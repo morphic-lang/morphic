@@ -239,7 +239,7 @@ fn build_exe(
                     .concat(),
                 func = profile_func,
             ))],
-            profile_record_rc: false,
+            profile_record_rc: options.profile_record_rc,
             target: {
                 if options.is_native {
                     cli::TargetConfig::Llvm(LlvmConfig::Native)
