@@ -8,9 +8,9 @@ import numpy as np
 def parse_times(results_dir):
     all_times = defaultdict(dict)
     for fname in os.listdir(results_dir):
-        # parse a filename of the form "bench_{name}.mor_native_{tag}.txt" into a tuple
+        # parse a filename of the form "bench_{name}.mor_native_{tag}_time.txt" into a tuple
         # (name, tag) using regular expressions
-        match = re.match(r"^bench_(?P<name>[^\.]+)\.mor_native_(?P<tag>[a-zA-Z0-9_]+)\.txt$", fname)
+        match = re.match(r"^bench_(?P<name>[^\.]+)\.mor_(?P<tag>[a-zA-Z0-9_]+)_time\.txt$", fname)
         if not match:
             continue
         # the file contains a comma-separated list of integers, which we can parse as a JSON array

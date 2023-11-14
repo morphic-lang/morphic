@@ -5,6 +5,7 @@ use morphic::cli;
 use morphic::cli::ArtifactDir;
 use morphic::cli::LlvmConfig;
 use morphic::cli::MlConfig;
+use morphic::cli::MutationMode;
 use morphic::cli::PassOptions;
 use morphic::cli::RcMode;
 use morphic::cli::SpecializationMode;
@@ -14,6 +15,7 @@ use morphic::progress_ui::ProgressMode;
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use serde::Deserialize;
+use serde::Serialize;
 use std::fs::File;
 use std::io::{BufReader, Write};
 use std::path::Path;
@@ -115,7 +117,19 @@ fn write_run_time(benchmark_name: &str, data: Vec<Duration>) {
     let nanoseconds: Vec<u128> = data.iter().map(|d| d.as_nanos()).collect();
 
     writeln!(file, "{}", serde_json::to_string(&nanoseconds).unwrap())
-        .expect("Could not write binary size to file");
+        .expect("Could not write run time to file");
+}
+
+const RC_COUNT_DIR: &str = "target/rc_count";
+
+fn write_rc_counts(benchmark_name: &str, data: Vec<RcCounts>) {
+    std::fs::create_dir_all(RC_COUNT_DIR).expect("Could not create rc_count directory");
+
+    let mut file = File::create(format!("{}/{}.txt", RC_COUNT_DIR, benchmark_name))
+        .expect("Could not create rc counts file");
+
+    writeln!(file, "{}", serde_json::to_string(&data).unwrap())
+        .expect("Could not write rc counts to file");
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -163,6 +177,7 @@ struct ProfSkippedTail {
 struct SampleOptions {
     is_native: bool,
     rc_mode: RcMode,
+    mutation_mode: MutationMode,
     profile_record_rc: bool,
 }
 
@@ -243,6 +258,7 @@ fn build_exe(
             pass_options: PassOptions {
                 defunc_mode,
                 rc_mode: options.rc_mode,
+                mutation_mode: options.mutation_mode,
                 ..Default::default()
             },
         },
@@ -280,6 +296,12 @@ fn variants() -> Vec<Variant> {
     variants
 }
 
+#[derive(Clone, Copy, Serialize)]
+struct RcCounts {
+    total_retain_count: u64,
+    total_release_count: u64,
+}
+
 fn bench_sample(
     iters: (u64, u64),
     bench_name: &str,
@@ -297,6 +319,7 @@ fn bench_sample(
             .join(variant_name.clone());
 
         let mut results = Vec::new();
+        let mut counts: Option<Vec<RcCounts>> = None;
         for _ in 0..iters.0 {
             let report: ProfReport = run_exe(&exe_path, iters.1, extra_stdin, expected_stdout);
 
@@ -314,9 +337,30 @@ fn bench_sample(
             let total_nanos = specialization.total_clock_nanos;
 
             results.push(Duration::from_nanos(total_nanos));
+
+            match (
+                specialization.total_retain_count,
+                specialization.total_release_count,
+            ) {
+                (Some(total_retain_count), Some(total_release_count)) => {
+                    let counts = counts.get_or_insert_with(|| Vec::new());
+                    counts.push(RcCounts {
+                        total_retain_count,
+                        total_release_count,
+                    });
+                }
+                (None, None) => {}
+                _ => {
+                    panic!("Expected both retain and release counts to be present, or neither");
+                }
+            }
         }
 
         write_run_time(&variant_name, results);
+
+        if let Some(counts) = counts {
+            write_rc_counts(&variant_name, counts);
+        }
     }
 }
 
@@ -325,6 +369,7 @@ fn compile_sample(
     src_path: impl AsRef<Path> + Clone,
     profile_mod: &[&str],
     profile_func: &str,
+    mutation_mode: MutationMode,
 ) {
     for variant in variants() {
         let tag = variant.tag();
@@ -339,6 +384,7 @@ fn compile_sample(
             SampleOptions {
                 is_native: true,
                 rc_mode: variant.rc_mode,
+                mutation_mode,
                 profile_record_rc: variant.record_rc,
             },
         );
@@ -366,6 +412,7 @@ fn sample_primes() {
         "samples/bench_primes_iter.mor",
         &[],
         "count_primes",
+        MutationMode::Optimize,
     );
 
     bench_sample(
@@ -411,6 +458,7 @@ fn sample_quicksort() {
         "samples/bench_quicksort.mor",
         &[],
         "quicksort",
+        MutationMode::Optimize,
     );
 
     bench_sample(
@@ -435,6 +483,7 @@ fn sample_primes_sieve() {
         "samples/bench_primes_sieve.mor",
         &[],
         "sieve",
+        MutationMode::Optimize,
     );
 
     bench_sample(iters, "bench_primes_sieve.mor", &[], "sieve", stdin, stdout);
@@ -455,6 +504,7 @@ fn sample_parse_json() {
         "samples/bench_parse_json.mor",
         &[],
         "parse_json",
+        MutationMode::AlwaysImmut,
     );
 
     bench_sample(
@@ -485,6 +535,7 @@ fn sample_calc() {
         "samples/bench_calc.mor",
         &[],
         "eval_exprs",
+        MutationMode::Optimize,
     );
 
     bench_sample(iters, "bench_calc.mor", &[], "eval_exprs", stdin, stdout);
@@ -504,6 +555,7 @@ fn sample_unify() {
         "samples/bench_unify.mor",
         &[],
         "solve_problems",
+        MutationMode::AlwaysImmut,
     );
 
     bench_sample(
@@ -533,6 +585,7 @@ fn sample_words_trie() {
         "samples/bench_words_trie.mor",
         &[],
         "count_words",
+        MutationMode::AlwaysImmut,
     );
 
     bench_sample(

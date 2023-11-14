@@ -761,7 +761,10 @@ fn annot_func(
                         internal: if rc_mode == cli::RcMode::Trivial {
                             fate::InternalFate::Owned
                         } else {
-                            fate::InternalFate::Unused
+                            // fate::InternalFate::Unused
+                            // NOTE: Temporary regression for consistency with the formalism in the
+                            // paper:
+                            fate::InternalFate::Accessed
                         },
                         last_internal_use: event::Horizon::new(),
                         blocks_escaped: OrdSet::new(),

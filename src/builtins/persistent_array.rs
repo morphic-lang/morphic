@@ -1105,6 +1105,7 @@ impl<'a> ArrayImpl<'a> for PersistentArrayImpl<'a> {
                             s.sub(height, s.i64(1)),
                         ],
                     );
+                    s.ptr_set(i, s.add(s.ptr_get(i), s.i64(1)));
                 },
             );
 
