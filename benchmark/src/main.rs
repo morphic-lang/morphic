@@ -214,8 +214,10 @@ fn build_exe(
     };
 
     if options.is_native {
-        if binary_path.exists() {
+        if artifact_dir.dir_path.exists() {
             return (binary_path, artifact_dir);
+        } else {
+            std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
         }
     } else {
         if artifact_dir.dir_path.exists() {
@@ -250,7 +252,7 @@ fn build_exe(
             llvm_opt_level: cli::default_llvm_opt_level(),
             output_path: binary_path.to_owned(),
             artifact_dir: if options.is_native {
-                None
+                Some(artifact_dir.clone())
             } else {
                 Some(artifact_dir.clone())
             },
@@ -504,7 +506,7 @@ fn sample_parse_json() {
         "samples/bench_parse_json.mor",
         &[],
         "parse_json",
-        MutationMode::AlwaysImmut,
+        MutationMode::Optimize,
     );
 
     bench_sample(
@@ -598,6 +600,98 @@ fn sample_words_trie() {
     );
 }
 
+fn sample_cfold() {
+    let iters = (10, 10);
+
+    let stdin = "16\n";
+    let stdout = "192457\n";
+
+    compile_sample(
+        "bench_cfold.mor",
+        "samples/bench_cfold.mor",
+        &[],
+        "test_cfold",
+        MutationMode::Optimize,
+    );
+
+    bench_sample(iters, "bench_cfold.mor", &[], "test_cfold", stdin, stdout);
+}
+
+fn sample_deriv() {
+    let iters = (10, 10);
+
+    let stdin = "8\n";
+    let stdout = "598592\n";
+
+    compile_sample(
+        "bench_deriv.mor",
+        "samples/bench_deriv.mor",
+        &[],
+        "run_deriv",
+        MutationMode::Optimize,
+    );
+
+    bench_sample(iters, "bench_deriv.mor", &[], "run_deriv", stdin, stdout);
+}
+
+fn sample_nqueens() {
+    let iters = (10, 10);
+
+    let stdin = "11\n";
+    let stdout = "2680\n";
+
+    compile_sample(
+        "bench_nqueens.mor",
+        "samples/bench_nqueens.mor",
+        &[],
+        "nqueens",
+        MutationMode::Optimize,
+    );
+
+    bench_sample(iters, "bench_nqueens.mor", &[], "nqueens", stdin, stdout);
+}
+
+fn sample_rbtree() {
+    let iters = (10, 10);
+
+    let stdin = "rbtree\n420000";
+    let stdout = "42000\n";
+
+    compile_sample(
+        "bench_rbtree.mor",
+        "samples/bench_rbtree.mor",
+        &[],
+        "test_rbtree",
+        MutationMode::Optimize,
+    );
+
+    bench_sample(iters, "bench_rbtree.mor", &[], "test_rbtree", stdin, stdout);
+}
+
+fn sample_rbtreeck() {
+    let iters = (10, 10);
+
+    let stdin = "rbtree-ck\n420000";
+    let stdout = "42000\n";
+
+    compile_sample(
+        "bench_rbtree_ck.mor",
+        "samples/bench_rbtree.mor",
+        &[],
+        "test_rbtreeck",
+        MutationMode::Optimize,
+    );
+
+    bench_sample(
+        iters,
+        "bench_rbtree_ck.mor",
+        &[],
+        "test_rbtreeck",
+        stdin,
+        stdout,
+    );
+}
+
 fn main() {
     if !Path::new("samples").exists() {
         eprintln!();
@@ -622,5 +716,11 @@ fn main() {
 
     sample_unify();
 
-    sample_words_trie()
+    sample_words_trie();
+
+    sample_cfold();
+    sample_deriv();
+    sample_nqueens();
+    sample_rbtree();
+    sample_rbtreeck();
 }

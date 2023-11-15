@@ -3,8 +3,12 @@
 module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
-    module String expose { int_to_string },
+    module String expose { int_to_string, string_to_nat, equal },
+    module Option expose { Option { Some, None } },
   }
+
+module Bench = file "lib/bench_common.mor" with { Core }
+  expose { repeat }
 
 type Color {
   Red,
@@ -84,32 +88,53 @@ mod(a: Int, b: Int): Int =
   a - b * (a / b)
 
 
-// the following three functions are rbtree
-make_tree_aux(n: Int, t: Tree) : Tree =
+make_tree_rbtree_aux(n: Int, t: Tree) : Tree =
   if n <= 0 { t } else {
     let n1 = n - 1 in
-    make_tree_aux(n1, insert(t, n1, mod(n1, 10) = 0))
+    make_tree_rbtree_aux(n1, insert(t, n1, mod(n1, 10) = 0))
   }
 
-make_tree(n : Int) : Tree =
-  make_tree_aux(n, Leaf)
+make_tree_rbtree(n : Int) : Tree =
+  make_tree_rbtree_aux(n, Leaf)
 
-proc main(): () =
-  let n = 4200000 in
-  let t = make_tree(n) in
+test_rbtree(n : Int): Int =
+  let t = make_tree_rbtree(n) in
   let v = fold(t, 0, \(k,v,r) -> if v { r + 1 } else { r }) in
-  do output(int_to_string(v))
+  v
 
-// this is rbtree-ck
-// make_tree_aux(freq : Int, n: Int, t: Tree, acc : Array Tree): Array Tree=
-//   if n <= 0 { push(acc, t) } else {
-//     let t_ = insert(t, n, mod(n, 10) = 0) in
-//     make_tree_aux(freq, n - 1, t_, if (mod(n, freq)=0) { push(acc, t_) } else { acc })
-//   }
-//
-// make_tree(freq : Int, n: Int): Array Tree =
-//   make_tree_aux(freq, n, Leaf, [])
-// proc main(): () =
-//   let trees = make_tree(5,4200000) in
-//   let v = fold(get(trees, len(trees) - 1), 0, \(k,v,r) -> if (v) { r + 1 } else { r }) in
-//   do output(int_to_string(v))
+make_tree_rbtreeck_aux(freq : Int, n: Int, t: Tree, acc : Array Tree): Array Tree=
+  if n <= 0 { push(acc, t) } else {
+    let t_ = insert(t, n, mod(n, 10) = 0) in
+    make_tree_rbtreeck_aux(freq, n - 1, t_, if (mod(n, freq)=0) { push(acc, t_) } else { acc })
+  }
+
+make_tree_rbtreeck(freq : Int, n: Int): Array Tree =
+  make_tree_rbtreeck_aux(freq, n, Leaf, [])
+test_rbtreeck(n : Int): Int =
+  let trees = make_tree_rbtreeck(5, n) in
+  let v = fold(get(trees, len(trees) - 1), 0, \(k,v,r) -> if (v) { r + 1 } else { r }) in
+  v
+
+
+// there are two benchmarks in this file, rbtree, and rbtree-ck, this file runs them both
+proc main(): () =
+  let iter_str = do input() in
+
+  let benchmark_name = do input() in
+  let tree_fn = if equal(benchmark_name, "rbtree") {
+    test_rbtree
+  } else if equal(benchmark_name, "rbtree-ck" ) {
+    test_rbtreeck
+  } else {
+    \x -> 0
+  } in
+
+  match (string_to_nat(iter_str), string_to_nat(do input())) {
+    (Some(iters), Some(size)) ->
+      match repeat(iters, \() -> tree_fn(size)) {
+        Some(n) -> do writeln(int_to_string(n)),
+        None -> (),
+      },
+    (_, _) ->
+      do writeln("Please enter two positive integers (an iteration count and a tree size)"),
+  }

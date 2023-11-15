@@ -3,8 +3,12 @@
 module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
-    module String expose { int_to_string },
+    module String expose { int_to_string, string_to_nat },
+    module Option expose { Option { Some, None } },
   }
+
+module Bench = file "lib/bench_common.mor" with { Core }
+  expose { repeat }
 
 type Solution {
   Solution(Array Int),
@@ -49,8 +53,15 @@ find_solutions(n : Int, queen: Int): Array (Array Int) =
     extend(n, [], find_solutions(n, queen - 1))
   }
 
-queens(n : Int): Int =
-  len(find_solutions(n, n))
+nqueens(n : Int) : Int = len(find_solutions(n, n))
 
 proc main(): () =
-  do output(int_to_string(queens(13)))
+  match (string_to_nat(do input()), string_to_nat(do input())) {
+    (Some(iters), Some(n_queens)) ->
+      match repeat(iters, \() -> nqueens(n_queens)) {
+        Some(n) -> do writeln(int_to_string(n)),
+        None -> (),
+      },
+    (_, _) ->
+      do writeln("Please enter two positive integers (an iteration count and the number of queens)"),
+  }
