@@ -8,29 +8,29 @@ build = "build.rs"
 
 [build-dependencies]
 find_clang = { path = "./find_clang" }
-anyhow = "1.0.66"
+anyhow = "1.0.75"
 lalrpop = "0.20.0"
-walkdir = "2.3.2"
+walkdir = "2.4.0"
 
 [dependencies]
 find_clang = { path = "./find_clang" }
 lalrpop-util = "0.20.0"
 im-rc = "15.1.0"
-itertools = "0.10.5"
+itertools = "0.12.0"
 lazy_static = "1.4.0"
 stacker = "0.1.15"
 better-panic = "0.3.0"
-clap = { version = "2.33.4", features = ["color"] }
-cc = "1.0.73"
-tempfile = "3.3.0"
-crossbeam-channel = "0.5.6"
+clap = { version = "4.4.10", features = ["color", "string"] }
+cc = "1.0.83"
+tempfile = "3.8.1"
+crossbeam-channel = "0.5.8"
 inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "776d78712b6d8180d6bbad55467e6307cd58aeb8", features = [
     "llvm16-0",
 ] }
 ansi_term = "0.12.1"
-textwrap = "0.15.1"
+textwrap = "0.16.0"
 json = "0.12.4" # used for string escaping in profile report generation
-indicatif = "0.17.1"
+indicatif = "0.17.7"
 
 # Error handling
 anyhow = "1.0.75"

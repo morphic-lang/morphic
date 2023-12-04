@@ -1,6 +1,7 @@
-use clap::{App, AppSettings, Arg, SubCommand};
+use clap::builder::{styling, PossibleValuesParser};
+use clap::{Arg, ArgAction, Command};
 use inkwell::OptimizationLevel;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use crate::progress_ui::ProgressMode;
@@ -158,69 +159,77 @@ pub fn default_llvm_opt_level() -> OptimizationLevel {
 
 impl Config {
     pub fn from_args() -> Self {
-        // We need to create this string at the top of this function because clap's cli builder
-        // can't take ownership of strings.
-        let default_opt_level_string = (default_llvm_opt_level() as u32).to_string();
+        let styles = styling::Styles::styled()
+            .header(styling::AnsiColor::Green.on_default() | styling::Effects::BOLD)
+            .usage(styling::AnsiColor::Green.on_default() | styling::Effects::BOLD)
+            .literal(styling::AnsiColor::Cyan.on_default() | styling::Effects::BOLD)
+            .placeholder(styling::AnsiColor::Cyan.on_default());
 
-        let matches = App::new(clap::crate_name!())
-            .version(clap::crate_version!())
-            .about(clap::crate_description!())
-            .setting(AppSettings::SubcommandRequiredElseHelp)
-            .setting(AppSettings::ColoredHelp)
+        let matches = Command::new(std::env!("CARGO_PKG_NAME"))
+            .version(std::env!("CARGO_PKG_VERSION"))
+            .about(std::env!("CARGO_PKG_DESCRIPTION"))
+            .styles(styles)
+            .next_line_help(true)
+            .subcommand_required(true)
+            .arg_required_else_help(true)
             .subcommand(
-                SubCommand::with_name("run")
+                Command::new("run")
                     .about("Compiles and runs a program from source")
-                    .setting(AppSettings::ColoredHelp)
-                    .setting(AppSettings::NextLineHelp)
                     .arg(
-                        Arg::with_name("src-path")
+                        Arg::new("src-path")
                             .help("Specify the source file for compilation.")
                             .required(true)
                             .index(1),
                     )
                     .arg(
-                        Arg::with_name("valgrind")
+                        Arg::new("valgrind")
                             .long("valgrind")
                             .conflicts_with("interpret")
+                            .action(ArgAction::SetTrue)
                             .help("Run the compiler output program inside of valgrind."),
                     )
                     .arg(
-                        Arg::with_name("valgrind-ignore-leaks")
+                        Arg::new("valgrind-ignore-leaks")
                             .long("valgrind-ignore-leaks")
                             .requires("valgrind")
+                            .action(ArgAction::SetTrue)
                             .help("Ignore memory leaks when running under valgrind."),
                     )
-                    .arg(Arg::with_name("interpret").long("interpret").help(
-                        "Run the program using the reference interpreter instead of generating \
-                         LLVM and running a fully compiled executable.",
-                    ))
-                    .arg(Arg::with_name("rc-mode")
+                    .arg(
+                        Arg::new("interpret")
+                            .long("interpret")
+                            .action(ArgAction::SetTrue)
+                            .help(
+                                "Run the program using the reference interpreter instead of \
+                                generating LLVM and running a fully compiled executable.",
+                            ),
+                    )
+                    .arg(Arg::new("rc-mode")
                         .long("rc-mode")
-                        .possible_values(RC_MODES)
+                        .value_parser(PossibleValuesParser::new(RC_MODES))
                         .default_value(DEFAULT_RC_MODE)
                         .help("Same as '--rc-mode' for 'morphic build'."),
                     )
-                    .arg(Arg::with_name("mutation-mode")
+                    .arg(Arg::new("mutation-mode")
                         .long("mutation-mode")
-                        .possible_values(MUTATION_MODES)
+                        .value_parser(PossibleValuesParser::new(MUTATION_MODES))
                         .default_value(DEFAULT_MUTATION_MODE),
                     ),
             )
             .subcommand(
-                SubCommand::with_name("build")
+                Command::new("build")
                     .about("Builds a program from source")
-                    .setting(AppSettings::ColoredHelp)
-                    .setting(AppSettings::NextLineHelp)
                     .arg(
-                        Arg::with_name("src-path")
+                        Arg::new("src-path")
                             .help("Specify the source file for compilation.")
                             .required(true)
                             .index(1),
                     )
                     .arg(
-                        Arg::with_name("emit-artifacts")
+                        Arg::new("emit-artifacts")
                             .long("emit-artifacts")
-                            .short("a")
+                            .short('a')
+                            .action(ArgAction::SetTrue)
                             .help(
                                 "Emit compilation artifacts including the generated LLVM IR and \
                                 object file. Artifacts will be placed in a directory whose name is \
@@ -228,41 +237,42 @@ impl Config {
                             ),
                     )
                     .arg(
-                        Arg::with_name("llvm-opt-level")
+                        Arg::new("llvm-opt-level")
                             .long("llvm-opt-level")
                             .help("Set the optimization level used by the LLVM backend.")
-                            .takes_value(true)
-                            .possible_values(&["0", "1", "2", "3"])
-                            .default_value(&default_opt_level_string),
+                            .value_parser(0..=3)
+                            .default_value((default_llvm_opt_level() as i64).to_string()),
                     )
                     .arg(
-                        Arg::with_name("wasm")
+                        Arg::new("wasm")
                             .long("wasm")
+                            .action(ArgAction::SetTrue)
                             .help("Compile to wasm instead of a native binary."),
                     )
                     .arg(
-                        Arg::with_name("sml")
+                        Arg::new("sml")
                             .long("sml")
+                            .action(ArgAction::SetTrue)
                             .help("Compile to SML instead of a native binary."),
                     )
                     .arg(
-                        Arg::with_name("ocaml")
+                        Arg::new("ocaml")
                             .long("ocaml")
+                            .action(ArgAction::SetTrue)
                             .help("Compile to OCaml instead of a native binary."),
                     )
                     .arg(
-                        Arg::with_name("output-path")
-                            .short("o")
+                        Arg::new("output-path")
+                            .short('o')
                             .long("output-path")
                             .help("Place the output executable at this path.")
-                            .takes_value(true),
                     )
                     .arg(
                         // If you ever change the CLI syntax for profiling, you need to grep for
                         // "--profile" elsewhere in the project and adjust things as necessary,
                         // because several error message strings in other modules mention the
                         // argument syntax.
-                        Arg::with_name("profile")
+                        Arg::new("profile")
                             .long("profile")
                             .help(
                                 "Instrument a function to measure performance statistics. To use \
@@ -271,58 +281,64 @@ impl Config {
                                 exits, it will write a JSON file to this path containing \
                                 performance data for every '--profile'd function.",
                             )
-                            .multiple(true)
+                            .action(ArgAction::Append)
                             .number_of_values(1),
                     )
                     .arg(
-                        Arg::with_name("profile-record-rc")
+                        Arg::new("profile-record-rc")
                         .long("profile-record-rc")
+                        .action(ArgAction::SetTrue)
                         .help(
                             "Record number of reference count increments and decrements for each \
                              '--profile'd function."
                         )
                     )
                     .arg(
-                        Arg::with_name("defunc-mode")
+                        Arg::new("defunc-mode")
                             .long("defunc-mode")
                             .help("Set whether or not to specialize during defunctionalization")
-                            .possible_values(&["specialize", "single"])
+                            .value_parser(PossibleValuesParser::new(&["specialize", "single"]))
                             .default_value("specialize"),
                     )
                     .arg(
-                        Arg::with_name("rc-mode")
+                        Arg::new("rc-mode")
                         .long("rc-mode")
                         .help(
                             "Set whether or not to elide reference counting operations. This is \
                             mostly useful for working around compiler bugs."
                         )
-                        .possible_values(RC_MODES)
+                        .value_parser(PossibleValuesParser::new(RC_MODES))
                         .default_value(DEFAULT_RC_MODE),
                     )
                     .arg(
-                        Arg::with_name("mutation-mode")
+                        Arg::new("mutation-mode")
                         .long("mutation-mode")
-                        .possible_values(MUTATION_MODES)
+                        .value_parser(PossibleValuesParser::new(MUTATION_MODES))
                         .default_value(DEFAULT_MUTATION_MODE),
                     )
                     .arg(
-                        Arg::with_name("progress")
+                        Arg::new("progress")
                             .long("progress")
+                            .action(ArgAction::SetTrue)
                             .help("Set whether or not to show progress"),
                     ),
             )
             .get_matches();
 
         if let Some(matches) = matches.subcommand_matches("run") {
-            let src_path = matches.value_of_os("src-path").unwrap().to_owned().into();
+            let src_path = matches
+                .get_one::<OsString>("src-path")
+                .unwrap()
+                .to_owned()
+                .into();
 
-            let mode = if matches.is_present("interpret") {
+            let mode = if matches.get_flag("interpret") {
                 RunMode::Interpret
             } else {
                 RunMode::Compile {
-                    valgrind: if matches.is_present("valgrind") {
+                    valgrind: if matches.get_flag("valgrind") {
                         Some(ValgrindConfig {
-                            leak_check: !matches.is_present("valgrind-ignore-leaks"),
+                            leak_check: !matches.get_flag("valgrind-ignore-leaks"),
                         })
                     } else {
                         None
@@ -330,9 +346,10 @@ impl Config {
                 }
             };
 
-            let rc_mode = parse_rc_mode(matches.value_of("rc-mode").unwrap());
+            let rc_mode = parse_rc_mode(matches.get_one::<String>("rc-mode").unwrap());
 
-            let mutation_mode = parse_mutation_mode(matches.value_of("mutation-mode").unwrap());
+            let mutation_mode =
+                parse_mutation_mode(matches.get_one::<String>("mutation-mode").unwrap());
 
             let run_config = RunConfig {
                 src_path,
@@ -345,28 +362,32 @@ impl Config {
         }
 
         if let Some(matches) = matches.subcommand_matches("build") {
-            let src_path: PathBuf = matches.value_of_os("src-path").unwrap().to_owned().into();
+            let src_path: PathBuf = matches
+                .get_one::<String>("src-path")
+                .unwrap()
+                .to_owned()
+                .into();
 
-            let target = if matches.is_present("wasm") {
+            let target = if matches.get_flag("wasm") {
                 TargetConfig::Llvm(LlvmConfig::Wasm)
-            } else if matches.is_present("sml") {
+            } else if matches.get_flag("sml") {
                 TargetConfig::Ml(MlConfig::Sml)
-            } else if matches.is_present("ocaml") {
+            } else if matches.get_flag("ocaml") {
                 TargetConfig::Ml(MlConfig::Ocaml)
             } else {
                 TargetConfig::Llvm(LlvmConfig::Native)
             };
 
-            let llvm_opt_level = match matches.value_of("llvm-opt-level").unwrap() {
-                "0" => OptimizationLevel::None,
-                "1" => OptimizationLevel::Less,
-                "2" => OptimizationLevel::Default,
-                "3" => OptimizationLevel::Aggressive,
+            let llvm_opt_level = match matches.get_one::<i64>("llvm-opt-level").unwrap() {
+                0 => OptimizationLevel::None,
+                1 => OptimizationLevel::Less,
+                2 => OptimizationLevel::Default,
+                3 => OptimizationLevel::Aggressive,
                 _ => unreachable!(),
             };
 
             let output_path = matches
-                .value_of_os("output-path")
+                .get_one::<OsString>("output-path")
                 .map(|s| s.to_owned().into())
                 .unwrap_or(
                     std::env::current_dir()
@@ -375,7 +396,7 @@ impl Config {
                         .with_extension(""),
                 );
 
-            let artifact_dir = if matches.is_present("emit-artifacts") {
+            let artifact_dir = if matches.get_flag("emit-artifacts") {
                 let mut artifact_dir = output_path.clone().into_os_string();
                 artifact_dir.push("-artifacts");
                 std::fs::create_dir_all(&artifact_dir).unwrap();
@@ -387,24 +408,25 @@ impl Config {
                 None
             };
 
-            let profile_syms = match matches.values_of("profile") {
+            let profile_syms = match matches.get_many::<String>("profile") {
                 Some(values) => values.map(|val| SymbolName(val.to_owned())).collect(),
                 None => Vec::new(),
             };
 
-            let profile_record_rc = matches.is_present("profile-record-rc");
+            let profile_record_rc = matches.get_flag("profile-record-rc");
 
-            let defunc_mode = match matches.value_of("defunc-mode").unwrap() {
+            let defunc_mode = match matches.get_one::<String>("defunc-mode").unwrap().as_str() {
                 "specialize" => SpecializationMode::Specialize,
                 "single" => SpecializationMode::Single,
                 _ => unreachable!(),
             };
 
-            let rc_mode = parse_rc_mode(matches.value_of("rc-mode").unwrap());
+            let rc_mode = parse_rc_mode(matches.get_one::<String>("rc-mode").unwrap());
 
-            let mutation_mode = parse_mutation_mode(matches.value_of("mutation-mode").unwrap());
+            let mutation_mode =
+                parse_mutation_mode(matches.get_one::<String>("mutation-mode").unwrap());
 
-            let progress = if matches.is_present("progress") {
+            let progress = if matches.get_flag("progress") {
                 ProgressMode::Visible
             } else {
                 ProgressMode::Hidden

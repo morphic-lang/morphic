@@ -1,7 +1,7 @@
 use std::iter;
 use std::process::Command as Cmd;
 
-pub const DEFAULT_CLANG_VERSION: u32 = 15;
+pub const DEFAULT_CLANG_VERSION: u32 = 16;
 
 #[derive(Debug, Clone)]
 pub struct Clang {

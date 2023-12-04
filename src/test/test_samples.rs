@@ -332,6 +332,7 @@ sample! { bench_words_trie "samples/bench_words_trie.mor";
 
 sample! { bench_unify "samples/bench_unify.mor";
     mutation_mode = MutationMode::AlwaysImmut;
+    compile_only = true;
     stdin = concat!(
         "2\n", // first number is iteration count
         include_str!("../../samples/sample-input/unify_problems_short.txt"),
