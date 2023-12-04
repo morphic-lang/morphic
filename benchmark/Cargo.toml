@@ -2,7 +2,7 @@
 name = "benchmark"
 version = "0.1.0"
 authors = ["William Brandon <williambrandon@berkeley.edu>"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 morphic = { path = ".." }
