@@ -1,4 +1,4 @@
-use crate::cli::{MutationMode, RcMode};
+use crate::cli::MutationMode;
 use crate::pseudoprocess::ExitStatus::Failure;
 
 sample! { io "samples/io.mor";

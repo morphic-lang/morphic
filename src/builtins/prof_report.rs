@@ -231,6 +231,7 @@ pub fn define_prof_report_fn<'a>(
                                                                     (
                                                                         "total_calls",
                                                                         DynU64(s.ptr_get(
+                                                                            s.i64_t(),
                                                                             counters
                                                                                 .total_calls
                                                                                 .as_pointer_value()
@@ -240,6 +241,7 @@ pub fn define_prof_report_fn<'a>(
                                                                     (
                                                                         "total_clock_nanos",
                                                                         DynU64(s.ptr_get(
+                                                                            s.i64_t(),
                                                                             counters
                                                                                 .total_clock_nanos
                                                                                 .as_pointer_value()
@@ -254,6 +256,7 @@ pub fn define_prof_report_fn<'a>(
                                                                     entries.push((
                                                                         "total_retain_count",
                                                                         DynU64(s.ptr_get(
+                                                                            s.i64_t(),
                                                                             total_retain_count
                                                                                 .as_pointer_value()
                                                                                 .into(),
@@ -267,6 +270,7 @@ pub fn define_prof_report_fn<'a>(
                                                                     entries.push((
                                                                         "total_release_count",
                                                                         DynU64(s.ptr_get(
+                                                                            s.i64_t(),
                                                                             total_release_count
                                                                                 .as_pointer_value()
                                                                                 .into(),

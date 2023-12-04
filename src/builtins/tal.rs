@@ -74,7 +74,7 @@ impl<'a> Tal<'a> {
         let usize_t = fountain_pen::usize_t(context, target);
         let void_t = context.void_type();
         let i8_t = context.i8_type();
-        let i8_ptr_t = i8_t.ptr_type(AddressSpace::Generic);
+        let i8_ptr_t = i8_t.ptr_type(AddressSpace::default());
         let i32_t = context.i32_type();
         let i64_t = context.i64_type();
 

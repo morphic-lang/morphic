@@ -30,10 +30,10 @@ impl<'a> RcBoxBuiltin<'a> {
         item_type: BasicTypeEnum<'a>,
     ) -> Self {
         let void_type = context.void_type();
-        let item_ptr_type = item_type.ptr_type(AddressSpace::Generic);
+        let item_ptr_type = item_type.ptr_type(AddressSpace::default());
 
         let rc_type = context.opaque_struct_type("builtin_rc");
-        let rc_ptr_type = rc_type.ptr_type(AddressSpace::Generic);
+        let rc_ptr_type = rc_type.ptr_type(AddressSpace::default());
 
         let new = module.add_function(
             "builtin_rc_new",
@@ -76,9 +76,11 @@ impl<'a> RcBoxBuiltin<'a> {
         tal: &Tal<'a>,
         item_release: Option<FunctionValue<'a>>,
     ) {
+        let i64_t = context.i64_type().as_basic_type_enum();
+
         self.rc_type
             .into_struct_type()
-            .set_body(&[context.i64_type().into(), self.item_type.into()], false);
+            .set_body(&[i64_t, self.item_type.into()], false);
 
         // define 'new'
         {
@@ -86,8 +88,8 @@ impl<'a> RcBoxBuiltin<'a> {
             let item = s.arg(0);
 
             let rc = s.malloc(s.usize(1), self.rc_type, tal);
-            s.arrow_set(rc, F_REFCOUNT, s.i64(1));
-            s.arrow_set(rc, F_ITEM, item);
+            s.arrow_set(self.rc_type, rc, F_REFCOUNT, s.i64(1));
+            s.arrow_set(self.rc_type, rc, F_ITEM, item);
             s.ret(rc);
         }
 
@@ -95,7 +97,7 @@ impl<'a> RcBoxBuiltin<'a> {
         {
             let s = scope(self.get, context, target);
             let rc = s.arg(0);
-            s.ret(s.gep(rc, F_ITEM));
+            s.ret(s.gep(self.rc_type, rc, F_ITEM));
         }
 
         // define 'retain'
@@ -107,8 +109,8 @@ impl<'a> RcBoxBuiltin<'a> {
                 s.call_void(record_retain, &[]);
             }
 
-            let new_refcount = s.add(s.arrow(rc, F_REFCOUNT), s.i64(1));
-            s.arrow_set(rc, F_REFCOUNT, new_refcount);
+            let new_refcount = s.add(s.arrow(self.rc_type, i64_t, rc, F_REFCOUNT), s.i64(1));
+            s.arrow_set(self.rc_type, rc, F_REFCOUNT, new_refcount);
 
             s.ret_void();
         }
@@ -122,12 +124,12 @@ impl<'a> RcBoxBuiltin<'a> {
                 s.call_void(record_release, &[]);
             }
 
-            let new_refcount = s.sub(s.arrow(rc, F_REFCOUNT), s.i64(1));
-            s.arrow_set(rc, F_REFCOUNT, new_refcount);
+            let new_refcount = s.sub(s.arrow(self.rc_type, i64_t, rc, F_REFCOUNT), s.i64(1));
+            s.arrow_set(self.rc_type, rc, F_REFCOUNT, new_refcount);
 
             s.if_(s.eq(new_refcount, s.i64(0)), |s| {
                 if let Some(item_release) = item_release {
-                    s.call_void(item_release, &[s.gep(rc, F_ITEM)]);
+                    s.call_void(item_release, &[s.gep(self.rc_type, rc, F_ITEM)]);
                 }
                 s.free(s.ptr_cast(s.i8_t(), rc), tal);
             });

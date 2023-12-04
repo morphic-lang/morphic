@@ -1,6 +1,6 @@
 use crate::builtins::array::ArrayImpl;
+use crate::builtins::cow_array::{CowArrayImpl, CowArrayIoImpl};
 use crate::builtins::flat_array::{FlatArrayImpl, FlatArrayIoImpl};
-use crate::builtins::persistent_array::{PersistentArrayImpl, PersistentArrayIoImpl};
 use crate::builtins::prof_report::{
     define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
 };
@@ -60,7 +60,7 @@ pub enum Error {
     #[error("could not create output file, {0}")]
     CouldNotWriteOutputFile(std::io::Error),
     #[error("could not locate valid clang install: {0}")]
-    CouldNotFindClang(anyhow::Error),
+    CouldNotFindClang(String),
     #[error("clang exited unsuccessfully, IO error: {0}")]
     ClangFailed(std::io::Error),
     #[error("selected LLVM target triple is not supported on your system, {0}")]
@@ -158,7 +158,7 @@ impl<'a> CustomTypeDecls<'a> {
             arg,
         );
 
-        builder.build_return(None);
+        builder.build_return(None).unwrap();
 
         let release_entry = context.append_basic_block(self.release, "release_entry");
 
@@ -177,7 +177,7 @@ impl<'a> CustomTypeDecls<'a> {
             arg,
         );
 
-        builder.build_return(None);
+        builder.build_return(None).unwrap();
     }
 }
 
@@ -255,8 +255,8 @@ fn declare_profile_points<'a>(
 struct Instances<'a> {
     flat_arrays: RefCell<BTreeMap<low::Type, Rc<dyn ArrayImpl<'a> + 'a>>>,
     flat_array_io: FlatArrayIoImpl<'a>,
-    persistent_arrays: RefCell<BTreeMap<low::Type, Rc<dyn ArrayImpl<'a> + 'a>>>,
-    persistent_array_io: PersistentArrayIoImpl<'a>,
+    cow_arrays: RefCell<BTreeMap<low::Type, Rc<dyn ArrayImpl<'a> + 'a>>>,
+    cow_array_io: CowArrayIoImpl<'a>,
     rcs: RefCell<BTreeMap<low::Type, RcBoxBuiltin<'a>>>,
 }
 
@@ -277,29 +277,26 @@ impl<'a> Instances<'a> {
         let flat_array_io =
             FlatArrayIoImpl::declare(globals.context, globals.module, byte_flat_builtin);
 
-        let mut persistent_arrays = BTreeMap::new();
-        let byte_persistent_builtin = PersistentArrayImpl::declare(
+        let mut cow_arrays = BTreeMap::new();
+        let byte_cow_builtin = CowArrayImpl::declare(
             globals.context,
             globals.target,
             globals.module,
             globals.context.i8_type().into(),
         );
 
-        persistent_arrays.insert(
+        cow_arrays.insert(
             low::Type::Num(first_ord::NumType::Byte),
-            Rc::new(byte_persistent_builtin) as Rc<dyn ArrayImpl<'a>>,
+            Rc::new(byte_cow_builtin) as Rc<dyn ArrayImpl<'a>>,
         );
-        let persistent_array_io = PersistentArrayIoImpl::declare(
-            globals.context,
-            globals.module,
-            byte_persistent_builtin,
-        );
+        let cow_array_io =
+            CowArrayIoImpl::declare(globals.context, globals.module, byte_cow_builtin);
 
         Self {
             flat_arrays: RefCell::new(flat_arrays),
             flat_array_io,
-            persistent_arrays: RefCell::new(persistent_arrays),
-            persistent_array_io,
+            cow_arrays: RefCell::new(cow_arrays),
+            cow_array_io: cow_array_io,
             rcs: RefCell::new(BTreeMap::new()),
         }
     }
@@ -334,12 +331,12 @@ impl<'a> Instances<'a> {
         new_builtin
     }
 
-    fn get_persistent_array<'b>(
+    fn get_cow_array<'b>(
         &self,
         globals: &Globals<'a, 'b>,
         item_type: &low::Type,
     ) -> Rc<dyn ArrayImpl<'a> + 'a> {
-        if let Some(existing) = self.persistent_arrays.borrow().get(&item_type.clone()) {
+        if let Some(existing) = self.cow_arrays.borrow().get(&item_type.clone()) {
             return existing.clone();
         }
         let ty = get_llvm_type(globals, self, item_type);
@@ -351,14 +348,14 @@ impl<'a> Instances<'a> {
                 ty,
             )) as Rc<dyn ArrayImpl<'a>>
         } else {
-            Rc::new(PersistentArrayImpl::declare(
+            Rc::new(CowArrayImpl::declare(
                 globals.context,
                 globals.target,
                 globals.module,
                 ty,
             )) as Rc<dyn ArrayImpl<'a>>
         };
-        self.persistent_arrays
+        self.cow_arrays
             .borrow_mut()
             .insert(item_type.clone(), new_builtin.clone());
         new_builtin
@@ -382,7 +379,7 @@ impl<'a> Instances<'a> {
         globals: &Globals<'a, 'b>,
         rc_progress: impl ProgressLogger,
         flat_progress: impl ProgressLogger,
-        persistent_progress: impl ProgressLogger,
+        cow_progress: impl ProgressLogger,
     ) {
         let builder = globals.context.create_builder();
         let void_type = globals.context.void_type();
@@ -395,7 +392,7 @@ impl<'a> Instances<'a> {
             let release_func = globals.module.add_function(
                 &format!("rc_release_{}", i),
                 void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
                     false,
                 ),
                 Some(Linkage::Internal),
@@ -408,7 +405,9 @@ impl<'a> Instances<'a> {
             builder.position_at_end(release_entry);
             let arg = release_func.get_nth_param(0).unwrap();
 
-            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+            let arg = builder
+                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
+                .unwrap();
 
             gen_rc_op(
                 RcOp::Release,
@@ -420,7 +419,7 @@ impl<'a> Instances<'a> {
                 arg,
             );
 
-            builder.build_return(None);
+            builder.build_return(None).unwrap();
 
             rc_builtin.define(
                 globals.context,
@@ -442,7 +441,7 @@ impl<'a> Instances<'a> {
             let retain_func = globals.module.add_function(
                 &format!("flat_array_retain_{}", i),
                 void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
                     false,
                 ),
                 Some(Linkage::Internal),
@@ -455,7 +454,9 @@ impl<'a> Instances<'a> {
             builder.position_at_end(retain_entry);
             let arg = retain_func.get_nth_param(0).unwrap();
 
-            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+            let arg = builder
+                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
+                .unwrap();
 
             gen_rc_op(
                 RcOp::Retain,
@@ -467,12 +468,12 @@ impl<'a> Instances<'a> {
                 arg,
             );
 
-            builder.build_return(None);
+            builder.build_return(None).unwrap();
 
             let release_func = globals.module.add_function(
                 &format!("flat_array_release_{}", i),
                 void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
                     false,
                 ),
                 Some(Linkage::Internal),
@@ -485,7 +486,9 @@ impl<'a> Instances<'a> {
             builder.position_at_end(release_entry);
             let arg = release_func.get_nth_param(0).unwrap();
 
-            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+            let arg = builder
+                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
+                .unwrap();
 
             gen_rc_op(
                 RcOp::Release,
@@ -497,7 +500,7 @@ impl<'a> Instances<'a> {
                 arg,
             );
 
-            builder.build_return(None);
+            builder.build_return(None).unwrap();
 
             // TODO: dont generate retains/releases that aren't used
             if is_zero_sized(globals, inner_type) {
@@ -527,18 +530,15 @@ impl<'a> Instances<'a> {
 
         flat_progress.finish();
 
-        // persistent arrays
-        let mut persistent_progress =
-            persistent_progress.start_session(Some(self.persistent_arrays.borrow().len() + 1));
-        for (i, (inner_type, persistent_array_builtin)) in
-            self.persistent_arrays.borrow().iter().enumerate()
-        {
+        // cow arrays
+        let mut cow_progress = cow_progress.start_session(Some(self.cow_arrays.borrow().len() + 1));
+        for (i, (inner_type, cow_array_builtin)) in self.cow_arrays.borrow().iter().enumerate() {
             let llvm_inner_type = get_llvm_type(globals, self, inner_type);
 
             let retain_func = globals.module.add_function(
-                &format!("persistent_array_retain_{}", i),
+                &format!("cow_array_retain_{}", i),
                 void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
                     false,
                 ),
                 Some(Linkage::Internal),
@@ -551,7 +551,9 @@ impl<'a> Instances<'a> {
             builder.position_at_end(retain_entry);
             let arg = retain_func.get_nth_param(0).unwrap();
 
-            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+            let arg = builder
+                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
+                .unwrap();
 
             gen_rc_op(
                 RcOp::Retain,
@@ -563,12 +565,12 @@ impl<'a> Instances<'a> {
                 arg,
             );
 
-            builder.build_return(None);
+            builder.build_return(None).unwrap();
 
             let release_func = globals.module.add_function(
-                &format!("persistent_array_release_{}", i),
+                &format!("cow_array_release_{}", i),
                 void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::Generic).into()],
+                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
                     false,
                 ),
                 Some(Linkage::Internal),
@@ -581,7 +583,9 @@ impl<'a> Instances<'a> {
             builder.position_at_end(release_entry);
             let arg = release_func.get_nth_param(0).unwrap();
 
-            let arg = builder.build_load(arg.into_pointer_value(), "arg");
+            let arg = builder
+                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
+                .unwrap();
 
             gen_rc_op(
                 RcOp::Release,
@@ -593,19 +597,13 @@ impl<'a> Instances<'a> {
                 arg,
             );
 
-            builder.build_return(None);
+            builder.build_return(None).unwrap();
 
             // TODO: dont generate retains/releases that aren't used
             if is_zero_sized(globals, inner_type) {
-                persistent_array_builtin.define(
-                    globals.context,
-                    globals.target,
-                    &globals.tal,
-                    None,
-                    None,
-                );
+                cow_array_builtin.define(globals.context, globals.target, &globals.tal, None, None);
             } else {
-                persistent_array_builtin.define(
+                cow_array_builtin.define(
                     globals.context,
                     globals.target,
                     &globals.tal,
@@ -614,14 +612,14 @@ impl<'a> Instances<'a> {
                 );
             }
 
-            persistent_progress.update(1);
+            cow_progress.update(1);
         }
 
-        self.persistent_array_io
+        self.cow_array_io
             .define(globals.context, globals.target, &globals.tal);
-        persistent_progress.update(1);
+        cow_progress.update(1);
 
-        persistent_progress.finish();
+        cow_progress.finish();
     }
 }
 
@@ -718,7 +716,7 @@ fn get_llvm_type<'a, 'b>(
             .array_type
             .into(),
         low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => instances
-            .get_persistent_array(globals, item_type)
+            .get_cow_array(globals, item_type)
             .interface()
             .array_type
             .into(),
@@ -728,7 +726,7 @@ fn get_llvm_type<'a, 'b>(
             .hole_array_type
             .into(),
         low::Type::HoleArray(constrain::RepChoice::FallbackImmut, item_type) => instances
-            .get_persistent_array(globals, item_type)
+            .get_cow_array(globals, item_type)
             .interface()
             .hole_array_type
             .into(),
@@ -745,7 +743,7 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Boxed(type_) => instances
             .get_rc(globals, type_)
             .rc_type
-            .ptr_type(AddressSpace::Generic)
+            .ptr_type(AddressSpace::default())
             .into(),
         low::Type::Custom(type_id) => globals.custom_types[type_id].ty.into(),
     }
@@ -775,30 +773,38 @@ fn gen_rc_op<'a, 'b>(
                     .get_flat_array(globals, item_type)
                     .interface()
                     .retain_array;
-                builder.build_call(retain_func, &[arg.into()], "retain_flat_array");
+                builder
+                    .build_call(retain_func, &[arg.into()], "retain_flat_array")
+                    .unwrap();
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_flat_array(globals, item_type)
                     .interface()
                     .release_array;
-                builder.build_call(release_func, &[arg.into()], "release_flat_array");
+                builder
+                    .build_call(release_func, &[arg.into()], "release_flat_array")
+                    .unwrap();
             }
         },
         low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => match op {
             RcOp::Retain => {
                 let retain_func = instances
-                    .get_persistent_array(globals, item_type)
+                    .get_cow_array(globals, item_type)
                     .interface()
                     .retain_array;
-                builder.build_call(retain_func, &[arg.into()], "retain_pers_array");
+                builder
+                    .build_call(retain_func, &[arg.into()], "retain_pers_array")
+                    .unwrap();
             }
             RcOp::Release => {
                 let release_func = instances
-                    .get_persistent_array(globals, item_type)
+                    .get_cow_array(globals, item_type)
                     .interface()
                     .release_array;
-                builder.build_call(release_func, &[arg.into()], "release_pers_array");
+                builder
+                    .build_call(release_func, &[arg.into()], "release_pers_array")
+                    .unwrap();
             }
         },
         low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => match op {
@@ -807,30 +813,38 @@ fn gen_rc_op<'a, 'b>(
                     .get_flat_array(globals, item_type)
                     .interface()
                     .retain_hole;
-                builder.build_call(retain_func, &[arg.into()], "retain_flat_hole_array");
+                builder
+                    .build_call(retain_func, &[arg.into()], "retain_flat_hole_array")
+                    .unwrap();
             }
             RcOp::Release => {
                 let release_func = instances
                     .get_flat_array(globals, item_type)
                     .interface()
                     .release_hole;
-                builder.build_call(release_func, &[arg.into()], "release_flat_hole_array");
+                builder
+                    .build_call(release_func, &[arg.into()], "release_flat_hole_array")
+                    .unwrap();
             }
         },
         low::Type::HoleArray(constrain::RepChoice::FallbackImmut, item_type) => match op {
             RcOp::Retain => {
                 let retain_func = instances
-                    .get_persistent_array(globals, item_type)
+                    .get_cow_array(globals, item_type)
                     .interface()
                     .retain_hole;
-                builder.build_call(retain_func, &[arg.into()], "retain_pers_hole_array");
+                builder
+                    .build_call(retain_func, &[arg.into()], "retain_pers_hole_array")
+                    .unwrap();
             }
             RcOp::Release => {
                 let release_func = instances
-                    .get_persistent_array(globals, item_type)
+                    .get_cow_array(globals, item_type)
                     .interface()
                     .release_hole;
-                builder.build_call(release_func, &[arg.into()], "release_pers_hole_array");
+                builder
+                    .build_call(release_func, &[arg.into()], "release_pers_hole_array")
+                    .unwrap();
             }
         },
         low::Type::Tuple(item_types) => {
@@ -874,12 +888,14 @@ fn gen_rc_op<'a, 'b>(
                 })
                 .collect::<Vec<_>>();
 
-            builder.build_switch(discrim, undefined_block, &switch_blocks[..]);
+            builder
+                .build_switch(discrim, undefined_block, &switch_blocks[..])
+                .unwrap();
 
             let next_block = globals.context.append_basic_block(func, "next");
 
             builder.position_at_end(undefined_block);
-            builder.build_unreachable();
+            builder.build_unreachable().unwrap();
             for (i, variant_block) in variant_blocks.iter().enumerate() {
                 builder.position_at_end(*variant_block);
                 let variant_id = first_ord::VariantId(i);
@@ -897,7 +913,7 @@ fn gen_rc_op<'a, 'b>(
                     unwrapped_variant,
                 );
 
-                builder.build_unconditional_branch(next_block);
+                builder.build_unconditional_branch(next_block).unwrap();
             }
 
             builder.position_at_end(next_block);
@@ -905,21 +921,29 @@ fn gen_rc_op<'a, 'b>(
         low::Type::Boxed(inner_type) => match op {
             RcOp::Retain => {
                 let retain_func = instances.get_rc(globals, inner_type).retain;
-                builder.build_call(retain_func, &[arg.into()], "retain_boxed");
+                builder
+                    .build_call(retain_func, &[arg.into()], "retain_boxed")
+                    .unwrap();
             }
             RcOp::Release => {
                 let release_func = instances.get_rc(globals, inner_type).release;
-                builder.build_call(release_func, &[arg.into()], "release_boxed");
+                builder
+                    .build_call(release_func, &[arg.into()], "release_boxed")
+                    .unwrap();
             }
         },
         low::Type::Custom(type_id) => match op {
             RcOp::Retain => {
                 let retain_func = globals.custom_types[type_id].retain;
-                builder.build_call(retain_func, &[arg.into()], "retain_boxed");
+                builder
+                    .build_call(retain_func, &[arg.into()], "retain_boxed")
+                    .unwrap();
             }
             RcOp::Release => {
                 let release_func = globals.custom_types[type_id].release;
-                builder.build_call(release_func, &[arg.into()], "release_boxed");
+                builder
+                    .build_call(release_func, &[arg.into()], "release_boxed")
+                    .unwrap();
             }
         },
     }
@@ -943,7 +967,7 @@ fn gen_entry_alloca<'a>(
         entry_builder.position_at_end(entry);
     }
 
-    entry_builder.build_alloca(ty, name)
+    entry_builder.build_alloca(ty, name).unwrap()
 }
 
 fn gen_unwrap_variant<'a, 'b>(
@@ -970,21 +994,26 @@ fn gen_unwrap_variant<'a, 'b>(
         )
         .unwrap();
 
-    builder.build_store(byte_array_ptr, byte_array);
+    builder.build_store(byte_array_ptr, byte_array).unwrap();
+    let content_ty = get_llvm_type(globals, instances, &variants[variant_id]);
+    let content_ptr = builder
+        .build_bitcast(
+            byte_array_ptr,
+            content_ty.ptr_type(AddressSpace::default()),
+            "content_ptr",
+        )
+        .unwrap();
 
-    let content_ptr = builder.build_bitcast(
-        byte_array_ptr,
-        get_llvm_type(globals, instances, &variants[variant_id]).ptr_type(AddressSpace::Generic),
-        "content_ptr",
-    );
-
-    let content = builder.build_load(content_ptr.into_pointer_value(), "content");
+    let content = builder
+        .build_load(content_ty, content_ptr.into_pointer_value(), "content")
+        .unwrap();
 
     content
 }
 
 #[derive(Clone, Debug)]
 struct TailCallTarget<'a> {
+    arg_ty: BasicTypeEnum<'a>,
     arg_var: PointerValue<'a>,
     block: BasicBlock<'a>,
 }
@@ -1005,25 +1034,29 @@ fn build_check_divisor_nonzero<'a, 'b>(
     builder: &Builder<'a>,
     val: IntValue<'a>,
 ) {
-    let is_nonzero = builder.build_int_compare(
-        IntPredicate::NE,
-        val,
-        val.get_type().const_int(0 as u64, false),
-        "is_nonzero",
-    );
+    let is_nonzero = builder
+        .build_int_compare(
+            IntPredicate::NE,
+            val,
+            val.get_type().const_int(0 as u64, false),
+            "is_nonzero",
+        )
+        .unwrap();
 
-    builder.build_call(
-        globals.tal.expect_i1,
-        &[
-            is_nonzero.into(),
-            globals
-                .context
-                .bool_type()
-                .const_int(1 as u64, false)
-                .into(),
-        ],
-        "expect_nonzero",
-    );
+    builder
+        .build_call(
+            globals.tal.expect_i1,
+            &[
+                is_nonzero.into(),
+                globals
+                    .context
+                    .bool_type()
+                    .const_int(1 as u64, false)
+                    .into(),
+            ],
+            "expect_nonzero",
+        )
+        .unwrap();
 
     let curr_block = builder.get_insert_block().unwrap();
 
@@ -1035,26 +1068,33 @@ fn build_check_divisor_nonzero<'a, 'b>(
         .context
         .insert_basic_block_after(curr_block, "continue_if_nonzero");
 
-    builder.build_conditional_branch(is_nonzero, continue_if_nonzero, panic_if_zero);
+    builder
+        .build_conditional_branch(is_nonzero, continue_if_nonzero, panic_if_zero)
+        .unwrap();
 
     builder.position_at_end(panic_if_zero);
 
-    let panic_message =
-        builder.build_global_string_ptr("panicked due to division by zero\n", "panic_message");
+    let panic_message = builder
+        .build_global_string_ptr("panicked due to division by zero\n", "panic_message")
+        .unwrap();
 
-    builder.build_call(
-        globals.tal.print_error,
-        &[panic_message.as_pointer_value().into()],
-        "print_error__call",
-    );
+    builder
+        .build_call(
+            globals.tal.print_error,
+            &[panic_message.as_pointer_value().into()],
+            "print_error__call",
+        )
+        .unwrap();
 
-    builder.build_call(
-        globals.tal.exit,
-        &[globals.context.i32_type().const_int(1 as u64, false).into()],
-        "exit_call",
-    );
+    builder
+        .build_call(
+            globals.tal.exit,
+            &[globals.context.i32_type().const_int(1 as u64, false).into()],
+            "exit_call",
+        )
+        .unwrap();
 
-    builder.build_unreachable();
+    builder.build_unreachable().unwrap();
 
     builder.position_at_end(continue_if_nonzero);
 }
@@ -1109,12 +1149,17 @@ fn gen_expr<'a, 'b>(
         E::Local(local_id) => locals[local_id].into(),
         E::Call(func_id, local_id) => builder
             .build_call(funcs[func_id], &[locals[local_id].into()], "result")
+            .unwrap()
             .try_as_basic_value()
             .left()
             .unwrap(),
         E::TailCall(tail_id, local_id) => {
-            builder.build_store(tail_targets[tail_id].arg_var, locals[local_id]);
-            builder.build_unconditional_branch(tail_targets[tail_id].block);
+            builder
+                .build_store(tail_targets[tail_id].arg_var, locals[local_id])
+                .unwrap();
+            builder
+                .build_unconditional_branch(tail_targets[tail_id].block)
+                .unwrap();
             let unreachable_block = context.append_basic_block(func, "after_tail_call");
             builder.position_at_end(unreachable_block);
             // The return type of the tail call (which is somewhat theoretical, as a tail call never
@@ -1128,7 +1173,9 @@ fn gen_expr<'a, 'b>(
             let next_block = context.append_basic_block(func, "next_block");
 
             let cond = locals[local_id].into_int_value();
-            builder.build_conditional_branch(cond, then_block, else_block);
+            builder
+                .build_conditional_branch(cond, then_block, else_block)
+                .unwrap();
 
             builder.position_at_end(then_block);
             let result_then = gen_expr(
@@ -1142,7 +1189,7 @@ fn gen_expr<'a, 'b>(
                 locals,
             );
             let last_then_expr_block = builder.get_insert_block().unwrap();
-            builder.build_unconditional_branch(next_block);
+            builder.build_unconditional_branch(next_block).unwrap();
 
             builder.position_at_end(else_block);
             let result_else = gen_expr(
@@ -1156,10 +1203,10 @@ fn gen_expr<'a, 'b>(
                 locals,
             );
             let last_else_expr_block = builder.get_insert_block().unwrap();
-            builder.build_unconditional_branch(next_block);
+            builder.build_unconditional_branch(next_block).unwrap();
 
             builder.position_at_end(next_block);
-            let phi = builder.build_phi(result_then.get_type(), "result");
+            let phi = builder.build_phi(result_then.get_type(), "result").unwrap();
             phi.add_incoming(&[
                 (&result_then, last_then_expr_block),
                 (&result_else, last_else_expr_block),
@@ -1186,7 +1233,7 @@ fn gen_expr<'a, 'b>(
             body
         }
         E::Unreachable(type_) => {
-            builder.build_unreachable();
+            builder.build_unreachable().unwrap();
             let unreachable_block = context.append_basic_block(func, "after_unreachable");
             builder.position_at_end(unreachable_block);
             get_undef(&get_llvm_type(globals, instances, type_))
@@ -1219,15 +1266,23 @@ fn gen_expr<'a, 'b>(
                 .unwrap();
             let byte_array_ptr =
                 gen_entry_alloca(globals.context, builder, byte_array_type, "byte_array_ptr");
-            let cast_byte_array_ptr = builder.build_bitcast(
-                byte_array_ptr,
-                locals[local_id].get_type().ptr_type(AddressSpace::Generic),
-                "cast_byte_array_ptr",
-            );
+            let cast_byte_array_ptr = builder
+                .build_bitcast(
+                    byte_array_ptr,
+                    locals[local_id]
+                        .get_type()
+                        .ptr_type(AddressSpace::default()),
+                    "cast_byte_array_ptr",
+                )
+                .unwrap();
 
-            builder.build_store(cast_byte_array_ptr.into_pointer_value(), locals[local_id]);
+            builder
+                .build_store(cast_byte_array_ptr.into_pointer_value(), locals[local_id])
+                .unwrap();
 
-            let byte_array = builder.build_load(byte_array_ptr, "byte_array");
+            let byte_array = builder
+                .build_load(byte_array_type, byte_array_ptr, "byte_array")
+                .unwrap();
 
             let discrim = variant_type
                 .get_field_type_at_index(VARIANT_DISCRIM_IDX)
@@ -1291,12 +1346,14 @@ fn gen_expr<'a, 'b>(
                     discrim,
                     "check_variant",
                 )
+                .unwrap()
                 .into()
         }
         E::WrapBoxed(local_id, inner_type) => {
             let builtin = instances.get_rc(globals, inner_type);
             builder
                 .build_call(builtin.new, &[locals[local_id].into()], "new_box")
+                .unwrap()
                 .try_as_basic_value()
                 .left()
                 .unwrap()
@@ -1305,11 +1362,18 @@ fn gen_expr<'a, 'b>(
             let builtin = instances.get_rc(globals, inner_type);
             let ptr = builder
                 .build_call(builtin.get, &[locals[local_id].into()], "unbox")
+                .unwrap()
                 .try_as_basic_value()
                 .left()
                 .unwrap()
                 .into_pointer_value();
-            builder.build_load(ptr, "content")
+            builder
+                .build_load(
+                    get_llvm_type(globals, instances, inner_type),
+                    ptr,
+                    "content",
+                )
+                .unwrap()
         }
         E::Retain(local_id, ty) => {
             gen_rc_op(
@@ -1338,155 +1402,192 @@ fn gen_expr<'a, 'b>(
         E::Intrinsic(intr, local_id) => match intr {
             Intrinsic::Not => builder
                 .build_not(locals[local_id].into_int_value(), "not_expr")
+                .unwrap()
                 .into(),
             Intrinsic::AddByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_int_add(lhs, rhs, "add_byte").into()
+                builder.build_int_add(lhs, rhs, "add_byte").unwrap().into()
             }
             Intrinsic::AddInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_int_add(lhs, rhs, "add_int").into()
+                builder.build_int_add(lhs, rhs, "add_int").unwrap().into()
             }
             Intrinsic::AddFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
-                builder.build_float_add(lhs, rhs, "add_float").into()
+                builder
+                    .build_float_add(lhs, rhs, "add_float")
+                    .unwrap()
+                    .into()
             }
             Intrinsic::SubByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_int_sub(lhs, rhs, "sub_byte").into()
+                builder.build_int_sub(lhs, rhs, "sub_byte").unwrap().into()
             }
             Intrinsic::SubInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_int_sub(lhs, rhs, "sub_int").into()
+                builder.build_int_sub(lhs, rhs, "sub_int").unwrap().into()
             }
             Intrinsic::SubFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
-                builder.build_float_sub(lhs, rhs, "sub_float").into()
+                builder
+                    .build_float_sub(lhs, rhs, "sub_float")
+                    .unwrap()
+                    .into()
             }
             Intrinsic::MulByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_int_mul(lhs, rhs, "mul_byte").into()
+                builder.build_int_mul(lhs, rhs, "mul_byte").unwrap().into()
             }
             Intrinsic::MulInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_int_mul(lhs, rhs, "mul_int").into()
+                builder.build_int_mul(lhs, rhs, "mul_int").unwrap().into()
             }
             Intrinsic::MulFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
-                builder.build_float_mul(lhs, rhs, "mul_float").into()
+                builder
+                    .build_float_mul(lhs, rhs, "mul_float")
+                    .unwrap()
+                    .into()
             }
             Intrinsic::DivByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 build_check_divisor_nonzero(globals, builder, rhs);
-                builder.build_int_unsigned_div(lhs, rhs, "div_byte").into()
+                builder
+                    .build_int_unsigned_div(lhs, rhs, "div_byte")
+                    .unwrap()
+                    .into()
             }
             Intrinsic::DivInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 build_check_divisor_nonzero(globals, builder, rhs);
-                builder.build_int_signed_div(lhs, rhs, "div_int").into()
+                builder
+                    .build_int_signed_div(lhs, rhs, "div_int")
+                    .unwrap()
+                    .into()
             }
             Intrinsic::DivFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
-                builder.build_float_div(lhs, rhs, "div_float").into()
+                builder
+                    .build_float_div(lhs, rhs, "div_float")
+                    .unwrap()
+                    .into()
             }
             Intrinsic::LtByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::ULT, lhs, rhs, "lt_byte")
+                    .unwrap()
                     .into()
             }
             Intrinsic::LtInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::SLT, lhs, rhs, "lt_int")
+                    .unwrap()
                     .into()
             }
             Intrinsic::LtFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
                 builder
                     .build_float_compare(FloatPredicate::OLT, lhs, rhs, "lt_float")
+                    .unwrap()
                     .into()
             }
             Intrinsic::LteByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::ULE, lhs, rhs, "lte_byte")
+                    .unwrap()
                     .into()
             }
             Intrinsic::LteInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::SLE, lhs, rhs, "lte_int")
+                    .unwrap()
                     .into()
             }
             Intrinsic::LteFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
                 builder
                     .build_float_compare(FloatPredicate::OLE, lhs, rhs, "lte_float")
+                    .unwrap()
                     .into()
             }
             Intrinsic::GtByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::UGT, lhs, rhs, "gt_byte")
+                    .unwrap()
                     .into()
             }
             Intrinsic::GtInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::SGT, lhs, rhs, "gt_int")
+                    .unwrap()
                     .into()
             }
             Intrinsic::GtFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
                 builder
                     .build_float_compare(FloatPredicate::OGT, lhs, rhs, "gt_float")
+                    .unwrap()
                     .into()
             }
             Intrinsic::GteByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::UGE, lhs, rhs, "gte_byte")
+                    .unwrap()
                     .into()
             }
             Intrinsic::GteInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::SGE, lhs, rhs, "gte_int")
+                    .unwrap()
                     .into()
             }
             Intrinsic::GteFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
                 builder
                     .build_float_compare(FloatPredicate::OGE, lhs, rhs, "gte_float")
+                    .unwrap()
                     .into()
             }
             Intrinsic::EqByte => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq_byte")
+                    .unwrap()
                     .into()
             }
             Intrinsic::EqInt => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder
                     .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq_int")
+                    .unwrap()
                     .into()
             }
             Intrinsic::EqFloat => {
                 let (lhs, rhs) = build_binop_float_args(builder, locals[local_id]);
                 builder
                     .build_float_compare(FloatPredicate::OEQ, lhs, rhs, "eq_float")
+                    .unwrap()
                     .into()
             }
             Intrinsic::NegByte => builder
                 .build_int_neg(locals[local_id].into_int_value(), "neg_byte")
+                .unwrap()
                 .into(),
             Intrinsic::NegInt => builder
                 .build_int_neg(locals[local_id].into_int_value(), "neg_int")
+                .unwrap()
                 .into(),
             Intrinsic::NegFloat => builder
                 .build_float_neg(locals[local_id].into_float_value(), "neg_float")
+                .unwrap()
                 .into(),
             Intrinsic::ByteToInt => builder
                 .build_int_z_extend(
@@ -1494,6 +1595,7 @@ fn gen_expr<'a, 'b>(
                     context.i64_type(),
                     "byte_to_int",
                 )
+                .unwrap()
                 .into(),
             Intrinsic::ByteToIntSigned => builder
                 .build_int_s_extend(
@@ -1501,6 +1603,7 @@ fn gen_expr<'a, 'b>(
                     context.i64_type(),
                     "byte_to_int_signed",
                 )
+                .unwrap()
                 .into(),
             Intrinsic::IntToByte => builder
                 .build_int_truncate(
@@ -1508,6 +1611,7 @@ fn gen_expr<'a, 'b>(
                     context.i8_type(),
                     "int_to_byte",
                 )
+                .unwrap()
                 .into(),
             Intrinsic::IntShiftLeft => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
@@ -1517,13 +1621,16 @@ fn gen_expr<'a, 'b>(
                 builder
                     .build_left_shift(
                         lhs,
-                        builder.build_and(
-                            rhs,
-                            context.i64_type().const_int(64 - 1, false),
-                            "int_shift_left_rhs_mask",
-                        ),
+                        builder
+                            .build_and(
+                                rhs,
+                                context.i64_type().const_int(64 - 1, false),
+                                "int_shift_left_rhs_mask",
+                            )
+                            .unwrap(),
                         "int_shift_left",
                     )
+                    .unwrap()
                     .into()
             }
             Intrinsic::IntShiftRight => {
@@ -1534,27 +1641,30 @@ fn gen_expr<'a, 'b>(
                 builder
                     .build_right_shift(
                         lhs,
-                        builder.build_and(
-                            rhs,
-                            context.i64_type().const_int(64 - 1, false),
-                            "int_shift_right_rhs_mask",
-                        ),
+                        builder
+                            .build_and(
+                                rhs,
+                                context.i64_type().const_int(64 - 1, false),
+                                "int_shift_right_rhs_mask",
+                            )
+                            .unwrap(),
                         false, // this is a logical shift
                         "int_shift_right",
                     )
+                    .unwrap()
                     .into()
             }
             Intrinsic::IntBitAnd => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_and(lhs, rhs, "int_bit_and").into()
+                builder.build_and(lhs, rhs, "int_bit_and").unwrap().into()
             }
             Intrinsic::IntBitOr => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_or(lhs, rhs, "int_bit_or").into()
+                builder.build_or(lhs, rhs, "int_bit_or").unwrap().into()
             }
             Intrinsic::IntBitXor => {
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
-                builder.build_xor(lhs, rhs, "int_bit_xor").into()
+                builder.build_xor(lhs, rhs, "int_bit_xor").unwrap().into()
             }
         },
         E::ArrayOp(rep, item_type, array_op) => match rep {
@@ -1563,6 +1673,7 @@ fn gen_expr<'a, 'b>(
                 match array_op {
                     low::ArrayOp::New() => builder
                         .build_call(builtin.interface().new, &[], "flat_array_new")
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1572,6 +1683,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[index_id].into()],
                             "flat_array_get",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1581,6 +1693,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[index_id].into()],
                             "flat_array_extract",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1590,6 +1703,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into()],
                             "flat_array_len",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1599,6 +1713,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[item_id].into()],
                             "flat_array_push",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1608,6 +1723,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into()],
                             "flat_array_pop",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1617,6 +1733,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[item_id].into()],
                             "flat_array_replace",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1626,16 +1743,18 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[capacity_id].into()],
                             "flat_array_reserve",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                 }
             }
             constrain::RepChoice::FallbackImmut => {
-                let builtin = instances.get_persistent_array(globals, item_type);
+                let builtin = instances.get_cow_array(globals, item_type);
                 match array_op {
                     low::ArrayOp::New() => builder
                         .build_call(builtin.interface().new, &[], "pers_array_new")
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1645,6 +1764,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[index_id].into()],
                             "pers_array_get",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1654,6 +1774,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[index_id].into()],
                             "pers_array_extract",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1663,6 +1784,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into()],
                             "pers_array_len",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1672,6 +1794,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[item_id].into()],
                             "pers_array_push",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1681,6 +1804,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into()],
                             "pers_array_pop",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1690,6 +1814,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[item_id].into()],
                             "pers_array_replace",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1699,6 +1824,7 @@ fn gen_expr<'a, 'b>(
                             &[locals[array_id].into(), locals[capacity_id].into()],
                             "pers_array_reserve",
                         )
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
@@ -1711,34 +1837,40 @@ fn gen_expr<'a, 'b>(
                 match io_op {
                     low::IoOp::Input => builder
                         .build_call(builtin_io.input, &[], "flat_array_input")
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                     low::IoOp::Output(array_id) => {
-                        builder.build_call(
-                            builtin_io.output,
-                            &[locals[array_id].into()],
-                            "flat_array_output",
-                        );
+                        builder
+                            .build_call(
+                                builtin_io.output,
+                                &[locals[array_id].into()],
+                                "flat_array_output",
+                            )
+                            .unwrap();
 
                         context.struct_type(&[], false).get_undef().into()
                     }
                 }
             }
             constrain::RepChoice::FallbackImmut => {
-                let builtin_io = instances.persistent_array_io;
+                let builtin_io = instances.cow_array_io;
                 match io_op {
                     low::IoOp::Input => builder
                         .build_call(builtin_io.input, &[], "pers_array_input")
+                        .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap(),
                     low::IoOp::Output(array_id) => {
-                        builder.build_call(
-                            builtin_io.output,
-                            &[locals[array_id].into()],
-                            "pers_array_output",
-                        );
+                        builder
+                            .build_call(
+                                builtin_io.output,
+                                &[locals[array_id].into()],
+                                "pers_array_output",
+                            )
+                            .unwrap();
 
                         context.struct_type(&[], false).get_undef().into()
                     }
@@ -1749,30 +1881,36 @@ fn gen_expr<'a, 'b>(
             match rep {
                 constrain::RepChoice::OptimizedMut => {
                     let builtin_io = instances.flat_array_io;
-                    builder.build_call(
-                        builtin_io.output_error,
-                        &[locals[message_id].into()],
-                        "flat_array_panic",
-                    );
+                    builder
+                        .build_call(
+                            builtin_io.output_error,
+                            &[locals[message_id].into()],
+                            "flat_array_panic",
+                        )
+                        .unwrap();
                 }
 
                 constrain::RepChoice::FallbackImmut => {
-                    let builtin_io = instances.persistent_array_io;
-                    builder.build_call(
-                        builtin_io.output_error,
-                        &[locals[message_id].into()],
-                        "pers_array_panic",
-                    );
+                    let builtin_io = instances.cow_array_io;
+                    builder
+                        .build_call(
+                            builtin_io.output_error,
+                            &[locals[message_id].into()],
+                            "pers_array_panic",
+                        )
+                        .unwrap();
                 }
             }
 
-            builder.build_call(
-                globals.tal.exit,
-                &[globals.context.i32_type().const_int(1 as u64, false).into()],
-                "exit_call",
-            );
+            builder
+                .build_call(
+                    globals.tal.exit,
+                    &[globals.context.i32_type().const_int(1 as u64, false).into()],
+                    "exit_call",
+                )
+                .unwrap();
 
-            builder.build_unreachable();
+            builder.build_unreachable().unwrap();
             let unreachable_block = context.append_basic_block(func, "after_panic");
             builder.position_at_end(unreachable_block);
             get_undef(&get_llvm_type(globals, instances, ret_type))
@@ -1802,15 +1940,16 @@ fn gen_function<'a, 'b>(
     func: &low::FuncDef,
 ) {
     let builder = context.create_builder();
-
     let entry = context.append_basic_block(func_decl, "entry");
-
     builder.position_at_end(entry);
+
+    let i64_t = context.i64_type();
 
     let (start_clock_nanos, start_retain_count, start_release_count) =
         if let Some(prof_id) = func.profile_point {
             let start_clock_nanos = builder
                 .build_call(globals.tal.prof_clock_nanos, &[], "start_clock_nanos")
+                .unwrap()
                 .try_as_basic_value()
                 .left()
                 .unwrap()
@@ -1818,20 +1957,26 @@ fn gen_function<'a, 'b>(
 
             let counters = &globals.profile_points[prof_id].counters[&func_id];
             let start_retain_count = if counters.total_retain_count.is_some() {
-                Some(builder.build_call(
-                    globals.tal.prof_rc.unwrap().get_retain_count,
-                    &[],
-                    "start_retain_count",
-                ))
+                let start_retain_count = builder
+                    .build_call(
+                        globals.tal.prof_rc.unwrap().get_retain_count,
+                        &[],
+                        "start_retain_count",
+                    )
+                    .unwrap();
+                Some(start_retain_count)
             } else {
                 None
             };
             let start_release_count = if counters.total_release_count.is_some() {
-                Some(builder.build_call(
-                    globals.tal.prof_rc.unwrap().get_release_count,
-                    &[],
-                    "start_release_count",
-                ))
+                let start_release_count = builder
+                    .build_call(
+                        globals.tal.prof_rc.unwrap().get_release_count,
+                        &[],
+                        "start_release_count",
+                    )
+                    .unwrap();
+                Some(start_release_count)
             } else {
                 None
             };
@@ -1849,47 +1994,59 @@ fn gen_function<'a, 'b>(
     // implemented via blocks which may be jumped to, and their arguments are implemented as mutable
     // variables.
     let tail_targets = func.tail_funcs.map(|tail_id, tail_func| {
-        let arg_var = builder.build_alloca(
-            get_llvm_type(globals, instances, &tail_func.arg_type),
-            &format!("tail_{}_arg", tail_id.0),
-        );
+        let arg_ty = get_llvm_type(globals, instances, &tail_func.arg_type);
+        let arg_var = builder
+            .build_alloca(arg_ty, &format!("tail_{}_arg", tail_id.0))
+            .unwrap();
 
         let block = context.append_basic_block(func_decl, &format!("tail_{}", tail_id.0));
 
-        TailCallTarget { arg_var, block }
+        TailCallTarget {
+            arg_ty,
+            arg_var,
+            block,
+        }
     });
 
     let gen_prof_epilogue = || {
         if let Some(prof_id) = func.profile_point {
             let end_clock_nanos = builder
                 .build_call(globals.tal.prof_clock_nanos, &[], "end_clock_nanos")
+                .unwrap()
                 .try_as_basic_value()
                 .left()
                 .unwrap()
                 .into_int_value();
 
-            let diff_clock_nanos = builder.build_int_sub(
-                end_clock_nanos,
-                start_clock_nanos.unwrap(),
-                "diff_clock_nanos",
-            );
+            let diff_clock_nanos = builder
+                .build_int_sub(
+                    end_clock_nanos,
+                    start_clock_nanos.unwrap(),
+                    "diff_clock_nanos",
+                )
+                .unwrap();
 
             let counters = &globals.profile_points[prof_id].counters[&func_id];
 
             let old_clock_nanos = builder
                 .build_load(
+                    i64_t,
                     counters.total_clock_nanos.as_pointer_value(),
                     "old_clock_nanos",
                 )
+                .unwrap()
                 .into_int_value();
 
-            let new_clock_nanos =
-                builder.build_int_add(old_clock_nanos, diff_clock_nanos, "new_clock_nanos");
+            let new_clock_nanos = builder
+                .build_int_add(old_clock_nanos, diff_clock_nanos, "new_clock_nanos")
+                .unwrap();
 
-            builder.build_store(
-                counters.total_clock_nanos.as_pointer_value(),
-                new_clock_nanos,
-            );
+            builder
+                .build_store(
+                    counters.total_clock_nanos.as_pointer_value(),
+                    new_clock_nanos,
+                )
+                .unwrap();
 
             let gen_rc_count_update =
                 |start_rc_count: Option<CallSiteValue<'_>>,
@@ -1899,34 +2056,38 @@ fn gen_function<'a, 'b>(
                     total_rc_count,
                 ) {
                     (Some(start_rc_count), Some(total_rc_count)) => {
-                        let end_rc_count = builder.build_call(
-                            tal_fn(globals.tal.prof_rc.unwrap()),
-                            &[],
-                            "end_rc_count",
-                        );
+                        let end_rc_count = builder
+                            .build_call(tal_fn(globals.tal.prof_rc.unwrap()), &[], "end_rc_count")
+                            .unwrap();
 
-                        let diff_rc_count = builder.build_int_sub(
-                            end_rc_count
-                                .try_as_basic_value()
-                                .left()
-                                .unwrap()
-                                .into_int_value(),
-                            start_rc_count
-                                .try_as_basic_value()
-                                .left()
-                                .unwrap()
-                                .into_int_value(),
-                            "diff_rc_count",
-                        );
+                        let diff_rc_count = builder
+                            .build_int_sub(
+                                end_rc_count
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap()
+                                    .into_int_value(),
+                                start_rc_count
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap()
+                                    .into_int_value(),
+                                "diff_rc_count",
+                            )
+                            .unwrap();
 
                         let old_rc_count = builder
-                            .build_load(total_rc_count.as_pointer_value(), "old_rc_count")
+                            .build_load(i64_t, total_rc_count.as_pointer_value(), "old_rc_count")
+                            .unwrap()
                             .into_int_value();
 
-                        let new_rc_count =
-                            builder.build_int_add(old_rc_count, diff_rc_count, "new_rc_count");
+                        let new_rc_count = builder
+                            .build_int_add(old_rc_count, diff_rc_count, "new_rc_count")
+                            .unwrap();
 
-                        builder.build_store(total_rc_count.as_pointer_value(), new_rc_count);
+                        builder
+                            .build_store(total_rc_count.as_pointer_value(), new_rc_count)
+                            .unwrap();
                     }
                     (None, None) => {}
                     _ => unreachable!(),
@@ -1942,16 +2103,21 @@ fn gen_function<'a, 'b>(
             );
 
             let old_calls = builder
-                .build_load(counters.total_calls.as_pointer_value(), "old_calls")
+                .build_load(i64_t, counters.total_calls.as_pointer_value(), "old_calls")
+                .unwrap()
                 .into_int_value();
 
-            let new_calls = builder.build_int_add(
-                old_calls,
-                context.i64_type().const_int(1, false),
-                "new_calls",
-            );
+            let new_calls = builder
+                .build_int_add(
+                    old_calls,
+                    context.i64_type().const_int(1, false),
+                    "new_calls",
+                )
+                .unwrap();
 
-            builder.build_store(counters.total_calls.as_pointer_value(), new_calls);
+            builder
+                .build_store(counters.total_calls.as_pointer_value(), new_calls)
+                .unwrap();
         }
     };
 
@@ -1969,13 +2135,15 @@ fn gen_function<'a, 'b>(
             &mut locals,
         );
         gen_prof_epilogue();
-        builder.build_return(Some(&ret_value));
+        builder.build_return(Some(&ret_value)).unwrap();
     }
 
     // Generate tail function bodies
     for (tail_id, tail_target) in &tail_targets {
         builder.position_at_end(tail_target.block);
-        let tail_arg_val = builder.build_load(tail_target.arg_var, "tail_arg_val");
+        let tail_arg_val = builder
+            .build_load(tail_target.arg_ty, tail_target.arg_var, "tail_arg_val")
+            .unwrap();
         let mut locals = IdVec::from_items(vec![tail_arg_val]);
         let ret_value = gen_expr(
             &builder,
@@ -1988,7 +2156,7 @@ fn gen_function<'a, 'b>(
             &mut locals,
         );
         gen_prof_epilogue();
-        builder.build_return(Some(&ret_value));
+        builder.build_return(Some(&ret_value)).unwrap();
     }
 }
 
@@ -2139,7 +2307,7 @@ fn gen_program<'a>(
     func_progress: impl ProgressLogger,
     rc_progress: impl ProgressLogger,
     flat_progress: impl ProgressLogger,
-    persistent_progress: impl ProgressLogger,
+    cow_progress: impl ProgressLogger,
     type_progress: impl ProgressLogger,
 ) -> Module<'a> {
     let module = context.create_module("module");
@@ -2223,7 +2391,7 @@ fn gen_program<'a>(
 
     func_progress.finish();
 
-    instances.define(&globals, rc_progress, flat_progress, persistent_progress);
+    instances.define(&globals, rc_progress, flat_progress, cow_progress);
 
     let mut type_progress = type_progress.start_session(Some(program.custom_types.len()));
     for (type_id, type_decls) in &globals.custom_types {
@@ -2236,8 +2404,8 @@ fn gen_program<'a>(
     let unit_type = context.struct_type(&[], false);
     let i8_ptr_ptr_type = context
         .i8_type()
-        .ptr_type(AddressSpace::Generic)
-        .ptr_type(AddressSpace::Generic);
+        .ptr_type(AddressSpace::default())
+        .ptr_type(AddressSpace::default());
     let main = module.add_function(
         "main",
         i32_type.fn_type(&[i32_type.into(), i8_ptr_ptr_type.into()], false),
@@ -2248,11 +2416,13 @@ fn gen_program<'a>(
     let main_block = context.append_basic_block(main, "main_block");
     builder.position_at_end(main_block);
 
-    builder.build_call(
-        funcs[program.main],
-        &[unit_type.get_undef().into()],
-        "main_result",
-    );
+    builder
+        .build_call(
+            funcs[program.main],
+            &[unit_type.get_undef().into()],
+            "main_result",
+        )
+        .unwrap();
 
     if program.profile_points.len() > 0 {
         let prof_report_fn = define_prof_report_fn(
@@ -2264,10 +2434,14 @@ fn gen_program<'a>(
             &globals.profile_points,
         );
 
-        builder.build_call(prof_report_fn, &[], "prof_report_call");
+        builder
+            .build_call(prof_report_fn, &[], "prof_report_call")
+            .unwrap();
     }
 
-    builder.build_return(Some(&i32_type.const_int(0, false)));
+    builder
+        .build_return(Some(&i32_type.const_int(0, false)))
+        .unwrap();
 
     return module;
 }
@@ -2427,7 +2601,7 @@ fn compile_to_executable(
         progress_ui::bar(progress, "gen_program: functions"),
         progress_ui::bar(progress, "gen_program: rc boxes"),
         progress_ui::bar(progress, "gen_program: flat arrays"),
-        progress_ui::bar(progress, "gen_program: persistent arrays"),
+        progress_ui::bar(progress, "gen_program: cow arrays"),
         progress_ui::bar(progress, "gen_program: custom types"),
     );
 

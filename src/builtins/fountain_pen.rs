@@ -11,7 +11,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 pub fn usize_t<'a>(context: &'a Context, target: &TargetData) -> IntType<'a> {
     let bits_per_byte = 8;
-    let ptr_size = target.get_pointer_byte_size(Some(AddressSpace::Generic)) * bits_per_byte;
+    let ptr_size = target.get_pointer_byte_size(Some(AddressSpace::default())) * bits_per_byte;
     return context.custom_width_int_type(ptr_size);
 }
 
@@ -53,6 +53,7 @@ impl<'a, 'b> Scope<'a, 'b> {
     pub fn str(&self, s: &str) -> BasicValueEnum<'a> {
         self.builder
             .build_global_string_ptr(s, "global_str")
+            .unwrap()
             .as_basic_value_enum()
     }
 
@@ -74,6 +75,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                     .collect::<Vec<_>>(),
                 "call",
             )
+            .unwrap()
             .try_as_basic_value()
             .left()
             .expect("Cannot use 'call' to call a function without a return value")
@@ -89,21 +91,38 @@ impl<'a, 'b> Scope<'a, 'b> {
                     .collect::<Vec<_>>(),
                 "call",
             )
+            .unwrap()
             .try_as_basic_value()
             .right()
             .expect("Cannot use 'call_void' to call a function with a return value");
     }
 
-    pub fn gep(&self, struct_ptr: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
+    pub fn gep(
+        &self,
+        struct_ty: BasicTypeEnum<'a>,
+        struct_ptr: BasicValueEnum<'a>,
+        idx: u32,
+    ) -> BasicValueEnum<'a> {
         self.builder
-            .build_struct_gep(struct_ptr.into_pointer_value(), idx, "gep")
+            .build_struct_gep(struct_ty, struct_ptr.into_pointer_value(), idx, "gep")
             .unwrap()
             .into()
     }
 
-    pub fn arrow(&self, struct_ptr: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
+    pub fn arrow(
+        &self,
+        struct_ty: BasicTypeEnum<'a>,
+        field_ty: BasicTypeEnum<'a>,
+        struct_ptr: BasicValueEnum<'a>,
+        idx: u32,
+    ) -> BasicValueEnum<'a> {
         self.builder
-            .build_load(self.gep(struct_ptr, idx).into_pointer_value(), "arrow")
+            .build_load(
+                field_ty,
+                self.gep(struct_ty, struct_ptr, idx).into_pointer_value(),
+                "arrow",
+            )
+            .unwrap()
     }
 
     pub fn field(&self, struct_val: BasicValueEnum<'a>, idx: u32) -> BasicValueEnum<'a> {
@@ -114,16 +133,19 @@ impl<'a, 'b> Scope<'a, 'b> {
 
     pub fn arrow_set(
         &self,
+        struct_ty: BasicTypeEnum<'a>,
         struct_ptr: BasicValueEnum<'a>,
         idx: u32,
         new_data: BasicValueEnum<'a>,
     ) {
-        self.builder.build_store(
-            self.builder
-                .build_struct_gep(struct_ptr.into_pointer_value(), idx, "gep")
-                .unwrap(),
-            new_data,
-        );
+        self.builder
+            .build_store(
+                self.builder
+                    .build_struct_gep(struct_ty, struct_ptr.into_pointer_value(), idx, "gep")
+                    .unwrap(),
+                new_data,
+            )
+            .unwrap();
     }
 
     pub fn if_(&self, cond: BasicValueEnum<'a>, body: impl FnOnce(&Scope<'a, 'b>) -> ()) {
@@ -132,7 +154,8 @@ impl<'a, 'b> Scope<'a, 'b> {
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
         self.builder
-            .build_conditional_branch(cond_int, then_block, next_block);
+            .build_conditional_branch(cond_int, then_block, next_block)
+            .unwrap();
         let new_scope = Scope::new(self.context, self.target, self.func, then_block);
 
         body(&new_scope);
@@ -140,7 +163,10 @@ impl<'a, 'b> Scope<'a, 'b> {
         let final_child_block = new_scope.builder.get_insert_block().unwrap();
 
         if final_child_block.get_terminator().is_none() {
-            new_scope.builder.build_unconditional_branch(next_block);
+            new_scope
+                .builder
+                .build_unconditional_branch(next_block)
+                .unwrap();
         }
 
         self.builder.position_at_end(next_block);
@@ -158,7 +184,8 @@ impl<'a, 'b> Scope<'a, 'b> {
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
         self.builder
-            .build_conditional_branch(cond_int, then_block, else_block);
+            .build_conditional_branch(cond_int, then_block, else_block)
+            .unwrap();
         let then_scope = Scope::new(self.context, self.target, self.func, then_block);
 
         if_body(&then_scope);
@@ -166,7 +193,10 @@ impl<'a, 'b> Scope<'a, 'b> {
         let final_then_block = then_scope.builder.get_insert_block().unwrap();
 
         if final_then_block.get_terminator().is_none() {
-            then_scope.builder.build_unconditional_branch(next_block);
+            then_scope
+                .builder
+                .build_unconditional_branch(next_block)
+                .unwrap();
         }
 
         let else_scope = Scope::new(self.context, self.target, self.func, else_block);
@@ -176,7 +206,10 @@ impl<'a, 'b> Scope<'a, 'b> {
         let final_else_block = else_scope.builder.get_insert_block().unwrap();
 
         if final_else_block.get_terminator().is_none() {
-            else_scope.builder.build_unconditional_branch(next_block);
+            else_scope
+                .builder
+                .build_unconditional_branch(next_block)
+                .unwrap();
         }
 
         self.builder.position_at_end(next_block);
@@ -194,23 +227,33 @@ impl<'a, 'b> Scope<'a, 'b> {
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
         self.builder
-            .build_conditional_branch(cond_int, then_block, else_block);
+            .build_conditional_branch(cond_int, then_block, else_block)
+            .unwrap();
 
         let then_scope = Scope::new(self.context, self.target, self.func, then_block);
         let then_value = then_body(&then_scope);
         let final_then_block = then_scope.builder.get_insert_block().unwrap();
-        then_scope.builder.build_unconditional_branch(next_block);
+        then_scope
+            .builder
+            .build_unconditional_branch(next_block)
+            .unwrap();
 
         let else_scope = Scope::new(self.context, self.target, self.func, else_block);
         let else_value = else_body(&else_scope);
         let final_else_block = else_scope.builder.get_insert_block().unwrap();
-        else_scope.builder.build_unconditional_branch(next_block);
+        else_scope
+            .builder
+            .build_unconditional_branch(next_block)
+            .unwrap();
 
         assert![then_value.get_type() == else_value.get_type()];
 
         self.builder.position_at_end(next_block);
 
-        let phi = self.builder.build_phi(then_value.get_type(), "result");
+        let phi = self
+            .builder
+            .build_phi(then_value.get_type(), "result")
+            .unwrap();
         phi.add_incoming(&[
             (&then_value, final_then_block),
             (&else_value, final_else_block),
@@ -236,6 +279,7 @@ impl<'a, 'b> Scope<'a, 'b> {
         let cond_int = cond.into_int_value();
         self.builder
             .build_select(cond_int, then_value, else_value, "ternary")
+            .unwrap()
     }
 
     pub fn ptr_cast(
@@ -244,14 +288,16 @@ impl<'a, 'b> Scope<'a, 'b> {
         ptr: BasicValueEnum<'a>,
     ) -> BasicValueEnum<'a> {
         let ptr_type = match result_type {
-            BasicTypeEnum::ArrayType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::FloatType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::IntType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::PointerType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::StructType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::VectorType(t) => t.ptr_type(AddressSpace::Generic),
+            BasicTypeEnum::ArrayType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::FloatType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::IntType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::PointerType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::StructType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::VectorType(t) => t.ptr_type(AddressSpace::default()),
         };
-        self.builder.build_bitcast(ptr, ptr_type, "ptr_cast")
+        self.builder
+            .build_bitcast(ptr, ptr_type, "ptr_cast")
+            .unwrap()
     }
 
     pub fn int_cast(
@@ -265,6 +311,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 result_type.into_int_type(),
                 "int_cast",
             )
+            .unwrap()
             .into()
     }
 
@@ -303,14 +350,21 @@ impl<'a, 'b> Scope<'a, 'b> {
         tup.into()
     }
 
-    pub fn buf_addr(&self, arr: BasicValueEnum<'a>, idx: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
+    pub fn buf_addr(
+        &self,
+        pointee_ty: BasicTypeEnum<'a>,
+        arr: BasicValueEnum<'a>,
+        idx: BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
         unsafe {
             self.builder
                 .build_in_bounds_gep(
+                    pointee_ty,
                     arr.into_pointer_value().into(),
                     &[idx.into_int_value()],
                     "arr_addr",
                 )
+                .unwrap()
                 .into()
         }
     }
@@ -318,73 +372,86 @@ impl<'a, 'b> Scope<'a, 'b> {
     /// 'buf_addr' out of bounds (OOB) -- i.e., without the "in-bounds" requirement.
     pub fn buf_addr_oob(
         &self,
+        pointee_ty: BasicTypeEnum<'a>,
         arr: BasicValueEnum<'a>,
         idx: BasicValueEnum<'a>,
     ) -> BasicValueEnum<'a> {
         unsafe {
             self.builder
                 .build_gep(
+                    pointee_ty,
                     arr.into_pointer_value().into(),
                     &[idx.into_int_value()],
                     "arr_addr",
                 )
+                .unwrap()
                 .into()
         }
     }
 
     pub fn buf_set(
         &self,
+        pointee_ty: BasicTypeEnum<'a>,
         arr: BasicValueEnum<'a>,
         idx: BasicValueEnum<'a>,
         val: BasicValueEnum<'a>,
     ) {
-        let addr = self.buf_addr(arr, idx).into_pointer_value();
+        let addr = self.buf_addr(pointee_ty, arr, idx).into_pointer_value();
 
-        self.builder.build_store(addr, val);
+        self.builder.build_store(addr, val).unwrap();
     }
 
-    pub fn buf_get(&self, arr: BasicValueEnum<'a>, idx: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
-        let addr = self.buf_addr(arr, idx).into_pointer_value();
+    pub fn buf_get(
+        &self,
+        pointee_ty: BasicTypeEnum<'a>,
+        arr: BasicValueEnum<'a>,
+        idx: BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
+        let addr = self.buf_addr(pointee_ty, arr, idx).into_pointer_value();
 
-        self.builder.build_load(addr, "get")
+        self.builder.build_load(pointee_ty, addr, "get").unwrap()
     }
 
-    pub fn arr_addr(&self, arr: BasicValueEnum<'a>, idx: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
-        let target_type = arr
-            .get_type()
-            .into_pointer_type()
-            .get_element_type()
-            .into_array_type()
-            .get_element_type();
-
-        self.buf_addr(self.ptr_cast(target_type, arr), idx)
+    pub fn arr_addr(
+        &self,
+        pointee_ty: BasicTypeEnum<'a>,
+        arr: BasicValueEnum<'a>,
+        idx: BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
+        self.buf_addr(pointee_ty, self.ptr_cast(pointee_ty, arr), idx)
     }
 
     pub fn arr_set(
         &self,
+        pointee_ty: BasicTypeEnum<'a>,
         arr: BasicValueEnum<'a>,
         idx: BasicValueEnum<'a>,
         val: BasicValueEnum<'a>,
     ) {
-        let addr = self.arr_addr(arr, idx).into_pointer_value();
+        let addr = self.arr_addr(pointee_ty, arr, idx).into_pointer_value();
 
-        self.builder.build_store(addr, val);
+        self.builder.build_store(addr, val).unwrap();
     }
 
-    pub fn arr_get(&self, arr: BasicValueEnum<'a>, idx: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
-        let addr = self.arr_addr(arr, idx).into_pointer_value();
+    pub fn arr_get(
+        &self,
+        pointee_ty: BasicTypeEnum<'a>,
+        arr: BasicValueEnum<'a>,
+        idx: BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
+        let addr = self.arr_addr(pointee_ty, arr, idx).into_pointer_value();
 
-        self.builder.build_load(addr, "get")
+        self.builder.build_load(pointee_ty, addr, "get").unwrap()
     }
 
     pub fn null(&self, ty: BasicTypeEnum<'a>) -> BasicValueEnum<'a> {
         let ptr_type = match ty {
-            BasicTypeEnum::ArrayType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::FloatType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::IntType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::PointerType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::StructType(t) => t.ptr_type(AddressSpace::Generic),
-            BasicTypeEnum::VectorType(t) => t.ptr_type(AddressSpace::Generic),
+            BasicTypeEnum::ArrayType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::FloatType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::IntType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::PointerType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::StructType(t) => t.ptr_type(AddressSpace::default()),
+            BasicTypeEnum::VectorType(t) => t.ptr_type(AddressSpace::default()),
         };
 
         ptr_type.const_null().into()
@@ -398,20 +465,28 @@ impl<'a, 'b> Scope<'a, 'b> {
         let i_ptr = self.alloca(self.i64_t());
         self.ptr_set(i_ptr, self.i64(0));
         self.while_(
-            |s| s.ult(s.ptr_get(i_ptr), bound),
+            |s| s.ult(s.ptr_get(self.i64_t(), i_ptr), bound),
             |s| {
-                body(s, s.ptr_get(i_ptr));
-                s.ptr_set(i_ptr, s.add(s.ptr_get(i_ptr), s.i64(1)));
+                body(s, s.ptr_get(self.i64_t(), i_ptr));
+                s.ptr_set(i_ptr, s.add(s.ptr_get(self.i64_t(), i_ptr), s.i64(1)));
             },
         );
     }
 
     pub fn ptr_set(&self, ptr: BasicValueEnum<'a>, val: BasicValueEnum<'a>) {
-        self.builder.build_store(ptr.into_pointer_value(), val);
+        self.builder
+            .build_store(ptr.into_pointer_value(), val)
+            .unwrap();
     }
 
-    pub fn ptr_get(&self, ptr: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
-        self.builder.build_load(ptr.into_pointer_value(), "get")
+    pub fn ptr_get(
+        &self,
+        pointee_ty: BasicTypeEnum<'a>,
+        ptr: BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
+        self.builder
+            .build_load(pointee_ty, ptr.into_pointer_value(), "get")
+            .unwrap()
     }
 
     pub fn panic(&self, panic_string: &str, panic_args: &[BasicValueEnum<'a>], tal: &Tal<'a>) {
@@ -419,7 +494,8 @@ impl<'a, 'b> Scope<'a, 'b> {
 
         let panic_global = self
             .builder
-            .build_global_string_ptr(panic_string, "panic_str");
+            .build_global_string_ptr(panic_string, "panic_str")
+            .unwrap();
 
         let mut print_error_args = vec![panic_global.as_pointer_value().into()];
         print_error_args.extend_from_slice(
@@ -430,16 +506,21 @@ impl<'a, 'b> Scope<'a, 'b> {
         );
 
         self.builder
-            .build_call(tal.print_error, &print_error_args, "print_error_output");
+            .build_call(tal.print_error, &print_error_args, "print_error_output")
+            .unwrap();
 
         self.builder
-            .build_call(tal.exit, &[i32_type.const_int(1, true).into()], "");
+            .build_call(tal.exit, &[i32_type.const_int(1, true).into()], "")
+            .unwrap();
 
-        self.builder.build_unreachable();
+        self.builder.build_unreachable().unwrap();
     }
 
     pub fn print(&self, message: &str, message_args: &[BasicValueEnum<'a>], tal: &Tal<'a>) {
-        let message_global = self.builder.build_global_string_ptr(message, "print_str");
+        let message_global = self
+            .builder
+            .build_global_string_ptr(message, "print_str")
+            .unwrap();
 
         let mut print_args = vec![message_global.as_pointer_value().into()];
         print_args.extend_from_slice(
@@ -450,11 +531,15 @@ impl<'a, 'b> Scope<'a, 'b> {
         );
 
         self.builder
-            .build_call(tal.print, &print_args, "print_output");
+            .build_call(tal.print, &print_args, "print_output")
+            .unwrap();
     }
 
     pub fn debug(&self, message: &str, message_args: &[BasicValueEnum<'a>], tal: &Tal<'a>) {
-        let message_global = self.builder.build_global_string_ptr(message, "debug_str");
+        let message_global = self
+            .builder
+            .build_global_string_ptr(message, "debug_str")
+            .unwrap();
 
         let mut print_error_args = vec![message_global.as_pointer_value().into()];
         print_error_args.extend_from_slice(
@@ -465,7 +550,8 @@ impl<'a, 'b> Scope<'a, 'b> {
         );
 
         self.builder
-            .build_call(tal.print_error, &print_error_args, "print_error__output");
+            .build_call(tal.print_error, &print_error_args, "print_error__output")
+            .unwrap();
     }
 
     pub fn malloc(
@@ -526,6 +612,7 @@ impl<'a, 'b> Scope<'a, 'b> {
     pub fn is_null(&self, ptr: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_is_null(ptr.into_pointer_value(), "is_null")
+            .unwrap()
             .into()
     }
 
@@ -537,6 +624,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 arg2.into_int_value(),
                 "slt",
             )
+            .unwrap()
             .into()
     }
 
@@ -548,6 +636,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 arg2.into_int_value(),
                 "ult",
             )
+            .unwrap()
             .into()
     }
 
@@ -559,6 +648,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 arg2.into_int_value(),
                 "ugt",
             )
+            .unwrap()
             .into()
     }
 
@@ -570,6 +660,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 arg2.into_int_value(),
                 "ule",
             )
+            .unwrap()
             .into()
     }
 
@@ -581,6 +672,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 arg2.into_int_value(),
                 "uge",
             )
+            .unwrap()
             .into()
     }
 
@@ -592,6 +684,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 arg2.into_int_value(),
                 "eq",
             )
+            .unwrap()
             .into()
     }
 
@@ -603,64 +696,77 @@ impl<'a, 'b> Scope<'a, 'b> {
                 arg2.into_int_value(),
                 "neq",
             )
+            .unwrap()
             .into()
     }
 
     pub fn mul(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_mul(arg1.into_int_value(), arg2.into_int_value(), "mul")
+            .unwrap()
             .into()
     }
 
     pub fn udiv(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_unsigned_div(arg1.into_int_value(), arg2.into_int_value(), "udiv")
+            .unwrap()
             .into()
     }
 
     pub fn urem(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_unsigned_rem(arg1.into_int_value(), arg2.into_int_value(), "urem")
+            .unwrap()
             .into()
     }
 
     pub fn add(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_add(arg1.into_int_value(), arg2.into_int_value(), "add")
+            .unwrap()
             .into()
     }
 
     pub fn sub(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_int_sub(arg1.into_int_value(), arg2.into_int_value(), "sub")
+            .unwrap()
             .into()
     }
 
     pub fn and(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_and(arg1.into_int_value(), arg2.into_int_value(), "and")
+            .unwrap()
             .into()
     }
 
     pub fn or(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_or(arg1.into_int_value(), arg2.into_int_value(), "and")
+            .unwrap()
             .into()
     }
 
     pub fn not(&self, arg: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
-        self.builder.build_not(arg.into_int_value(), "not").into()
+        self.builder
+            .build_not(arg.into_int_value(), "not")
+            .unwrap()
+            .into()
     }
 
     pub fn sll(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_left_shift(arg1.into_int_value(), arg2.into_int_value(), "sll")
+            .unwrap()
             .into()
     }
 
     pub fn srl(&self, arg1: BasicValueEnum<'a>, arg2: BasicValueEnum<'a>) -> BasicValueEnum<'a> {
         self.builder
             .build_right_shift(arg1.into_int_value(), arg2.into_int_value(), false, "srl")
+            .unwrap()
             .into()
     }
 
@@ -675,6 +781,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 result_type.into_int_type(),
                 "truncate",
             )
+            .unwrap()
             .into()
     }
 
@@ -717,11 +824,11 @@ impl<'a, 'b> Scope<'a, 'b> {
     }
 
     pub fn ret_void(&self) {
-        self.builder.build_return(None);
+        self.builder.build_return(None).unwrap();
     }
 
     pub fn ret(&self, ret_val: BasicValueEnum<'a>) {
-        self.builder.build_return(Some(&ret_val));
+        self.builder.build_return(Some(&ret_val)).unwrap();
     }
 
     pub fn size(&self, ty: BasicTypeEnum<'a>) -> BasicValueEnum<'a> {
@@ -759,7 +866,7 @@ impl<'a, 'b> Scope<'a, 'b> {
             entry_builder.position_at_end(entry);
         }
 
-        entry_builder.build_alloca(ty, "alloca").into()
+        entry_builder.build_alloca(ty, "alloca").unwrap().into()
     }
 
     pub fn while_(
@@ -771,19 +878,21 @@ impl<'a, 'b> Scope<'a, 'b> {
         let loop_block = self.context.append_basic_block(self.func, "loop_block");
         let next_block = self.context.append_basic_block(self.func, "next_block");
 
-        self.builder.build_unconditional_branch(cond_block);
+        self.builder.build_unconditional_branch(cond_block).unwrap();
 
         let cond_scope = Scope::new(self.context, self.target, self.func, cond_block);
         let cond_val = cond(&cond_scope);
-        cond_scope.builder.build_conditional_branch(
-            cond_val.into_int_value(),
-            loop_block,
-            next_block,
-        );
+        cond_scope
+            .builder
+            .build_conditional_branch(cond_val.into_int_value(), loop_block, next_block)
+            .unwrap();
 
         let loop_scope = Scope::new(self.context, self.target, self.func, loop_block);
         body(&loop_scope);
-        loop_scope.builder.build_unconditional_branch(cond_block);
+        loop_scope
+            .builder
+            .build_unconditional_branch(cond_block)
+            .unwrap();
 
         self.builder.position_at_end(next_block);
     }

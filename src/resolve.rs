@@ -380,7 +380,7 @@ impl LocalContext {
     }
 
     fn insert_anon(&mut self) -> res::LocalId {
-        let mut scope = self.scopes.last_mut().unwrap();
+        let scope = self.scopes.last_mut().unwrap();
         let id = scope.next_id;
         scope.next_id.0 += 1;
         id

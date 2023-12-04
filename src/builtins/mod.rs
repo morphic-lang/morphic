@@ -10,8 +10,6 @@ pub mod fountain_pen;
 
 pub mod tal;
 
-pub mod persistent_array;
-
 pub mod rc;
 
 pub mod zero_sized_array;

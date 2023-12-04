@@ -33,7 +33,7 @@ impl<'a> FlatArrayImpl<'a> {
     ) -> Self {
         let void_type = context.void_type();
         let i64_type = context.i64_type();
-        let item_ptr_type = item_type.ptr_type(AddressSpace::Generic);
+        let item_ptr_type = item_type.ptr_type(AddressSpace::default());
 
         let array_type = context.opaque_struct_type("builtin_flat_array");
         array_type.set_body(
@@ -170,22 +170,20 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
         // Offset a reference (an *i64) into the underlying heap buffer by sizeof(i64) to skip the leading
         // refcount, obtaining a reference to the data array.
         let buf_to_data = |s: &Scope<'a, 'b>, buf_ptr: BasicValueEnum<'a>| {
-            debug_assert_eq!(
-                buf_ptr
-                    .get_type()
-                    .into_pointer_type()
-                    .get_element_type()
-                    .into_int_type()
-                    .get_bit_width(),
-                64,
-            );
-            s.ptr_cast(self.interface.item_type, s.buf_addr_oob(buf_ptr, s.i32(1)))
+            s.ptr_cast(
+                self.interface.item_type,
+                s.buf_addr_oob(s.i64_t(), buf_ptr, s.i32(1)),
+            )
         };
 
         // Offset a reference to the beginning of the data array by -sizeof(i64) to obtain a
         // reference to the beginning of the underlying heap buffer, including the leading refcount.
         let data_to_buf = |s: &Scope<'a, 'b>, buf_ptr: BasicValueEnum<'a>| {
-            s.buf_addr_oob(s.ptr_cast(s.i64_t(), buf_ptr), s.i32(-1i32 as u32))
+            s.buf_addr_oob(
+                s.i64_t(),
+                s.ptr_cast(s.i64_t(), buf_ptr),
+                s.i32(-1i32 as u32),
+            )
         };
 
         // define 'new'
@@ -213,7 +211,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             s.call_void(self.bounds_check, &[me, idx]);
             let data = s.field(me, F_ARR_DATA);
 
-            s.ret(s.buf_get(data, idx));
+            s.ret(s.buf_get(self.interface.item_type, data, idx));
         }
 
         // define 'extract'
@@ -226,7 +224,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let data = s.field(me, F_ARR_DATA);
 
             s.ret(s.make_tup(&[
-                s.buf_get(data, idx),
+                s.buf_get(self.interface.item_type, data, idx),
                 s.make_struct(
                     self.interface.hole_array_type,
                     &[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)],
@@ -251,7 +249,12 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
             let new_me = s.call(self.ensure_cap, &[me, new_len]);
 
-            s.buf_set(s.field(new_me, F_ARR_DATA), old_len, s.arg(1));
+            s.buf_set(
+                self.interface.item_type,
+                s.field(new_me, F_ARR_DATA),
+                old_len,
+                s.arg(1),
+            );
 
             s.ret(s.make_struct(
                 array_type,
@@ -283,7 +286,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                 ],
             );
 
-            let item = s.buf_get(s.field(me, F_ARR_DATA), new_len);
+            let item = s.buf_get(self.interface.item_type, s.field(me, F_ARR_DATA), new_len);
 
             s.ret(s.make_tup(&[new_me, item]))
         }
@@ -297,7 +300,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let idx = s.field(hole, F_HOLE_IDX);
             let me = s.field(hole, F_HOLE_ARR);
 
-            s.buf_set(s.field(me, F_ARR_DATA), idx, item);
+            s.buf_set(self.interface.item_type, s.field(me, F_ARR_DATA), idx, item);
 
             s.ret(me);
         }
@@ -386,7 +389,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             s.if_(s.not(s.is_null(refcount_ptr)), |s| {
-                s.ptr_set(refcount_ptr, s.add(s.ptr_get(refcount_ptr), s.i64(1)));
+                s.ptr_set(
+                    refcount_ptr,
+                    s.add(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1)),
+                );
             });
 
             s.ret_void();
@@ -404,7 +410,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             s.if_(s.not(s.is_null(refcount_ptr)), |s| {
-                let new_refcount = s.sub(s.ptr_get(refcount_ptr), s.i64(1));
+                let new_refcount = s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
                 s.ptr_set(refcount_ptr, new_refcount);
 
                 let data = s.field(me, F_ARR_DATA);
@@ -412,7 +418,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                 s.if_(s.eq(new_refcount, s.i64(0)), |s| {
                     if let Some(item_release) = item_release {
                         s.for_(s.field(me, F_ARR_LEN), |s, i| {
-                            s.call_void(item_release, &[s.buf_addr(data, i)]);
+                            s.call_void(
+                                item_release,
+                                &[s.buf_addr(self.interface.item_type, data, i)],
+                            );
                         });
                     }
                     s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
@@ -445,7 +454,7 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
 
             let refcount_ptr = data_to_buf(&s, s.field(arr, F_ARR_DATA));
 
-            let new_refcount = s.sub(s.ptr_get(refcount_ptr), s.i64(1));
+            let new_refcount = s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
             s.ptr_set(refcount_ptr, new_refcount);
 
             let data = s.field(arr, F_ARR_DATA);
@@ -457,7 +466,10 @@ impl<'a> ArrayImpl<'a> for FlatArrayImpl<'a> {
                     // than using a single 'for' loop with an internal branch.
                     s.for_(s.field(arr, F_ARR_LEN), |s, i| {
                         s.if_(s.ne(i, hole_idx), |s| {
-                            s.call_void(item_release, &[s.buf_addr(data, i)]);
+                            s.call_void(
+                                item_release,
+                                &[s.buf_addr(self.interface.item_type, data, i)],
+                            );
                         });
                     });
                 }
@@ -600,7 +612,8 @@ impl<'a> FlatArrayIoImpl<'a> {
             let s = scope(self.input, context, target);
 
             s.call(tal.flush, &[]);
-            let array = s.alloca(self.byte_array_type.interface().array_type);
+            let array_t = self.byte_array_type.interface().array_type;
+            let array = s.alloca(array_t);
             s.ptr_set(array, s.call(self.byte_array_type.interface().new, &[]));
 
             let getchar_result = s.alloca(s.i32_t());
@@ -614,18 +627,18 @@ impl<'a> FlatArrayIoImpl<'a> {
                     ))
                 },
                 |s| {
-                    let input_byte = s.truncate(s.i8_t(), s.ptr_get(getchar_result));
+                    let input_byte = s.truncate(s.i8_t(), s.ptr_get(s.i32_t(), getchar_result));
                     s.ptr_set(
                         array,
                         s.call(
                             self.byte_array_type.interface().push,
-                            &[s.ptr_get(array), input_byte],
+                            &[s.ptr_get(array_t, array), input_byte],
                         ),
                     );
                 },
             );
 
-            s.ret(s.ptr_get(array));
+            s.ret(s.ptr_get(array_t, array));
         }
 
         // define 'output'
