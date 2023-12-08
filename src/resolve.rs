@@ -19,7 +19,7 @@ use crate::lex;
 use crate::parse;
 use crate::parse_error;
 use crate::report_error::{locate_path, locate_span, Locate};
-use crate::util::id_vec::IdVec;
+use id_collections::IdVec;
 
 #[derive(Debug)]
 pub enum ErrorKind {
@@ -438,11 +438,9 @@ pub fn resolve_program(
         return Err(locate_path(file_path)(ErrorKind::MainNotFound.into()));
     };
 
-    let val_symbols = ctx
-        .val_symbols
-        .into_mapped(|_id, val_syms| val_syms.unwrap());
+    let val_symbols = ctx.val_symbols.map(|_id, val_syms| val_syms.unwrap());
 
-    let mut vals = ctx.vals.into_mapped(|_id, val_def| val_def.unwrap());
+    let mut vals = ctx.vals.map(|_id, val_def| val_def.unwrap());
 
     let profile_points = resolve_profile_points(
         &ctx.mod_symbols,
@@ -456,7 +454,7 @@ pub fn resolve_program(
 
     Ok(res::Program {
         mod_symbols: ctx.mod_symbols,
-        custom_types: ctx.types.into_mapped(|_id, typedef| typedef.unwrap()),
+        custom_types: ctx.types.map(|_id, typedef| typedef.unwrap()),
         custom_type_symbols: ctx.type_symbols,
         profile_points,
         vals,
@@ -520,7 +518,7 @@ fn resolve_mod(
                         let type_symbols_id = ctx.type_symbols.push(res::TypeSymbols {
                             mod_: self_mod_id,
                             type_name: name.clone(),
-                            variant_symbols: IdVec::from_items(
+                            variant_symbols: IdVec::from_vec(
                                 variants
                                     .iter()
                                     .map(|(_, variant_name, _)| res::VariantSymbols {
@@ -646,7 +644,7 @@ fn resolve_mod(
                 .map_err(locate_path(file_path))?;
         }
 
-        let resolved_variants = IdVec::from_items(
+        let resolved_variants = IdVec::from_vec(
             variants
                 .iter()
                 .map(|(_, _, variant_type)| match variant_type {

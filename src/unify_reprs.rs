@@ -15,10 +15,11 @@ use crate::util::graph::{
     acyclic_and_cyclic_sccs, connected_components, strongly_connected, Graph, Scc, Undirected,
 };
 use crate::util::id_gen::IdGen;
-use crate::util::id_vec::IdVec;
+use crate::util::iter::try_zip_exact;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
+use id_collections::{id_type, IdVec};
 
 fn add_type_deps(type_: &anon::Type, deps: &mut BTreeSet<first_ord::CustomTypeId>) {
     match type_ {
@@ -107,9 +108,11 @@ fn parameterize(
                 .collect(),
         ),
 
-        anon::Type::Variants(variants) => unif::Type::Variants(
-            variants.map(|_, variant| parameterize(parameterized, scc_num_params, id_gen, variant)),
-        ),
+        anon::Type::Variants(variants) => {
+            unif::Type::Variants(variants.map_refs(|_, variant| {
+                parameterize(parameterized, scc_num_params, id_gen, &variant)
+            }))
+        }
 
         anon::Type::Boxed(content) => unif::Type::Boxed(Box::new(parameterize(
             parameterized,
@@ -121,13 +124,13 @@ fn parameterize(
         anon::Type::Custom(custom) => match &parameterized[custom] {
             Some(typedef) => unif::Type::Custom(
                 *custom,
-                IdVec::from_items((0..typedef.num_params).map(|_| id_gen.fresh()).collect()),
+                IdVec::from_vec((0..typedef.num_params).map(|_| id_gen.fresh()).collect()),
             ),
 
             // This is a typedef in the same SCC, so we need to parameterize it by all the SCC parameters.
             None => unif::Type::Custom(
                 *custom,
-                IdVec::from_items((0..scc_num_params).map(unif::RepParamId).collect()),
+                IdVec::from_vec((0..scc_num_params).map(unif::RepParamId).collect()),
             ),
         },
     }
@@ -163,7 +166,7 @@ fn parameterize_typedef_scc(
         })
         .collect();
 
-    debug_assert_eq!(id_gen.count(), num_params);
+    debug_assert_eq!(id_gen.count().to_value(), num_params);
 
     to_populate
 }
@@ -172,16 +175,16 @@ fn parameterize_typedefs(
     typedefs: &IdVec<first_ord::CustomTypeId, anon::Type>,
 ) -> IdVec<first_ord::CustomTypeId, unif::TypeDef> {
     let type_deps = Graph {
-        edges_out: typedefs.map(|_, content| {
+        edges_out: typedefs.map_refs(|_, content| {
             let mut deps = BTreeSet::new();
-            add_type_deps(content, &mut deps);
+            add_type_deps(&content, &mut deps);
             deps.into_iter().collect()
         }),
     };
 
     let sccs = strongly_connected(&type_deps);
 
-    let mut parameterized = IdVec::from_items(vec![None; typedefs.len()]);
+    let mut parameterized = IdVec::from_vec(vec![None; typedefs.len()]);
     for scc in &sccs {
         let to_populate = parameterize_typedef_scc(typedefs, &parameterized, scc);
 
@@ -196,10 +199,11 @@ fn parameterize_typedefs(
         }
     }
 
-    parameterized.into_mapped(|_, typedef| typedef.unwrap())
+    parameterized.map(|_, typedef| typedef.unwrap())
 }
 
-id_type!(SolverVarId);
+#[id_type]
+struct SolverVarId(usize);
 
 #[derive(Clone, Debug)]
 struct PendingSig {
@@ -280,7 +284,7 @@ fn instantiate_type(
         ),
 
         anon::Type::Variants(variants) => unif::Type::Variants(
-            variants.map(|_, variant| instantiate_type(typedefs, graph, variant)),
+            variants.map_refs(|_, variant| instantiate_type(typedefs, graph, &variant)),
         ),
 
         anon::Type::Boxed(content) => {
@@ -289,7 +293,7 @@ fn instantiate_type(
 
         anon::Type::Custom(custom) => unif::Type::Custom(
             *custom,
-            IdVec::from_items(
+            IdVec::from_vec(
                 (0..typedefs[custom].num_params)
                     .map(|_| graph.new_var())
                     .collect(),
@@ -324,8 +328,7 @@ fn equate_types(graph: &mut ConstraintGraph, type1: &SolverType, type2: &SolverT
         }
 
         (unif::Type::Variants(variants1), unif::Type::Variants(variants2)) => {
-            for (_, variant1, variant2) in variants1
-                .try_zip_exact(variants2)
+            for (_, variant1, variant2) in try_zip_exact(variants1, variants2)
                 .expect("variants1.len() should equal variants2.len()")
             {
                 equate_types(graph, variant1, variant2);
@@ -338,9 +341,8 @@ fn equate_types(graph: &mut ConstraintGraph, type1: &SolverType, type2: &SolverT
 
         (unif::Type::Custom(custom1, args1), unif::Type::Custom(custom2, args2)) => {
             debug_assert_eq!(custom1, custom2);
-            for (_, arg1, arg2) in args1
-                .try_zip_exact(args2)
-                .expect("args1.len() should equal args2.len()")
+            for (_, arg1, arg2) in
+                try_zip_exact(args1, args2).expect("args1.len() should equal args2.len()")
             {
                 graph.equate(*arg1, *arg2);
             }
@@ -374,13 +376,13 @@ fn instantiate_subst(
         ),
 
         unif::Type::Variants(variants) => {
-            unif::Type::Variants(variants.map(|_, variant| instantiate_subst(vars, variant)))
+            unif::Type::Variants(variants.map_refs(|_, variant| instantiate_subst(vars, &variant)))
         }
 
         unif::Type::Boxed(content) => unif::Type::Boxed(Box::new(instantiate_subst(vars, content))),
 
         unif::Type::Custom(custom, args) => {
-            unif::Type::Custom(*custom, args.map(|_, arg| vars[arg]))
+            unif::Type::Custom(*custom, args.map_refs(|_, arg| vars[arg]))
         }
     }
 }
@@ -490,7 +492,7 @@ fn instantiate_expr(
         rc::Expr::Call(purity, func, arg_aliases, arg_statuses, arg) => {
             match &globals.funcs_annot[func] {
                 Some(def_annot) => {
-                    let rep_vars = IdVec::from_items(
+                    let rep_vars = IdVec::from_vec(
                         (0..def_annot.num_params).map(|_| graph.new_var()).collect(),
                     );
 
@@ -598,7 +600,7 @@ fn instantiate_expr(
 
         rc::Expr::WrapVariant(variant_types, variant, content) => {
             let variant_types_inst = variant_types
-                .map(|_, variant_type| instantiate_type(typedefs, graph, variant_type));
+                .map_refs(|_, variant_type| instantiate_type(typedefs, graph, &variant_type));
 
             equate_types(
                 graph,
@@ -649,7 +651,7 @@ fn instantiate_expr(
             let typedef = &typedefs[custom];
 
             let rep_vars =
-                IdVec::from_items((0..typedef.num_params).map(|_| graph.new_var()).collect());
+                IdVec::from_vec((0..typedef.num_params).map(|_| graph.new_var()).collect());
 
             let content_type_inst = instantiate_subst(&rep_vars, &typedef.content);
             equate_types(graph, &content_type_inst, locals.local_binding(*content));
@@ -969,7 +971,8 @@ fn instantiate_expr(
     }
 }
 
-id_type!(UnifiedVarId);
+#[id_type]
+struct UnifiedVarId(usize);
 
 // Partitions the set of unified solver variables into 'internal variables' and 'parameters' on a
 // per-function basis, where the 'parameters' correspond to exactly those variables which appear in
@@ -1021,7 +1024,7 @@ fn extract_sig_type(
         ),
 
         unif::Type::Variants(variants) => unif::Type::Variants(
-            variants.map(|_, variant| extract_sig_type(to_unified, to_params, variant)),
+            variants.map_refs(|_, variant| extract_sig_type(to_unified, to_params, &variant)),
         ),
 
         unif::Type::Boxed(content) => {
@@ -1029,7 +1032,7 @@ fn extract_sig_type(
         }
 
         unif::Type::Custom(custom, args) => {
-            let arg_params = args.map(|_, arg_var| get_param(to_params, to_unified[arg_var]));
+            let arg_params = args.map_refs(|_, arg_var| get_param(to_params, to_unified[arg_var]));
             unif::Type::Custom(*custom, arg_params)
         }
     }
@@ -1051,17 +1054,17 @@ fn partition_vars_for_sig(
     let ret_extracted = extract_sig_type(to_unified, &mut to_params, ret_type);
 
     let params = {
-        let mut params = IdVec::from_items(vec![None; to_params.len()]);
+        let mut params = IdVec::from_vec(vec![None; to_params.len()]);
         for (unified, &param) in &to_params {
             debug_assert!(params[param].is_none());
             params[param] = Some(*unified);
         }
-        params.into_mapped(|_, unified| unified.unwrap())
+        params.map(|_, unified| unified.unwrap())
     };
 
     let mut internal_var_gen = IdGen::<unif::InternalRepVarId>::new();
 
-    let solutions = IdVec::from_items(
+    let solutions = IdVec::from_vec(
         (0..num_unified)
             .map(UnifiedVarId)
             .map(|unified| {
@@ -1108,7 +1111,7 @@ fn extract_type(
         ),
 
         unif::Type::Variants(variants) => unif::Type::Variants(
-            variants.into_mapped(|_, variant| extract_type(to_unified, this_solutions, variant)),
+            variants.map(|_, variant| extract_type(to_unified, this_solutions, variant)),
         ),
 
         unif::Type::Boxed(content) => {
@@ -1117,7 +1120,7 @@ fn extract_type(
 
         unif::Type::Custom(custom, arg_vars) => unif::Type::Custom(
             custom,
-            arg_vars.into_mapped(|_, arg_var| this_solutions[to_unified[arg_var]]),
+            arg_vars.map(|_, arg_var| this_solutions[to_unified[arg_var]]),
         ),
     }
 }
@@ -1149,7 +1152,7 @@ fn extract_condition(
 
         unif::Condition::Custom(custom, rep_vars, content_cond) => unif::Condition::Custom(
             custom,
-            rep_vars.into_mapped(|_, rep_var| this_solutions[to_unified[rep_var]]),
+            rep_vars.map(|_, rep_var| this_solutions[to_unified[rep_var]]),
             Box::new(extract_condition(to_unified, this_solutions, *content_cond)),
         ),
 
@@ -1201,7 +1204,7 @@ fn extract_expr(
                 func,
                 func_partition
                     .params
-                    .map(|_, unified| this_solutions[unified]),
+                    .map_refs(|_, unified| this_solutions[unified]),
                 arg_aliases,
                 arg_statuses,
                 arg,
@@ -1243,9 +1246,8 @@ fn extract_expr(
         unif::Expr::TupleField(tuple, idx) => unif::Expr::TupleField(tuple, idx),
 
         unif::Expr::WrapVariant(variants, variant, content) => {
-            let variants_extracted = variants.into_mapped(|_, variant_type| {
-                extract_type(to_unified, this_solutions, variant_type)
-            });
+            let variants_extracted = variants
+                .map(|_, variant_type| extract_type(to_unified, this_solutions, variant_type));
 
             unif::Expr::WrapVariant(variants_extracted, variant, content)
         }
@@ -1263,15 +1265,13 @@ fn extract_expr(
         ),
 
         unif::Expr::WrapCustom(custom, rep_args, content) => {
-            let rep_args_extracted =
-                rep_args.into_mapped(|_, arg_var| this_solutions[to_unified[arg_var]]);
+            let rep_args_extracted = rep_args.map(|_, arg_var| this_solutions[to_unified[arg_var]]);
 
             unif::Expr::WrapCustom(custom, rep_args_extracted, content)
         }
 
         unif::Expr::UnwrapCustom(custom, rep_args, wrapped) => {
-            let rep_args_extracted =
-                rep_args.into_mapped(|_, arg_var| this_solutions[to_unified[arg_var]]);
+            let rep_args_extracted = rep_args.map(|_, arg_var| this_solutions[to_unified[arg_var]]);
 
             unif::Expr::UnwrapCustom(custom, rep_args_extracted, wrapped)
         }
@@ -1383,16 +1383,16 @@ fn unify_func_scc(
 
     // TODO: This doesn't quite fit the structure of the utilities offer in utils::constraint_graph,
     // but it comes very close.  Can we factor this out into a reusable abstraction?
-    let unified_vars: IdVec<UnifiedVarId, _> = IdVec::from_items(connected_components(
+    let unified_vars: IdVec<UnifiedVarId, _> = IdVec::from_vec(connected_components(
         &Undirected::from_directed_unchecked(Graph {
             edges_out: graph
                 .var_equalities
-                .map(|_, equalities| equalities.iter().cloned().collect()),
+                .map_refs(|_, equalities| equalities.iter().cloned().collect()),
         }),
     ));
 
     let to_unified: IdVec<SolverVarId, _> = {
-        let mut to_unified = IdVec::from_items(vec![None; graph.var_equalities.len()]);
+        let mut to_unified = IdVec::from_vec(vec![None; graph.var_equalities.len()]);
 
         for (unified, solver_vars) in &unified_vars {
             for solver_var in solver_vars {
@@ -1401,7 +1401,7 @@ fn unify_func_scc(
             }
         }
 
-        to_unified.into_mapped(|_, unified| unified.unwrap())
+        to_unified.map(|_, unified| unified.unwrap())
     };
 
     let solved_sigs = sigs_pending
@@ -1496,7 +1496,7 @@ fn add_func_deps(deps: &mut BTreeSet<rc::CustomFuncId>, expr: &rc::Expr) {
 
 fn func_dependency_graph(program: &rc::Program) -> Graph<rc::CustomFuncId> {
     Graph {
-        edges_out: program.funcs.map(|_, func_def| {
+        edges_out: program.funcs.map_refs(|_, func_def| {
             let mut deps = BTreeSet::new();
             add_func_deps(&mut deps, &func_def.body);
             deps.into_iter().collect()
@@ -1511,7 +1511,7 @@ pub fn unify_reprs(program: rc::Program, progress: impl ProgressLogger) -> unif:
 
     let sccs = acyclic_and_cyclic_sccs(&func_dependency_graph(&program));
 
-    let mut funcs_annot = IdVec::from_items(vec![None; program.funcs.len()]);
+    let mut funcs_annot = IdVec::from_vec(vec![None; program.funcs.len()]);
     for scc in &sccs {
         let scc_annot = match scc {
             Scc::Acyclic(func) => unify_func_scc(&typedefs, &program.funcs, &funcs_annot, &[*func]),
@@ -1534,7 +1534,7 @@ pub fn unify_reprs(program: rc::Program, progress: impl ProgressLogger) -> unif:
         mod_symbols: program.mod_symbols,
         custom_types: typedefs,
         custom_type_symbols: program.custom_type_symbols,
-        funcs: funcs_annot.into_mapped(|_, func| func.unwrap()),
+        funcs: funcs_annot.map(|_, func| func.unwrap()),
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,

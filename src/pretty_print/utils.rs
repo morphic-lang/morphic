@@ -4,8 +4,7 @@ use std::collections::BTreeMap;
 use crate::data::first_order_ast as first_ord;
 use crate::data::mono_ast as mono;
 use crate::data::repr_specialized_ast as special;
-use crate::util::id_type::Id;
-use crate::util::id_vec::IdVec;
+use id_collections::{Id, IdVec};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct BaseName(String);

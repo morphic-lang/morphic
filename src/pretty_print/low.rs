@@ -78,7 +78,7 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
             Ok(())
         }
         Type::Variants(types) => {
-            let types = &types.items;
+            let types = types.as_slice();
             if types.len() == 0 {
                 write![w, "{{}}"]?
             } else if types.len() == 1 {
@@ -290,11 +290,11 @@ fn write_custom_type(w: &mut dyn Write, type_: &Type, type_id: usize) -> io::Res
 }
 
 pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
-    for (i, type_) in program.custom_types.items.iter().enumerate() {
+    for (i, type_) in program.custom_types.values().enumerate() {
         write_custom_type(w, type_, i)?;
     }
     writeln![w]?;
-    for (i, func) in program.funcs.items.iter().enumerate() {
+    for (i, func) in program.funcs.values().enumerate() {
         write_func(w, func, i)?;
     }
     Ok(())

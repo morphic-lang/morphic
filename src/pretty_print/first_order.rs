@@ -685,7 +685,7 @@ impl<'a, 'b> Context<'a, 'b> {
         self.writeln()?;
 
         let type_sccs = graph::strongly_connected(&Graph {
-            edges_out: prog.custom_types.map(|_, type_def| {
+            edges_out: prog.custom_types.map_refs(|_, type_def| {
                 let mut deps = BTreeSet::new();
                 for variant in &type_def.variants {
                     match variant.1 {
@@ -714,7 +714,7 @@ impl<'a, 'b> Context<'a, 'b> {
         }
 
         let func_graph = Graph {
-            edges_out: prog.funcs.map(|_, func_def| {
+            edges_out: prog.funcs.map_refs(|_, func_def| {
                 let mut deps = BTreeSet::new();
                 add_func_deps(&mut deps, &func_def.body);
                 deps.into_iter().collect()

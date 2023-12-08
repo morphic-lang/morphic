@@ -1,11 +1,6 @@
 #[macro_use]
 pub mod lines;
 
-#[macro_use]
-pub mod id_type;
-
-pub mod id_vec;
-
 pub mod id_gen;
 
 pub mod local_context;
@@ -27,6 +22,8 @@ pub mod inequality_graph;
 pub mod event_set;
 
 pub mod progress_logger;
+
+pub mod iter;
 
 pub fn with_scope<T, R, F: for<'a> FnOnce(&'a mut Vec<T>) -> R>(vec: &mut Vec<T>, func: F) -> R {
     let old_len = vec.len();

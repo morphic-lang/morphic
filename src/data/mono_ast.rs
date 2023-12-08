@@ -3,9 +3,10 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub CustomTypeId);
+#[id_type]
+pub struct CustomTypeId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
@@ -30,7 +31,8 @@ pub struct TypeDef {
     pub variants: IdVec<res::VariantId, Option<Type>>,
 }
 
-id_type!(pub CustomGlobalId);
+#[id_type]
+pub struct CustomGlobalId(pub usize);
 
 #[derive(Clone, Debug)]
 pub enum Expr {

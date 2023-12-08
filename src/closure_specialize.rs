@@ -4,8 +4,9 @@ use crate::data::closure_annot_ast as annot;
 use crate::data::closure_specialized_ast as special;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
-use crate::util::id_vec::IdVec;
+use crate::util::iter::try_zip_exact;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::IdVec;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Request<T> {
@@ -104,7 +105,7 @@ impl<'a> Context<'a> {
         match requirement {
             annot::Requirement::Lam(lam_id, lam_params) => {
                 let resolved_lam_params =
-                    lam_params.map(|_, solution| self.resolve_solution(solution, params));
+                    lam_params.map_refs(|_, solution| self.resolve_solution(&solution, params));
 
                 let resolved_lam = self.resolve_lam(Request {
                     head: *lam_id,
@@ -115,8 +116,8 @@ impl<'a> Context<'a> {
             }
 
             annot::Requirement::Template(template_id, template_params) => {
-                let resolved_template_params =
-                    template_params.map(|_, solution| self.resolve_solution(solution, params));
+                let resolved_template_params = template_params
+                    .map_refs(|_, solution| self.resolve_solution(&solution, params));
 
                 let resolved_template = self.resolve_template(Request {
                     head: *template_id,
@@ -160,7 +161,7 @@ impl<'a> Context<'a> {
 
             annot::Requirement::Ctor(custom, type_params, variant) => {
                 let resolved_type_params =
-                    type_params.map(|_, solution| self.resolve_solution(solution, params));
+                    type_params.map_refs(|_, solution| self.resolve_solution(&solution, params));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -185,7 +186,7 @@ impl<'a> Context<'a> {
             annot::Solution::MinSolutionTo(template_id, template_params) => {
                 self.resolve_template(Request {
                     head: *template_id,
-                    params: template_params.map(|_, param| params[param].clone()),
+                    params: template_params.map_refs(|_, param| params[param].clone()),
                 })
             }
         }
@@ -205,7 +206,7 @@ impl<'a> Context<'a> {
 
         let resolved_captures = lam
             .captures
-            .map(|_, capture| self.resolve_sig_type(capture, &request.params));
+            .map_refs(|_, capture| self.resolve_sig_type(&capture, &request.params));
 
         let resolved_arg = self.resolve_sig_type(&lam.arg, &request.params);
 
@@ -260,7 +261,7 @@ impl<'a> Context<'a> {
             }
 
             annot::Type::Custom(custom, custom_params) => {
-                let resolved_reps = custom_params.map(|_, rep| resolve_rep(self, rep));
+                let resolved_reps = custom_params.map_refs(|_, rep| resolve_rep(self, &rep));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -305,7 +306,7 @@ impl<'a> Context<'a> {
 
         debug_assert_eq!(typedef.num_params, request.params.len());
 
-        let resolved_variants = typedef.variants.map(|_, content| {
+        let resolved_variants = typedef.variants.map_refs(|_, content| {
             content
                 .as_ref()
                 .map(|content| self.resolve_sig_type(content, &request.params))
@@ -339,7 +340,7 @@ impl<'a> Context<'a> {
 
             annot::Pattern::Ctor(custom, custom_params, variant, content) => {
                 let resolved_custom_params =
-                    custom_params.map(|_, solution| self.resolve_solution(solution, params));
+                    custom_params.map_refs(|_, solution| self.resolve_solution(&solution, params));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -390,7 +391,7 @@ impl<'a> Context<'a> {
 
             annot::Expr::NullaryCtor(custom, custom_params, variant) => {
                 let resolved_custom_params =
-                    custom_params.map(|_, solution| self.resolve_solution(solution, params));
+                    custom_params.map_refs(|_, solution| self.resolve_solution(&solution, params));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -402,7 +403,7 @@ impl<'a> Context<'a> {
 
             annot::Expr::Ctor(custom, custom_params, variant, solution) => {
                 let resolved_custom_params =
-                    custom_params.map(|_, solution| self.resolve_solution(solution, params));
+                    custom_params.map_refs(|_, solution| self.resolve_solution(&solution, params));
 
                 let resolved_custom = self.resolve_custom_type(Request {
                     head: *custom,
@@ -416,7 +417,7 @@ impl<'a> Context<'a> {
 
             annot::Expr::Global(val_id, val_params) => {
                 let resolved_val_params =
-                    val_params.map(|_, solution| self.resolve_solution(solution, params));
+                    val_params.map_refs(|_, solution| self.resolve_solution(&solution, params));
 
                 let resolved_val_id = self.resolve_val(Request {
                     head: *val_id,
@@ -439,7 +440,7 @@ impl<'a> Context<'a> {
 
             annot::Expr::Lam(lam_id, lam_params, rep, captures) => {
                 let resolved_lam_params =
-                    lam_params.map(|_, solution| self.resolve_solution(solution, params));
+                    lam_params.map_refs(|_, solution| self.resolve_solution(&solution, params));
 
                 let resolved_lam_id = self.resolve_lam(Request {
                     head: *lam_id,
@@ -449,7 +450,7 @@ impl<'a> Context<'a> {
                 let resolved_rep = self.resolve_solution(rep, params);
 
                 let resolved_captures =
-                    captures.map(|_, capture| self.resolve_expr(capture, params));
+                    captures.map_refs(|_, capture| self.resolve_expr(&capture, params));
 
                 special::Expr::Lam(resolved_lam_id, resolved_rep, resolved_captures)
             }
@@ -573,24 +574,24 @@ pub fn closure_specialize(
     // variables.  There should be some way to do this dependency analysis during the prior closure
     // annotation pass.
 
-    let main_param_opaque_ids: IdVec<annot::RepParamId, _> = IdVec::from_items(
+    let main_param_opaque_ids: IdVec<annot::RepParamId, _> = IdVec::from_vec(
         (0..main_def.params.num_params())
             .map(|_| ctx.opaque_reps.push(None))
             .collect(),
     );
 
-    let main_param_opaque_reps = main_param_opaque_ids.map(|_, &opaque_id| {
+    let main_param_opaque_reps = main_param_opaque_ids.map_refs(|_, opaque_id| {
         let mut param_rep = special::FuncRep(BTreeSet::new());
-        param_rep.0.insert(special::FuncCase::Opaque(opaque_id));
+        param_rep.0.insert(special::FuncCase::Opaque(*opaque_id));
         param_rep
     });
 
-    for (_, opaque_id, (template_id, template_params)) in main_param_opaque_ids
-        .try_zip_exact(&main_def.params.requirements)
-        .expect("main_def.params.num_params() should equal main_def_params.requirements.len()")
+    for (_, opaque_id, (template_id, template_params)) in
+        try_zip_exact(&main_param_opaque_ids, &main_def.params.requirements)
+            .expect("main_def.params.num_params() should equal main_def_params.requirements.len()")
     {
         let resolved_template_params =
-            template_params.map(|_, param| main_param_opaque_reps[param].clone());
+            template_params.map_refs(|_, param| main_param_opaque_reps[param].clone());
 
         let rep = ctx.resolve_template(Request {
             head: *template_id,
@@ -625,24 +626,24 @@ pub fn closure_specialize(
 
     let custom_type_symbols = ctx
         .custom_types
-        .map(|id, _| program.custom_type_symbols[type_origin.get(&id).unwrap()].clone());
+        .map_refs(|id, _| program.custom_type_symbols[type_origin.get(&id).unwrap()].clone());
     let val_symbols = ctx
         .vals
-        .map(|id, _| program.val_symbols[val_origin.get(&id).unwrap()].clone());
+        .map_refs(|id, _| program.val_symbols[val_origin.get(&id).unwrap()].clone());
     let lam_symbols = ctx
         .lams
-        .map(|id, _| program.lam_symbols[lam_origin.get(&id).unwrap()].clone());
+        .map_refs(|id, _| program.lam_symbols[lam_origin.get(&id).unwrap()].clone());
 
     progress.finish();
 
     special::Program {
         mod_symbols: program.mod_symbols.clone(),
-        custom_types: ctx.custom_types.into_mapped(|_, typedef| typedef.unwrap()),
+        custom_types: ctx.custom_types.map(|_, typedef| typedef.unwrap()),
         custom_type_symbols,
-        opaque_reps: ctx.opaque_reps.into_mapped(|_, rep| rep.unwrap()),
-        vals: ctx.vals.into_mapped(|_, val_def| val_def.unwrap()),
+        opaque_reps: ctx.opaque_reps.map(|_, rep| rep.unwrap()),
+        vals: ctx.vals.map(|_, val_def| val_def.unwrap()),
         val_symbols,
-        lams: ctx.lams.into_mapped(|_, lam_def| lam_def.unwrap()),
+        lams: ctx.lams.map(|_, lam_def| lam_def.unwrap()),
         lam_symbols,
         profile_points: program.profile_points,
         main: resolved_main_id,

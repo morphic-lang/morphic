@@ -14,15 +14,16 @@ use crate::field_path;
 use crate::stack_path;
 use crate::util::disjunction::Disj;
 use crate::util::graph::{strongly_connected, Graph};
-use crate::util::id_vec::IdVec;
 use crate::util::im_rc_ext::VectorExtensions;
 use crate::util::inequality_graph as ineq;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::local_context::LocalContext;
 use crate::util::norm_pair::NormPair;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::{id_type, IdVec};
 
-id_type!(ModeSpecFuncId);
+#[id_type]
+struct ModeSpecFuncId(usize);
 
 #[derive(Clone, Debug)]
 struct ModeSpecialization {
@@ -53,7 +54,7 @@ fn specialize_modes(
         // parameters, which will leak into main's signature.
         modes: funcs[main].modes[main_version]
             .extern_constraints
-            .map(|_, bound| bound.lte_const),
+            .map_refs(|_, bound| bound.lte_const),
     });
 
     let mut specialized = IdVec::new();
@@ -66,13 +67,13 @@ fn specialize_modes(
 
         let spec_calls = version_annots
             .calls
-            .map(|call_id, &(callee_id, callee_version)| {
+            .map_refs(|call_id, (callee_id, callee_version)| {
                 let callee_modes = mode_annots.call_modes[call_id]
-                    .map(|_, bound| get_mode(&instance.modes, bound));
+                    .map_refs(|_, bound| get_mode(&instance.modes, &bound));
 
                 insts.resolve(ModeInstance {
-                    func: callee_id,
-                    version: callee_version,
+                    func: *callee_id,
+                    version: *callee_version,
                     modes: callee_modes,
                 })
             });
@@ -227,7 +228,8 @@ fn deduplicate_specializations(
     rc::CustomFuncId,
 ) {
     let sccs = strongly_connected(&Graph {
-        edges_out: specializations.map(|_, specialization| specialization.calls.items.clone()),
+        edges_out: specializations
+            .map_refs(|_, specialization| specialization.calls.clone().into_vec()),
     });
 
     let mut concrete_funcs: IdVec<rc::CustomFuncId, Option<ConcreteRcOps<rc::CustomFuncId>>> =
@@ -237,7 +239,7 @@ fn deduplicate_specializations(
         BTreeMap::new();
 
     let mut known_dedups: IdVec<ModeSpecFuncId, Option<rc::CustomFuncId>> =
-        IdVec::from_items(vec![None; specializations.len()]);
+        IdVec::from_vec(vec![None; specializations.len()]);
 
     for scc in &sccs {
         let mut scc_concrete_funcs = BTreeMap::new();
@@ -248,7 +250,7 @@ fn deduplicate_specializations(
             let calls =
                 specialization
                     .calls
-                    .map(|_, callee_spec| match known_dedups[callee_spec] {
+                    .map_refs(|_, callee_spec| match known_dedups[callee_spec] {
                         Some(callee_dedup) => SccCall::Call(callee_dedup),
                         None => {
                             let callee_func = specializations[callee_spec].func;
@@ -270,23 +272,23 @@ fn deduplicate_specializations(
 
             let release_prologues = mode_annots
                 .drop_prologues
-                .map(|_, drops| concretize_drops(modes, drops));
+                .map_refs(|_, drops| concretize_drops(modes, &drops));
 
             let retain_epilogues = mode_annots
                 .retain_epilogues
-                .map(|_, retains| concretize_retains(modes, retains));
+                .map_refs(|_, retains| concretize_retains(modes, &retains));
 
             let occur_retains = mode_annots
                 .occur_modes
-                .map(|_, occur_modes| concretize_occurs(modes, occur_modes));
+                .map_refs(|_, occur_modes| concretize_occurs(modes, &occur_modes));
 
             let let_release_epilogues = mode_annots
                 .let_drop_epilogues
-                .map(|_, drops| concretize_drops(modes, drops));
+                .map_refs(|_, drops| concretize_drops(modes, &drops));
 
             let branch_release_epilogues = mode_annots
                 .branch_drop_epilogues
-                .map(|_, drops| concretize_drops(modes, drops));
+                .map_refs(|_, drops| concretize_drops(modes, &drops));
 
             let arg_release_epilogue = concretize_drop_modes(modes, &mode_annots.arg_drop_epilogue);
 
@@ -349,8 +351,8 @@ fn deduplicate_specializations(
                 for (func_id, dedup_id) in &scc_fresh_ids {
                     let ops = &concrete_scc.concrete_funcs[func_id];
 
-                    let resolved_calls = ops.calls.map(|_, &call| match call {
-                        SccCall::Call(dedup_id) => dedup_id,
+                    let resolved_calls = ops.calls.map_refs(|_, call| match call {
+                        SccCall::Call(dedup_id) => *dedup_id,
                         SccCall::RecCall(func_id) => scc_fresh_ids[&func_id],
                     });
 
@@ -375,7 +377,7 @@ fn deduplicate_specializations(
     }
 
     (
-        concrete_funcs.into_mapped(|_, concrete| concrete.unwrap()),
+        concrete_funcs.map(|_, concrete| concrete.unwrap()),
         known_dedups[main_spec].unwrap(),
     )
 }
@@ -1027,7 +1029,7 @@ fn build_func(
                 mutation::LocalStatus {
                     mutated_cond: mutation_cond
                         .clone()
-                        .into_mapped(mutation::MutationCondition::AliasCondition)
+                        .map(mutation::MutationCondition::AliasCondition)
                         .or(Disj::Any(OrdSet::unit(
                             mutation::MutationCondition::ArgMutated(arg_name.clone()),
                         ))),
@@ -1066,10 +1068,10 @@ pub fn rc_specialize(program: mode::Program, progress: impl ProgressLogger) -> r
     let (concrete_ops, rc_main) =
         deduplicate_specializations(&program.funcs, &specializations, main_spec);
 
-    let rc_func_symbols = concrete_ops.map(|_, ops| program.func_symbols[ops.func].clone());
+    let rc_func_symbols = concrete_ops.map_refs(|_, ops| program.func_symbols[ops.func].clone());
 
-    let rc_funcs =
-        concrete_ops.map(|_, ops| build_func(&program.custom_types, &program.funcs[ops.func], ops));
+    let rc_funcs = concrete_ops
+        .map_refs(|_, ops| build_func(&program.custom_types, &program.funcs[ops.func], &ops));
 
     progress.finish();
 
@@ -1078,7 +1080,7 @@ pub fn rc_specialize(program: mode::Program, progress: impl ProgressLogger) -> r
         custom_types: program
             .custom_types
             .types
-            .into_mapped(|_, type_def| type_def.content),
+            .map(|_, type_def| type_def.content),
         custom_type_symbols: program.custom_type_symbols,
         funcs: rc_funcs,
         func_symbols: rc_func_symbols,

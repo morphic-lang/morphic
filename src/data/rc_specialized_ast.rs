@@ -10,12 +10,14 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::disjunction::Disj;
-use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub CustomFuncId);
+#[id_type]
+pub struct CustomFuncId(pub usize);
 
-id_type!(pub LocalId);
+#[id_type]
+pub struct LocalId(pub usize);
 
 pub const ARG_LOCAL: LocalId = LocalId(0);
 

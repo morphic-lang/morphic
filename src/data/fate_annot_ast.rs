@@ -12,17 +12,22 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::event_set as event;
 use crate::util::graph::Scc;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub CallId);
+#[id_type]
+pub struct CallId(pub usize);
 
-id_type!(pub OccurId);
+#[id_type]
+pub struct OccurId(pub usize);
 
-id_type!(pub LetBlockId);
+#[id_type]
+pub struct LetBlockId(pub usize);
 
-id_type!(pub BranchBlockId);
+#[id_type]
+pub struct BranchBlockId(pub usize);
 
-id_type!(pub RetainPointId);
+#[id_type]
+pub struct RetainPointId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Local(pub OccurId, pub flat::LocalId);
@@ -82,7 +87,8 @@ pub enum IoOp {
     ), // Returns unit
 }
 
-id_type!(pub ExprId);
+#[id_type]
+pub struct ExprId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct Expr {

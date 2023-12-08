@@ -5,10 +5,10 @@ use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
 use crate::data::tail_rec_ast as tail;
-use crate::util::id_vec::IdVec;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
+use id_collections::IdVec;
 
 // we need to change branches to ifs
 // we need to unwrap array literals
@@ -502,7 +502,7 @@ fn lower_function(
     // Appease the borrow checker
     let ret_type = &func.ret_type;
 
-    let tail_funcs = func.tail_funcs.into_mapped(|_, tail_func| low::TailFunc {
+    let tail_funcs = func.tail_funcs.map(|_, tail_func| low::TailFunc {
         arg_type: tail_func.arg_type.clone(),
         body: lower_function_body(typedefs, &tail_func.arg_type, ret_type, tail_func.body),
         profile_point: tail_func.profile_point,
@@ -526,8 +526,7 @@ pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -
 
     let lowered_funcs = program
         .funcs
-        .items
-        .into_iter()
+        .into_values()
         .map(|func| {
             let lowered = lower_function(func, &typedefs);
             progress.update(1);
@@ -540,7 +539,7 @@ pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -
     low::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: typedefs,
-        funcs: IdVec::from_items(lowered_funcs),
+        funcs: IdVec::from_vec(lowered_funcs),
         profile_points: program.profile_points,
         main: low::CustomFuncId(program.main.0),
     }

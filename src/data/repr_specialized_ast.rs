@@ -6,11 +6,13 @@ use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_unified_ast as unif;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub CustomTypeId);
+#[id_type]
+pub struct CustomTypeId(pub usize);
 
-id_type!(pub CustomFuncId);
+#[id_type]
+pub struct CustomFuncId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {

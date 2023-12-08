@@ -1,8 +1,9 @@
+use crate::data::raw_ast as raw;
+use id_collections::id_type;
 use std::collections::BTreeSet;
 
-use crate::data::raw_ast as raw;
-
-id_type!(pub ProfilePointId);
+#[id_type]
+pub struct ProfilePointId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct ProfilePoint {

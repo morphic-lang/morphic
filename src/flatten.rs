@@ -6,13 +6,13 @@ use crate::data::flat_ast as flat;
 use crate::data::intrinsics as intrs;
 use crate::intrinsic_config::intrinsic_sig;
 use crate::util::graph::{strongly_connected, Graph};
-use crate::util::id_vec::IdVec;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::IdVec;
 
 pub fn flatten(program: anon::Program, progress: impl ProgressLogger) -> flat::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
-    let flat_funcs = program.funcs.map(|_, func_def| {
-        let func_def_flat = flatten_func_def(&program, func_def);
+    let flat_funcs = program.funcs.map_refs(|_, func_def| {
+        let func_def_flat = flatten_func_def(&program, &func_def);
         progress.update(1);
         func_def_flat
     });
@@ -68,7 +68,7 @@ impl LocalsContext {
     }
 
     fn with_scope<R, F: for<'a> FnOnce(&'a mut LocalsContext) -> R>(&mut self, body: F) -> R {
-        let num_locals = self.locals.len();
+        let num_locals = self.locals.count();
         let result = body(self);
         self.locals.truncate(num_locals);
         result
@@ -618,16 +618,16 @@ fn mark_custom_type_sccs(
     }
 
     let type_deps = Graph {
-        edges_out: typedefs.map(|_, content| {
+        edges_out: typedefs.map_refs(|_, content| {
             let mut deps = BTreeSet::new();
-            add_type_deps(content, &mut deps);
+            add_type_deps(&content, &mut deps);
             deps.into_iter().collect()
         }),
     };
 
-    let sccs = IdVec::<flat::CustomTypeSccId, _>::from_items(strongly_connected(&type_deps));
+    let sccs = IdVec::<flat::CustomTypeSccId, _>::from_vec(strongly_connected(&type_deps));
 
-    let mut types = typedefs.map(|_, _| None);
+    let mut types = typedefs.map_refs(|_, _| None);
     for (scc_id, scc) in &sccs {
         for type_ in scc {
             debug_assert!(types[type_].is_none());
@@ -639,7 +639,7 @@ fn mark_custom_type_sccs(
     }
 
     flat::CustomTypes {
-        types: types.into_mapped(|_, type_def| type_def.unwrap()),
+        types: types.map(|_, type_def| type_def.unwrap()),
         sccs,
     }
 }

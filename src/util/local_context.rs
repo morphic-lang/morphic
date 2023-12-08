@@ -1,5 +1,4 @@
-use crate::util::id_type::Id;
-use crate::util::id_vec::IdVec;
+use id_collections::{Count, Id, IdVec};
 
 #[derive(Clone, Debug)]
 pub struct LocalContext<Var: Id, T> {
@@ -17,8 +16,8 @@ impl<Var: Id, T> LocalContext<Var, T> {
         self.stack.push(binding)
     }
 
-    pub fn truncate(&mut self, len: usize) {
-        self.stack.truncate(len);
+    pub fn truncate(&mut self, count: Count<Var>) {
+        self.stack.truncate(count);
     }
 
     pub fn local_binding(&self, local: Var) -> &T
@@ -32,10 +31,10 @@ impl<Var: Id, T> LocalContext<Var, T> {
         &mut self,
         body: F,
     ) -> R {
-        let old_len = self.stack.len();
+        let old_count = self.stack.count();
         let result = body(self);
-        debug_assert!(self.stack.len() >= old_len);
-        self.stack.items.truncate(old_len);
+        debug_assert!(self.stack.count() >= old_count);
+        self.stack.truncate(old_count);
         result
     }
 

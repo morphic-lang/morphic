@@ -14,9 +14,10 @@ use crate::file_cache::FileCache;
 use crate::intrinsic_config::intrinsic_sig;
 use crate::report_error::{locate_path, locate_span, Locate};
 use crate::report_type;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(TypeVar);
+#[id_type]
+struct TypeVar(usize);
 
 #[derive(Clone, Copy, Debug)]
 enum RawErrorKind {
@@ -429,7 +430,7 @@ impl Scope {
     where
         F: for<'a> FnOnce(&'a mut Scope) -> R,
     {
-        let len = self.locals.len();
+        let len = self.locals.count();
         let result = body(self);
         self.locals.truncate(len);
         result
@@ -631,7 +632,7 @@ fn instantiate_scheme(
     ctx: &mut Context,
     scheme: &res::TypeScheme,
 ) -> (IdVec<res::TypeParamId, TypeVar>, TypeVar) {
-    let param_vars = IdVec::from_items(
+    let param_vars = IdVec::from_vec(
         (0..scheme.num_params)
             .map(|_| ctx.new_var(Assign::Unknown))
             .collect(),
@@ -687,13 +688,13 @@ fn infer_pat(
                 _ => unreachable!(),
             };
 
-            let param_vars = IdVec::from_items(
+            let param_vars = IdVec::from_vec(
                 (0..num_params)
                     .map(|_| ctx.new_var(Assign::Unknown))
                     .collect(),
             );
 
-            let ctor_var = ctx.new_var(Assign::App(*id, param_vars.items.clone()));
+            let ctor_var = ctx.new_var(Assign::App(*id, param_vars.clone().into_vec()));
 
             ctx.unify(expected, ctor_var)?;
 
@@ -723,7 +724,8 @@ fn infer_pat(
                 }
             };
 
-            let ctor_annot = AnnotPattern::Ctor(*id, param_vars.items, *variant, content_annot);
+            let ctor_annot =
+                AnnotPattern::Ctor(*id, param_vars.into_vec(), *variant, content_annot);
 
             Ok(ctor_annot)
         }
@@ -918,7 +920,7 @@ fn infer_expr(
 }
 
 fn instantiate_rigid(ctx: &mut Context, scheme: &res::TypeScheme) -> TypeVar {
-    let rigid_params = IdVec::from_items(
+    let rigid_params = IdVec::from_vec(
         (0..scheme.num_params)
             .map(|idx| ctx.new_var(Assign::Param(res::TypeParamId(idx))))
             .collect(),
@@ -969,7 +971,7 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawEr
     match body {
         AnnotExpr::Global(id, vars) => Ok(typed::Expr::Global(
             id,
-            vars.try_map(|_param_id, &var| ctx.extract(var))?,
+            vars.try_map(|_param_id, var| ctx.extract(var))?,
         )),
 
         AnnotExpr::Local(id) => Ok(typed::Expr::Local(id)),
@@ -1065,12 +1067,12 @@ fn infer_def(
 }
 
 pub fn type_infer(program: res::Program) -> Result<typed::Program, Error> {
-    let vals_inferred = program.vals.try_map(|id, def| {
+    let vals_inferred = program.vals.try_map_refs(|id, def| {
         let val_symbols = &program.val_symbols[id];
 
         let mut ctx = Context::new();
 
-        infer_def(&mut ctx, &program, def)
+        infer_def(&mut ctx, &program, &def)
             .map_err(locate_path(&program.mod_symbols[val_symbols.mod_].file))
             .map_err(|located| {
                 located.map(|err| err.render(&program, &val_symbols.type_param_names, &ctx))

@@ -2,15 +2,17 @@ use im_rc::OrdMap;
 use std::cmp::Ordering;
 
 use crate::util::id_gen::IdGen;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
 // Event ids are *reverse-chronological*, in the sense that events with *higher* id values occur
 // earlier, and *per-block*, in the sense that ids are unique and sequentially assigned within a
 // block, but will in general overlap between blocks.
-id_type!(RevEventId);
+#[id_type]
+struct RevEventId(usize);
 
 // Block ids are global per event set
-id_type!(pub BlockId);
+#[id_type]
+pub struct BlockId(pub usize);
 
 #[derive(Clone, Debug)]
 struct Block {

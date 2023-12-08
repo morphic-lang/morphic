@@ -11,8 +11,8 @@ use crate::data::mutation_annot_ast as mutation;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
 use crate::util::inequality_graph::{ExternalVarId, Infimum, UpperBound};
+use id_collections::IdVec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StackField {

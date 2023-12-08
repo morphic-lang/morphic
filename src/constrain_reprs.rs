@@ -10,8 +10,8 @@ use crate::data::repr_unified_ast as unif;
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::mutation_status::translate_callee_status_cond_disj_post_rc;
 use crate::util::disjunction::Disj;
-use crate::util::id_vec::IdVec;
 use crate::util::progress_logger::ProgressLogger;
+use id_collections::IdVec;
 
 impl Signature for constrain::FuncRepConstraints {
     type Sig = IdVec<unif::RepParamId, constrain::ParamConstraints>;
@@ -143,7 +143,7 @@ fn constrain_path(
                     debug_assert_eq!(custom_params.len(), typedefs[custom_id_2].num_params);
                     State::Inner {
                         curr_type: &typedefs[custom_id].content,
-                        param_mapping: custom_params.map(|_, param| param_mapping[param]),
+                        param_mapping: custom_params.map_refs(|_, param| param_mapping[param]),
                     }
                 }
                 (alias::Field::ArrayMembers, unif::Type::Array(_, item_type))
@@ -326,7 +326,7 @@ fn constrain_func(
     func_def: &unif::FuncDef,
     mutation_mode: MutationMode,
 ) -> constrain::FuncRepConstraints {
-    let mut param_constraints = IdVec::from_items(vec![
+    let mut param_constraints = IdVec::from_vec(vec![
         constrain::ParamConstraints {
             fallback_immut_if: Disj::new()
         };
@@ -338,7 +338,7 @@ fn constrain_func(
         MutationMode::AlwaysImmut => constrain::RepChoice::FallbackImmut,
     };
 
-    let mut internal_vars = IdVec::from_items(vec![default_rep_choice; func_def.num_internal_vars]);
+    let mut internal_vars = IdVec::from_vec(vec![default_rep_choice; func_def.num_internal_vars]);
 
     constrain_expr(
         typedefs,

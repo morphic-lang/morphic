@@ -162,7 +162,7 @@ fn propagated_mutations(
         new_ctx[&other].statuses[&other_path].mutated_cond.or_mut(
             alias_cond
                 .clone()
-                .into_mapped(annot::MutationCondition::AliasCondition),
+                .map(annot::MutationCondition::AliasCondition),
         );
     }
     (mutations, new_ctx)
@@ -277,7 +277,7 @@ fn annot_expr(
                     final_ctx[&other].statuses[&other_path].mutated_cond.or_mut(
                         mut_cond
                             .clone()
-                            .into_mapped(annot::MutationCondition::AliasCondition),
+                            .map(annot::MutationCondition::AliasCondition),
                     );
                 }
 
@@ -323,7 +323,7 @@ fn annot_expr(
 
                     new_ctx[&other].statuses[&other_path]
                         .mutated_cond
-                        .or_mut(mut_cond.into_mapped(annot::MutationCondition::AliasCondition));
+                        .or_mut(mut_cond.map(annot::MutationCondition::AliasCondition));
                 }
 
                 let lhs = flat::LocalId(new_ctx.len());

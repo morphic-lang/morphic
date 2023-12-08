@@ -12,10 +12,10 @@ use crate::field_path::{get_refs_in, split_at_fold};
 use crate::fixed_point::{annot_all, Signature, SignatureAssumptions};
 use crate::util::event_set as event;
 use crate::util::id_gen::IdGen;
-use crate::util::id_vec::IdVec;
 use crate::util::im_rc_ext::VectorExtensions;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::ProgressLogger;
+use id_collections::{Count, IdVec};
 
 impl Signature for fate::FuncDef {
     type Sig = BTreeMap<alias::ArgName, fate::ArgFieldFate>;
@@ -275,7 +275,7 @@ fn annot_expr(
 
                     // Note: After truncation, `sub_locals` contains all locals *strictly* before
                     // `binding_local`.
-                    sub_locals.truncate(binding_local.0);
+                    sub_locals.truncate(Count::from_value(binding_local.0));
 
                     let rhs_fate = let_uses
                         .uses
@@ -841,8 +841,8 @@ fn annot_func(
         body: body_annot,
         occur_fates: occurs,
         expr_annots,
-        num_calls: calls.count(),
-        num_retain_points: retain_points.count(),
+        num_calls: calls.count().to_value(),
+        num_retain_points: retain_points.count().to_value(),
         let_block_end_events,
         branch_block_end_events,
         profile_point: func_def.profile_point,

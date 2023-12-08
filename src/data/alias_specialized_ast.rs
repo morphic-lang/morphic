@@ -15,9 +15,10 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::event_set as event;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub FuncVersionId);
+#[id_type]
+pub struct FuncVersionId(pub usize);
 
 /// The total order on this type is meaningful, with NoAlias < MayAlias.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

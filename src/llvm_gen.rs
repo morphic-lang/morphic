@@ -15,10 +15,10 @@ use crate::data::repr_constrained_ast as constrain;
 use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::graph::{self, Graph};
-use crate::util::id_vec::IdVec;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use crate::{cli, progress_ui};
 use find_clang::find_default_clang;
+use id_collections::IdVec;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -186,7 +186,7 @@ fn declare_profile_points<'a>(
     module: &Module<'a>,
     program: &low::Program,
 ) -> IdVec<prof::ProfilePointId, ProfilePointDecls<'a>> {
-    let mut decls = program.profile_points.map(|_, _| ProfilePointDecls {
+    let mut decls = program.profile_points.map_refs(|_, _| ProfilePointDecls {
         counters: BTreeMap::new(),
         skipped_tail_rec: BTreeSet::new(),
     });
@@ -658,7 +658,7 @@ fn get_llvm_variant_type<'a, 'b>(
     let (max_alignment, max_size) = {
         let mut max_alignment = 1;
         let mut max_size = 0;
-        for variant_type in &variants.items {
+        for variant_type in variants.values() {
             let variant_type = get_llvm_type(globals, instances, &variant_type);
             debug_assert!(variant_type.is_sized());
             let alignment = globals.target.get_abi_alignment(&variant_type);
@@ -1214,7 +1214,7 @@ fn gen_expr<'a, 'b>(
             phi.as_basic_value()
         }
         E::LetMany(bindings, local_id) => {
-            let len = locals.len();
+            let count = locals.count();
             for (_, binding_expr) in bindings {
                 let binding_val = gen_expr(
                     builder,
@@ -1229,7 +1229,7 @@ fn gen_expr<'a, 'b>(
                 let _ = locals.push(binding_val);
             }
             let body = locals[local_id];
-            locals.truncate(len);
+            locals.truncate(count);
             body
         }
         E::Unreachable(type_) => {
@@ -1993,7 +1993,7 @@ fn gen_function<'a, 'b>(
     // Declare tail call targets, but don't populate their bodies yet. Tail functions are
     // implemented via blocks which may be jumped to, and their arguments are implemented as mutable
     // variables.
-    let tail_targets = func.tail_funcs.map(|tail_id, tail_func| {
+    let tail_targets = func.tail_funcs.map_refs(|tail_id, tail_func| {
         let arg_ty = get_llvm_type(globals, instances, &tail_func.arg_type);
         let arg_var = builder
             .build_alloca(arg_ty, &format!("tail_{}_arg", tail_id.0))
@@ -2123,7 +2123,7 @@ fn gen_function<'a, 'b>(
 
     // Generate main body
     {
-        let mut locals = IdVec::from_items(vec![func_decl.get_nth_param(0).unwrap()]);
+        let mut locals = IdVec::from_vec(vec![func_decl.get_nth_param(0).unwrap()]);
         let ret_value = gen_expr(
             &builder,
             instances,
@@ -2144,7 +2144,7 @@ fn gen_function<'a, 'b>(
         let tail_arg_val = builder
             .build_load(tail_target.arg_ty, tail_target.arg_var, "tail_arg_val")
             .unwrap();
-        let mut locals = IdVec::from_items(vec![tail_arg_val]);
+        let mut locals = IdVec::from_vec(vec![tail_arg_val]);
         let ret_value = gen_expr(
             &builder,
             instances,
@@ -2222,9 +2222,9 @@ fn add_size_deps(type_: &low::Type, deps: &mut BTreeSet<low::CustomTypeId>) {
 
 fn custom_type_dep_order(typedefs: &IdVec<low::CustomTypeId, low::Type>) -> Vec<low::CustomTypeId> {
     let size_deps = Graph {
-        edges_out: typedefs.map(|_, def| {
+        edges_out: typedefs.map_refs(|_, def| {
             let mut deps = BTreeSet::new();
-            add_size_deps(def, &mut deps);
+            add_size_deps(&def, &mut deps);
             deps.into_iter().collect()
         }),
     };
@@ -2279,7 +2279,7 @@ fn find_zero_sized(
     // `custom_types`.
     debug_assert_eq!(type_dep_order, &custom_type_dep_order(custom_types) as &[_]);
 
-    let mut custom_types_zero_sized = IdVec::from_items(vec![None; custom_types.len()]);
+    let mut custom_types_zero_sized = IdVec::from_vec(vec![None; custom_types.len()]);
 
     for &type_id in type_dep_order {
         debug_assert!(custom_types_zero_sized[type_id].is_none());
@@ -2297,7 +2297,7 @@ fn find_zero_sized(
         });
     }
 
-    custom_types_zero_sized.into_mapped(|_, zero_sized| zero_sized.unwrap())
+    custom_types_zero_sized.map(|_, zero_sized| zero_sized.unwrap())
 }
 
 fn gen_program<'a>(
@@ -2328,7 +2328,7 @@ fn gen_program<'a>(
 
     let custom_types = program
         .custom_types
-        .map(|type_id, _type| CustomTypeDecls::declare(&context, &module, type_id));
+        .map_refs(|type_id, _type| CustomTypeDecls::declare(&context, &module, type_id));
 
     let profile_points = declare_profile_points(&context, &module, &program);
 
@@ -2365,7 +2365,7 @@ fn gen_program<'a>(
 
     let mut func_progress = func_progress.start_session(Some(program.funcs.len()));
 
-    let funcs = program.funcs.map(|func_id, func_def| {
+    let funcs = program.funcs.map_refs(|func_id, func_def| {
         let return_type = get_llvm_type(&globals, &instances, &func_def.ret_type);
         let arg_type = get_llvm_type(&globals, &instances, &func_def.arg_type);
 

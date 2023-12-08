@@ -1,4 +1,4 @@
-use crate::util::{id_type::Id, id_vec::IdVec};
+use id_collections::{Id, IdVec};
 
 #[derive(Clone, Debug)]
 pub struct Graph<NodeId: Id> {
@@ -8,7 +8,7 @@ pub struct Graph<NodeId: Id> {
 // Reversal
 
 fn reverse<NodeId: Id>(graph: &Graph<NodeId>) -> Graph<NodeId> {
-    let mut edges_in = IdVec::from_items((0..graph.edges_out.len()).map(|_| Vec::new()).collect());
+    let mut edges_in = IdVec::from_vec((0..graph.edges_out.len()).map(|_| Vec::new()).collect());
 
     for (src, edges) in &graph.edges_out {
         for dest in edges {
@@ -27,7 +27,7 @@ fn dfs_postorder<NodeId: Id, I: Iterator<Item = NodeId>>(
     graph: &Graph<NodeId>,
     roots: I,
 ) -> Vec<NodeId> {
-    let mut visited: IdVec<NodeId, _> = IdVec::from_items(vec![false; graph.edges_out.len()]);
+    let mut visited: IdVec<NodeId, _> = IdVec::from_vec(vec![false; graph.edges_out.len()]);
     let mut traversal = Vec::new();
 
     enum Action<NodeId> {
@@ -71,12 +71,9 @@ fn dfs_postorder<NodeId: Id, I: Iterator<Item = NodeId>>(
 pub fn strongly_connected<NodeId: Id>(graph: &Graph<NodeId>) -> Vec<Vec<NodeId>> {
     let reversed = reverse(graph);
 
-    let scc_order = dfs_postorder(
-        &reversed,
-        (0..reversed.edges_out.len()).map(NodeId::from_index),
-    );
+    let scc_order = dfs_postorder(&reversed, reversed.edges_out.count().into_iter());
 
-    let mut visited: IdVec<NodeId, _> = IdVec::from_items(vec![false; graph.edges_out.len()]);
+    let mut visited: IdVec<NodeId, _> = IdVec::from_vec(vec![false; graph.edges_out.len()]);
 
     let mut sccs = Vec::new();
 
@@ -145,7 +142,7 @@ mod test {
     use super::*;
 
     fn nodes_exactly_once<NodeId: Id>(graph: &Graph<NodeId>, sccs: &[Vec<NodeId>]) -> bool {
-        let mut seen: IdVec<NodeId, _> = IdVec::from_items(vec![false; graph.edges_out.len()]);
+        let mut seen: IdVec<NodeId, _> = IdVec::from_vec(vec![false; graph.edges_out.len()]);
 
         for scc in sccs {
             for node in scc {
@@ -161,7 +158,7 @@ mod test {
     }
 
     fn sccs_linearized<NodeId: Id>(graph: &Graph<NodeId>, sccs: &[Vec<NodeId>]) -> bool {
-        let mut seen: IdVec<NodeId, _> = IdVec::from_items(vec![false; graph.edges_out.len()]);
+        let mut seen: IdVec<NodeId, _> = IdVec::from_vec(vec![false; graph.edges_out.len()]);
 
         for scc in sccs {
             for node in scc {
@@ -234,11 +231,13 @@ mod test {
 
     #[test]
     fn test_random() {
+        use id_collections::id_type;
         use rand::SeedableRng;
         use rand_distr::{Distribution, Exp, Uniform};
         use rand_pcg::Pcg64Mcg;
 
-        id_type!(TestNodeId);
+        #[id_type]
+        struct TestNodeId(usize);
 
         // Seed generated once for deterministic tests
         let mut gen = Pcg64Mcg::seed_from_u64(0xe2662e13b18f515);
@@ -249,7 +248,7 @@ mod test {
         for &mean_edges in &[0.01, 1.0, 5.0, 10.0] {
             for _ in 0..NUM_TESTS_PER_CFG {
                 let mut graph = Graph {
-                    edges_out: IdVec::from_items(vec![Vec::new(); NUM_NODES]),
+                    edges_out: IdVec::from_vec(vec![Vec::new(); NUM_NODES]),
                 };
 
                 for (_, node_edges) in graph.edges_out.iter_mut() {
@@ -284,9 +283,9 @@ impl<NodeId: Id> Undirected<NodeId> {
 pub fn connected_components<NodeId: Id>(graph: &Undirected<NodeId>) -> Vec<Vec<NodeId>> {
     let mut components = Vec::new();
 
-    let mut visited: IdVec<NodeId, _> = IdVec::from_items(vec![false; graph.0.edges_out.len()]);
+    let mut visited: IdVec<NodeId, _> = IdVec::from_vec(vec![false; graph.0.edges_out.len()]);
 
-    for root_id in (0..graph.0.edges_out.len()).map(NodeId::from_index) {
+    for root_id in graph.0.edges_out.count().into_iter() {
         if visited[&root_id] {
             continue;
         }

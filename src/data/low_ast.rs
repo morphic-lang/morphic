@@ -5,13 +5,15 @@ use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
 use crate::data::resolved_ast as res;
 use crate::data::tail_rec_ast as tail;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
 // Second pass:
 // (1) flatten sum types over sum types
 
-id_type!(pub LocalId);
-id_type!(pub CustomFuncId);
+#[id_type]
+pub struct LocalId(pub usize);
+#[id_type]
+pub struct CustomFuncId(pub usize);
 pub type CustomTypeId = special::CustomTypeId;
 
 pub type Type = special::Type;

@@ -7,11 +7,13 @@ use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub CustomFuncId);
+#[id_type]
+pub struct CustomFuncId(pub usize);
 
-id_type!(pub TailFuncId);
+#[id_type]
+pub struct TailFuncId(pub usize);
 
 #[derive(Clone, Debug)]
 pub enum Expr {

@@ -9,9 +9,10 @@ use crate::data::purity::Purity;
 use crate::data::rc_specialized_ast as rc;
 use crate::data::resolved_ast as res;
 use crate::util::graph::Scc;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub RepParamId);
+#[id_type]
+pub struct RepParamId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
@@ -163,7 +164,8 @@ pub struct SolvedCall<Rep>(
     pub rc::LocalId,
 );
 
-id_type!(pub InternalRepVarId);
+#[id_type]
+pub struct InternalRepVarId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RepSolution {

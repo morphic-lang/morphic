@@ -10,8 +10,8 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::disjunction::Disj;
 use crate::util::graph::Scc;
-use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
+use id_collections::IdVec;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Field {

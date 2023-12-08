@@ -3,10 +3,10 @@ use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_constrained_ast as constrain;
 use crate::data::repr_specialized_ast as special;
 use crate::data::repr_unified_ast as unif;
-use crate::util::id_vec::IdVec;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
+use id_collections::IdVec;
 
 type ValInstances = InstanceQueue<
     (
@@ -51,7 +51,7 @@ fn resolve_type<Rep>(
         ),
 
         unif::Type::Variants(variants) => special::Type::Variants(
-            variants.map(|_, variant| resolve_type(type_insts, resolve_var, variant)),
+            variants.map_refs(|_, variant| resolve_type(type_insts, resolve_var, &variant)),
         ),
 
         unif::Type::Boxed(content) => {
@@ -59,7 +59,7 @@ fn resolve_type<Rep>(
         }
 
         unif::Type::Custom(custom, rep_vars) => special::Type::Custom(
-            type_insts.resolve((*custom, rep_vars.map(|_, var| resolve_var(var)))),
+            type_insts.resolve((*custom, rep_vars.map_refs(|_, var| resolve_var(&var)))),
         ),
     }
 }
@@ -135,7 +135,7 @@ fn resolve_condition(
         unif::Condition::Custom(custom, rep_vars, content_cond) => special::Condition::Custom(
             type_insts.resolve((
                 *custom,
-                rep_vars.map(|_, rep_var| resolve_solution(params, internal, *rep_var)),
+                rep_vars.map_refs(|_, rep_var| resolve_solution(params, internal, *rep_var)),
             )),
             Box::new(resolve_condition(
                 type_insts,
@@ -173,7 +173,7 @@ fn resolve_expr(
             *purity,
             func_insts.resolve((
                 *func,
-                rep_vars.map(|_, rep_var| resolve_solution(params, internal, *rep_var)),
+                rep_vars.map_refs(|_, rep_var| resolve_solution(params, internal, *rep_var)),
             )),
             *arg,
         ),
@@ -209,7 +209,8 @@ fn resolve_expr(
         unif::Expr::TupleField(tuple, idx) => special::Expr::TupleField(*tuple, *idx),
 
         unif::Expr::WrapVariant(variant_types, variant, content) => special::Expr::WrapVariant(
-            variant_types.map(|_, type_| resolve_body_type(type_insts, params, internal, type_)),
+            variant_types
+                .map_refs(|_, type_| resolve_body_type(type_insts, params, internal, &type_)),
             *variant,
             *content,
         ),
@@ -231,7 +232,7 @@ fn resolve_expr(
         unif::Expr::WrapCustom(custom, rep_vars, content) => special::Expr::WrapCustom(
             type_insts.resolve((
                 *custom,
-                rep_vars.map(|_, rep_var| resolve_solution(params, internal, *rep_var)),
+                rep_vars.map_refs(|_, rep_var| resolve_solution(params, internal, *rep_var)),
             )),
             *content,
         ),
@@ -239,7 +240,7 @@ fn resolve_expr(
         unif::Expr::UnwrapCustom(custom, rep_vars, wrapped) => special::Expr::UnwrapCustom(
             type_insts.resolve((
                 *custom,
-                rep_vars.map(|_, rep_var| resolve_solution(params, internal, *rep_var)),
+                rep_vars.map_refs(|_, rep_var| resolve_solution(params, internal, *rep_var)),
             )),
             *wrapped,
         ),

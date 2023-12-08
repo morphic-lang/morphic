@@ -4,12 +4,13 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
 // 'ModId' is used only for the purposes of reporting human-readable module information to the user,
 // for example during error reporting. After the initial name resolution pass is complete, the
 // module from which a particular type or value originated is semantically irrelevant.
-id_type!(pub ModId);
+#[id_type]
+pub struct ModId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TypeId {
@@ -21,11 +22,14 @@ pub enum TypeId {
     Custom(CustomTypeId),
 }
 
-id_type!(pub CustomTypeId);
+#[id_type]
+pub struct CustomTypeId(pub usize);
 
-id_type!(pub VariantId);
+#[id_type]
+pub struct VariantId(pub usize);
 
-id_type!(pub TypeParamId);
+#[id_type]
+pub struct TypeParamId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GlobalId {
@@ -37,7 +41,8 @@ pub enum GlobalId {
     Custom(CustomGlobalId),
 }
 
-id_type!(pub CustomGlobalId);
+#[id_type]
+pub struct CustomGlobalId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IoOp {
@@ -55,7 +60,8 @@ pub enum ArrayOp {
     Reserve,
 }
 
-id_type!(pub LocalId);
+#[id_type]
+pub struct LocalId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct Program {

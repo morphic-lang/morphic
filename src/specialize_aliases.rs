@@ -16,9 +16,9 @@ use crate::stack_path;
 use crate::util::disjunction::Disj;
 use crate::util::graph::Scc;
 use crate::util::id_gen::IdGen;
-use crate::util::id_vec::IdVec;
 use crate::util::norm_pair::NormPair;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::{id_type, Count, IdMap, IdVec};
 
 #[derive(Clone, Debug)]
 struct SccCallSite {
@@ -39,7 +39,8 @@ struct SccInfo {
     callers: BTreeMap<first_ord::CustomFuncId, Vec<SccCallSite>>,
 }
 
-id_type!(SccId);
+#[id_type]
+struct SccId(usize);
 
 fn collect_call_sites(
     curr_func: first_ord::CustomFuncId,
@@ -89,7 +90,7 @@ fn collect_sccs(
     funcs: &IdVec<first_ord::CustomFuncId, fate::FuncDef>,
     sccs: Vec<Scc<first_ord::CustomFuncId>>,
 ) -> (IdVec<first_ord::CustomFuncId, SccId>, IdVec<SccId, SccInfo>) {
-    let mut func_to_scc = IdVec::from_items(vec![None; funcs.len()]);
+    let mut func_to_scc = IdVec::from_vec(vec![None; funcs.len()]);
     let mut scc_infos = IdVec::new();
 
     for scc in sccs {
@@ -127,10 +128,7 @@ fn collect_sccs(
         }
     }
 
-    (
-        func_to_scc.into_mapped(|_, scc_id| scc_id.unwrap()),
-        scc_infos,
-    )
+    (func_to_scc.map(|_, scc_id| scc_id.unwrap()), scc_infos)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -157,7 +155,7 @@ struct InstanceQueue {
 impl InstanceQueue {
     fn new(num_funcs: usize) -> Self {
         InstanceQueue {
-            instances: IdVec::from_items(vec![
+            instances: IdVec::from_vec(vec![
                 FuncInstances {
                     version_gen: IdGen::new(),
                     cache: BTreeMap::new(),
@@ -536,7 +534,7 @@ pub fn specialize_aliases(program: fate::Program, progress: impl ProgressLogger)
     let mut versions: IdVec<
         first_ord::CustomFuncId,
         BTreeMap<spec::FuncVersionId, spec::FuncVersion>,
-    > = IdVec::from_items(vec![BTreeMap::new(); program.funcs.len()]);
+    > = IdVec::from_vec(vec![BTreeMap::new(); program.funcs.len()]);
 
     while let Some((entry_func, entry_version, entry_inst)) = insts.pending.pop_front() {
         debug_assert!(!versions[&entry_func].contains_key(&entry_version));
@@ -570,7 +568,7 @@ pub fn specialize_aliases(program: fate::Program, progress: impl ProgressLogger)
             let scc_func_version = scc_versions[&scc_func];
 
             let func_def = &program.funcs[scc_func];
-            let mut version_calls = IdVec::from_items(vec![None; func_def.num_calls]);
+            let mut version_calls = IdVec::from_vec(vec![None; func_def.num_calls]);
             resolve_expr(
                 &program.custom_types,
                 &program.funcs,
@@ -586,7 +584,7 @@ pub fn specialize_aliases(program: fate::Program, progress: impl ProgressLogger)
             versions[&scc_func].insert(
                 scc_func_version,
                 spec::FuncVersion {
-                    calls: version_calls.into_mapped(|_, call| call.unwrap()),
+                    calls: version_calls.map(|_, call| call.unwrap()),
                     aliases: scc_func_inst.aliases,
                     ret_fate: scc_func_inst.ret_fate,
                 },
@@ -596,13 +594,14 @@ pub fn specialize_aliases(program: fate::Program, progress: impl ProgressLogger)
 
     let orig_num_funcs = program.funcs.len();
 
-    let resolved_funcs = IdVec::from_items(
+    let resolved_funcs = IdVec::from_vec(
         program
             .funcs
             .into_iter()
             .zip(versions.into_iter())
             .map(|((id1, func_def), (id2, func_versions))| {
                 debug_assert_eq!(id1, id2);
+                let version_count = Count::from_value(func_versions.len());
                 spec::FuncDef {
                     purity: func_def.purity,
                     arg_type: func_def.arg_type,
@@ -616,9 +615,13 @@ pub fn specialize_aliases(program: fate::Program, progress: impl ProgressLogger)
                     num_retain_points: func_def.num_retain_points,
                     let_block_end_events: func_def.let_block_end_events,
                     branch_block_end_events: func_def.branch_block_end_events,
-                    versions: IdVec::try_from_contiguous(func_versions.into_iter()).expect(
-                        "A function's fully-populated version map should have contiguous keys",
-                    ),
+                    versions: func_versions
+                        .into_iter()
+                        .collect::<IdMap<_, _>>()
+                        .try_to_id_vec(version_count)
+                        .expect(
+                            "A function's fully-populated version map should have contiguous keys",
+                        ),
                     profile_point: func_def.profile_point,
                 }
             })

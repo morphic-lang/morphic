@@ -145,7 +145,7 @@ fn write_type(
             Ok(())
         }
         Type::Variants(types) => {
-            let types = &types.items;
+            let types = types.as_slice();
             if types.len() == 0 {
                 write![w, "{{}}"]?
             } else if types.len() == 1 {

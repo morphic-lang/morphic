@@ -3,17 +3,20 @@ use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub LamId);
+#[id_type]
+pub struct LamId(pub usize);
 
-id_type!(pub LocalId);
+#[id_type]
+pub struct LocalId(pub usize);
 
 impl LocalId {
     pub const ARG: Self = LocalId(0);
 }
 
-id_type!(pub CaptureId);
+#[id_type]
+pub struct CaptureId(pub usize);
 
 #[derive(Clone, Debug)]
 pub enum Expr {

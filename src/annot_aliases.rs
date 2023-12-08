@@ -73,7 +73,7 @@ fn add_func_deps(deps: &mut BTreeSet<first_ord::CustomFuncId>, expr: &flat::Expr
 
 fn func_dependency_graph(program: &flat::Program) -> Graph<first_ord::CustomFuncId> {
     Graph {
-        edges_out: program.funcs.map(|_, func_def| {
+        edges_out: program.funcs.map_refs(|_, func_def| {
             let mut deps = BTreeSet::new();
             add_func_deps(&mut deps, &func_def.body);
             deps.into_iter().collect()

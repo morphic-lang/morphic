@@ -30,7 +30,7 @@ impl<T: Ord + Clone> Disj<T> {
         }
     }
 
-    pub fn into_mapped<U: Ord + Clone>(self, transform: impl Fn(T) -> U) -> Disj<U> {
+    pub fn map<U: Ord + Clone>(self, transform: impl Fn(T) -> U) -> Disj<U> {
         match self {
             Disj::True => Disj::True,
             Disj::Any(clauses) => Disj::Any(clauses.into_iter().map(transform).collect()),

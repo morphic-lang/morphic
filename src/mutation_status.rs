@@ -18,7 +18,7 @@ pub fn translate_callee_status_cond(
     match callee_cond {
         annot::MutationCondition::AliasCondition(alias_cond) => {
             translate_callee_cond(arg_id, arg_aliases, arg_folded_aliases, alias_cond)
-                .into_mapped(annot::MutationCondition::AliasCondition)
+                .map(annot::MutationCondition::AliasCondition)
         }
 
         annot::MutationCondition::ArgMutated(alias::ArgName(arg_path)) => {
@@ -68,7 +68,7 @@ pub fn translate_callee_status_cond_post_rc(
             opt_cond
                 .cloned()
                 .unwrap_or_default()
-                .into_mapped(annot::MutationCondition::AliasCondition)
+                .map(annot::MutationCondition::AliasCondition)
         }
 
         annot::MutationCondition::ArgMutated(alias::ArgName(arg_path)) => {

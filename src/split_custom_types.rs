@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::util::graph::{self, Graph};
-use crate::util::id_vec::IdVec;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::IdVec;
 
 pub fn split_custom_types(
     program: &first_ord::Program,
@@ -17,7 +17,7 @@ pub fn split_custom_types(
 
     let boxed_variants = find_boxed_variants(&program.custom_types);
 
-    let custom_types = program.custom_types.map(|custom, typedef| {
+    let custom_types = program.custom_types.map_refs(|custom, typedef| {
         match typedef.variants.len() {
             0 => anon::Type::Tuple(vec![]),
             1 => {
@@ -32,7 +32,7 @@ pub fn split_custom_types(
         }
     });
 
-    let funcs = program.funcs.map(|_, func_def| {
+    let funcs = program.funcs.map_refs(|_, func_def| {
         let func_def_trans = anon::FuncDef {
             purity: func_def.purity,
             arg_type: trans_type(&func_def.arg_type),
@@ -98,7 +98,7 @@ fn find_boxed_variants(
     typedefs: &IdVec<first_ord::CustomTypeId, first_ord::TypeDef>,
 ) -> IdVec<first_ord::CustomTypeId, IdVec<first_ord::VariantId, IsBoxed>> {
     let size_deps = Graph {
-        edges_out: typedefs.map(|_, def| {
+        edges_out: typedefs.map_refs(|_, def| {
             let mut deps = BTreeSet::new();
             for (_, variant) in &def.variants {
                 if let Some(content) = variant {
@@ -111,7 +111,7 @@ fn find_boxed_variants(
 
     let sccs = graph::strongly_connected(&size_deps);
 
-    let mut boxed_variants = IdVec::from_items(vec![None; typedefs.len()]);
+    let mut boxed_variants = IdVec::from_vec(vec![None; typedefs.len()]);
 
     for scc_vec in sccs {
         let scc: BTreeSet<_> = scc_vec.into_iter().collect();
@@ -119,20 +119,24 @@ fn find_boxed_variants(
         for custom in &scc {
             debug_assert!(boxed_variants[custom].is_none());
             boxed_variants[custom] =
-                Some(typedefs[custom].variants.map(|_, variant| match variant {
-                    Some(content) => {
-                        if needs_boxing(&scc, content) {
-                            IsBoxed::Boxed
-                        } else {
-                            IsBoxed::Unboxed
-                        }
-                    }
-                    None => IsBoxed::Unboxed,
-                }));
+                Some(
+                    typedefs[custom]
+                        .variants
+                        .map_refs(|_, variant| match variant {
+                            Some(content) => {
+                                if needs_boxing(&scc, &content) {
+                                    IsBoxed::Boxed
+                                } else {
+                                    IsBoxed::Unboxed
+                                }
+                            }
+                            None => IsBoxed::Unboxed,
+                        }),
+                );
         }
     }
 
-    boxed_variants.into_mapped(|_, variants| variants.unwrap())
+    boxed_variants.map(|_, variants| variants.unwrap())
 }
 
 fn trans_type(type_: &first_ord::Type) -> anon::Type {
@@ -165,7 +169,7 @@ fn trans_variants(
     variants: &IdVec<first_ord::VariantId, Option<first_ord::Type>>,
 ) -> IdVec<first_ord::VariantId, anon::Type> {
     assert![variants.len() != 1];
-    variants.map(|variant_id, content| trans_content_type(boxed[variant_id], content))
+    variants.map_refs(|variant_id, content| trans_content_type(boxed[variant_id], &content))
 }
 
 fn trans_expr(

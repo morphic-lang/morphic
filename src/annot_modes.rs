@@ -16,11 +16,11 @@ use crate::stack_path;
 use crate::util::disjunction::Disj;
 use crate::util::event_set as event;
 use crate::util::graph::{strongly_connected, Graph};
-use crate::util::id_vec::IdVec;
 use crate::util::im_rc_ext::VectorExtensions;
 use crate::util::inequality_graph as ineq;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::{id_type, Count, IdVec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum OccurKind {
@@ -496,7 +496,7 @@ fn mark_expr_occurs<'a>(
 
                     // NOTE: After truncation, `sub_locals` contains all locals *strictly* before
                     // `binding_local`.
-                    sub_locals.truncate(binding_local.0);
+                    sub_locals.truncate(Count::from_value(binding_local.0));
                     internal_future_uses.uses.remove(&binding_local);
 
                     let rhs_position = if idx + 1 == bindings.len()
@@ -713,8 +713,8 @@ fn mark_func_occurs(
     func_def: &spec::FuncDef,
     version: &spec::FuncVersion,
 ) -> MarkedOccurs {
-    let mut occur_kinds = IdVec::from_items(vec![None; func_def.occur_fates.len()]);
-    let mut tentative_drop_prologues = IdVec::from_items(vec![None; func_def.expr_annots.len()]);
+    let mut occur_kinds = IdVec::from_vec(vec![None; func_def.occur_fates.len()]);
+    let mut tentative_drop_prologues = IdVec::from_vec(vec![None; func_def.expr_annots.len()]);
 
     let mut locals = LocalContext::new();
     locals.add_local(MarkOccurLocalInfo {
@@ -740,9 +740,8 @@ fn mark_func_occurs(
     debug_assert!(body_uses.uses.keys().all(|&local| local == flat::ARG_LOCAL));
 
     MarkedOccurs {
-        occur_kinds: occur_kinds.into_mapped(|_, kinds| kinds.unwrap()),
-        tentative_drop_prologues: tentative_drop_prologues
-            .into_mapped(|_, prologue| prologue.unwrap()),
+        occur_kinds: occur_kinds.map(|_, kinds| kinds.unwrap()),
+        tentative_drop_prologues: tentative_drop_prologues.map(|_, prologue| prologue.unwrap()),
     }
 }
 
@@ -1075,9 +1074,9 @@ fn repair_func_drops(
     marked_occurs: MarkedOccurs,
 ) -> MarkedDrops {
     let mut drop_prologues = marked_occurs.tentative_drop_prologues;
-    let mut let_drop_epilogues = IdVec::from_items(vec![None; func_def.let_block_end_events.len()]);
+    let mut let_drop_epilogues = IdVec::from_vec(vec![None; func_def.let_block_end_events.len()]);
     let mut branch_drop_epilogues =
-        IdVec::from_items(vec![None; func_def.branch_block_end_events.len()]);
+        IdVec::from_vec(vec![None; func_def.branch_block_end_events.len()]);
 
     let body_moves = repair_expr_drops(
         typedefs,
@@ -1101,8 +1100,8 @@ fn repair_func_drops(
     MarkedDrops {
         occur_kinds: marked_occurs.occur_kinds,
         drop_prologues,
-        let_drop_epilogues: let_drop_epilogues.into_mapped(|_, epilogue| epilogue.unwrap()),
-        branch_drop_epilogues: branch_drop_epilogues.into_mapped(|_, epilogue| epilogue.unwrap()),
+        let_drop_epilogues: let_drop_epilogues.map(|_, epilogue| epilogue.unwrap()),
+        branch_drop_epilogues: branch_drop_epilogues.map(|_, epilogue| epilogue.unwrap()),
         arg_drop_epilogue,
     }
 }
@@ -1219,7 +1218,10 @@ fn collect_expr_moves(
                 &marked_drops.let_drop_epilogues[block_id],
             );
 
-            let block_binding_moves = var_moves.items.drain(orig_locals..).collect::<Vec<_>>();
+            let block_binding_moves = var_moves
+                .drain_from(Count::from_value(orig_locals))
+                .map(|(_, v)| v)
+                .collect::<Vec<_>>();
             debug_assert_eq!(block_binding_moves.len(), bindings.len());
             debug_assert!(binding_moves[block_id].is_none());
             binding_moves[block_id] = Some(block_binding_moves);
@@ -1325,7 +1327,7 @@ fn collect_func_moves(func_def: &spec::FuncDef, marked_drops: &MarkedDrops) -> M
         path_move_horizons: BTreeMap::new(),
     });
 
-    let mut binding_moves = IdVec::from_items(vec![None; func_def.let_block_end_events.len()]);
+    let mut binding_moves = IdVec::from_vec(vec![None; func_def.let_block_end_events.len()]);
 
     collect_expr_moves(
         marked_drops,
@@ -1338,7 +1340,7 @@ fn collect_func_moves(func_def: &spec::FuncDef, marked_drops: &MarkedDrops) -> M
     );
 
     debug_assert_eq!(var_moves.len(), 1);
-    let mut arg_moves = var_moves.items.into_iter().next().unwrap();
+    let mut arg_moves = var_moves.into_values().next().unwrap();
 
     // The argument drop epilogue occurs after all other events in the function, so we don't need to
     // explicitly track move horizons associated with the argument drop epilogue for the purpose of
@@ -1353,7 +1355,7 @@ fn collect_func_moves(func_def: &spec::FuncDef, marked_drops: &MarkedDrops) -> M
     }
 
     MoveHorizons {
-        binding_moves: binding_moves.into_mapped(|_, moves| moves.unwrap()),
+        binding_moves: binding_moves.map(|_, moves| moves.unwrap()),
         arg_moves,
     }
 }
@@ -1366,17 +1368,18 @@ fn find_sccs(
     // to specialized function versions in these algorithms.  To work around this, we build an
     // internal table mapping those pairs to `GlobalFuncVersionId`s which are suitable for use with
     // the SCC algorithm.
-    id_type!(GlobalFuncVersionId);
+    #[id_type]
+    struct GlobalFuncVersionId(usize);
 
     let mut global_to_version: IdVec<GlobalFuncVersionId, _> = IdVec::new();
-    let version_to_global = funcs.map(|func_id, func_def| {
+    let version_to_global = funcs.map_refs(|func_id, func_def| {
         func_def
             .versions
-            .map(|version_id, _| global_to_version.push((func_id, version_id)))
+            .map_refs(|version_id, _| global_to_version.push((func_id, version_id)))
     });
 
     let dep_graph = Graph {
-        edges_out: global_to_version.map(|_, (func_id, version_id)| {
+        edges_out: global_to_version.map_refs(|_, (func_id, version_id)| {
             funcs[func_id].versions[version_id]
                 .calls
                 .iter()
@@ -2382,14 +2385,14 @@ fn annot_scc(
             });
 
             let mut solver_annots = SolverModeAnnots {
-                occur_modes: func_def.occur_fates.map(|_, _| None),
-                call_modes: version.calls.map(|_, _| None),
-                let_drop_epilogues: marked_drops.let_drop_epilogues.map(|_, _| None),
-                branch_drop_epilogues: marked_drops.branch_drop_epilogues.map(|_, _| None),
-                drop_prologues: marked_drops.drop_prologues.map(|_, _| None),
+                occur_modes: func_def.occur_fates.map_refs(|_, _| None),
+                call_modes: version.calls.map_refs(|_, _| None),
+                let_drop_epilogues: marked_drops.let_drop_epilogues.map_refs(|_, _| None),
+                branch_drop_epilogues: marked_drops.branch_drop_epilogues.map_refs(|_, _| None),
+                drop_prologues: marked_drops.drop_prologues.map_refs(|_, _| None),
                 // `retain_epilogues` is indexed by `ExprId`, so we can obtain an empty `IdVec` of
                 // the right shape from `drop_prologues`.
-                retain_epilogues: IdVec::from_items(vec![None; func_def.num_retain_points]),
+                retain_epilogues: IdVec::from_vec(vec![None; func_def.num_retain_points]),
             };
 
             let ret_val_modes = annot_expr(
@@ -2428,24 +2431,18 @@ fn annot_scc(
             (
                 (func_id, version_id),
                 SolverFullModeAnnots {
-                    occur_modes: solver_annots
-                        .occur_modes
-                        .into_mapped(|_, modes| modes.unwrap()),
-                    call_modes: solver_annots
-                        .call_modes
-                        .into_mapped(|_, modes| modes.unwrap()),
+                    occur_modes: solver_annots.occur_modes.map(|_, modes| modes.unwrap()),
+                    call_modes: solver_annots.call_modes.map(|_, modes| modes.unwrap()),
                     let_drop_epilogues: solver_annots
                         .let_drop_epilogues
-                        .into_mapped(|_, modes| modes.unwrap()),
+                        .map(|_, modes| modes.unwrap()),
                     branch_drop_epilogues: solver_annots
                         .branch_drop_epilogues
-                        .into_mapped(|_, modes| modes.unwrap()),
-                    drop_prologues: solver_annots
-                        .drop_prologues
-                        .into_mapped(|_, modes| modes.unwrap()),
+                        .map(|_, modes| modes.unwrap()),
+                    drop_prologues: solver_annots.drop_prologues.map(|_, modes| modes.unwrap()),
                     retain_epilogues: solver_annots
                         .retain_epilogues
-                        .into_mapped(|_, modes| modes.unwrap()),
+                        .map(|_, modes| modes.unwrap()),
                     arg_drop_epilogue: arg_drop_epilogue_annot,
                 },
             )
@@ -2454,7 +2451,7 @@ fn annot_scc(
 
     let solutions = constraints.solve(&extern_vars);
 
-    let extern_constraints = extern_vars.map(|_, var| solutions[var].clone());
+    let extern_constraints = extern_vars.map_refs(|_, var| solutions[var].clone());
 
     let mut remaining_func_sigs = scc_sigs.func_sigs;
     for ((func_id, version_id), solver_annots) in func_solver_annots {
@@ -2466,23 +2463,23 @@ fn annot_scc(
             ret_modes: scc_sig.ret_modes,
             occur_modes: solver_annots
                 .occur_modes
-                .into_mapped(|_, modes| extract_occur_modes(&solutions, modes)),
+                .map(|_, modes| extract_occur_modes(&solutions, modes)),
             call_modes: solver_annots
                 .call_modes
-                .into_mapped(|_, modes| modes.into_mapped(|_, var| solutions[var].clone())),
+                .map(|_, modes| modes.map(|_, var| solutions[var].clone())),
             let_drop_epilogues: solver_annots
                 .let_drop_epilogues
-                .into_mapped(|_, drops| extract_drops(&solutions, drops)),
+                .map(|_, drops| extract_drops(&solutions, drops)),
             branch_drop_epilogues: solver_annots
                 .branch_drop_epilogues
-                .into_mapped(|_, drops| extract_drops(&solutions, drops)),
+                .map(|_, drops| extract_drops(&solutions, drops)),
             arg_drop_epilogue: extract_drop_modes(&solutions, solver_annots.arg_drop_epilogue),
             drop_prologues: solver_annots
                 .drop_prologues
-                .into_mapped(|_, modes| extract_drops(&solutions, modes)),
+                .map(|_, modes| extract_drops(&solutions, modes)),
             retain_epilogues: solver_annots
                 .retain_epilogues
-                .into_mapped(|_, modes| extract_retains(&solutions, modes)),
+                .map(|_, modes| extract_retains(&solutions, modes)),
         };
 
         debug_assert!(func_annots[func_id][version_id].is_none());
@@ -2501,7 +2498,7 @@ pub fn annot_modes(
 
     let mut func_annots = program
         .funcs
-        .map(|_, func_def| func_def.versions.map(|_, _| None));
+        .map_refs(|_, func_def| func_def.versions.map_refs(|_, _| None));
 
     for scc in sccs {
         annot_scc(elision_mode, &program, &mut func_annots, &scc);
@@ -2514,7 +2511,7 @@ pub fn annot_modes(
         mod_symbols: program.mod_symbols,
         custom_types: program.custom_types,
         custom_type_symbols: program.custom_type_symbols,
-        funcs: IdVec::from_items(
+        funcs: IdVec::from_vec(
             program
                 .funcs
                 .into_iter()
@@ -2533,7 +2530,7 @@ pub fn annot_modes(
                         occur_fates: func_def.occur_fates,
                         expr_annots: func_def.expr_annots,
                         versions: func_def.versions,
-                        modes: modes.into_mapped(|_, version_annots| version_annots.unwrap()),
+                        modes: modes.map(|_, version_annots| version_annots.unwrap()),
                         profile_point: func_def.profile_point,
                     }
                 })

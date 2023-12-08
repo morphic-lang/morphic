@@ -1,7 +1,7 @@
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::IdVec;
 
 #[derive(Clone, Debug)]
 pub struct Program {

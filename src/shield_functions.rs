@@ -70,7 +70,7 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
 
 fn global_sccs(program: &mono::Program) -> Vec<Scc<mono::CustomGlobalId>> {
     let dep_graph = Graph {
-        edges_out: program.vals.map(|_def_id, def| {
+        edges_out: program.vals.map_refs(|_def_id, def| {
             let mut deps = BTreeSet::new();
             add_expr_deps(&def.body, &mut deps);
             deps.into_iter().collect()

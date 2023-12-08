@@ -5,7 +5,7 @@ use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_unified_ast as unif;
 use crate::data::resolved_ast as res;
 use crate::util::disjunction::Disj;
-use crate::util::id_vec::IdVec;
+use id_collections::IdVec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RepChoice {

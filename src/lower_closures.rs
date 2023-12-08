@@ -9,8 +9,8 @@ use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
-use crate::util::id_vec::IdVec;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::{id_type, IdVec};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum LeafFuncCase {
@@ -65,9 +65,11 @@ fn add_rep_leaves(
     }
 }
 
-id_type!(LoweredClosureId);
+#[id_type]
+struct LoweredClosureId(usize);
 
-id_type!(DispatchFuncId);
+#[id_type]
+struct DispatchFuncId(usize);
 
 // We factor out this 'mapping' structure because its associated methods rely heavily on error-prone
 // raw index manipulation, and we want to be able to able to reason about it independently of the
@@ -138,34 +140,34 @@ impl IdMapping {
         debug_assert_eq!(parts.globals.len(), self.num_orig_globals);
         debug_assert_eq!(parts.lam_bodies.len(), self.num_orig_lams);
 
-        let num_closures = parts.closures.items.len();
+        let num_closures = parts.closures.len();
 
-        let mut custom_types = parts.custom_types.items;
-        custom_types.extend(parts.closures.items);
+        let mut custom_types = parts.custom_types.into_vec();
+        custom_types.extend(parts.closures.into_vec());
 
         let mut custom_type_symbols = parts
             .custom_type_symbols
-            .into_mapped(|_, symbols| first_ord::CustomTypeSymbols::CustomType(symbols))
-            .items;
+            .map(|_, symbols| first_ord::CustomTypeSymbols::CustomType(symbols))
+            .into_vec();
         custom_type_symbols
             .extend(repeat_with(|| first_ord::CustomTypeSymbols::ClosureType).take(num_closures));
 
         let num_dispatch_funcs = parts.dispatch_funcs.len();
 
-        let mut funcs = parts.globals.items;
-        funcs.extend(parts.lam_bodies.items);
+        let mut funcs = parts.globals.into_vec();
+        funcs.extend(parts.lam_bodies.into_vec());
         funcs.push(parts.main);
-        funcs.extend(parts.dispatch_funcs.items);
+        funcs.extend(parts.dispatch_funcs.into_vec());
 
         let mut func_symbols = parts
             .global_symbols
-            .into_mapped(|_, symbols| first_ord::FuncSymbols::Global(symbols))
-            .items;
+            .map(|_, symbols| first_ord::FuncSymbols::Global(symbols))
+            .into_vec();
         func_symbols.extend(
             parts
                 .lam_body_symbols
-                .into_mapped(|_, symbols| first_ord::FuncSymbols::Lam(symbols))
-                .items,
+                .map(|_, symbols| first_ord::FuncSymbols::Lam(symbols))
+                .into_vec(),
         );
         func_symbols.push(first_ord::FuncSymbols::MainWrapper);
         func_symbols
@@ -173,10 +175,10 @@ impl IdMapping {
 
         first_ord::Program {
             mod_symbols: parts.mod_symbols,
-            custom_types: IdVec::from_items(custom_types),
-            custom_type_symbols: IdVec::from_items(custom_type_symbols),
-            funcs: IdVec::from_items(funcs),
-            func_symbols: IdVec::from_items(func_symbols),
+            custom_types: IdVec::from_vec(custom_types),
+            custom_type_symbols: IdVec::from_vec(custom_type_symbols),
+            funcs: IdVec::from_vec(funcs),
+            func_symbols: IdVec::from_vec(func_symbols),
             profile_points: parts.profile_points,
             main: first_ord::CustomFuncId(self.num_orig_globals + self.num_orig_lams),
         }
@@ -1026,7 +1028,7 @@ impl<'a> Context<'a> {
     fn lower_custom_type(&mut self, typedef: &special::TypeDef) -> first_ord::TypeDef {
         let lowered_variants: IdVec<res::VariantId, _> = typedef
             .variants
-            .map(|_, variant| variant.as_ref().map(|content| self.lower_type(content)));
+            .map_refs(|_, variant| variant.as_ref().map(|content| self.lower_type(content)));
 
         first_ord::TypeDef {
             // Here we soft-transmute an IdVec indexed by res::VariantId to an IdVec indexed by
@@ -1036,7 +1038,7 @@ impl<'a> Context<'a> {
             // res::VariantId and first_ord::VariantId is that some sum types in the first-order AST
             // are not derived from pre-existing sum types at all, but are instead
             // internally-generated representations of defunctionalized closures.
-            variants: IdVec::<first_ord::VariantId, _>::from_items(lowered_variants.items),
+            variants: IdVec::<first_ord::VariantId, _>::from_vec(lowered_variants.into_vec()),
         }
     }
 
@@ -1097,18 +1099,18 @@ pub fn lower_closures(
 
     let lowered_custom_types = program
         .custom_types
-        .map(|_, typedef| ctx.lower_custom_type(typedef));
+        .map_refs(|_, typedef| ctx.lower_custom_type(&typedef));
 
-    let lowered_globals = program.vals.map(|_, val_def| {
-        let result = ctx.lower_global(val_def);
+    let lowered_globals = program.vals.map_refs(|_, val_def| {
+        let result = ctx.lower_global(&val_def);
         progress.update(1);
         result
     });
 
     let lowered_global_symbols = program.val_symbols.clone();
 
-    let lowered_lam_bodies = program.lams.map(|_, lam_def| {
-        let result = ctx.lower_lam_body(lam_def);
+    let lowered_lam_bodies = program.lams.map_refs(|_, lam_def| {
+        let result = ctx.lower_lam_body(&lam_def);
         progress.update(1);
         result
     });

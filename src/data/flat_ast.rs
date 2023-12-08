@@ -4,11 +4,13 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub LocalId);
+#[id_type]
+pub struct LocalId(pub usize);
 
-id_type!(pub CustomTypeSccId);
+#[id_type]
+pub struct CustomTypeSccId(pub usize);
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {

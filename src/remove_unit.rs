@@ -1,3 +1,4 @@
+use id_collections::{Id, IdVec};
 use std::collections::BTreeMap;
 
 // this pass does 2 things:
@@ -7,7 +8,6 @@ use std::collections::BTreeMap;
 use crate::{
     data::{first_order_ast::*, intrinsics},
     intrinsic_config::intrinsic_sig,
-    util::id_vec::IdVec,
 };
 
 struct Context<'a> {
@@ -398,7 +398,7 @@ pub fn remove_unit(prog: &Program) -> Program {
 
         let type_def = &prog.custom_types[type_id];
         if type_def.variants.len() == 1 {
-            match &type_def.variants.items[0] {
+            match &type_def.variants[VariantId::from_index(0)] {
                 None => {
                     type_reduction.insert(type_id, Type::Tuple(Vec::new()));
                     return Type::Tuple(Vec::new());
@@ -436,14 +436,14 @@ pub fn remove_unit(prog: &Program) -> Program {
     let prog = prog.clone();
     Program {
         mod_symbols: prog.mod_symbols,
-        custom_types: prog.custom_types.into_mapped(|type_id, type_def| {
+        custom_types: prog.custom_types.map(|type_id, type_def| {
             if ctx.type_reduction.contains_key(&type_id) {
                 TypeDef {
                     variants: IdVec::new(),
                 }
             } else {
                 TypeDef {
-                    variants: type_def.variants.into_mapped(|_variant_id, variant_type| {
+                    variants: type_def.variants.map(|_variant_id, variant_type| {
                         variant_type.map(|variant_type| ctx.remove_type(variant_type))
                     }),
                 }
@@ -452,7 +452,7 @@ pub fn remove_unit(prog: &Program) -> Program {
         custom_type_symbols: prog.custom_type_symbols,
         funcs: prog
             .funcs
-            .into_mapped(|func_id, func_def| ctx.remove_func_def(func_id, func_def)),
+            .map(|func_id, func_def| ctx.remove_func_def(func_id, func_def)),
         func_symbols: prog.func_symbols,
         profile_points: prog.profile_points,
         main: prog.main,

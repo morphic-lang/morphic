@@ -6,8 +6,8 @@ use crate::data::rc_specialized_ast as rc;
 use crate::data::repr_specialized_ast as special;
 use crate::data::tail_rec_ast as tail;
 use crate::util::graph::{self, Graph};
-use crate::util::id_vec::IdVec;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::IdVec;
 
 fn last_index<T>(slice: &[T]) -> Option<usize> {
     if slice.is_empty() {
@@ -263,7 +263,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
     let progress = progress.start_session(None);
 
     let tail_call_deps = Graph {
-        edges_out: program.funcs.map(|_, func| {
+        edges_out: program.funcs.map_refs(|_, func| {
             let mut deps = BTreeSet::new();
             // The argument always provides exactly one free variable in scope for the body of the
             // function.
@@ -273,10 +273,10 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
     };
 
     let sccs: IdVec<tail::CustomFuncId, _> =
-        IdVec::from_items(graph::acyclic_and_cyclic_sccs(&tail_call_deps));
+        IdVec::from_vec(graph::acyclic_and_cyclic_sccs(&tail_call_deps));
 
     let modes = {
-        let mut modes = IdVec::from_items(vec![CallMode::AlwaysTail; program.funcs.len()]);
+        let mut modes = IdVec::from_vec(vec![CallMode::AlwaysTail; program.funcs.len()]);
 
         // In principle, 'main' could be tail-recursive, so we need to make sure it still has an
         // entry point even in that case.  In other words, we need this because our logic that marks
@@ -327,9 +327,9 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
     // "from the inside", i.e. for use in generating its internal implementation.
     let (mappings, entry_points) = {
         let mut mappings: IdVec<special::CustomFuncId, Option<FuncMapping>> =
-            IdVec::from_items(vec![None; program.funcs.len()]);
+            IdVec::from_vec(vec![None; program.funcs.len()]);
 
-        let entry_points = sccs.map(|new_func_id, scc| match scc {
+        let entry_points = sccs.map_refs(|new_func_id, scc| match scc {
             graph::Scc::Acyclic(orig_id) => {
                 debug_assert!(mappings[orig_id].is_none());
                 mappings[orig_id] = Some(FuncMapping::Direct(new_func_id));
@@ -358,10 +358,10 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                         let entry_variants: IdVec<
                             first_ord::VariantId,
                             (tail::TailFuncId, special::CustomFuncId),
-                        > = IdVec::from_items(not_always_tail_funcs);
+                        > = IdVec::from_vec(not_always_tail_funcs);
 
                         let variant_types = entry_variants
-                            .map(|_, (_, orig_id)| program.funcs[orig_id].arg_type.clone());
+                            .map_refs(|_, (_, orig_id)| program.funcs[orig_id].arg_type.clone());
 
                         for (variant_id, (_, orig_id)) in &entry_variants {
                             mappings[orig_id] = Some(FuncMapping::Variant(
@@ -372,7 +372,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                         }
 
                         EntryPoint::Variants(
-                            entry_variants.map(|_, (tail_func_id, _)| *tail_func_id),
+                            entry_variants.map(|_, (tail_func_id, _)| tail_func_id),
                         )
                     }
                 }
@@ -382,7 +382,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
         (mappings, entry_points)
     };
 
-    let mut new_funcs = sccs.map(|new_func_id, scc| match scc {
+    let mut new_funcs = sccs.map_refs(|new_func_id, scc| match scc {
         graph::Scc::Acyclic(orig_id) => {
             debug_assert_eq!(&entry_points[new_func_id], &EntryPoint::Direct);
 
@@ -423,7 +423,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                 .iter()
                 .all(|orig_id| &program.funcs[orig_id].purity == &purity));
 
-            let tail_funcs: IdVec<tail::TailFuncId, tail::TailFunc> = IdVec::from_items(
+            let tail_funcs: IdVec<tail::TailFuncId, tail::TailFunc> = IdVec::from_vec(
                 orig_ids
                     .iter()
                     .map(|orig_id| {
@@ -458,7 +458,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                 }
 
                 EntryPoint::Variants(entry_func_ids) => {
-                    let arg_variant_types = entry_func_ids.map(|_, entry_func_id| {
+                    let arg_variant_types = entry_func_ids.map_refs(|_, entry_func_id| {
                         program.funcs[orig_ids[entry_func_id.0]].arg_type.clone()
                     });
 

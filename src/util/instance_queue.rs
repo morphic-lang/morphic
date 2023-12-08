@@ -1,11 +1,11 @@
-// TODO: Should this be changed to HashSet?
-use std::collections::BTreeMap;
+use crate::util::id_gen::IdGen;
+use id_collections::Id;
+use std::collections::BTreeMap; // TODO: Should this be changed to HashSet?
 use std::collections::VecDeque;
 
-use crate::util::id_type::Id;
-
 #[derive(Clone, Debug)]
-pub struct InstanceQueue<Inst, MonoId> {
+pub struct InstanceQueue<Inst, MonoId: Id> {
+    id_gen: IdGen<MonoId>,
     ids: BTreeMap<Inst, MonoId>,
     pending: VecDeque<(MonoId, Inst)>,
 }
@@ -13,19 +13,20 @@ pub struct InstanceQueue<Inst, MonoId> {
 impl<Inst: Ord + Clone, MonoId: Id> InstanceQueue<Inst, MonoId> {
     pub fn new() -> Self {
         InstanceQueue {
+            id_gen: IdGen::new(),
             ids: BTreeMap::new(),
             pending: VecDeque::new(),
         }
     }
 
     pub fn resolve(&mut self, inst: Inst) -> MonoId {
-        let new_id_if_needed = MonoId::from_index(self.ids.len());
         let pending = &mut self.pending; // Appease the borrow checker
         self.ids
             .entry(inst.clone())
             .or_insert_with(|| {
-                pending.push_back((new_id_if_needed.clone(), inst));
-                new_id_if_needed
+                let new_id = self.id_gen.fresh();
+                pending.push_back((new_id, inst));
+                new_id
             })
             .clone()
     }

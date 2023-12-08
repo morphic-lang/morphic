@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::util::graph::Scc;
-use crate::util::id_type::Id;
-use crate::util::id_vec::IdVec;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::Id;
+use id_collections::IdVec;
 
 pub trait Signature {
     type Sig;
@@ -21,7 +21,7 @@ impl<'a, FuncId: Id + Ord, FuncDef: Signature> SignatureAssumptions<'a, FuncId, 
         // TODO: This bounds check exists only to make alias specialization work, because alias
         // specialization passes an empty IdVec for known_defs.  We should probably find a different
         // way to do this.
-        if func.to_index() < self.known_defs.len() {
+        if func.to_index() < self.known_defs.count().to_value() {
             if let Some(func_def) = &self.known_defs[func] {
                 return Some(func_def.signature());
             }
@@ -119,7 +119,7 @@ where
     FuncDef: Signature,
     FuncDef::Sig: Eq,
 {
-    let mut annotated = IdVec::from_items((0..num_funcs).map(|_| None).collect());
+    let mut annotated = IdVec::from_vec((0..num_funcs).map(|_| None).collect());
 
     let mut progress = progress_logger.start_session(Some(num_funcs));
 
@@ -137,5 +137,5 @@ where
 
     progress.finish();
 
-    annotated.into_mapped(|_, func_def| func_def.unwrap())
+    annotated.map(|_, func_def| func_def.unwrap())
 }

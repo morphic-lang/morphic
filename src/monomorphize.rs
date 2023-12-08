@@ -1,8 +1,8 @@
 use crate::data::mono_ast as mono;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
-use crate::util::id_vec::IdVec;
 use crate::util::instance_queue::InstanceQueue;
+use id_collections::IdVec;
 
 type ValInstances =
     InstanceQueue<(res::CustomGlobalId, IdVec<res::TypeParamId, mono::Type>), mono::CustomGlobalId>;
@@ -57,7 +57,8 @@ fn resolve_expr(
         }
 
         typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Custom(id), variant), args) => {
-            let args_resolved = args.map(|_param_id, arg| resolve_type(type_insts, inst_args, arg));
+            let args_resolved =
+                args.map_refs(|_param_id, arg| resolve_type(type_insts, inst_args, &arg));
 
             let new_id = type_insts.resolve((*id, args_resolved));
             mono::Expr::Ctor(new_id, *variant)
@@ -66,7 +67,8 @@ fn resolve_expr(
         typed::Expr::Global(res::GlobalId::Ctor(_, _), _) => unreachable!(),
 
         typed::Expr::Global(res::GlobalId::Custom(id), args) => {
-            let args_resolved = args.map(|_param_id, arg| resolve_type(type_insts, inst_args, arg));
+            let args_resolved =
+                args.map_refs(|_param_id, arg| resolve_type(type_insts, inst_args, &arg));
             let new_id = val_insts.resolve((*id, args_resolved));
             mono::Expr::Global(new_id)
         }
@@ -186,7 +188,7 @@ fn resolve_type(
         }
 
         res::Type::App(res::TypeId::Custom(id), args) => {
-            let args_resolved = IdVec::from_items(
+            let args_resolved = IdVec::from_vec(
                 args.iter()
                     .map(|arg| resolve_type(type_insts, inst_args, arg))
                     .collect(),
@@ -250,7 +252,7 @@ fn resolve_pattern(
         }
 
         typed::Pattern::Ctor(res::TypeId::Custom(id), args, variant, content) => {
-            let args_resolved = IdVec::from_items(
+            let args_resolved = IdVec::from_vec(
                 args.iter()
                     .map(|arg| resolve_type(type_insts, inst_args, arg))
                     .collect(),
@@ -302,9 +304,9 @@ fn resolve_typedef(
 ) -> mono::TypeDef {
     debug_assert_eq!(inst_args.len(), typedef.num_params);
 
-    let variants_resolved = typedef.variants.map(|_id, variant| {
+    let variants_resolved = typedef.variants.map_refs(|_id, variant| {
         if let Some(variant) = variant {
-            Some(resolve_type(type_insts, inst_args, variant))
+            Some(resolve_type(type_insts, inst_args, &variant))
         } else {
             None
         }

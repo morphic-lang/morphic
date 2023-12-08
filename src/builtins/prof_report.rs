@@ -3,7 +3,8 @@ use crate::builtins::tal::Tal;
 use crate::data::low_ast as low;
 use crate::data::profile as prof;
 use crate::data::tail_rec_ast as tail;
-use crate::util::id_vec::IdVec;
+use crate::util::iter::try_zip_exact;
+use id_collections::IdVec;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -190,8 +191,7 @@ pub fn define_prof_report_fn<'a>(
                     "timings",
                     Array(
                         MultiLine,
-                        profile_points
-                            .try_zip_exact(profile_point_decls)
+                        try_zip_exact(profile_points, profile_point_decls)
                             .unwrap()
                             .flat_map(|(_prof_id, prof_point, prof_decls)| {
                                 prof_point

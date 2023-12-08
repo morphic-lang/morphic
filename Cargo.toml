@@ -40,6 +40,7 @@ thiserror = "1.0.50"
 rand = "0.8.5"
 rand_distr = "0.4.3"
 rand_pcg = "0.3.1"
+id_collections = "1.0.1"
 
 [workspace]
 members = ["benchmark", "find_clang"]
