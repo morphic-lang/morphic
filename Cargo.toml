@@ -31,6 +31,7 @@ ansi_term = "0.12.1"
 textwrap = "0.16.0"
 json = "0.12.4" # used for string escaping in profile report generation
 indicatif = "0.17.7"
+id_collections = "1.0.1"
 
 # Error handling
 anyhow = "1.0.75"
@@ -40,7 +41,6 @@ thiserror = "1.0.50"
 rand = "0.8.5"
 rand_distr = "0.4.3"
 rand_pcg = "0.3.1"
-id_collections = "1.0.1"
 
 [workspace]
 members = ["benchmark", "find_clang"]

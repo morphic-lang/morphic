@@ -71,6 +71,7 @@ mod annot_fates;
 mod specialize_aliases;
 
 mod annot_modes;
+mod annot_modes2;
 
 mod rc_specialize;
 
