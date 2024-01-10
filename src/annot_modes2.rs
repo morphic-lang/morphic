@@ -1,9 +1,7 @@
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::NumType;
 use crate::data::flat_ast as flat;
-use crate::data::mode_annot_ast2::{
-    self as annot, Lifetime, ModeConstr, ModeParam, ModeTerm, ModeVar,
-};
+use crate::data::mode_annot_ast2::{self as annot, Lt, ModeConstr, ModeParam, ModeTerm, ModeVar};
 use crate::util::graph;
 use crate::util::id_gen::IdGen;
 use crate::util::local_context::LocalContext;

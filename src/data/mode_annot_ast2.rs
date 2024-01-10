@@ -11,10 +11,13 @@ use std::hash::Hash;
 
 #[id_type]
 pub struct LifetimeVar(pub usize);
+
 #[id_type]
 pub struct LifetimeParam(pub usize);
+
 #[id_type]
 pub struct ModeVar(pub usize);
+
 #[id_type]
 pub struct ModeParam(pub usize);
 
@@ -23,99 +26,239 @@ pub struct ModeParam(pub usize);
 pub enum ModeTerm {
     Owned,
     Borrowed,
-    Join(NonemptySet<ModeVar>),
+    Join(NonEmptySet<ModeVar>),
 }
 
 impl ModeTerm {
     pub fn var(v: ModeVar) -> Self {
-        Self::Join(NonemptySet::new(v))
+        Self::Join(NonEmptySet::new(v))
     }
 }
 
-/// A constraint of the form `self.0 <= self.1`
+/// A constraint of the form `self.0 <= self.1`.
 #[derive(Debug, Clone, Copy)]
 pub struct ModeConstr(pub ModeVar, pub ModeVar);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LocalLifetime {
-    Final,
-    Let(Box<LocalLifetime>),
-    In(Box<LocalLifetime>),
-    Match(Box<LocalLifetime>, Box<LocalLifetime>),
-    Matchl(Box<LocalLifetime>),
-    Matchr(Box<LocalLifetime>),
+pub enum Lt {
+    Empty,
+    Local(LtLocal),
+    Join(NonEmptySet<LifetimeVar>),
 }
 
-impl LocalLifetime {
-    fn join(&self, other: &Self) -> Self {
-        use LocalLifetime::*;
-        match (self, other) {
-            (Final, Final) => Final,
-            (Let(l1), Let(l2)) => Let(Box::new(l1.join(l2))),
-            (In(l1), In(l2)) => In(Box::new(l1.join(l2))),
-            (Let(_), In(_)) => other.clone(),
-            (In(_), Let(_)) => self.clone(),
-            (Match(l1, r1), Match(l2, r2)) => Match(Box::new(l1.join(l2)), Box::new(r1.join(r2))),
-            (Matchl(l1), Matchl(l2)) => Matchl(Box::new(l1.join(l2))),
-            (Matchr(l1), Matchr(l2)) => Matchr(Box::new(l1.join(l2))),
-            _ => Final,
-        }
-    }
-}
-
-impl PartialOrd for LocalLifetime {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        use LocalLifetime::*;
-        match (self, other) {
-            (Final, Final) => Some(Ordering::Equal),
-            (Let(l1), Let(l2)) => l1.partial_cmp(l2),
-            (In(l1), In(l2)) => l1.partial_cmp(l2),
-            (Let(_), In(_)) => Some(Ordering::Less),
-            (In(_), Let(_)) => Some(Ordering::Greater),
-            (Match(l1, r1), Match(l2, r2)) => l1.partial_cmp(l2).and_then(|o| {
-                if o == Ordering::Equal {
-                    r1.partial_cmp(r2)
-                } else {
-                    Some(o)
-                }
-            }),
-            (Matchl(l1), Matchl(l2)) => l1.partial_cmp(l2),
-            (Matchr(l1), Matchr(l2)) => l1.partial_cmp(l2),
-            _ => None,
-        }
+impl Lt {
+    pub fn var(v: LifetimeVar) -> Self {
+        Self::Join(NonEmptySet::new(v))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Lifetime {
-    Empty,
-    Local(LocalLifetime),
-    Join(NonemptySet<LifetimeVar>),
+pub enum LtLocal {
+    Nil,
+    Seq(Box<LtLocal>, usize),
+    Par(LtPar),
 }
 
-impl Lifetime {
-    pub fn var(v: LifetimeVar) -> Self {
-        Self::Join(NonemptySet::new(v))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LtPar(Vec<Option<LtLocal>>);
+
+impl LtPar {
+    fn new(l: LtLocal, i: usize, n: usize) -> Self {
+        let mut v = vec![None; n];
+        v[i] = Some(l);
+        Self(v)
     }
 }
 
-impl PartialOrd for Lifetime {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        use Lifetime::*;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonEmptySet<T: Eq + Hash>(HashSet<T>);
+
+impl<T: Eq + Hash> NonEmptySet<T> {
+    fn new(x: T) -> Self {
+        let mut s = HashSet::new();
+        s.insert(x);
+        Self(s)
+    }
+
+    fn insert(&mut self, t: T) {
+        self.0.insert(t);
+    }
+
+    fn union(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+
+    fn is_subset(&self, other: &Self) -> bool {
+        self.0.is_subset(&other.0)
+    }
+}
+
+impl Lt {
+    /// A lattice join compatible with the `PartialOrd` implementation for `Lt`.
+    fn join(&mut self, other: Self) {
         match (self, other) {
-            (Empty, Empty) => Some(Ordering::Equal),
-            (Local(l1), Local(l2)) => l1.partial_cmp(l2),
-            (Join(ltvs1), Join(ltvs2)) => {
-                if ltvs1.is_subset(ltvs2) {
-                    Some(Ordering::Less)
-                } else if ltvs2.is_subset(ltvs1) {
-                    Some(Ordering::Greater)
+            (me @ Lt::Empty, other) => *me = other,
+            (_, Lt::Empty) => {}
+            (Lt::Local(l1), Lt::Local(l2)) => l1.join(l2),
+            (me @ Lt::Local(_), other @ Lt::Join(_)) => *me = other,
+            (Lt::Join(_), Lt::Local(_)) => {}
+            (Lt::Join(s1), Lt::Join(s2)) => s1.union(s2),
+        }
+    }
+
+    /// `l1 <= l2` iff, for every leaf in `l1`, there is a leaf in `l2` that occurs "later in time".
+    /// Defines a partial order.
+    fn is_subsumed_by(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Lt::Empty, _) => true,
+            (_, Lt::Empty) => false,
+            (Lt::Local(l1), Lt::Local(l2)) => l1.is_subsumed_by(l2),
+            (Lt::Local(_), Lt::Join(_)) => true,
+            (Lt::Join(_), Lt::Local(_)) => false,
+            (Lt::Join(s1), Lt::Join(s2)) => s1.is_subset(s2),
+        }
+    }
+
+    /// True iff no leaf in `self` occurs "later in time" than any leaf in `other`. This condition
+    /// is non-transitive.
+    fn does_not_exceed(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Lt::Empty, _) => true,
+            (_, Lt::Empty) => true,
+            (Lt::Local(l1), Lt::Local(l2)) => l1.does_not_exceed(l2),
+            (Lt::Local(_), Lt::Join(_)) => true,
+            (Lt::Join(_), Lt::Local(_)) => false,
+            (Lt::Join(s1), Lt::Join(s2)) => s1.is_subset(s2),
+        }
+    }
+}
+
+impl LtLocal {
+    fn join(&mut self, other: Self) {
+        match (self, other) {
+            (me @ LtLocal::Nil, other) => *me = other,
+            (_, LtLocal::Nil) => {}
+            (me @ LtLocal::Seq(_, _), other @ LtLocal::Seq(_, _)) => {
+                let i1 = if let LtLocal::Seq(_, i) = me {
+                    *i
                 } else {
-                    None
+                    unreachable!()
+                };
+                let i2 = if let LtLocal::Seq(_, i) = &other {
+                    *i
+                } else {
+                    unreachable!()
+                };
+                if i1 < i2 {
+                    *me = other;
+                } else if i1 == i2 {
+                    me.join(other);
                 }
             }
-            _ => None,
+            (LtLocal::Seq(_, _), LtLocal::Par(_)) => {
+                panic!("expected structurally compatible lifetimes")
+            }
+            (LtLocal::Par(_), LtLocal::Seq(_, _)) => {
+                panic!("expected structurally compatible lifetimes")
+            }
+            (LtLocal::Par(p1), LtLocal::Par(p2)) => p1.join(p2),
         }
+    }
+
+    fn is_subsumed_by(&self, other: &Self) -> bool {
+        match (self, other) {
+            (LtLocal::Nil, _) => false,
+            (_, LtLocal::Nil) => true,
+            (LtLocal::Seq(l1, i1), LtLocal::Seq(l2, i2)) => {
+                if i1 < i2 {
+                    true
+                } else if i1 > i2 {
+                    false
+                } else {
+                    l1.is_subsumed_by(l2)
+                }
+            }
+            (LtLocal::Seq(_, _), LtLocal::Par(_)) => {
+                panic!("expected structurally compatible lifetimes")
+            }
+            (LtLocal::Par(_), LtLocal::Seq(_, _)) => {
+                panic!("expected structurally compatible lifetimes")
+            }
+            (LtLocal::Par(p1), LtLocal::Par(p2)) => p1.is_subsumed_by(p2),
+        }
+    }
+
+    fn does_not_exceed(&self, other: &Self) -> bool {
+        match (self, other) {
+            (LtLocal::Nil, _) => false,
+            (_, LtLocal::Nil) => true,
+            (LtLocal::Seq(l1, i1), LtLocal::Seq(l2, i2)) => {
+                if i1 < i2 {
+                    true
+                } else if i1 > i2 {
+                    false
+                } else {
+                    l1.does_not_exceed(l2)
+                }
+            }
+            (LtLocal::Seq(_, _), LtLocal::Par(_)) => {
+                panic!("expected structurally compatible lifetimes")
+            }
+            (LtLocal::Par(_), LtLocal::Seq(_, _)) => {
+                panic!("expected structurally compatible lifetimes")
+            }
+            (LtLocal::Par(p1), LtLocal::Par(p2)) => p1.does_not_exceed(p2),
+        }
+    }
+}
+
+impl LtPar {
+    fn join(&mut self, other: Self) {
+        if self.0.len() != other.0.len() {
+            panic!("expected structurally compatible lifetimes");
+        }
+        for (l1, l2) in self.0.iter_mut().zip(other.0.into_iter()) {
+            match (l1, l2) {
+                (None, None) => {}
+                (me @ None, other @ Some(_)) => *me = other,
+                (Some(_), None) => {}
+                (Some(l1), Some(l2)) => l1.join(l2),
+            }
+        }
+    }
+
+    fn is_subsumed_by(&self, other: &Self) -> bool {
+        if self.0.len() != other.0.len() {
+            panic!("expected structurally compatible lifetimes");
+        }
+        for (l1, l2) in self.0.iter().zip(other.0.iter()) {
+            match (l1, l2) {
+                (Some(_), None) => {
+                    return false;
+                }
+                (Some(l1), Some(l2)) => {
+                    if !l1.is_subsumed_by(l2) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
+    fn does_not_exceed(&self, other: &Self) -> bool {
+        if self.0.len() != other.0.len() {
+            panic!("expected structurally compatible lifetimes");
+        }
+        for (l1, l2) in self.0.iter().zip(other.0.iter()) {
+            if let (Some(l1), Some(l2)) = (l1, l2) {
+                if !l1.does_not_exceed(l2) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -305,25 +448,4 @@ pub struct Program {
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: first_ord::CustomFuncId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NonemptySet<T: Eq + Hash>(HashSet<T>);
-
-impl<T: Eq + Hash> NonemptySet<T> {
-    pub fn new(x: T) -> Self {
-        Self(std::iter::once(x).collect())
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_subset(&self, other: &Self) -> bool {
-        self.0.is_subset(&other.0)
-    }
-
-    pub fn insert(&mut self, x: T) {
-        self.0.insert(x);
-    }
 }
