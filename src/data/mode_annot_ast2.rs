@@ -4,16 +4,16 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use id_collections::Count;
 use id_collections::{id_type, IdVec};
-use std::cmp::{Ordering, PartialOrd};
 use std::collections::HashSet;
 use std::hash::Hash;
 
 #[id_type]
-pub struct LifetimeVar(pub usize);
+pub struct LtVar(pub usize);
 
 #[id_type]
-pub struct LifetimeParam(pub usize);
+pub struct LtParam(pub usize);
 
 #[id_type]
 pub struct ModeVar(pub usize);
@@ -43,22 +43,26 @@ pub struct ModeConstr(pub ModeVar, pub ModeVar);
 pub enum Lt {
     Empty,
     Local(LtLocal),
-    Join(NonEmptySet<LifetimeVar>),
+    /// Non-empty to ensure lifetime representations are unique.
+    Join(NonEmptySet<LtVar>),
 }
 
 impl Lt {
-    pub fn var(v: LifetimeVar) -> Self {
+    pub fn var(v: LtVar) -> Self {
         Self::Join(NonEmptySet::new(v))
     }
 }
 
+/// `Seq` corresponds to a set of ordered operations, for instance the binding and body of a let.
+/// `Par` corresponds to a set of unordered operations, for instance the arms of a match.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LtLocal {
-    Nil,
+    Final,
     Seq(Box<LtLocal>, usize),
     Par(LtPar),
 }
 
+// Must be non-empty to ensure lifetime representations are unique.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LtPar(Vec<Option<LtLocal>>);
 
@@ -94,7 +98,10 @@ impl<T: Eq + Hash> NonEmptySet<T> {
 }
 
 impl Lt {
-    /// A lattice join compatible with the `PartialOrd` implementation for `Lt`.
+    /// A join over the following lattice: `l1 <= l2` iff, for every leaf of `l1`, there is a leaf
+    /// of `l2` that occurs "later in time".
+    ///
+    /// Panics if `self` and `other` are not structurally compatible.
     fn join(&mut self, other: Self) {
         match (self, other) {
             (me @ Lt::Empty, other) => *me = other,
@@ -106,21 +113,10 @@ impl Lt {
         }
     }
 
-    /// `l1 <= l2` iff, for every leaf in `l1`, there is a leaf in `l2` that occurs "later in time".
-    /// Defines a partial order.
-    fn is_subsumed_by(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Lt::Empty, _) => true,
-            (_, Lt::Empty) => false,
-            (Lt::Local(l1), Lt::Local(l2)) => l1.is_subsumed_by(l2),
-            (Lt::Local(_), Lt::Join(_)) => true,
-            (Lt::Join(_), Lt::Local(_)) => false,
-            (Lt::Join(s1), Lt::Join(s2)) => s1.is_subset(s2),
-        }
-    }
-
     /// True iff no leaf in `self` occurs "later in time" than any leaf in `other`. This condition
     /// is non-transitive.
+    ///
+    /// Panics if `self` and `other` are not structurally compatible.
     fn does_not_exceed(&self, other: &Self) -> bool {
         match (self, other) {
             (Lt::Empty, _) => true,
@@ -136,9 +132,11 @@ impl Lt {
 impl LtLocal {
     fn join(&mut self, other: Self) {
         match (self, other) {
-            (me @ LtLocal::Nil, other) => *me = other,
-            (_, LtLocal::Nil) => {}
+            (LtLocal::Final, _) => {}
+            (me, LtLocal::Final) => *me = LtLocal::Final,
             (me @ LtLocal::Seq(_, _), other @ LtLocal::Seq(_, _)) => {
+                // We need to set `me` to `other` if `i1 < i2`, which means we can't destructure
+                // `me` and `other` in the match arm.
                 let i1 = if let LtLocal::Seq(_, i) = me {
                     *i
                 } else {
@@ -165,33 +163,10 @@ impl LtLocal {
         }
     }
 
-    fn is_subsumed_by(&self, other: &Self) -> bool {
-        match (self, other) {
-            (LtLocal::Nil, _) => false,
-            (_, LtLocal::Nil) => true,
-            (LtLocal::Seq(l1, i1), LtLocal::Seq(l2, i2)) => {
-                if i1 < i2 {
-                    true
-                } else if i1 > i2 {
-                    false
-                } else {
-                    l1.is_subsumed_by(l2)
-                }
-            }
-            (LtLocal::Seq(_, _), LtLocal::Par(_)) => {
-                panic!("expected structurally compatible lifetimes")
-            }
-            (LtLocal::Par(_), LtLocal::Seq(_, _)) => {
-                panic!("expected structurally compatible lifetimes")
-            }
-            (LtLocal::Par(p1), LtLocal::Par(p2)) => p1.is_subsumed_by(p2),
-        }
-    }
-
     fn does_not_exceed(&self, other: &Self) -> bool {
         match (self, other) {
-            (LtLocal::Nil, _) => false,
-            (_, LtLocal::Nil) => true,
+            (LtLocal::Final, _) => false,
+            (_, LtLocal::Final) => true,
             (LtLocal::Seq(l1, i1), LtLocal::Seq(l2, i2)) => {
                 if i1 < i2 {
                     true
@@ -227,26 +202,6 @@ impl LtPar {
         }
     }
 
-    fn is_subsumed_by(&self, other: &Self) -> bool {
-        if self.0.len() != other.0.len() {
-            panic!("expected structurally compatible lifetimes");
-        }
-        for (l1, l2) in self.0.iter().zip(other.0.iter()) {
-            match (l1, l2) {
-                (Some(_), None) => {
-                    return false;
-                }
-                (Some(l1), Some(l2)) => {
-                    if !l1.is_subsumed_by(l2) {
-                        return false;
-                    }
-                }
-                _ => {}
-            }
-        }
-        true
-    }
-
     fn does_not_exceed(&self, other: &Self) -> bool {
         if self.0.len() != other.0.len() {
             panic!("expected structurally compatible lifetimes");
@@ -263,81 +218,81 @@ impl LtPar {
 }
 
 #[derive(Clone, Debug)]
-pub enum ArrayOp<Mode, Lt> {
+pub enum ArrayOp<M, L> {
     Get(
-        Type<Mode, Lt>, // Item type
-        flat::LocalId,  // Array
-        flat::LocalId,  // Index
+        Type<M, L>,    // Item type
+        flat::LocalId, // Array
+        flat::LocalId, // Index
     ), // Returns item
     Extract(
-        Type<Mode, Lt>, // Item type
-        flat::LocalId,  // Array
-        flat::LocalId,  // Index
+        Type<M, L>,    // Item type
+        flat::LocalId, // Array
+        flat::LocalId, // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        Type<Mode, Lt>, // Item type
-        flat::LocalId,  // Array
+        Type<M, L>,    // Item type
+        flat::LocalId, // Array
     ), // Returns int
     Push(
-        Type<Mode, Lt>, // Item type
-        flat::LocalId,  // Array
-        flat::LocalId,  // Item
+        Type<M, L>,    // Item type
+        flat::LocalId, // Array
+        flat::LocalId, // Item
     ), // Returns new array
     Pop(
-        Type<Mode, Lt>, // Item type
-        flat::LocalId,  // Array
+        Type<M, L>,    // Item type
+        flat::LocalId, // Array
     ), // Returns tuple (array, item)
     Replace(
-        Type<Mode, Lt>, // Item type
-        flat::LocalId,  // Hole array
-        flat::LocalId,  // Item
+        Type<M, L>,    // Item type
+        flat::LocalId, // Hole array
+        flat::LocalId, // Item
     ), // Returns new array
     Reserve(
-        Type<Mode, Lt>, // Item type
-        flat::LocalId,  // Array
-        flat::LocalId,  // Capacity
+        Type<M, L>,    // Item type
+        flat::LocalId, // Array
+        flat::LocalId, // Capacity
     ), // Returns new array
 }
 
 #[derive(Clone, Debug)]
-pub enum Expr<Mode, Lt> {
+pub enum Expr<M, L> {
     Local(flat::LocalId),
     Call(Purity, first_ord::CustomFuncId, flat::LocalId),
     Branch(
         flat::LocalId,
-        Vec<(Condition<Mode, Lt>, Expr<Mode, Lt>)>,
-        Type<Mode, Lt>,
+        Vec<(Condition<M, L>, Expr<M, L>)>,
+        Type<M, L>,
     ),
     LetMany(
-        Vec<(Type<Mode, Lt>, Expr<Mode, Lt>)>, // bound values.  Each is assigned a new sequential flat::LocalId
-        flat::LocalId,                         // body
+        Vec<(Type<M, L>, Expr<M, L>)>, // bound values.  Each is assigned a new sequential flat::LocalId
+        flat::LocalId,                 // body
     ),
 
     Tuple(Vec<flat::LocalId>),
     TupleField(flat::LocalId, usize),
     WrapVariant(
-        IdVec<first_ord::VariantId, Type<Mode, Lt>>,
+        IdVec<first_ord::VariantId, Type<M, L>>,
         first_ord::VariantId,
         flat::LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, flat::LocalId),
     WrapBoxed(
         flat::LocalId,
-        Type<Mode, Lt>, // Inner type
+        Type<M, L>, // Inner type
     ),
     UnwrapBoxed(
         flat::LocalId,
-        Type<Mode, Lt>, // Inner type
+        Type<M, L>, // Inner type
     ),
     WrapCustom(first_ord::CustomTypeId, flat::LocalId),
     UnwrapCustom(first_ord::CustomTypeId, flat::LocalId),
 
     Intrinsic(Intrinsic, flat::LocalId),
-    ArrayOp(ArrayOp<Mode, Lt>),
+    ArrayOp(ArrayOp<M, L>),
     IoOp(flat::IoOp),
-    Panic(Type<Mode, Lt>, flat::LocalId),
+    Panic(Type<M, L>, flat::LocalId),
 
-    ArrayLit(Type<Mode, Lt>, Vec<flat::LocalId>),
+    ArrayLit(Type<M, L>, Vec<flat::LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -345,15 +300,15 @@ pub enum Expr<Mode, Lt> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Condition<Mode, Lt> {
+pub enum Condition<M, L> {
     Any,
-    Tuple(Vec<Condition<Mode, Lt>>),
-    Variant(first_ord::VariantId, Box<Condition<Mode, Lt>>),
+    Tuple(Vec<Condition<M, L>>),
+    Variant(first_ord::VariantId, Box<Condition<M, L>>),
     Boxed(
-        Box<Condition<Mode, Lt>>,
-        Type<Mode, Lt>, // Inner type
+        Box<Condition<M, L>>,
+        Type<M, L>, // Inner type
     ),
-    Custom(first_ord::CustomTypeId, Box<Condition<Mode, Lt>>),
+    Custom(first_ord::CustomTypeId, Box<Condition<M, L>>),
     BoolConst(bool),
     ByteConst(u8),
     IntConst(i64),
@@ -361,75 +316,72 @@ pub enum Condition<Mode, Lt> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Annot<Mode, Lt> {
-    pub lifetime: Lt,
-    pub mode: Mode,
-    pub intrinsic_ty: IntrinsicType<Mode>,
+pub struct ModeAnnot<M, L> {
+    pub lifetime: L,
+    pub mode: M,
+    pub intrinsic_type: IntrinsicType<M, L>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Type<Mode, Lt> {
+pub enum Type<M, L> {
     Bool,
     Num(first_ord::NumType),
-    Tuple(Vec<Type<Mode, Lt>>),
-    Variants(IdVec<first_ord::VariantId, Type<Mode, Lt>>),
+    Tuple(Vec<Type<M, L>>),
+    Variants(IdVec<first_ord::VariantId, Type<M, L>>),
     Custom(
         first_ord::CustomTypeId,
-        IdVec<ModeParam, Mode>,   // Substitution for mode parameters
-        IdVec<LifetimeParam, Lt>, // Substitution for lifetime parameters
+        IdVec<ModeParam, M>, // Substitution for mode parameters
+        IdVec<LtParam, L>,   // Substitution for lifetime parameters
     ),
 
-    // Types with mode variables
-    Array(Box<Type<Mode, Lt>>, Annot<Mode, Lt>),
-    HoleArray(Box<Type<Mode, Lt>>, Annot<Mode, Lt>),
-    Boxed(Box<Type<Mode, Lt>>, Annot<Mode, Lt>),
+    // Types with attached modes
+    Array(Box<Type<M, L>>, ModeAnnot<M, L>),
+    HoleArray(Box<Type<M, L>>, ModeAnnot<M, L>),
+    Boxed(Box<Type<M, L>>, ModeAnnot<M, L>),
 }
 
-/// "Intrinsic" as opposed to "extrinsic", not "intrinsic" as in a "compiler built-in"
+// "Intrinsic" as in describing the contents of the heap itself, rather than its relation to other
+// objects (not "intrinsic" as in "builtin")
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IntrinsicType<Mode> {
+pub enum IntrinsicType<M, L> {
     Bool,
     Num(first_ord::NumType),
-    Tuple(Vec<IntrinsicType<Mode>>),
-    Variants(IdVec<first_ord::VariantId, IntrinsicType<Mode>>),
-    Custom(first_ord::CustomTypeId, IdVec<ModeParam, Mode>),
+    Tuple(Vec<IntrinsicType<M, L>>),
+    Variants(IdVec<first_ord::VariantId, IntrinsicType<M, L>>),
+    Custom(
+        first_ord::CustomTypeId,
+        IdVec<ModeParam, M>, // Substitution for mode parameters
+        IdVec<LtParam, L>,   // Substitution for lifetime parameters
+    ),
 
-    // Types with mode variables
-    Array(Box<IntrinsicType<Mode>>, Mode),
-    HoleArray(Box<IntrinsicType<Mode>>, Mode),
-    Boxed(Box<IntrinsicType<Mode>>, Mode),
+    // Types with attached modes
+    Array(Box<IntrinsicType<M, L>>, M),
+    HoleArray(Box<IntrinsicType<M, L>>, M),
+    Boxed(Box<IntrinsicType<M, L>>, M),
 }
-
-pub type SolverType = Type<ModeVar, LifetimeVar>;
-pub type SolverIntrinsicType = IntrinsicType<ModeVar>;
-pub type SolverExpr = Expr<ModeVar, LifetimeVar>;
-
-pub type ExternalType = Type<ModeParam, LifetimeParam>;
-pub type ExternalIntrinsicType = IntrinsicType<ModeParam>;
-pub type ExternalExpr = Expr<ModeParam, LifetimeParam>;
 
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub purity: Purity,
 
     // The total number of mode (resp. lifetime) parameters in `arg_type` and `ret_type`
-    pub num_mode_params: usize,
-    pub num_lifetime_params: usize,
-    pub arg_type: ExternalType,
-    pub ret_type: ExternalType,
+    pub num_mode_params: Count<ModeParam>,
+    pub num_lt_params: Count<LtParam>,
+    pub arg_type: Type<ModeParam, LtParam>,
+    pub ret_type: Type<ModeParam, LtParam>,
     pub constrs: Vec<ModeConstr>,
 
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument
-    pub body: flat::Expr,
+    pub body: Expr<ModeParam, LtParam>,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 
 #[derive(Clone, Debug)]
 pub struct CustomTypeDef {
-    pub num_mode_params: usize,
-    pub num_lifetime_params: usize,
-    pub content: ExternalType,
+    pub num_mode_params: Count<ModeParam>,
+    pub num_lt_params: Count<LtParam>,
+    pub content: Type<ModeParam, LtParam>,
     pub scc: flat::CustomTypeSccId,
 }
 
