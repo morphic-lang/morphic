@@ -4,6 +4,7 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::graph::Scc;
 use id_collections::{id_type, IdVec};
 
 #[id_type]
@@ -138,7 +139,7 @@ pub struct CustomTypeDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
     pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
-    pub sccs: IdVec<CustomTypeSccId, Vec<first_ord::CustomTypeId>>,
+    pub sccs: IdVec<CustomTypeSccId, Scc<first_ord::CustomTypeId>>,
 }
 
 #[derive(Clone, Debug)]

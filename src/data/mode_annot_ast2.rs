@@ -4,10 +4,10 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use id_collections::Count;
-use id_collections::{id_type, IdVec};
-use std::collections::HashSet;
+use id_collections::{id_type, Count, Id, IdVec};
+use std::collections::BTreeSet;
 use std::hash::Hash;
+use std::rc::Rc;
 
 #[id_type]
 pub struct LtVar(pub usize);
@@ -23,21 +23,79 @@ pub struct ModeParam(pub usize);
 
 /// We compute the least solution to our constraints where `Borrowed` < `Owned`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ModeTerm {
+pub enum ModeTerm<M: Id> {
     Owned,
     Borrowed,
-    Join(NonEmptySet<ModeVar>),
+    Join(NonEmptySet<M>),
 }
 
-impl ModeTerm {
-    pub fn var(v: ModeVar) -> Self {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModeAnnot<M: Id> {
+    Stack {
+        stack: ModeTerm<M>,
+    },
+    CyclicScc {
+        stack: ModeTerm<M>,
+        storage: ModeTerm<M>,
+        access: ModeTerm<M>,
+    },
+    Heap {
+        storage: ModeTerm<M>,
+        access: ModeTerm<M>,
+    },
+}
+
+impl<M: Id> ModeTerm<M> {
+    pub fn var(v: M) -> Self {
         Self::Join(NonEmptySet::new(v))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LtPathElem {
+    Final,
+    Seq(usize),
+    Par(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LtPath(Vec<LtPathElem>);
+
+impl LtPath {
+    pub fn new() -> Self {
+        Self(vec![LtPathElem::Final])
+    }
+
+    pub fn push_seq(&self, i: usize) -> Self {
+        let mut elems = self.0.clone();
+        elems.push(LtPathElem::Seq(i));
+        Self(elems)
+    }
+
+    pub fn push_par(&self, i: usize) -> Self {
+        let mut elems = self.0.clone();
+        elems.push(LtPathElem::Par(i));
+        Self(elems)
+    }
+
+    pub fn iter(&self) -> LtPathIter<'_> {
+        LtPathIter(self.0.iter())
+    }
+}
+
+struct LtPathIter<'a>(std::slice::Iter<'a, LtPathElem>);
+
+impl<'a> Iterator for LtPathIter<'a> {
+    type Item = &'a LtPathElem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
     }
 }
 
 /// A constraint of the form `self.0 <= self.1`.
 #[derive(Debug, Clone, Copy)]
-pub struct ModeConstr(pub ModeVar, pub ModeVar);
+pub struct ModeConstr(pub ModeParam, pub ModeParam);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lt {
@@ -75,11 +133,11 @@ impl LtPar {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NonEmptySet<T: Eq + Hash>(HashSet<T>);
+pub struct NonEmptySet<T: Id>(BTreeSet<T>);
 
-impl<T: Eq + Hash> NonEmptySet<T> {
+impl<T: Id> NonEmptySet<T> {
     fn new(x: T) -> Self {
-        let mut s = HashSet::new();
+        let mut s = BTreeSet::new();
         s.insert(x);
         Self(s)
     }
@@ -110,6 +168,14 @@ impl Lt {
             (me @ Lt::Local(_), other @ Lt::Join(_)) => *me = other,
             (Lt::Join(_), Lt::Local(_)) => {}
             (Lt::Join(s1), Lt::Join(s2)) => s1.union(s2),
+        }
+    }
+
+    fn join_path(&mut self, path: &LtPath) {
+        match self {
+            Lt::Empty => todo!(),
+            Lt::Local(l) => l.join_path(path.iter()),
+            Lt::Join(_) => {}
         }
     }
 
@@ -161,6 +227,10 @@ impl LtLocal {
             }
             (LtLocal::Par(p1), LtLocal::Par(p2)) => p1.join(p2),
         }
+    }
+
+    fn join_path(&mut self, path: LtPathIter<'_>) {
+        todo!()
     }
 
     fn does_not_exceed(&self, other: &Self) -> bool {
@@ -218,7 +288,7 @@ impl LtPar {
 }
 
 #[derive(Clone, Debug)]
-pub enum ArrayOp<M, L> {
+pub enum ArrayOp<M: Id, L> {
     Get(
         Type<M, L>,    // Item type
         flat::LocalId, // Array
@@ -255,7 +325,7 @@ pub enum ArrayOp<M, L> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Expr<M, L> {
+pub enum Expr<M: Id, L> {
     Local(flat::LocalId),
     Call(Purity, first_ord::CustomFuncId, flat::LocalId),
     Branch(
@@ -300,7 +370,7 @@ pub enum Expr<M, L> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Condition<M, L> {
+pub enum Condition<M: Id, L> {
     Any,
     Tuple(Vec<Condition<M, L>>),
     Variant(first_ord::VariantId, Box<Condition<M, L>>),
@@ -316,57 +386,61 @@ pub enum Condition<M, L> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModeAnnot<M, L> {
-    pub lifetime: L,
-    pub mode: M,
-    pub intrinsic_type: IntrinsicType<M, L>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Type<M, L> {
+pub enum Type<M: Id, L> {
     Bool,
     Num(first_ord::NumType),
     Tuple(Vec<Type<M, L>>),
     Variants(IdVec<first_ord::VariantId, Type<M, L>>),
-    Custom(
-        first_ord::CustomTypeId,
-        IdVec<ModeParam, M>, // Substitution for mode parameters
-        IdVec<LtParam, L>,   // Substitution for lifetime parameters
-    ),
+    Custom {
+        id: first_ord::CustomTypeId,
+        stack_mode_subst: IdVec<ModeParam, M>,
+        storage_mode_subst: IdVec<ModeParam, M>,
+        access_mode_subst: IdVec<ModeParam, M>,
+        lt_subst: IdVec<LtParam, L>,
+    },
 
     // Types with attached modes
-    Array(Box<Type<M, L>>, ModeAnnot<M, L>),
-    HoleArray(Box<Type<M, L>>, ModeAnnot<M, L>),
-    Boxed(Box<Type<M, L>>, ModeAnnot<M, L>),
+    Array(Box<Type<M, L>>, ModeAnnot<M>, L),
+    HoleArray(Box<Type<M, L>>, ModeAnnot<M>, L),
+    Boxed(Box<Type<M, L>>, ModeAnnot<M>, L),
 }
 
-// "Intrinsic" as in describing the contents of the heap itself, rather than its relation to other
-// objects (not "intrinsic" as in "builtin")
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IntrinsicType<M, L> {
-    Bool,
-    Num(first_ord::NumType),
-    Tuple(Vec<IntrinsicType<M, L>>),
-    Variants(IdVec<first_ord::VariantId, IntrinsicType<M, L>>),
-    Custom(
-        first_ord::CustomTypeId,
-        IdVec<ModeParam, M>, // Substitution for mode parameters
-        IdVec<LtParam, L>,   // Substitution for lifetime parameters
-    ),
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ParamCounts {
+    pub stack_mode_count: Count<ModeParam>,
+    pub storage_mode_count: Count<ModeParam>,
+    pub access_mode_count: Count<ModeParam>,
+    pub lt_count: Count<LtParam>,
+}
 
-    // Types with attached modes
-    Array(Box<IntrinsicType<M, L>>, M),
-    HoleArray(Box<IntrinsicType<M, L>>, M),
-    Boxed(Box<IntrinsicType<M, L>>, M),
+impl std::ops::Add for ParamCounts {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        let stack_mode_count =
+            Count::from_value(self.stack_mode_count.to_value() + other.stack_mode_count.to_value());
+        let storage_mode_count = Count::from_value(
+            self.storage_mode_count.to_value() + other.storage_mode_count.to_value(),
+        );
+        let access_mode_count = Count::from_value(
+            self.access_mode_count.to_value() + other.access_mode_count.to_value(),
+        );
+        let lt = Count::from_value(self.lt_count.to_value() + other.lt_count.to_value());
+        Self {
+            stack_mode_count,
+            storage_mode_count,
+            access_mode_count,
+            lt_count: lt,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub purity: Purity,
 
-    // The total number of mode (resp. lifetime) parameters in `arg_type` and `ret_type`
-    pub num_mode_params: Count<ModeParam>,
-    pub num_lt_params: Count<LtParam>,
+    // Total number of params in `arg_type` and `ret_type`
+    pub num_params: ParamCounts,
     pub arg_type: Type<ModeParam, LtParam>,
     pub ret_type: Type<ModeParam, LtParam>,
     pub constrs: Vec<ModeConstr>,
@@ -379,10 +453,8 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct CustomTypeDef {
-    pub num_mode_params: Count<ModeParam>,
-    pub num_lt_params: Count<LtParam>,
+    pub num_params: ParamCounts,
     pub content: Type<ModeParam, LtParam>,
-    pub scc: flat::CustomTypeSccId,
 }
 
 #[derive(Clone, Debug)]

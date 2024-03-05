@@ -116,6 +116,50 @@ pub enum Scc<NodeId> {
     Cyclic(Vec<NodeId>),
 }
 
+impl<NodeId> Scc<NodeId> {
+    pub fn iter(&self) -> SccIter<NodeId> {
+        self.into_iter()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum SccIterImpl<'a, NodeId> {
+    Acyclic(std::iter::Once<&'a NodeId>),
+    Cyclic(std::slice::Iter<'a, NodeId>),
+}
+
+#[derive(Clone, Debug)]
+pub struct SccIter<'a, NodeId> {
+    inner: SccIterImpl<'a, NodeId>,
+}
+
+impl<'a, NodeId> Iterator for SccIter<'a, NodeId> {
+    type Item = &'a NodeId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            SccIterImpl::Acyclic(iter) => iter.next(),
+            SccIterImpl::Cyclic(iter) => iter.next(),
+        }
+    }
+}
+
+impl<'a, NodeId> IntoIterator for &'a Scc<NodeId> {
+    type Item = &'a NodeId;
+    type IntoIter = SccIter<'a, NodeId>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Scc::Acyclic(node) => SccIter {
+                inner: SccIterImpl::Acyclic(std::iter::once(node)),
+            },
+            Scc::Cyclic(nodes) => SccIter {
+                inner: SccIterImpl::Cyclic(nodes.iter()),
+            },
+        }
+    }
+}
+
 pub fn acyclic_and_cyclic_sccs<NodeId: Id + Eq>(graph: &Graph<NodeId>) -> Vec<Scc<NodeId>> {
     let sccs = strongly_connected(graph);
 

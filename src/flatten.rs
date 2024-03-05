@@ -5,7 +5,8 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::intrinsics as intrs;
 use crate::intrinsic_config::intrinsic_sig;
-use crate::util::graph::{strongly_connected, Graph};
+use crate::util::graph::acyclic_and_cyclic_sccs;
+use crate::util::graph::Graph;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::IdVec;
 
@@ -625,7 +626,7 @@ fn mark_custom_type_sccs(
         }),
     };
 
-    let sccs = IdVec::<flat::CustomTypeSccId, _>::from_vec(strongly_connected(&type_deps));
+    let sccs = IdVec::<flat::CustomTypeSccId, _>::from_vec(acyclic_and_cyclic_sccs(&type_deps));
 
     let mut types = typedefs.map_refs(|_, _| None);
     for (scc_id, scc) in &sccs {
