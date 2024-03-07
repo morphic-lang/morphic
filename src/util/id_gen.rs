@@ -11,8 +11,7 @@ impl<T: Id> IdGen<T> {
     }
 
     pub fn fresh(&mut self) -> T {
-        let result = self.next.inc();
-        result
+        self.next.inc()
     }
 
     pub fn count(&self) -> Count<T> {

@@ -20,11 +20,16 @@ impl<Var: Id, T> LocalContext<Var, T> {
         self.stack.truncate(count);
     }
 
-    pub fn local_binding(&self, local: Var) -> &T
-    where
-        T: Clone,
-    {
+    pub fn pop(&mut self) {
+        self.stack.pop();
+    }
+
+    pub fn local_binding(&self, local: Var) -> &T {
         &self.stack[local]
+    }
+
+    pub fn local_binding_mut(&mut self, local: Var) -> &mut T {
+        &mut self.stack[local]
     }
 
     pub fn with_scope<R, F: for<'a> FnOnce(&'a mut LocalContext<Var, T>) -> R>(
