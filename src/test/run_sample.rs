@@ -19,6 +19,7 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
 ) {
     let config = cli::RunConfig {
         src_path: path.as_ref().to_owned(),
+        purity_mode: cli::PurityMode::Checked,
         mode,
         rc_mode,
         mutation_mode,
