@@ -327,7 +327,7 @@ impl Config {
 
         if let Some(matches) = matches.subcommand_matches("run") {
             let src_path = matches
-                .get_one::<OsString>("src-path")
+                .get_one::<String>("src-path")
                 .unwrap()
                 .to_owned()
                 .into();
