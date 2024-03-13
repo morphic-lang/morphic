@@ -2,65 +2,57 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
 use crate::data::flat_ast::{self as flat, LocalId};
 use crate::data::mode_annot_ast2::{
-    self as annot, Lt, LtParam, ModeLteConstr, ModeParam, ModeTerm, Overlay,
+    self as annot, Lt, LtParam, ModeConstr, ModeParam, ModeTerm, Overlay,
 };
-use crate::util::graph::{self, Graph, Scc};
 use crate::util::id_gen::IdGen;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, Count, Id, IdMap, IdVec};
+use id_graph_sccs::{find_components, Scc, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
 
 struct ConstrGraph {
     // a -> b means a <= b, i.e. if a is owned then b is owned
-    inner: Graph<ModeParam>,
+    edges_out: IdVec<ModeParam, Vec<ModeParam>>,
+    owned: BTreeSet<ModeParam>,
 }
 
 impl ConstrGraph {
     fn new() -> Self {
         Self {
-            inner: Graph {
-                edges_out: IdVec::new(),
-            },
+            edges_out: IdVec::new(),
+            owned: BTreeSet::new(),
         }
     }
 
-    fn add_constr(&mut self, constr: ModeLteConstr) {
-        self.inner.edges_out[constr.0].push(constr.1);
+    fn add_constrs(&mut self, constrs: &[ModeConstr]) {
+        for constr in constrs {
+            match constr {
+                ModeConstr::Lte(a, b) => {
+                    self.enforce_lte(*a, *b);
+                }
+                ModeConstr::Owned(a) => {
+                    self.enforce_owned(*a);
+                }
+            }
+        }
     }
 
-    fn add_lte(&mut self, a: ModeParam, b: ModeParam) {
-        self.add_constr(ModeLteConstr(a, b));
+    fn enforce_lte(&mut self, a: ModeParam, b: ModeParam) {
+        self.edges_out[a].push(b);
     }
 
-    fn add_eq(&mut self, a: ModeParam, b: ModeParam) {
-        self.add_lte(a, b);
-        self.add_lte(b, a);
+    fn enforce_eq(&mut self, a: ModeParam, b: ModeParam) {
+        self.enforce_lte(a, b);
+        self.enforce_lte(b, a);
+    }
+
+    fn enforce_owned(&mut self, a: ModeParam) {
+        self.owned.insert(a);
     }
 
     fn solve(&self) -> IdVec<ModeVar, ModeTerm<ModeVar>> {
-        let sccs = graph::acyclic_and_cyclic_sccs(&self.inner);
-
-        let mut lower_bounds = IdMap::new();
-        for scc in &sccs {
-            todo!()
-        }
-
-        let len = lower_bounds.len();
-        lower_bounds.to_id_vec(Count::from_value(len))
-    }
-}
-
-struct ModeConstrs(Vec<ModeLteConstr>);
-
-impl ModeConstrs {
-    fn add_lte(&mut self, a: ModeParam, b: ModeParam) {
-        self.0.push(ModeLteConstr(a, b));
-    }
-
-    fn add_eq(&mut self, a: ModeParam, b: ModeParam) {
-        self.add_lte(a, b);
-        self.add_lte(b, a);
+        todo!()
     }
 }
 
@@ -106,12 +98,19 @@ fn count_params(
     }
 }
 
+fn fresh_ids<I: Id, J: Id>(n: Count<I>, count: &mut Count<J>) -> IdVec<I, J> {
+    IdVec::from_count_with(n, |_| count.inc())
+}
+
 fn parameterize(
     customs: &IdMap<CustomTypeId, annot::CustomTypeDef>,
+    old_customs: &IdVec<CustomTypeId, flat::CustomTypeDef>,
+    sccs: &Sccs<TypeSccId, CustomTypeId>,
+    scc_map: &IdVec<CustomTypeId, TypeSccId>,
     scc_num_mode_params: Count<ModeParam>,
     scc_num_lt_params: Count<LtParam>,
-    mode_gen: &mut IdGen<ModeParam>,
-    lt_gen: &mut IdGen<LtParam>,
+    mode_count: &mut Count<ModeParam>,
+    lt_count: &mut Count<LtParam>,
     t: &anon::Type,
 ) -> annot::Type<ModeParam, LtParam> {
     match t {
@@ -122,10 +121,13 @@ fn parameterize(
                 .map(|t| {
                     parameterize(
                         customs,
+                        old_customs,
+                        sccs,
+                        scc_map,
                         scc_num_mode_params,
                         scc_num_lt_params,
-                        mode_gen,
-                        lt_gen,
+                        mode_count,
+                        lt_count,
                         t,
                     )
                 })
@@ -134,87 +136,142 @@ fn parameterize(
         anon::Type::Variants(ts) => annot::Type::Variants(ts.map_refs(|_, t| {
             parameterize(
                 customs,
+                old_customs,
+                sccs,
+                scc_map,
                 scc_num_mode_params,
                 scc_num_lt_params,
-                mode_gen,
-                lt_gen,
+                mode_count,
+                lt_count,
                 &t,
             )
         })),
         anon::Type::Custom(id) => match customs.get(id) {
-            Some(typedef) => {
-                let mode_subst =
-                    IdVec::from_count_with(typedef.num_mode_params, |_| mode_gen.fresh());
-                let lt_subst = IdVec::from_count_with(typedef.num_lt_params, |_| lt_gen.fresh());
-                let overlay = IdVec::from_count_with(typedef.num_mode_params, |_| mode_gen.fresh());
-                annot::Type::Custom {
-                    id: *id,
-                    mode_subst,
-                    lt_subst,
-                    overlay: Overlay::Custom(overlay),
-                }
-            }
+            Some(typedef) => annot::Type::Custom {
+                id: *id,
+                mode_subst: fresh_ids(typedef.num_mode_params, mode_count),
+                overlay_subst: fresh_ids(typedef.num_mode_params, mode_count),
+                lt_subst: fresh_ids(typedef.num_lt_params, lt_count),
+                overlay: fresh_overlay(old_customs, sccs, scc_map, scc_map[*id], mode_count, t),
+            },
             // This is a typedef in the same SCC, so we need to parameterize it by all the SCC parameters.
-            None => {
-                let mode_subst = IdVec::from_count_with(scc_num_mode_params, |id| id);
-                let lt_subst = IdVec::from_count_with(scc_num_lt_params, |id| id);
-                let overlay = IdVec::from_count_with(scc_num_mode_params, |id| id);
-                annot::Type::Custom {
-                    id: *id,
-                    mode_subst,
-                    lt_subst,
-                    overlay: Overlay::Custom(overlay),
-                }
-            }
+            None => annot::Type::Custom {
+                id: *id,
+                mode_subst: fresh_ids(scc_num_mode_params, mode_count),
+                overlay_subst: fresh_ids(scc_num_mode_params, mode_count),
+                lt_subst: fresh_ids(scc_num_lt_params, lt_count),
+                overlay: fresh_overlay(old_customs, sccs, scc_map, scc_map[*id], mode_count, t),
+            },
         },
         anon::Type::Array(t) => {
             let content = parameterize(
                 customs,
+                old_customs,
                 scc_num_mode_params,
                 scc_num_lt_params,
-                mode_gen,
-                lt_gen,
+                mode_count,
+                lt_count,
                 t,
             );
             annot::Type::Array {
                 content: Box::new(content),
-                mode: ModeTerm::var(mode_gen.fresh()),
-                lt: Lt::var(lt_gen.fresh()),
-                overlay: Overlay::Managed(mode_gen.fresh()),
+                mode: ModeTerm::var(mode_count.fresh()),
+                lt: Lt::var(lt_count.fresh()),
+                overlay: Overlay::Managed(mode_count.fresh()),
             }
         }
         anon::Type::HoleArray(t) => {
             let content = parameterize(
                 customs,
+                old_customs,
+                sccs,
+                scc_map,
                 scc_num_mode_params,
                 scc_num_lt_params,
-                mode_gen,
-                lt_gen,
+                mode_count,
+                lt_count,
                 t,
             );
             annot::Type::HoleArray {
                 content: Box::new(content),
-                mode: ModeTerm::var(mode_gen.fresh()),
-                lt: Lt::var(lt_gen.fresh()),
-                overlay: Overlay::Managed(mode_gen.fresh()),
+                mode: ModeTerm::var(mode_count.fresh()),
+                lt: Lt::var(lt_count.fresh()),
+                overlay: Overlay::Managed(mode_count.fresh()),
             }
         }
         anon::Type::Boxed(t) => {
             let content = parameterize(
                 customs,
+                old_customs,
+                sccs,
+                scc_map,
                 scc_num_mode_params,
                 scc_num_lt_params,
-                mode_gen,
-                lt_gen,
+                mode_count,
+                lt_count,
                 t,
             );
             annot::Type::Boxed {
                 content: Box::new(content),
-                mode: ModeTerm::var(mode_gen.fresh()),
-                lt: Lt::var(lt_gen.fresh()),
-                overlay: Overlay::Managed(mode_gen.fresh()),
+                mode: ModeTerm::var(mode_count.inc()),
+                lt: Lt::var(lt_count.inc()),
+                overlay: fresh_overlay(typedefs, count, sccs, scc_map, scc_id, t),
             }
         }
+    }
+}
+
+#[id_type]
+struct TypeSccId(usize);
+
+fn fresh_overlay(
+    customs: &IdVec<CustomTypeId, flat::CustomTypeDef>,
+    sccs: &Sccs<TypeSccId, CustomTypeId>,
+    scc_map: &IdVec<CustomTypeId, TypeSccId>,
+    scc_id: TypeSccId,
+    count: &mut Count<ModeParam>,
+    t: &anon::Type,
+) -> Overlay<ModeParam> {
+    match t {
+        anon::Type::Bool => Overlay::Bool,
+        anon::Type::Num(t) => Overlay::Num(*t),
+        anon::Type::Tuple(ts) => Overlay::Tuple(
+            ts.iter()
+                .map(|t| fresh_overlay(customs, sccs, scc_map, scc_id, count, t))
+                .collect(),
+        ),
+        anon::Type::Variants(ts) => Overlay::Variants(
+            ts.map_refs(|_, t| fresh_overlay(customs, sccs, scc_map, scc_id, count, t)),
+        ),
+        anon::Type::Custom(id) => {
+            let other_scc_id = scc_map[*id];
+            if other_scc_id == scc_id {
+                Overlay::CustomInScc
+            } else {
+                Overlay::Custom(
+                    sccs.component(other_scc_id)
+                        .nodes
+                        .iter()
+                        .map(|&id| {
+                            (
+                                id,
+                                fresh_overlay(
+                                    customs,
+                                    count,
+                                    sccs,
+                                    scc_map,
+                                    other_scc_id,
+                                    &customs[id].content,
+                                ),
+                            )
+                        })
+                        .collect(),
+                )
+            }
+        }
+        anon::Type::Array(_) => Overlay::Array(ModeTerm::var(count.inc())),
+        anon::Type::HoleArray(_) => Overlay::HoleArray(ModeTerm::var(count.inc())),
+        anon::Type::Boxed(_) => Overlay::Boxed(ModeTerm::var(count.inc())),
     }
 }
 
@@ -297,15 +354,15 @@ fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &flat::Expr) {
     }
 }
 
-fn func_dependency_graph(program: &flat::Program) -> Graph<CustomFuncId> {
-    Graph {
-        edges_out: program.funcs.map_refs(|_, func_def| {
-            let mut deps = BTreeSet::new();
-            add_func_deps(&mut deps, &func_def.body);
-            deps.into_iter().collect()
-        }),
-    }
-}
+// fn func_dependency_graph(program: &flat::Program) -> Graph<CustomFuncId> {
+//     Graph {
+//         edges_out: program.funcs.map_refs(|_, func_def| {
+//             let mut deps = BTreeSet::new();
+//             add_func_deps(&mut deps, &func_def.body);
+//             deps.into_iter().collect()
+//         }),
+//     }
+// }
 
 #[id_type]
 struct LtVar(pub usize);
@@ -395,7 +452,7 @@ fn instantiate_expr(
                     }
                     locals_fut.add_local(fut.clone());
 
-                    let end_of_scope = path.push_seq(bindings.len());
+                    let end_of_scope = path.seq(bindings.len());
                     let bindings_inst = bindings
                         .iter()
                         .enumerate()
@@ -410,7 +467,7 @@ fn instantiate_expr(
                                 locals_fut,
                                 fut,
                                 binding,
-                                path.push_seq(i),
+                                path.seq(i),
                             );
                             scopes.add_local(end_of_scope.clone());
                             locals.add_local(binding_t.clone());

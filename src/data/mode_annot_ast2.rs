@@ -5,6 +5,7 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use id_collections::{id_type, Count, Id, IdVec};
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::hash::Hash;
 
@@ -13,12 +14,12 @@ use std::hash::Hash;
 // - for let-many, make sure to clone Gamma(x) at the right time
 
 #[id_type]
-pub struct LtParam(pub usize);
-
-#[id_type]
 pub struct ModeParam(pub usize);
 
-/// We compute the least solution to our constraints where `Borrowed` < `Owned`.
+#[id_type]
+pub struct LtParam(pub usize);
+
+/// We compute the least solution to our mode constraints where `Borrowed` < `Owned`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModeTerm<M: Id> {
     Owned,
@@ -28,9 +29,7 @@ pub enum ModeTerm<M: Id> {
 
 impl<M: Id> ModeTerm<M> {
     pub fn var(x: M) -> Self {
-        let mut set = BTreeSet::new();
-        set.insert(x);
-        ModeTerm::Join(set)
+        ModeTerm::Join(std::iter::once(x).collect())
     }
 }
 
@@ -48,19 +47,19 @@ impl Path {
         Self(im_rc::Vector::new())
     }
 
-    pub fn push_seq(&self, i: usize) -> Self {
+    pub fn seq(&self, i: usize) -> Self {
         let mut elems = self.0.clone();
         elems.push_back(PathElem::Seq(i));
         Self(elems)
     }
 
-    pub fn push_par(&self, i: usize, n: usize) -> Self {
+    pub fn par(&self, i: usize, n: usize) -> Self {
         let mut elems = self.0.clone();
         elems.push_back(PathElem::Par { i, n });
         Self(elems)
     }
 
-    pub fn as_lt<L>(&self) -> Lt<L> {
+    pub fn as_lt<L: Id>(&self) -> Lt<L> {
         let mut res = LocalLt::Final;
         for elem in self.0.iter().rev() {
             match elem {
@@ -78,12 +77,14 @@ impl Path {
     }
 }
 
-/// A constraint of the form `self.0 <= self.1`.
 #[derive(Debug, Clone, Copy)]
-pub struct ModeLteConstr(pub ModeParam, pub ModeParam);
+pub enum ModeConstr {
+    Lte(ModeParam, ModeParam),
+    Owned(ModeParam),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Lt<L> {
+pub enum Lt<L: Id> {
     Empty,
     Local(LocalLt),
     Join(BTreeSet<L>), // Always non-empty
@@ -92,25 +93,20 @@ pub enum Lt<L> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalLt {
     Final,
-    // For ordered "events", e.g. the binding and body of a let.
+    // Represents ordered "events", e.g. the binding and body of a let.
     Seq(Box<LocalLt>, usize),
-    // For unordered "events", e.g. the arms of a match.
-    // Always contains at lest one `Some`.
+    // Represents unordered "events", e.g. the arms of a match.
+    // Always contains at least one `Some`.
     Par(Vec<Option<LocalLt>>),
 }
 
-impl<L> Lt<L>
-where
-    L: Ord + Eq + Clone,
-{
+impl<L: Id> Lt<L> {
     pub fn var(x: L) -> Self {
-        let mut set = BTreeSet::new();
-        set.insert(x);
-        Lt::Join(set)
+        Lt::Join(std::iter::once(x).collect())
     }
 
-    /// A join over the following lattice: `l1 <= l2` iff, for every leaf of `l1`, there is a leaf
-    /// of `l2` that occurs "later in time".
+    /// A join over the lattice: `l1 <= l2` iff, for every leaf of `l1`, there is a leaf of `l2`
+    /// that occurs "later in time".
     ///
     /// Panics if `self` and `other` are not structurally compatible.
     fn join(&self, other: &Self) -> Self {
@@ -156,7 +152,7 @@ impl LocalLt {
             }
             (LocalLt::Par(p1), LocalLt::Par(p2)) => {
                 if p1.len() != p2.len() {
-                    panic!("expected structurally compatible lifetimes");
+                    panic!("incompatible lifetimes")
                 }
                 LocalLt::Par(
                     p1.iter()
@@ -171,15 +167,8 @@ impl LocalLt {
                 )
             }
             (LocalLt::Seq(_, _), LocalLt::Par(_)) | (LocalLt::Par(_), LocalLt::Seq(_, _)) => {
-                panic!("expected structurally compatible lifetimes");
+                panic!("incompatible lifetimes");
             }
-        }
-    }
-
-    fn seq_idx(&self) -> usize {
-        match self {
-            LocalLt::Seq(_, i) => *i,
-            _ => panic!("expected Seq"),
         }
     }
 
@@ -198,7 +187,7 @@ impl LocalLt {
             }
             (LocalLt::Par(p1), LocalLt::Par(p2)) => {
                 if p1.len() != p2.len() {
-                    panic!("expected structurally compatible lifetimes");
+                    panic!("incompatible lifetimes");
                 }
                 for (l1, l2) in p1.iter().zip(p2.iter()) {
                     if let (Some(l1), Some(l2)) = (l1, l2) {
@@ -210,14 +199,14 @@ impl LocalLt {
                 return true;
             }
             _ => {
-                panic!("expected structurally compatible lifetimes");
+                panic!("incompatible lifetimes");
             }
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum ArrayOp<M: Id, L> {
+pub enum ArrayOp<M: Id, L: Id> {
     Get(
         Type<M, L>,    // Item type
         flat::LocalId, // Array
@@ -254,7 +243,7 @@ pub enum ArrayOp<M: Id, L> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Expr<M: Id, L> {
+pub enum Expr<M: Id, L: Id> {
     Local(flat::LocalId),
     Call(Purity, first_ord::CustomFuncId, flat::LocalId),
     Branch(
@@ -299,7 +288,7 @@ pub enum Expr<M: Id, L> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Condition<M: Id, L> {
+pub enum Condition<M: Id, L: Id> {
     Any,
     Tuple(Vec<Condition<M, L>>),
     Variant(first_ord::VariantId, Box<Condition<M, L>>),
@@ -316,39 +305,46 @@ pub enum Condition<M: Id, L> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overlay<M: Id> {
-    Unmanaged,  // For types which are alwayed copied, e.g. Bool
-    Managed(M), // For types which are rc'ed, e.g. Array
-    Custom(IdVec<ModeParam, M>),
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<Overlay<M>>),
+    Variants(IdVec<first_ord::VariantId, Overlay<M>>),
+    Custom(BTreeMap<first_ord::CustomTypeId, Overlay<M>>),
+    CustomInScc, // A custom type in the same SCC as the type being overlaid
+    Array(ModeTerm<M>),
+    HoleArray(ModeTerm<M>),
+    Boxed(ModeTerm<M>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Type<M: Id, L> {
+pub enum Type<M: Id, L: Id> {
     Bool,
     Num(first_ord::NumType),
     Tuple(Vec<Type<M, L>>),
     Variants(IdVec<first_ord::VariantId, Type<M, L>>),
     Custom {
         id: first_ord::CustomTypeId,
-        mode_subst: IdVec<ModeParam, M>,
-        lt_subst: IdVec<LtParam, L>,
         overlay: Overlay<M>,
+        mode_subst: IdVec<ModeParam, M>,
+        overlay_subst: IdVec<ModeParam, M>,
+        lt_subst: IdVec<LtParam, L>,
     },
     Array {
-        content: Box<Type<M, L>>,
         mode: ModeTerm<M>,
         lt: Lt<L>,
+        content: Box<Type<M, L>>,
         overlay: Overlay<M>,
     },
     HoleArray {
-        content: Box<Type<M, L>>,
         mode: ModeTerm<M>,
         lt: Lt<L>,
+        content: Box<Type<M, L>>,
         overlay: Overlay<M>,
     },
     Boxed {
-        content: Box<Type<M, L>>,
         mode: ModeTerm<M>,
         lt: Lt<L>,
+        content: Box<Type<M, L>>,
         overlay: Overlay<M>,
     },
 }
@@ -362,7 +358,7 @@ pub struct FuncDef {
     pub num_lt_params: Count<LtParam>,
     pub arg_type: Type<ModeParam, LtParam>,
     pub ret_type: Type<ModeParam, LtParam>,
-    pub constrs: Vec<ModeLteConstr>,
+    pub constrs: Vec<ModeConstr>,
 
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument

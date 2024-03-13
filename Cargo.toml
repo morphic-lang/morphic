@@ -32,6 +32,7 @@ textwrap = "0.16.0"
 json = "0.12.4" # used for string escaping in profile report generation
 indicatif = "0.17.7"
 id_collections = "1.0.1"
+id_graph_sccs = "0.1.1"
 
 # Error handling
 anyhow = "1.0.75"

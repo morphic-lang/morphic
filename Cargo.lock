@@ -396,6 +396,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "id_graph_sccs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6ea5a002f4a721ade3ffb3252e81e403c5610825a08c7b044d44d6bb2f6a623"
+dependencies = [
+ "id_collections",
+ "num-traits",
+]
+
+[[package]]
 name = "im-rc"
 version = "15.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -628,6 +638,7 @@ dependencies = [
  "crossbeam-channel",
  "find_clang",
  "id_collections",
+ "id_graph_sccs",
  "im-rc",
  "indicatif",
  "inkwell",
