@@ -232,7 +232,6 @@ fn build_exe(
     build(
         cli::BuildConfig {
             src_path: src_path.as_ref().to_path_buf(),
-            purity_mode: cli::PurityMode::Checked,
             profile_syms: vec![cli::SymbolName(format!(
                 "{mod_}{func}",
                 mod_ = profile_mod

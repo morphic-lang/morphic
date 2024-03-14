@@ -312,6 +312,7 @@ impl<'a, 'b> Context<'a, 'b> {
             GlobalId::IoOp(io_op) => match io_op {
                 IoOp::Input => self.write("input")?,
                 IoOp::Output => self.write("output")?,
+                IoOp::DebugOutput => self.write("debug_output")?,
             },
             GlobalId::Panic => self.write("panic")?,
             GlobalId::Ctor(type_id, variant_id) => match type_id {

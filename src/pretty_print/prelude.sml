@@ -48,4 +48,5 @@ fun intrinsic_replace(f : 'a -> 'a PersistentArray.array, x : 'a): 'a Persistent
 
 fun input(()) : char PersistentArray.array = #1 (intrinsic_pop (PersistentArray.fromList (explode (Option.getOpt ((TextIO.inputLine TextIO.stdIn), "\n")))))
 fun output(l : char PersistentArray.array) = print (implode (PersistentArray.toList l))
+fun debug_output(l : char PersistentArray.array) = print (implode (PersistentArray.toList l))
 fun panic(l : char PersistentArray.array) = raise Fail (implode (PersistentArray.toList l))

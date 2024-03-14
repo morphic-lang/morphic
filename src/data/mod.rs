@@ -14,6 +14,8 @@ pub mod resolved_ast;
 
 pub mod typed_ast;
 
+pub mod pure_ast;
+
 pub mod mono_ast;
 
 pub mod lambda_lifted_ast;

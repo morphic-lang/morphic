@@ -2,8 +2,9 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
+use crate::data::pure_ast::IoOp;
 use crate::data::purity::Purity;
-use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
+use crate::data::resolved_ast::{self as res, ArrayOp};
 use id_collections::{id_type, IdVec};
 
 #[id_type]

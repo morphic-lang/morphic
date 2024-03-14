@@ -1,4 +1,5 @@
 use crate::data::mono_ast as mono;
+use crate::data::pure_ast as pure;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
 use crate::util::instance_queue::InstanceQueue;
@@ -14,15 +15,15 @@ fn resolve_expr(
     val_insts: &mut ValInstances,
     type_insts: &mut TypeInstances,
     inst_args: &IdVec<res::TypeParamId, mono::Type>,
-    expr: &typed::Expr,
+    expr: &pure::Expr,
 ) -> mono::Expr {
     match expr {
-        typed::Expr::Global(res::GlobalId::Intrinsic(intr), args) => {
+        pure::Expr::Global(pure::GlobalId::Intrinsic(intr), args) => {
             debug_assert!(args.is_empty());
             mono::Expr::Intrinsic(*intr)
         }
 
-        typed::Expr::Global(res::GlobalId::ArrayOp(op), args) => {
+        pure::Expr::Global(pure::GlobalId::ArrayOp(op), args) => {
             debug_assert_eq!(args.len(), 1);
             mono::Expr::ArrayOp(
                 *op,
@@ -30,12 +31,12 @@ fn resolve_expr(
             )
         }
 
-        typed::Expr::Global(res::GlobalId::IoOp(op), args) => {
+        pure::Expr::Global(pure::GlobalId::IoOp(op), args) => {
             debug_assert!(args.is_empty());
             mono::Expr::IoOp(*op)
         }
 
-        typed::Expr::Global(res::GlobalId::Panic, args) => {
+        pure::Expr::Global(pure::GlobalId::Panic, args) => {
             debug_assert_eq!(args.len(), 1);
             mono::Expr::Panic(resolve_type(
                 type_insts,
@@ -44,7 +45,7 @@ fn resolve_expr(
             ))
         }
 
-        typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, variant), args) => {
+        pure::Expr::Global(pure::GlobalId::Ctor(res::TypeId::Bool, variant), args) => {
             debug_assert!(args.is_empty());
 
             let val = match variant {
@@ -56,7 +57,7 @@ fn resolve_expr(
             mono::Expr::BoolLit(val)
         }
 
-        typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Custom(id), variant), args) => {
+        pure::Expr::Global(pure::GlobalId::Ctor(res::TypeId::Custom(id), variant), args) => {
             let args_resolved =
                 args.map_refs(|_param_id, arg| resolve_type(type_insts, inst_args, &arg));
 
@@ -64,25 +65,25 @@ fn resolve_expr(
             mono::Expr::Ctor(new_id, *variant)
         }
 
-        typed::Expr::Global(res::GlobalId::Ctor(_, _), _) => unreachable!(),
+        pure::Expr::Global(pure::GlobalId::Ctor(_, _), _) => unreachable!(),
 
-        typed::Expr::Global(res::GlobalId::Custom(id), args) => {
+        pure::Expr::Global(pure::GlobalId::Custom(id), args) => {
             let args_resolved =
                 args.map_refs(|_param_id, arg| resolve_type(type_insts, inst_args, &arg));
             let new_id = val_insts.resolve((*id, args_resolved));
             mono::Expr::Global(new_id)
         }
 
-        &typed::Expr::Local(id) => mono::Expr::Local(id),
+        &pure::Expr::Local(id) => mono::Expr::Local(id),
 
-        typed::Expr::Tuple(items) => mono::Expr::Tuple(
+        pure::Expr::Tuple(items) => mono::Expr::Tuple(
             items
                 .iter()
                 .map(|item| resolve_expr(val_insts, type_insts, inst_args, item))
                 .collect(),
         ),
 
-        typed::Expr::Lam(purity, arg_type, ret_type, pat, body, prof_id) => {
+        pure::Expr::Lam(purity, arg_type, ret_type, pat, body, prof_id) => {
             let pat_resolved = resolve_pattern(type_insts, inst_args, pat);
             let arg_type_resolved = resolve_type(type_insts, inst_args, arg_type);
             let ret_type_resolved = resolve_type(type_insts, inst_args, ret_type);
@@ -97,13 +98,13 @@ fn resolve_expr(
             )
         }
 
-        typed::Expr::App(purity, func, arg) => {
+        pure::Expr::App(purity, func, arg) => {
             let func_resolved = resolve_expr(val_insts, type_insts, inst_args, func);
             let arg_resolved = resolve_expr(val_insts, type_insts, inst_args, arg);
             mono::Expr::App(*purity, Box::new(func_resolved), Box::new(arg_resolved))
         }
 
-        typed::Expr::Match(discrim, cases, result_type) => {
+        pure::Expr::Match(discrim, cases, result_type) => {
             let discrim_resolved = resolve_expr(val_insts, type_insts, inst_args, discrim);
 
             let cases_resolved = cases
@@ -120,7 +121,7 @@ fn resolve_expr(
             mono::Expr::Match(Box::new(discrim_resolved), cases_resolved, result_resolved)
         }
 
-        typed::Expr::LetMany(bindings, body) => {
+        pure::Expr::LetMany(bindings, body) => {
             let mut new_bindings = Vec::new();
 
             for (lhs, rhs) in bindings {
@@ -135,7 +136,7 @@ fn resolve_expr(
             mono::Expr::LetMany(new_bindings, Box::new(body_resolved))
         }
 
-        typed::Expr::ArrayLit(type_, items) => {
+        pure::Expr::ArrayLit(type_, items) => {
             let type_resolved = resolve_type(type_insts, inst_args, type_);
             let item_resolved = items
                 .iter()
@@ -145,11 +146,11 @@ fn resolve_expr(
             mono::Expr::ArrayLit(type_resolved, item_resolved)
         }
 
-        &typed::Expr::ByteLit(val) => mono::Expr::ByteLit(val),
-        &typed::Expr::IntLit(val) => mono::Expr::IntLit(val),
-        &typed::Expr::FloatLit(val) => mono::Expr::FloatLit(val),
+        &pure::Expr::ByteLit(val) => mono::Expr::ByteLit(val),
+        &pure::Expr::IntLit(val) => mono::Expr::IntLit(val),
+        &pure::Expr::FloatLit(val) => mono::Expr::FloatLit(val),
 
-        typed::Expr::Span(_, _, content) => resolve_expr(val_insts, type_insts, inst_args, content),
+        pure::Expr::Span(_, _, content) => resolve_expr(val_insts, type_insts, inst_args, content),
     }
 }
 
@@ -283,7 +284,7 @@ fn resolve_val_def(
     val_insts: &mut ValInstances,
     type_insts: &mut TypeInstances,
     inst_args: &IdVec<res::TypeParamId, mono::Type>,
-    def: &typed::ValDef,
+    def: &pure::ValDef,
 ) -> mono::ValDef {
     debug_assert_eq!(inst_args.len(), def.scheme.num_params);
 
@@ -320,7 +321,7 @@ fn resolve_typedef(
 // TODO: Handle polymorphic recursion with a graceful error.  Currently, we enter an infinite loop
 // and consume all available memory.
 
-pub fn monomorphize(program: typed::Program) -> mono::Program {
+pub fn monomorphize(program: pure::Program) -> mono::Program {
     let mut val_insts = ValInstances::new();
     let mut type_insts = TypeInstances::new();
 

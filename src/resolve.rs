@@ -298,6 +298,10 @@ lazy_static! {
             raw::ValName("output".to_owned()),
             res::GlobalId::IoOp(res::IoOp::Output),
         );
+        global_map.insert(
+            raw::ValName("debug_output".to_owned()),
+            res::GlobalId::IoOp(res::IoOp::DebugOutput),
+        );
         global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
 
         for &(intrinsic, name) in INTRINSIC_NAMES {

@@ -523,12 +523,8 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
         App(Array, vec![arg])
     }
 
-    fn func(arg: res::Type, ret: res::Type) -> res::Type {
-        Func(Purity::Pure, Box::new(arg), Box::new(ret))
-    }
-
-    fn impure_func(arg: res::Type, ret: res::Type) -> res::Type {
-        Func(Purity::Impure, Box::new(arg), Box::new(ret))
+    fn func(purity: Purity, arg: res::Type, ret: res::Type) -> res::Type {
+        Func(purity, Box::new(arg), Box::new(ret))
     }
 
     fn pair(fst: res::Type, snd: res::Type) -> res::Type {
@@ -548,35 +544,56 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
 
         res::GlobalId::ArrayOp(op) => {
             use crate::data::resolved_ast::ArrayOp::*;
+            let purity = res::array_op_purity(op);
             let result = match op {
-                Get => scheme(1, func(pair(array(param(0)), int()), param(0))),
+                Get => scheme(1, func(purity, pair(array(param(0)), int()), param(0))),
                 Extract => scheme(
                     1,
                     func(
+                        purity,
                         pair(array(param(0)), int()),
-                        pair(param(0), func(param(0), array(param(0)))),
+                        pair(param(0), func(purity, param(0), array(param(0)))),
                     ),
                 ),
-                Len => scheme(1, func(array(param(0)), int())),
-                Push => scheme(1, func(pair(array(param(0)), param(0)), array(param(0)))),
-                Pop => scheme(1, func(array(param(0)), pair(array(param(0)), param(0)))),
-                Reserve => scheme(1, func(pair(array(param(0)), int()), array(param(0)))),
+                Len => scheme(1, func(purity, array(param(0)), int())),
+                Push => scheme(
+                    1,
+                    func(purity, pair(array(param(0)), param(0)), array(param(0))),
+                ),
+                Pop => scheme(
+                    1,
+                    func(purity, array(param(0)), pair(array(param(0)), param(0))),
+                ),
+                Reserve => scheme(
+                    1,
+                    func(purity, pair(array(param(0)), int()), array(param(0))),
+                ),
             };
             Cow::Owned(result)
         }
 
-        res::GlobalId::IoOp(op) => match op {
-            res::IoOp::Input => Cow::Owned(scheme(0, impure_func(Tuple(vec![]), array(byte())))),
-            res::IoOp::Output => Cow::Owned(scheme(0, impure_func(array(byte()), Tuple(vec![])))),
-        },
+        res::GlobalId::IoOp(op) => {
+            let purity = res::io_op_purity(op);
+            match op {
+                res::IoOp::Input => {
+                    Cow::Owned(scheme(0, func(purity, Tuple(vec![]), array(byte()))))
+                }
+                res::IoOp::Output => {
+                    Cow::Owned(scheme(0, func(purity, array(byte()), Tuple(vec![]))))
+                }
+                res::IoOp::DebugOutput => {
+                    Cow::Owned(scheme(0, func(purity, array(byte()), Tuple(vec![]))))
+                }
+            }
+        }
 
-        res::GlobalId::Panic => Cow::Owned(scheme(1, func(array(byte()), param(0)))),
+        res::GlobalId::Panic => Cow::Owned(scheme(1, func(Purity::Pure, array(byte()), param(0)))),
 
         res::GlobalId::Ctor(Custom(custom), variant) => {
             let typedef = &program.custom_types[custom];
             let ret = App(Custom(custom), (0..typedef.num_params).map(param).collect());
             if let Some(arg) = typedef.variants[variant].clone() {
-                Cow::Owned(scheme(typedef.num_params, func(arg, ret)))
+                Cow::Owned(scheme(typedef.num_params, func(Purity::Pure, arg, ret)))
             } else {
                 Cow::Owned(scheme(typedef.num_params, ret))
             }

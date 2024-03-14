@@ -25,6 +25,8 @@ mod resolve;
 
 mod check_purity;
 
+mod purity_infer;
+
 mod report_type;
 mod type_infer;
 
@@ -207,7 +209,6 @@ pub fn run(
 
     let lowered = compile_to_low_ast(
         &config.src_path,
-        config.purity_mode,
         &[],
         false,
         None,
@@ -229,7 +230,6 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
         cli::TargetConfig::Llvm(_) => {
             let lowered = compile_to_low_ast(
                 &config.src_path,
-                config.purity_mode,
                 &config.profile_syms,
                 config.profile_record_rc,
                 config.artifact_dir.as_ref(),
@@ -246,7 +246,6 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
             Some(_) => {
                 compile_to_first_order_ast(
                     &config.src_path,
-                    config.purity_mode,
                     &config.profile_syms,
                     config.profile_record_rc,
                     config.artifact_dir.as_ref(),
@@ -262,7 +261,6 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
 
 fn compile_to_first_order_ast(
     src_path: &Path,
-    purity_mode: cli::PurityMode,
     profile_syms: &[cli::SymbolName],
     profile_record_rc: bool,
     artifact_dir: Option<&cli::ArtifactDir>,
@@ -273,9 +271,7 @@ fn compile_to_first_order_ast(
     let resolved = resolve::resolve_program(files, src_path, profile_syms, profile_record_rc)
         .map_err(ErrorKind::ResolveFailed)?;
     // Check obvious errors and infer types
-    if matches!(purity_mode, cli::PurityMode::Checked) {
-        check_purity::check_purity(&resolved).map_err(ErrorKind::PurityCheckFailed)?;
-    }
+    check_purity::check_purity(&resolved).map_err(ErrorKind::PurityCheckFailed)?;
     let typed = type_infer::type_infer(resolved).map_err(ErrorKind::TypeInferFailed)?;
     check_exhaustive::check_exhaustive(&typed).map_err(ErrorKind::CheckExhaustiveFailed)?;
     check_main::check_main(&typed).map_err(ErrorKind::CheckMainFailed)?;
@@ -302,7 +298,8 @@ fn compile_to_first_order_ast(
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    let mono = monomorphize::monomorphize(typed);
+    let pure = purity_infer::purity_infer(typed);
+    let mono = monomorphize::monomorphize(pure);
 
     if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("mono.sml"))
@@ -368,7 +365,6 @@ fn compile_to_first_order_ast(
 
 fn compile_to_low_ast(
     src_path: &Path,
-    purity_mode: cli::PurityMode,
     profile_syms: &[cli::SymbolName],
     profile_record_rc: bool,
     artifact_dir: Option<&cli::ArtifactDir>,
@@ -378,7 +374,6 @@ fn compile_to_low_ast(
 ) -> Result<data::low_ast::Program, Error> {
     let first_order = compile_to_first_order_ast(
         src_path,
-        purity_mode,
         profile_syms,
         profile_record_rc,
         artifact_dir,

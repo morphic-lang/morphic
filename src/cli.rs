@@ -19,19 +19,12 @@ pub enum RunMode {
     Interpret,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum PurityMode {
-    Checked,
-    Unchecked,
-}
-
 #[derive(Clone, Debug)]
 pub struct RunConfig {
     pub src_path: PathBuf,
     pub mode: RunMode,
     pub rc_mode: RcMode,
     pub mutation_mode: MutationMode,
-    pub purity_mode: PurityMode,
 
     // This controls the stdio capture behavior of the *user* program.  Logging and error messages
     // from the compiler itself are unaffected.
@@ -140,7 +133,6 @@ impl Default for PassOptions {
 #[derive(Debug)]
 pub struct BuildConfig {
     pub src_path: PathBuf,
-    pub purity_mode: PurityMode,
 
     pub profile_syms: Vec<SymbolName>,
     pub profile_record_rc: bool,
@@ -352,12 +344,6 @@ impl Config {
                 .to_owned()
                 .into();
 
-            let purity_mode = if matches.get_flag("no-check-purity") {
-                PurityMode::Unchecked
-            } else {
-                PurityMode::Checked
-            };
-
             let mode = if matches.get_flag("interpret") {
                 RunMode::Interpret
             } else {
@@ -379,7 +365,6 @@ impl Config {
 
             let run_config = RunConfig {
                 src_path,
-                purity_mode,
                 mode,
                 rc_mode,
                 mutation_mode,
@@ -394,12 +379,6 @@ impl Config {
                 .unwrap()
                 .to_owned()
                 .into();
-
-            let purity_mode = if matches.get_flag("no-check-purity") {
-                PurityMode::Unchecked
-            } else {
-                PurityMode::Checked
-            };
 
             let target = if matches.get_flag("wasm") {
                 TargetConfig::Llvm(LlvmConfig::Wasm)
@@ -467,7 +446,6 @@ impl Config {
 
             let build_config = BuildConfig {
                 src_path,
-                purity_mode,
                 profile_syms,
                 profile_record_rc,
                 target,

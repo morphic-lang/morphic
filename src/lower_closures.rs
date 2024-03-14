@@ -7,8 +7,9 @@ use crate::data::intrinsics as intrs;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
+use crate::data::pure_ast::IoOp;
 use crate::data::purity::Purity;
-use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
+use crate::data::resolved_ast::{self as res, ArrayOp};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, IdVec};
 
@@ -18,7 +19,7 @@ enum LeafFuncCase {
     Intrinsic(intrs::Intrinsic),
     ArrayOp(res::ArrayOp, special::Type),
     ArrayReplace(special::Type),
-    IoOp(res::IoOp),
+    IoOp(IoOp),
     Panic(special::Type),
     Ctor(special::CustomTypeId, res::VariantId),
 }
@@ -768,7 +769,7 @@ impl<'a> Context<'a> {
             // TODO: optimize ArrayReplace
             LeafFuncCase::ArrayReplace(_) => {}
             LeafFuncCase::IoOp(op) => match op {
-                res::IoOp::Input => {
+                IoOp::Input => {
                     let arg_optimizable = match arg {
                         first_ord::Expr::Tuple(args) => {
                             assert![args.len() == 0];
@@ -783,7 +784,7 @@ impl<'a> Context<'a> {
                     }
                     return Some(first_ord::Expr::IoOp(first_ord::IoOp::Input));
                 }
-                res::IoOp::Output => {
+                IoOp::Output => {
                     return Some(first_ord::Expr::IoOp(first_ord::IoOp::Output(Box::new(
                         arg.clone(),
                     ))));

@@ -1,10 +1,7 @@
 use crate::data::mono_ast::*;
 use crate::data::profile::ProfilePointId;
-use crate::data::resolved_ast::{ArrayOp, IoOp, VariantId};
-// use crate::data::resolved_ast::{
-//     ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeDef, TypeId, TypeParamId,
-//     VariantId,
-// };
+use crate::data::pure_ast::IoOp;
+use crate::data::resolved_ast::{ArrayOp, VariantId};
 use crate::util::graph::{self, Graph};
 
 use std::collections::{BTreeMap, BTreeSet};

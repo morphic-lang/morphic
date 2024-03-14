@@ -48,6 +48,15 @@ pub struct CustomGlobalId(pub usize);
 pub enum IoOp {
     Input,
     Output,
+    DebugOutput,
+}
+
+pub fn io_op_purity(op: IoOp) -> Purity {
+    match op {
+        IoOp::Input => Purity::Impure,
+        IoOp::Output => Purity::Impure,
+        IoOp::DebugOutput => Purity::Pure,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -58,6 +67,17 @@ pub enum ArrayOp {
     Push,
     Pop,
     Reserve,
+}
+
+pub fn array_op_purity(op: ArrayOp) -> Purity {
+    match op {
+        ArrayOp::Get => Purity::Pure,
+        ArrayOp::Extract => Purity::Pure,
+        ArrayOp::Len => Purity::Pure,
+        ArrayOp::Push => Purity::Pure,
+        ArrayOp::Pop => Purity::Pure,
+        ArrayOp::Reserve => Purity::Pure,
+    }
 }
 
 #[id_type]

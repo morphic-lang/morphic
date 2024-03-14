@@ -48,4 +48,5 @@ let intrinsic_replace((f, x) : ('a -> 'a PersistentArray.array) * 'a): 'a Persis
 
 let input (()) : char PersistentArray.array = let in_ = try read_line () with End_of_file -> "" in PersistentArray.fromList (Array.init (String.length in_) (String.get in_))
 let output (l : char PersistentArray.array) = print_string (String.init (PersistentArray.length l) (fun i -> PersistentArray.sub (l, i)))
+let debug_output (l : char PersistentArray.array) = print_string (String.init (PersistentArray.length l) (fun i -> PersistentArray.sub (l, i)))
 let panic (l : char PersistentArray.array) = raise (Failure (String.init (PersistentArray.length l) (fun i -> PersistentArray.sub (l, i))))
