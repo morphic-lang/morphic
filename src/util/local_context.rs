@@ -20,10 +20,6 @@ impl<Var: Id, T> LocalContext<Var, T> {
         self.stack.truncate(count);
     }
 
-    pub fn pop(&mut self) {
-        self.stack.pop();
-    }
-
     pub fn local_binding(&self, local: Var) -> &T {
         &self.stack[local]
     }
