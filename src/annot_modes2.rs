@@ -1,6 +1,7 @@
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
 use crate::data::flat_ast::{self as flat, LocalId};
+use crate::data::mode_annot_ast2::iter::{CollectOverlayExt, CollectTypeExt, IterExt, IterExt2};
 use crate::data::mode_annot_ast2::{
     self as annot, Lt, LtParam, ModeConstr, ModeParam, ModeTerm, Overlay,
 };
