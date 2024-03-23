@@ -62,6 +62,9 @@ pub struct Tal<'a> {
     // LLVM Intrinsics
     pub expect_i1: FunctionValue<'a>,
     pub umul_with_overflow_i64: FunctionValue<'a>,
+    pub ctpop_i64: FunctionValue<'a>,
+    pub ctlz_i64: FunctionValue<'a>,
+    pub cttz_i64: FunctionValue<'a>,
 }
 
 impl<'a> Tal<'a> {
@@ -73,6 +76,7 @@ impl<'a> Tal<'a> {
     ) -> Self {
         let usize_t = fountain_pen::usize_t(context, target);
         let void_t = context.void_type();
+        let i1_t = context.bool_type();
         let i8_t = context.i8_type();
         let i8_ptr_t = i8_t.ptr_type(AddressSpace::default());
         let i32_t = context.i32_type();
@@ -188,6 +192,23 @@ impl<'a> Tal<'a> {
                 .fn_type(&[i64_t.into(), i64_t.into()], false),
             Some(Linkage::External),
         );
+        let ctpop_i64 = module.add_function(
+            "llvm.ctpop.i64",
+            i64_t.fn_type(&[i64_t.into()], false),
+            Some(Linkage::External),
+        );
+        let ctlz_i64 = module.add_function(
+            "llvm.ctlz.i64",
+            // The second argument is a bool indicating whether the output is poison if the input is 0.
+            i64_t.fn_type(&[i64_t.into(), i1_t.into()], false),
+            Some(Linkage::External),
+        );
+        let cttz_i64 = module.add_function(
+            "llvm.cttz.i64",
+            // The second argument is a bool indicating whether the output is poison if the input is 0.
+            i64_t.fn_type(&[i64_t.into(), i1_t.into()], false),
+            Some(Linkage::External),
+        );
 
         let prof_rc = if profile_record_rc {
             let record_retain = module.add_function(
@@ -246,6 +267,9 @@ impl<'a> Tal<'a> {
 
             expect_i1,
             umul_with_overflow_i64,
+            ctpop_i64,
+            ctlz_i64,
+            cttz_i64,
         }
     }
 }

@@ -82,6 +82,9 @@ define_intrinsic_names![
     (IntBitAnd, name("int_bit_and")),
     (IntBitOr, name("int_bit_or")),
     (IntBitXor, name("int_bit_xor")),
+    (IntCtpop, name("int_count_ones")),
+    (IntCtlz, name("int_leading_zeros")),
+    (IntCttz, name("int_trailing_zeros")),
 ];
 
 // Signatures:
@@ -149,5 +152,8 @@ pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
         IntBitAnd => pure(tuple!(int(), int()), int()),
         IntBitOr => pure(tuple!(int(), int()), int()),
         IntBitXor => pure(tuple!(int(), int()), int()),
+        IntCtpop => pure(int(), int()),
+        IntCtlz => pure(int(), int()),
+        IntCttz => pure(int(), int()),
     }
 }

@@ -1455,6 +1455,39 @@ fn interpret_expr(
                 heap.add(Value::Num(NumValue::Int(left ^ right)))
             }
 
+            Expr::Intrinsic(Intrinsic::IntCtpop, local_id) => {
+                let value = unwrap_int(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_ctpop".into()),
+                );
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    value.0.count_ones() as i64
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntCtlz, local_id) => {
+                let value = unwrap_int(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_ctlz".into()),
+                );
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    value.0.leading_zeros() as i64
+                ))))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntCttz, local_id) => {
+                let value = unwrap_int(
+                    heap,
+                    locals[local_id],
+                    stacktrace.add_frame("int_cttz".into()),
+                );
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    value.0.trailing_zeros() as i64,
+                ))))
+            }
+
             Expr::ArrayOp(rep, _item_type, ArrayOp::New()) => {
                 heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, vec![]))
             }

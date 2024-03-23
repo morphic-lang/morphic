@@ -5,7 +5,8 @@ use crate::data::purity::Purity;
 // 1. Add it to this file
 // 2. Add its user-facing name and type signature to src/intrinsic_config.rs
 // 3. Add support for it in src/interpreter.rs
-// 4. Add support for it in src/llvm_gen.rs
+// 4. Add support for it in src/llvm_gen.rs (NOTE: to do this you may need to declare a new LLVM
+//    intrinsic in `src/builtins/tal.rs`)
 
 // Non-arithmetic intrinsics (that is, intrinsics which require nontrivial handling in alias
 // analysis, mutation analysis, rc op generation, etc.) are not yet supported.
@@ -60,6 +61,9 @@ pub enum Intrinsic {
     IntBitAnd,
     IntBitOr,
     IntBitXor,
+    IntCtpop,
+    IntCtlz,
+    IntCttz,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

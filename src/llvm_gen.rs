@@ -1666,6 +1666,43 @@ fn gen_expr<'a, 'b>(
                 let (lhs, rhs) = build_binop_int_args(builder, locals[local_id]);
                 builder.build_xor(lhs, rhs, "int_bit_xor").unwrap().into()
             }
+            Intrinsic::IntCtpop => {
+                let val = locals[local_id].into_int_value();
+                builder
+                    .build_call(globals.tal.ctpop_i64, &[val.into()], "int_ctpop")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+            }
+            Intrinsic::IntCtlz => {
+                let val = locals[local_id].into_int_value();
+                let zero_is_poison = globals.context.bool_type().const_int(0, false);
+                builder
+                    .build_call(
+                        globals.tal.ctlz_i64,
+                        &[val.into(), zero_is_poison.into()],
+                        "int_ctlz",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+            }
+            Intrinsic::IntCttz => {
+                let val = locals[local_id].into_int_value();
+                let zero_is_poison = globals.context.bool_type().const_int(0, false);
+                builder
+                    .build_call(
+                        globals.tal.cttz_i64,
+                        &[val.into(), zero_is_poison.into()],
+                        "int_cttz",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+            }
         },
         E::ArrayOp(rep, item_type, array_op) => match rep {
             constrain::RepChoice::OptimizedMut => {
