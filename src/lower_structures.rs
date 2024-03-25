@@ -31,17 +31,12 @@ impl LowAstBuilder {
     }
 
     fn add_expr(&mut self, type_: low::Type, expr: low::Expr) -> low::LocalId {
-        #[cfg(debug_assertions)]
-        {
-            // TODO: Use 'matches' macro
-            if let Some((_, low::Expr::TailCall(_, _))) = self.exprs.last() {
-                panic!(
-                    "The pass 'lower_strucures' tried to generate an expression immediately after \
-                     a tail call, which violates the invariant that a tail call must be the last \
-                     expression in its block."
-                );
-            }
-        }
+        debug_assert!(
+            !matches!(self.exprs.last(), Some((_, low::Expr::TailCall(_, _)))),
+            "The pass 'lower_strucures' tried to generate an expression immediately after \
+             a tail call, which violates the invariant that a tail call must be the last \
+             expression in its block."
+        );
 
         let new_id = low::LocalId(self.offset.0 + self.exprs.len());
         self.exprs.push((type_, expr));
