@@ -2,7 +2,7 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::flat_ast::{self as flat, LocalId};
 use crate::data::mode_annot_ast2::{
-    self as annot, Lt, LtParam, ModeConstr, ModeParam, ModeTerm, Overlay,
+    self as annot, Lt, LtParam, ModeConstr, ModeParam, ModeTerm, OldOverlay,
 };
 use crate::fixed_point::{self, Signature, SignatureAssumptions};
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
@@ -63,22 +63,22 @@ fn fresh_overlay(
     scc_overlay_mode_count: Count<ModeParam>,
     fresh_mode: &mut Count<ModeParam>,
     ty: &anon::Type,
-) -> Overlay<ModeParam> {
+) -> OldOverlay<ModeParam> {
     match ty {
-        anon::Type::Bool => Overlay::Bool,
-        anon::Type::Num(num_ty) => Overlay::Num(*num_ty),
-        anon::Type::Tuple(tys) => Overlay::Tuple(
+        anon::Type::Bool => OldOverlay::Bool,
+        anon::Type::Num(num_ty) => OldOverlay::Num(*num_ty),
+        anon::Type::Tuple(tys) => OldOverlay::Tuple(
             tys.iter()
                 .map(|ty| fresh_overlay(scc_overlay_mode_count, fresh_mode, ty))
                 .collect(),
         ),
-        anon::Type::Variants(tys) => Overlay::Variants(
+        anon::Type::Variants(tys) => OldOverlay::Variants(
             tys.map_refs(|_, ty| fresh_overlay(scc_overlay_mode_count, fresh_mode, ty)),
         ),
-        anon::Type::Custom(id) => Overlay::Custom(*id),
-        anon::Type::Array(_) => Overlay::Array(fresh_mode.inc()),
-        anon::Type::HoleArray(_) => Overlay::HoleArray(fresh_mode.inc()),
-        anon::Type::Boxed(_) => Overlay::Boxed(fresh_mode.inc()),
+        anon::Type::Custom(id) => OldOverlay::Custom(*id),
+        anon::Type::Array(_) => OldOverlay::Array(fresh_mode.inc()),
+        anon::Type::HoleArray(_) => OldOverlay::HoleArray(fresh_mode.inc()),
+        anon::Type::Boxed(_) => OldOverlay::Boxed(fresh_mode.inc()),
     }
 }
 
@@ -90,11 +90,11 @@ fn parameterize(
     fresh_mode: &mut Count<ModeParam>,
     fresh_lt: &mut Count<LtParam>,
     ty: &anon::Type,
-) -> annot::Type<ModeParam, LtParam> {
+) -> annot::OldType<ModeParam, LtParam> {
     match ty {
-        anon::Type::Bool => annot::Type::Bool,
-        anon::Type::Num(num_ty) => annot::Type::Num(*num_ty),
-        anon::Type::Tuple(tys) => annot::Type::Tuple(
+        anon::Type::Bool => annot::OldType::Bool,
+        anon::Type::Num(num_ty) => annot::OldType::Num(*num_ty),
+        anon::Type::Tuple(tys) => annot::OldType::Tuple(
             tys.iter()
                 .map(|ty| {
                     parameterize(
@@ -109,7 +109,7 @@ fn parameterize(
                 })
                 .collect(),
         ),
-        anon::Type::Variants(tys) => annot::Type::Variants(tys.map_refs(|_, ty| {
+        anon::Type::Variants(tys) => annot::OldType::Variants(tys.map_refs(|_, ty| {
             parameterize(
                 parameterized,
                 scc_mode_count,
@@ -121,14 +121,14 @@ fn parameterize(
             )
         })),
         anon::Type::Custom(id) => match parameterized.get(id) {
-            Some(typedef) => annot::Type::Custom(
+            Some(typedef) => annot::OldType::Custom(
                 *id,
                 fresh_params(typedef.num_mode_params, fresh_mode),
                 fresh_params(typedef.num_lt_params, fresh_lt),
             ),
             // This is a typedef in the same SCC; we need to parameterize it by all the SCC
             // parameters
-            None => annot::Type::Custom(
+            None => annot::OldType::Custom(
                 *id,
                 fresh_params(scc_mode_count, fresh_mode),
                 fresh_params(scc_lt_count, fresh_lt),
@@ -144,7 +144,7 @@ fn parameterize(
                 fresh_lt,
                 ty,
             );
-            annot::Type::Array(
+            annot::OldType::Array(
                 fresh_mode.inc(),
                 fresh_lt.inc(),
                 Box::new(content),
@@ -161,7 +161,7 @@ fn parameterize(
                 fresh_lt,
                 ty,
             );
-            annot::Type::HoleArray(
+            annot::OldType::HoleArray(
                 fresh_mode.inc(),
                 fresh_lt.inc(),
                 Box::new(content),
@@ -178,7 +178,7 @@ fn parameterize(
                 fresh_lt,
                 ty,
             );
-            annot::Type::Boxed(
+            annot::OldType::Boxed(
                 fresh_mode.inc(),
                 fresh_lt.inc(),
                 Box::new(content),
@@ -269,9 +269,9 @@ fn parameterize_customs(customs: &flat::CustomTypes) -> IdVec<CustomTypeId, anno
 #[id_type]
 struct ModeVar(usize);
 
-type SolverType = annot::Type<ModeVar, Lt>;
+type SolverType = annot::OldType<ModeVar, Lt>;
 type SolverOccur = annot::Occur<ModeVar, Lt>;
-type SolverOverlay = annot::Overlay<ModeVar>;
+type SolverOverlay = annot::OldOverlay<ModeVar>;
 type SolverCondition = annot::Condition<ModeVar, Lt>;
 type SolverExpr = annot::Expr<ModeVar, Lt>;
 
@@ -326,25 +326,25 @@ impl ConstrGraph {
 
 fn mode_bind_overlays(constrs: &mut ConstrGraph, o1: &SolverOverlay, o2: &SolverOverlay) {
     match (o1, o2) {
-        (Overlay::Bool, Overlay::Bool) => {}
-        (Overlay::Num(_), Overlay::Num(_)) => {}
-        (Overlay::Tuple(os1), Overlay::Tuple(os2)) => {
+        (OldOverlay::Bool, OldOverlay::Bool) => {}
+        (OldOverlay::Num(_), OldOverlay::Num(_)) => {}
+        (OldOverlay::Tuple(os1), OldOverlay::Tuple(os2)) => {
             for (o1, o2) in os1.iter().zip(os2.iter()) {
                 mode_bind_overlays(constrs, o1, o2);
             }
         }
-        (Overlay::Variants(os1), Overlay::Variants(os2)) => {
+        (OldOverlay::Variants(os1), OldOverlay::Variants(os2)) => {
             for ((_, o1), (_, o2)) in os1.iter().zip(os2.iter()) {
                 mode_bind_overlays(constrs, o1, o2);
             }
         }
-        (Overlay::Array(m1), Overlay::Array(m2)) => {
+        (OldOverlay::Array(m1), OldOverlay::Array(m2)) => {
             constrs.enforce_eq(*m1, *m2);
         }
-        (Overlay::HoleArray(m1), Overlay::HoleArray(m2)) => {
+        (OldOverlay::HoleArray(m1), OldOverlay::HoleArray(m2)) => {
             constrs.enforce_eq(*m1, *m2);
         }
-        (Overlay::Boxed(m1), Overlay::Boxed(m2)) => {
+        (OldOverlay::Boxed(m1), OldOverlay::Boxed(m2)) => {
             constrs.enforce_eq(*m1, *m2);
         }
         _ => panic!("incompatible overlays"),
@@ -353,19 +353,19 @@ fn mode_bind_overlays(constrs: &mut ConstrGraph, o1: &SolverOverlay, o2: &Solver
 
 fn mode_bind(constrs: &mut ConstrGraph, ty1: &SolverType, ty2: &SolverType) {
     match (ty1, ty2) {
-        (annot::Type::Bool, annot::Type::Bool) => {}
-        (annot::Type::Num(_), annot::Type::Num(_)) => {}
-        (annot::Type::Tuple(tys1), annot::Type::Tuple(tys2)) => {
+        (annot::OldType::Bool, annot::OldType::Bool) => {}
+        (annot::OldType::Num(_), annot::OldType::Num(_)) => {}
+        (annot::OldType::Tuple(tys1), annot::OldType::Tuple(tys2)) => {
             for (ty1, ty2) in tys1.iter().zip(tys2.iter()) {
                 mode_bind(constrs, ty1, ty2);
             }
         }
-        (annot::Type::Variants(tys1), annot::Type::Variants(tys2)) => {
+        (annot::OldType::Variants(tys1), annot::OldType::Variants(tys2)) => {
             for ((_, ty1), (_, ty2)) in tys1.iter().zip(tys2.iter()) {
                 mode_bind(constrs, ty1, ty2);
             }
         }
-        (annot::Type::Array(m1, _lt1, ty1, o1), annot::Type::Array(m2, _lt2, ty2, o2)) => {
+        (annot::OldType::Array(m1, _lt1, ty1, o1), annot::OldType::Array(m2, _lt2, ty2, o2)) => {
             constrs.enforce_eq(*m1, *m2);
         }
         _ => panic!("incompatible types"),
@@ -416,19 +416,19 @@ fn emit_occur_constrs(
     fut_ty: &SolverType,
 ) {
     match (binding_ty, fut_ty) {
-        (annot::Type::Bool, annot::Type::Bool) => {}
-        (annot::Type::Num(_), annot::Type::Num(_)) => {}
-        (annot::Type::Tuple(tys1), annot::Type::Tuple(tys2)) => {
+        (annot::OldType::Bool, annot::OldType::Bool) => {}
+        (annot::OldType::Num(_), annot::OldType::Num(_)) => {}
+        (annot::OldType::Tuple(tys1), annot::OldType::Tuple(tys2)) => {
             for (ty1, ty2) in tys1.iter().zip(tys2.iter()) {
                 emit_occur_constrs(constrs, path, ty1, ty2);
             }
         }
-        (annot::Type::Variants(tys1), annot::Type::Variants(tys2)) => {
+        (annot::OldType::Variants(tys1), annot::OldType::Variants(tys2)) => {
             for ((_, ty1), (_, ty2)) in tys1.iter().zip(tys2.iter()) {
                 emit_occur_constrs(constrs, path, ty1, ty2);
             }
         }
-        (annot::Type::Array(m1, lt1, ty1, o1), annot::Type::Array(m2, lt2, ty2, o2)) => {
+        (annot::OldType::Array(m1, lt1, ty1, o1), annot::OldType::Array(m2, lt2, ty2, o2)) => {
             emit_occur_constr(constrs, path, lt1, lt2, *m1, *m2);
             emit_occur_constrs_heap(constrs, path, ty1, ty2);
             emit_occur_constrs_overlay(constrs, path, o1, o2);
@@ -540,67 +540,69 @@ impl TrackedContext {
 
 fn same_shape(ty1: &anon::Type, ty2: &SolverType) -> bool {
     match (ty1, ty2) {
-        (anon::Type::Bool, annot::Type::Bool) => true,
-        (anon::Type::Num(num_ty1), annot::Type::Num(num_ty2)) => num_ty1 == num_ty2,
-        (anon::Type::Tuple(tys1), annot::Type::Tuple(tys2)) => {
+        (anon::Type::Bool, annot::OldType::Bool) => true,
+        (anon::Type::Num(num_ty1), annot::OldType::Num(num_ty2)) => num_ty1 == num_ty2,
+        (anon::Type::Tuple(tys1), annot::OldType::Tuple(tys2)) => {
             tys1.len() == tys2.len()
                 && tys1
                     .iter()
                     .zip(tys2.iter())
                     .all(|(ty1, ty2)| same_shape(ty1, ty2))
         }
-        (anon::Type::Variants(tys1), annot::Type::Variants(tys2)) => {
+        (anon::Type::Variants(tys1), annot::OldType::Variants(tys2)) => {
             tys1.len() == tys2.len()
                 && tys1
                     .iter()
                     .zip(tys2.iter())
                     .all(|((id1, ty1), (id2, ty2))| id1 == id2 && same_shape(ty1, ty2))
         }
-        (anon::Type::Custom(id1), annot::Type::Custom(id2, _, _)) => id1 == id2,
-        (anon::Type::Array(ty1), annot::Type::Array(_, _, ty2, _)) => same_shape(ty1, ty2),
-        (anon::Type::HoleArray(ty1), annot::Type::HoleArray(_, _, ty2, _)) => same_shape(ty1, ty2),
-        (anon::Type::Boxed(ty1), annot::Type::Boxed(_, _, ty2, _)) => same_shape(ty1, ty2),
+        (anon::Type::Custom(id1), annot::OldType::Custom(id2, _, _)) => id1 == id2,
+        (anon::Type::Array(ty1), annot::OldType::Array(_, _, ty2, _)) => same_shape(ty1, ty2),
+        (anon::Type::HoleArray(ty1), annot::OldType::HoleArray(_, _, ty2, _)) => {
+            same_shape(ty1, ty2)
+        }
+        (anon::Type::Boxed(ty1), annot::OldType::Boxed(_, _, ty2, _)) => same_shape(ty1, ty2),
         _ => false,
     }
 }
 
 fn apply_overlay(ty: &SolverType, overlay: &SolverOverlay) -> SolverType {
     match (ty, overlay) {
-        (annot::Type::Bool, annot::Overlay::Bool) => annot::Type::Bool,
-        (annot::Type::Num(num_ty1), annot::Overlay::Num(num_ty2)) => {
+        (annot::OldType::Bool, annot::OldOverlay::Bool) => annot::OldType::Bool,
+        (annot::OldType::Num(num_ty1), annot::OldOverlay::Num(num_ty2)) => {
             assert_eq!(num_ty1, num_ty2);
-            annot::Type::Num(*num_ty1)
+            annot::OldType::Num(*num_ty1)
         }
-        (annot::Type::Tuple(tys), annot::Overlay::Tuple(os)) => {
+        (annot::OldType::Tuple(tys), annot::OldOverlay::Tuple(os)) => {
             assert_eq!(tys.len(), os.len());
             let tys = tys
                 .iter()
                 .zip(os.iter())
                 .map(|(ty, o)| apply_overlay(ty, o))
                 .collect();
-            annot::Type::Tuple(tys)
+            annot::OldType::Tuple(tys)
         }
-        (annot::Type::Variants(tys), annot::Overlay::Variants(os)) => {
+        (annot::OldType::Variants(tys), annot::OldOverlay::Variants(os)) => {
             assert_eq!(tys.len(), os.len());
             let tys = tys
                 .values()
                 .zip(os.values())
                 .map(|(ty, o)| apply_overlay(ty, o))
                 .collect();
-            annot::Type::Variants(IdVec::from_vec(tys))
+            annot::OldType::Variants(IdVec::from_vec(tys))
         }
-        (annot::Type::Custom(id1, modes, lts), annot::Overlay::Custom(id2)) => {
+        (annot::OldType::Custom(id1, modes, lts), annot::OldOverlay::Custom(id2)) => {
             assert_eq!(id1, id2);
-            annot::Type::Custom(*id1, modes.clone(), lts.clone())
+            annot::OldType::Custom(*id1, modes.clone(), lts.clone())
         }
-        (annot::Type::Array(_, lt, ty, o), annot::Overlay::Array(m)) => {
-            annot::Type::Array(*m, lt.clone(), ty.clone(), o.clone())
+        (annot::OldType::Array(_, lt, ty, o), annot::OldOverlay::Array(m)) => {
+            annot::OldType::Array(*m, lt.clone(), ty.clone(), o.clone())
         }
-        (annot::Type::HoleArray(_, lt, ty, o), annot::Overlay::HoleArray(m)) => {
-            annot::Type::HoleArray(*m, lt.clone(), ty.clone(), o.clone())
+        (annot::OldType::HoleArray(_, lt, ty, o), annot::OldOverlay::HoleArray(m)) => {
+            annot::OldType::HoleArray(*m, lt.clone(), ty.clone(), o.clone())
         }
-        (annot::Type::Boxed(_, lt, ty, o), annot::Overlay::Boxed(m)) => {
-            annot::Type::Boxed(*m, lt.clone(), ty.clone(), o.clone())
+        (annot::OldType::Boxed(_, lt, ty, o), annot::OldOverlay::Boxed(m)) => {
+            annot::OldType::Boxed(*m, lt.clone(), ty.clone(), o.clone())
         }
         _ => panic!("type and overlay are incompatible"),
     }
@@ -666,11 +668,11 @@ impl Signature for annot::FuncDef {
 fn instantiate_occur_int(ctx: &TrackedContext, id: LocalId) -> SolverOccur {
     assert!(matches!(
         **ctx.local_binding(id),
-        annot::Type::Num(NumType::Int)
+        annot::OldType::Num(NumType::Int)
     ));
     annot::Occur {
         local: id,
-        ty: annot::Type::Num(NumType::Int),
+        ty: annot::OldType::Num(NumType::Int),
     }
 }
 
@@ -683,7 +685,7 @@ fn instantiate_occur_array(
     item_ty: &anon::Type,
     id: LocalId,
 ) -> SolverOccur {
-    let occur_ty = annot::Type::Array(
+    let occur_ty = annot::OldType::Array(
         constrs.fresh_var(),
         path.as_lt(),
         Box::new(instantiate_type(customs, constrs, item_ty)),
@@ -700,7 +702,7 @@ fn instantiate_occur_hole(
     item_ty: &anon::Type,
     id: LocalId,
 ) -> SolverOccur {
-    let occur_ty = annot::Type::Array(
+    let occur_ty = annot::OldType::Array(
         constrs.fresh_var(),
         path.as_lt(),
         Box::new(instantiate_type(customs, constrs, item_ty)),
@@ -712,43 +714,43 @@ fn instantiate_occur_hole(
 fn freshen_type(
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     constrs: &mut ConstrGraph,
-    ty: &annot::Type<ModeParam, LtParam>,
+    ty: &annot::OldType<ModeParam, LtParam>,
 ) -> SolverType {
     match ty {
-        annot::Type::Bool => annot::Type::Bool,
-        annot::Type::Num(num_ty) => annot::Type::Num(*num_ty),
-        annot::Type::Tuple(tys) => {
+        annot::OldType::Bool => annot::OldType::Bool,
+        annot::OldType::Num(num_ty) => annot::OldType::Num(*num_ty),
+        annot::OldType::Tuple(tys) => {
             let tys = tys
                 .iter()
                 .map(|ty| freshen_type(customs, constrs, ty))
                 .collect();
-            annot::Type::Tuple(tys)
+            annot::OldType::Tuple(tys)
         }
-        annot::Type::Variants(tys) => {
+        annot::OldType::Variants(tys) => {
             let tys = tys.map_refs(|_, ty| freshen_type(customs, constrs, ty));
-            annot::Type::Variants(tys)
+            annot::OldType::Variants(tys)
         }
-        annot::Type::Custom(id, modes, lts) => {
+        annot::OldType::Custom(id, modes, lts) => {
             let typedef = &customs[*id];
             let modes = IdVec::from_count_with(typedef.num_mode_params, |_| constrs.fresh_var());
             let lts = IdVec::from_count_with(typedef.num_lt_params, |_| Lt::Empty);
-            annot::Type::Custom(*id, modes, lts)
+            annot::OldType::Custom(*id, modes, lts)
         }
-        annot::Type::Array(m, lt, ty, o) => {
+        annot::OldType::Array(m, lt, ty, o) => {
             // let m = constrs.fresh_var();
             // let ty = Box::new(freshen_type(customs, constrs, ty));
             // let o = instantiate_overlay(customs, constrs, ty);
             // annot::Type::Array(m, Lt::Empty, ty, o)
             todo!()
         }
-        annot::Type::HoleArray(m, lt, ty, o) => {
+        annot::OldType::HoleArray(m, lt, ty, o) => {
             // let m = constrs.fresh_var();
             // let ty = Box::new(freshen_type(customs, constrs, ty));
             // let o = instantiate_overlay(customs, constrs, ty);
             // annot::Type::HoleArray(m, Lt::Empty, ty, o)
             todo!()
         }
-        annot::Type::Boxed(m, lt, ty, o) => {
+        annot::OldType::Boxed(m, lt, ty, o) => {
             // let m = constrs.fresh_var();
             // let ty = Box::new(freshen_type(customs, constrs, ty));
             // let o = instantiate_overlay(customs, constrs, ty);
@@ -882,7 +884,7 @@ fn instantiate_expr(
         }),
 
         flat::Expr::Tuple(item_ids) => {
-            let annot::Type::Tuple(fut_tys) = fut_ty else {
+            let annot::OldType::Tuple(fut_tys) = fut_ty else {
                 unreachable!();
             };
             assert_eq!(item_ids.len(), fut_tys.len());
@@ -907,7 +909,7 @@ fn instantiate_expr(
 
         flat::Expr::UnwrapVariant(variant_id, wrapped) => {
             let content_ty =
-                if let annot::Type::Variants(variant_tys) = &**ctx.local_binding(*wrapped) {
+                if let annot::OldType::Variants(variant_tys) = &**ctx.local_binding(*wrapped) {
                     &variant_tys[variant_id]
                 } else {
                     unreachable!();
@@ -925,7 +927,7 @@ fn instantiate_expr(
         flat::Expr::UnwrapBoxed(wrapped, item_ty) => todo!(),
 
         flat::Expr::WrapCustom(custom_id, content) => {
-            let annot::Type::Custom(fut_custom_id, modes, lts) = fut_ty else {
+            let annot::OldType::Custom(fut_custom_id, modes, lts) = fut_ty else {
                 unreachable!();
             };
             assert_eq!(custom_id, fut_custom_id);
@@ -942,7 +944,7 @@ fn instantiate_expr(
         flat::Expr::ArrayOp(flat::ArrayOp::Get(_, arr_id, idx_id)) => {
             let idx_occur = instantiate_occur_int(&ctx, *idx_id);
 
-            let annot::Type::Array(mode, lt, item_ty, overlay) = &**ctx.local_binding(*arr_id)
+            let annot::OldType::Array(mode, lt, item_ty, overlay) = &**ctx.local_binding(*arr_id)
             else {
                 unreachable!();
             };
@@ -957,7 +959,7 @@ fn instantiate_expr(
 
         flat::Expr::ArrayOp(flat::ArrayOp::Extract(item_ty, arr_id, idx_id)) => {
             // TODO: apply overlay
-            let annot::Type::HoleArray(mode, _, item_ty, _) = fut_ty else {
+            let annot::OldType::HoleArray(mode, _, item_ty, _) = fut_ty else {
                 unreachable!();
             };
             constrs.enforce_owned(*mode);
@@ -976,7 +978,7 @@ fn instantiate_expr(
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Push(item_ty, arr_id, item_id)) => {
-            let annot::Type::Array(mode, _, _, _) = fut_ty else {
+            let annot::OldType::Array(mode, _, _, _) = fut_ty else {
                 unreachable!();
             };
             constrs.enforce_owned(*mode);
@@ -988,12 +990,12 @@ fn instantiate_expr(
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Pop(item_ty, arr_id)) => {
-            let annot::Type::Tuple(ret_items) = fut_ty else {
+            let annot::OldType::Tuple(ret_items) = fut_ty else {
                 unreachable!();
             };
             assert_eq!(ret_items.len(), 2);
 
-            let annot::Type::Array(mode, _, fut_item_ty, _) = &ret_items[0] else {
+            let annot::OldType::Array(mode, _, fut_item_ty, _) = &ret_items[0] else {
                 unreachable!();
             };
             constrs.enforce_owned(*mode);
@@ -1004,7 +1006,7 @@ fn instantiate_expr(
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Replace(item_ty, hole_id, item_id)) => {
-            let annot::Type::Array(mode, _, _, _) = fut_ty else {
+            let annot::OldType::Array(mode, _, _, _) = fut_ty else {
                 unreachable!();
             };
             constrs.enforce_owned(*mode);
@@ -1016,7 +1018,7 @@ fn instantiate_expr(
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Reserve(item_ty, arr_id, cap_id)) => {
-            let annot::Type::Array(mode, _, _, _) = fut_ty else {
+            let annot::OldType::Array(mode, _, _, _) = fut_ty else {
                 unreachable!();
             };
             constrs.enforce_owned(*mode);
@@ -1028,11 +1030,11 @@ fn instantiate_expr(
         }
 
         flat::Expr::IoOp(flat::IoOp::Input) => {
-            let annot::Type::Array(mode, _, item_ty, _) = fut_ty else {
+            let annot::OldType::Array(mode, _, item_ty, _) = fut_ty else {
                 unreachable!();
             };
             constrs.enforce_owned(*mode);
-            assert!(matches!(**item_ty, annot::Type::Num(NumType::Byte)));
+            assert!(matches!(**item_ty, annot::OldType::Num(NumType::Byte)));
             annot::Expr::IoOp(annot::IoOp::Input)
         }
 
@@ -1048,7 +1050,7 @@ fn instantiate_expr(
         }
 
         flat::Expr::ArrayLit(item_ty, item_ids) => {
-            let annot::Type::Array(mode, _, _, _) = fut_ty else {
+            let annot::OldType::Array(mode, _, _, _) = fut_ty else {
                 unreachable!();
             };
             constrs.enforce_owned(*mode);
@@ -1107,20 +1109,20 @@ fn instantiate_overlay(
     ty: &anon::Type,
 ) -> SolverOverlay {
     match ty {
-        anon::Type::Bool => Overlay::Bool,
-        anon::Type::Num(num_ty) => Overlay::Num(*num_ty),
-        anon::Type::Tuple(tys) => Overlay::Tuple(
+        anon::Type::Bool => OldOverlay::Bool,
+        anon::Type::Num(num_ty) => OldOverlay::Num(*num_ty),
+        anon::Type::Tuple(tys) => OldOverlay::Tuple(
             tys.iter()
                 .map(|ty| instantiate_overlay(customs, constrs, ty))
                 .collect(),
         ),
         anon::Type::Variants(tys) => {
-            Overlay::Variants(tys.map_refs(|_, ty| instantiate_overlay(customs, constrs, ty)))
+            OldOverlay::Variants(tys.map_refs(|_, ty| instantiate_overlay(customs, constrs, ty)))
         }
-        anon::Type::Custom(id) => annot::Overlay::Custom(*id),
-        anon::Type::Array(_) => Overlay::Array(constrs.fresh_var()),
-        anon::Type::HoleArray(_) => Overlay::HoleArray(constrs.fresh_var()),
-        anon::Type::Boxed(_) => Overlay::Boxed(constrs.fresh_var()),
+        anon::Type::Custom(id) => annot::OldOverlay::Custom(*id),
+        anon::Type::Array(_) => OldOverlay::Array(constrs.fresh_var()),
+        anon::Type::HoleArray(_) => OldOverlay::HoleArray(constrs.fresh_var()),
+        anon::Type::Boxed(_) => OldOverlay::Boxed(constrs.fresh_var()),
     }
 }
 
@@ -1131,34 +1133,34 @@ fn instantiate_type(
     ty: &anon::Type,
 ) -> SolverType {
     match ty {
-        anon::Type::Bool => annot::Type::Bool,
-        anon::Type::Num(num_ty) => annot::Type::Num(*num_ty),
-        anon::Type::Tuple(tys) => annot::Type::Tuple(
+        anon::Type::Bool => annot::OldType::Bool,
+        anon::Type::Num(num_ty) => annot::OldType::Num(*num_ty),
+        anon::Type::Tuple(tys) => annot::OldType::Tuple(
             tys.iter()
                 .map(|ty| instantiate_type(customs, constrs, ty))
                 .collect(),
         ),
         anon::Type::Variants(tys) => {
-            annot::Type::Variants(tys.map_refs(|_, ty| instantiate_type(customs, constrs, ty)))
+            annot::OldType::Variants(tys.map_refs(|_, ty| instantiate_type(customs, constrs, ty)))
         }
-        anon::Type::Custom(id) => annot::Type::Custom(
+        anon::Type::Custom(id) => annot::OldType::Custom(
             *id,
             IdVec::from_count_with(customs[*id].num_mode_params, |_| constrs.fresh_var()),
             IdVec::from_count_with(customs[*id].num_lt_params, |_| Lt::Empty),
         ),
-        anon::Type::Array(content_ty) => annot::Type::Array(
+        anon::Type::Array(content_ty) => annot::OldType::Array(
             constrs.fresh_var(),
             Lt::Empty,
             Box::new(instantiate_type(customs, constrs, content_ty)),
             instantiate_overlay(customs, constrs, content_ty),
         ),
-        anon::Type::HoleArray(content_ty) => annot::Type::HoleArray(
+        anon::Type::HoleArray(content_ty) => annot::OldType::HoleArray(
             constrs.fresh_var(),
             Lt::Empty,
             Box::new(instantiate_type(customs, constrs, content_ty)),
             instantiate_overlay(customs, constrs, content_ty),
         ),
-        anon::Type::Boxed(content_ty) => annot::Type::Boxed(
+        anon::Type::Boxed(content_ty) => annot::OldType::Boxed(
             constrs.fresh_var(),
             Lt::Empty,
             Box::new(instantiate_type(customs, constrs, content_ty)),

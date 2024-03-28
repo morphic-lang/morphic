@@ -647,7 +647,6 @@ dependencies = [
  "lalrpop",
  "lalrpop-util",
  "lazy_static",
- "once_cell",
  "rand",
  "rand_distr",
  "rand_pcg",
