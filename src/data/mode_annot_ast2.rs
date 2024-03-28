@@ -1,3 +1,4 @@
+use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::intrinsics::Intrinsic;
@@ -5,8 +6,11 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use id_collections::{id_type, Count, IdVec};
+use once_cell::unsync::Lazy;
 use std::collections::BTreeSet;
 use std::hash::Hash;
+use std::marker::PhantomData;
+use std::rc::Rc;
 
 // Notes:
 // - have instantiate return a dictionary of updates?
@@ -220,35 +224,36 @@ pub struct Occur<M, L> {
 #[derive(Clone, Debug)]
 pub enum ArrayOp<M, L> {
     Get(
-        Type<M, L>,  // Item type
+        Type<M, L>,  // Item type (of input)
         Occur<M, L>, // Array
         Occur<M, L>, // Index
+        Type<M, L>,  // Return type; needed for RC op insertion
     ), // Returns item
     Extract(
-        Type<M, L>,  // Item type
+        Type<M, L>,  // Item type (of input)
         Occur<M, L>, // Array
         Occur<M, L>, // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        Type<M, L>,  // Item type
+        Type<M, L>,  // Item type (of input)
         Occur<M, L>, // Array
     ), // Returns int
     Push(
-        Type<M, L>,  // Item type
+        Type<M, L>,  // Item type (of input)
         Occur<M, L>, // Array
         Occur<M, L>, // Item
     ), // Returns new array
     Pop(
-        Type<M, L>,  // Item type
+        Type<M, L>,  // Item type (of input)
         Occur<M, L>, // Array
     ), // Returns tuple (array, item)
     Replace(
-        Type<M, L>,  // Item type
+        Type<M, L>,  // Item type (of input)
         Occur<M, L>, // Hole array
         Occur<M, L>, // Item
     ), // Returns new array
     Reserve(
-        Type<M, L>,  // Item type
+        Type<M, L>,  // Item type (of input)
         Occur<M, L>, // Array
         Occur<M, L>, // Capacity
     ), // Returns new array
@@ -436,3 +441,224 @@ pub struct Program {
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: first_ord::CustomFuncId,
 }
+
+pub type DynLazy<T> = Rc<Lazy<T, Box<dyn FnOnce() -> T>>>;
+
+pub fn lazy<T>(f: impl FnOnce() -> T + 'static) -> DynLazy<T> {
+    Rc::new(Lazy::new(Box::new(f)))
+}
+
+// The F-algebra for types
+pub enum TF<A, B, X, Y> {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<X>),
+    Variants(IdVec<first_ord::VariantId, X>),
+    Custom(first_ord::CustomTypeId, A),
+    Array(B, Y, X),
+    HoleArray(B, Y, X),
+    Boxed(B, Y, X),
+}
+
+// The F-algebra for "simple" types, i.e. types without overlays
+pub enum STF<A, B, X> {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<X>),
+    Variants(IdVec<first_ord::VariantId, X>),
+    Custom(first_ord::CustomTypeId, A),
+    Array(B, X),
+    HoleArray(B, X),
+    Boxed(B, X),
+}
+
+// The F-algebra for overlays
+#[derive(Clone, Debug)]
+pub enum OF<A, B, X> {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<X>),
+    Variants(IdVec<first_ord::VariantId, X>),
+    Custom(first_ord::CustomTypeId, A),
+    Array(B),
+    HoleArray(B),
+    Boxed(B),
+}
+
+pub struct TL<A, B, C, D>(TF<A, B, OL<C, D>, DynLazy<TL<A, B, C, D>>>);
+pub struct STL<A, B>(STF<A, B, DynLazy<STL<A, B>>>);
+pub struct OL<A, B>(OF<A, B, DynLazy<OL<A, B>>>);
+
+pub type Overlay2<M> = OL<IdVec<ModeParam, M>, M>;
+
+// pub enum OverlayLike<'a, A, B> {
+//     Bool,
+//     Num(first_ord::NumType),
+//     Tuple(Vec<Lazy<'a, OverlayLike<'a, A, B>>>),
+//     Variants(IdVec<first_ord::VariantId, Lazy<'a, OverlayLike<'a, A, B>>>),
+//     Custom(first_ord::CustomTypeId, A),
+//     Array(B),
+//     HoleArray(B),
+//     Boxed(B),
+// }
+//
+// struct TypeLike2<'a, A, B>(OverlayLike<'a, (), Box<TypeLike2<'a, A, B>>>);
+//
+// pub enum TypeLike<'a, A, B> {
+//     Bool,
+//     Num(first_ord::NumType),
+//     Tuple(Vec<Lazy<'a, TypeLike<'a, A, B>>>),
+//     Variants(IdVec<first_ord::VariantId, Lazy<'a, TypeLike<'a, A, B>>>),
+//     Custom(first_ord::CustomTypeId, A),
+//     Array(B, Lazy<'a, TypeLike<'a, A, B>>),
+//     HoleArray(B, Lazy<'a, TypeLike<'a, A, B>>),
+//     Boxed(B, Lazy<'a, TypeLike<'a, A, B>>),
+// }
+//
+// pub enum AnnotLike<'a, A, B, C, D> {
+//     Bool,
+//     Num(first_ord::NumType),
+//     Tuple(Vec<Lazy<'a, AnnotLike<'a, A, B, C, D>>>),
+//     Variants(IdVec<first_ord::VariantId, Lazy<'a, AnnotLike<'a, A, B, C, D>>>),
+//     Custom(first_ord::CustomTypeId, A),
+//     Array(
+//         B,
+//         Lazy<'a, AnnotLike<'a, A, B, C, D>>,
+//         Lazy<'a, OverlayLike<'a, C, D>>,
+//     ),
+//     HoleArray(
+//         B,
+//         Lazy<'a, AnnotLike<'a, A, B, C, D>>,
+//         Lazy<'a, OverlayLike<'a, C, D>>,
+//     ),
+//     Boxed(
+//         B,
+//         Lazy<'a, AnnotLike<'a, A, B, C, D>>,
+//         Lazy<'a, OverlayLike<'a, C, D>>,
+//     ),
+// }
+//
+// pub type OverlayIter<'a, M> = OverlayLike<'a, (), &'a M>;
+// pub type AnnotTypeIter<'a, M, L> =
+//     AnnotLike<'a, (&'a IdVec<ModeParam, M>, &'a IdVec<LtParam, L>), (&'a M, &'a L), (), &'a M>;
+//
+// impl<M> Overlay<M> {
+//     pub fn iter<'a>(&'a self) -> OverlayIter<'a, M> {
+//         match self {
+//             Overlay::Bool => OverlayLike::Bool,
+//             Overlay::Num(num_ty) => OverlayLike::Num(*num_ty),
+//             Overlay::Tuple(overlays) => OverlayLike::Tuple(
+//                 overlays
+//                     .iter()
+//                     .map(|overlay| Lazy::new(|| overlay.iter()))
+//                     .collect(),
+//             ),
+//             Overlay::Variants(variants) => OverlayLike::Variants(IdVec::from_vec(
+//                 variants
+//                     .values()
+//                     .map(|overlay| Lazy::new(|| overlay.iter()))
+//                     .collect(),
+//             )),
+//             Overlay::Custom(id) => OverlayLike::Custom(*id, ()),
+//             Overlay::Array(mode) => OverlayLike::Array(mode),
+//             Overlay::HoleArray(mode) => OverlayLike::HoleArray(mode),
+//             Overlay::Boxed(mode) => OverlayLike::Boxed(mode),
+//         }
+//     }
+// }
+//
+// impl<M, L> Type<M, L> {
+//     pub fn iter<'a>(&'a self) -> AnnotTypeIter<'a, M, L> {
+//         match self {
+//             Type::Bool => AnnotLike::Bool,
+//             Type::Num(num_ty) => AnnotLike::Num(*num_ty),
+//             Type::Tuple(tys) => {
+//                 AnnotLike::Tuple(tys.iter().map(|ty| Lazy::new(|| ty.iter())).collect())
+//             }
+//             Type::Variants(variants) => AnnotLike::Variants(IdVec::from_vec(
+//                 variants
+//                     .values()
+//                     .map(|ty| Lazy::new(|| ty.iter()))
+//                     .collect(),
+//             )),
+//             Type::Custom(id, modes, lts) => AnnotLike::Custom(*id, (modes, lts)),
+//             Type::Array(mode, lt, ty, overlay) => AnnotLike::Array(
+//                 (mode, lt),
+//                 Lazy::new(move || ty.iter()),
+//                 Lazy::new(move || overlay.iter()),
+//             ),
+//             Type::HoleArray(mode, lt, ty, overlay) => AnnotLike::Array(
+//                 (mode, lt),
+//                 Lazy::new(move || ty.iter()),
+//                 Lazy::new(move || overlay.iter()),
+//             ),
+//             Type::Boxed(mode, lt, ty, overlay) => AnnotLike::Array(
+//                 (mode, lt),
+//                 Lazy::new(move || ty.iter()),
+//                 Lazy::new(move || overlay.iter()),
+//             ),
+//         }
+//     }
+// }
+//
+// impl<'a, A, B, C, D> AnnotLike<'a, A, B, C, D> {
+//     pub fn zip<E, F, G, H>(
+//         self,
+//         other: AnnotLike<E, F, G, H>,
+//     ) -> AnnotLike<(A, E), (B, F), (C, G), (D, H)> {
+//         todo!()
+//         match (self, other) {
+//             (TypeLike::Bool, TypeLike::Bool) => TypeLike::Bool,
+//             (TypeLike::Num(n1), TypeLike::Num(n2)) if n1 == n2 => TypeLike::Num(n1),
+//             (TypeLike::Tuple(tys1), TypeLike::Tuple(tys2)) => TypeLike::Tuple(
+//                 tys1.into_iter()
+//                     .zip(tys2)
+//                     .map(|(t1, t2)| DynLazy::new(move || t1.force().zip(t2.force())))
+//                     .collect(),
+//             ),
+//             (TypeLike::Custom(id1, a1), TypeLike::Custom(id2, a2)) if id1 == id2 => {
+//                 TypeLike::Custom(id1, (a1, a2))
+//             }
+//             (TypeLike::Array(m1, ty1, o1), TypeLike::Array(m2, ty2, o2)) => {
+//                 TypeLike::Array((m1, m2), ty1.zip(ty2), o1.map(|o1| o1.zip(o2)))
+//             }
+//             (TypeLike::HoleArray(m1, ty1, o1), TypeLike::HoleArray(m2, ty2, o2)) => {
+//                 TypeLike::HoleArray((m1, m2), ty1.zip(ty2), o1.map(|o1| o1.zip(o2)))
+//             }
+//             (TypeLike::Boxed(m1, ty1, o1), TypeLike::Boxed(m2, ty2, o2)) => {
+//                 TypeLike::Boxed((m1, m2), ty1.zip(ty2), o1.map(|o1| o1.zip(o2)))
+//             }
+//             _ => panic!("incompatible types"),
+//         }
+//     }
+// }
+
+// #[derive(Clone, Debug, PartialEq, Eq)]
+// pub enum Overlay<M> {
+//     Bool,
+//     Num(first_ord::NumType),
+//     Tuple(Vec<Overlay<M>>),
+//     Variants(IdVec<first_ord::VariantId, Overlay<M>>),
+//     // The mode and lifetime substitutions for this custom type's parameters are stored in the type
+//     // which corresponds to this overlay.
+//     Custom(first_ord::CustomTypeId),
+//     Array(M),
+//     HoleArray(M),
+//     Boxed(M),
+// }
+
+// #[derive(Clone, Debug, PartialEq, Eq)]
+// pub enum Type<M, L> {
+//     Bool,
+//     Num(first_ord::NumType),
+//     Tuple(Vec<Type<M, L>>),
+//     Variants(IdVec<first_ord::VariantId, Type<M, L>>),
+//     Custom(
+//         first_ord::CustomTypeId,
+//         IdVec<ModeParam, M>,
+//         IdVec<LtParam, L>,
+//     ),
+//     Array(M, L, Box<Type<M, L>>, Overlay<M>),
+//     HoleArray(M, L, Box<Type<M, L>>, Overlay<M>),
+//     Boxed(M, L, Box<Type<M, L>>, Overlay<M>),
+// }
