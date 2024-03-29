@@ -1,0 +1,208 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io,
+    module Array,
+    module Iter expose { Iter },
+    module String,
+    module Option expose { Option { Some, None } }
+  }
+
+module Test = file "lib/test.mor"
+  with { Core }
+  expose { test }
+
+// Basic functions
+
+mod(a: Int, b: Int): Int =
+  a -  a / b * b
+
+rc_bp(r: Int, c: Int): (Int, Int) =
+  (r / 3 * 3 + c / 3, mod(r, 3) * 3 + mod(c, 3))
+
+bp_rc(r: Int, c: Int): (Int, Int) =
+  rc_bp(r, c)
+
+assert(cond: Bool, msg: Array Byte): () =
+  if !cond { panic(msg) } else { () }
+
+for(init_state: a, start: Int, end: Int, body: ((a, Int) -> a)): a =
+  Iter.range(start, end) |> Iter.foldl(init_state, body)
+
+// Rule type
+
+type Rule {
+  Rule(Int)
+}
+
+type RuleType {
+  RC,
+  RN,
+  CN,
+  BN,
+}
+
+is_set: Int = int_shift_left(1, 9)
+
+new_rule(): Rule =
+  Rule(is_set - 1) // 0b111111111 (9 ones)
+
+new_single(x: Int): Rule = 
+  Rule(int_bit_or(int_shift_left(1, x), is_set))
+
+check_set(rule: Rule): Bool = 
+  let Rule(r) = rule in (int_bit_and(r, is_set) = is_set)
+
+count_options(rule: Rule): Int =
+  let Rule(r) = rule in int_count_ones(int_bit_and(r, int_bit_not(is_set)))
+
+iter_options(rule: Rule): Iter Int =
+  let Rule(r) = rule in
+  Iter.range(0, 9)
+    |> Iter.filter(\(x) -> !(int_bit_and(r, int_shift_left(1, x)) = 0))
+
+int_bit_not(x: Int): Int = int_bit_xor(x, -1)
+
+set_false(rule: Rule, x: Int): Rule =
+  let Rule(r) = rule in Rule(int_bit_and(r, int_bit_not(int_shift_left(1, x))))
+
+// Sudoku type
+
+type Sudoku {
+  Sudoku(Array Rule)
+}
+
+id_to_type(id:Int): RuleType =
+  match id / 81 {
+    0 -> RC,
+    1 -> RN,
+    2 -> CN,
+    3 -> BN,
+    _ -> panic("invalid rule_id"),
+  }
+
+rule_to_id(t: RuleType, a: Int, b: Int): Int =
+  match t {
+    RC -> 0,
+    RN -> 81,
+    CN -> 81 * 2,
+    BN -> 81 * 3,
+  } + 9 * a + b
+
+rule_to_rcn(idx: Int, x: Int): (Int, Int, Int) =
+  let t = id_to_type(idx) in
+  let a = mod(idx, 81) / 9 in
+  let b = mod(idx, 9) in
+  match t {
+    RC -> (a, b, x),
+    RN -> (a, x, b),
+    CN -> (x, a, b),
+    BN -> let (r, c) = bp_rc(a, x) in (r, c, b),
+  }
+
+set_pencilmark_false(rules: Array Rule, r: Int, c: Int, n: Int): Array Rule =
+  let (b,p) = rc_bp(r, c) in
+  rules
+  |> Array.update(rule_to_id(RC, r, c), \(rule) -> set_false(rule, n))
+  |> Array.update(rule_to_id(RN, r, n), \(rule) -> set_false(rule, c))
+  |> Array.update(rule_to_id(CN, c, n), \(rule) -> set_false(rule, r))
+  |> Array.update(rule_to_id(BN, b, n), \(rule) -> set_false(rule, p))
+
+set_pencilmark(old: Array Rule, r: Int, c: Int, n: Int): Array Rule =
+  let (b,p) = rc_bp(r, c) in
+  old
+  // RC
+  |> for(0, 9, \(rules, n2) ->
+    if n = n2 {
+      Array.set(rules, rule_to_id(RC, r, c), new_single(n))
+    } else {
+      set_pencilmark_false(rules, r, c, n2)
+    }
+  )
+  // RN
+  |> for(0, 9, \(rules, c2) ->
+    if c = c2 {
+      Array.set(rules, rule_to_id(RN, r, n), new_single(c))
+    } else {
+      set_pencilmark_false(rules, r, c2, n)
+    }
+  )
+  // CN
+  |> for(0, 9, \(rules, r2) ->
+    if r = r2 {
+      Array.set(rules, rule_to_id(CN, c, n), new_single(r))
+    } else {
+      set_pencilmark_false(rules, r2, c, n)
+    }
+  )
+  // BN
+  |> for(0, 9, \(rules, p2) ->
+    if p = p2 {
+      Array.set(rules, rule_to_id(BN, b, n), new_single(p))
+    } else {
+      let (r2,c2) = bp_rc(b,p2) in
+      set_pencilmark_false(rules, r2, c2, n)
+    }
+  )
+
+new_sudoku(givens: Array Byte): Sudoku =
+  assert(Array.len(givens) = 9 * 9, "input wrong size") then
+  let old = Iter.forever(new_rule())
+    |> Iter.take(9 * 9 * 4)
+    |> Array.from_iter() in
+  Sudoku(
+    givens
+    |> Iter.items()
+    |> Iter.enumerate() 
+    |> Iter.foldl(old, \(rules, (i, given)) ->
+      match String.digit_to_nat(given) {
+        Some(n) ->
+          assert(!(n = 0), "given cannot be 0") then
+          let r = i / 9 in
+          let c = mod(i, 9) in
+          set_pencilmark(rules, r, c, n - 1),
+        None ->
+          rules,
+      }
+    )
+  )
+
+solve_rec(sudoku: Sudoku): Iter Sudoku =
+  let Sudoku(rules) = sudoku in
+  let rule_idx = rules
+    |> Iter.items()
+    |> Iter.enumerate()
+    |> Iter.filter(\((_, rule)) -> !check_set(rule))
+    |> Iter.foldl((10, None), \((min, min_opt), (idx, rule)) ->
+      let count = count_options(rule) in
+      if count < min { 
+        (count, Some(idx)) 
+      } else { 
+        (min, min_opt) 
+      }
+    ) in
+    match rule_idx {
+      (0, _) ->
+        Iter.empty,
+      (_, None) ->
+        Iter.once(Sudoku(rules)),
+      (_, Some(idx)) ->
+        let rule = Array.get(rules, idx) in
+        iter_options(rule)
+        |> Iter.map(\(x) -> 
+          let (r, c, n) = rule_to_rcn(idx, x) in
+          Sudoku(set_pencilmark(rules, r, c, n))
+        )
+        |> Iter.flat_map(solve_rec),
+    }
+
+solve(sudoku: Sudoku): Array Sudoku =
+  // profile point goes here
+  sudoku
+  |> solve_rec()
+  |> Array.from_iter()
+
+proc main(): () =
+  // 546993 solutions
+  let givens = ".......6..2.9..1....8..1..52..5..4....3..2....4......7.3..6.5....91.............." in
+  let solutions = new_sudoku(givens) |> solve() in
+  do Io.writeln(String.int_to_string(Array.len(solutions)))
