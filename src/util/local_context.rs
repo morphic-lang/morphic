@@ -24,10 +24,6 @@ impl<Var: Id, T> LocalContext<Var, T> {
         &self.stack[local]
     }
 
-    pub fn local_binding_mut(&mut self, local: Var) -> &mut T {
-        &mut self.stack[local]
-    }
-
     pub fn with_scope<R, F: for<'a> FnOnce(&'a mut LocalContext<Var, T>) -> R>(
         &mut self,
         body: F,
