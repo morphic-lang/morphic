@@ -1,12 +1,13 @@
 use crate::data::anon_sum_ast as anon;
-use crate::data::first_order_ast as first_ord;
+use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::flat_ast as flat;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::iter::{try_zip_eq, IterExt};
 use id_collections::{id_type, Count, IdVec};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 
 // Notes:
@@ -152,22 +153,18 @@ impl LocalLt {
                     LocalLt::Seq(Box::new(l1.join(&**l2)), *i1)
                 }
             }
-            (LocalLt::Par(p1), LocalLt::Par(p2)) => {
-                if p1.len() != p2.len() {
-                    panic!("incompatible lifetimes")
-                }
-                LocalLt::Par(
-                    p1.iter()
-                        .zip(p2.iter())
-                        .map(|(l1, l2)| match (l1, l2) {
-                            (None, None) => None,
-                            (None, Some(l2)) => Some(l2.clone()),
-                            (Some(l1), None) => Some(l1.clone()),
-                            (Some(l1), Some(l2)) => Some(l1.join(l2)),
-                        })
-                        .collect(),
-                )
-            }
+            (LocalLt::Par(p1), LocalLt::Par(p2)) => LocalLt::Par(
+                p1.iter()
+                    .try_zip_eq(p2.iter())
+                    .expect("incompatible lifetimes")
+                    .map(|(l1, l2)| match (l1, l2) {
+                        (None, None) => None,
+                        (None, Some(l2)) => Some(l2.clone()),
+                        (Some(l1), None) => Some(l1.clone()),
+                        (Some(l1), Some(l2)) => Some(l1.join(l2)),
+                    })
+                    .collect(),
+            ),
             (LocalLt::Seq(_, _), LocalLt::Par(_)) | (LocalLt::Par(_), LocalLt::Seq(_, _)) => {
                 panic!("incompatible lifetimes");
             }
@@ -288,8 +285,8 @@ pub enum Expr<M, L> {
         Occur<M, L>,
         Type<M, L>, // Inner type
     ),
-    WrapCustom(first_ord::CustomTypeId, Occur<M, L>),
-    UnwrapCustom(first_ord::CustomTypeId, Occur<M, L>),
+    WrapCustom(CustomTypeId, Occur<M, L>),
+    UnwrapCustom(CustomTypeId, Occur<M, L>),
 
     Intrinsic(Intrinsic, Occur<M, L>),
     ArrayOp(ArrayOp<M, L>),
@@ -312,7 +309,7 @@ pub enum Condition<M, L> {
         Box<Condition<M, L>>,
         Type<M, L>, // Inner type
     ),
-    Custom(first_ord::CustomTypeId, Box<Condition<M, L>>),
+    Custom(CustomTypeId, Box<Condition<M, L>>),
     BoolConst(bool),
     ByteConst(u8),
     IntConst(i64),
@@ -325,9 +322,7 @@ pub enum Overlay<M> {
     Num(first_ord::NumType),
     Tuple(Vec<Overlay<M>>),
     Variants(IdVec<first_ord::VariantId, Overlay<M>>),
-    // The mode and lifetime substitutions for this custom type's parameters are stored in the type
-    // which corresponds to this overlay.
-    Custom(first_ord::CustomTypeId),
+    Custom(CustomTypeId, BTreeMap<ModeParam, M>),
     Array(M),
     HoleArray(M),
     Boxed(M),
@@ -339,11 +334,7 @@ pub enum Type<M, L> {
     Num(first_ord::NumType),
     Tuple(Vec<Type<M, L>>),
     Variants(IdVec<first_ord::VariantId, Type<M, L>>),
-    Custom(
-        first_ord::CustomTypeId,
-        IdVec<ModeParam, M>,
-        IdVec<LtParam, L>,
-    ),
+    Custom(CustomTypeId, IdVec<ModeParam, M>, IdVec<LtParam, L>),
     Array(M, L, Box<Type<M, L>>, Overlay<M>),
     HoleArray(M, L, Box<Type<M, L>>, Overlay<M>),
     Boxed(M, L, Box<Type<M, L>>, Overlay<M>),
@@ -358,10 +349,17 @@ impl<M: Clone> Type<M, Lt> {
             (Type::Num(n1), Type::Num(n2)) if n1 == n2 => Type::Num(*n1),
             (Type::Tuple(tys1), Type::Tuple(tys2)) => Type::Tuple(
                 tys1.iter()
-                    .zip(tys2)
+                    .try_zip_eq(tys2)
+                    .expect("incompatible types")
                     .map(|(t1, t2)| t1.left_meet(t2))
                     .collect(),
             ),
+            (Type::Variants(vs1), Type::Variants(vs2)) => Type::Variants(IdVec::from_vec(
+                try_zip_eq(vs1, vs2)
+                    .expect("incompatible types")
+                    .map(|(_, v1, v2)| v1.left_meet(v2))
+                    .collect(),
+            )),
             (Type::Custom(id1, ms1, lts1), Type::Custom(id2, _ms2, _lts2)) if id1 == id2 => {
                 Type::Custom(*id1, ms1.clone(), lts1.clone())
             }
@@ -393,8 +391,7 @@ impl<M: Clone> Type<M, Lt> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sig {
     // Total number of params in `arg_type` and `ret_type`
-    pub num_mode_params: Count<ModeParam>, // Does not include overlay mode params
-    pub num_overlay_mode_params: Count<ModeParam>,
+    pub num_mode_params: Count<ModeParam>,
     pub num_lt_params: Count<LtParam>,
 
     pub arg_type: Type<ModeParam, LtParam>,
@@ -414,27 +411,616 @@ pub struct FuncDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct CustomTypeDef {
+pub struct TypeDef {
     pub num_mode_params: Count<ModeParam>,
-    pub num_overlay_mode_params: Count<ModeParam>,
     pub num_lt_params: Count<LtParam>,
+    pub overlay_params: BTreeSet<ModeParam>,
+
     pub content: Type<ModeParam, LtParam>,
     pub overlay: Overlay<ModeParam>,
 }
 
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
-    pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
-    pub sccs: IdVec<flat::CustomTypeSccId, Vec<first_ord::CustomTypeId>>,
+    pub types: IdVec<CustomTypeId, TypeDef>,
+    pub sccs: IdVec<flat::CustomTypeSccId, Vec<CustomTypeId>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
-    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: first_ord::CustomFuncId,
+}
+
+pub type Next<'a, T> = Box<dyn Fn() -> T + 'a>;
+pub type DynIter<'a, T> = Box<dyn Iterator<Item = T> + 'a>;
+
+#[derive(Clone, Copy, Debug)]
+pub enum DataKind {
+    Stack,
+    Heap,
+}
+
+pub enum OverlayLike<'a, A, B> {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(DynIter<'a, OverlayLike<'a, A, B>>),
+    Variants(DynIter<'a, OverlayLike<'a, A, B>>),
+    Custom(CustomTypeId, A),
+    Array(B),
+    HoleArray(B),
+    Boxed(B),
+}
+
+pub enum TypeLike<'a, A, B, C, D> {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(DynIter<'a, TypeLike<'a, A, B, C, D>>),
+    Variants(DynIter<'a, TypeLike<'a, A, B, C, D>>),
+    Custom(CustomTypeId, A),
+    Array(
+        B,
+        Next<'a, TypeLike<'a, A, B, C, D>>,
+        Next<'a, OverlayLike<'a, C, D>>,
+    ),
+    HoleArray(
+        B,
+        Next<'a, TypeLike<'a, A, B, C, D>>,
+        Next<'a, OverlayLike<'a, C, D>>,
+    ),
+    Boxed(
+        B,
+        Next<'a, TypeLike<'a, A, B, C, D>>,
+        Next<'a, OverlayLike<'a, C, D>>,
+    ),
+}
+
+pub type OverlayItem<'a, M> = OverlayLike<'a, &'a BTreeMap<ModeParam, M>, &'a M>;
+pub type OwnedOverlayItem<'a, M> = OverlayLike<'a, BTreeMap<ModeParam, M>, M>;
+
+pub type TypeItem<'a, M, L> = TypeLike<
+    'a,
+    (&'a IdVec<ModeParam, M>, &'a IdVec<LtParam, L>),
+    (&'a M, &'a L),
+    &'a BTreeMap<ModeParam, M>,
+    &'a M,
+>;
+pub type OwnedTypeItem<'a, M, L> =
+    TypeLike<'a, (IdVec<ModeParam, M>, IdVec<LtParam, L>), (M, L), BTreeMap<ModeParam, M>, M>;
+
+impl<M> Overlay<M> {
+    pub fn items<'a>(&'a self) -> OverlayItem<M> {
+        match self {
+            Overlay::Bool => OverlayLike::Bool,
+            Overlay::Num(n) => OverlayLike::Num(*n),
+            Overlay::Tuple(items) => {
+                OverlayLike::Tuple(Box::new(items.iter().map(|next| next.items())))
+            }
+            Overlay::Variants(variants) => {
+                OverlayLike::Variants(Box::new(variants.iter().map(|(_, next)| next.items())))
+            }
+            Overlay::Custom(id, modes) => OverlayLike::Custom(*id, modes),
+            Overlay::Array(mode) => OverlayLike::Array(mode),
+            Overlay::HoleArray(mode) => OverlayLike::HoleArray(mode),
+            Overlay::Boxed(mode) => OverlayLike::Boxed(mode),
+        }
+    }
+}
+
+impl<'a, M: Clone> OwnedOverlayItem<'a, M> {
+    pub fn collect(self) -> Overlay<M> {
+        match self {
+            OverlayLike::Bool => Overlay::Bool,
+            OverlayLike::Num(n) => Overlay::Num(n),
+            OverlayLike::Tuple(items) => Overlay::Tuple(items.map(|next| next.collect()).collect()),
+            OverlayLike::Variants(variants) => Overlay::Variants(IdVec::from_vec(
+                variants.map(|next| next.collect()).collect(),
+            )),
+            OverlayLike::Custom(id, modes) => Overlay::Custom(id, modes),
+            OverlayLike::Array(mode) => Overlay::Array(mode),
+            OverlayLike::HoleArray(mode) => Overlay::HoleArray(mode),
+            OverlayLike::Boxed(mode) => Overlay::Boxed(mode),
+        }
+    }
+}
+
+impl<M, L> Type<M, L> {
+    pub fn items<'a>(&'a self) -> TypeItem<'a, M, L> {
+        match self {
+            Type::Bool => TypeLike::Bool,
+            Type::Num(n) => TypeLike::Num(*n),
+            Type::Tuple(items) => TypeLike::Tuple(Box::new(items.iter().map(|next| next.items()))),
+            Type::Variants(variants) => {
+                TypeLike::Variants(Box::new(variants.iter().map(|(_, next)| next.items())))
+            }
+            Type::Custom(id, ms, lts) => TypeLike::Custom(*id, (ms, lts)),
+            Type::Array(mode, lt, ty, overlay) => TypeLike::Array(
+                (mode, lt),
+                Box::new(|| ty.items()),
+                Box::new(|| overlay.items()),
+            ),
+            Type::HoleArray(mode, lt, ty, overlay) => TypeLike::HoleArray(
+                (mode, lt),
+                Box::new(|| ty.items()),
+                Box::new(|| overlay.items()),
+            ),
+            Type::Boxed(mode, lt, ty, overlay) => TypeLike::Boxed(
+                (mode, lt),
+                Box::new(|| ty.items()),
+                Box::new(|| overlay.items()),
+            ),
+        }
+    }
+
+    fn overlay_items<'a>(&'a self) -> OverlayLike<&'a IdVec<ModeParam, M>, &'a M> {
+        match self {
+            Type::Bool => OverlayLike::Bool,
+            Type::Num(n) => OverlayLike::Num(*n),
+            Type::Tuple(items) => {
+                OverlayLike::Tuple(Box::new(items.iter().map(|next| next.overlay_items())))
+            }
+            Type::Variants(variants) => OverlayLike::Variants(Box::new(
+                variants.iter().map(|(_, next)| next.overlay_items()),
+            )),
+            Type::Custom(id, modes, _) => OverlayLike::Custom(*id, modes),
+            Type::Array(mode, _, _, _) => OverlayLike::Array(mode),
+            Type::HoleArray(mode, _, _, _) => OverlayLike::HoleArray(mode),
+            Type::Boxed(mode, _, _, _) => OverlayLike::Boxed(mode),
+        }
+    }
+}
+
+impl<'a, M: Clone, L: Clone> OwnedTypeItem<'a, M, L> {
+    pub fn collect(self) -> Type<M, L> {
+        match self {
+            TypeLike::Bool => Type::Bool,
+            TypeLike::Num(n) => Type::Num(n),
+            TypeLike::Tuple(items) => Type::Tuple(items.map(|next| next.collect()).collect()),
+            TypeLike::Variants(variants) => Type::Variants(IdVec::from_vec(
+                variants.map(|next| next.collect()).collect(),
+            )),
+            TypeLike::Custom(id, (modes, lts)) => Type::Custom(id, modes, lts),
+            TypeLike::Array((mode, lt), ty, overlay) => {
+                Type::Array(mode, lt, Box::new(ty().collect()), overlay().collect())
+            }
+            TypeLike::HoleArray((mode, lt), ty, overlay) => {
+                Type::HoleArray(mode, lt, Box::new(ty().collect()), overlay().collect())
+            }
+            TypeLike::Boxed((mode, lt), ty, overlay) => {
+                Type::Boxed(mode, lt, Box::new(ty().collect()), overlay().collect())
+            }
+        }
+    }
+}
+
+impl anon::Type {
+    pub fn items<'a>(&'a self) -> TypeLike<(), (), (), ()> {
+        match self {
+            anon::Type::Bool => TypeLike::Bool,
+            anon::Type::Num(n) => TypeLike::Num(*n),
+            anon::Type::Tuple(items) => {
+                TypeLike::Tuple(Box::new(items.into_iter().map(|next| next.items())))
+            }
+            anon::Type::Variants(variants) => {
+                TypeLike::Variants(Box::new(variants.into_iter().map(|(_, next)| next.items())))
+            }
+            anon::Type::Custom(id) => TypeLike::Custom(*id, ()),
+            anon::Type::Array(ty) => {
+                TypeLike::Array((), Box::new(|| ty.items()), Box::new(|| ty.overlay_items()))
+            }
+            anon::Type::HoleArray(ty) => {
+                TypeLike::HoleArray((), Box::new(|| ty.items()), Box::new(|| ty.overlay_items()))
+            }
+            anon::Type::Boxed(ty) => {
+                TypeLike::Boxed((), Box::new(|| ty.items()), Box::new(|| ty.overlay_items()))
+            }
+        }
+    }
+
+    pub fn overlay_items<'a>(&'a self) -> OverlayLike<(), ()> {
+        match self {
+            anon::Type::Bool => OverlayLike::Bool,
+            anon::Type::Num(n) => OverlayLike::Num(*n),
+            anon::Type::Tuple(items) => {
+                OverlayLike::Tuple(Box::new(items.into_iter().map(|next| next.overlay_items())))
+            }
+            anon::Type::Variants(variants) => OverlayLike::Variants(Box::new(
+                variants.into_iter().map(|(_, next)| next.overlay_items()),
+            )),
+            anon::Type::Custom(id) => OverlayLike::Custom(*id, ()),
+            anon::Type::Array(_) => OverlayLike::Array(()),
+            anon::Type::HoleArray(_) => OverlayLike::HoleArray(()),
+            anon::Type::Boxed(_) => OverlayLike::Boxed(()),
+        }
+    }
+}
+
+impl<'a, A: 'a, B: 'a> OverlayLike<'a, A, B> {
+    pub fn map<C, D>(
+        self,
+        f1: impl Fn(CustomTypeId, A) -> C + Clone + 'a,
+        f2: impl Fn(B) -> D + Clone + 'a,
+    ) -> OverlayLike<'a, C, D> {
+        // `DataKind::Stack` is a dummy value. We only care about the kind when the overlay is part
+        // of a type, in which case `map_impl` will be called directly.
+        self.map_impl(
+            DataKind::Stack,
+            move |_, id, v| f1(id, v),
+            move |_, v| f2(v),
+        )
+    }
+
+    fn map_impl<C, D>(
+        self,
+        kind: DataKind,
+        f1: impl Fn(DataKind, CustomTypeId, A) -> C + Clone + 'a,
+        f2: impl Fn(DataKind, B) -> D + Clone + 'a,
+    ) -> OverlayLike<'a, C, D> {
+        match self {
+            OverlayLike::Bool => OverlayLike::Bool,
+            OverlayLike::Num(n) => OverlayLike::Num(n),
+            OverlayLike::Tuple(items) => OverlayLike::Tuple(Box::new(
+                items.map(move |next| next.map_impl(kind, f1.clone(), f2.clone())),
+            )),
+            OverlayLike::Variants(variants) => OverlayLike::Variants(Box::new(
+                variants.map(move |next| next.map_impl(kind, f1.clone(), f2.clone())),
+            )),
+            OverlayLike::Custom(id, v) => OverlayLike::Custom(id, f1(kind, id, v)),
+            OverlayLike::Array(v) => OverlayLike::Array(f2(kind, v)),
+            OverlayLike::HoleArray(v) => OverlayLike::HoleArray(f2(kind, v)),
+            OverlayLike::Boxed(v) => OverlayLike::Boxed(f2(kind, v)),
+        }
+    }
+
+    pub fn zip<C: 'a, D: 'a>(
+        self,
+        other: OverlayLike<'a, C, D>,
+    ) -> OverlayLike<'a, (A, C), (B, D)> {
+        match (self, other) {
+            (OverlayLike::Bool, OverlayLike::Bool) => OverlayLike::Bool,
+            (OverlayLike::Num(n1), OverlayLike::Num(n2)) if n1 == n2 => OverlayLike::Num(n1),
+            (OverlayLike::Tuple(items1), OverlayLike::Tuple(items2)) => {
+                OverlayLike::Tuple(Box::new(
+                    items1
+                        .into_iter()
+                        .zip_eq(items2)
+                        .map(|(next1, next2)| next1.zip(next2)),
+                ))
+            }
+            (OverlayLike::Variants(variants1), OverlayLike::Variants(variants2)) => {
+                OverlayLike::Variants(Box::new(
+                    variants1
+                        .into_iter()
+                        .zip_eq(variants2)
+                        .map(|(next1, next2)| next1.zip(next2)),
+                ))
+            }
+            (OverlayLike::Custom(id1, v1), OverlayLike::Custom(id2, v2)) if id1 == id2 => {
+                OverlayLike::Custom(id1, (v1, v2))
+            }
+            (OverlayLike::Array(v1), OverlayLike::Array(v2)) => OverlayLike::Array((v1, v2)),
+            (OverlayLike::HoleArray(v1), OverlayLike::HoleArray(v2)) => {
+                OverlayLike::HoleArray((v1, v2))
+            }
+            (OverlayLike::Boxed(v1), OverlayLike::Boxed(v2)) => OverlayLike::Boxed((v1, v2)),
+            _ => panic!("incompatible types"),
+        }
+    }
+
+    pub fn for_each(self, f1: impl Fn(CustomTypeId, A) + Clone, f2: impl Fn(B) + Clone) {
+        // `DataKind::Stack` is a dummy value. We only care about the kind when the overlay is part
+        // of a type, in which case `for_each_impl` will be called directly.
+        self.for_each_impl(
+            DataKind::Stack,
+            move |_, id, v| f1(id, v),
+            move |_, v| f2(v),
+        )
+    }
+
+    fn for_each_impl(
+        self,
+        kind: DataKind,
+        f1: impl Fn(DataKind, CustomTypeId, A) + Clone,
+        f2: impl Fn(DataKind, B) + Clone,
+    ) {
+        match self {
+            OverlayLike::Bool => {}
+            OverlayLike::Num(_) => {}
+            OverlayLike::Tuple(items) => {
+                for next in items {
+                    next.for_each_impl(DataKind::Heap, f1.clone(), f2.clone());
+                }
+            }
+            OverlayLike::Variants(variants) => {
+                for next in variants {
+                    next.for_each_impl(DataKind::Heap, f1.clone(), f2.clone());
+                }
+            }
+            OverlayLike::Custom(id, v) => f1(kind, id, v),
+            OverlayLike::Array(v) => f2(kind, v),
+            OverlayLike::HoleArray(v) => f2(kind, v),
+            OverlayLike::Boxed(v) => f2(kind, v),
+        }
+    }
+}
+
+impl<'a, R: Clone> OverlayLike<'a, R, R> {
+    pub fn fold(self, init: R, f: impl Fn(R, R) -> R + Clone) -> R {
+        match self {
+            OverlayLike::Bool => init,
+            OverlayLike::Num(_) => init,
+            OverlayLike::Tuple(items) => items.into_iter().fold(init.clone(), |acc, next| {
+                f(acc, next.fold(init.clone(), f.clone()))
+            }),
+            OverlayLike::Variants(variants) => {
+                variants.into_iter().fold(init.clone(), |acc, next| {
+                    f(acc, next.fold(init.clone(), f.clone()))
+                })
+            }
+            OverlayLike::Custom(_, v) => v,
+            OverlayLike::Array(v) => v,
+            OverlayLike::HoleArray(v) => v,
+            OverlayLike::Boxed(v) => v,
+        }
+    }
+}
+
+impl<'a, A: 'a, B: 'a, C: 'a, D: 'a> TypeLike<'a, A, B, C, D> {
+    pub fn map<E, F, G, H>(
+        self,
+        ty_f1: impl Fn(DataKind, CustomTypeId, A) -> E + Clone + 'a,
+        ty_f2: impl Fn(DataKind, B) -> F + Clone + 'a,
+        ov_f1: impl Fn(DataKind, CustomTypeId, C) -> G + Clone + 'a,
+        ov_f2: impl Fn(DataKind, D) -> H + Clone + 'a,
+    ) -> TypeLike<'a, E, F, G, H> {
+        self.map_impl(DataKind::Stack, ty_f1, ty_f2, ov_f1, ov_f2)
+    }
+
+    fn map_impl<E, F, G, H>(
+        self,
+        kind: DataKind,
+        ty_f1: impl Fn(DataKind, CustomTypeId, A) -> E + Clone + 'a,
+        ty_f2: impl Fn(DataKind, B) -> F + Clone + 'a,
+        ov_f1: impl Fn(DataKind, CustomTypeId, C) -> G + Clone + 'a,
+        ov_f2: impl Fn(DataKind, D) -> H + Clone + 'a,
+    ) -> TypeLike<'a, E, F, G, H> {
+        match self {
+            TypeLike::Bool => TypeLike::Bool,
+            TypeLike::Num(n) => TypeLike::Num(n),
+            TypeLike::Tuple(items) => TypeLike::Tuple(Box::new(items.map(move |next| {
+                next.map_impl(
+                    kind,
+                    ty_f1.clone(),
+                    ty_f2.clone(),
+                    ov_f1.clone(),
+                    ov_f2.clone(),
+                )
+            }))),
+            TypeLike::Variants(variants) => {
+                TypeLike::Variants(Box::new(variants.map(move |next| {
+                    next.map_impl(
+                        kind,
+                        ty_f1.clone(),
+                        ty_f2.clone(),
+                        ov_f1.clone(),
+                        ov_f2.clone(),
+                    )
+                })))
+            }
+            TypeLike::Custom(id, v) => TypeLike::Custom(id, ty_f1(kind, id, v)),
+            TypeLike::Array(v, ty, overlay) => TypeLike::Array(
+                ty_f2(kind, v),
+                {
+                    let ov_f1 = ov_f1.clone();
+                    let ov_f2 = ov_f2.clone();
+                    Box::new(move || {
+                        ty().map_impl(
+                            DataKind::Heap,
+                            ty_f1.clone(),
+                            ty_f2.clone(),
+                            ov_f1.clone(),
+                            ov_f2.clone(),
+                        )
+                    })
+                },
+                Box::new(move || overlay().map_impl(kind, ov_f1.clone(), ov_f2.clone())),
+            ),
+            TypeLike::HoleArray(v, ty, overlay) => TypeLike::HoleArray(
+                ty_f2(kind, v),
+                {
+                    let ov_f1 = ov_f1.clone();
+                    let ov_f2 = ov_f2.clone();
+                    Box::new(move || {
+                        ty().map_impl(
+                            DataKind::Heap,
+                            ty_f1.clone(),
+                            ty_f2.clone(),
+                            ov_f1.clone(),
+                            ov_f2.clone(),
+                        )
+                    })
+                },
+                Box::new(move || overlay().map_impl(kind, ov_f1.clone(), ov_f2.clone())),
+            ),
+            TypeLike::Boxed(v, ty, overlay) => TypeLike::Boxed(
+                ty_f2(kind, v),
+                {
+                    let ov_f1 = ov_f1.clone();
+                    let ov_f2 = ov_f2.clone();
+                    Box::new(move || {
+                        ty().map_impl(
+                            DataKind::Heap,
+                            ty_f1.clone(),
+                            ty_f2.clone(),
+                            ov_f1.clone(),
+                            ov_f2.clone(),
+                        )
+                    })
+                },
+                Box::new(move || overlay().map_impl(kind, ov_f1.clone(), ov_f2.clone())),
+            ),
+        }
+    }
+
+    pub fn zip<E: 'a, F: 'a, G: 'a, H: 'a>(
+        self,
+        other: TypeLike<'a, E, F, G, H>,
+    ) -> TypeLike<'a, (A, E), (B, F), (C, G), (D, H)> {
+        match (self, other) {
+            (TypeLike::Bool, TypeLike::Bool) => TypeLike::Bool,
+            (TypeLike::Num(n1), TypeLike::Num(n2)) if n1 == n2 => TypeLike::Num(n1),
+            (TypeLike::Tuple(items1), TypeLike::Tuple(items2)) => TypeLike::Tuple(Box::new(
+                items1
+                    .into_iter()
+                    .zip_eq(items2)
+                    .map(|(next1, next2)| next1.zip(next2)),
+            )),
+            (TypeLike::Variants(variants1), TypeLike::Variants(variants2)) => {
+                TypeLike::Variants(Box::new(
+                    variants1
+                        .into_iter()
+                        .zip_eq(variants2)
+                        .map(|(next1, next2)| next1.zip(next2)),
+                ))
+            }
+            (TypeLike::Custom(id1, v1), TypeLike::Custom(id2, v2)) if id1 == id2 => {
+                TypeLike::Custom(id1, (v1, v2))
+            }
+            (TypeLike::Array(v1, ty1, overlay1), TypeLike::Array(v2, ty2, overlay2)) => {
+                TypeLike::Array(
+                    (v1, v2),
+                    Box::new(move || ty1().zip(ty2())),
+                    Box::new(move || overlay1().zip(overlay2())),
+                )
+            }
+            (TypeLike::HoleArray(v1, ty1, overlay1), TypeLike::HoleArray(v2, ty2, overlay2)) => {
+                TypeLike::HoleArray(
+                    (v1, v2),
+                    Box::new(move || ty1().zip(ty2())),
+                    Box::new(move || overlay1().zip(overlay2())),
+                )
+            }
+            (TypeLike::Boxed(v1, ty1, overlay1), TypeLike::Boxed(v2, ty2, overlay2)) => {
+                TypeLike::Boxed(
+                    (v1, v2),
+                    Box::new(move || ty1().zip(ty2())),
+                    Box::new(move || overlay1().zip(overlay2())),
+                )
+            }
+            _ => panic!("incompatible types"),
+        }
+    }
+
+    pub fn for_each(
+        self,
+        f1: impl Fn(DataKind, CustomTypeId, A) + Clone,
+        f2: impl Fn(DataKind, B) + Clone,
+        f3: impl Fn(DataKind, CustomTypeId, C) + Clone,
+        f4: impl Fn(DataKind, D) + Clone,
+    ) {
+        self.for_each_impl(DataKind::Stack, f1, f2, f3, f4)
+    }
+
+    fn for_each_impl(
+        self,
+        kind: DataKind,
+        f1: impl Fn(DataKind, CustomTypeId, A) + Clone,
+        f2: impl Fn(DataKind, B) + Clone,
+        f3: impl Fn(DataKind, CustomTypeId, C) + Clone,
+        f4: impl Fn(DataKind, D) + Clone,
+    ) {
+        match self {
+            TypeLike::Bool => {}
+            TypeLike::Num(_) => {}
+            TypeLike::Tuple(items) => {
+                for next in items {
+                    next.for_each_impl(
+                        DataKind::Heap,
+                        f1.clone(),
+                        f2.clone(),
+                        f3.clone(),
+                        f4.clone(),
+                    );
+                }
+            }
+            TypeLike::Variants(variants) => {
+                for next in variants {
+                    next.for_each_impl(
+                        DataKind::Heap,
+                        f1.clone(),
+                        f2.clone(),
+                        f3.clone(),
+                        f4.clone(),
+                    );
+                }
+            }
+            TypeLike::Custom(id, v) => f1(kind, id, v),
+            TypeLike::Array(v, ty, overlay) => {
+                f2(kind, v);
+                ty().for_each_impl(
+                    DataKind::Heap,
+                    f1.clone(),
+                    f2.clone(),
+                    f3.clone(),
+                    f4.clone(),
+                );
+                overlay().for_each_impl(kind, f3.clone(), f4.clone());
+            }
+            TypeLike::HoleArray(v, ty, overlay) => {
+                f2(kind, v);
+                ty().for_each_impl(
+                    DataKind::Heap,
+                    f1.clone(),
+                    f2.clone(),
+                    f3.clone(),
+                    f4.clone(),
+                );
+                overlay().for_each_impl(kind, f3.clone(), f4.clone());
+            }
+            TypeLike::Boxed(v, ty, overlay) => {
+                f2(kind, v);
+                ty().for_each_impl(
+                    DataKind::Heap,
+                    f1.clone(),
+                    f2.clone(),
+                    f3.clone(),
+                    f4.clone(),
+                );
+                overlay().for_each_impl(kind, f3.clone(), f4.clone());
+            }
+        }
+    }
+}
+
+impl<'a, R: Clone> TypeLike<'a, R, R, R, R> {
+    pub fn fold(self, init: R, f: impl Fn(R, R) -> R + Clone) -> R {
+        match self {
+            TypeLike::Bool => init,
+            TypeLike::Num(_) => init,
+            TypeLike::Tuple(items) => items.into_iter().fold(init.clone(), |acc, next| {
+                f(acc, next.fold(init.clone(), f.clone()))
+            }),
+            TypeLike::Variants(variants) => variants.into_iter().fold(init.clone(), |acc, next| {
+                f(acc, next.fold(init.clone(), f.clone()))
+            }),
+            TypeLike::Custom(_, v) => v,
+            TypeLike::Array(v, ty, overlay) => {
+                f(v, ty().fold(init.clone(), f.clone()));
+                overlay().fold(init, f)
+            }
+            TypeLike::HoleArray(v, ty, overlay) => {
+                f(v, ty().fold(init.clone(), f.clone()));
+                overlay().fold(init, f)
+            }
+            TypeLike::Boxed(v, ty, overlay) => {
+                f(v, ty().fold(init.clone(), f.clone()));
+                overlay().fold(init, f)
+            }
+        }
+    }
 }

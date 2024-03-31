@@ -15,7 +15,7 @@ use crate::util::graph::{
     acyclic_and_cyclic_sccs, connected_components, strongly_connected, Graph, Scc, Undirected,
 };
 use crate::util::id_gen::IdGen;
-use crate::util::iter::try_zip_exact;
+use crate::util::iter::try_zip_eq;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
@@ -328,7 +328,7 @@ fn equate_types(graph: &mut ConstraintGraph, type1: &SolverType, type2: &SolverT
         }
 
         (unif::Type::Variants(variants1), unif::Type::Variants(variants2)) => {
-            for (_, variant1, variant2) in try_zip_exact(variants1, variants2)
+            for (_, variant1, variant2) in try_zip_eq(variants1, variants2)
                 .expect("variants1.len() should equal variants2.len()")
             {
                 equate_types(graph, variant1, variant2);
@@ -342,7 +342,7 @@ fn equate_types(graph: &mut ConstraintGraph, type1: &SolverType, type2: &SolverT
         (unif::Type::Custom(custom1, args1), unif::Type::Custom(custom2, args2)) => {
             debug_assert_eq!(custom1, custom2);
             for (_, arg1, arg2) in
-                try_zip_exact(args1, args2).expect("args1.len() should equal args2.len()")
+                try_zip_eq(args1, args2).expect("args1.len() should equal args2.len()")
             {
                 graph.equate(*arg1, *arg2);
             }

@@ -13,7 +13,7 @@ use crate::intrinsic_config::intrinsic_sig;
 use crate::util::constraint_graph::{ConstraintGraph, EquivClass, EquivClasses, SolverVarId};
 use crate::util::graph::{self, Graph};
 use crate::util::id_gen::IdGen;
-use crate::util::iter::try_zip_exact;
+use crate::util::iter::try_zip_eq;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
@@ -387,7 +387,7 @@ fn equate_types(
         (annot::Type::Custom(custom1, args1), annot::Type::Custom(custom2, args2)) => {
             debug_assert_eq!(custom1, custom2);
 
-            for (_, arg1, arg2) in try_zip_exact(args1, args2).expect(
+            for (_, arg1, arg2) in try_zip_eq(args1, args2).expect(
                 "Arguments lists for the same type constructor should always have the same length",
             ) {
                 graph.equate(*arg1, *arg2);
@@ -671,9 +671,8 @@ fn instantiate_params(
 ) -> IdVec<annot::RepParamId, SolverVarId> {
     let param_vars = IdVec::from_vec((0..params.num_params()).map(|_| graph.new_var()).collect());
 
-    for (_, param_var, (req_template, req_params)) in
-        try_zip_exact(&param_vars, &params.requirements)
-            .expect("params.num_params() should equal params.requirements.len()")
+    for (_, param_var, (req_template, req_params)) in try_zip_eq(&param_vars, &params.requirements)
+        .expect("params.num_params() should equal params.requirements.len()")
     {
         graph.require(
             *param_var,
@@ -825,7 +824,7 @@ fn instantiate_expr(
                     let scheme_params = instantiate_params(graph, &lam_def.params);
 
                     for (_capture_id, expected, actual) in
-                        try_zip_exact(&lam_def.captures, &solver_capture_types).expect(
+                        try_zip_eq(&lam_def.captures, &solver_capture_types).expect(
                             "A lambda should always be instantiated with the same number of \
                              captures",
                         )
@@ -859,7 +858,7 @@ fn instantiate_expr(
                     debug_assert_eq!(solver_sig.captures.len(), lam_captures.len());
 
                     for (_capture_id, expected, actual) in
-                        try_zip_exact(&solver_sig.captures, &solver_capture_types).expect(
+                        try_zip_eq(&solver_sig.captures, &solver_capture_types).expect(
                             "A lambda should always be instantiated with the same number of \
                              captures",
                         )

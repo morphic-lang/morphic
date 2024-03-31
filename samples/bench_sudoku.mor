@@ -14,7 +14,7 @@ module Test = file "lib/test.mor"
 // Basic functions
 
 mod(a: Int, b: Int): Int =
-  a -  a / b * b
+  a - a / b * b
 
 rc_bp(r: Int, c: Int): (Int, Int) =
   (r / 3 * 3 + c / 3, mod(r, 3) * 3 + mod(c, 3))
@@ -71,7 +71,7 @@ type Sudoku {
   Sudoku(Array Rule)
 }
 
-id_to_type(id:Int): RuleType =
+id_to_type(id: Int): RuleType =
   match id / 81 {
     0 -> RC,
     1 -> RN,

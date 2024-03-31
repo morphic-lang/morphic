@@ -4,7 +4,7 @@ use crate::data::closure_annot_ast as annot;
 use crate::data::closure_specialized_ast as special;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
-use crate::util::iter::try_zip_exact;
+use crate::util::iter::try_zip_eq;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::IdVec;
 
@@ -587,7 +587,7 @@ pub fn closure_specialize(
     });
 
     for (_, opaque_id, (template_id, template_params)) in
-        try_zip_exact(&main_param_opaque_ids, &main_def.params.requirements)
+        try_zip_eq(&main_param_opaque_ids, &main_def.params.requirements)
             .expect("main_def.params.num_params() should equal main_def_params.requirements.len()")
     {
         let resolved_template_params =

@@ -1,246 +1,218 @@
+#![allow(dead_code, unused_variables, unused_imports)]
+
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::flat_ast::{self as flat, LocalId};
 use crate::data::mode_annot_ast2::{
-    self as annot, Lt, LtParam, ModeConstr, ModeParam, ModeTerm, Overlay,
+    self as annot, DataKind, Lt, LtParam, ModeConstr, ModeParam, ModeTerm, Overlay,
 };
 use crate::fixed_point::{self, Signature, SignatureAssumptions};
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
-use id_collections::{id_type, Count, Id, IdMap, IdVec};
+use id_collections::{id, id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
+use std::cell::{RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-fn count_stack_params(counts: &IdMap<CustomTypeId, usize>, ty: &anon::Type) -> usize {
-    match ty {
-        anon::Type::Bool => 0,
-        anon::Type::Num(_) => 0,
-        anon::Type::Tuple(tys) => tys.iter().map(|ty| count_stack_params(counts, ty)).sum(),
-        anon::Type::Variants(tys) => tys
-            .iter()
-            .map(|(_, ty)| count_stack_params(counts, ty))
-            .sum(),
-        anon::Type::Custom(id) => match counts.get(id) {
-            Some(count) => *count,
-            // This is a typedef in the same SCC; the reference to it here contributes no additional
-            // parameters to the entire SCC.
-            None => 0,
-        },
-        anon::Type::Array(_) => 1,
-        anon::Type::HoleArray(_) => 1,
-        anon::Type::Boxed(_) => 1,
+struct State<T>(Rc<RefCell<T>>);
+
+impl<T> Clone for State<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
-fn count_heap_params(counts: &IdMap<CustomTypeId, usize>, ty: &anon::Type) -> usize {
-    match ty {
-        anon::Type::Bool => 0,
-        anon::Type::Num(_) => 0,
-        anon::Type::Tuple(tys) => tys.iter().map(|ty| count_heap_params(counts, ty)).sum(),
-        anon::Type::Variants(tys) => tys
-            .iter()
-            .map(|(_, ty)| count_heap_params(counts, ty))
-            .sum(),
-        anon::Type::Custom(id) => match counts.get(id) {
-            Some(count) => *count,
-            // This is a typedef in the same SCC; the reference to it here contributes no additional
-            // parameters to the entire SCC.
-            None => 0,
-        },
-        anon::Type::Array(ty) => count_heap_params(counts, ty) + 1,
-        anon::Type::HoleArray(ty) => count_heap_params(counts, ty) + 1,
-        anon::Type::Boxed(ty) => count_heap_params(counts, ty) + 1,
+fn state<T>(inner: T) -> State<T> {
+    State(Rc::new(RefCell::new(inner)))
+}
+
+impl<T> State<T> {
+    fn get<'a>(&'a self) -> RefMut<'a, T> {
+        self.0.borrow_mut()
+    }
+
+    fn take(self) -> Option<T> {
+        Rc::into_inner(self.0).map(|cell| cell.into_inner())
     }
 }
 
-fn fresh_params<I: Id, J: Id>(n: Count<I>, fresh: &mut Count<J>) -> IdVec<I, J> {
-    IdVec::from_count_with(n, |_| fresh.inc())
+fn count_lt_params(customs: &IdMap<CustomTypeId, annot::TypeDef>, ty: &anon::Type) -> usize {
+    ty.items()
+        .map(
+            |_, id, _| match customs.get(id) {
+                Some(typedef) => typedef.num_lt_params.to_value(),
+                // This is a typedef in the same SCC; the reference to it here contributes no additional
+                // parameters to the entire SCC.
+                None => 0,
+            },
+            |_, _| 1,
+            |_, _, _| 0,
+            |_, _| 0,
+        )
+        .fold(0, |a, b| a + b)
 }
 
-fn fresh_overlay(
-    scc_overlay_mode_count: Count<ModeParam>,
-    fresh_mode: &mut Count<ModeParam>,
+fn count_mode_params(
+    customs: &IdMap<CustomTypeId, annot::TypeDef>,
+    ty: &anon::Type,
+) -> (usize, BTreeSet<ModeParam>) {
+    let count = state(0);
+    let overlay_params = state(BTreeSet::new());
+
+    // It would be nicer to use `fold` like in `count_lt_params`, but we need to update
+    // `scc_overlay_params`.
+    ty.items().for_each(
+        |_, id, _| {
+            if let Some(typedef) = customs.get(id) {
+                *count.get() += typedef.num_mode_params.to_value();
+            }
+            // Otherwise, this is a typedef in the same SCC
+        },
+        |_, _| (),
+        |_, id, _| {
+            if let Some(typedef) = customs.get(id) {
+                overlay_params.get().insert(ModeParam(*count.get()));
+                *count.get() += typedef.overlay_params.len();
+            }
+            // Otherwise, this is a typedef in the same SCC
+        },
+        |_, _| (),
+    );
+
+    let count = *count.get();
+    (count, overlay_params.take().unwrap())
+}
+
+fn overlay_custom_params(
+    parameterized: &IdMap<CustomTypeId, annot::TypeDef>,
+    scc_overlay_params: &BTreeSet<ModeParam>,
+    next_mode: State<&mut Count<ModeParam>>,
+    id: CustomTypeId,
+) -> BTreeMap<ModeParam, ModeParam> {
+    match parameterized.get(id) {
+        Some(typedef) => typedef
+            .overlay_params
+            .iter()
+            .map(|id| (*id, next_mode.get().inc()))
+            .collect::<BTreeMap<_, _>>(),
+        // This is a typedef in the same SCC; we need to parameterize it by all the SCC
+        // parameters
+        None => scc_overlay_params.iter().map(|id| (*id, *id)).collect(),
+    }
+}
+
+fn parameterize_overlay(
+    parameterized: &IdMap<CustomTypeId, annot::TypeDef>,
+    scc_overlay_params: &BTreeSet<ModeParam>,
+    next_mode: &mut Count<ModeParam>,
     ty: &anon::Type,
 ) -> Overlay<ModeParam> {
-    match ty {
-        anon::Type::Bool => Overlay::Bool,
-        anon::Type::Num(num_ty) => Overlay::Num(*num_ty),
-        anon::Type::Tuple(tys) => Overlay::Tuple(
-            tys.iter()
-                .map(|ty| fresh_overlay(scc_overlay_mode_count, fresh_mode, ty))
-                .collect(),
-        ),
-        anon::Type::Variants(tys) => Overlay::Variants(
-            tys.map_refs(|_, ty| fresh_overlay(scc_overlay_mode_count, fresh_mode, ty)),
-        ),
-        anon::Type::Custom(id) => Overlay::Custom(*id),
-        anon::Type::Array(_) => Overlay::Array(fresh_mode.inc()),
-        anon::Type::HoleArray(_) => Overlay::HoleArray(fresh_mode.inc()),
-        anon::Type::Boxed(_) => Overlay::Boxed(fresh_mode.inc()),
-    }
+    let next_mode = state(next_mode);
+    ty.overlay_items()
+        .map(
+            |id, _| overlay_custom_params(parameterized, scc_overlay_params, next_mode.clone(), id),
+            |_| next_mode.get().inc(),
+        )
+        .collect()
 }
 
-fn parameterize(
-    parameterized: &IdMap<CustomTypeId, annot::CustomTypeDef>,
+fn parameterize_type(
+    parameterized: &IdMap<CustomTypeId, annot::TypeDef>,
     scc_mode_count: Count<ModeParam>,
-    scc_overlay_mode_count: Count<ModeParam>,
     scc_lt_count: Count<LtParam>,
-    fresh_mode: &mut Count<ModeParam>,
-    fresh_lt: &mut Count<LtParam>,
+    scc_overlay_params: &BTreeSet<ModeParam>,
+    next_mode: &mut Count<ModeParam>,
+    next_lt: &mut Count<LtParam>,
     ty: &anon::Type,
 ) -> annot::Type<ModeParam, LtParam> {
-    match ty {
-        anon::Type::Bool => annot::Type::Bool,
-        anon::Type::Num(num_ty) => annot::Type::Num(*num_ty),
-        anon::Type::Tuple(tys) => annot::Type::Tuple(
-            tys.iter()
-                .map(|ty| {
-                    parameterize(
-                        parameterized,
-                        scc_mode_count,
-                        scc_overlay_mode_count,
-                        scc_lt_count,
-                        fresh_mode,
-                        fresh_lt,
-                        ty,
-                    )
-                })
-                .collect(),
-        ),
-        anon::Type::Variants(tys) => annot::Type::Variants(tys.map_refs(|_, ty| {
-            parameterize(
-                parameterized,
-                scc_mode_count,
-                scc_overlay_mode_count,
-                scc_lt_count,
-                fresh_mode,
-                fresh_lt,
-                ty,
-            )
-        })),
-        anon::Type::Custom(id) => match parameterized.get(id) {
-            Some(typedef) => annot::Type::Custom(
-                *id,
-                fresh_params(typedef.num_mode_params, fresh_mode),
-                fresh_params(typedef.num_lt_params, fresh_lt),
-            ),
-            // This is a typedef in the same SCC; we need to parameterize it by all the SCC
-            // parameters
-            None => annot::Type::Custom(
-                *id,
-                fresh_params(scc_mode_count, fresh_mode),
-                fresh_params(scc_lt_count, fresh_lt),
-            ),
-        },
-        anon::Type::Array(ty) => {
-            let content = parameterize(
-                parameterized,
-                scc_mode_count,
-                scc_overlay_mode_count,
-                scc_lt_count,
-                fresh_mode,
-                fresh_lt,
-                ty,
-            );
-            annot::Type::Array(
-                fresh_mode.inc(),
-                fresh_lt.inc(),
-                Box::new(content),
-                fresh_overlay(scc_overlay_mode_count, fresh_mode, ty),
-            )
-        }
-        anon::Type::HoleArray(ty) => {
-            let content = parameterize(
-                parameterized,
-                scc_mode_count,
-                scc_overlay_mode_count,
-                scc_lt_count,
-                fresh_mode,
-                fresh_lt,
-                ty,
-            );
-            annot::Type::HoleArray(
-                fresh_mode.inc(),
-                fresh_lt.inc(),
-                Box::new(content),
-                fresh_overlay(scc_overlay_mode_count, fresh_mode, ty),
-            )
-        }
-        anon::Type::Boxed(ty) => {
-            let content = parameterize(
-                parameterized,
-                scc_mode_count,
-                scc_overlay_mode_count,
-                scc_lt_count,
-                fresh_mode,
-                fresh_lt,
-                ty,
-            );
-            annot::Type::Boxed(
-                fresh_mode.inc(),
-                fresh_lt.inc(),
-                Box::new(content),
-                fresh_overlay(scc_overlay_mode_count, fresh_mode, ty),
-            )
-        }
-    }
+    let next_mode = state(next_mode);
+    let next_lt = state(next_lt);
+    ty.items()
+        .map(
+            |_, id, _| {
+                match parameterized.get(id) {
+                    Some(typedef) => (
+                        IdVec::from_count_with(typedef.num_mode_params, |_| next_mode.get().inc()),
+                        IdVec::from_count_with(typedef.num_lt_params, |_| next_lt.get().inc()),
+                    ),
+                    // This is a typedef in the same SCC; we need to parameterize it by all the SCC
+                    // parameters
+                    None => (
+                        IdVec::from_count_with(scc_mode_count, |id| id),
+                        IdVec::from_count_with(scc_lt_count, |id| id),
+                    ),
+                }
+            },
+            |_, _| (next_mode.get().inc(), next_lt.get().inc()),
+            |_, id, _| {
+                overlay_custom_params(parameterized, scc_overlay_params, next_mode.clone(), id)
+            },
+            |_, _| next_mode.get().inc(),
+        )
+        .collect()
 }
 
 fn parameterize_custom_scc(
     customs: &IdVec<CustomTypeId, flat::CustomTypeDef>,
-    parameterized: &IdMap<CustomTypeId, annot::CustomTypeDef>,
+    parameterized: &IdMap<CustomTypeId, annot::TypeDef>,
     stack_param_counts: &IdMap<CustomTypeId, usize>,
     heap_param_counts: &IdMap<CustomTypeId, usize>,
     scc: &old_graph::Scc<CustomTypeId>,
-) -> BTreeMap<CustomTypeId, annot::CustomTypeDef> {
-    let num_stack_params: usize = scc
+) -> BTreeMap<CustomTypeId, annot::TypeDef> {
+    let (num_mode_params, overlay_params) = scc
         .iter()
-        .map(|id| count_stack_params(stack_param_counts, &customs[*id].content))
-        .sum();
-    let num_heap_params: usize = scc
-        .iter()
-        .map(|id| count_heap_params(heap_param_counts, &customs[*id].content))
-        .sum();
+        .map(|id| count_mode_params(parameterized, &customs[*id].content))
+        .fold((0, BTreeSet::new()), |(a, b), (c, d)| {
+            (a + c, b.union(&d).copied().collect())
+        });
+    let num_mode_params = Count::from_value(num_mode_params);
 
-    let num_mode_params = Count::from_value(num_heap_params);
-    let num_overlay_mode_params = Count::from_value(num_stack_params);
-    let num_lt_params = Count::from_value(num_heap_params);
+    let num_lt_params = Count::from_value(
+        scc.iter()
+            .map(|id| count_lt_params(parameterized, &customs[*id].content))
+            .sum(),
+    );
 
-    let mut fresh_mode = Count::new();
-    let mut fresh_lt = Count::new();
+    let mut next_mode = Count::new();
+    let mut next_lt = Count::new();
 
     let to_populate = scc
         .iter()
         .map(|id| {
             (
                 *id,
-                annot::CustomTypeDef {
+                annot::TypeDef {
                     num_mode_params,
-                    num_overlay_mode_params,
                     num_lt_params,
-                    content: parameterize(
+                    overlay_params: overlay_params.clone(),
+                    content: parameterize_type(
                         parameterized,
                         num_mode_params,
-                        num_overlay_mode_params,
                         num_lt_params,
-                        &mut fresh_mode,
-                        &mut fresh_lt,
+                        &overlay_params,
+                        &mut next_mode,
+                        &mut next_lt,
                         &customs[*id].content,
                     ),
-                    overlay: fresh_overlay(num_mode_params, &mut fresh_mode, &customs[*id].content),
+                    overlay: parameterize_overlay(
+                        parameterized,
+                        &overlay_params,
+                        &mut next_mode,
+                        &customs[*id].content,
+                    ),
                 },
             )
         })
         .collect();
 
-    debug_assert_eq!(num_mode_params, fresh_mode);
-    debug_assert_eq!(num_lt_params, fresh_lt);
+    debug_assert_eq!(num_mode_params, next_mode);
+    debug_assert_eq!(num_lt_params, next_lt);
     to_populate
 }
 
-fn parameterize_customs(customs: &flat::CustomTypes) -> IdVec<CustomTypeId, annot::CustomTypeDef> {
+fn parameterize_customs(customs: &flat::CustomTypes) -> IdVec<CustomTypeId, annot::TypeDef> {
     let mut parameterized = IdMap::new();
     let mut stack_param_counts = IdMap::new();
     let mut heap_param_counts = IdMap::new();
@@ -324,52 +296,26 @@ impl ConstrGraph {
     }
 }
 
-fn mode_bind_overlays(constrs: &mut ConstrGraph, o1: &SolverOverlay, o2: &SolverOverlay) {
-    match (o1, o2) {
-        (Overlay::Bool, Overlay::Bool) => {}
-        (Overlay::Num(_), Overlay::Num(_)) => {}
-        (Overlay::Tuple(os1), Overlay::Tuple(os2)) => {
-            for (o1, o2) in os1.iter().zip(os2.iter()) {
-                mode_bind_overlays(constrs, o1, o2);
-            }
-        }
-        (Overlay::Variants(os1), Overlay::Variants(os2)) => {
-            for ((_, o1), (_, o2)) in os1.iter().zip(os2.iter()) {
-                mode_bind_overlays(constrs, o1, o2);
-            }
-        }
-        (Overlay::Array(m1), Overlay::Array(m2)) => {
-            constrs.enforce_eq(*m1, *m2);
-        }
-        (Overlay::HoleArray(m1), Overlay::HoleArray(m2)) => {
-            constrs.enforce_eq(*m1, *m2);
-        }
-        (Overlay::Boxed(m1), Overlay::Boxed(m2)) => {
-            constrs.enforce_eq(*m1, *m2);
-        }
-        _ => panic!("incompatible overlays"),
-    }
-}
-
 fn mode_bind(constrs: &mut ConstrGraph, ty1: &SolverType, ty2: &SolverType) {
-    match (ty1, ty2) {
-        (annot::Type::Bool, annot::Type::Bool) => {}
-        (annot::Type::Num(_), annot::Type::Num(_)) => {}
-        (annot::Type::Tuple(tys1), annot::Type::Tuple(tys2)) => {
-            for (ty1, ty2) in tys1.iter().zip(tys2.iter()) {
-                mode_bind(constrs, ty1, ty2);
+    let constrs = state(constrs);
+    ty1.items().zip(ty2.items()).for_each(
+        |_, _, ((ms1, _), (ms2, _))| {
+            for ((_, m1), (_, m2)) in ms1.iter().zip(ms2.iter()) {
+                constrs.get().enforce_eq(*m1, *m2);
             }
-        }
-        (annot::Type::Variants(tys1), annot::Type::Variants(tys2)) => {
-            for ((_, ty1), (_, ty2)) in tys1.iter().zip(tys2.iter()) {
-                mode_bind(constrs, ty1, ty2);
+        },
+        |_, ((m1, _), (m2, _))| {
+            constrs.get().enforce_eq(*m1, *m2);
+        },
+        |_, _, (ms1, ms2)| {
+            for ((_, m1), (_, m2)) in ms1.iter().zip(ms2.iter()) {
+                constrs.get().enforce_eq(*m1, *m2);
             }
-        }
-        (annot::Type::Array(m1, _lt1, ty1, o1), annot::Type::Array(m2, _lt2, ty2, o2)) => {
-            constrs.enforce_eq(*m1, *m2);
-        }
-        _ => panic!("incompatible types"),
-    }
+        },
+        |_, (m1, m2)| {
+            constrs.get().enforce_eq(*m1, *m2);
+        },
+    )
 }
 
 fn emit_occur_constr(
@@ -391,50 +337,39 @@ fn emit_occur_constr(
     }
 }
 
-fn emit_occur_constrs_overlay(
-    constrs: &mut ConstrGraph,
-    path: &annot::Path,
-    binding_overlay: &SolverOverlay,
-    use_overlay: &SolverOverlay,
-) {
-    todo!()
-}
-
-fn emit_occur_constrs_heap(
-    constrs: &mut ConstrGraph,
-    path: &annot::Path,
-    binding_ty: &SolverType,
-    fut_ty: &SolverType,
-) {
-    todo!()
-}
-
 fn emit_occur_constrs(
     constrs: &mut ConstrGraph,
     path: &annot::Path,
     binding_ty: &SolverType,
     fut_ty: &SolverType,
 ) {
-    match (binding_ty, fut_ty) {
-        (annot::Type::Bool, annot::Type::Bool) => {}
-        (annot::Type::Num(_), annot::Type::Num(_)) => {}
-        (annot::Type::Tuple(tys1), annot::Type::Tuple(tys2)) => {
-            for (ty1, ty2) in tys1.iter().zip(tys2.iter()) {
-                emit_occur_constrs(constrs, path, ty1, ty2);
-            }
-        }
-        (annot::Type::Variants(tys1), annot::Type::Variants(tys2)) => {
-            for ((_, ty1), (_, ty2)) in tys1.iter().zip(tys2.iter()) {
-                emit_occur_constrs(constrs, path, ty1, ty2);
-            }
-        }
-        (annot::Type::Array(m1, lt1, ty1, o1), annot::Type::Array(m2, lt2, ty2, o2)) => {
-            emit_occur_constr(constrs, path, lt1, lt2, *m1, *m2);
-            emit_occur_constrs_heap(constrs, path, ty1, ty2);
-            emit_occur_constrs_overlay(constrs, path, o1, o2);
-        }
-        _ => panic!("incompatible types"),
-    }
+    let constrs = state(constrs);
+    binding_ty.items().zip(fut_ty.items()).for_each(
+        |kind, id, ((ms1, lts1), (ms2, lts2))| {},
+        |kind, ((m1, lt1), (m2, lt2))| {},
+        |kind, id, (ms1, ms2)| {},
+        |kind, (m1, m2)| {},
+    );
+    // match (binding_ty, fut_ty) {
+    //     (annot::Type::Bool, annot::Type::Bool) => {}
+    //     (annot::Type::Num(_), annot::Type::Num(_)) => {}
+    //     (annot::Type::Tuple(tys1), annot::Type::Tuple(tys2)) => {
+    //         for (ty1, ty2) in tys1.iter().zip(tys2.iter()) {
+    //             emit_occur_constrs(constrs, path, ty1, ty2);
+    //         }
+    //     }
+    //     (annot::Type::Variants(tys1), annot::Type::Variants(tys2)) => {
+    //         for ((_, ty1), (_, ty2)) in tys1.iter().zip(tys2.iter()) {
+    //             emit_occur_constrs(constrs, path, ty1, ty2);
+    //         }
+    //     }
+    //     (annot::Type::Array(m1, lt1, ty1, o1), annot::Type::Array(m2, lt2, ty2, o2)) => {
+    //         emit_occur_constr(constrs, path, lt1, lt2, *m1, *m2);
+    //         emit_occur_constrs_heap(constrs, path, ty1, ty2);
+    //         emit_occur_constrs_overlay(constrs, path, o1, o2);
+    //     }
+    //     _ => panic!("incompatible types"),
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -554,7 +489,7 @@ fn same_shape(ty1: &anon::Type, ty2: &SolverType) -> bool {
                 && tys1
                     .iter()
                     .zip(tys2.iter())
-                    .all(|((id1, ty1), (id2, ty2))| id1 == id2 && same_shape(ty1, ty2))
+                    .all(|((_, ty1), (_, ty2))| same_shape(ty1, ty2))
         }
         (anon::Type::Custom(id1), annot::Type::Custom(id2, _, _)) => id1 == id2,
         (anon::Type::Array(ty1), annot::Type::Array(_, _, ty2, _)) => same_shape(ty1, ty2),
@@ -565,45 +500,46 @@ fn same_shape(ty1: &anon::Type, ty2: &SolverType) -> bool {
 }
 
 fn apply_overlay(ty: &SolverType, overlay: &SolverOverlay) -> SolverType {
-    match (ty, overlay) {
-        (annot::Type::Bool, annot::Overlay::Bool) => annot::Type::Bool,
-        (annot::Type::Num(num_ty1), annot::Overlay::Num(num_ty2)) => {
-            assert_eq!(num_ty1, num_ty2);
-            annot::Type::Num(*num_ty1)
-        }
-        (annot::Type::Tuple(tys), annot::Overlay::Tuple(os)) => {
-            assert_eq!(tys.len(), os.len());
-            let tys = tys
-                .iter()
-                .zip(os.iter())
-                .map(|(ty, o)| apply_overlay(ty, o))
-                .collect();
-            annot::Type::Tuple(tys)
-        }
-        (annot::Type::Variants(tys), annot::Overlay::Variants(os)) => {
-            assert_eq!(tys.len(), os.len());
-            let tys = tys
-                .values()
-                .zip(os.values())
-                .map(|(ty, o)| apply_overlay(ty, o))
-                .collect();
-            annot::Type::Variants(IdVec::from_vec(tys))
-        }
-        (annot::Type::Custom(id1, modes, lts), annot::Overlay::Custom(id2)) => {
-            assert_eq!(id1, id2);
-            annot::Type::Custom(*id1, modes.clone(), lts.clone())
-        }
-        (annot::Type::Array(_, lt, ty, o), annot::Overlay::Array(m)) => {
-            annot::Type::Array(*m, lt.clone(), ty.clone(), o.clone())
-        }
-        (annot::Type::HoleArray(_, lt, ty, o), annot::Overlay::HoleArray(m)) => {
-            annot::Type::HoleArray(*m, lt.clone(), ty.clone(), o.clone())
-        }
-        (annot::Type::Boxed(_, lt, ty, o), annot::Overlay::Boxed(m)) => {
-            annot::Type::Boxed(*m, lt.clone(), ty.clone(), o.clone())
-        }
-        _ => panic!("type and overlay are incompatible"),
-    }
+    todo!()
+    // match (ty, overlay) {
+    //     (annot::Type::Bool, annot::Overlay::Bool) => annot::Type::Bool,
+    //     (annot::Type::Num(num_ty1), annot::Overlay::Num(num_ty2)) => {
+    //         assert_eq!(num_ty1, num_ty2);
+    //         annot::Type::Num(*num_ty1)
+    //     }
+    //     (annot::Type::Tuple(tys), annot::Overlay::Tuple(os)) => {
+    //         assert_eq!(tys.len(), os.len());
+    //         let tys = tys
+    //             .iter()
+    //             .zip(os.iter())
+    //             .map(|(ty, o)| apply_overlay(ty, o))
+    //             .collect();
+    //         annot::Type::Tuple(tys)
+    //     }
+    //     (annot::Type::Variants(tys), annot::Overlay::Variants(os)) => {
+    //         assert_eq!(tys.len(), os.len());
+    //         let tys = tys
+    //             .values()
+    //             .zip(os.values())
+    //             .map(|(ty, o)| apply_overlay(ty, o))
+    //             .collect();
+    //         annot::Type::Variants(IdVec::from_vec(tys))
+    //     }
+    //     (annot::Type::Custom(id1, modes, lts), annot::Overlay::Custom(id2)) => {
+    //         assert_eq!(id1, id2);
+    //         annot::Type::Custom(*id1, modes.clone(), lts.clone())
+    //     }
+    //     (annot::Type::Array(_, lt, ty, o), annot::Overlay::Array(m)) => {
+    //         annot::Type::Array(*m, lt.clone(), ty.clone(), o.clone())
+    //     }
+    //     (annot::Type::HoleArray(_, lt, ty, o), annot::Overlay::HoleArray(m)) => {
+    //         annot::Type::HoleArray(*m, lt.clone(), ty.clone(), o.clone())
+    //     }
+    //     (annot::Type::Boxed(_, lt, ty, o), annot::Overlay::Boxed(m)) => {
+    //         annot::Type::Boxed(*m, lt.clone(), ty.clone(), o.clone())
+    //     }
+    //     _ => panic!("type and overlay are incompatible"),
+    // }
 }
 
 fn instantiate_occur(
@@ -626,7 +562,7 @@ fn instantiate_occur(
 }
 
 fn instantiate_condition(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     cond: &flat::Condition,
 ) -> SolverCondition {
@@ -675,7 +611,7 @@ fn instantiate_occur_int(ctx: &TrackedContext, id: LocalId) -> SolverOccur {
 }
 
 fn instantiate_occur_array(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     ctx: &mut TrackedContext,
     updates: &mut LocalUpdates,
     constrs: &mut ConstrGraph,
@@ -693,7 +629,7 @@ fn instantiate_occur_array(
 }
 
 fn instantiate_occur_hole(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     ctx: &mut TrackedContext,
     constrs: &mut ConstrGraph,
     path: &annot::Path,
@@ -710,7 +646,7 @@ fn instantiate_occur_hole(
 }
 
 fn freshen_type(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     ty: &annot::Type<ModeParam, LtParam>,
 ) -> SolverType {
@@ -734,21 +670,21 @@ fn freshen_type(
             let lts = IdVec::from_count_with(typedef.num_lt_params, |_| Lt::Empty);
             annot::Type::Custom(*id, modes, lts)
         }
-        annot::Type::Array(m, lt, ty, o) => {
+        annot::Type::Array(mode, lt, ty, o) => {
             // let m = constrs.fresh_var();
             // let ty = Box::new(freshen_type(customs, constrs, ty));
             // let o = instantiate_overlay(customs, constrs, ty);
             // annot::Type::Array(m, Lt::Empty, ty, o)
             todo!()
         }
-        annot::Type::HoleArray(m, lt, ty, o) => {
+        annot::Type::HoleArray(mode, lt, ty, o) => {
             // let m = constrs.fresh_var();
             // let ty = Box::new(freshen_type(customs, constrs, ty));
             // let o = instantiate_overlay(customs, constrs, ty);
             // annot::Type::HoleArray(m, Lt::Empty, ty, o)
             todo!()
         }
-        annot::Type::Boxed(m, lt, ty, o) => {
+        annot::Type::Boxed(mode, lt, ty, o) => {
             // let m = constrs.fresh_var();
             // let ty = Box::new(freshen_type(customs, constrs, ty));
             // let o = instantiate_overlay(customs, constrs, ty);
@@ -764,7 +700,7 @@ fn freshen_type(
 // Note that we must return a set of updates rather than mutating Γ because I-Match requires that we
 // check all branches in the initial Γ.
 fn instantiate_expr(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     sigs: &SignatureAssumptions<CustomFuncId, annot::FuncDef>,
     constrs: &mut ConstrGraph,
     ctx: &ImmutContext,
@@ -1102,31 +1038,37 @@ struct SolverScc {
 }
 
 fn instantiate_overlay(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     ty: &anon::Type,
 ) -> SolverOverlay {
-    match ty {
-        anon::Type::Bool => Overlay::Bool,
-        anon::Type::Num(num_ty) => Overlay::Num(*num_ty),
-        anon::Type::Tuple(tys) => Overlay::Tuple(
-            tys.iter()
-                .map(|ty| instantiate_overlay(customs, constrs, ty))
-                .collect(),
-        ),
-        anon::Type::Variants(tys) => {
-            Overlay::Variants(tys.map_refs(|_, ty| instantiate_overlay(customs, constrs, ty)))
-        }
-        anon::Type::Custom(id) => annot::Overlay::Custom(*id),
-        anon::Type::Array(_) => Overlay::Array(constrs.fresh_var()),
-        anon::Type::HoleArray(_) => Overlay::HoleArray(constrs.fresh_var()),
-        anon::Type::Boxed(_) => Overlay::Boxed(constrs.fresh_var()),
-    }
+    todo!()
+    // match ty {
+    //     anon::Type::Bool => Overlay::Bool,
+    //     anon::Type::Num(num_ty) => Overlay::Num(*num_ty),
+    //     anon::Type::Tuple(tys) => Overlay::Tuple(
+    //         tys.iter()
+    //             .map(|ty| instantiate_overlay(customs, constrs, ty))
+    //             .collect(),
+    //     ),
+    //     anon::Type::Variants(tys) => {
+    //         Overlay::Variants(tys.map_refs(|_, ty| instantiate_overlay(customs, constrs, ty)))
+    //     }
+    //     anon::Type::Custom(id) => annot::Overlay::Custom(
+    //         *id,
+    //         IdVec::from_count_with(customs[*id].num_overlay_mode_params, |_| {
+    //             constrs.fresh_var()
+    //         }),
+    //     ),
+    //     anon::Type::Array(_) => Overlay::Array(constrs.fresh_var()),
+    //     anon::Type::HoleArray(_) => Overlay::HoleArray(constrs.fresh_var()),
+    //     anon::Type::Boxed(_) => Overlay::Boxed(constrs.fresh_var()),
+    // }
 }
 
 // Replaces parameters with fresh variables from the constraint graph.
 fn instantiate_type(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     ty: &anon::Type,
 ) -> SolverType {
@@ -1168,11 +1110,11 @@ fn instantiate_type(
 }
 
 fn instantiate_scc(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     funcs_annot: &mut IdMap<CustomTypeId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
 ) -> SolverScc {
-    let mut constrs = ConstrGraph::new();
+    let constrs = ConstrGraph::new();
 
     match scc.kind {
         SccKind::Acyclic => {
@@ -1198,7 +1140,7 @@ fn instantiate_scc(
 }
 
 fn solve_scc(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     funcs_annot: &mut IdMap<CustomTypeId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
 ) {

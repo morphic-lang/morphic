@@ -1,3 +1,5 @@
+// TODO: Here for legacy reasons; should be replaced with `Count`
+
 use id_collections::{Count, Id};
 
 #[derive(Clone, Debug)]

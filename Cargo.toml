@@ -16,7 +16,6 @@ walkdir = "2.4.0"
 find_clang = { path = "./find_clang" }
 lalrpop-util = "0.20.0"
 im-rc = "15.1.0"
-itertools = "0.12.0"
 lazy_static = "1.4.0"
 stacker = "0.1.15"
 better-panic = "0.3.0"
