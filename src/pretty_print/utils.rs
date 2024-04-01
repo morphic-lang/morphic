@@ -1,10 +1,8 @@
-use std::borrow::Borrow;
-use std::collections::BTreeMap;
-
 use crate::data::first_order_ast as first_ord;
 use crate::data::mono_ast as mono;
-use crate::data::repr_specialized_ast as special;
 use id_collections::{Id, IdVec};
+use std::borrow::Borrow;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct BaseName(String);
@@ -37,14 +35,12 @@ impl<NameId: Ord> DisambiguationTable<NameId> {
 }
 
 #[derive(Clone, Debug)]
-pub struct CustomTypeRenderer {
-    table: DisambiguationTable<special::CustomTypeId>,
+pub struct CustomTypeRenderer<TypeId> {
+    table: DisambiguationTable<TypeId>,
 }
 
-impl CustomTypeRenderer {
-    pub fn from_symbols(
-        custom_type_symbols: &IdVec<special::CustomTypeId, first_ord::CustomTypeSymbols>,
-    ) -> Self {
+impl<TypeId: Id> CustomTypeRenderer<TypeId> {
+    pub fn from_symbols(custom_type_symbols: &IdVec<TypeId, first_ord::CustomTypeSymbols>) -> Self {
         let mut table = DisambiguationTable::new();
 
         for (id, symbols) in custom_type_symbols {
@@ -62,7 +58,7 @@ impl CustomTypeRenderer {
         CustomTypeRenderer { table }
     }
 
-    pub fn render(&self, custom_type: impl Borrow<special::CustomTypeId>) -> String {
+    pub fn render(&self, custom_type: impl Borrow<TypeId>) -> String {
         let (BaseName(base_name), suffix) = self.table.get_name(custom_type);
         debug_assert!(base_name.find(|c: char| c.is_whitespace()).is_none());
         format!("{}~{}", base_name, suffix)

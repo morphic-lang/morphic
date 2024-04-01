@@ -7,12 +7,9 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::iter::{try_zip_eq, IterExt};
 use id_collections::{id_type, Count, IdVec};
+use id_graph_sccs::Sccs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
-
-// Notes:
-// - have instantiate return a dictionary of updates?
-// - for let-many, make sure to clone Gamma(x) at the right time
 
 #[id_type]
 pub struct ModeParam(pub usize);
@@ -22,17 +19,15 @@ pub struct LtParam(pub usize);
 
 /// We compute the least solution to our mode constraints where `Borrowed` < `Owned`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ModeTerm<M> {
+pub enum Mode<M> {
     Owned,
     Borrowed,
-    Join(BTreeSet<M>), // Always non-empty
+    Param(M),
 }
 
-impl<M: Ord> ModeTerm<M> {
-    pub fn var(x: M) -> Self {
-        ModeTerm::Join(std::iter::once(x).collect())
-    }
-}
+// Represents a constraint of the form `self.0 <= self.1`.
+#[derive(Debug, Clone)]
+pub struct ModeConstr(pub ModeParam, pub ModeParam);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathElem {
@@ -82,12 +77,6 @@ impl Path {
         }
         Lt::Local(res)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModeConstr<M> {
-    Lte(M, M),
-    Owned(M),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,24 +378,23 @@ impl<M: Clone> Type<M, Lt> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Sig {
+pub struct Signature {
     // Total number of params in `arg_type` and `ret_type`
     pub num_mode_params: Count<ModeParam>,
     pub num_lt_params: Count<LtParam>,
-
-    pub arg_type: Type<ModeParam, LtParam>,
-    pub ret_type: Type<ModeParam, LtParam>,
-    pub constrs: Vec<ModeConstr<ModeParam>>,
+    pub arg_type: Type<Mode<ModeParam>, Lt>,
+    pub ret_type: Type<Mode<ModeParam>, Lt>,
 }
 
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub purity: Purity,
-    pub sig: Sig,
+    pub sig: Signature,
+    pub sig_constrs: Vec<ModeConstr>,
 
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument
-    pub body: Expr<ModeParam, LtParam>,
+    pub body: Expr<Mode<ModeParam>, Lt>,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 
@@ -423,7 +411,7 @@ pub struct TypeDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
     pub types: IdVec<CustomTypeId, TypeDef>,
-    pub sccs: IdVec<flat::CustomTypeSccId, Vec<CustomTypeId>>,
+    pub sccs: Sccs<flat::CustomTypeSccId, CustomTypeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -557,7 +545,7 @@ impl<M, L> Type<M, L> {
         }
     }
 
-    fn overlay_items<'a>(&'a self) -> OverlayLike<&'a IdVec<ModeParam, M>, &'a M> {
+    pub fn overlay_items<'a>(&'a self) -> OverlayLike<&'a IdVec<ModeParam, M>, &'a M> {
         match self {
             Type::Bool => OverlayLike::Bool,
             Type::Num(n) => OverlayLike::Num(*n),

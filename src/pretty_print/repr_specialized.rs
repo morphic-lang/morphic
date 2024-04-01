@@ -20,7 +20,7 @@ const TAB_SIZE: usize = 2;
 
 #[derive(Clone, Debug, Copy)]
 struct Context<'a> {
-    type_renderer: &'a CustomTypeRenderer,
+    type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
     func_renderer: &'a FuncRenderer<CustomFuncId>,
     indentation: usize,
     num_locals: usize,
@@ -42,7 +42,7 @@ impl<'a> Context<'a> {
 
 fn write_condition(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
     condition: &Condition,
 ) -> io::Result<()> {
     match condition {
@@ -100,7 +100,7 @@ fn write_repchoice(w: &mut dyn Write, rep: &RepChoice) -> io::Result<()> {
 
 fn write_type(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
     type_: &Type,
 ) -> io::Result<()> {
     match type_ {
@@ -377,7 +377,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
 
 fn write_func(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
     func_renderer: &FuncRenderer<CustomFuncId>,
     func: &FuncDef,
     func_id: CustomFuncId,
@@ -406,7 +406,7 @@ fn write_func(
 
 fn write_custom_type(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
     type_: &Type,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
