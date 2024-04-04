@@ -39,7 +39,7 @@ enum PathElem {
 pub struct Path(im_rc::Vector<PathElem>);
 
 impl Path {
-    pub fn final_() -> Self {
+    pub fn root() -> Self {
         Self(im_rc::Vector::new())
     }
 
@@ -311,6 +311,7 @@ pub enum Overlay<M> {
     Num(first_ord::NumType),
     Tuple(Vec<Overlay<M>>),
     Variants(IdVec<first_ord::VariantId, Overlay<M>>),
+    // Self(CustomTypeId)
     Custom(CustomTypeId, BTreeMap<ModeParam, M>),
     Array(M),
     HoleArray(M),
@@ -323,6 +324,7 @@ pub enum Type<M, L> {
     Num(first_ord::NumType),
     Tuple(Vec<Type<M, L>>),
     Variants(IdVec<first_ord::VariantId, Type<M, L>>),
+    // Self(CustomTypeId)
     Custom(CustomTypeId, IdVec<ModeParam, M>, IdVec<LtParam, L>),
     Array(M, L, Box<Type<M, L>>, Overlay<M>),
     HoleArray(M, L, Box<Type<M, L>>, Overlay<M>),
