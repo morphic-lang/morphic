@@ -18,6 +18,7 @@ pub mod instance_queue;
 pub mod im_rc_ext;
 
 pub mod inequality_graph;
+pub mod inequality_graph2;
 
 pub mod event_set;
 
