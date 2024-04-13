@@ -4,7 +4,7 @@
 //! There are a few notable differences from the paper:
 //! - We use nomial types (called "custom" types in this compiler) instead of mu types.
 //! - The AST is in A-normal form.
-//! - In addition to the `Boxed` type (which is a plain reference counted allocation), we have the
+//! - In addition to the type `Boxed` (which is a plain reference counted allocation), we have the
 //!   types `Array` and `HoleArray`, which need similar treatment during borrow inference because
 //!   they have an embedded reference count.
 
@@ -69,9 +69,13 @@ impl Path {
         Self(elems)
     }
 
+    fn elems(&self) -> impl Iterator<Item = PathElem> + '_ {
+        self.0.iter().copied().rev()
+    }
+
     pub fn as_lt(&self) -> Lt {
         let mut lt = LocalLt::Final;
-        for &elem in &self.0 {
+        for elem in self.elems() {
             match elem {
                 PathElem::Seq(i) => {
                     lt = LocalLt::Seq(Box::new(lt), i);
@@ -169,7 +173,7 @@ impl LocalLt {
 
     pub fn does_not_exceed(&self, rhs: &Path) -> bool {
         let mut lhs = self;
-        for &elem in &rhs.0 {
+        for elem in rhs.elems() {
             match (lhs, elem) {
                 (LocalLt::Final, _) => {
                     return false;

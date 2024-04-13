@@ -32,72 +32,11 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn remove_indent(&self) -> Self {
-        Self {
-            indentation: self.indentation.saturating_sub(TAB_SIZE),
-            ..*self
-        }
-    }
-
     fn writeln(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(w)?;
         write!(w, "{}", " ".repeat(self.indentation))
     }
 }
-
-// #[derive(Clone, Debug)]
-// struct LtMarkers(BTreeSet<LtParam>);
-//
-// #[derive(Clone, Debug)]
-// enum ArrayOp<M, L> {
-//     Get(LtMarkers, LtMarkers),
-//     Extract(LtMarkers, LtMarkers),
-//     Len(LtMarkers),
-//     Push(LtMarkers, LtMarkers),
-//     Pop(LtMarkers),
-//     Replace(LtMarkers, LtMarkers),
-//     Reserve(LtMarkers, LtMarkers),
-// }
-//
-// #[derive(Clone, Debug)]
-// enum IoOp<M, L> {
-//     Input,
-//     Output(LtMarkers),
-// }
-//
-// #[derive(Clone, Debug)]
-// enum Expr<M, L> {
-//     Local(LtMarkers),
-//     Call(Purity, first_ord::CustomFuncId, LtMarkers),
-//     Branch(LtMarkers, Vec<(Condition<M, L>, Expr<M, L>)>, Type<M, L>),
-//     LetMany(Vec<(Type<M, L>, Expr<M, L>)>, LtMarkers),
-//
-//     Tuple(Vec<LtMarkers>),
-//     TupleField(LtMarkers, usize),
-//     WrapVariant(first_ord::VariantId, LtMarkers),
-//     UnwrapVariant(first_ord::VariantId, LtMarkers),
-//     WrapBoxed(
-//         LtMarkers,
-//         Type<M, L>, // Inner type
-//     ),
-//     UnwrapBoxed(
-//         LtMarkers,
-//         Type<M, L>, // Inner type
-//     ),
-//     WrapCustom(CustomTypeId, LtMarkers),
-//     UnwrapCustom(CustomTypeId, LtMarkers),
-//
-//     Intrinsic(Intrinsic, LtMarkers),
-//     ArrayOp(ArrayOp<M, L>),
-//     IoOp(IoOp<M, L>),
-//     Panic(Type<M, L>, LtMarkers),
-//
-//     ArrayLit(Type<M, L>, Vec<LtMarkers>),
-//     BoolLit(bool),
-//     ByteLit(u8),
-//     IntLit(i64),
-//     FloatLit(f64),
-// }
 
 fn write_tuple_like<T>(
     w: &mut dyn Write,
@@ -207,7 +146,7 @@ fn write_lifetime(w: &mut dyn Write, lt: &Lt) -> io::Result<()> {
 }
 
 fn write_mode_param(w: &mut dyn Write, m: &ModeParam) -> io::Result<()> {
-    write!(w, "${}", m.0)
+    write!(w, "!{}", m.0)
 }
 
 fn write_mode(w: &mut dyn Write, m: &ModeLowerBound) -> io::Result<()> {
@@ -324,7 +263,6 @@ fn write_type<M, L>(
                         write!(w, ", ")?;
                     }
                 }
-                // TODO: print `os`
                 for (p, m) in subst.ms.iter() {
                     write_mode(w, m)?;
                     if let Some(om) = subst.os.0.get(&p) {
@@ -345,7 +283,7 @@ fn write_type<M, L>(
             write_mode_and_lifetime(w, write_mode, write_lifetime, m, lt)?;
             write!(w, " Array (")?;
             write_type(w, type_renderer, write_mode, write_lifetime, item_type)?;
-            write!(w, ") as (")?;
+            write!(w, " as ")?;
             write_overlay(w, type_renderer, write_mode, overlay)?;
             write!(w, ")")
         }
@@ -353,7 +291,7 @@ fn write_type<M, L>(
             write_mode_and_lifetime(w, write_mode, write_lifetime, m, lt)?;
             write!(w, " HoleArray (")?;
             write_type(w, type_renderer, write_mode, write_lifetime, item_type)?;
-            write!(w, ") as (")?;
+            write!(w, " as ")?;
             write_overlay(w, type_renderer, write_mode, overlay)?;
             write!(w, ")")
         }
@@ -361,7 +299,7 @@ fn write_type<M, L>(
             write_mode_and_lifetime(w, write_mode, write_lifetime, m, lt)?;
             write!(w, " Box (")?;
             write_type(w, type_renderer, write_mode, write_lifetime, item_type)?;
-            write!(w, ") as (")?;
+            write!(w, " as ")?;
             write_overlay(w, type_renderer, write_mode, overlay)?;
             write!(w, ")")
         }
@@ -457,18 +395,21 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             while index < bindings.len() {
                 if let Some(string) = match_string_bytes(&bindings[index..]) {
                     new_context.writeln(w)?;
+                    let last_index = index + string.len() - 1;
                     write!(
                         w,
-                        "%{}...%{}: Byte = {:?}",
+                        "{}...{}: %{}...%{}: Byte = {:?}",
+                        index,
+                        last_index,
                         context.num_locals + index,
-                        context.num_locals + index + string.len() - 1,
+                        context.num_locals + last_index,
                         string,
                     )?;
                     index += string.len();
                 } else {
                     let (binding_type, binding_expr) = &bindings[index];
                     new_context.writeln(w)?;
-                    write!(w, "%{}: ", context.num_locals + index)?;
+                    write!(w, "{}: %{}: ", index, context.num_locals + index)?;
                     write_type_concrete(w, context.type_renderer, binding_type)?;
                     write!(w, " = ")?;
                     write_expr(
@@ -611,13 +552,6 @@ fn write_func(
     func: &FuncDef,
     func_id: CustomFuncId,
 ) -> io::Result<()> {
-    let context = Context {
-        type_renderer,
-        func_renderer,
-        indentation: 0,
-        num_locals: 1,
-    };
-
     write!(w, "func {} (%0: ", func_renderer.render(func_id))?;
     write_type(
         w,
@@ -636,22 +570,21 @@ fn write_func(
     )?;
 
     if func.constrs.is_empty() {
-        writeln!(w, " =")?;
+        write!(w, " =\n")?;
     } else {
-        let context = context.add_indent();
-        context.writeln(w)?;
-        write!(w, "where")?;
-
+        write!(w, "\n{}where ", " ".repeat(TAB_SIZE))?;
         write_constrs(w, &func.constrs)?;
-        context.remove_indent();
-        context.writeln(w)?;
-        write!(w, "=")?;
+        write!(w, "\n=\n")?;
     }
 
-    context.add_indent();
-    context.writeln(w)?;
+    let context = Context {
+        type_renderer,
+        func_renderer,
+        indentation: 0,
+        num_locals: 1,
+    };
+
     write_expr(w, &func.body, context)?;
-    writeln!(w)?;
     writeln!(w)?;
     Ok(())
 }
@@ -672,6 +605,7 @@ fn write_typedef(
     )?;
     write!(w, " as ")?;
     write_overlay(w, type_renderer, &write_mode_param, &typedef.overlay)?;
+    writeln!(w)?;
     Ok(())
 }
 
@@ -681,10 +615,11 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
 
     for (i, typedef) in &program.custom_types.types {
         write_typedef(w, &type_renderer, typedef, i)?;
+        writeln!(w)?;
     }
-    writeln!(w)?;
     for (i, func) in &program.funcs {
         write_func(w, &type_renderer, &func_renderer, func, i)?;
+        writeln!(w)?;
     }
     Ok(())
 }

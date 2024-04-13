@@ -16,7 +16,6 @@ walkdir = "2.4.0"
 find_clang = { path = "./find_clang" }
 lalrpop-util = "0.20.0"
 im-rc = "15.1.0"
-lazy_static = "1.4.0"
 stacker = "0.1.15"
 better-panic = "0.3.0"
 clap = { version = "4.4.10", features = ["color", "string"] }
@@ -32,6 +31,7 @@ json = "0.12.4" # used for string escaping in profile report generation
 indicatif = "0.17.7"
 id_collections = "1.0.1"
 id_graph_sccs = "0.1.1"
+once_cell = "1.19.0"
 
 # Error handling
 anyhow = "1.0.75"

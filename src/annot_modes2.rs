@@ -5,9 +5,13 @@
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
+use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
-    self as annot, Lt, LtParam, Mode, ModeLowerBound, ModeParam, Overlay, OverlaySubst, TypeSubst,
+    self as annot, Lt, LtParam, Mode, ModeLowerBound, ModeParam, Occur, Overlay, OverlaySubst,
+    TypeSubst,
 };
+use crate::intrinsic_config::intrinsic_sig;
+use crate::pretty_print::graphviz as gv;
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
@@ -18,6 +22,7 @@ use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::rc::Rc;
 
 #[id_type]
@@ -781,8 +786,8 @@ fn unapply_overlay<L>(
     }
 }
 
-/// Compute the substitution that replaces the mode parameters in `ov` with the corresponding mode
-/// variables in `ty`.
+/// Compute the substitution that replaces the mode parameters in `param` with the corresponding
+/// mode variables in `vars`.
 fn compute_overlay_subst<'a>(
     params: annot::OverlayItem<'a, ModeParam>,
     vars: annot::OverlayItem<'a, ModeVar>,
@@ -880,17 +885,14 @@ fn unfold_type<L: Clone>(
 
 fn unfold_custom<L: Clone>(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    ty: &annot::Type<ModeVar, L>,
+    subst: &TypeSubst<ModeVar, L>,
+    id: CustomTypeId,
 ) -> annot::Type<ModeVar, L> {
-    let annot::Type::Custom(id, subst) = ty else {
-        panic!("expected custom type");
-    };
-
-    let typedef = &customs[*id];
-    let ty = subst.apply(&typedef.content);
-
-    let extracted = compute_overlay_subst(typedef.overlay.items(), ty.overlay_items());
-    unfold_type(customs, &extracted, &ty, &subst)
+    let typedef = &customs[id];
+    let folded = subst.apply(&typedef.content);
+    let extracted = compute_overlay_subst(typedef.overlay.items(), folded.overlay_items());
+    let unfolded = unfold_type(customs, &extracted, &folded, &subst);
+    unfolded
 }
 
 /// A typing context that can be cheaply cloned.
@@ -914,7 +916,14 @@ impl ImmutContext {
         id
     }
 
-    fn set_local(&mut self, local: LocalId, binding: Rc<SolverType>) {
+    fn truncate(&mut self, count: Count<LocalId>) {
+        if count < self.count {
+            self.count = count;
+            self.stack.truncate(count.to_value());
+        }
+    }
+
+    fn update_local(&mut self, local: LocalId, binding: Rc<SolverType>) {
         self.stack[local.0] = binding;
     }
 
@@ -931,12 +940,21 @@ impl LocalUpdates {
         LocalUpdates(BTreeMap::new())
     }
 
-    fn local_binding(&self, local: LocalId) -> Option<&Rc<SolverType>> {
-        self.0.get(&local)
+    fn len(&self) -> usize {
+        self.0.len()
     }
 
-    fn record(&mut self, id: LocalId, binding: Rc<SolverType>) {
+    fn record_update(&mut self, id: LocalId, binding: Rc<SolverType>) {
         self.0.insert(id, binding);
+    }
+
+    fn truncate(&mut self, count: Count<LocalId>) {
+        // TODO: in practice we only remove the last element, so we could optimize this.
+        self.0.retain(|id, _| id.0 < count.to_value());
+    }
+
+    fn local_binding(&self, local: LocalId) -> Option<&Rc<SolverType>> {
+        self.0.get(&local)
     }
 
     fn meet(&mut self, _constrs: &mut ConstrGraph, other: &Self) {
@@ -975,25 +993,30 @@ impl TrackedContext {
         }
     }
 
-    fn local_binding(&self, local: LocalId) -> &Rc<SolverType> {
-        self.ctx.local_binding(local)
-    }
-
     fn add_local(&mut self, binding: Rc<SolverType>) -> LocalId {
         let local = self.ctx.add_local(binding.clone());
-        self.updates.record(local, binding);
+        self.updates.record_update(local, binding);
         local
     }
 
-    fn set_local(&mut self, local: LocalId, binding: Rc<SolverType>) {
-        self.ctx.set_local(local, binding.clone());
-        self.updates.record(local, binding);
+    fn truncate(&mut self, count: Count<LocalId>) {
+        self.ctx.truncate(count);
+        self.updates.truncate(count);
     }
 
-    fn set_locals(&mut self, updates: &LocalUpdates) {
+    fn update_local(&mut self, local: LocalId, binding: Rc<SolverType>) {
+        self.ctx.update_local(local, binding.clone());
+        self.updates.record_update(local, binding);
+    }
+
+    fn apply_updates(&mut self, updates: &LocalUpdates) {
         for (id, binding) in &updates.0 {
-            self.ctx.set_local(*id, binding.clone());
+            self.update_local(*id, binding.clone());
         }
+    }
+
+    fn local_binding(&self, local: LocalId) -> &Rc<SolverType> {
+        self.ctx.local_binding(local)
     }
 
     fn as_untracked(&self) -> &ImmutContext {
@@ -1120,7 +1143,7 @@ fn instantiate_occur(
     // mode_bind(constrs, old_ty, fut_ty);
 
     let new_ty = Rc::new(old_ty.left_meet(fut_ty));
-    ctx.set_local(id, new_ty);
+    ctx.update_local(id, new_ty);
 
     annot::Occur {
         local: id,
@@ -1128,7 +1151,20 @@ fn instantiate_occur(
     }
 }
 
-fn instantiate_int_use(ctx: &TrackedContext, id: LocalId) -> SolverOccur {
+fn instantiate_primitive_type<M, L>(ty: &intr::Type) -> annot::Type<M, L> {
+    match ty {
+        intr::Type::Bool => annot::Type::Bool,
+        intr::Type::Num(n) => annot::Type::Num(*n),
+        intr::Type::Tuple(items) => annot::Type::Tuple(
+            items
+                .iter()
+                .map(|ty| instantiate_primitive_type(ty))
+                .collect(),
+        ),
+    }
+}
+
+fn instantiate_int_occur(ctx: &TrackedContext, id: LocalId) -> SolverOccur {
     assert!(matches!(
         **ctx.local_binding(id),
         annot::Type::Num(NumType::Int)
@@ -1236,6 +1272,7 @@ fn instantiate_expr(
             // This `join_everywhere` arises from the fact that we assume that functions access all
             // of their arguments. We could be more precise here.
             let arg_ty = join_everywhere(&replace_lts(&arg_ty, &lt_subst), &path.seq(1).as_lt());
+            println!("arg_ty: {:?}", arg_ty);
             let arg = instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arg, &arg_ty);
 
             annot::Expr::Call(*purity, *func, arg)
@@ -1270,7 +1307,7 @@ fn instantiate_expr(
             }
 
             // Finally, apply the updates before instantiating the discriminant.
-            ctx.set_locals(&updates);
+            ctx.apply_updates(&updates);
 
             let fut_ty = ctx.local_binding(*discrim_id).clone();
             let discrim_occur = instantiate_occur(
@@ -1285,8 +1322,26 @@ fn instantiate_expr(
             annot::Expr::Branch(discrim_occur, cases_annot, (*fut_ty).clone())
         }
 
+        // We're only using `with_scope` here for its debug assertion, and to signal intent; by the
+        // time the passed closure returns, we've manually truncated away all the variables which it
+        // would usually be `with_scope`'s responsibility to remove.
         flat::Expr::LetMany(bindings, result_id) => scopes.with_scope(|scopes| {
+            let locals_offset = scopes.len();
             let end_of_scope = path.seq(bindings.len());
+
+            // println!("-------------------");
+            for (binding_ty, _binding_expr) in bindings {
+                let local_id1 = scopes.add_local(end_of_scope.clone());
+                let local_id2 = ctx.add_local(Rc::new(instantiate_type_unused(
+                    customs, constrs, binding_ty,
+                )));
+
+                debug_assert_eq!(local_id1, local_id2);
+
+                // println!("${} : {:?} = {:?}", local_id1.0, binding_ty, binding_expr);
+            }
+            // println!("in ${} as {:?}", result_id.0, fut_ty);
+            // println!("+++++++++++++++++++");
 
             let result_occur = instantiate_occur(
                 customs,
@@ -1297,23 +1352,15 @@ fn instantiate_expr(
                 fut_ty,
             );
 
-            let mut locals = Vec::new();
-            for (binding_ty, _) in bindings {
-                let local_id1 = scopes.add_local(end_of_scope.clone());
-                let local_id2 = if local_id1 == *result_id {
-                    ctx.add_local(Rc::new(fut_ty.clone()))
-                } else {
-                    ctx.add_local(Rc::new(instantiate_type_unused(
-                        customs, constrs, binding_ty,
-                    )))
-                };
-
-                debug_assert_eq!(local_id1, local_id2);
-                locals.push(local_id1);
-            }
-
-            let mut exprs_annot = Vec::new();
+            let mut bindings_annot_rev = Vec::new();
             for (i, (_, binding_expr)) in bindings.iter().enumerate().rev() {
+                let local = LocalId(locals_offset + i);
+                let fut_ty = (**ctx.local_binding(local)).clone();
+
+                // Only retain the locals *strictly* before this binding.
+                scopes.truncate(Count::from_value(local.0));
+                ctx.truncate(Count::from_value(local.0));
+
                 let (expr_annot, expr_updates) = instantiate_expr(
                     customs,
                     sigs,
@@ -1322,24 +1369,31 @@ fn instantiate_expr(
                     ctx.as_untracked(),
                     scopes,
                     path.seq(i),
-                    &ctx.local_binding(locals[i]),
+                    &fut_ty,
                     binding_expr,
                 );
 
                 // Apply the updates to the context. It is important that the enclosing loop is in
                 // reverse order to ensure that each binding is checked in the correct context.
-                ctx.set_locals(&expr_updates);
+                ctx.apply_updates(&expr_updates);
+                for (id, _) in &expr_updates.0 {
+                    if !ctx.updates.0.contains_key(id) {
+                        println!("---------------------");
+                        println!("id: {:?}", id);
+                        println!("expr_annot: {:?}", expr_annot);
+                        panic!("missing update");
+                    }
+                }
 
-                exprs_annot.push(expr_annot);
+                bindings_annot_rev.push((fut_ty, expr_annot));
             }
 
-            let new_bindings = locals
-                .into_iter()
-                .zip(exprs_annot.into_iter())
-                .map(|(local, expr_annot)| ((**ctx.local_binding(local)).clone(), expr_annot))
-                .collect();
+            let bindings_annot = {
+                bindings_annot_rev.reverse();
+                bindings_annot_rev
+            };
 
-            annot::Expr::LetMany(new_bindings, result_occur)
+            annot::Expr::LetMany(bindings_annot, result_occur)
         }),
 
         flat::Expr::Tuple(item_ids) => {
@@ -1347,10 +1401,12 @@ fn instantiate_expr(
                 unreachable!();
             };
             debug_assert_eq!(item_ids.len(), fut_tys.len());
-            let occurs = item_ids
+            let mut occurs_rev: Vec<_> = item_ids
                 .iter()
                 .zip(fut_tys.iter())
                 .enumerate()
+                // We must process the items in reverse order to ensure `instantiate_occur` (which
+                // modifies the lifetimes in `ctx`) generates the correct constraints.
                 .rev()
                 .map(|(i, (item_id, item_fut_ty))| {
                     instantiate_occur(
@@ -1363,6 +1419,10 @@ fn instantiate_expr(
                     )
                 })
                 .collect();
+            let occurs = {
+                occurs_rev.reverse();
+                occurs_rev
+            };
             annot::Expr::Tuple(occurs)
         }
 
@@ -1377,6 +1437,7 @@ fn instantiate_expr(
             item_tys[*idx] = fut_ty.clone();
             let tuple_ty = annot::Type::Tuple(item_tys);
 
+            // println!("before: {:?}", &**ctx.local_binding(*tuple_id));
             let tuple_occur = instantiate_occur(
                 customs,
                 &mut ctx,
@@ -1385,6 +1446,8 @@ fn instantiate_expr(
                 *tuple_id,
                 &tuple_ty,
             );
+            // println!("tuple_id: {}, tuple_ty: {:?}", tuple_id.0, tuple_ty);
+            // println!("after: {:?}", &**ctx.local_binding(*tuple_id));
             annot::Expr::TupleField(tuple_occur, *idx)
         }
 
@@ -1476,15 +1539,14 @@ fn instantiate_expr(
 
             debug_assert_eq!(*custom_id, *fut_id);
 
-            let content_ty = apply_overlay(
-                &unfold_custom(customs, fut_ty),
-                &unfold_overlay(
-                    customs,
-                    &fut_subst.os.apply(&customs[*custom_id].overlay),
-                    &fut_subst.os,
-                ),
+            let unfolded_ty = unfold_custom(customs, &fut_subst, *custom_id);
+            let unfolded_ov = &unfold_overlay(
+                customs,
+                &fut_subst.os.apply(&customs[*custom_id].overlay),
+                &fut_subst.os,
             );
 
+            let content_ty = apply_overlay(&unfolded_ty, &unfolded_ov);
             let content_occur = instantiate_occur(
                 customs,
                 &mut ctx,
@@ -1497,41 +1559,48 @@ fn instantiate_expr(
             annot::Expr::WrapCustom(*custom_id, content_occur)
         }
 
-        flat::Expr::UnwrapCustom(custom_id, wrapped) => {
+        flat::Expr::UnwrapCustom(custom_id, folded) => {
             let custom = &customs[custom_id];
-            let wrapped_ty =
-                instantiate_type(customs, constrs, || lt_count.inc(), custom.content.items());
-            let wrapped_overlay =
-                instantiate_overlay(customs, constrs, custom.content.overlay_items());
-            let wrapped_overlay_subst =
-                compute_overlay_subst(custom.overlay.items(), wrapped_overlay.items());
-            let unwrapped_ty = apply_overlay(
-                &unfold_custom(customs, &wrapped_ty),
-                &unfold_overlay(customs, &wrapped_overlay, &wrapped_overlay_subst),
+
+            let folded_ov = instantiate_overlay(customs, constrs, custom.overlay.items());
+            let folded_os = compute_overlay_subst(custom.overlay.items(), folded_ov.items());
+            let folded_ts = TypeSubst {
+                ms: IdVec::from_count_with(custom.num_mode_params, |_| constrs.fresh_var()),
+                os: folded_os.clone(),
+                lts: IdVec::from_count_with(custom.num_lt_params, |_| lt_count.inc()),
+            };
+
+            let unfolded_ty = apply_overlay(
+                &unfold_custom(customs, &folded_ts, *custom_id),
+                &unfold_overlay(customs, &folded_ov, &folded_os),
             );
 
-            mode_bind(constrs, &unwrapped_ty, fut_ty);
+            mode_bind(constrs, &unfolded_ty, fut_ty);
 
-            let lt_subst = lt_bind(&unwrapped_ty, fut_ty);
-            let wrapped_ty = replace_lts(&wrap_lt_params(&wrapped_ty), &lt_subst);
-
-            let wrapped_occur = instantiate_occur(
+            let folded_ty = replace_lts(
+                &wrap_lt_params(&annot::Type::Custom(*custom_id, folded_ts)),
+                &lt_bind(&unfolded_ty, fut_ty),
+            );
+            let folded_occur = instantiate_occur(
                 customs,
                 &mut ctx,
                 constrs,
                 &path.seq(0),
-                *wrapped,
-                &wrapped_ty,
+                *folded,
+                &folded_ty,
             );
 
-            annot::Expr::UnwrapCustom(*custom_id, wrapped_occur)
+            annot::Expr::UnwrapCustom(*custom_id, folded_occur)
         }
 
         // Right now, all intrinsics are trivial from a mode inference perspective because they
         // operate on arithmetic types. If this changes, we will have to update this.
         flat::Expr::Intrinsic(intr, arg) => {
-            let arg_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arg, fut_ty);
+            let sig = intrinsic_sig(*intr);
+            let arg_occur = Occur {
+                local: *arg,
+                ty: instantiate_primitive_type(&sig.arg),
+            };
             annot::Expr::Intrinsic(*intr, arg_occur)
         }
 
@@ -1550,7 +1619,7 @@ fn instantiate_expr(
                 item_ov,
             );
 
-            let idx_occur = instantiate_int_use(&ctx, *idx_id);
+            let idx_occur = instantiate_int_occur(&ctx, *idx_id);
             let arr_occur =
                 instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
 
@@ -1581,9 +1650,9 @@ fn instantiate_expr(
                 instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
             );
 
+            let idx_occur = instantiate_int_occur(&ctx, *idx_id);
             let arr_occur =
                 instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
-            let idx_occur = instantiate_int_use(&ctx, *idx_id);
 
             annot::Expr::ArrayOp(annot::ArrayOp::Extract(annot_item_ty, arr_occur, idx_occur))
         }
@@ -1676,6 +1745,15 @@ fn instantiate_expr(
             };
             require_owned(constrs, *fut_mode);
 
+            let item_occur = instantiate_occur(
+                customs,
+                &mut ctx,
+                constrs,
+                &path.seq(2),
+                *item_id,
+                fut_item_ty,
+            );
+
             let hole_mode = constrs.fresh_var();
             require_owned(constrs, hole_mode);
 
@@ -1684,15 +1762,6 @@ fn instantiate_expr(
                 path.seq(1).as_lt(),
                 fut_item_ty.clone(),
                 instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
-            );
-
-            let item_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(2),
-                *item_id,
-                fut_item_ty,
             );
 
             let hole_occur =
@@ -1711,7 +1780,7 @@ fn instantiate_expr(
             };
             require_owned(constrs, *fut_mode);
 
-            let cap_occur = instantiate_int_use(&ctx, *cap_id);
+            let cap_occur = instantiate_int_occur(&ctx, *cap_id);
             let arr_occur =
                 instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, fut_ty);
             annot::Expr::ArrayOp(annot::ArrayOp::Reserve(
@@ -1733,8 +1802,14 @@ fn instantiate_expr(
         }
 
         flat::Expr::IoOp(flat::IoOp::Output(arr_id)) => {
+            let arr_ty = annot::Type::Array(
+                constrs.fresh_var(),
+                path.seq(1).as_lt(),
+                Box::new(annot::Type::Num(NumType::Byte)),
+                annot::Overlay::Num(NumType::Byte),
+            );
             let arr_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, fut_ty);
+                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
             annot::Expr::IoOp(annot::IoOp::Output(arr_occur))
         }
 
@@ -1746,22 +1821,28 @@ fn instantiate_expr(
         }
 
         // See I-Rc; this is the operation that constructs new arrays
-        flat::Expr::ArrayLit(item_ty, item_ids) => {
-            let annot::Type::Array(m, _, _, _) = fut_ty else {
+        flat::Expr::ArrayLit(_item_ty, item_ids) => {
+            let annot::Type::Array(fut_mode, _, fut_item_ty, _) = fut_ty else {
                 unreachable!();
             };
-            require_owned(constrs, *m);
+            require_owned(constrs, *fut_mode);
 
             let item_occurs = item_ids
                 .iter()
                 .enumerate()
                 .map(|(i, item_id)| {
-                    instantiate_occur(customs, &mut ctx, constrs, &path.seq(i), *item_id, fut_ty)
+                    instantiate_occur(
+                        customs,
+                        &mut ctx,
+                        constrs,
+                        &path.seq(i),
+                        *item_id,
+                        fut_item_ty,
+                    )
                 })
                 .collect();
 
-            let item_ty = instantiate_type_unused(customs, constrs, item_ty);
-            annot::Expr::ArrayLit(item_ty, item_occurs)
+            annot::Expr::ArrayLit((**fut_item_ty).clone(), item_occurs)
         }
 
         flat::Expr::BoolLit(val) => annot::Expr::BoolLit(*val),
@@ -1816,7 +1897,7 @@ fn instantiate_scc(
                 })
                 .collect::<BTreeMap<_, _>>();
 
-            let bodies = loop {
+            let (new_arg_tys, bodies) = loop {
                 let mut new_arg_tys = BTreeMap::new();
                 let mut bodies = BTreeMap::new();
                 let assumptions = SignatureAssumptions {
@@ -1837,6 +1918,7 @@ fn instantiate_scc(
                     let arg_id = scopes.add_local(annot::Path::root().seq(1));
                     debug_assert_eq!(arg_id, flat::ARG_LOCAL);
 
+                    println!("-------------------");
                     let (expr, updates) = instantiate_expr(
                         customs,
                         assumptions,
@@ -1851,13 +1933,15 @@ fn instantiate_scc(
                     );
                     bodies.insert(*id, expr);
 
-                    new_arg_tys.insert(
-                        *id,
-                        updates
-                            .local_binding(flat::ARG_LOCAL)
-                            .map(|ty| (**ty).clone())
-                            .unwrap_or(arg_ty),
-                    );
+                    // println!("updates: {:?}", updates);
+                    println!("+++++++++++++++++++");
+
+                    debug_assert!(updates.len() <= 1);
+                    if let Some(update) = updates.local_binding(flat::ARG_LOCAL) {
+                        ctx.update_local(flat::ARG_LOCAL, update.clone());
+                    }
+
+                    new_arg_tys.insert(*id, (**ctx.local_binding(flat::ARG_LOCAL)).clone());
                 }
 
                 if new_arg_tys
@@ -1865,14 +1949,14 @@ fn instantiate_scc(
                     .zip_eq(arg_tys.values())
                     .all(|(new, old)| lt_equiv(new, old))
                 {
-                    break bodies;
+                    break (new_arg_tys, bodies);
                 }
 
                 arg_tys = new_arg_tys;
             };
 
             SolverScc {
-                func_args: arg_tys,
+                func_args: new_arg_tys,
                 func_rets: ret_tys,
                 func_bodies: bodies,
                 scc_constrs: constrs,
@@ -2097,6 +2181,56 @@ fn solve_scc(
     }
 
     let solution: Solution = instantiated.scc_constrs.solve(&external);
+
+    // #[id_type]
+    // struct SccId(usize);
+
+    // let vars = &instantiated.scc_constrs.vars;
+    // let sccs: Sccs<SccId, _> = find_components(vars.count(), |var| &vars[var].lb_vars);
+
+    // let mut my_id = None;
+    // for (scc_id, scc) in &sccs {
+    //     for var in scc.nodes {
+    //         if *var == ModeVar(162) {
+    //             my_id = Some(scc_id);
+    //         }
+    //     }
+    // }
+
+    // if let Some(my_id) = my_id {
+    //     let mut buf = Vec::new();
+    //     let mut w = gv::GraphvizWriter::new(2);
+    //     w.write_digraph(&mut buf, |buf, w| {
+    //         let scc = sccs.component(my_id);
+
+    //         let borrowed = w.write_node(buf, "&", None).unwrap();
+    //         let owned = w.write_node(buf, "!", None).unwrap();
+    //         let nodes: BTreeMap<_, _> = scc
+    //             .nodes
+    //             .iter()
+    //             .map(|var| (var, w.write_node(buf, &format!("{}", var.0), None).unwrap()))
+    //             .collect();
+    //         for var in scc.nodes {
+    //             let var_constrs = &instantiated.scc_constrs.vars[*var];
+    //             for other in &var_constrs.lb_vars {
+    //                 w.write_edge(buf, nodes[other], nodes[&var], None).unwrap();
+    //             }
+    //             match var_constrs.lb_const {
+    //                 Mode::Borrowed => {
+    //                     w.write_edge(buf, borrowed, nodes[&var], None).unwrap();
+    //                 }
+    //                 Mode::Owned => {
+    //                     w.write_edge(buf, owned, nodes[&var], None).unwrap();
+    //                 }
+    //             }
+    //         }
+    //         Ok(())
+    //     })
+    //     .unwrap();
+    //     let mut file = std::fs::File::create(format!("graph{}.dot", scc.nodes[0].0)).unwrap();
+    //     file.write_all(buf.as_slice()).unwrap();
+    //     file.flush().unwrap();
+    // }
 
     for func_id in scc.nodes {
         let arg_ty = &instantiated.func_args[&func_id];

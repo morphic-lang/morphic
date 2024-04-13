@@ -1,7 +1,7 @@
 use crate::data::purity::Purity;
 use crate::data::visibility::Visibility;
 use lalrpop_util::ParseError;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -237,19 +237,19 @@ impl Error {
     }
 }
 
-lazy_static! {
-    static ref BUILTIN_TYPES: BTreeMap<raw::TypeName, res::TypeId> = {
-        let mut type_map = BTreeMap::new();
+static BUILTIN_TYPES: Lazy<BTreeMap<raw::TypeName, res::TypeId>> = Lazy::new(|| {
+    let mut type_map = BTreeMap::new();
 
-        type_map.insert(raw::TypeName("Bool".to_owned()), res::TypeId::Bool);
-        type_map.insert(raw::TypeName("Byte".to_owned()), res::TypeId::Byte);
-        type_map.insert(raw::TypeName("Int".to_owned()), res::TypeId::Int);
-        type_map.insert(raw::TypeName("Float".to_owned()), res::TypeId::Float);
-        type_map.insert(raw::TypeName("Array".to_owned()), res::TypeId::Array);
+    type_map.insert(raw::TypeName("Bool".to_owned()), res::TypeId::Bool);
+    type_map.insert(raw::TypeName("Byte".to_owned()), res::TypeId::Byte);
+    type_map.insert(raw::TypeName("Int".to_owned()), res::TypeId::Int);
+    type_map.insert(raw::TypeName("Float".to_owned()), res::TypeId::Float);
+    type_map.insert(raw::TypeName("Array".to_owned()), res::TypeId::Array);
 
-        type_map
-    };
-    static ref BUILTIN_CTORS: BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)> = {
+    type_map
+});
+static BUILTIN_CTORS: Lazy<BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)>> =
+    Lazy::new(|| {
         let mut ctor_map = BTreeMap::new();
 
         ctor_map.insert(
@@ -262,59 +262,58 @@ lazy_static! {
         );
 
         ctor_map
-    };
-    static ref BUILTIN_GLOBALS: BTreeMap<raw::ValName, res::GlobalId> = {
-        let mut global_map = BTreeMap::new();
+    });
+static BUILTIN_GLOBALS: Lazy<BTreeMap<raw::ValName, res::GlobalId>> = Lazy::new(|| {
+    let mut global_map = BTreeMap::new();
 
-        global_map.insert(
-            raw::ValName("get".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Get),
-        );
-        global_map.insert(
-            raw::ValName("extract".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Extract),
-        );
-        global_map.insert(
-            raw::ValName("len".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Len),
-        );
-        global_map.insert(
-            raw::ValName("push".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Push),
-        );
-        global_map.insert(
-            raw::ValName("pop".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Pop),
-        );
-        global_map.insert(
-            raw::ValName("reserve".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Reserve),
-        );
-        global_map.insert(
-            raw::ValName("input".to_owned()),
-            res::GlobalId::IoOp(res::IoOp::Input),
-        );
-        global_map.insert(
-            raw::ValName("output".to_owned()),
-            res::GlobalId::IoOp(res::IoOp::Output),
-        );
-        global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
+    global_map.insert(
+        raw::ValName("get".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Get),
+    );
+    global_map.insert(
+        raw::ValName("extract".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Extract),
+    );
+    global_map.insert(
+        raw::ValName("len".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Len),
+    );
+    global_map.insert(
+        raw::ValName("push".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Push),
+    );
+    global_map.insert(
+        raw::ValName("pop".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Pop),
+    );
+    global_map.insert(
+        raw::ValName("reserve".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Reserve),
+    );
+    global_map.insert(
+        raw::ValName("input".to_owned()),
+        res::GlobalId::IoOp(res::IoOp::Input),
+    );
+    global_map.insert(
+        raw::ValName("output".to_owned()),
+        res::GlobalId::IoOp(res::IoOp::Output),
+    );
+    global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
 
-        for &(intrinsic, name) in INTRINSIC_NAMES {
-            match name {
-                intrs::Name::Op { debug_name: _ } => {}
-                intrs::Name::Func { source_name } => {
-                    global_map.insert(
-                        raw::ValName(source_name.to_owned()),
-                        res::GlobalId::Intrinsic(intrinsic),
-                    );
-                }
+    for &(intrinsic, name) in INTRINSIC_NAMES {
+        match name {
+            intrs::Name::Op { debug_name: _ } => {}
+            intrs::Name::Func { source_name } => {
+                global_map.insert(
+                    raw::ValName(source_name.to_owned()),
+                    res::GlobalId::Intrinsic(intrinsic),
+                );
             }
         }
+    }
 
-        global_map
-    };
-}
+    global_map
+});
 
 #[derive(Clone, Debug)]
 struct ModMap {

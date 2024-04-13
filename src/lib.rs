@@ -394,19 +394,25 @@ fn compile_to_low_ast(
 
     let flat = flatten::flatten(split, progress_ui::bar(progress, "flatten"));
 
-    // if let Some(artifact_dir) = artifact_dir {
-    //     let mode_annot2 = annot_modes2::annot_modes(
-    //         &flat,
-    //         annot_modes2::Strategy::Aggressive,
-    //         progress_ui::bar(progress, "annot_modes2"),
-    //     );
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("flat"))
+            .map_err(ErrorKind::WriteIrFailed)?;
 
-    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("mode-annot2"))
-    //         .map_err(ErrorKind::WriteIrFailed)?;
+        pretty_print::flat::write_program(&mut out_file, &flat)
+            .map_err(ErrorKind::WriteIrFailed)?;
 
-    //     pretty_print::mode_annot::write_program(&mut out_file, &mode_annot2)
-    //         .map_err(ErrorKind::WriteIrFailed)?;
-    // }
+        let mode_annot2 = annot_modes2::annot_modes(
+            &flat,
+            annot_modes2::Strategy::Aggressive,
+            progress_ui::bar(progress, "annot_modes2"),
+        );
+
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("mode-annot2"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::mode_annot::write_program(&mut out_file, &mode_annot2)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
 
     let alias_annot =
         annot_aliases::annot_aliases(flat, progress_ui::bar(progress, "annot_aliases"));
