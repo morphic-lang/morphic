@@ -18,14 +18,14 @@ pub trait BoundedSemilattice {
 }
 
 #[derive(Clone, Debug)]
-struct VarConstrs<Var, T> {
+pub struct VarConstrs<Var, T> {
     /// If a variable `v` has a `VarConstrs` struct whose `lb_vars` vec contains a variable `u`,
     /// that encodes the constraint `u <= v`.
-    lb_vars: Vec<Var>,
+    pub lb_vars: Vec<Var>,
 
     /// If a variable `v` has a `VarConstrs` struct whose `lb_const` field is a constant value `c`,
     /// that encodes the constraint `c <= v`.
-    lb_const: T,
+    pub lb_const: T,
 }
 
 #[derive(Clone, Debug)]
@@ -35,13 +35,13 @@ pub struct ConstrGraph<Var: Id, T> {
 
 #[derive(Clone, Debug)]
 pub struct LowerBound<Var, T> {
-    /// If a variable `v` has an `UpperBound` struct whose `vars` set contains a variable `u`, then
-    /// `u <= v`.
-    pub vars: BTreeSet<Var>,
+    /// If a variable `v` has a `LowerBound` struct whose `lb_vars` set contains a variable `u`,
+    /// then `u <= v`.
+    pub lb_vars: BTreeSet<Var>,
 
-    /// If a variable `v` has an `UpperBound` struct whose `const_` contains a constant value `c`,
+    /// If a variable `v` has a `LowerBound` struct whose `lb_const` contains a constant value `c`,
     /// then `c <= v`.
-    pub const_: T,
+    pub lb_const: T,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +56,10 @@ where
 {
     pub fn new() -> Self {
         ConstrGraph { vars: IdVec::new() }
+    }
+
+    pub fn inner(&self) -> &IdVec<SolverVar, VarConstrs<SolverVar, T>> {
+        &self.vars
     }
 
     pub fn fresh_var(&mut self) -> SolverVar {
@@ -113,8 +117,8 @@ where
         }
 
         let mut lower_bounds = self.vars.map_refs(|_, _| LowerBound {
-            vars: BTreeSet::new(),
-            const_: T::least(),
+            lb_vars: BTreeSet::new(),
+            lb_const: T::least(),
         });
 
         for (_, scc) in &sccs {
@@ -124,8 +128,8 @@ where
             for &var in scc.nodes {
                 for lb_var in &self.vars[var].lb_vars {
                     let lb = &lower_bounds[lb_var];
-                    scc_lb_vars.extend(&lb.vars);
-                    scc_lb_const.join_mut(&lb.const_);
+                    scc_lb_vars.extend(&lb.lb_vars);
+                    scc_lb_const.join_mut(&lb.lb_const);
                 }
 
                 if external.contains(&var) {
@@ -137,8 +141,8 @@ where
 
             for &var in scc.nodes {
                 lower_bounds[var] = LowerBound {
-                    vars: scc_lb_vars.clone(),
-                    const_: scc_lb_const.clone(),
+                    lb_vars: scc_lb_vars.clone(),
+                    lb_const: scc_lb_const.clone(),
                 }
             }
         }
@@ -158,10 +162,10 @@ where
         let vars = subgraph.map_refs(|_, _| self.fresh_var());
 
         for (external, upper_bound) in subgraph {
-            for other_external in &upper_bound.vars {
+            for other_external in &upper_bound.lb_vars {
                 self.require_lte(vars[external], vars[other_external]);
             }
-            self.require_lte_const(&upper_bound.const_, vars[external]);
+            self.require_lte_const(&upper_bound.lb_const, vars[external]);
         }
 
         vars

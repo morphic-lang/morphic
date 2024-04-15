@@ -7,11 +7,12 @@ use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
-    self as annot, Lt, LtParam, Mode, ModeLowerBound, ModeParam, Occur, Overlay, OverlaySubst,
-    TypeSubst,
+    self as annot, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, Overlay,
+    OverlaySubst, TypeSubst,
 };
 use crate::intrinsic_config::intrinsic_sig;
-use crate::pretty_print::graphviz as gv;
+use crate::pretty_print::mode_annot as pp;
+use crate::pretty_print::utils::CustomTypeRenderer;
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
@@ -22,11 +23,7 @@ use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::rc::Rc;
-
-#[id_type]
-struct ModeVar(usize);
 
 type SolverType = annot::Type<ModeVar, Lt>;
 type SolverOccur = annot::Occur<ModeVar, Lt>;
@@ -283,6 +280,7 @@ fn parameterize_customs(
         for (id, typedef) in to_populate {
             parameterized.insert(id, typedef);
         }
+        println!("Parameterized SCC {:?}", scc_id);
     }
     parameterized.to_id_vec(customs.types.count())
 }
@@ -383,13 +381,13 @@ fn require_owned(constrs: &mut ConstrGraph, var: ModeVar) {
 
 fn emit_occur_constr(
     constrs: &mut ConstrGraph,
-    path: &annot::Path,
+    scope: &annot::Path,
     binding_lt: &Lt,
     use_lt: &Lt,
     binding_mode: ModeVar,
     use_mode: ModeVar,
 ) {
-    if use_lt.does_not_exceed(path) {
+    if use_lt.does_not_exceed(scope) {
         if *binding_lt == Lt::Empty && *use_lt != Lt::Empty {
             // Case: this is a non-escaping, final ("opportunistic") occurrence.
             constrs.require_lte(use_mode, binding_mode);
@@ -403,7 +401,7 @@ fn emit_occur_constr(
 fn emit_occur_constrs_overlay(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
-    path: &annot::Path,
+    scope: &annot::Path,
     binding_ty: &SolverType,
     fut_ty: &SolverType,
     binding_ov: &SolverOverlay,
@@ -424,7 +422,7 @@ fn emit_occur_constrs_overlay(
             annot::Overlay::Tuple(os2),
         ) => {
             for (((ty1, ty2), o1), o2) in tys1.iter().zip_eq(tys2).zip_eq(os1).zip_eq(os2) {
-                emit_occur_constrs_overlay(customs, constrs, path, ty1, ty2, o1, o2);
+                emit_occur_constrs_overlay(customs, constrs, scope, ty1, ty2, o1, o2);
             }
         }
         (
@@ -439,7 +437,7 @@ fn emit_occur_constrs_overlay(
                 .zip_eq(os1.values())
                 .zip_eq(os2.values())
             {
-                emit_occur_constrs_overlay(customs, constrs, path, ty1, ty2, o1, o2);
+                emit_occur_constrs_overlay(customs, constrs, scope, ty1, ty2, o1, o2);
             }
         }
         (
@@ -458,7 +456,7 @@ fn emit_occur_constrs_overlay(
             emit_occur_constrs_overlay(
                 customs,
                 constrs,
-                path,
+                scope,
                 &subst1.apply(&typedef.content),
                 &subst2.apply(&typedef.content),
                 &subst3.apply(&typedef.overlay),
@@ -483,7 +481,7 @@ fn emit_occur_constrs_overlay(
             annot::Overlay::Boxed(m1),
             annot::Overlay::Boxed(m2),
         ) => {
-            emit_occur_constr(constrs, path, lt1, lt2, *m1, *m2);
+            emit_occur_constr(constrs, scope, lt1, lt2, *m1, *m2);
         }
         _ => panic!("incompatible types"),
     }
@@ -492,7 +490,7 @@ fn emit_occur_constrs_overlay(
 fn emit_occur_constrs_heap(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
-    path: &annot::Path,
+    scope: &annot::Path,
     binding_ty: &SolverType,
     fut_ty: &SolverType,
 ) {
@@ -501,12 +499,12 @@ fn emit_occur_constrs_heap(
         (annot::Type::Num(n1), annot::Type::Num(n2)) if n1 == n2 => {}
         (annot::Type::Tuple(tys1), annot::Type::Tuple(tys2)) => {
             for (ty1, ty2) in tys1.iter().zip_eq(tys2) {
-                emit_occur_constrs_heap(customs, constrs, path, ty1, ty2);
+                emit_occur_constrs_heap(customs, constrs, scope, ty1, ty2);
             }
         }
         (annot::Type::Variants(tys1), annot::Type::Variants(tys2)) => {
             for ((_, ty1), (_, ty2)) in tys1.iter().zip_eq(tys2) {
-                emit_occur_constrs_heap(customs, constrs, path, ty1, ty2);
+                emit_occur_constrs_heap(customs, constrs, scope, ty1, ty2);
             }
         }
         (annot::Type::SelfCustom(id1), annot::Type::SelfCustom(id2)) if id1 == id2 => {}
@@ -518,7 +516,7 @@ fn emit_occur_constrs_heap(
             emit_occur_constrs_heap(
                 customs,
                 constrs,
-                path,
+                scope,
                 &subst1.apply(&typedef.content),
                 &subst2.apply(&typedef.content),
             );
@@ -527,8 +525,8 @@ fn emit_occur_constrs_heap(
         | (annot::Type::HoleArray(m1, _, ty1, o1), annot::Type::HoleArray(m2, _, ty2, o2))
         | (annot::Type::Boxed(m1, _, ty1, o1), annot::Type::Boxed(m2, _, ty2, o2)) => {
             constrs.require_eq(*m1, *m2);
-            emit_occur_constrs_heap(customs, constrs, path, ty1, ty2);
-            emit_occur_constrs_overlay(customs, constrs, path, ty1, ty2, o1, o2);
+            emit_occur_constrs_heap(customs, constrs, scope, ty1, ty2);
+            emit_occur_constrs_overlay(customs, constrs, scope, ty1, ty2, o1, o2);
         }
         _ => panic!("incompatible types"),
     }
@@ -537,7 +535,7 @@ fn emit_occur_constrs_heap(
 fn emit_occur_constrs(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
-    path: &annot::Path,
+    scope: &annot::Path,
     binding_ty: &SolverType,
     fut_ty: &SolverType,
 ) {
@@ -546,12 +544,12 @@ fn emit_occur_constrs(
         (annot::Type::Num(n1), annot::Type::Num(n2)) if n1 == n2 => {}
         (annot::Type::Tuple(tys1), annot::Type::Tuple(tys2)) => {
             for (ty1, ty2) in tys1.iter().zip_eq(tys2) {
-                emit_occur_constrs(customs, constrs, path, ty1, ty2);
+                emit_occur_constrs(customs, constrs, scope, ty1, ty2);
             }
         }
         (annot::Type::Variants(tys1), annot::Type::Variants(tys2)) => {
             for ((_, ty1), (_, ty2)) in tys1.iter().zip_eq(tys2) {
-                emit_occur_constrs(customs, constrs, path, ty1, ty2);
+                emit_occur_constrs(customs, constrs, scope, ty1, ty2);
             }
         }
         (annot::Type::SelfCustom(id1), annot::Type::SelfCustom(id2)) if id1 == id2 => {}
@@ -561,11 +559,11 @@ fn emit_occur_constrs(
             let binding_ov = subst1.os.apply(&typedef.overlay);
             let fut_ty = subst2.apply(&typedef.content);
             let fut_ov = subst2.os.apply(&typedef.overlay);
-            emit_occur_constrs(customs, constrs, path, &binding_ty, &fut_ty);
+            emit_occur_constrs(customs, constrs, scope, &binding_ty, &fut_ty);
             emit_occur_constrs_overlay(
                 customs,
                 constrs,
-                path,
+                scope,
                 &binding_ty,
                 &fut_ty,
                 &binding_ov,
@@ -575,9 +573,9 @@ fn emit_occur_constrs(
         (annot::Type::Array(m1, lt1, ty1, o1), annot::Type::Array(m2, lt2, ty2, o2))
         | (annot::Type::HoleArray(m1, lt1, ty1, o1), annot::Type::HoleArray(m2, lt2, ty2, o2))
         | (annot::Type::Boxed(m1, lt1, ty1, o1), annot::Type::Boxed(m2, lt2, ty2, o2)) => {
-            emit_occur_constr(constrs, path, lt1, lt2, *m1, *m2);
-            emit_occur_constrs_heap(customs, constrs, path, ty1, ty2);
-            emit_occur_constrs_overlay(customs, constrs, path, ty1, ty2, o1, o2);
+            emit_occur_constr(constrs, scope, lt1, lt2, *m1, *m2);
+            emit_occur_constrs_heap(customs, constrs, scope, ty1, ty2);
+            emit_occur_constrs_overlay(customs, constrs, scope, ty1, ty2, o1, o2);
         }
         _ => panic!("incompatible types"),
     }
@@ -1131,13 +1129,13 @@ fn instantiate_condition(
 fn instantiate_occur(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     ctx: &mut TrackedContext,
+    scopes: &LocalContext<LocalId, annot::Path>,
     constrs: &mut ConstrGraph,
-    path: &annot::Path,
     id: LocalId,
     fut_ty: &SolverType,
 ) -> SolverOccur {
     let old_ty = ctx.local_binding(id);
-    emit_occur_constrs(customs, constrs, path, old_ty, fut_ty);
+    emit_occur_constrs(customs, constrs, scopes.local_binding(id), old_ty, fut_ty);
 
     // TODO: do we need this? It's not in the formalism.
     // mode_bind(constrs, old_ty, fut_ty);
@@ -1220,7 +1218,7 @@ impl<'a> SignatureAssumptions<'a> {
                 )
             },
             |def| {
-                let params_to_vars = constrs.instantiate_subgraph(&def.constrs);
+                let params_to_vars = constrs.instantiate_subgraph(&def.constrs.sig);
                 let remapping = |param| params_to_vars[param];
                 (
                     replace_modes(&remapping, &def.sig.arg_type),
@@ -1259,7 +1257,7 @@ fn instantiate_expr(
 
     let expr_annot = match expr {
         flat::Expr::Local(local) => {
-            let occur = instantiate_occur(customs, &mut ctx, constrs, &path, *local, fut_ty);
+            let occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *local, fut_ty);
             annot::Expr::Local(occur)
         }
 
@@ -1269,11 +1267,10 @@ fn instantiate_expr(
             mode_bind(constrs, &ret_ty, fut_ty);
             let lt_subst = lt_bind(&ret_ty, fut_ty);
 
-            // This `join_everywhere` arises from the fact that we assume that functions access all
-            // of their arguments. We could be more precise here.
-            let arg_ty = join_everywhere(&replace_lts(&arg_ty, &lt_subst), &path.seq(1).as_lt());
-            println!("arg_ty: {:?}", arg_ty);
-            let arg = instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arg, &arg_ty);
+            // This `join_everywhere` reflects the fact that we assume that functions access all of
+            // their arguments. We could be more precise here.
+            let arg_ty = join_everywhere(&replace_lts(&arg_ty, &lt_subst), &path.as_lt());
+            let arg = instantiate_occur(customs, &mut ctx, scopes, constrs, *arg, &arg_ty);
 
             annot::Expr::Call(*purity, *func, arg)
         }
@@ -1284,7 +1281,6 @@ fn instantiate_expr(
             let mut updates = LocalUpdates::new();
             let mut cases_annot = Vec::new();
 
-            let body_path = path.seq(1);
             for (i, (cond, body)) in cases.iter().enumerate() {
                 let cond_annot = instantiate_condition(customs, constrs, cond);
                 let (body_annot, body_updates) = instantiate_expr(
@@ -1294,7 +1290,7 @@ fn instantiate_expr(
                     lt_count,
                     ctx.as_untracked(),
                     scopes,
-                    body_path.par(i, cases.len()),
+                    path.par(i, cases.len()),
                     fut_ty,
                     body,
                 );
@@ -1310,14 +1306,8 @@ fn instantiate_expr(
             ctx.apply_updates(&updates);
 
             let fut_ty = ctx.local_binding(*discrim_id).clone();
-            let discrim_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(0),
-                *discrim_id,
-                &fut_ty,
-            );
+            let discrim_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *discrim_id, &fut_ty);
 
             annot::Expr::Branch(discrim_occur, cases_annot, (*fut_ty).clone())
         }
@@ -1329,28 +1319,16 @@ fn instantiate_expr(
             let locals_offset = scopes.len();
             let end_of_scope = path.seq(bindings.len());
 
-            // println!("-------------------");
-            for (binding_ty, _binding_expr) in bindings {
+            for (binding_ty, _) in bindings {
                 let local_id1 = scopes.add_local(end_of_scope.clone());
                 let local_id2 = ctx.add_local(Rc::new(instantiate_type_unused(
                     customs, constrs, binding_ty,
                 )));
-
                 debug_assert_eq!(local_id1, local_id2);
-
-                // println!("${} : {:?} = {:?}", local_id1.0, binding_ty, binding_expr);
             }
-            // println!("in ${} as {:?}", result_id.0, fut_ty);
-            // println!("+++++++++++++++++++");
 
-            let result_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &end_of_scope,
-                *result_id,
-                fut_ty,
-            );
+            let result_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *result_id, fut_ty);
 
             let mut bindings_annot_rev = Vec::new();
             for (i, (_, binding_expr)) in bindings.iter().enumerate().rev() {
@@ -1376,14 +1354,6 @@ fn instantiate_expr(
                 // Apply the updates to the context. It is important that the enclosing loop is in
                 // reverse order to ensure that each binding is checked in the correct context.
                 ctx.apply_updates(&expr_updates);
-                for (id, _) in &expr_updates.0 {
-                    if !ctx.updates.0.contains_key(id) {
-                        println!("---------------------");
-                        println!("id: {:?}", id);
-                        println!("expr_annot: {:?}", expr_annot);
-                        panic!("missing update");
-                    }
-                }
 
                 bindings_annot_rev.push((fut_ty, expr_annot));
             }
@@ -1404,19 +1374,11 @@ fn instantiate_expr(
             let mut occurs_rev: Vec<_> = item_ids
                 .iter()
                 .zip(fut_tys.iter())
-                .enumerate()
                 // We must process the items in reverse order to ensure `instantiate_occur` (which
-                // modifies the lifetimes in `ctx`) generates the correct constraints.
+                // updates the lifetimes in `ctx`) generates the correct constraints.
                 .rev()
-                .map(|(i, (item_id, item_fut_ty))| {
-                    instantiate_occur(
-                        customs,
-                        &mut ctx,
-                        constrs,
-                        &path.seq(i),
-                        *item_id,
-                        item_fut_ty,
-                    )
+                .map(|(item_id, item_fut_ty)| {
+                    instantiate_occur(customs, &mut ctx, scopes, constrs, *item_id, item_fut_ty)
                 })
                 .collect();
             let occurs = {
@@ -1437,17 +1399,9 @@ fn instantiate_expr(
             item_tys[*idx] = fut_ty.clone();
             let tuple_ty = annot::Type::Tuple(item_tys);
 
-            // println!("before: {:?}", &**ctx.local_binding(*tuple_id));
-            let tuple_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(0),
-                *tuple_id,
-                &tuple_ty,
-            );
-            // println!("tuple_id: {}, tuple_ty: {:?}", tuple_id.0, tuple_ty);
-            // println!("after: {:?}", &**ctx.local_binding(*tuple_id));
+            let tuple_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *tuple_id, &tuple_ty);
+
             annot::Expr::TupleField(tuple_occur, *idx)
         }
 
@@ -1459,8 +1413,8 @@ fn instantiate_expr(
             let content_occur = instantiate_occur(
                 customs,
                 &mut ctx,
+                scopes,
                 constrs,
-                &path.seq(0),
                 *content,
                 &fut_variant_tys[*variant_id],
             );
@@ -1469,26 +1423,19 @@ fn instantiate_expr(
         }
 
         flat::Expr::UnwrapVariant(variant_id, wrapped) => {
-            let annot::Type::Variants(binding_variant_tys) = &**ctx.local_binding(*wrapped) else {
+            let annot::Type::Variants(mut variant_tys) = instantiate_type_unused_from_items(
+                customs,
+                constrs,
+                ctx.local_binding(*wrapped).items(),
+            ) else {
                 unreachable!();
             };
 
-            let wrapped_ty = annot::Type::Variants(binding_variant_tys.map_refs(|id, ty| {
-                if id == *variant_id {
-                    fut_ty.clone()
-                } else {
-                    ty.clone()
-                }
-            }));
+            variant_tys[*variant_id] = fut_ty.clone();
 
-            let wrapped_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(0),
-                *wrapped,
-                &wrapped_ty,
-            );
+            let wrapped_ty = annot::Type::Variants(variant_tys);
+            let wrapped_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *wrapped, &wrapped_ty);
 
             annot::Expr::UnwrapVariant(*variant_id, wrapped_occur)
         }
@@ -1502,14 +1449,8 @@ fn instantiate_expr(
             require_owned(constrs, *fut_mode);
             mode_bind_overlays(constrs, &unapply_overlay(customs, &fut_item_ty), &fut_ov);
 
-            let content_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(0),
-                *content,
-                fut_item_ty,
-            );
+            let content_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *content, fut_item_ty);
 
             annot::Expr::WrapBoxed(content_occur, (**fut_item_ty).clone())
         }
@@ -1521,13 +1462,13 @@ fn instantiate_expr(
 
             let box_ty = annot::Type::Boxed(
                 constrs.fresh_var(),
-                path.seq(1).as_lt(),
+                path.as_lt(),
                 Box::new(item_ty.clone()),
                 item_ov,
             );
 
             let box_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *wrapped, &box_ty);
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *wrapped, &box_ty);
 
             annot::Expr::UnwrapBoxed(box_occur, item_ty)
         }
@@ -1547,14 +1488,8 @@ fn instantiate_expr(
             );
 
             let content_ty = apply_overlay(&unfolded_ty, &unfolded_ov);
-            let content_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(0),
-                *content,
-                &content_ty,
-            );
+            let content_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *content, &content_ty);
 
             annot::Expr::WrapCustom(*custom_id, content_occur)
         }
@@ -1581,14 +1516,8 @@ fn instantiate_expr(
                 &wrap_lt_params(&annot::Type::Custom(*custom_id, folded_ts)),
                 &lt_bind(&unfolded_ty, fut_ty),
             );
-            let folded_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(0),
-                *folded,
-                &folded_ty,
-            );
+            let folded_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *folded, &folded_ty);
 
             annot::Expr::UnwrapCustom(*custom_id, folded_occur)
         }
@@ -1609,19 +1538,15 @@ fn instantiate_expr(
             let item_ty = replace_modes(|_| constrs.fresh_var(), fut_ty);
             let item_ov = unapply_overlay(customs, &fut_ty);
 
-            let arr_mode = constrs.fresh_var();
-            require_owned(constrs, arr_mode);
-
             let arr_ty = annot::Type::Array(
-                arr_mode,
-                path.seq(1).as_lt(),
+                constrs.fresh_var(),
+                path.as_lt(),
                 Box::new(item_ty.clone()),
                 item_ov,
             );
 
             let idx_occur = instantiate_int_occur(&ctx, *idx_id);
-            let arr_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
+            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
 
             annot::Expr::ArrayOp(annot::ArrayOp::Get(
                 item_ty,
@@ -1641,18 +1566,17 @@ fn instantiate_expr(
             require_owned(constrs, arr_mode);
 
             let annot_item_ty = replace_modes(|_| constrs.fresh_var(), fut_item_ty);
-            mode_bind_storage(constrs, &annot_item_ty, fut_item_ty);
+            mode_bind(constrs, &annot_item_ty, fut_item_ty);
 
             let arr_ty = annot::Type::Array(
                 arr_mode,
-                path.seq(1).as_lt(),
+                path.as_lt(),
                 Box::new(annot_item_ty.clone()),
                 instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
             );
 
             let idx_occur = instantiate_int_occur(&ctx, *idx_id);
-            let arr_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
+            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
 
             annot::Expr::ArrayOp(annot::ArrayOp::Extract(annot_item_ty, arr_occur, idx_occur))
         }
@@ -1663,13 +1587,12 @@ fn instantiate_expr(
             let item_ty = instantiate_type_unused(customs, constrs, item_ty);
             let arr_ty = annot::Type::Array(
                 constrs.fresh_var(),
-                path.seq(1).as_lt(),
+                path.as_lt(),
                 Box::new(item_ty.clone()),
                 instantiate_overlay(customs, constrs, item_ty.overlay_items()),
             );
 
-            let arr_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
+            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
 
             annot::Expr::ArrayOp(annot::ArrayOp::Len(item_ty, arr_occur))
         }
@@ -1683,32 +1606,29 @@ fn instantiate_expr(
             let arr_mode = constrs.fresh_var();
             require_owned(constrs, arr_mode);
 
-            let arr_item_ty = replace_modes(|_| constrs.fresh_var(), fut_item_ty);
-            mode_bind_storage(constrs, &arr_item_ty, fut_item_ty);
+            // let arr_item_ty = replace_modes(|_| constrs.fresh_var(), fut_item_ty);
+            // mode_bind(constrs, &arr_item_ty, fut_item_ty);
 
-            let pushed_item_ty = replace_modes(|_| constrs.fresh_var(), fut_item_ty);
-            mode_bind_storage(constrs, &pushed_item_ty, fut_item_ty);
+            // let pushed_item_ty = replace_modes(|_| constrs.fresh_var(), fut_item_ty);
+            // mode_bind(constrs, &pushed_item_ty, fut_item_ty);
 
             let arr_ty = annot::Type::Array(
                 arr_mode,
-                path.seq(1).as_lt(),
-                Box::new(pushed_item_ty.clone()),
+                path.as_lt(),
+                Box::new((**fut_item_ty).clone()),
                 instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
             );
 
-            let item_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(1),
-                *item_id,
-                &pushed_item_ty,
-            );
+            let item_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *item_id, &fut_item_ty);
 
-            let arr_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
+            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
 
-            annot::Expr::ArrayOp(annot::ArrayOp::Push(pushed_item_ty, arr_occur, item_occur))
+            annot::Expr::ArrayOp(annot::ArrayOp::Push(
+                (**fut_item_ty).clone(),
+                arr_occur,
+                item_occur,
+            ))
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Pop(item_ty, arr_id)) => {
@@ -1719,24 +1639,23 @@ fn instantiate_expr(
             let annot::Type::Array(fut_arr_mode, _, fut_item_ty, _) = &ret_tys[0] else {
                 unreachable!();
             };
-            let popped_item_ty = &ret_tys[1];
+            let fut_popped_ty = &ret_tys[1];
 
             require_owned(constrs, *fut_arr_mode);
-            mode_bind_storage(constrs, popped_item_ty, fut_item_ty);
+            mode_bind(constrs, fut_popped_ty, fut_item_ty);
 
             let arr_mode = constrs.fresh_var();
             require_owned(constrs, arr_mode);
 
             let arr_ty = annot::Type::Array(
                 arr_mode,
-                path.seq(1).as_lt(),
-                Box::new(popped_item_ty.clone()),
+                path.as_lt(),
+                Box::new(fut_popped_ty.clone()),
                 instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
             );
 
-            let arr_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
-            annot::Expr::ArrayOp(annot::ArrayOp::Pop(popped_item_ty.clone(), arr_occur))
+            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
+            annot::Expr::ArrayOp(annot::ArrayOp::Pop(fut_popped_ty.clone(), arr_occur))
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Replace(item_ty, hole_id, item_id)) => {
@@ -1745,27 +1664,21 @@ fn instantiate_expr(
             };
             require_owned(constrs, *fut_mode);
 
-            let item_occur = instantiate_occur(
-                customs,
-                &mut ctx,
-                constrs,
-                &path.seq(2),
-                *item_id,
-                fut_item_ty,
-            );
+            let item_occur =
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *item_id, fut_item_ty);
 
             let hole_mode = constrs.fresh_var();
             require_owned(constrs, hole_mode);
 
             let hole_ty = annot::Type::HoleArray(
                 hole_mode,
-                path.seq(1).as_lt(),
+                path.as_lt(),
                 fut_item_ty.clone(),
                 instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
             );
 
             let hole_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *hole_id, &hole_ty);
+                instantiate_occur(customs, &mut ctx, scopes, constrs, *hole_id, &hole_ty);
 
             annot::Expr::ArrayOp(annot::ArrayOp::Replace(
                 (**fut_item_ty).clone(),
@@ -1781,8 +1694,7 @@ fn instantiate_expr(
             require_owned(constrs, *fut_mode);
 
             let cap_occur = instantiate_int_occur(&ctx, *cap_id);
-            let arr_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, fut_ty);
+            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, fut_ty);
             annot::Expr::ArrayOp(annot::ArrayOp::Reserve(
                 (**fut_item_ty).clone(),
                 arr_occur,
@@ -1791,12 +1703,12 @@ fn instantiate_expr(
         }
 
         flat::Expr::IoOp(flat::IoOp::Input) => {
-            let annot::Type::Array(fut_mode, _, item_ty, _) = fut_ty else {
+            let annot::Type::Array(fut_mode, _, fut_item_ty, _) = fut_ty else {
                 unreachable!();
             };
 
             require_owned(constrs, *fut_mode);
-            assert!(matches!(**item_ty, annot::Type::Num(NumType::Byte)));
+            assert!(matches!(**fut_item_ty, annot::Type::Num(NumType::Byte)));
 
             annot::Expr::IoOp(annot::IoOp::Input)
         }
@@ -1804,20 +1716,24 @@ fn instantiate_expr(
         flat::Expr::IoOp(flat::IoOp::Output(arr_id)) => {
             let arr_ty = annot::Type::Array(
                 constrs.fresh_var(),
-                path.seq(1).as_lt(),
+                path.as_lt(),
                 Box::new(annot::Type::Num(NumType::Byte)),
                 annot::Overlay::Num(NumType::Byte),
             );
-            let arr_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(0), *arr_id, &arr_ty);
+            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
             annot::Expr::IoOp(annot::IoOp::Output(arr_occur))
         }
 
         flat::Expr::Panic(ret_ty, msg_id) => {
-            let msg_occur =
-                instantiate_occur(customs, &mut ctx, constrs, &path.seq(1), *msg_id, fut_ty);
-            let ret_ty = instantiate_type_unused(customs, constrs, ret_ty);
-            annot::Expr::Panic(ret_ty, msg_occur)
+            debug_assert!(same_shape(ret_ty, fut_ty));
+            let arr_ty = annot::Type::Array(
+                constrs.fresh_var(),
+                path.as_lt(),
+                Box::new(annot::Type::Num(NumType::Byte)),
+                annot::Overlay::Num(NumType::Byte),
+            );
+            let msg_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *msg_id, &arr_ty);
+            annot::Expr::Panic(fut_ty.clone(), msg_occur)
         }
 
         // See I-Rc; this is the operation that constructs new arrays
@@ -1827,21 +1743,20 @@ fn instantiate_expr(
             };
             require_owned(constrs, *fut_mode);
 
-            let item_occurs = item_ids
+            let mut item_occurs_rev: Vec<_> = item_ids
                 .iter()
-                .enumerate()
-                .map(|(i, item_id)| {
-                    instantiate_occur(
-                        customs,
-                        &mut ctx,
-                        constrs,
-                        &path.seq(i),
-                        *item_id,
-                        fut_item_ty,
-                    )
+                // We must process the items in reverse order to ensure `instantiate_occur` (which
+                // updates the lifetimes in `ctx`) generates the correct constraints.
+                .rev()
+                .map(|item_id| {
+                    instantiate_occur(customs, &mut ctx, scopes, constrs, *item_id, fut_item_ty)
                 })
                 .collect();
 
+            let item_occurs = {
+                item_occurs_rev.reverse();
+                item_occurs_rev
+            };
             annot::Expr::ArrayLit((**fut_item_ty).clone(), item_occurs)
         }
 
@@ -1862,6 +1777,7 @@ fn instantiate_scc(
     funcs: &IdVec<CustomFuncId, flat::FuncDef>,
     funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
+    renderer: &CustomTypeRenderer<CustomTypeId>,
 ) -> SolverScc {
     match scc.kind {
         SccKind::Acyclic | SccKind::Cyclic => {
@@ -1897,7 +1813,10 @@ fn instantiate_scc(
                 })
                 .collect::<BTreeMap<_, _>>();
 
+            let mut iter_num = 0;
             let (new_arg_tys, bodies) = loop {
+                println!("iter_num: {}", iter_num);
+                iter_num += 1;
                 let mut new_arg_tys = BTreeMap::new();
                 let mut bodies = BTreeMap::new();
                 let assumptions = SignatureAssumptions {
@@ -1918,7 +1837,6 @@ fn instantiate_scc(
                     let arg_id = scopes.add_local(annot::Path::root().seq(1));
                     debug_assert_eq!(arg_id, flat::ARG_LOCAL);
 
-                    println!("-------------------");
                     let (expr, updates) = instantiate_expr(
                         customs,
                         assumptions,
@@ -1933,9 +1851,6 @@ fn instantiate_scc(
                     );
                     bodies.insert(*id, expr);
 
-                    // println!("updates: {:?}", updates);
-                    println!("+++++++++++++++++++");
-
                     debug_assert!(updates.len() <= 1);
                     if let Some(update) = updates.local_binding(flat::ARG_LOCAL) {
                         ctx.update_local(flat::ARG_LOCAL, update.clone());
@@ -1943,6 +1858,30 @@ fn instantiate_scc(
 
                     new_arg_tys.insert(*id, (**ctx.local_binding(flat::ARG_LOCAL)).clone());
                 }
+
+                for (new, old) in new_arg_tys.values().zip_eq(arg_tys.values()) {
+                    if !lt_equiv(new, old) {
+                        pp::write_type(
+                            &mut std::io::stdout(),
+                            renderer,
+                            &pp::write_mode_var,
+                            &pp::write_lifetime,
+                            new,
+                        )
+                        .unwrap();
+                        println!();
+                        pp::write_type(
+                            &mut std::io::stdout(),
+                            renderer,
+                            &pp::write_mode_var,
+                            &pp::write_lifetime,
+                            old,
+                        )
+                        .unwrap();
+                        println!();
+                    }
+                }
+                println!("----");
 
                 if new_arg_tys
                     .values()
@@ -1992,29 +1931,31 @@ fn record_vars<L>(params: &mut BTreeSet<ModeVar>, ty: &annot::Type<ModeVar, L>) 
 type Solution = in_eq::Solution<ModeVar, ModeParam, Mode>;
 
 // TODO: use `replace_modes` instead
-fn extract_type(solution: &Solution, ty: &SolverType) -> annot::Type<ModeLowerBound, Lt> {
-    let map_os = |os: &OverlaySubst<ModeVar>| {
-        OverlaySubst(
-            os.0.iter()
-                .map(|(p, m)| (*p, solution.lower_bounds[*m].clone()))
-                .collect(),
-        )
+fn extract_type(solution: &Solution, ty: &SolverType) -> annot::Type<ModeSolution, Lt> {
+    let get_solution = |m: ModeVar| ModeSolution {
+        lb: solution.lower_bounds[m].clone(),
+        solver_var: m,
     };
+
+    let map_os = |os: &OverlaySubst<ModeVar>| {
+        OverlaySubst(os.0.iter().map(|(p, m)| (*p, get_solution(*m))).collect())
+    };
+
     ty.items()
         .map(
             &|_, subst| TypeSubst {
-                ms: subst.ms.map_refs(|_, m| solution.lower_bounds[*m].clone()),
+                ms: subst.ms.map_refs(|_, m| get_solution(*m)),
                 os: map_os(&subst.os),
                 lts: subst.lts.clone(),
             },
-            &|(m, lt)| (solution.lower_bounds[*m].clone(), lt.clone()),
+            &|(m, lt)| (get_solution(*m), lt.clone()),
             &|_, subst| map_os(subst),
-            &|m| solution.lower_bounds[*m].clone(),
+            &|m| get_solution(*m),
         )
         .collect()
 }
 
-fn extract_occur(solution: &Solution, occur: &SolverOccur) -> annot::Occur<ModeLowerBound, Lt> {
+fn extract_occur(solution: &Solution, occur: &SolverOccur) -> annot::Occur<ModeSolution, Lt> {
     annot::Occur {
         local: occur.local,
         ty: extract_type(solution, &occur.ty),
@@ -2024,7 +1965,7 @@ fn extract_occur(solution: &Solution, occur: &SolverOccur) -> annot::Occur<ModeL
 fn extract_condition(
     solution: &Solution,
     cond: &SolverCondition,
-) -> annot::Condition<ModeLowerBound, Lt> {
+) -> annot::Condition<ModeSolution, Lt> {
     match cond {
         annot::Condition::Any => annot::Condition::Any,
         annot::Condition::Tuple(conds) => annot::Condition::Tuple(
@@ -2050,7 +1991,7 @@ fn extract_condition(
     }
 }
 
-fn extract_expr(solution: &Solution, expr: &SolverExpr) -> annot::Expr<ModeLowerBound, Lt> {
+fn extract_expr(solution: &Solution, expr: &SolverExpr) -> annot::Expr<ModeSolution, Lt> {
     use annot::Expr as E;
     match expr {
         E::Local(occur) => E::Local(extract_occur(solution, occur)),
@@ -2171,8 +2112,10 @@ fn solve_scc(
     funcs: &IdVec<CustomFuncId, flat::FuncDef>,
     funcs_annot: &mut IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
+    renderer: &CustomTypeRenderer<CustomTypeId>,
 ) {
-    let instantiated = instantiate_scc(customs, funcs, funcs_annot, scc);
+    let instantiated = instantiate_scc(customs, funcs, funcs_annot, scc, renderer);
+    println!("Instantiated SCC: {:?}", scc);
 
     let mut external = BTreeSet::new();
     for func_id in scc.nodes {
@@ -2181,56 +2124,6 @@ fn solve_scc(
     }
 
     let solution: Solution = instantiated.scc_constrs.solve(&external);
-
-    // #[id_type]
-    // struct SccId(usize);
-
-    // let vars = &instantiated.scc_constrs.vars;
-    // let sccs: Sccs<SccId, _> = find_components(vars.count(), |var| &vars[var].lb_vars);
-
-    // let mut my_id = None;
-    // for (scc_id, scc) in &sccs {
-    //     for var in scc.nodes {
-    //         if *var == ModeVar(162) {
-    //             my_id = Some(scc_id);
-    //         }
-    //     }
-    // }
-
-    // if let Some(my_id) = my_id {
-    //     let mut buf = Vec::new();
-    //     let mut w = gv::GraphvizWriter::new(2);
-    //     w.write_digraph(&mut buf, |buf, w| {
-    //         let scc = sccs.component(my_id);
-
-    //         let borrowed = w.write_node(buf, "&", None).unwrap();
-    //         let owned = w.write_node(buf, "!", None).unwrap();
-    //         let nodes: BTreeMap<_, _> = scc
-    //             .nodes
-    //             .iter()
-    //             .map(|var| (var, w.write_node(buf, &format!("{}", var.0), None).unwrap()))
-    //             .collect();
-    //         for var in scc.nodes {
-    //             let var_constrs = &instantiated.scc_constrs.vars[*var];
-    //             for other in &var_constrs.lb_vars {
-    //                 w.write_edge(buf, nodes[other], nodes[&var], None).unwrap();
-    //             }
-    //             match var_constrs.lb_const {
-    //                 Mode::Borrowed => {
-    //                     w.write_edge(buf, borrowed, nodes[&var], None).unwrap();
-    //                 }
-    //                 Mode::Owned => {
-    //                     w.write_edge(buf, owned, nodes[&var], None).unwrap();
-    //                 }
-    //             }
-    //         }
-    //         Ok(())
-    //     })
-    //     .unwrap();
-    //     let mut file = std::fs::File::create(format!("graph{}.dot", scc.nodes[0].0)).unwrap();
-    //     file.write_all(buf.as_slice()).unwrap();
-    //     file.flush().unwrap();
-    // }
 
     for func_id in scc.nodes {
         let arg_ty = &instantiated.func_args[&func_id];
@@ -2263,7 +2156,10 @@ fn solve_scc(
                     arg_type: replace_modes(remap_internal, arg_ty),
                     ret_type: replace_modes(remap_internal, ret_ty),
                 },
-                constrs: constrs,
+                constrs: annot::FuncConstrs {
+                    sig: constrs,
+                    internal: instantiated.scc_constrs.clone(),
+                },
                 body: extract_expr(&solution, &instantiated.func_bodies[&func_id]),
                 profile_point: func.profile_point.clone(),
             },
@@ -2317,6 +2213,7 @@ pub fn annot_modes(
     progress: impl ProgressLogger,
 ) -> annot::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
+    let renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
 
     let custom_sccs = convert_type_sccs(&program.custom_types.sccs);
     let mut rev_custom_sccs = IdMap::new();
@@ -2340,7 +2237,8 @@ pub fn annot_modes(
 
     let mut funcs_annot = IdMap::new();
     for (_, scc) in &func_sccs {
-        solve_scc(&customs, &program.funcs, &mut funcs_annot, scc);
+        solve_scc(&customs, &program.funcs, &mut funcs_annot, scc, &renderer);
+        println!("Solved SCC {:?}", scc);
         progress.update(scc.nodes.len());
     }
 

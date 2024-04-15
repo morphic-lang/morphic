@@ -23,6 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 
 #[id_type]
+pub struct ModeVar(pub usize);
+
+#[id_type]
 pub struct ModeParam(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -32,6 +35,15 @@ pub enum Mode {
 }
 
 pub type ModeLowerBound = in_eq::LowerBound<ModeParam, Mode>;
+
+/// During constraint generation, modes are represented using `ModeVar`s. These get replaced by
+/// `ModeParam`s when the constraints are solved. `lb` is the solution. We keep around the
+/// generation-phase representation, `solver_var`, purely for debugging purposes.
+#[derive(Debug, Clone)]
+pub struct ModeSolution {
+    pub lb: ModeLowerBound,
+    pub solver_var: ModeVar,
+}
 
 impl in_eq::BoundedSemilattice for Mode {
     fn join_mut(&mut self, other: &Self) {
@@ -432,15 +444,24 @@ pub struct Signature {
     pub ret_type: Type<ModeParam, LtParam>,
 }
 
+/// `sig` describes the constraints relevant to the mode parameters of the function's signature. We
+/// keep around a copy of all of the constraints generated for the function body during constraint
+/// generation in `internal` for debugging purposes.
+#[derive(Clone, Debug)]
+pub struct FuncConstrs {
+    pub sig: IdVec<ModeParam, ModeLowerBound>,
+    pub internal: in_eq::ConstrGraph<ModeVar, Mode>,
+}
+
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub purity: Purity,
     pub sig: Signature,
-    pub constrs: IdVec<ModeParam, ModeLowerBound>,
+    pub constrs: FuncConstrs,
 
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument
-    pub body: Expr<ModeLowerBound, Lt>,
+    pub body: Expr<ModeSolution, Lt>,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 
@@ -972,16 +993,19 @@ impl<'a, R: Clone> TypeLike<'a, R, R, R, R> {
             TypeLike::SelfCustom(_) => empty,
             TypeLike::Custom(_, v) => v,
             TypeLike::Array(v, ty, overlay) => {
-                append(v, ty().fold(empty.clone(), append));
-                overlay().fold(empty, append)
+                let a = ty().fold(empty.clone(), append);
+                let b = overlay().fold(empty, append);
+                append(append(v, a), b)
             }
             TypeLike::HoleArray(v, ty, overlay) => {
-                append(v, ty().fold(empty.clone(), append));
-                overlay().fold(empty, append)
+                let a = ty().fold(empty.clone(), append);
+                let b = overlay().fold(empty, append);
+                append(append(v, a), b)
             }
             TypeLike::Boxed(v, ty, overlay) => {
-                append(v, ty().fold(empty.clone(), append));
-                overlay().fold(empty, append)
+                let a = ty().fold(empty.clone(), append);
+                let b = overlay().fold(empty, append);
+                append(append(v, a), b)
             }
         }
     }
