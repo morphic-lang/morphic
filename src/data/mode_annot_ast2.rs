@@ -103,6 +103,55 @@ impl Path {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonEmptySet<T>(BTreeSet<T>);
+
+impl<T> NonEmptySet<T> {
+    pub fn singleton(value: T) -> Self
+    where
+        T: Ord,
+    {
+        Self(std::iter::once(value).collect())
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter<'a>(&'a self) -> std::collections::btree_set::Iter<'a, T> {
+        self.0.iter()
+    }
+}
+
+impl<T> TryFrom<BTreeSet<T>> for NonEmptySet<T> {
+    type Error = ();
+
+    fn try_from(set: BTreeSet<T>) -> Result<Self, Self::Error> {
+        if !set.is_empty() {
+            Ok(Self(set))
+        } else {
+            Err(())
+        }
+    }
+}
+
+impl<T: Ord + Clone> std::ops::BitOr for &NonEmptySet<T> {
+    type Output = NonEmptySet<T>;
+
+    fn bitor(self, rhs: &NonEmptySet<T>) -> Self::Output {
+        NonEmptySet(&self.0 | &rhs.0)
+    }
+}
+
+impl<'a, T> IntoIterator for &'a NonEmptySet<T> {
+    type Item = &'a T;
+    type IntoIter = std::collections::btree_set::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 #[id_type]
 pub struct LtParam(pub usize);
 
@@ -110,8 +159,7 @@ pub struct LtParam(pub usize);
 pub enum Lt {
     Empty,
     Local(LocalLt),
-    // Always non-empty
-    Join(BTreeSet<LtParam>),
+    Join(NonEmptySet<LtParam>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,7 +173,7 @@ pub enum LocalLt {
 
 impl Lt {
     pub fn var(x: LtParam) -> Self {
-        Lt::Join(std::iter::once(x).collect())
+        Lt::Join(NonEmptySet::singleton(x))
     }
 
     /// A join over the lattice: `l1 <= l2` iff, for every leaf of `l1`, there is a leaf of `l2`
@@ -739,6 +787,7 @@ impl anon::Type {
 }
 
 impl<'a, A: 'a, B: 'a> OverlayLike<'a, A, B> {
+    #[must_use]
     pub fn map<'b, C, D>(
         self,
         f1: &'b impl Fn(CustomTypeId, A) -> C,
@@ -848,6 +897,7 @@ impl<'a, R: Clone> OverlayLike<'a, R, R> {
 }
 
 impl<'a, A: 'a, B: 'a, C: 'a, D: 'a> TypeLike<'a, A, B, C, D> {
+    #[must_use]
     pub fn map<'b, E, F, G, H>(
         self,
         f1: &'b impl Fn(CustomTypeId, A) -> E,

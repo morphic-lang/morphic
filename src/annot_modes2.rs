@@ -608,8 +608,8 @@ fn same_shape(ty1: &anon::Type, ty2: &SolverType) -> bool {
     }
 }
 
-fn lt_bind(ty1: &annot::Type<ModeVar, LtParam>, ty2: &SolverType) -> BTreeMap<LtParam, Lt> {
-    let mut subst: BTreeMap<_, Lt> = BTreeMap::new();
+fn lt_bind(ty1: &annot::Type<ModeVar, LtParam>, ty2: &SolverType) -> IdVec<LtParam, Lt> {
+    let mut subst: IdMap<_, Lt> = IdMap::new();
     let subst_cell = RefCell::new(&mut subst);
 
     let update = |param: LtParam, lt: Lt| {
@@ -620,7 +620,7 @@ fn lt_bind(ty1: &annot::Type<ModeVar, LtParam>, ty2: &SolverType) -> BTreeMap<Lt
             .or_insert_with(|| lt.clone());
     };
 
-    ty1.items().zip(ty2.items()).map(
+    ty1.items().zip(ty2.items()).for_each(
         &|_, (subst1, subst2)| {
             for (lt1, lt2) in subst1.lts.values().zip_eq(subst2.lts.values()) {
                 update(*lt1, lt2.clone());
@@ -633,32 +633,38 @@ fn lt_bind(ty1: &annot::Type<ModeVar, LtParam>, ty2: &SolverType) -> BTreeMap<Lt
         &|_| {},
     );
 
-    subst
+    let n = Count::from_value(subst.len());
+    subst.to_id_vec(n)
+}
+
+fn collect_lt_params(ty: &annot::Type<ModeVar, Lt>) -> BTreeSet<LtParam> {
+    let mut res = BTreeSet::new();
+    let cell = RefCell::new(&mut res);
+    let collect_one = |lt: &Lt| match lt {
+        Lt::Empty => {}
+        Lt::Local(_) => {}
+        Lt::Join(params) => {
+            cell.borrow_mut().extend(params.iter().copied());
+        }
+    };
+    ty.items().for_each(
+        &|_, subst| subst.lts.values().for_each(collect_one),
+        &|(_, lt)| collect_one(lt),
+        &|_, _| {},
+        &|_| {},
+    );
+    res
 }
 
 // TODO: This is somewhat duplicative. Should this be part of our general substitution machinery?
-fn replace_lts(ty: &SolverType, subst: &BTreeMap<LtParam, Lt>) -> SolverType {
+fn replace_lts(ty: &SolverType, subst: &IdVec<LtParam, Lt>) -> SolverType {
     let do_subst = |lt: &Lt| match lt {
         Lt::Empty => Lt::Empty,
         Lt::Local(lt) => Lt::Local(lt.clone()),
-        Lt::Join(params) => {
-            // Lifetime parameters originate from the return value of a function and, hence, live
-            // longer than any local lifetime. If `subst` contains a local lifetime for a given
-            // parameter, we can safety throw it away.
-            let mut new_params = BTreeSet::new();
-            for p in params {
-                if let Some(val) = subst.get(p) {
-                    match val {
-                        Lt::Empty => {}
-                        Lt::Local(_) => {}
-                        Lt::Join(params) => new_params.extend(params),
-                    }
-                } else {
-                    new_params.insert(*p);
-                }
-            }
-            Lt::Join(new_params)
-        }
+        Lt::Join(params) => params
+            .iter()
+            .map(|p| &subst[p])
+            .fold(Lt::Empty, |lt1, lt2| Lt::join(&lt1, lt2)),
     };
     ty.items()
         .map(
@@ -1797,6 +1803,7 @@ fn instantiate_scc(
                 })
                 .collect::<BTreeMap<_, _>>();
 
+            let mut first_lt = next_lt;
             let ret_tys = scc
                 .nodes
                 .iter()
@@ -1812,6 +1819,16 @@ fn instantiate_scc(
                     )
                 })
                 .collect::<BTreeMap<_, _>>();
+
+            let debug_sig_params = if cfg!(debug_assertions) {
+                let mut params = BTreeSet::new();
+                while first_lt != next_lt {
+                    params.insert(first_lt.inc());
+                }
+                params
+            } else {
+                BTreeSet::new()
+            };
 
             let mut iter_num = 0;
             let (new_arg_tys, bodies) = loop {
@@ -1882,6 +1899,21 @@ fn instantiate_scc(
                     }
                 }
                 println!("----");
+
+                debug_assert!(
+                    {
+                        let params_found = new_arg_tys.values().map(collect_lt_params).fold(
+                            BTreeSet::new(),
+                            |mut acc, params| {
+                                acc.extend(params);
+                                acc
+                            },
+                        );
+                        debug_sig_params.is_superset(&params_found)
+                    },
+                    "Some temporary lifetime parameters leaked into the function arguments during \
+                     expression instantiation. Only parameters from the return type should appear"
+                );
 
                 if new_arg_tys
                     .values()
