@@ -130,17 +130,20 @@ fn write_local_lifetime(w: &mut dyn Write, lt: &LocalLt) -> io::Result<()> {
 pub fn write_lifetime(w: &mut dyn Write, lt: &Lt) -> io::Result<()> {
     match lt {
         Lt::Empty => write!(w, "∅"),
-        Lt::Local(lt) => write_local_lifetime(w, lt),
+        Lt::Local(lt) => {
+            write!(w, "{{ ")?;
+            write_local_lifetime(w, lt)?;
+            write!(w, " }}")?;
+            Ok(())
+        }
         Lt::Join(params) => {
             // assert!(!params.is_empty());
-            write!(w, "{{")?;
             for (i, param) in params.iter().enumerate() {
                 write_lifetime_param(w, param)?;
                 if i < params.len() - 1 {
                     write!(w, " ⨆ ")?;
                 }
             }
-            write!(w, "}}")?;
             Ok(())
         }
     }
@@ -155,19 +158,19 @@ pub fn write_mode_param(w: &mut dyn Write, m: &ModeParam) -> io::Result<()> {
 }
 
 fn write_mode(w: &mut dyn Write, m: &ModeSolution) -> io::Result<()> {
-    write_mode_var(w, &m.solver_var)?;
-    write!(w, "@")?;
+    // write_mode_var(w, &m.solver_var)?;
+    // write!(w, " @ ")?;
     if m.lb.lb_const == Mode::Owned {
         write!(w, "●")?;
     } else if !m.lb.lb_vars.is_empty() {
-        write!(w, "{{")?;
+        write!(w, "{{ ")?;
         for (i, param) in m.lb.lb_vars.iter().enumerate() {
             write_mode_param(w, param)?;
             if i < m.lb.lb_vars.len() - 1 {
                 write!(w, " ⨆ ")?;
             }
         }
-        write!(w, "}}")?;
+        write!(w, " }}")?;
     } else {
         write!(w, "&")?;
     }
@@ -263,31 +266,34 @@ pub fn write_type<M, L>(
         T::SelfCustom(type_id) => write!(w, "{}<self>", type_renderer.render(*type_id)),
         T::Custom(type_id, subst) => {
             write!(w, "{}", type_renderer.render(type_id))?;
-            let mut remaining = subst.ms.len() + subst.lts.len();
-            if remaining > 0 {
+
+            if subst.lts.len() > 0 || subst.ms.len() > 0 {
                 write!(w, "<")?;
-                for (_, lt) in subst.lts.iter() {
+
+                for (i, (_, lt)) in subst.lts.iter().enumerate() {
                     write_lifetime(w, lt)?;
-                    remaining -= 1;
-                    if remaining >= 1 {
+                    if i < subst.lts.len() - 1 {
                         write!(w, ", ")?;
                     }
                 }
-                write!(w, "| ")?;
-                for (p, m) in subst.ms.iter() {
+
+                write!(w, " | ")?;
+
+                for (i, (p, m)) in subst.ms.iter().enumerate() {
                     write_mode(w, m)?;
                     if let Some(om) = subst.os.0.get(&p) {
-                        write!(w, " {{")?;
+                        write!(w, "(")?;
                         write_mode(w, om)?;
-                        write!(w, "}}")?;
+                        write!(w, ")")?;
                     }
-                    remaining -= 1;
-                    if remaining >= 1 {
+                    if i < subst.ms.len() - 1 {
                         write!(w, ", ")?;
                     }
                 }
+
                 write!(w, ">")?;
             }
+
             Ok(())
         }
         T::Array(m, lt, item_type, overlay) => {

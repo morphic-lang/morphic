@@ -19,6 +19,7 @@ use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
 use crate::util::map_ext::MapExt;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use core::num;
 use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::cell::RefCell;
@@ -225,6 +226,8 @@ fn parameterize_custom_scc(
 
     let mut mode_count = Count::new();
     let mut lt_count = Count::new();
+    let mut num_overlay_params = 0; // For debugging
+
     let to_populate = scc
         .iter()
         .map(|id| {
@@ -236,7 +239,12 @@ fn parameterize_custom_scc(
                 self_id,
                 &customs[*id].content,
             );
+
+            println!("{content:?}");
+
             let overlay_params = find_overlay_params(&content);
+            num_overlay_params += overlay_params.len();
+
             let overlay = parameterize_overlay(
                 parameterized,
                 &overlay_params,
@@ -244,6 +252,7 @@ fn parameterize_custom_scc(
                 self_id,
                 &customs[*id].content,
             );
+
             (
                 *id,
                 annot::TypeDef {
@@ -257,7 +266,8 @@ fn parameterize_custom_scc(
         })
         .collect();
 
-    debug_assert_eq!(num_mode_params, mode_count);
+    // Naively, one might also expect `num_mode_params` to be equal to `mode_count`, but overlays
+    // complicate things.
     debug_assert_eq!(num_lt_params, lt_count);
     to_populate
 }
@@ -608,13 +618,11 @@ fn same_shape(ty1: &anon::Type, ty2: &SolverType) -> bool {
     }
 }
 
-fn lt_bind(ty1: &annot::Type<ModeVar, LtParam>, ty2: &SolverType) -> IdVec<LtParam, Lt> {
-    let mut subst: IdMap<_, Lt> = IdMap::new();
-    let subst_cell = RefCell::new(&mut subst);
-
-    let update = |param: LtParam, lt: Lt| {
-        subst_cell
-            .borrow_mut()
+fn lt_bind(ty1: &annot::Type<ModeVar, LtParam>, ty2: &SolverType) -> BTreeMap<LtParam, Lt> {
+    let mut subst: BTreeMap<_, Lt> = BTreeMap::new();
+    let cell = RefCell::new(&mut subst);
+    let update = |param: LtParam, lt: &Lt| {
+        cell.borrow_mut()
             .entry(param)
             .and_modify(|old| *old = old.join(&lt))
             .or_insert_with(|| lt.clone());
@@ -623,18 +631,16 @@ fn lt_bind(ty1: &annot::Type<ModeVar, LtParam>, ty2: &SolverType) -> IdVec<LtPar
     ty1.items().zip(ty2.items()).for_each(
         &|_, (subst1, subst2)| {
             for (lt1, lt2) in subst1.lts.values().zip_eq(subst2.lts.values()) {
-                update(*lt1, lt2.clone());
+                update(*lt1, lt2);
             }
         },
         &|((_, lt1), (_, lt2))| {
-            update(*lt1, lt2.clone());
+            update(*lt1, lt2);
         },
         &|_, _| {},
         &|_| {},
     );
-
-    let n = Count::from_value(subst.len());
-    subst.to_id_vec(n)
+    subst
 }
 
 fn collect_lt_params(ty: &annot::Type<ModeVar, Lt>) -> BTreeSet<LtParam> {
@@ -657,7 +663,8 @@ fn collect_lt_params(ty: &annot::Type<ModeVar, Lt>) -> BTreeSet<LtParam> {
 }
 
 // TODO: This is somewhat duplicative. Should this be part of our general substitution machinery?
-fn replace_lts(ty: &SolverType, subst: &IdVec<LtParam, Lt>) -> SolverType {
+// Panics if `subst` does not contain a substitution for every parameter in `ty`.
+fn replace_lts(ty: &SolverType, subst: &BTreeMap<LtParam, Lt>) -> SolverType {
     let do_subst = |lt: &Lt| match lt {
         Lt::Empty => Lt::Empty,
         Lt::Local(lt) => Lt::Local(lt.clone()),
@@ -1563,28 +1570,36 @@ fn instantiate_expr(
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Extract(item_ty, arr_id, idx_id)) => {
-            let annot::Type::HoleArray(fut_mode, _, fut_item_ty, _) = fut_ty else {
+            let annot::Type::Tuple(ret_tys) = fut_ty else {
                 unreachable!();
             };
+            debug_assert_eq!(ret_tys.len(), 2);
+            let annot::Type::HoleArray(fut_mode, _, fut_item_ty, _) = &ret_tys[1] else {
+                unreachable!();
+            };
+            let fut_extracted_ty = &ret_tys[0];
+
             require_owned(constrs, *fut_mode);
+            mode_bind(constrs, fut_extracted_ty, fut_item_ty);
 
             let arr_mode = constrs.fresh_var();
             require_owned(constrs, arr_mode);
 
-            let annot_item_ty = replace_modes(|_| constrs.fresh_var(), fut_item_ty);
-            mode_bind(constrs, &annot_item_ty, fut_item_ty);
-
             let arr_ty = annot::Type::Array(
                 arr_mode,
                 path.as_lt(),
-                Box::new(annot_item_ty.clone()),
+                Box::new(fut_extracted_ty.clone()),
                 instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
             );
 
             let idx_occur = instantiate_int_occur(&ctx, *idx_id);
             let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
 
-            annot::Expr::ArrayOp(annot::ArrayOp::Extract(annot_item_ty, arr_occur, idx_occur))
+            annot::Expr::ArrayOp(annot::ArrayOp::Extract(
+                fut_extracted_ty.clone(),
+                arr_occur,
+                idx_occur,
+            ))
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Len(item_ty, arr_id)) => {
@@ -1832,7 +1847,7 @@ fn instantiate_scc(
 
             let mut iter_num = 0;
             let (new_arg_tys, bodies) = loop {
-                println!("iter_num: {}", iter_num);
+                // println!("iter_num: {}", iter_num);
                 iter_num += 1;
                 let mut new_arg_tys = BTreeMap::new();
                 let mut bodies = BTreeMap::new();
@@ -1876,29 +1891,28 @@ fn instantiate_scc(
                     new_arg_tys.insert(*id, (**ctx.local_binding(flat::ARG_LOCAL)).clone());
                 }
 
-                for (new, old) in new_arg_tys.values().zip_eq(arg_tys.values()) {
-                    if !lt_equiv(new, old) {
-                        pp::write_type(
-                            &mut std::io::stdout(),
-                            renderer,
-                            &pp::write_mode_var,
-                            &pp::write_lifetime,
-                            new,
-                        )
-                        .unwrap();
-                        println!();
-                        pp::write_type(
-                            &mut std::io::stdout(),
-                            renderer,
-                            &pp::write_mode_var,
-                            &pp::write_lifetime,
-                            old,
-                        )
-                        .unwrap();
-                        println!();
-                    }
-                }
-                println!("----");
+                // for (new, old) in new_arg_tys.values().zip_eq(arg_tys.values()) {
+                //     if !lt_equiv(new, old) {
+                //         pp::write_type(
+                //             &mut std::io::stdout(),
+                //             renderer,
+                //             &pp::write_mode_var,
+                //             &pp::write_lifetime,
+                //             old,
+                //         )
+                //         .unwrap();
+                //         println!(" =>");
+                //         pp::write_type(
+                //             &mut std::io::stdout(),
+                //             renderer,
+                //             &pp::write_mode_var,
+                //             &pp::write_lifetime,
+                //             new,
+                //         )
+                //         .unwrap();
+                //         println!();
+                //     }
+                // }
 
                 debug_assert!(
                     {
@@ -1926,6 +1940,7 @@ fn instantiate_scc(
                 arg_tys = new_arg_tys;
             };
 
+            // println!("----");
             SolverScc {
                 func_args: new_arg_tys,
                 func_rets: ret_tys,
@@ -1947,6 +1962,7 @@ fn record_vars<L>(params: &mut BTreeSet<ModeVar>, ty: &annot::Type<ModeVar, L>) 
     ty.items().for_each(
         &|_, subst| {
             params.borrow_mut().extend(subst.ms.values().cloned());
+            params.borrow_mut().extend(subst.os.0.values().cloned());
         },
         &|(m, _)| {
             params.borrow_mut().insert(*m);
@@ -1964,25 +1980,25 @@ type Solution = in_eq::Solution<ModeVar, ModeParam, Mode>;
 
 // TODO: use `replace_modes` instead
 fn extract_type(solution: &Solution, ty: &SolverType) -> annot::Type<ModeSolution, Lt> {
-    let get_solution = |m: ModeVar| ModeSolution {
-        lb: solution.lower_bounds[m].clone(),
-        solver_var: m,
+    let get_solution = |m: &ModeVar| ModeSolution {
+        lb: solution.lower_bounds[*m].clone(),
+        solver_var: *m,
     };
 
     let map_os = |os: &OverlaySubst<ModeVar>| {
-        OverlaySubst(os.0.iter().map(|(p, m)| (*p, get_solution(*m))).collect())
+        OverlaySubst(os.0.iter().map(|(p, m)| (*p, get_solution(m))).collect())
     };
 
     ty.items()
         .map(
             &|_, subst| TypeSubst {
-                ms: subst.ms.map_refs(|_, m| get_solution(*m)),
+                ms: subst.ms.map_refs(|_, m| get_solution(m)),
                 os: map_os(&subst.os),
                 lts: subst.lts.clone(),
             },
-            &|(m, lt)| (get_solution(*m), lt.clone()),
+            &|(m, lt)| (get_solution(m), lt.clone()),
             &|_, subst| map_os(subst),
-            &|m| get_solution(*m),
+            &|m| get_solution(m),
         )
         .collect()
 }
@@ -2149,13 +2165,31 @@ fn solve_scc(
     let instantiated = instantiate_scc(customs, funcs, funcs_annot, scc, renderer);
     println!("Instantiated SCC: {:?}", scc);
 
-    let mut external = BTreeSet::new();
+    let mut sig_vars = BTreeSet::new();
     for func_id in scc.nodes {
-        record_vars(&mut external, &instantiated.func_args[&func_id]);
-        record_vars(&mut external, &instantiated.func_rets[&func_id]);
+        record_vars(&mut sig_vars, &instantiated.func_args[&func_id]);
+        record_vars(&mut sig_vars, &instantiated.func_rets[&func_id]);
     }
 
-    let solution: Solution = instantiated.scc_constrs.solve(&external);
+    let solution: Solution = instantiated.scc_constrs.solve(&sig_vars);
+
+    // Extract the subset of the constraints relevant to the signature
+    let mut sig_constrs = IdMap::new();
+    for (var, lb) in &solution.lower_bounds {
+        if sig_vars.contains(&var) {
+            // `solution.lower_bounds` contains duplicate information if two internal variables get
+            // mapped to the same external variable (are in the same SCC). This is convenient some
+            // places, but maybe it would be cleaner to avoid doing this.
+            let external = solution.internal_to_external[&var];
+            if let Some(old_lb) = sig_constrs.get(external) {
+                debug_assert_eq!(old_lb, lb);
+            } else {
+                sig_constrs.insert(external, lb.clone());
+            }
+        }
+    }
+
+    let sig_constrs = sig_constrs.to_id_vec(solution.num_external);
 
     for func_id in scc.nodes {
         let arg_ty = &instantiated.func_args[&func_id];
@@ -2166,18 +2200,20 @@ fn solve_scc(
         let num_lt_params =
             count_lt_params(customs, arg_ty.items()) + count_lt_params(customs, ret_ty.items());
 
-        // Extract the subset of constraints relevant to external variables
-        let mut num_params = Count::new();
-        let mut constrs = IdMap::new();
-        for (var, param) in &solution.internal_to_external {
-            constrs.insert_vacant(*param, solution.lower_bounds[*var].clone());
-            let _ = num_params.inc();
-        }
-
-        let constrs = constrs.to_id_vec(num_params);
-
         let func = &funcs[func_id];
-        let remap_internal = |internal| solution.internal_to_external[&internal];
+        let remap_internal = |internal| {
+            // if !solution.internal_to_external.contains_key(&internal) {
+            //     println!("MISSING: {:?}", internal);
+            // }
+            solution.internal_to_external[&internal]
+        };
+        // println!("remap_internal: {:?}", solution.internal_to_external);
+        // println!("arg_ty: {:?}", arg_ty);
+        // println!("recorded: {:?}", {
+        //     let mut recorded = BTreeSet::new();
+        //     record_vars(&mut recorded, arg_ty);
+        //     recorded
+        // });
         funcs_annot.insert_vacant(
             *func_id,
             annot::FuncDef {
@@ -2189,7 +2225,7 @@ fn solve_scc(
                     ret_type: replace_modes(remap_internal, ret_ty),
                 },
                 constrs: annot::FuncConstrs {
-                    sig: constrs,
+                    sig: sig_constrs.clone(),
                     internal: instantiated.scc_constrs.clone(),
                 },
                 body: extract_expr(&solution, &instantiated.func_bodies[&func_id]),

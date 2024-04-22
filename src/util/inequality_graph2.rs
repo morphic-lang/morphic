@@ -33,7 +33,7 @@ pub struct ConstrGraph<Var: Id, T> {
     vars: IdVec<Var, VarConstrs<Var, T>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LowerBound<Var, T> {
     /// If a variable `v` has a `LowerBound` struct whose `lb_vars` set contains a variable `u`,
     /// then `u <= v`.
@@ -45,7 +45,8 @@ pub struct LowerBound<Var, T> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Solution<SolverVar: Id, ExternalVar, T> {
+pub struct Solution<SolverVar: Id, ExternalVar: Id, T> {
+    pub num_external: Count<ExternalVar>,
     pub internal_to_external: BTreeMap<SolverVar, ExternalVar>,
     pub lower_bounds: IdVec<SolverVar, LowerBound<ExternalVar, T>>,
 }
@@ -90,10 +91,10 @@ where
     }
 
     /// Find the least solution to the constraints in this graph, expressed in terms of a fresh set
-    /// of contiguous, "external" variables.
+    /// of *contiguous* "external" variables.
     pub fn solve<ExternalVar: Id>(
         &self,
-        external: &BTreeSet<SolverVar>,
+        sig_vars: &BTreeSet<SolverVar>,
     ) -> Solution<SolverVar, ExternalVar, T> {
         #[id_type]
         struct EquivClass(usize);
@@ -103,20 +104,21 @@ where
         let sccs: Sccs<EquivClass, _> =
             find_components(self.vars.count(), |var| &self.vars[var].lb_vars);
 
-        // Contains one entry for each variable in `external`. All variables in the same SCC will be
-        // mapped to the same value.
+        // Create one fresh external variable for each SCC containing a signature variable.
         let mut internal_to_external = BTreeMap::new();
-        let mut external_count = Count::new();
+        let mut num_external = Count::new();
         for (_, scc) in &sccs {
-            if scc.nodes.iter().any(|&var| external.contains(&var)) {
-                let fresh_external = external_count.inc();
+            if scc.nodes.iter().any(|&var| sig_vars.contains(&var)) {
+                let fresh_external = num_external.inc();
                 for &var in scc.nodes {
                     internal_to_external.insert(var, fresh_external);
                 }
             }
         }
 
-        let mut lower_bounds = self.vars.map_refs(|_, _| LowerBound {
+        // These are not just dummy values; they must be trivial bounds. When a variable depends on
+        // a variable from the same SCC, we end up accessing this bound as we have yet to update it.
+        let mut lower_bounds = IdVec::from_count_with(self.vars.count(), |_| LowerBound {
             lb_vars: BTreeSet::new(),
             lb_const: T::least(),
         });
@@ -125,6 +127,7 @@ where
             let mut scc_lb_vars = BTreeSet::new();
             let mut scc_lb_const = T::least();
 
+            // Solve for the lower bound of the SCC.
             for &var in scc.nodes {
                 for lb_var in &self.vars[var].lb_vars {
                     let lb = &lower_bounds[lb_var];
@@ -132,22 +135,24 @@ where
                     scc_lb_const.join_mut(&lb.lb_const);
                 }
 
-                if external.contains(&var) {
+                if sig_vars.contains(&var) {
                     scc_lb_vars.insert(internal_to_external[&var]);
                 }
 
                 scc_lb_const.join_mut(&self.vars[var].lb_const);
             }
 
+            // Assign the lower bound to all variables in the SCC.
             for &var in scc.nodes {
                 lower_bounds[var] = LowerBound {
                     lb_vars: scc_lb_vars.clone(),
                     lb_const: scc_lb_const.clone(),
-                }
+                };
             }
         }
 
         Solution {
+            num_external,
             internal_to_external,
             lower_bounds,
         }
