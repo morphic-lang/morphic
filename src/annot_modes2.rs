@@ -7,11 +7,11 @@ use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
-    self as annot, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, Overlay,
-    OverlaySubst, TypeSubst,
+    self as annot, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, OverlaySubst,
+    TypeSubst,
 };
 use crate::intrinsic_config::intrinsic_sig;
-use crate::pretty_print::mode_annot as pp;
+// use crate::pretty_print::mode_annot as pp;
 use crate::pretty_print::utils::CustomTypeRenderer;
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
 use crate::util::inequality_graph2 as in_eq;
@@ -19,7 +19,6 @@ use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
 use crate::util::map_ext::MapExt;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
-use core::num;
 use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::cell::RefCell;
@@ -38,6 +37,14 @@ trait Map {
     fn get(&self, i: Self::K) -> Option<&Self::V>;
 }
 
+impl<K: Ord, V> Map for BTreeMap<K, V> {
+    type K = K;
+    type V = V;
+    fn get(&self, k: K) -> Option<&V> {
+        self.get(&k)
+    }
+}
+
 impl<I: Id, V> Map for IdVec<I, V> {
     type K = I;
     type V = V;
@@ -51,14 +58,6 @@ impl<I: Id, V> Map for IdMap<I, V> {
     type V = V;
     fn get(&self, i: I) -> Option<&V> {
         self.get(i)
-    }
-}
-
-impl<K: Ord, V> Map for BTreeMap<K, V> {
-    type K = K;
-    type V = V;
-    fn get(&self, k: K) -> Option<&V> {
-        self.get(&k)
     }
 }
 
@@ -86,7 +85,10 @@ fn count_mode_params<'a, A: 'a, B: 'a, C: 'a, D: 'a>(
     ty: annot::TypeLike<'a, A, B, C, D>,
 ) -> usize {
     ty.map(
-        &|id, _| customs.get(id).unwrap().num_mode_params.to_value(),
+        &|id, _| {
+            let typedef = customs.get(id).unwrap();
+            typedef.num_mode_params.to_value() + typedef.overlay_params.len()
+        },
         &|_| 1,
         &|id, _| customs.get(id).unwrap().overlay_params.len(),
         &|_| 1,
@@ -94,65 +96,22 @@ fn count_mode_params<'a, A: 'a, B: 'a, C: 'a, D: 'a>(
     .fold(0, &|a, b| a + b)
 }
 
-// Invariant: must produce `ModeParam`s in the same order that they are consumed by
-// `parameterize_overlay`.
-fn find_overlay_params(ty: &annot::Type<ModeParam, LtParam>) -> Vec<ModeParam> {
-    fn find_overlay_params_rec(ty: &annot::Type<ModeParam, LtParam>, params: &mut Vec<ModeParam>) {
-        match ty {
-            annot::Type::Bool | annot::Type::Num(_) => {}
-            annot::Type::Tuple(tys) => {
-                for ty in tys {
-                    find_overlay_params_rec(ty, params);
-                }
+fn collect_overlay_modes(ov: &annot::Overlay<ModeParam>) -> BTreeSet<ModeParam> {
+    let mut params = BTreeSet::new();
+    let cell = RefCell::new(&mut params);
+    ov.items().for_each(
+        &|_, osub| {
+            for p in osub.0.values() {
+                debug_assert!(!cell.borrow().contains(p));
+                cell.borrow_mut().insert(*p);
             }
-            annot::Type::Variants(tys) => {
-                for ty in tys.values() {
-                    find_overlay_params_rec(ty, params);
-                }
-            }
-            annot::Type::SelfCustom(_) => {}
-            annot::Type::Custom(_, subst) => {
-                for m in subst.os.0.values() {
-                    params.push(*m);
-                }
-            }
-            annot::Type::Array(m, _, _, _)
-            | annot::Type::HoleArray(m, _, _, _)
-            | annot::Type::Boxed(m, _, _, _) => {
-                params.push(*m);
-            }
-        }
-    }
-
-    let mut params = Vec::new();
-    find_overlay_params_rec(ty, &mut params);
+        },
+        &|m| {
+            debug_assert!(!cell.borrow().contains(m));
+            cell.borrow_mut().insert(*m);
+        },
+    );
     params
-}
-
-// Invariant: must consume `modes_to_use` in the same order that they are produced by
-// `find_overlay_params`.
-fn parameterize_overlay(
-    parameterized: &IdMap<CustomTypeId, annot::TypeDef>,
-    modes_to_use: &Vec<ModeParam>,
-    sccs: &IdVec<CustomTypeId, CustomTypeSccId>,
-    self_id: CustomTypeSccId,
-    ty: &anon::Type,
-) -> Overlay<ModeParam> {
-    let modes_to_use = RefCell::new(modes_to_use.clone());
-    ty.overlay_items(Some((sccs, self_id)))
-        .map(
-            &|id, _| {
-                OverlaySubst(
-                    parameterized[id]
-                        .overlay_params
-                        .iter()
-                        .map(|p| (*p, modes_to_use.borrow_mut().pop().unwrap()))
-                        .collect(),
-                )
-            },
-            &|_| modes_to_use.borrow_mut().pop().unwrap(),
-        )
-        .collect()
 }
 
 fn parameterize_type(
@@ -182,17 +141,19 @@ fn parameterize_type(
         .map(
             &|id, _| {
                 let typedef = &parameterized[id];
-                TypeSubst {
-                    ms: IdVec::from_count_with(typedef.num_mode_params, |_| fresh_mode()),
-                    os: fresh_overlay_params(id),
-                    lts: IdVec::from_count_with(typedef.num_lt_params, |_| fresh_lt()),
-                }
+                (
+                    TypeSubst {
+                        ms: IdVec::from_count_with(typedef.num_mode_params, |_| fresh_mode()),
+                        lts: IdVec::from_count_with(typedef.num_lt_params, |_| fresh_lt()),
+                    },
+                    fresh_overlay_params(id),
+                )
             },
             &|_| (fresh_mode(), fresh_lt()),
             &|id, _| fresh_overlay_params(id),
             &|_| fresh_mode(),
         )
-        .collect()
+        .collect_ty()
 }
 
 fn parameterize_custom_scc(
@@ -202,7 +163,7 @@ fn parameterize_custom_scc(
     self_id: CustomTypeSccId,
     scc: &old_graph::Scc<CustomTypeId>,
 ) -> BTreeMap<CustomTypeId, annot::TypeDef> {
-    let num_mode_params = Count::from_value(
+    let scc_num_mode_params = Count::from_value(
         scc.iter()
             .map(|id| {
                 count_mode_params(
@@ -213,7 +174,7 @@ fn parameterize_custom_scc(
             .sum(),
     );
 
-    let num_lt_params = Count::from_value(
+    let scc_num_lt_params = Count::from_value(
         scc.iter()
             .map(|id| {
                 count_lt_params(
@@ -226,50 +187,53 @@ fn parameterize_custom_scc(
 
     let mut mode_count = Count::new();
     let mut lt_count = Count::new();
-    let mut num_overlay_params = 0; // For debugging
 
-    let to_populate = scc
-        .iter()
-        .map(|id| {
-            let content = parameterize_type(
-                parameterized,
-                &mut mode_count,
-                &mut lt_count,
-                custom_sccs,
-                self_id,
-                &customs[*id].content,
-            );
+    let mut bodies = BTreeMap::new();
+    let mut scc_overlay_params = BTreeSet::new();
 
-            println!("{content:?}");
+    for id in scc.iter() {
+        let content = parameterize_type(
+            parameterized,
+            &mut mode_count,
+            &mut lt_count,
+            custom_sccs,
+            self_id,
+            &customs[*id].content,
+        );
 
-            let overlay_params = find_overlay_params(&content);
-            num_overlay_params += overlay_params.len();
+        let overlay = content
+            .overlay_items()
+            .map(&|_, osub| osub.clone(), &|m| *m)
+            .collect_ov();
 
-            let overlay = parameterize_overlay(
-                parameterized,
-                &overlay_params,
-                custom_sccs,
-                self_id,
-                &customs[*id].content,
-            );
+        let overlay_params = collect_overlay_modes(&overlay);
 
+        for p in overlay_params {
+            debug_assert!(!scc_overlay_params.contains(&p));
+            scc_overlay_params.insert(p);
+        }
+
+        bodies.insert(*id, (content, overlay));
+    }
+
+    debug_assert_eq!(scc_num_mode_params, mode_count);
+    debug_assert_eq!(scc_num_lt_params, lt_count);
+
+    bodies
+        .into_iter()
+        .map(|(id, (content, overlay))| {
             (
-                *id,
+                id,
                 annot::TypeDef {
-                    num_mode_params,
-                    num_lt_params,
-                    overlay_params: overlay_params.into_iter().collect(),
+                    num_mode_params: scc_num_mode_params,
+                    num_lt_params: scc_num_lt_params,
+                    overlay_params: scc_overlay_params.clone(),
                     content,
                     overlay,
                 },
             )
         })
-        .collect();
-
-    // Naively, one might also expect `num_mode_params` to be equal to `mode_count`, but overlays
-    // complicate things.
-    debug_assert_eq!(num_lt_params, lt_count);
-    to_populate
+        .collect()
 }
 
 fn parameterize_customs(
@@ -290,7 +254,7 @@ fn parameterize_customs(
         for (id, typedef) in to_populate {
             parameterized.insert(id, typedef);
         }
-        println!("Parameterized SCC {:?}", scc_id);
+        // println!("Parameterized SCC {:?}", scc_id);
     }
     parameterized.to_id_vec(customs.types.count())
 }
@@ -338,11 +302,11 @@ fn mode_bind<L1, L2>(
 ) {
     let constrs = RefCell::new(constrs);
     ty1.items().zip(ty2.items()).for_each(
-        &|_, (subst1, subst2)| {
-            for (m1, m2) in subst1.ms.values().zip_eq(subst2.ms.values()) {
+        &|_, ((tsub1, osub1), (tsub2, osub2))| {
+            for (m1, m2) in tsub1.ms.values().zip_eq(tsub2.ms.values()) {
                 constrs.borrow_mut().require_eq(*m1, *m2);
             }
-            for (m1, m2) in subst1.os.0.values().zip_eq(subst2.os.0.values()) {
+            for (m1, m2) in osub1.0.values().zip_eq(osub2.0.values()) {
                 constrs.borrow_mut().require_eq(*m1, *m2);
             }
         },
@@ -357,31 +321,6 @@ fn mode_bind<L1, L2>(
         &|(m1, m2)| {
             constrs.borrow_mut().require_eq(*m1, *m2);
         },
-    )
-}
-
-/// Given *heap* types `ty1` and `ty2` mode bind only their storage modes (i.e. ignore the modes in
-/// overlays on `Array`, `HoleArray`, and `Boxed`)
-fn mode_bind_storage<L1, L2>(
-    constrs: &mut ConstrGraph,
-    ty1: &annot::Type<ModeVar, L1>,
-    ty2: &annot::Type<ModeVar, L2>,
-) {
-    let constrs = RefCell::new(constrs);
-    ty1.items().zip(ty2.items()).for_each(
-        &|_, (subst1, subst2)| {
-            for (m1, m2) in subst1.ms.values().zip_eq(subst2.ms.values()) {
-                constrs.borrow_mut().require_eq(*m1, *m2);
-            }
-            for (m1, m2) in subst1.os.0.values().zip_eq(subst2.os.0.values()) {
-                constrs.borrow_mut().require_eq(*m1, *m2);
-            }
-        },
-        &|((m1, _), (m2, _))| {
-            constrs.borrow_mut().require_eq(*m1, *m2);
-        },
-        &|_, _| {},
-        &|_| {},
     )
 }
 
@@ -457,20 +396,26 @@ fn emit_occur_constrs_overlay(
             annot::Overlay::SelfCustom(id4),
         ) if id1 == id2 && id1 == id3 && id1 == id4 => {}
         (
-            annot::Type::Custom(id1, subst1),
-            annot::Type::Custom(id2, subst2),
-            annot::Overlay::Custom(id3, subst3),
-            annot::Overlay::Custom(id4, subst4),
+            annot::Type::Custom(id1, tsub1, _),
+            annot::Type::Custom(id2, tsub2, _),
+            annot::Overlay::Custom(id3, osub1),
+            annot::Overlay::Custom(id4, osub2),
         ) if id1 == id2 && id1 == id3 && id1 == id4 => {
             let typedef = &customs[id1];
+            // println!("\nPanic here");
+            // println!("overlay {:?}", typedef.overlay);
+            // println!("overlay params {:?}", typedef.overlay_params);
+            // println!("osub1 {:?}", osub1);
+            // println!("osub2 {:?}", osub2);
+            // println!();
             emit_occur_constrs_overlay(
                 customs,
                 constrs,
                 scope,
-                &subst1.apply(&typedef.content),
-                &subst2.apply(&typedef.content),
-                &subst3.apply(&typedef.overlay),
-                &subst4.apply(&typedef.overlay),
+                &tsub1.apply_to(&typedef.content),
+                &tsub2.apply_to(&typedef.content),
+                &osub1.apply_to(&typedef.overlay),
+                &osub2.apply_to(&typedef.overlay),
             );
         }
         (
@@ -518,8 +463,10 @@ fn emit_occur_constrs_heap(
             }
         }
         (annot::Type::SelfCustom(id1), annot::Type::SelfCustom(id2)) if id1 == id2 => {}
-        (annot::Type::Custom(id1, subst1), annot::Type::Custom(id2, subst2)) if id1 == id2 => {
-            for (m1, m2) in subst1.os.0.values().zip_eq(subst2.os.0.values()) {
+        (annot::Type::Custom(id1, tsub1, osub1), annot::Type::Custom(id2, tsub2, osub2))
+            if id1 == id2 =>
+        {
+            for (m1, m2) in osub1.0.values().zip_eq(osub2.0.values()) {
                 constrs.require_eq(*m1, *m2);
             }
             let typedef = &customs[id1];
@@ -527,8 +474,8 @@ fn emit_occur_constrs_heap(
                 customs,
                 constrs,
                 scope,
-                &subst1.apply(&typedef.content),
-                &subst2.apply(&typedef.content),
+                &tsub1.apply_to(&typedef.content),
+                &tsub2.apply_to(&typedef.content),
             );
         }
         (annot::Type::Array(m1, _, ty1, o1), annot::Type::Array(m2, _, ty2, o2))
@@ -563,12 +510,14 @@ fn emit_occur_constrs(
             }
         }
         (annot::Type::SelfCustom(id1), annot::Type::SelfCustom(id2)) if id1 == id2 => {}
-        (annot::Type::Custom(id1, subst1), annot::Type::Custom(id2, subst2)) if id1 == id2 => {
+        (annot::Type::Custom(id1, tsub1, osub1), annot::Type::Custom(id2, tsub2, osub2))
+            if id1 == id2 =>
+        {
             let typedef = &customs[id1];
-            let binding_ty = subst1.apply(&typedef.content);
-            let binding_ov = subst1.os.apply(&typedef.overlay);
-            let fut_ty = subst2.apply(&typedef.content);
-            let fut_ov = subst2.os.apply(&typedef.overlay);
+            let binding_ty = tsub1.apply_to(&typedef.content);
+            let binding_ov = osub1.apply_to(&typedef.overlay);
+            let fut_ty = tsub2.apply_to(&typedef.content);
+            let fut_ov = osub2.apply_to(&typedef.overlay);
             emit_occur_constrs(customs, constrs, scope, &binding_ty, &fut_ty);
             emit_occur_constrs_overlay(
                 customs,
@@ -610,7 +559,7 @@ fn same_shape(ty1: &anon::Type, ty2: &SolverType) -> bool {
                     .all(|((_, ty1), (_, ty2))| same_shape(ty1, ty2))
         }
         (anon::Type::Custom(id1), annot::Type::SelfCustom(id2)) => id1 == id2,
-        (anon::Type::Custom(id1), annot::Type::Custom(id2, _)) => id1 == id2,
+        (anon::Type::Custom(id1), annot::Type::Custom(id2, _, _)) => id1 == id2,
         (anon::Type::Array(ty1), annot::Type::Array(_, _, ty2, _)) => same_shape(ty1, ty2),
         (anon::Type::HoleArray(ty1), annot::Type::HoleArray(_, _, ty2, _)) => same_shape(ty1, ty2),
         (anon::Type::Boxed(ty1), annot::Type::Boxed(_, _, ty2, _)) => same_shape(ty1, ty2),
@@ -629,8 +578,8 @@ fn lt_bind(ty1: &annot::Type<ModeVar, LtParam>, ty2: &SolverType) -> BTreeMap<Lt
     };
 
     ty1.items().zip(ty2.items()).for_each(
-        &|_, (subst1, subst2)| {
-            for (lt1, lt2) in subst1.lts.values().zip_eq(subst2.lts.values()) {
+        &|_, ((tsub1, _), (tsub2, _))| {
+            for (lt1, lt2) in tsub1.lts.values().zip_eq(tsub2.lts.values()) {
                 update(*lt1, lt2);
             }
         },
@@ -654,12 +603,25 @@ fn collect_lt_params(ty: &annot::Type<ModeVar, Lt>) -> BTreeSet<LtParam> {
         }
     };
     ty.items().for_each(
-        &|_, subst| subst.lts.values().for_each(collect_one),
+        &|_, (tsub, _)| tsub.lts.values().for_each(collect_one),
         &|(_, lt)| collect_one(lt),
         &|_, _| {},
         &|_| {},
     );
     res
+}
+
+fn map_lts<M: Clone, L1, L2>(
+    (tsub, osub): (&TypeSubst<M, L1>, &OverlaySubst<M>),
+    f: impl Fn(&L1) -> L2,
+) -> (TypeSubst<M, L2>, OverlaySubst<M>) {
+    (
+        TypeSubst {
+            ms: tsub.ms.clone(),
+            lts: tsub.lts.map_refs(|_, lt| f(lt)),
+        },
+        osub.clone(),
+    )
 }
 
 // TODO: This is somewhat duplicative. Should this be part of our general substitution machinery?
@@ -675,53 +637,41 @@ fn replace_lts(ty: &SolverType, subst: &BTreeMap<LtParam, Lt>) -> SolverType {
     };
     ty.items()
         .map(
-            &|_, subst| TypeSubst {
-                ms: subst.ms.clone(),
-                os: subst.os.clone(),
-                lts: subst.lts.map_refs(|_, lt| do_subst(lt)),
-            },
+            &|_, sub| map_lts(sub, do_subst),
             &|(m, lt)| (*m, do_subst(lt)),
             &|_, ms| ms.clone(),
             &|m| *m,
         )
-        .collect()
+        .collect_ty()
 }
 
 fn wrap_lt_params(ty: &annot::Type<ModeVar, LtParam>) -> annot::Type<ModeVar, Lt> {
     ty.items()
         .map(
-            &|_, subst| TypeSubst {
-                ms: subst.ms.clone(),
-                os: subst.os.clone(),
-                lts: subst.lts.map_refs(|_, lt| Lt::var(*lt)),
-            },
+            &|_, sub| map_lts(sub, |lt| Lt::var(*lt)),
             &|(m, lt)| (*m, Lt::var(*lt)),
             &|_, ms| ms.clone(),
             &|m| *m,
         )
-        .collect()
+        .collect_ty()
 }
 
 fn join_everywhere(ty: &SolverType, new_lt: &Lt) -> SolverType {
     ty.items()
         .map(
-            &|_, subst| TypeSubst {
-                ms: subst.ms.clone(),
-                os: subst.os.clone(),
-                lts: subst.lts.map_refs(|_, lt| lt.join(new_lt)),
-            },
+            &|_, sub| map_lts(sub, |lt| lt.join(new_lt)),
             &|(m, lt)| (*m, lt.join(new_lt)),
             &|_, ms| ms.clone(),
             &|m| *m,
         )
-        .collect()
+        .collect_ty()
 }
 
 fn lt_equiv(ty1: &annot::Type<ModeVar, Lt>, ty2: &annot::Type<ModeVar, Lt>) -> bool {
     ty1.items()
         .zip(ty2.items())
         .map(
-            &|_, (subst1, subst2)| subst1.lts == subst2.lts,
+            &|_, ((tsub1, _), (tsub2, _))| tsub1.lts == tsub2.lts,
             &|((_, lt1), (_, lt2))| lt1 == lt2,
             &|_, _| true,
             &|_| true,
@@ -753,15 +703,8 @@ fn apply_overlay<L: Clone>(
         (annot::Type::SelfCustom(id1), annot::Overlay::SelfCustom(id2)) if id1 == id2 => {
             annot::Type::SelfCustom(*id1)
         }
-        (annot::Type::Custom(id1, subst1), annot::Overlay::Custom(id2, subst2)) if id1 == id2 => {
-            annot::Type::Custom(
-                *id1,
-                TypeSubst {
-                    ms: subst1.ms.clone(),
-                    os: subst2.clone(),
-                    lts: subst1.lts.clone(),
-                },
-            )
+        (annot::Type::Custom(id1, tsub, _), annot::Overlay::Custom(id2, osub)) if id1 == id2 => {
+            annot::Type::Custom(*id1, tsub.clone(), osub.clone())
         }
         (annot::Type::Array(_, lt, ty, o), annot::Overlay::Array(m)) => {
             annot::Type::Array(*m, lt.clone(), ty.clone(), o.clone())
@@ -790,7 +733,7 @@ fn unapply_overlay<L>(
             annot::Overlay::Variants(tys.map_refs(|_, ty| unapply_overlay(customs, ty)))
         }
         annot::Type::SelfCustom(id) => annot::Overlay::SelfCustom(*id),
-        annot::Type::Custom(id, subst) => annot::Overlay::Custom(*id, subst.os.clone()),
+        annot::Type::Custom(id, _, osub) => annot::Overlay::Custom(*id, osub.clone()),
         annot::Type::Array(m, _, _, _) => annot::Overlay::Array(*m),
         annot::Type::HoleArray(m, _, _, _) => annot::Overlay::HoleArray(*m),
         annot::Type::Boxed(m, _, _, _) => annot::Overlay::Boxed(*m),
@@ -808,7 +751,7 @@ fn compute_overlay_subst<'a>(
 
     params.zip(vars).for_each(
         &|_, (params, ms)| {
-            for (param1, (param2, m)) in params.0.keys().zip(&ms.0) {
+            for (param1, (param2, m)) in params.0.keys().zip_eq(&ms.0) {
                 debug_assert_eq!(param1, param2);
                 cell.borrow_mut().0.insert_vacant(*param1, *m);
             }
@@ -818,29 +761,33 @@ fn compute_overlay_subst<'a>(
         },
     );
 
+    // println!("---------------");
+    // println!("subst {:?}", subst.0);
+    // println!("---------------");
+
     subst
 }
 
 /// Computes the nominal equivalent of `o'[a |-> mu a. o]` where `o'` is `overlay` and `o` is
-/// `self_subst`.
+/// `self_sub`.
 fn unfold_overlay(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
+    self_sub: &OverlaySubst<ModeVar>,
     overlay: &SolverOverlay,
-    self_subst: &OverlaySubst<ModeVar>,
 ) -> SolverOverlay {
     match overlay {
         annot::Overlay::Bool => annot::Overlay::Bool,
         annot::Overlay::Num(num_ty) => annot::Overlay::Num(*num_ty),
         annot::Overlay::Tuple(os) => annot::Overlay::Tuple(
             os.iter()
-                .map(|o| unfold_overlay(customs, o, self_subst))
+                .map(|o| unfold_overlay(customs, self_sub, o))
                 .collect(),
         ),
         annot::Overlay::Variants(os) => {
-            annot::Overlay::Variants(os.map_refs(|_, o| unfold_overlay(customs, o, self_subst)))
+            annot::Overlay::Variants(os.map_refs(|_, o| unfold_overlay(customs, self_sub, o)))
         }
-        annot::Overlay::SelfCustom(id) => annot::Overlay::Custom(*id, self_subst.clone()),
-        annot::Overlay::Custom(id, os) => annot::Overlay::Custom(*id, os.clone()),
+        annot::Overlay::SelfCustom(id) => annot::Overlay::Custom(*id, self_sub.clone()),
+        annot::Overlay::Custom(id, osub) => annot::Overlay::Custom(*id, osub.clone()),
         annot::Overlay::Array(m) => annot::Overlay::Array(*m),
         annot::Overlay::HoleArray(m) => annot::Overlay::HoleArray(*m),
         annot::Overlay::Boxed(m) => annot::Overlay::Boxed(*m),
@@ -850,59 +797,69 @@ fn unfold_overlay(
 fn unfold_type<L: Clone>(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     extracted: &OverlaySubst<ModeVar>,
+    ty_orig: &TypeSubst<ModeVar, L>,
+    ov_orig: &OverlaySubst<ModeVar>,
     ty: &annot::Type<ModeVar, L>,
-    self_subst: &TypeSubst<ModeVar, L>,
 ) -> annot::Type<ModeVar, L> {
     match ty {
         annot::Type::Bool => annot::Type::Bool,
         annot::Type::Num(num_ty) => annot::Type::Num(*num_ty),
         annot::Type::Tuple(tys) => annot::Type::Tuple(
             tys.iter()
-                .map(|ty| unfold_type(customs, extracted, ty, self_subst))
+                .map(|ty| unfold_type(customs, extracted, ty_orig, ov_orig, ty))
                 .collect(),
         ),
         annot::Type::Variants(tys) => annot::Type::Variants(
-            tys.map_refs(|_, ty| unfold_type(customs, extracted, ty, self_subst)),
+            tys.map_refs(|_, ty| unfold_type(customs, extracted, ty_orig, ov_orig, ty)),
         ),
-        annot::Type::SelfCustom(id) => annot::Type::Custom(
-            *id,
-            TypeSubst {
-                ms: self_subst.ms.clone(),
-                os: extracted.clone(),
-                lts: self_subst.lts.clone(),
-            },
-        ),
-        annot::Type::Custom(id, subst) => annot::Type::Custom(*id, subst.clone()),
+        annot::Type::SelfCustom(id) => annot::Type::Custom(*id, ty_orig.clone(), extracted.clone()),
+        annot::Type::Custom(id, tsub, osub) => annot::Type::Custom(*id, tsub.clone(), osub.clone()),
         annot::Type::Array(m, lt, ty, o) => annot::Type::Array(
             m.clone(),
             lt.clone(),
-            Box::new(unfold_type(customs, extracted, ty, self_subst)),
-            unfold_overlay(customs, o, &self_subst.os),
+            Box::new(unfold_type(customs, extracted, ty_orig, ov_orig, ty)),
+            unfold_overlay(customs, ov_orig, o),
         ),
         annot::Type::HoleArray(m, lt, ty, o) => annot::Type::HoleArray(
             m.clone(),
             lt.clone(),
-            Box::new(unfold_type(customs, extracted, ty, self_subst)),
-            unfold_overlay(customs, o, &self_subst.os),
+            Box::new(unfold_type(customs, extracted, ty_orig, ov_orig, ty)),
+            unfold_overlay(customs, ov_orig, o),
         ),
         annot::Type::Boxed(m, lt, ty, o) => annot::Type::Boxed(
             m.clone(),
             lt.clone(),
-            Box::new(unfold_type(customs, extracted, ty, self_subst)),
-            unfold_overlay(customs, o, &self_subst.os),
+            Box::new(unfold_type(customs, extracted, ty_orig, ov_orig, ty)),
+            unfold_overlay(customs, ov_orig, o),
         ),
     }
 }
 
 fn unfold_custom<L: Clone>(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    subst: &TypeSubst<ModeVar, L>,
+    tsub: &TypeSubst<ModeVar, L>,
+    osub: &OverlaySubst<ModeVar>,
     id: CustomTypeId,
 ) -> annot::Type<ModeVar, L> {
+    ////////////////////
+    // BUG: osub should include parameters for ALL types in the SCC
+
+    // println!("-------");
     let typedef = &customs[id];
-    let folded = subst.apply(&typedef.content);
-    let extracted = compute_overlay_subst(typedef.overlay.items(), folded.overlay_items());
-    let unfolded = unfold_type(customs, &extracted, &folded, &subst);
+    // println!("content {:?}", typedef.content);
+    // println!("overlay {:?}", typedef.overlay);
+    // println!("tsub {:?}", tsub.ms);
+    // println!("osub {:?}", osub.0);
+    let folded = tsub.apply_to(&typedef.content);
+    let extracted = OverlaySubst(
+        typedef
+            .overlay_params
+            .iter()
+            .map(|p| (*p, tsub.ms[p]))
+            .collect(),
+    );
+    let unfolded = unfold_type(customs, &extracted, tsub, osub, &folded);
+    // println!("-------");
     unfolded
 }
 
@@ -1043,6 +1000,9 @@ fn fresh_overlay_subst(
     constrs: &mut ConstrGraph,
     params: &BTreeSet<ModeParam>,
 ) -> OverlaySubst<ModeVar> {
+    // println!("--------------------");
+    // println!("fresh_overlay_subst for {:?}", params);
+    // println!("--------------------");
     OverlaySubst(
         params
             .into_iter()
@@ -1061,7 +1021,7 @@ fn instantiate_overlay<'a, A: 'a, B: 'a>(
         &|id, _| fresh_overlay_subst(*constrs.borrow_mut(), &customs[id].overlay_params),
         &|_| constrs.borrow_mut().fresh_var(),
     )
-    .collect()
+    .collect_ov()
 }
 
 fn instantiate_type<'a, A: 'a, B: 'a, C: 'a, D: 'a, L>(
@@ -1075,19 +1035,21 @@ fn instantiate_type<'a, A: 'a, B: 'a, C: 'a, D: 'a, L>(
     ty.map(
         &|id, _| {
             let typedef = &customs[id];
-            TypeSubst {
-                ms: IdVec::from_count_with(typedef.num_mode_params, |_| {
-                    constrs.borrow_mut().fresh_var()
-                }),
-                os: fresh_overlay_subst(*constrs.borrow_mut(), &typedef.overlay_params),
-                lts: IdVec::from_count_with(typedef.num_lt_params, |_| fresh.borrow_mut()()),
-            }
+            (
+                TypeSubst {
+                    ms: IdVec::from_count_with(typedef.num_mode_params, |_| {
+                        constrs.borrow_mut().fresh_var()
+                    }),
+                    lts: IdVec::from_count_with(typedef.num_lt_params, |_| fresh.borrow_mut()()),
+                },
+                fresh_overlay_subst(*constrs.borrow_mut(), &typedef.overlay_params),
+            )
         },
         &|_| (constrs.borrow_mut().fresh_var(), fresh.borrow_mut()()),
         &|id, _| fresh_overlay_subst(*constrs.borrow_mut(), &customs[id].overlay_params),
         &|_| constrs.borrow_mut().fresh_var(),
     )
-    .collect()
+    .collect_ty()
 }
 
 fn instantiate_type_unused_from_items<'a, A: 'a, B: 'a, C: 'a, D: 'a>(
@@ -1192,19 +1154,15 @@ fn replace_modes<M1: Id, M2, L: Clone>(
     ty: &annot::Type<M1, L>,
 ) -> annot::Type<M2, L> {
     let remapping = RefCell::new(remapping);
-    let lookup = |m| remapping.borrow_mut()(m);
+    let lookup = |m: &M1| remapping.borrow_mut()(*m);
     ty.items()
         .map(
-            &|_, subst| TypeSubst {
-                ms: subst.ms.map_refs(|_, m| lookup(*m)),
-                os: OverlaySubst(subst.os.0.iter().map(|(p, m)| (*p, lookup(*m))).collect()),
-                lts: subst.lts.clone(),
-            },
-            &|(m, lt)| (lookup(*m), lt.clone()),
-            &|_, subst| OverlaySubst(subst.0.iter().map(|(p, m)| (*p, lookup(*m))).collect()),
-            &|m| lookup(*m),
+            &|_, (tsub, osub)| (tsub.map_vals(lookup, Clone::clone), osub.map_vals(lookup)),
+            &|(m, lt)| (lookup(m), lt.clone()),
+            &|_, osub| osub.map_vals(lookup),
+            &|m| lookup(m),
         )
-        .collect()
+        .collect_ty()
 }
 
 /// Used during lifetime fixed point iteration. `know_defs` contains the definitions of all
@@ -1265,6 +1223,7 @@ fn instantiate_expr(
     path: annot::Path,
     fut_ty: &SolverType,
     expr: &flat::Expr,
+    renderer: &CustomTypeRenderer<CustomTypeId>,
 ) -> (SolverExpr, LocalUpdates) {
     let mut ctx = TrackedContext::new(ctx);
 
@@ -1306,6 +1265,7 @@ fn instantiate_expr(
                     path.par(i, cases.len()),
                     fut_ty,
                     body,
+                    renderer,
                 );
 
                 // Record the updates, but DO NOT apply them to the context. Every branch should be
@@ -1362,6 +1322,7 @@ fn instantiate_expr(
                     path.seq(i),
                     &fut_ty,
                     binding_expr,
+                    renderer,
                 );
 
                 // Apply the updates to the context. It is important that the enclosing loop is in
@@ -1487,20 +1448,62 @@ fn instantiate_expr(
         }
 
         flat::Expr::WrapCustom(custom_id, content) => {
-            let annot::Type::Custom(fut_id, fut_subst) = fut_ty else {
+            let annot::Type::Custom(fut_id, fut_tsub, fut_osub) = fut_ty else {
                 unreachable!();
             };
 
             debug_assert_eq!(*custom_id, *fut_id);
 
-            let unfolded_ty = unfold_custom(customs, &fut_subst, *custom_id);
+            let unfolded_ty = unfold_custom(customs, fut_tsub, fut_osub, *custom_id);
             let unfolded_ov = &unfold_overlay(
                 customs,
-                &fut_subst.os.apply(&customs[*custom_id].overlay),
-                &fut_subst.os,
+                &fut_osub,
+                &fut_osub.apply_to(&customs[*custom_id].overlay),
             );
 
             let content_ty = apply_overlay(&unfolded_ty, &unfolded_ov);
+
+            // println!();
+            // println!("custom_id: {:?}", custom_id);
+            // pp::write_type(
+            //     &mut std::io::stdout(),
+            //     renderer,
+            //     &pp::write_mode_var,
+            //     &pp::write_lifetime,
+            //     &unfolded_ty,
+            // )
+            // .unwrap();
+            // println!();
+            // println!("fut_osub: {:?}", fut_osub);
+            // println!("custom overlay: {:?}", customs[*custom_id].overlay);
+            // println!("custom content: {:?}", customs[*custom_id].content);
+            // println!(
+            //     "custom overlay params: {:?}",
+            //     customs[*custom_id].overlay_params
+            // );
+            // println!("unfolded_ov: {:?}", unfolded_ov);
+            // println!();
+            // pp::write_type(
+            //     &mut std::io::stdout(),
+            //     renderer,
+            //     &pp::write_mode_var,
+            //     &pp::write_lifetime,
+            //     &ctx.local_binding(*content),
+            // )
+            // .unwrap();
+            // println!();
+            // println!();
+            // pp::write_type(
+            //     &mut std::io::stdout(),
+            //     renderer,
+            //     &pp::write_mode_var,
+            //     &pp::write_lifetime,
+            //     &content_ty,
+            // )
+            // .unwrap();
+            // println!();
+            // println!();
+
             let content_occur =
                 instantiate_occur(customs, &mut ctx, scopes, constrs, *content, &content_ty);
 
@@ -1510,25 +1513,61 @@ fn instantiate_expr(
         flat::Expr::UnwrapCustom(custom_id, folded) => {
             let custom = &customs[custom_id];
 
-            let folded_ov = instantiate_overlay(customs, constrs, custom.overlay.items());
-            let folded_os = compute_overlay_subst(custom.overlay.items(), folded_ov.items());
+            let folded_os = fresh_overlay_subst(constrs, &custom.overlay_params);
+            let folded_ov = folded_os.apply_to(&custom.overlay);
             let folded_ts = TypeSubst {
                 ms: IdVec::from_count_with(custom.num_mode_params, |_| constrs.fresh_var()),
-                os: folded_os.clone(),
                 lts: IdVec::from_count_with(custom.num_lt_params, |_| lt_count.inc()),
             };
 
             let unfolded_ty = apply_overlay(
-                &unfold_custom(customs, &folded_ts, *custom_id),
-                &unfold_overlay(customs, &folded_ov, &folded_os),
+                &unfold_custom(customs, &folded_ts, &folded_os, *custom_id),
+                &unfold_overlay(customs, &folded_os, &folded_ov),
             );
+
+            // println!("HERE");
+            // pp::write_type(
+            //     &mut std::io::stdout(),
+            //     renderer,
+            //     &pp::write_mode_var,
+            //     &pp::write_lifetime_param,
+            //     &unfolded_ty,
+            // )
+            // .unwrap();
+            // println!();
+            // pp::write_type(
+            //     &mut std::io::stdout(),
+            //     renderer,
+            //     &pp::write_mode_var,
+            //     &pp::write_lifetime,
+            //     &fut_ty,
+            // )
+            // .unwrap();
+            // println!();
+            // println!();
 
             mode_bind(constrs, &unfolded_ty, fut_ty);
 
+            // println!();
+            // println!("folded_ts: {:?}", folded_ts);
+            // println!("folded_os: {:?}", folded_os);
+
             let folded_ty = replace_lts(
-                &wrap_lt_params(&annot::Type::Custom(*custom_id, folded_ts)),
+                &wrap_lt_params(&annot::Type::Custom(*custom_id, folded_ts, folded_os)),
                 &lt_bind(&unfolded_ty, fut_ty),
             );
+
+            // pp::write_type(
+            //     &mut std::io::stdout(),
+            //     renderer,
+            //     &pp::write_mode_var,
+            //     &pp::write_lifetime,
+            //     &folded_ty,
+            // )
+            // .unwrap();
+            // println!();
+            // println!();
+
             let folded_occur =
                 instantiate_occur(customs, &mut ctx, scopes, constrs, *folded, &folded_ty);
 
@@ -1605,17 +1644,17 @@ fn instantiate_expr(
         flat::Expr::ArrayOp(flat::ArrayOp::Len(item_ty, arr_id)) => {
             debug_assert_eq!(fut_ty, &annot::Type::Num(NumType::Int));
 
-            let item_ty = instantiate_type_unused(customs, constrs, item_ty);
+            let annot_item_ty = instantiate_type_unused(customs, constrs, item_ty);
             let arr_ty = annot::Type::Array(
                 constrs.fresh_var(),
                 path.as_lt(),
-                Box::new(item_ty.clone()),
-                instantiate_overlay(customs, constrs, item_ty.overlay_items()),
+                Box::new(annot_item_ty.clone()),
+                instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
             );
 
             let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
 
-            annot::Expr::ArrayOp(annot::ArrayOp::Len(item_ty, arr_occur))
+            annot::Expr::ArrayOp(annot::ArrayOp::Len(annot_item_ty, arr_occur))
         }
 
         flat::Expr::ArrayOp(flat::ArrayOp::Push(item_ty, arr_id, item_id)) => {
@@ -1626,12 +1665,6 @@ fn instantiate_expr(
 
             let arr_mode = constrs.fresh_var();
             require_owned(constrs, arr_mode);
-
-            // let arr_item_ty = replace_modes(|_| constrs.fresh_var(), fut_item_ty);
-            // mode_bind(constrs, &arr_item_ty, fut_item_ty);
-
-            // let pushed_item_ty = replace_modes(|_| constrs.fresh_var(), fut_item_ty);
-            // mode_bind(constrs, &pushed_item_ty, fut_item_ty);
 
             let arr_ty = annot::Type::Array(
                 arr_mode,
@@ -1845,10 +1878,8 @@ fn instantiate_scc(
                 BTreeSet::new()
             };
 
-            let mut iter_num = 0;
             let (new_arg_tys, bodies) = loop {
                 // println!("iter_num: {}", iter_num);
-                iter_num += 1;
                 let mut new_arg_tys = BTreeMap::new();
                 let mut bodies = BTreeMap::new();
                 let assumptions = SignatureAssumptions {
@@ -1880,6 +1911,7 @@ fn instantiate_scc(
                         annot::Path::root().seq(0),
                         &wrap_lt_params(&ret_tys[id]),
                         &func.body,
+                        renderer,
                     );
                     bodies.insert(*id, expr);
 
@@ -1960,9 +1992,9 @@ fn instantiate_scc(
 fn record_vars<L>(params: &mut BTreeSet<ModeVar>, ty: &annot::Type<ModeVar, L>) {
     let params = RefCell::new(params);
     ty.items().for_each(
-        &|_, subst| {
-            params.borrow_mut().extend(subst.ms.values().cloned());
-            params.borrow_mut().extend(subst.os.0.values().cloned());
+        &|_, (tsub, osub)| {
+            params.borrow_mut().extend(tsub.ms.values().cloned());
+            params.borrow_mut().extend(osub.0.values().cloned());
         },
         &|(m, _)| {
             params.borrow_mut().insert(*m);
@@ -1985,22 +2017,19 @@ fn extract_type(solution: &Solution, ty: &SolverType) -> annot::Type<ModeSolutio
         solver_var: *m,
     };
 
-    let map_os = |os: &OverlaySubst<ModeVar>| {
-        OverlaySubst(os.0.iter().map(|(p, m)| (*p, get_solution(m))).collect())
-    };
-
     ty.items()
         .map(
-            &|_, subst| TypeSubst {
-                ms: subst.ms.map_refs(|_, m| get_solution(m)),
-                os: map_os(&subst.os),
-                lts: subst.lts.clone(),
+            &|_, (tsub, osub)| {
+                (
+                    tsub.map_vals(get_solution, Clone::clone),
+                    osub.map_vals(get_solution),
+                )
             },
             &|(m, lt)| (get_solution(m), lt.clone()),
-            &|_, subst| map_os(subst),
+            &|_, osub| osub.map_vals(get_solution),
             &|m| get_solution(m),
         )
-        .collect()
+        .collect_ty()
 }
 
 fn extract_occur(solution: &Solution, occur: &SolverOccur) -> annot::Occur<ModeSolution, Lt> {
@@ -2163,7 +2192,7 @@ fn solve_scc(
     renderer: &CustomTypeRenderer<CustomTypeId>,
 ) {
     let instantiated = instantiate_scc(customs, funcs, funcs_annot, scc, renderer);
-    println!("Instantiated SCC: {:?}", scc);
+    // println!("Instantiated SCC: {:?}", scc);
 
     let mut sig_vars = BTreeSet::new();
     for func_id in scc.nodes {
@@ -2306,7 +2335,7 @@ pub fn annot_modes(
     let mut funcs_annot = IdMap::new();
     for (_, scc) in &func_sccs {
         solve_scc(&customs, &program.funcs, &mut funcs_annot, scc, &renderer);
-        println!("Solved SCC {:?}", scc);
+        // println!("Solved SCC {:?}", scc);
         progress.update(scc.nodes.len());
     }
 

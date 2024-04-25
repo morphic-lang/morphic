@@ -206,7 +206,7 @@ fn write_overlay<M>(
             write_overlay(w, type_renderer, write_mode, overlay)
         }),
         Overlay::Variants(overlays) => {
-            write_tuple_like(w, "{{", "}}", overlays.as_slice(), |w, overlay| {
+            write_tuple_like(w, "{", "}", overlays.as_slice(), |w, overlay| {
                 write_overlay(w, type_renderer, write_mode, overlay)
             })
         }
@@ -260,33 +260,33 @@ pub fn write_type<M, L>(
         T::Tuple(types) => write_tuple_like(w, "(", ")", types, |w, type_| {
             write_type(w, type_renderer, write_mode, write_lifetime, type_)
         }),
-        T::Variants(types) => write_tuple_like(w, "{{", "}}", types.as_slice(), |w, type_| {
+        T::Variants(types) => write_tuple_like(w, "{", "}", types.as_slice(), |w, type_| {
             write_type(w, type_renderer, write_mode, write_lifetime, type_)
         }),
         T::SelfCustom(type_id) => write!(w, "{}<self>", type_renderer.render(*type_id)),
-        T::Custom(type_id, subst) => {
+        T::Custom(type_id, tsub, osub) => {
             write!(w, "{}", type_renderer.render(type_id))?;
 
-            if subst.lts.len() > 0 || subst.ms.len() > 0 {
+            if tsub.lts.len() > 0 || tsub.ms.len() > 0 {
                 write!(w, "<")?;
 
-                for (i, (_, lt)) in subst.lts.iter().enumerate() {
+                for (i, (_, lt)) in tsub.lts.iter().enumerate() {
                     write_lifetime(w, lt)?;
-                    if i < subst.lts.len() - 1 {
+                    if i < tsub.lts.len() - 1 {
                         write!(w, ", ")?;
                     }
                 }
 
                 write!(w, " | ")?;
 
-                for (i, (p, m)) in subst.ms.iter().enumerate() {
+                for (i, (p, m)) in tsub.ms.iter().enumerate() {
                     write_mode(w, m)?;
-                    if let Some(om) = subst.os.0.get(&p) {
+                    if let Some(om) = osub.0.get(&p) {
                         write!(w, "(")?;
                         write_mode(w, om)?;
                         write!(w, ")")?;
                     }
-                    if i < subst.ms.len() - 1 {
+                    if i < tsub.ms.len() - 1 {
                         write!(w, ", ")?;
                     }
                 }

@@ -397,46 +397,55 @@ pub enum Overlay<M> {
 }
 
 impl<M: Clone> OverlaySubst<M> {
-    pub fn apply(&self, overlay: &Overlay<ModeParam>) -> Overlay<M> {
+    pub fn apply_to(&self, overlay: &Overlay<ModeParam>) -> Overlay<M> {
         overlay
             .items()
-            .map(&|_, subst| subst.instantiate(self), &|m| self.0[m].clone())
-            .collect()
+            .map(&|_, subst| subst.map_vals(|m| self.0[m].clone()), &|m| {
+                self.0
+                    .get(m)
+                    .expect(format!("missing mode param: {:?}", m).as_str())
+                    .clone()
+            })
+            .collect_ov()
     }
-}
 
-impl OverlaySubst<ModeParam> {
-    fn instantiate<M: Clone>(&self, vars: &OverlaySubst<M>) -> OverlaySubst<M> {
-        OverlaySubst(
-            self.0
-                .iter()
-                .map(|(p, m)| (p.clone(), vars.0[m].clone()))
-                .collect(),
-        )
+    pub fn map_vals<M2>(&self, mut f: impl FnMut(&M) -> M2) -> OverlaySubst<M2> {
+        OverlaySubst(self.0.iter().map(|(p, m)| (*p, f(m))).collect())
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeSubst<M, L> {
     pub ms: IdVec<ModeParam, M>,
-    pub os: OverlaySubst<M>,
     pub lts: IdVec<LtParam, L>,
 }
 
 impl<M: Clone, L: Clone> TypeSubst<M, L> {
-    pub fn apply(&self, ty: &Type<ModeParam, LtParam>) -> Type<M, L> {
+    pub fn apply_to(&self, ty: &Type<ModeParam, LtParam>) -> Type<M, L> {
         ty.items()
             .map(
-                &|_, subst| TypeSubst {
-                    ms: subst.ms.map_refs(|_, m| self.ms[m].clone()),
-                    os: subst.os.instantiate(&self.os),
-                    lts: subst.lts.map_refs(|_, lt| self.lts[lt].clone()),
+                &|_, (tsub, osub)| {
+                    (
+                        tsub.map_vals(|m| self.ms[m].clone(), |lt| self.lts[lt].clone()),
+                        osub.map_vals(|m| self.ms[m].clone()),
+                    )
                 },
                 &|(m, lt)| (self.ms[m].clone(), self.lts[lt].clone()),
-                &|_, subst| subst.instantiate(&self.os),
+                &|_, osub| osub.map_vals(|m| self.ms[m].clone()),
                 &|m| self.ms[m].clone(),
             )
-            .collect()
+            .collect_ty()
+    }
+
+    pub fn map_vals<M2, L2>(
+        &self,
+        mut f: impl FnMut(&M) -> M2,
+        mut g: impl FnMut(&L) -> L2,
+    ) -> TypeSubst<M2, L2> {
+        TypeSubst {
+            ms: self.ms.map_refs(|_, m| f(m)),
+            lts: self.lts.map_refs(|_, lt| g(lt)),
+        }
     }
 }
 
@@ -447,7 +456,7 @@ pub enum Type<M, L> {
     Tuple(Vec<Type<M, L>>),
     Variants(IdVec<first_ord::VariantId, Type<M, L>>),
     SelfCustom(CustomTypeId),
-    Custom(CustomTypeId, TypeSubst<M, L>),
+    Custom(CustomTypeId, TypeSubst<M, L>, OverlaySubst<M>),
     Array(M, L, Box<Type<M, L>>, Overlay<M>),
     HoleArray(M, L, Box<Type<M, L>>, Overlay<M>),
     Boxed(M, L, Box<Type<M, L>>, Overlay<M>),
@@ -460,23 +469,27 @@ impl<M: Clone> Type<M, Lt> {
         self.items()
             .zip(other.items())
             .map(
-                &|_, (subst1, subst2)| TypeSubst {
-                    ms: subst1.ms.clone(),
-                    os: subst1.os.clone(),
-                    lts: IdVec::from_vec(
-                        subst1
-                            .lts
-                            .values()
-                            .zip_eq(subst2.lts.values())
-                            .map(|(lt1, lt2)| lt1.join(&lt2))
-                            .collect(),
-                    ),
+                &|_, ((tsub1, osub1), (tsub2, _))| {
+                    (
+                        TypeSubst {
+                            ms: tsub1.ms.clone(),
+                            lts: IdVec::from_vec(
+                                tsub1
+                                    .lts
+                                    .values()
+                                    .zip_eq(tsub2.lts.values())
+                                    .map(|(lt1, lt2)| lt1.join(&lt2))
+                                    .collect(),
+                            ),
+                        },
+                        osub1.clone(),
+                    )
                 },
                 &|((m1, lt1), (_, lt2))| (m1.clone(), lt1.join(&lt2)),
-                &|_, (ms1, _)| ms1.clone(),
+                &|_, (osub1, _)| osub1.clone(),
                 &|(m1, _)| m1.clone(),
             )
-            .collect()
+            .collect_ty()
     }
 }
 
@@ -521,7 +534,7 @@ pub struct TypeDef {
     // The mode params in `overlay` are a subset of the mode params in `content`
     pub overlay_params: BTreeSet<ModeParam>,
     pub content: Type<ModeParam, LtParam>,
-    pub overlay: Overlay<ModeParam>,
+    pub overlay: Overlay<ModeParam>, // TODO: remove; always compute from `content`
 }
 
 #[derive(Clone, Debug)]
@@ -607,13 +620,15 @@ impl<M> Overlay<M> {
 pub type OwnedOverlayItem<'a, M> = OverlayLike<'a, OverlaySubst<M>, M>;
 
 impl<'a, M> OwnedOverlayItem<'a, M> {
-    pub fn collect(self) -> Overlay<M> {
+    pub fn collect_ov(self) -> Overlay<M> {
         match self {
             OverlayLike::Bool => Overlay::Bool,
             OverlayLike::Num(n) => Overlay::Num(n),
-            OverlayLike::Tuple(items) => Overlay::Tuple(items.map(|next| next.collect()).collect()),
+            OverlayLike::Tuple(items) => {
+                Overlay::Tuple(items.map(|next| next.collect_ov()).collect())
+            }
             OverlayLike::Variants(variants) => Overlay::Variants(IdVec::from_vec(
-                variants.map(|next| next.collect()).collect(),
+                variants.map(|next| next.collect_ov()).collect(),
             )),
             OverlayLike::SelfCustom(id) => Overlay::SelfCustom(id),
             OverlayLike::Custom(id, subst) => Overlay::Custom(id, subst),
@@ -624,8 +639,13 @@ impl<'a, M> OwnedOverlayItem<'a, M> {
     }
 }
 
-pub type TypeItem<'a, M, L> =
-    TypeLike<'a, &'a TypeSubst<M, L>, (&'a M, &'a L), &'a OverlaySubst<M>, &'a M>;
+pub type TypeItem<'a, M, L> = TypeLike<
+    'a,
+    (&'a TypeSubst<M, L>, &'a OverlaySubst<M>),
+    (&'a M, &'a L),
+    &'a OverlaySubst<M>,
+    &'a M,
+>;
 
 impl<M, L> Type<M, L> {
     pub fn items<'a>(&'a self) -> TypeItem<'a, M, L> {
@@ -637,7 +657,7 @@ impl<M, L> Type<M, L> {
                 TypeLike::Variants(Box::new(variants.iter().map(|(_, next)| next.items())))
             }
             Type::SelfCustom(id) => TypeLike::SelfCustom(*id),
-            Type::Custom(id, subst) => TypeLike::Custom(*id, subst),
+            Type::Custom(id, tsub, osub) => TypeLike::Custom(*id, (tsub, osub)),
             Type::Array(m, lt, ty, ov) => {
                 TypeLike::Array((m, lt), Box::new(|| ty.items()), Box::new(|| ov.items()))
             }
@@ -661,7 +681,7 @@ impl<M, L> Type<M, L> {
                 variants.iter().map(|(_, next)| next.overlay_items()),
             )),
             Type::SelfCustom(id) => OverlayLike::SelfCustom(*id),
-            Type::Custom(id, subst) => OverlayLike::Custom(*id, &subst.os),
+            Type::Custom(id, _, osub) => OverlayLike::Custom(*id, osub),
             Type::Array(mode, _, _, _) => OverlayLike::Array(mode),
             Type::HoleArray(mode, _, _, _) => OverlayLike::HoleArray(mode),
             Type::Boxed(mode, _, _, _) => OverlayLike::Boxed(mode),
@@ -669,27 +689,28 @@ impl<M, L> Type<M, L> {
     }
 }
 
-pub type OwnedTypeItem<'a, M, L> = TypeLike<'a, TypeSubst<M, L>, (M, L), OverlaySubst<M>, M>;
+pub type OwnedTypeItem<'a, M, L> =
+    TypeLike<'a, (TypeSubst<M, L>, OverlaySubst<M>), (M, L), OverlaySubst<M>, M>;
 
 impl<'a, M, L> OwnedTypeItem<'a, M, L> {
-    pub fn collect(self) -> Type<M, L> {
+    pub fn collect_ty(self) -> Type<M, L> {
         match self {
             TypeLike::Bool => Type::Bool,
             TypeLike::Num(n) => Type::Num(n),
-            TypeLike::Tuple(items) => Type::Tuple(items.map(|next| next.collect()).collect()),
+            TypeLike::Tuple(items) => Type::Tuple(items.map(|next| next.collect_ty()).collect()),
             TypeLike::Variants(variants) => Type::Variants(IdVec::from_vec(
-                variants.map(|next| next.collect()).collect(),
+                variants.map(|next| next.collect_ty()).collect(),
             )),
             TypeLike::SelfCustom(id) => Type::SelfCustom(id),
-            TypeLike::Custom(id, subst) => Type::Custom(id, subst),
+            TypeLike::Custom(id, (tsub, osub)) => Type::Custom(id, tsub, osub),
             TypeLike::Array((m, lt), ty, ov) => {
-                Type::Array(m, lt, Box::new(ty().collect()), ov().collect())
+                Type::Array(m, lt, Box::new(ty().collect_ty()), ov().collect_ov())
             }
             TypeLike::HoleArray((m, lt), ty, ov) => {
-                Type::HoleArray(m, lt, Box::new(ty().collect()), ov().collect())
+                Type::HoleArray(m, lt, Box::new(ty().collect_ty()), ov().collect_ov())
             }
             TypeLike::Boxed((m, lt), ty, ov) => {
-                Type::Boxed(m, lt, Box::new(ty().collect()), ov().collect())
+                Type::Boxed(m, lt, Box::new(ty().collect_ty()), ov().collect_ov())
             }
         }
     }
