@@ -44,6 +44,16 @@ pub struct LowerBound<Var, T> {
     pub lb_const: T,
 }
 
+impl<Var: Id, T: Clone + BoundedSemilattice> LowerBound<Var, T> {
+    pub fn instantiate(&self, at: &IdVec<Var, T>) -> T {
+        let mut result = self.lb_const.clone();
+        for var in &self.lb_vars {
+            result.join_mut(&at[var]);
+        }
+        result
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Solution<SolverVar: Id, ExternalVar: Id, T> {
     pub num_external: Count<ExternalVar>,

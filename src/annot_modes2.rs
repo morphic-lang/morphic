@@ -1119,7 +1119,7 @@ fn instantiate_occur(
     ctx.update_local(id, new_ty);
 
     annot::Occur {
-        local: id,
+        id,
         ty: fut_ty.clone(),
     }
 }
@@ -1143,7 +1143,7 @@ fn instantiate_int_occur(ctx: &TrackedContext, id: LocalId) -> SolverOccur {
         annot::Type::Num(NumType::Int)
     ));
     annot::Occur {
-        local: id,
+        id,
         ty: annot::Type::Num(NumType::Int),
     }
 }
@@ -1579,7 +1579,7 @@ fn instantiate_expr(
         flat::Expr::Intrinsic(intr, arg) => {
             let sig = intrinsic_sig(*intr);
             let arg_occur = Occur {
-                local: *arg,
+                id: *arg,
                 ty: instantiate_primitive_type(&sig.arg),
             };
             annot::Expr::Intrinsic(*intr, arg_occur)
@@ -2034,7 +2034,7 @@ fn extract_type(solution: &Solution, ty: &SolverType) -> annot::Type<ModeSolutio
 
 fn extract_occur(solution: &Solution, occur: &SolverOccur) -> annot::Occur<ModeSolution, Lt> {
     annot::Occur {
-        local: occur.local,
+        id: occur.id,
         ty: extract_type(solution, &occur.ty),
     }
 }

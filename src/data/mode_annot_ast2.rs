@@ -275,7 +275,7 @@ impl LocalLt {
 
 #[derive(Clone, Debug)]
 pub struct Occur<M, L> {
-    pub local: flat::LocalId,
+    pub id: flat::LocalId,
     pub ty: Type<M, L>,
 }
 

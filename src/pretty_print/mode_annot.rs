@@ -336,7 +336,7 @@ fn write_occur(
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     occur: &Occur,
 ) -> io::Result<()> {
-    write!(w, "%{} as ", occur.local.0)?;
+    write!(w, "%{} as ", occur.id.0)?;
     write_type_concrete(w, type_renderer, &occur.ty)
 }
 
@@ -511,10 +511,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         },
         Expr::Panic(_ret_type, occur) => write_single(w, context.type_renderer, "panic", occur),
         Expr::ArrayLit(_type, elem_occurs) => {
-            let elem_ids = elem_occurs
-                .iter()
-                .map(|occur| occur.local)
-                .collect::<Vec<_>>();
+            let elem_ids = elem_occurs.iter().map(|occur| occur.id).collect::<Vec<_>>();
 
             let elems_are_contiguous = elem_ids.len() > 1
                 && (0..elem_ids.len() - 1).all(|i| elem_ids[i].0 + 1 == elem_ids[i + 1].0);
