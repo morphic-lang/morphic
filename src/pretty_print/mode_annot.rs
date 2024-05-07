@@ -1,7 +1,7 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::mode_annot_ast2::{
-    self as annot, ArrayOp, FuncConstrs, FuncDef, IoOp, LocalLt, Lt, LtParam, Mode, ModeParam,
-    ModeSolution, ModeVar, Overlay, Program, TypeDef,
+    self as annot, ArrayOp, FuncConstrs, FuncDef, IoOp, LocalLt, Lt, LtParam, Mode, ModeOverlay,
+    ModeParam, ModeSolution, ModeVar, Overlay, Program, TypeDef,
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
@@ -195,7 +195,7 @@ fn write_overlay<M>(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
-    overlay: &Overlay<M>,
+    overlay: &ModeOverlay<M>,
 ) -> io::Result<()> {
     match overlay {
         Overlay::Bool => write!(w, "Bool"),

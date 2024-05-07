@@ -22,6 +22,9 @@ use id_graph_sccs::Sccs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 
+// TODO: instead of representing types structurally, we might be able to get away with just
+// representing them as a `Vec` of modes in many places
+
 #[id_type]
 pub struct ModeVar(pub usize);
 
@@ -85,7 +88,7 @@ impl Path {
         self.0.iter().copied().rev()
     }
 
-    pub fn as_lt(&self) -> Lt {
+    pub fn as_local_lt(&self) -> LocalLt {
         let mut lt = LocalLt::Final;
         for elem in self.elems() {
             match elem {
@@ -99,7 +102,11 @@ impl Path {
                 }
             }
         }
-        Lt::Local(lt)
+        lt
+    }
+
+    pub fn as_lt(&self) -> Lt {
+        Lt::Local(self.as_local_lt())
     }
 }
 
@@ -277,6 +284,7 @@ impl LocalLt {
 pub struct Occur<M, L> {
     pub id: flat::LocalId,
     pub ty: Type<M, L>,
+    pub is_final: Selector,
 }
 
 #[derive(Clone, Debug)]
@@ -329,7 +337,7 @@ pub enum Expr<M, L> {
     Call(Purity, first_ord::CustomFuncId, Occur<M, L>),
     Branch(Occur<M, L>, Vec<(Condition<M, L>, Expr<M, L>)>, Type<M, L>),
     LetMany(
-        Vec<(Type<M, L>, Expr<M, L>)>, // bound values.  Each is assigned a new sequential Occur<M,L>
+        Vec<(Type<M, L>, Expr<M, L>)>, // bound values.  Each is assigned a new sequential LocalId
         Occur<M, L>,                   // body
     ),
 
@@ -384,20 +392,56 @@ pub enum Condition<M, L> {
 pub struct OverlaySubst<M>(pub BTreeMap<ModeParam, M>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Overlay<M> {
+pub enum Overlay<A, B> {
     Bool,
     Num(first_ord::NumType),
-    Tuple(Vec<Overlay<M>>),
-    Variants(IdVec<first_ord::VariantId, Overlay<M>>),
+    Tuple(Vec<Overlay<A, B>>),
+    Variants(IdVec<first_ord::VariantId, Overlay<A, B>>),
     SelfCustom(CustomTypeId),
-    Custom(CustomTypeId, OverlaySubst<M>),
-    Array(M),
-    HoleArray(M),
-    Boxed(M),
+    Custom(CustomTypeId, A),
+    Array(B),
+    HoleArray(B),
+    Boxed(B),
 }
 
+impl<A, B> Overlay<A, B> {
+    pub fn update_with(
+        &mut self,
+        other: &Overlay<A, B>,
+        mut f: impl FnMut(&mut A, &A),
+        mut g: impl FnMut(&mut B, &B),
+    ) {
+        match (self, other) {
+            (Overlay::Bool, Overlay::Bool) => {}
+            (Overlay::Num(n1), Overlay::Num(n2)) if n1 == n2 => {}
+            (Overlay::Tuple(lhs), Overlay::Tuple(rhs)) => {
+                for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs) {
+                    lhs.update_with(rhs, &mut f, &mut g);
+                }
+            }
+            (Overlay::Variants(lhs), Overlay::Variants(rhs)) => {
+                for (lhs, rhs) in lhs.values_mut().zip_eq(rhs.values()) {
+                    lhs.update_with(rhs, &mut f, &mut g);
+                }
+            }
+            (Overlay::SelfCustom(id1), Overlay::SelfCustom(id2)) if id1 == id2 => {}
+            (Overlay::Custom(id1, lhs), Overlay::Custom(id2, rhs)) if id1 == id2 => {
+                f(lhs, rhs);
+            }
+            (Overlay::Array(lhs), Overlay::Array(rhs))
+            | (Overlay::HoleArray(lhs), Overlay::HoleArray(rhs))
+            | (Overlay::Boxed(lhs), Overlay::Boxed(rhs)) => {
+                g(lhs, rhs);
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+pub type ModeOverlay<M> = Overlay<OverlaySubst<M>, M>;
+
 impl<M: Clone> OverlaySubst<M> {
-    pub fn apply_to(&self, overlay: &Overlay<ModeParam>) -> Overlay<M> {
+    pub fn apply_to(&self, overlay: &ModeOverlay<ModeParam>) -> ModeOverlay<M> {
         overlay
             .items()
             .map(&|_, subst| subst.map_vals(|m| self.0[m].clone()), &|m| {
@@ -411,6 +455,73 @@ impl<M: Clone> OverlaySubst<M> {
 
     pub fn map_vals<M2>(&self, mut f: impl FnMut(&M) -> M2) -> OverlaySubst<M2> {
         OverlaySubst(self.0.iter().map(|(p, m)| (*p, f(m))).collect())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveStatus {
+    Present,
+    Absent,
+}
+
+pub type Selector = Overlay<IdVec<LtParam, MoveStatus>, MoveStatus>;
+
+impl Selector {
+    pub fn from_ty<M: Clone, L>(ty: &Type<M, L>, leaf: MoveStatus) -> Self {
+        match ty {
+            Type::Bool => Overlay::Bool,
+            Type::Num(num_ty) => Overlay::Num(*num_ty),
+            Type::Tuple(field_tys) => Overlay::Tuple(
+                field_tys
+                    .iter()
+                    .map(|ty| Selector::from_ty(ty, leaf))
+                    .collect(),
+            ),
+            Type::Variants(variant_tys) => {
+                Overlay::Variants(variant_tys.map_refs(|_, ty| Selector::from_ty(ty, leaf)))
+            }
+            Type::SelfCustom(id) => Overlay::SelfCustom(*id),
+            Type::Custom(id, tsub, _) => Overlay::Custom(*id, tsub.lts.map_refs(|_, _| leaf)),
+            Type::Array(_, _, _, _) => Overlay::Array(leaf),
+            Type::HoleArray(_, _, _, _) => Overlay::HoleArray(leaf),
+            Type::Boxed(_, _, _, _) => Overlay::Boxed(leaf),
+        }
+    }
+
+    pub fn and_eq(&mut self, other: &Selector) {
+        let compute_status = |lhs, rhs| match (lhs, rhs) {
+            (MoveStatus::Present, MoveStatus::Present) => MoveStatus::Present,
+            _ => MoveStatus::Absent,
+        };
+        self.update_with(
+            other,
+            |lhs, rhs| {
+                for (lhs, rhs) in lhs.values_mut().zip_eq(rhs.values()) {
+                    *lhs = compute_status(*lhs, *rhs);
+                }
+            },
+            |lhs, rhs| {
+                *lhs = compute_status(*lhs, *rhs);
+            },
+        );
+    }
+
+    pub fn or_eq(&mut self, other: &Selector) {
+        let compute_status = |lhs, rhs| match (lhs, rhs) {
+            (MoveStatus::Absent, MoveStatus::Absent) => MoveStatus::Absent,
+            _ => MoveStatus::Present,
+        };
+        self.update_with(
+            other,
+            |lhs, rhs| {
+                for (lhs, rhs) in lhs.values_mut().zip_eq(rhs.values()) {
+                    *lhs = compute_status(*lhs, *rhs);
+                }
+            },
+            |lhs, rhs| {
+                *lhs = compute_status(*lhs, *rhs);
+            },
+        );
     }
 }
 
@@ -457,9 +568,9 @@ pub enum Type<M, L> {
     Variants(IdVec<first_ord::VariantId, Type<M, L>>),
     SelfCustom(CustomTypeId),
     Custom(CustomTypeId, TypeSubst<M, L>, OverlaySubst<M>),
-    Array(M, L, Box<Type<M, L>>, Overlay<M>),
-    HoleArray(M, L, Box<Type<M, L>>, Overlay<M>),
-    Boxed(M, L, Box<Type<M, L>>, Overlay<M>),
+    Array(M, L, Box<Type<M, L>>, ModeOverlay<M>),
+    HoleArray(M, L, Box<Type<M, L>>, ModeOverlay<M>),
+    Boxed(M, L, Box<Type<M, L>>, ModeOverlay<M>),
 }
 
 impl<M: Clone> Type<M, Lt> {
@@ -534,7 +645,7 @@ pub struct TypeDef {
     // The mode params in `overlay` are a subset of the mode params in `content`
     pub overlay_params: BTreeSet<ModeParam>,
     pub content: Type<ModeParam, LtParam>,
-    pub overlay: Overlay<ModeParam>, // TODO: remove; always compute from `content`
+    pub overlay: ModeOverlay<ModeParam>, // TODO: remove; always compute from `content`
 }
 
 #[derive(Clone, Debug)]
@@ -595,10 +706,8 @@ pub enum TypeLike<'a, A, B, C, D> {
     ),
 }
 
-pub type OverlayItem<'a, M> = OverlayLike<'a, &'a OverlaySubst<M>, &'a M>;
-
-impl<M> Overlay<M> {
-    pub fn items<'a>(&'a self) -> OverlayItem<'a, M> {
+impl<A, B> Overlay<A, B> {
+    pub fn items<'a>(&'a self) -> OverlayLike<'a, &'a A, &'a B> {
         match self {
             Overlay::Bool => OverlayLike::Bool,
             Overlay::Num(n) => OverlayLike::Num(*n),
@@ -617,10 +726,8 @@ impl<M> Overlay<M> {
     }
 }
 
-pub type OwnedOverlayItem<'a, M> = OverlayLike<'a, OverlaySubst<M>, M>;
-
-impl<'a, M> OwnedOverlayItem<'a, M> {
-    pub fn collect_ov(self) -> Overlay<M> {
+impl<'a, A, B> OverlayLike<'a, A, B> {
+    pub fn collect_ov(self) -> Overlay<A, B> {
         match self {
             OverlayLike::Bool => Overlay::Bool,
             OverlayLike::Num(n) => Overlay::Num(n),
@@ -647,6 +754,8 @@ pub type TypeItem<'a, M, L> = TypeLike<
     &'a M,
 >;
 
+pub type ModeOverlayItem<'a, M> = OverlayLike<'a, &'a OverlaySubst<M>, &'a M>;
+
 impl<M, L> Type<M, L> {
     pub fn items<'a>(&'a self) -> TypeItem<'a, M, L> {
         match self {
@@ -670,7 +779,7 @@ impl<M, L> Type<M, L> {
         }
     }
 
-    pub fn overlay_items<'a>(&'a self) -> OverlayItem<'a, M> {
+    pub fn overlay_items<'a>(&'a self) -> ModeOverlayItem<'a, M> {
         match self {
             Type::Bool => OverlayLike::Bool,
             Type::Num(n) => OverlayLike::Num(*n),

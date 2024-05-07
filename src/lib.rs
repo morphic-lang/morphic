@@ -74,7 +74,7 @@ mod annot_modes;
 mod annot_modes2;
 
 mod rc_specialize;
-// mod rc_specialize2;
+mod rc_specialize2;
 
 // end new passes
 

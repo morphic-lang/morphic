@@ -3,15 +3,16 @@
 //! core logic for the pass is contained in `instantiate_expr`.
 
 use crate::data::anon_sum_ast as anon;
-use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
+use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType, VariantId};
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
-    self as annot, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, OverlaySubst,
-    TypeSubst,
+    self as annot, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, MoveStatus, Occur,
+    OverlaySubst, Selector, TypeSubst,
 };
+use crate::data::profile as prof;
+use crate::data::purity::Purity;
 use crate::intrinsic_config::intrinsic_sig;
-// use crate::pretty_print::mode_annot as pp;
 use crate::pretty_print::utils::CustomTypeRenderer;
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
 use crate::util::inequality_graph2 as in_eq;
@@ -25,9 +26,207 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+// It is crucial that RC specialization (the next pass) does not inhibit tail calls by inserting
+// retains/releases after them. To that end, this pass must handle tail calls specially during
+// constraint generation. The machinery here is duplicative of the machinery during the actual tail
+// call elimination pass, but it is better to recompute later which calls are tail in case we
+// accidently *do* inhibit such a call.
+
+fn last_index<T>(slice: &[T]) -> Option<usize> {
+    if slice.is_empty() {
+        None
+    } else {
+        Some(slice.len() - 1)
+    }
+}
+
+// This function should only be called on 'expr' when the expression occurs in tail position.
+fn add_tail_call_deps(deps: &mut BTreeSet<CustomFuncId>, vars_in_scope: usize, expr: &flat::Expr) {
+    match expr {
+        flat::Expr::Call(_purity, id, _arg) => {
+            deps.insert(*id);
+        }
+
+        flat::Expr::Branch(_discrim, cases, _result_type) => {
+            for (_cond, body) in cases {
+                add_tail_call_deps(deps, vars_in_scope, body);
+            }
+        }
+
+        flat::Expr::LetMany(bindings, final_local) => {
+            if let Some(last_i) = last_index(bindings) {
+                if *final_local == flat::LocalId(vars_in_scope + last_i) {
+                    add_tail_call_deps(deps, vars_in_scope + last_i, &bindings[last_i].1);
+                }
+            }
+        }
+
+        _ => {}
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Position {
+    Tail,
+    NotTail,
+}
+
+#[derive(Clone, Debug)]
+struct TailFuncDef {
+    pub purity: Purity,
+    pub arg_type: anon::Type,
+    pub ret_type: anon::Type,
+    pub body: TailExpr,
+    pub profile_point: Option<prof::ProfilePointId>,
+}
+
+// Just a `flat::Expr` except that all the tail calls marked.
+#[derive(Clone, Debug)]
+enum TailExpr {
+    Local(LocalId),
+    Call(Purity, Position, CustomFuncId, LocalId),
+    Branch(LocalId, Vec<(flat::Condition, TailExpr)>, anon::Type),
+    LetMany(Vec<(anon::Type, TailExpr)>, LocalId),
+
+    Tuple(Vec<LocalId>),
+    TupleField(LocalId, usize),
+    WrapVariant(IdVec<VariantId, anon::Type>, VariantId, LocalId),
+    UnwrapVariant(VariantId, LocalId),
+    WrapBoxed(LocalId, anon::Type),
+    UnwrapBoxed(LocalId, anon::Type),
+    WrapCustom(CustomTypeId, LocalId),
+    UnwrapCustom(CustomTypeId, LocalId),
+
+    Intrinsic(intr::Intrinsic, LocalId),
+    ArrayOp(flat::ArrayOp),
+    IoOp(flat::IoOp),
+    Panic(anon::Type, LocalId),
+
+    ArrayLit(anon::Type, Vec<LocalId>),
+    BoolLit(bool),
+    ByteLit(u8),
+    IntLit(i64),
+    FloatLit(f64),
+}
+
+fn mark_tail_calls(
+    tail_candidates: &BTreeSet<CustomFuncId>,
+    pos: Position,
+    vars_in_scope: usize,
+    expr: &flat::Expr,
+) -> TailExpr {
+    match expr {
+        flat::Expr::Local(id) => TailExpr::Local(*id),
+        flat::Expr::Call(purity, func, arg) => {
+            let final_pos = if pos == Position::Tail && tail_candidates.contains(func) {
+                Position::Tail
+            } else {
+                Position::NotTail
+            };
+            TailExpr::Call(*purity, final_pos, *func, *arg)
+        }
+        flat::Expr::Branch(discrim, cases, result_type) => TailExpr::Branch(
+            *discrim,
+            cases
+                .iter()
+                .map(|(cond, body)| {
+                    (
+                        cond.clone(),
+                        mark_tail_calls(tail_candidates, pos, vars_in_scope, body),
+                    )
+                })
+                .collect(),
+            result_type.clone(),
+        ),
+        flat::Expr::LetMany(bindings, final_local) => TailExpr::LetMany(
+            bindings
+                .iter()
+                .enumerate()
+                .map(|(i, (ty, binding))| {
+                    let is_final_binding =
+                        i + 1 == bindings.len() && *final_local == flat::LocalId(vars_in_scope + i);
+
+                    let sub_pos = if is_final_binding {
+                        pos
+                    } else {
+                        Position::NotTail
+                    };
+
+                    (
+                        ty.clone(),
+                        mark_tail_calls(tail_candidates, sub_pos, vars_in_scope + i, binding),
+                    )
+                })
+                .collect(),
+            *final_local,
+        ),
+        flat::Expr::Tuple(items) => TailExpr::Tuple(items.clone()),
+        flat::Expr::TupleField(tuple, idx) => TailExpr::TupleField(*tuple, *idx),
+        flat::Expr::WrapVariant(variant_types, variant, content) => {
+            TailExpr::WrapVariant(variant_types.clone(), *variant, *content)
+        }
+        flat::Expr::UnwrapVariant(variant, wrapped) => TailExpr::UnwrapVariant(*variant, *wrapped),
+        flat::Expr::WrapBoxed(content, content_type) => {
+            TailExpr::WrapBoxed(*content, content_type.clone())
+        }
+        flat::Expr::UnwrapBoxed(content, content_type) => {
+            TailExpr::UnwrapBoxed(*content, content_type.clone())
+        }
+        flat::Expr::WrapCustom(custom, content) => TailExpr::WrapCustom(*custom, *content),
+        flat::Expr::UnwrapCustom(custom, wrapped) => TailExpr::UnwrapCustom(*custom, *wrapped),
+        flat::Expr::Intrinsic(intr, arg) => TailExpr::Intrinsic(*intr, *arg),
+        flat::Expr::ArrayOp(op) => TailExpr::ArrayOp(op.clone()),
+        flat::Expr::IoOp(op) => TailExpr::IoOp(*op),
+        flat::Expr::Panic(ret_type, message) => TailExpr::Panic(ret_type.clone(), *message),
+        flat::Expr::ArrayLit(item_type, items) => {
+            TailExpr::ArrayLit(item_type.clone(), items.clone())
+        }
+        flat::Expr::BoolLit(val) => TailExpr::BoolLit(*val),
+        flat::Expr::ByteLit(val) => TailExpr::ByteLit(*val),
+        flat::Expr::IntLit(val) => TailExpr::IntLit(*val),
+        flat::Expr::FloatLit(val) => TailExpr::FloatLit(*val),
+    }
+}
+
+fn compute_tail_calls(
+    funcs: &IdVec<CustomFuncId, flat::FuncDef>,
+) -> IdVec<CustomFuncId, TailFuncDef> {
+    #[id_type]
+    struct TailSccId(usize);
+
+    let sccs: Sccs<TailSccId, _> = find_components(funcs.count(), |func_id| {
+        let mut deps = BTreeSet::new();
+        // The argument always provides exactly one free variable in scope for the body of the
+        // function.
+        add_tail_call_deps(&mut deps, 1, &funcs[func_id].body);
+        deps
+    });
+
+    let mut tail_funcs = IdMap::new();
+    for (_, scc) in &sccs {
+        let tail_candidates = scc.nodes.into_iter().copied().collect();
+        for func_id in scc.nodes {
+            let func = &funcs[func_id];
+            let body = mark_tail_calls(&tail_candidates, Position::Tail, 1, &func.body);
+            tail_funcs.insert(
+                func_id,
+                TailFuncDef {
+                    purity: func.purity,
+                    arg_type: func.arg_type.clone(),
+                    ret_type: func.ret_type.clone(),
+                    body,
+                    profile_point: func.profile_point,
+                },
+            );
+        }
+    }
+
+    tail_funcs.to_id_vec(funcs.count())
+}
+
 type SolverType = annot::Type<ModeVar, Lt>;
 type SolverOccur = annot::Occur<ModeVar, Lt>;
-type SolverOverlay = annot::Overlay<ModeVar>;
+type SolverOverlay = annot::ModeOverlay<ModeVar>;
 type SolverCondition = annot::Condition<ModeVar, Lt>;
 type SolverExpr = annot::Expr<ModeVar, Lt>;
 
@@ -96,7 +295,7 @@ fn count_mode_params<'a, A: 'a, B: 'a, C: 'a, D: 'a>(
     .fold(0, &|a, b| a + b)
 }
 
-fn collect_overlay_modes(ov: &annot::Overlay<ModeParam>) -> BTreeSet<ModeParam> {
+fn collect_overlay_modes(ov: &annot::ModeOverlay<ModeParam>) -> BTreeSet<ModeParam> {
     let mut params = BTreeSet::new();
     let cell = RefCell::new(&mut params);
     ov.items().for_each(
@@ -254,7 +453,6 @@ fn parameterize_customs(
         for (id, typedef) in to_populate {
             parameterized.insert(id, typedef);
         }
-        // println!("Parameterized SCC {:?}", scc_id);
     }
     parameterized.to_id_vec(customs.types.count())
 }
@@ -331,19 +529,17 @@ fn require_owned(constrs: &mut ConstrGraph, var: ModeVar) {
 fn emit_occur_constr(
     constrs: &mut ConstrGraph,
     scope: &annot::Path,
-    binding_lt: &Lt,
+    _binding_lt: &Lt,
     use_lt: &Lt,
     binding_mode: ModeVar,
     use_mode: ModeVar,
 ) {
     if use_lt.does_not_exceed(scope) {
-        if *binding_lt == Lt::Empty && *use_lt != Lt::Empty {
-            // Case: this is a non-escaping, final ("opportunistic") occurrence.
-            constrs.require_lte(use_mode, binding_mode);
-        }
+        // Case: this is a non-escaping, ("opportunistic" or "borrow") occurrence.
+        constrs.require_lte(use_mode, binding_mode);
     } else {
         // Case: this is an escaping ("move" or "dup") occurrence.
-        constrs.require_lte(binding_mode, use_mode);
+        constrs.require_eq(binding_mode, use_mode);
     }
 }
 
@@ -402,12 +598,6 @@ fn emit_occur_constrs_overlay(
             annot::Overlay::Custom(id4, osub2),
         ) if id1 == id2 && id1 == id3 && id1 == id4 => {
             let typedef = &customs[id1];
-            // println!("\nPanic here");
-            // println!("overlay {:?}", typedef.overlay);
-            // println!("overlay params {:?}", typedef.overlay_params);
-            // println!("osub1 {:?}", osub1);
-            // println!("osub2 {:?}", osub2);
-            // println!();
             emit_occur_constrs_overlay(
                 customs,
                 constrs,
@@ -743,8 +933,8 @@ fn unapply_overlay<L>(
 /// Compute the substitution that replaces the mode parameters in `param` with the corresponding
 /// mode variables in `vars`.
 fn compute_overlay_subst<'a>(
-    params: annot::OverlayItem<'a, ModeParam>,
-    vars: annot::OverlayItem<'a, ModeVar>,
+    params: annot::ModeOverlayItem<'a, ModeParam>,
+    vars: annot::ModeOverlayItem<'a, ModeVar>,
 ) -> OverlaySubst<ModeVar> {
     let mut subst = OverlaySubst(BTreeMap::new());
     let cell = RefCell::new(&mut subst);
@@ -760,10 +950,6 @@ fn compute_overlay_subst<'a>(
             cell.borrow_mut().0.insert_vacant(*param, *m);
         },
     );
-
-    // println!("---------------");
-    // println!("subst {:?}", subst.0);
-    // println!("---------------");
 
     subst
 }
@@ -841,15 +1027,7 @@ fn unfold_custom<L: Clone>(
     osub: &OverlaySubst<ModeVar>,
     id: CustomTypeId,
 ) -> annot::Type<ModeVar, L> {
-    ////////////////////
-    // BUG: osub should include parameters for ALL types in the SCC
-
-    // println!("-------");
     let typedef = &customs[id];
-    // println!("content {:?}", typedef.content);
-    // println!("overlay {:?}", typedef.overlay);
-    // println!("tsub {:?}", tsub.ms);
-    // println!("osub {:?}", osub.0);
     let folded = tsub.apply_to(&typedef.content);
     let extracted = OverlaySubst(
         typedef
@@ -859,7 +1037,6 @@ fn unfold_custom<L: Clone>(
             .collect(),
     );
     let unfolded = unfold_type(customs, &extracted, tsub, osub, &folded);
-    // println!("-------");
     unfolded
 }
 
@@ -1000,9 +1177,6 @@ fn fresh_overlay_subst(
     constrs: &mut ConstrGraph,
     params: &BTreeSet<ModeParam>,
 ) -> OverlaySubst<ModeVar> {
-    // println!("--------------------");
-    // println!("fresh_overlay_subst for {:?}", params);
-    // println!("--------------------");
     OverlaySubst(
         params
             .into_iter()
@@ -1099,6 +1273,57 @@ fn instantiate_condition(
     }
 }
 
+fn compute_is_final(binding_ty: &SolverType) -> Selector {
+    let finality = |lt: &Lt| match lt {
+        Lt::Empty => MoveStatus::Present,
+        _ => MoveStatus::Absent,
+    };
+    match binding_ty {
+        annot::Type::Bool => Selector::Bool,
+        annot::Type::Num(n) => Selector::Num(*n),
+        annot::Type::Tuple(items) => Selector::Tuple(items.iter().map(compute_is_final).collect()),
+        annot::Type::Variants(items) => {
+            Selector::Variants(items.map_refs(|_, ty| compute_is_final(ty)))
+        }
+        annot::Type::SelfCustom(id) => Selector::SelfCustom(*id),
+        annot::Type::Custom(id, tsub, osub) => {
+            Selector::Custom(*id, tsub.lts.map_refs(|_, lt| finality(lt)))
+        }
+        annot::Type::Array(_, lt, _, _) => annot::Overlay::Array(finality(lt)),
+        annot::Type::HoleArray(_, lt, _, _) => annot::Overlay::HoleArray(finality(lt)),
+        annot::Type::Boxed(_, lt, _, _) => annot::Overlay::Boxed(finality(lt)),
+    }
+}
+
+fn instantiate_occur_ext(
+    pos: Position,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
+    ctx: &mut TrackedContext,
+    scopes: &LocalContext<LocalId, annot::Path>,
+    constrs: &mut ConstrGraph,
+    id: LocalId,
+    fut_ty: &SolverType,
+) -> SolverOccur {
+    let old_ty = ctx.local_binding(id);
+
+    if pos == Position::Tail {
+        mode_bind(constrs, old_ty, fut_ty);
+    } else {
+        emit_occur_constrs(customs, constrs, scopes.local_binding(id), old_ty, fut_ty);
+    }
+
+    let is_final = compute_is_final(old_ty);
+
+    let new_ty = Rc::new(old_ty.left_meet(fut_ty));
+    ctx.update_local(id, new_ty);
+
+    annot::Occur {
+        id,
+        ty: fut_ty.clone(),
+        is_final,
+    }
+}
+
 /// Generate occurrence constraints and merge `fut_ty` into the typing context. Corresponds to the
 /// I-Occur rule.
 fn instantiate_occur(
@@ -1109,19 +1334,7 @@ fn instantiate_occur(
     id: LocalId,
     fut_ty: &SolverType,
 ) -> SolverOccur {
-    let old_ty = ctx.local_binding(id);
-    emit_occur_constrs(customs, constrs, scopes.local_binding(id), old_ty, fut_ty);
-
-    // TODO: do we need this? It's not in the formalism.
-    // mode_bind(constrs, old_ty, fut_ty);
-
-    let new_ty = Rc::new(old_ty.left_meet(fut_ty));
-    ctx.update_local(id, new_ty);
-
-    annot::Occur {
-        id,
-        ty: fut_ty.clone(),
-    }
+    instantiate_occur_ext(Position::NotTail, customs, ctx, scopes, constrs, id, fut_ty)
 }
 
 fn instantiate_primitive_type<M, L>(ty: &intr::Type) -> annot::Type<M, L> {
@@ -1145,6 +1358,7 @@ fn instantiate_int_occur(ctx: &TrackedContext, id: LocalId) -> SolverOccur {
     annot::Occur {
         id,
         ty: annot::Type::Num(NumType::Int),
+        is_final: annot::Overlay::Num(NumType::Int),
     }
 }
 
@@ -1222,18 +1436,18 @@ fn instantiate_expr(
     scopes: &mut LocalContext<LocalId, annot::Path>,
     path: annot::Path,
     fut_ty: &SolverType,
-    expr: &flat::Expr,
+    expr: &TailExpr,
     renderer: &CustomTypeRenderer<CustomTypeId>,
 ) -> (SolverExpr, LocalUpdates) {
     let mut ctx = TrackedContext::new(ctx);
 
     let expr_annot = match expr {
-        flat::Expr::Local(local) => {
+        TailExpr::Local(local) => {
             let occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *local, fut_ty);
             annot::Expr::Local(occur)
         }
 
-        flat::Expr::Call(purity, func, arg) => {
+        TailExpr::Call(purity, pos, func, arg) => {
             let (arg_ty, ret_ty) = sigs.sig_of(constrs, *func);
 
             mode_bind(constrs, &ret_ty, fut_ty);
@@ -1242,12 +1456,13 @@ fn instantiate_expr(
             // This `join_everywhere` reflects the fact that we assume that functions access all of
             // their arguments. We could be more precise here.
             let arg_ty = join_everywhere(&replace_lts(&arg_ty, &lt_subst), &path.as_lt());
-            let arg = instantiate_occur(customs, &mut ctx, scopes, constrs, *arg, &arg_ty);
+            let arg =
+                instantiate_occur_ext(*pos, customs, &mut ctx, scopes, constrs, *arg, &arg_ty);
 
             annot::Expr::Call(*purity, *func, arg)
         }
 
-        flat::Expr::Branch(discrim_id, cases, ret_ty) => {
+        TailExpr::Branch(discrim_id, cases, ret_ty) => {
             debug_assert!(same_shape(ret_ty, fut_ty));
 
             let mut updates = LocalUpdates::new();
@@ -1288,7 +1503,7 @@ fn instantiate_expr(
         // We're only using `with_scope` here for its debug assertion, and to signal intent; by the
         // time the passed closure returns, we've manually truncated away all the variables which it
         // would usually be `with_scope`'s responsibility to remove.
-        flat::Expr::LetMany(bindings, result_id) => scopes.with_scope(|scopes| {
+        TailExpr::LetMany(bindings, result_id) => scopes.with_scope(|scopes| {
             let locals_offset = scopes.len();
             let end_of_scope = path.seq(bindings.len());
 
@@ -1340,7 +1555,7 @@ fn instantiate_expr(
             annot::Expr::LetMany(bindings_annot, result_occur)
         }),
 
-        flat::Expr::Tuple(item_ids) => {
+        TailExpr::Tuple(item_ids) => {
             let annot::Type::Tuple(fut_tys) = fut_ty else {
                 unreachable!();
             };
@@ -1362,7 +1577,7 @@ fn instantiate_expr(
             annot::Expr::Tuple(occurs)
         }
 
-        flat::Expr::TupleField(tuple_id, idx) => {
+        TailExpr::TupleField(tuple_id, idx) => {
             let annot::Type::Tuple(mut item_tys) = instantiate_type_unused_from_items(
                 customs,
                 constrs,
@@ -1379,7 +1594,7 @@ fn instantiate_expr(
             annot::Expr::TupleField(tuple_occur, *idx)
         }
 
-        flat::Expr::WrapVariant(_variant_tys, variant_id, content) => {
+        TailExpr::WrapVariant(_variant_tys, variant_id, content) => {
             let annot::Type::Variants(fut_variant_tys) = fut_ty else {
                 unreachable!();
             };
@@ -1396,7 +1611,7 @@ fn instantiate_expr(
             annot::Expr::WrapVariant(fut_variant_tys.clone(), *variant_id, content_occur)
         }
 
-        flat::Expr::UnwrapVariant(variant_id, wrapped) => {
+        TailExpr::UnwrapVariant(variant_id, wrapped) => {
             let annot::Type::Variants(mut variant_tys) = instantiate_type_unused_from_items(
                 customs,
                 constrs,
@@ -1415,7 +1630,7 @@ fn instantiate_expr(
         }
 
         // See I-Rc; this is the operation that constructs new boxes
-        flat::Expr::WrapBoxed(content, _item_ty) => {
+        TailExpr::WrapBoxed(content, _item_ty) => {
             let annot::Type::Boxed(fut_mode, _, fut_item_ty, fut_ov) = fut_ty else {
                 unreachable!();
             };
@@ -1430,7 +1645,7 @@ fn instantiate_expr(
         }
 
         // See I-Get
-        flat::Expr::UnwrapBoxed(wrapped, _item_ty) => {
+        TailExpr::UnwrapBoxed(wrapped, _item_ty) => {
             let item_ty = replace_modes(|_| constrs.fresh_var(), fut_ty);
             let item_ov = unapply_overlay(customs, &fut_ty);
 
@@ -1447,7 +1662,7 @@ fn instantiate_expr(
             annot::Expr::UnwrapBoxed(box_occur, item_ty)
         }
 
-        flat::Expr::WrapCustom(custom_id, content) => {
+        TailExpr::WrapCustom(custom_id, content) => {
             let annot::Type::Custom(fut_id, fut_tsub, fut_osub) = fut_ty else {
                 unreachable!();
             };
@@ -1463,54 +1678,13 @@ fn instantiate_expr(
 
             let content_ty = apply_overlay(&unfolded_ty, &unfolded_ov);
 
-            // println!();
-            // println!("custom_id: {:?}", custom_id);
-            // pp::write_type(
-            //     &mut std::io::stdout(),
-            //     renderer,
-            //     &pp::write_mode_var,
-            //     &pp::write_lifetime,
-            //     &unfolded_ty,
-            // )
-            // .unwrap();
-            // println!();
-            // println!("fut_osub: {:?}", fut_osub);
-            // println!("custom overlay: {:?}", customs[*custom_id].overlay);
-            // println!("custom content: {:?}", customs[*custom_id].content);
-            // println!(
-            //     "custom overlay params: {:?}",
-            //     customs[*custom_id].overlay_params
-            // );
-            // println!("unfolded_ov: {:?}", unfolded_ov);
-            // println!();
-            // pp::write_type(
-            //     &mut std::io::stdout(),
-            //     renderer,
-            //     &pp::write_mode_var,
-            //     &pp::write_lifetime,
-            //     &ctx.local_binding(*content),
-            // )
-            // .unwrap();
-            // println!();
-            // println!();
-            // pp::write_type(
-            //     &mut std::io::stdout(),
-            //     renderer,
-            //     &pp::write_mode_var,
-            //     &pp::write_lifetime,
-            //     &content_ty,
-            // )
-            // .unwrap();
-            // println!();
-            // println!();
-
             let content_occur =
                 instantiate_occur(customs, &mut ctx, scopes, constrs, *content, &content_ty);
 
             annot::Expr::WrapCustom(*custom_id, content_occur)
         }
 
-        flat::Expr::UnwrapCustom(custom_id, folded) => {
+        TailExpr::UnwrapCustom(custom_id, folded) => {
             let custom = &customs[custom_id];
 
             let folded_os = fresh_overlay_subst(constrs, &custom.overlay_params);
@@ -1525,48 +1699,12 @@ fn instantiate_expr(
                 &unfold_overlay(customs, &folded_os, &folded_ov),
             );
 
-            // println!("HERE");
-            // pp::write_type(
-            //     &mut std::io::stdout(),
-            //     renderer,
-            //     &pp::write_mode_var,
-            //     &pp::write_lifetime_param,
-            //     &unfolded_ty,
-            // )
-            // .unwrap();
-            // println!();
-            // pp::write_type(
-            //     &mut std::io::stdout(),
-            //     renderer,
-            //     &pp::write_mode_var,
-            //     &pp::write_lifetime,
-            //     &fut_ty,
-            // )
-            // .unwrap();
-            // println!();
-            // println!();
-
             mode_bind(constrs, &unfolded_ty, fut_ty);
-
-            // println!();
-            // println!("folded_ts: {:?}", folded_ts);
-            // println!("folded_os: {:?}", folded_os);
 
             let folded_ty = replace_lts(
                 &wrap_lt_params(&annot::Type::Custom(*custom_id, folded_ts, folded_os)),
                 &lt_bind(&unfolded_ty, fut_ty),
             );
-
-            // pp::write_type(
-            //     &mut std::io::stdout(),
-            //     renderer,
-            //     &pp::write_mode_var,
-            //     &pp::write_lifetime,
-            //     &folded_ty,
-            // )
-            // .unwrap();
-            // println!();
-            // println!();
 
             let folded_occur =
                 instantiate_occur(customs, &mut ctx, scopes, constrs, *folded, &folded_ty);
@@ -1576,17 +1714,20 @@ fn instantiate_expr(
 
         // Right now, all intrinsics are trivial from a mode inference perspective because they
         // operate on arithmetic types. If this changes, we will have to update this.
-        flat::Expr::Intrinsic(intr, arg) => {
+        TailExpr::Intrinsic(intr, arg) => {
             let sig = intrinsic_sig(*intr);
+            let ty = instantiate_primitive_type(&sig.arg);
+            let is_final = compute_is_final(&ty);
             let arg_occur = Occur {
                 id: *arg,
-                ty: instantiate_primitive_type(&sig.arg),
+                ty,
+                is_final,
             };
             annot::Expr::Intrinsic(*intr, arg_occur)
         }
 
         // See I-Get
-        flat::Expr::ArrayOp(flat::ArrayOp::Get(_, arr_id, idx_id)) => {
+        TailExpr::ArrayOp(flat::ArrayOp::Get(_, arr_id, idx_id)) => {
             let item_ty = replace_modes(|_| constrs.fresh_var(), fut_ty);
             let item_ov = unapply_overlay(customs, &fut_ty);
 
@@ -1608,7 +1749,7 @@ fn instantiate_expr(
             ))
         }
 
-        flat::Expr::ArrayOp(flat::ArrayOp::Extract(item_ty, arr_id, idx_id)) => {
+        TailExpr::ArrayOp(flat::ArrayOp::Extract(item_ty, arr_id, idx_id)) => {
             let annot::Type::Tuple(ret_tys) = fut_ty else {
                 unreachable!();
             };
@@ -1641,7 +1782,7 @@ fn instantiate_expr(
             ))
         }
 
-        flat::Expr::ArrayOp(flat::ArrayOp::Len(item_ty, arr_id)) => {
+        TailExpr::ArrayOp(flat::ArrayOp::Len(item_ty, arr_id)) => {
             debug_assert_eq!(fut_ty, &annot::Type::Num(NumType::Int));
 
             let annot_item_ty = instantiate_type_unused(customs, constrs, item_ty);
@@ -1657,7 +1798,7 @@ fn instantiate_expr(
             annot::Expr::ArrayOp(annot::ArrayOp::Len(annot_item_ty, arr_occur))
         }
 
-        flat::Expr::ArrayOp(flat::ArrayOp::Push(item_ty, arr_id, item_id)) => {
+        TailExpr::ArrayOp(flat::ArrayOp::Push(item_ty, arr_id, item_id)) => {
             let annot::Type::Array(fut_mode, _, fut_item_ty, _) = fut_ty else {
                 unreachable!();
             };
@@ -1685,7 +1826,7 @@ fn instantiate_expr(
             ))
         }
 
-        flat::Expr::ArrayOp(flat::ArrayOp::Pop(item_ty, arr_id)) => {
+        TailExpr::ArrayOp(flat::ArrayOp::Pop(item_ty, arr_id)) => {
             let annot::Type::Tuple(ret_tys) = fut_ty else {
                 unreachable!();
             };
@@ -1712,7 +1853,7 @@ fn instantiate_expr(
             annot::Expr::ArrayOp(annot::ArrayOp::Pop(fut_popped_ty.clone(), arr_occur))
         }
 
-        flat::Expr::ArrayOp(flat::ArrayOp::Replace(item_ty, hole_id, item_id)) => {
+        TailExpr::ArrayOp(flat::ArrayOp::Replace(item_ty, hole_id, item_id)) => {
             let annot::Type::Array(fut_mode, _, fut_item_ty, _) = fut_ty else {
                 unreachable!();
             };
@@ -1741,7 +1882,7 @@ fn instantiate_expr(
             ))
         }
 
-        flat::Expr::ArrayOp(flat::ArrayOp::Reserve(_item_ty, arr_id, cap_id)) => {
+        TailExpr::ArrayOp(flat::ArrayOp::Reserve(_item_ty, arr_id, cap_id)) => {
             let annot::Type::Array(fut_mode, _, fut_item_ty, _) = fut_ty else {
                 unreachable!();
             };
@@ -1756,7 +1897,7 @@ fn instantiate_expr(
             ))
         }
 
-        flat::Expr::IoOp(flat::IoOp::Input) => {
+        TailExpr::IoOp(flat::IoOp::Input) => {
             let annot::Type::Array(fut_mode, _, fut_item_ty, _) = fut_ty else {
                 unreachable!();
             };
@@ -1767,7 +1908,7 @@ fn instantiate_expr(
             annot::Expr::IoOp(annot::IoOp::Input)
         }
 
-        flat::Expr::IoOp(flat::IoOp::Output(arr_id)) => {
+        TailExpr::IoOp(flat::IoOp::Output(arr_id)) => {
             let arr_ty = annot::Type::Array(
                 constrs.fresh_var(),
                 path.as_lt(),
@@ -1778,7 +1919,7 @@ fn instantiate_expr(
             annot::Expr::IoOp(annot::IoOp::Output(arr_occur))
         }
 
-        flat::Expr::Panic(ret_ty, msg_id) => {
+        TailExpr::Panic(ret_ty, msg_id) => {
             debug_assert!(same_shape(ret_ty, fut_ty));
             let arr_ty = annot::Type::Array(
                 constrs.fresh_var(),
@@ -1791,7 +1932,7 @@ fn instantiate_expr(
         }
 
         // See I-Rc; this is the operation that constructs new arrays
-        flat::Expr::ArrayLit(_item_ty, item_ids) => {
+        TailExpr::ArrayLit(_item_ty, item_ids) => {
             let annot::Type::Array(fut_mode, _, fut_item_ty, _) = fut_ty else {
                 unreachable!();
             };
@@ -1814,13 +1955,13 @@ fn instantiate_expr(
             annot::Expr::ArrayLit((**fut_item_ty).clone(), item_occurs)
         }
 
-        flat::Expr::BoolLit(val) => annot::Expr::BoolLit(*val),
+        TailExpr::BoolLit(val) => annot::Expr::BoolLit(*val),
 
-        flat::Expr::ByteLit(val) => annot::Expr::ByteLit(*val),
+        TailExpr::ByteLit(val) => annot::Expr::ByteLit(*val),
 
-        flat::Expr::IntLit(val) => annot::Expr::IntLit(*val),
+        TailExpr::IntLit(val) => annot::Expr::IntLit(*val),
 
-        flat::Expr::FloatLit(val) => annot::Expr::FloatLit(*val),
+        TailExpr::FloatLit(val) => annot::Expr::FloatLit(*val),
     };
 
     (expr_annot, ctx.into_updates())
@@ -1828,7 +1969,7 @@ fn instantiate_expr(
 
 fn instantiate_scc(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    funcs: &IdVec<CustomFuncId, flat::FuncDef>,
+    funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
     renderer: &CustomTypeRenderer<CustomTypeId>,
@@ -1879,7 +2020,6 @@ fn instantiate_scc(
             };
 
             let (new_arg_tys, bodies) = loop {
-                // println!("iter_num: {}", iter_num);
                 let mut new_arg_tys = BTreeMap::new();
                 let mut bodies = BTreeMap::new();
                 let assumptions = SignatureAssumptions {
@@ -1923,29 +2063,6 @@ fn instantiate_scc(
                     new_arg_tys.insert(*id, (**ctx.local_binding(flat::ARG_LOCAL)).clone());
                 }
 
-                // for (new, old) in new_arg_tys.values().zip_eq(arg_tys.values()) {
-                //     if !lt_equiv(new, old) {
-                //         pp::write_type(
-                //             &mut std::io::stdout(),
-                //             renderer,
-                //             &pp::write_mode_var,
-                //             &pp::write_lifetime,
-                //             old,
-                //         )
-                //         .unwrap();
-                //         println!(" =>");
-                //         pp::write_type(
-                //             &mut std::io::stdout(),
-                //             renderer,
-                //             &pp::write_mode_var,
-                //             &pp::write_lifetime,
-                //             new,
-                //         )
-                //         .unwrap();
-                //         println!();
-                //     }
-                // }
-
                 debug_assert!(
                     {
                         let params_found = new_arg_tys.values().map(collect_lt_params).fold(
@@ -1972,7 +2089,6 @@ fn instantiate_scc(
                 arg_tys = new_arg_tys;
             };
 
-            // println!("----");
             SolverScc {
                 func_args: new_arg_tys,
                 func_rets: ret_tys,
@@ -2036,6 +2152,7 @@ fn extract_occur(solution: &Solution, occur: &SolverOccur) -> annot::Occur<ModeS
     annot::Occur {
         id: occur.id,
         ty: extract_type(solution, &occur.ty),
+        is_final: occur.is_final.clone(),
     }
 }
 
@@ -2186,13 +2303,12 @@ fn extract_expr(solution: &Solution, expr: &SolverExpr) -> annot::Expr<ModeSolut
 
 fn solve_scc(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    funcs: &IdVec<CustomFuncId, flat::FuncDef>,
+    funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &mut IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
     renderer: &CustomTypeRenderer<CustomTypeId>,
 ) {
     let instantiated = instantiate_scc(customs, funcs, funcs_annot, scc, renderer);
-    // println!("Instantiated SCC: {:?}", scc);
 
     let mut sig_vars = BTreeSet::new();
     for func_id in scc.nodes {
@@ -2230,19 +2346,7 @@ fn solve_scc(
             count_lt_params(customs, arg_ty.items()) + count_lt_params(customs, ret_ty.items());
 
         let func = &funcs[func_id];
-        let remap_internal = |internal| {
-            // if !solution.internal_to_external.contains_key(&internal) {
-            //     println!("MISSING: {:?}", internal);
-            // }
-            solution.internal_to_external[&internal]
-        };
-        // println!("remap_internal: {:?}", solution.internal_to_external);
-        // println!("arg_ty: {:?}", arg_ty);
-        // println!("recorded: {:?}", {
-        //     let mut recorded = BTreeSet::new();
-        //     record_vars(&mut recorded, arg_ty);
-        //     recorded
-        // });
+        let remap_internal = |internal| solution.internal_to_external[&internal];
         funcs_annot.insert_vacant(
             *func_id,
             annot::FuncDef {
@@ -2264,17 +2368,17 @@ fn solve_scc(
     }
 }
 
-fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &flat::Expr) {
+fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &TailExpr) {
     match expr {
-        flat::Expr::Call(_, other, _) => {
+        TailExpr::Call(_, _, other, _) => {
             deps.insert(*other);
         }
-        flat::Expr::Branch(_, cases, _) => {
+        TailExpr::Branch(_, cases, _) => {
             for (_, body) in cases {
                 add_func_deps(deps, body);
             }
         }
-        flat::Expr::LetMany(bindings, _) => {
+        TailExpr::LetMany(bindings, _) => {
             for (_, rhs) in bindings {
                 add_func_deps(deps, rhs);
             }
@@ -2286,7 +2390,7 @@ fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &flat::Expr) {
 fn convert_type_sccs(
     orig: &IdVec<CustomTypeSccId, old_graph::Scc<CustomTypeId>>,
 ) -> Sccs<CustomTypeSccId, CustomTypeId> {
-    let mut sccs = Sccs::new();
+    let mut sccs: Sccs<CustomTypeSccId, _> = Sccs::new();
     for (id, scc) in orig {
         let push_id = match scc {
             old_graph::Scc::Acyclic(node) => sccs.push_acyclic_component(*node),
@@ -2309,7 +2413,6 @@ pub fn annot_modes(
     _strat: Strategy,
     progress: impl ProgressLogger,
 ) -> annot::Program {
-    let mut progress = progress.start_session(Some(program.funcs.len()));
     let renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
 
     let custom_sccs = convert_type_sccs(&program.custom_types.sccs);
@@ -2323,23 +2426,24 @@ pub fn annot_modes(
     let rev_sccs = rev_custom_sccs.to_id_vec(program.custom_types.types.count());
     let customs = parameterize_customs(&program.custom_types, &rev_sccs);
 
+    let funcs = compute_tail_calls(&program.funcs);
+
     #[id_type]
     struct FuncSccId(usize);
 
-    let func_sccs: Sccs<FuncSccId, _> = find_components(program.funcs.count(), |id| {
+    let func_sccs: Sccs<FuncSccId, _> = find_components(funcs.count(), |id| {
         let mut deps = BTreeSet::new();
-        add_func_deps(&mut deps, &program.funcs[id].body);
+        add_func_deps(&mut deps, &funcs[id].body);
         deps
     });
 
+    let mut progress = progress.start_session(Some(program.funcs.len()));
+
     let mut funcs_annot = IdMap::new();
     for (_, scc) in &func_sccs {
-        solve_scc(&customs, &program.funcs, &mut funcs_annot, scc, &renderer);
-        // println!("Solved SCC {:?}", scc);
+        solve_scc(&customs, &funcs, &mut funcs_annot, scc, &renderer);
         progress.update(scc.nodes.len());
     }
-
-    let funcs_annot = funcs_annot.to_id_vec(program.funcs.count());
 
     progress.finish();
 
@@ -2350,7 +2454,7 @@ pub fn annot_modes(
             sccs: custom_sccs,
         },
         custom_type_symbols: program.custom_type_symbols.clone(),
-        funcs: funcs_annot,
+        funcs: funcs_annot.to_id_vec(funcs.count()),
         func_symbols: program.func_symbols.clone(),
         profile_points: program.profile_points.clone(),
         main: program.main,
