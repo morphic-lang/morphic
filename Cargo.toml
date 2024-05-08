@@ -33,6 +33,12 @@ id_collections = "1.0.1"
 id_graph_sccs = "0.1.1"
 once_cell = "1.19.0"
 
+# Interning
+rustc-hash = "1.1.0"
+hashbrown = "0.14.5"
+dashmap = { version = "5.5.3", features = ["raw-api"] }
+triomphe = "0.1.11"
+
 # Error handling
 anyhow = "1.0.75"
 thiserror = "1.0.50"
