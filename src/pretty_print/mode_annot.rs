@@ -1,6 +1,6 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::mode_annot_ast2::{
-    self as annot, ArrayOp, FuncConstrs, FuncDef, IoOp, LocalLt, Lt, LtParam, Mode, ModeOverlay,
+    self as annot, ArrayOp, Constrs, FuncDef, IoOp, LocalLt, Lt, LtParam, Mode, ModeOverlay,
     ModeParam, ModeSolution, ModeVar, Overlay, Program, TypeDef,
 };
 use crate::intrinsic_config::intrinsic_to_name;
@@ -541,7 +541,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
     }
 }
 
-fn write_constrs(w: &mut dyn Write, constrs: &FuncConstrs) -> io::Result<()> {
+fn write_constrs(w: &mut dyn Write, constrs: &Constrs) -> io::Result<()> {
     for (p, bound) in &constrs.sig {
         for lb in &bound.lb_vars {
             write_mode_param(w, lb)?;
@@ -558,7 +558,7 @@ fn write_constrs(w: &mut dyn Write, constrs: &FuncConstrs) -> io::Result<()> {
 
     write!(w, "{{ ")?;
 
-    for (v, bound) in constrs.internal.inner() {
+    for (v, bound) in constrs.all.inner() {
         for lb in &bound.lb_vars {
             write_mode_var(w, lb)?;
             write!(w, " ≤ ")?;

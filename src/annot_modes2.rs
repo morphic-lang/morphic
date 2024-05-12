@@ -7,8 +7,7 @@ use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType, VariantI
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
-    self as annot, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, MoveStatus, Occur,
-    OverlaySubst, Selector, TypeSubst,
+    self as annot, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur,
 };
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -224,136 +223,17 @@ fn compute_tail_calls(
     tail_funcs.to_id_vec(funcs.count())
 }
 
-type SolverType = annot::Type<ModeVar, Lt>;
+type SolverType = annot::AnnotType<ModeVar, Lt>;
 type SolverOccur = annot::Occur<ModeVar, Lt>;
-type SolverOverlay = annot::ModeOverlay<ModeVar>;
+type SolverOverlay = annot::AnnotOverlay<ModeVar>;
 type SolverCondition = annot::Condition<ModeVar, Lt>;
 type SolverExpr = annot::Expr<ModeVar, Lt>;
-
-trait Map {
-    type K;
-    type V;
-    fn get(&self, i: Self::K) -> Option<&Self::V>;
-}
-
-impl<K: Ord, V> Map for BTreeMap<K, V> {
-    type K = K;
-    type V = V;
-    fn get(&self, k: K) -> Option<&V> {
-        self.get(&k)
-    }
-}
-
-impl<I: Id, V> Map for IdVec<I, V> {
-    type K = I;
-    type V = V;
-    fn get(&self, i: I) -> Option<&V> {
-        self.get(i)
-    }
-}
-
-impl<I: Id, V> Map for IdMap<I, V> {
-    type K = I;
-    type V = V;
-    fn get(&self, i: I) -> Option<&V> {
-        self.get(i)
-    }
-}
 
 // ------------------------
 // Step 1: Parameterization
 // ------------------------
 // We start by lifting the set of custom type definitions from the previous pass into the current
 // pass by annotating them with fresh mode and lifetime parameters.
-
-fn count_lt_params<'a, A: 'a, B: 'a, C: 'a, D: 'a>(
-    customs: &'a impl Map<K = CustomTypeId, V = annot::TypeDef>,
-    ty: annot::TypeLike<'a, A, B, C, D>,
-) -> usize {
-    ty.map(
-        &|id, _| customs.get(id).unwrap().num_lt_params.to_value(),
-        &|_| 1,
-        &|_, _| 0,
-        &|_| 0,
-    )
-    .fold(0, &|a, b| a + b)
-}
-
-fn count_mode_params<'a, A: 'a, B: 'a, C: 'a, D: 'a>(
-    customs: &'a impl Map<K = CustomTypeId, V = annot::TypeDef>,
-    ty: annot::TypeLike<'a, A, B, C, D>,
-) -> usize {
-    ty.map(
-        &|id, _| {
-            let typedef = customs.get(id).unwrap();
-            typedef.num_mode_params.to_value() + typedef.overlay_params.len()
-        },
-        &|_| 1,
-        &|id, _| customs.get(id).unwrap().overlay_params.len(),
-        &|_| 1,
-    )
-    .fold(0, &|a, b| a + b)
-}
-
-fn collect_overlay_modes(ov: &annot::ModeOverlay<ModeParam>) -> BTreeSet<ModeParam> {
-    let mut params = BTreeSet::new();
-    let cell = RefCell::new(&mut params);
-    ov.items().for_each(
-        &|_, osub| {
-            for p in osub.0.values() {
-                debug_assert!(!cell.borrow().contains(p));
-                cell.borrow_mut().insert(*p);
-            }
-        },
-        &|m| {
-            debug_assert!(!cell.borrow().contains(m));
-            cell.borrow_mut().insert(*m);
-        },
-    );
-    params
-}
-
-fn parameterize_type(
-    parameterized: &IdMap<CustomTypeId, annot::TypeDef>,
-    mode_count: &mut Count<ModeParam>,
-    lt_count: &mut Count<LtParam>,
-    sccs: &IdVec<CustomTypeId, CustomTypeSccId>,
-    self_id: CustomTypeSccId,
-    ty: &anon::Type,
-) -> annot::Type<ModeParam, LtParam> {
-    let mode_count = RefCell::new(mode_count);
-    let lt_count = RefCell::new(lt_count);
-
-    let fresh_mode = || mode_count.borrow_mut().inc();
-    let fresh_lt = || lt_count.borrow_mut().inc();
-    let fresh_overlay_params = |id| {
-        OverlaySubst(
-            parameterized[id]
-                .overlay_params
-                .iter()
-                .map(|p| (*p, fresh_mode()))
-                .collect(),
-        )
-    };
-
-    ty.items(Some((sccs, self_id)))
-        .map(
-            &|id, _| {
-                let typedef = &parameterized[id];
-                (
-                    TypeSubst {
-                        ms: IdVec::from_count_with(typedef.num_mode_params, |_| fresh_mode()),
-                        lts: IdVec::from_count_with(typedef.num_lt_params, |_| fresh_lt()),
-                    },
-                    fresh_overlay_params(id),
-                )
-            },
-            &|_| (fresh_mode(), fresh_lt()),
-            &|id, _| fresh_overlay_params(id),
-            &|_| fresh_mode(),
-        )
-        .collect_ty()
-}
 
 fn parameterize_custom_scc(
     parameterized: &IdMap<CustomTypeId, annot::TypeDef>,
@@ -362,34 +242,6 @@ fn parameterize_custom_scc(
     self_id: CustomTypeSccId,
     scc: &old_graph::Scc<CustomTypeId>,
 ) -> BTreeMap<CustomTypeId, annot::TypeDef> {
-    let scc_num_mode_params = Count::from_value(
-        scc.iter()
-            .map(|id| {
-                count_mode_params(
-                    parameterized,
-                    customs[*id].content.items(Some((custom_sccs, self_id))),
-                )
-            })
-            .sum(),
-    );
-
-    let scc_num_lt_params = Count::from_value(
-        scc.iter()
-            .map(|id| {
-                count_lt_params(
-                    parameterized,
-                    customs[*id].content.items(Some((custom_sccs, self_id))),
-                )
-            })
-            .sum(),
-    );
-
-    let mut mode_count = Count::new();
-    let mut lt_count = Count::new();
-
-    let mut bodies = BTreeMap::new();
-    let mut scc_overlay_params = BTreeSet::new();
-
     for id in scc.iter() {
         let content = parameterize_type(
             parameterized,
@@ -414,9 +266,6 @@ fn parameterize_custom_scc(
 
         bodies.insert(*id, (content, overlay));
     }
-
-    debug_assert_eq!(scc_num_mode_params, mode_count);
-    debug_assert_eq!(scc_num_lt_params, lt_count);
 
     bodies
         .into_iter()
@@ -480,17 +329,9 @@ fn parameterize_customs(
 type ConstrGraph = in_eq::ConstrGraph<ModeVar, Mode>;
 
 fn mode_bind_overlays(constrs: &mut ConstrGraph, ov1: &SolverOverlay, ov2: &SolverOverlay) {
-    let constrs = RefCell::new(constrs);
-    ov1.items().zip(ov2.items()).for_each(
-        &|_, (subst1, subst2)| {
-            for (m1, m2) in subst1.0.values().zip_eq(subst2.0.values()) {
-                constrs.borrow_mut().require_eq(*m1, *m2);
-            }
-        },
-        &|(m1, m2)| {
-            constrs.borrow_mut().require_eq(*m1, *m2);
-        },
-    )
+    ov1.ms()
+        .zip(ov2.ms())
+        .for_each(|(m1, m2)| constrs.require_eq(*m1, *m2));
 }
 
 fn mode_bind<L1, L2>(
@@ -498,28 +339,9 @@ fn mode_bind<L1, L2>(
     ty1: &annot::Type<ModeVar, L1>,
     ty2: &annot::Type<ModeVar, L2>,
 ) {
-    let constrs = RefCell::new(constrs);
-    ty1.items().zip(ty2.items()).for_each(
-        &|_, ((tsub1, osub1), (tsub2, osub2))| {
-            for (m1, m2) in tsub1.ms.values().zip_eq(tsub2.ms.values()) {
-                constrs.borrow_mut().require_eq(*m1, *m2);
-            }
-            for (m1, m2) in osub1.0.values().zip_eq(osub2.0.values()) {
-                constrs.borrow_mut().require_eq(*m1, *m2);
-            }
-        },
-        &|((m1, _), (m2, _))| {
-            constrs.borrow_mut().require_eq(*m1, *m2);
-        },
-        &|_, (subst1, subst2)| {
-            for (m1, m2) in subst1.0.values().zip_eq(subst2.0.values()) {
-                constrs.borrow_mut().require_eq(*m1, *m2);
-            }
-        },
-        &|(m1, m2)| {
-            constrs.borrow_mut().require_eq(*m1, *m2);
-        },
-    )
+    ty1.ms()
+        .zip(ty2.ms())
+        .for_each(|(m1, m2)| constrs.require_eq(*m1, *m2));
 }
 
 fn require_owned(constrs: &mut ConstrGraph, var: ModeVar) {
@@ -677,6 +499,15 @@ fn emit_occur_constrs_heap(
         }
         _ => panic!("incompatible types"),
     }
+}
+
+fn emit_occur_constrs(
+    constrs: &mut ConstrGraph,
+    scope: &annot::Path,
+    binding_ty: &SolverType,
+    fut_ty: &SolverType,
+) {
+    binding_ty.ms().zip(binding_ty.ls()).zip(fut_ty.ms().zip)
 }
 
 fn emit_occur_constrs(
@@ -2357,9 +2188,9 @@ fn solve_scc(
                     arg_type: replace_modes(remap_internal, arg_ty),
                     ret_type: replace_modes(remap_internal, ret_ty),
                 },
-                constrs: annot::FuncConstrs {
+                constrs: annot::Constrs {
                     sig: sig_constrs.clone(),
-                    internal: instantiated.scc_constrs.clone(),
+                    all: instantiated.scc_constrs.clone(),
                 },
                 body: extract_expr(&solution, &instantiated.func_bodies[&func_id]),
                 profile_point: func.profile_point.clone(),
@@ -2409,7 +2240,7 @@ pub enum Strategy {
 }
 
 pub fn annot_modes(
-    program: &flat::Program,
+    program: flat::Program,
     _strat: Strategy,
     progress: impl ProgressLogger,
 ) -> annot::Program {
