@@ -47,3 +47,10 @@ impl<K: Ord, V> MapExt<K, V> for BTreeMap<K, V> {
         }
     }
 }
+
+pub fn btree_map_refs<K, V, U>(x: &BTreeMap<K, V>, mut f: impl FnMut(&K, &V) -> U) -> BTreeMap<K, U>
+where
+    K: Clone + Ord,
+{
+    x.iter().map(|(k, v)| (k.clone(), f(k, v))).collect()
+}
