@@ -18,8 +18,9 @@ use crate::util::iter::IterExt;
 use crate::util::map_ext::{btree_map_refs, Map};
 use crate::util::non_empty_set::NonEmptySet;
 use id_collections::{id_type, Count, IdVec};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
+use std::iter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
@@ -133,14 +134,12 @@ impl Lt {
     /// `l2` that occurs "later in time".
     ///
     /// Panics if `self` and `other` are not structurally compatible.
-    pub fn join(&mut self, other: &Self) {
+    pub fn join(&self, other: &Self) -> Self {
         match (self, other) {
-            (_, Lt::Empty) => {}
-            (l1 @ Lt::Empty, l2) => *l1 = l2.clone(),
-            (Lt::Local(l1), Lt::Local(l2)) => l1.join(l2),
-            (Lt::Join(_), Lt::Local(_)) => {}
-            (l1 @ Lt::Local(_), Lt::Join(s)) => *l1 = Lt::Join(s.clone()),
-            (Lt::Join(s1), Lt::Join(s2)) => s1.extend(s2.iter().copied()),
+            (Lt::Empty, l) | (l, Lt::Empty) => l.clone(),
+            (Lt::Local(l1), Lt::Local(l2)) => Lt::Local(l1.join(l2)),
+            (Lt::Join(s), Lt::Local(_)) | (Lt::Local(_), Lt::Join(s)) => Lt::Join(s.clone()),
+            (Lt::Join(s1), Lt::Join(s2)) => Lt::Join(s1 | s2),
         }
     }
 
@@ -158,29 +157,31 @@ impl Lt {
 }
 
 impl LocalLt {
-    pub fn join(&mut self, other: &Self) {
-        match (self, other) {
-            (LocalLt::Final, _) => {}
-            (l1, LocalLt::Final) => *l1 = LocalLt::Final,
+    pub fn join(&self, rhs: &Self) -> Self {
+        match (self, rhs) {
+            (LocalLt::Final, _) | (_, LocalLt::Final) => LocalLt::Final,
             (LocalLt::Seq(l1, i1), LocalLt::Seq(l2, i2)) => {
-                if *i1 < *i2 {
-                    *l1 = l2.clone();
-                    *i1 = *i2;
-                } else if i1 == i2 {
-                    l1.join(l2);
+                if i1 < i2 {
+                    LocalLt::Seq(l2.clone(), *i2)
+                } else if i2 > i1 {
+                    LocalLt::Seq(l1.clone(), *i1)
+                } else {
+                    LocalLt::Seq(Box::new(l1.join(l2)), *i1)
                 }
             }
-            (LocalLt::Par(p1), LocalLt::Par(p2)) => {
-                for (l1, l2) in p1.iter_mut().zip_eq(p2) {
-                    match (l1, l2) {
-                        (None, None) => {}
-                        (Some(_), None) => {}
-                        (l1 @ None, Some(l2)) => *l1 = Some(l2.clone()),
-                        (Some(l1), Some(l2)) => l1.join(l2),
-                    }
-                }
+            (LocalLt::Par(p1), LocalLt::Par(p2)) => LocalLt::Par(
+                p1.iter()
+                    .zip_eq(p2.iter())
+                    .map(|(l1, l2)| match (l1, l2) {
+                        (None, None) => None,
+                        (None, Some(l)) | (Some(l), None) => Some(l.clone()),
+                        (Some(l1), Some(l2)) => Some(l1.join(l2)),
+                    })
+                    .collect(),
+            ),
+            (LocalLt::Seq(_, _), LocalLt::Par(_)) | (LocalLt::Par(_), LocalLt::Seq(_, _)) => {
+                panic!("incompatible lifetimes");
             }
-            _ => panic!("incompatible lifetimes"),
         }
     }
 
@@ -227,163 +228,636 @@ impl LocalLt {
 }
 
 #[id_type]
-pub struct CustomSlotId(pub usize);
-
-#[id_type]
 pub struct SlotId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Overlay<I> {
+pub enum OverlayShape {
     Bool,
     Num(first_ord::NumType),
-    Tuple(Vec<Overlay<I>>),
-    Variants(IdVec<first_ord::VariantId, Overlay<I>>),
+    Tuple(Vec<OverlayShape>),
+    Variants(IdVec<first_ord::VariantId, OverlayShape>),
     SelfCustom(CustomTypeId),
-    Custom(CustomTypeId, BTreeMap<CustomSlotId, I>),
-    Array(I),
-    HoleArray(I),
-    Boxed(I),
-}
-
-pub fn remap_ov(
-    ov: &Overlay<CustomSlotId>,
-    map: &impl Map<K = CustomSlotId, V = SlotId>,
-) -> Overlay<SlotId> {
-    match ov {
-        Overlay::Bool => Overlay::Bool,
-        Overlay::Num(n) => Overlay::Num(*n),
-        Overlay::Tuple(ovs) => Overlay::Tuple(ovs.iter().map(|ov| remap_ov(ov, map)).collect()),
-        Overlay::Variants(ovs) => Overlay::Variants(ovs.map_refs(|_, ov| remap_ov(ov, map))),
-        Overlay::SelfCustom(id) => Overlay::SelfCustom(*id),
-        Overlay::Custom(id, ovs) => {
-            Overlay::Custom(*id, btree_map_refs(ovs, |_, slot| *map.get(slot).unwrap()))
-        }
-        Overlay::Array(slot) => Overlay::Array(*map.get(slot).unwrap()),
-        Overlay::HoleArray(slot) => Overlay::HoleArray(*map.get(slot).unwrap()),
-        Overlay::Boxed(slot) => Overlay::Boxed(*map.get(slot).unwrap()),
-    }
+    Custom(CustomTypeId, BTreeSet<SlotId>),
+    Array,
+    HoleArray,
+    Boxed,
 }
 
 #[derive(Clone, Debug)]
-pub struct AnnotOverlay<A> {
-    pub ov: Overlay<SlotId>,
-    pub data: BTreeMap<SlotId, A>,
+pub enum Overlay<T> {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<Overlay<T>>),
+    Variants(IdVec<first_ord::VariantId, Overlay<T>>),
+    SelfCustom(CustomTypeId),
+    Custom(CustomTypeId, BTreeMap<SlotId, T>),
+    Array(T),
+    HoleArray(T),
+    Boxed(T),
+}
+
+impl Overlay<SlotId> {
+    pub fn hydrate<T: Clone>(&self, subst: &impl Map<K = SlotId, V = T>) -> Overlay<T> {
+        match self {
+            Overlay::Bool => Overlay::Bool,
+            Overlay::Num(n) => Overlay::Num(*n),
+            Overlay::Tuple(ovs) => Overlay::Tuple(ovs.iter().map(|ov| ov.hydrate(subst)).collect()),
+            Overlay::Variants(ovs) => Overlay::Variants(ovs.map_refs(|_, ov| ov.hydrate(subst))),
+            Overlay::SelfCustom(id) => Overlay::SelfCustom(*id),
+            Overlay::Custom(id, old_subst) => Overlay::Custom(
+                *id,
+                btree_map_refs(old_subst, |_, slot| subst.get(slot).unwrap().clone()),
+            ),
+            Overlay::Array(slot) => Overlay::Array(subst.get(slot).unwrap().clone()),
+            Overlay::HoleArray(slot) => Overlay::HoleArray(subst.get(slot).unwrap().clone()),
+            Overlay::Boxed(slot) => Overlay::Boxed(subst.get(slot).unwrap().clone()),
+        }
+    }
+}
+
+impl<T> Overlay<T> {
+    // Must produce the order expected by `collect_overlay`
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &T> + '_> {
+        match self {
+            Overlay::Bool => Box::new(iter::empty()),
+            Overlay::Num(_) => Box::new(iter::empty()),
+            Overlay::Tuple(ovs) => Box::new(ovs.iter().flat_map(Overlay::iter)),
+            Overlay::Variants(ovs) => Box::new(ovs.values().flat_map(Overlay::iter)),
+            Overlay::SelfCustom(_) => Box::new(iter::empty()),
+            Overlay::Custom(_, ov) => Box::new(ov.values()),
+            Overlay::Array(x) => Box::new(iter::once(x)),
+            Overlay::HoleArray(x) => Box::new(iter::once(x)),
+            Overlay::Boxed(x) => Box::new(iter::once(x)),
+        }
+    }
+
+    pub fn shape(&self) -> OverlayShape {
+        match self {
+            Overlay::Bool => OverlayShape::Bool,
+            Overlay::Num(n) => OverlayShape::Num(*n),
+            Overlay::Tuple(ovs) => OverlayShape::Tuple(ovs.iter().map(Overlay::shape).collect()),
+            Overlay::Variants(ovs) => OverlayShape::Variants(ovs.map_refs(|_, ov| ov.shape())),
+            Overlay::SelfCustom(id) => OverlayShape::SelfCustom(*id),
+            Overlay::Custom(id, subst) => {
+                OverlayShape::Custom(*id, subst.keys().copied().collect())
+            }
+            Overlay::Array(_) => OverlayShape::Array,
+            Overlay::HoleArray(_) => OverlayShape::HoleArray,
+            Overlay::Boxed(_) => OverlayShape::Boxed,
+        }
+    }
+}
+
+pub trait CollectOverlay<T> {
+    fn collect_overlay<U>(self, orig: &Overlay<U>) -> Overlay<T>;
+}
+
+impl<T, I: Iterator<Item = T>> CollectOverlay<T> for I {
+    fn collect_overlay<U>(mut self, orig: &Overlay<U>) -> Overlay<T> {
+        collect_overlay(&mut self, orig)
+    }
+}
+
+// Must expect the order produced by `Overlay::iter`
+fn collect_overlay<T, U>(iter: &mut impl Iterator<Item = T>, orig: &Overlay<U>) -> Overlay<T> {
+    match orig {
+        Overlay::Bool => Overlay::Bool,
+        Overlay::Num(n) => Overlay::Num(*n),
+        Overlay::Tuple(ovs) => {
+            Overlay::Tuple(ovs.iter().map(|ov| collect_overlay(iter, ov)).collect())
+        }
+        Overlay::Variants(ovs) => {
+            Overlay::Variants(ovs.map_refs(|_, ov| collect_overlay(iter, ov)))
+        }
+        Overlay::SelfCustom(id) => Overlay::SelfCustom(*id),
+        Overlay::Custom(id, subst) => {
+            Overlay::Custom(*id, btree_map_refs(subst, |_, _| iter.next().unwrap()))
+        }
+        Overlay::Array(_) => Overlay::Array(iter.next().unwrap()),
+        Overlay::HoleArray(_) => Overlay::HoleArray(iter.next().unwrap()),
+        Overlay::Boxed(_) => Overlay::Boxed(iter.next().unwrap()),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Type<I> {
+pub enum Shape {
     Bool,
     Num(first_ord::NumType),
-    Tuple(Vec<Type<I>>),
-    Variants(IdVec<first_ord::VariantId, Type<I>>),
+    Tuple(Vec<Shape>),
+    Variants(IdVec<first_ord::VariantId, Shape>),
     SelfCustom(CustomTypeId),
-    Custom(
-        CustomTypeId,
-        BTreeMap<CustomSlotId, I>, // Overlay
-        IdVec<CustomSlotId, I>,    // Substitution
-    ),
-    Array(I, Overlay<I>, Box<Type<I>>),
-    HoleArray(I, Overlay<I>, Box<Type<I>>),
-    Boxed(I, Overlay<I>, Box<Type<I>>),
+    Custom(CustomTypeId, BTreeSet<SlotId>),
+    Array(Box<Shape>),
+    HoleArray(Box<Shape>),
+    Boxed(Box<Shape>),
 }
 
-impl<I: Copy> Type<I> {
-    pub fn as_ov(&self, customs: &CustomTypes) -> Overlay<I> {
+#[derive(Clone, Debug)]
+pub enum LtData<T> {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<LtData<T>>),
+    Variants(IdVec<first_ord::VariantId, LtData<T>>),
+    SelfCustom(CustomTypeId),
+    Custom(CustomTypeId, BTreeMap<SlotId, T>),
+    Array(T, Box<LtData<T>>),
+    HoleArray(T, Box<LtData<T>>),
+    Boxed(T, Box<LtData<T>>),
+}
+
+impl LtData<SlotId> {
+    pub fn hydrate<T: Clone>(&self, subst: &impl Map<K = SlotId, V = T>) -> LtData<T> {
         match self {
-            Type::Bool => Overlay::Bool,
-            Type::Num(n) => Overlay::Num(*n),
-            Type::Tuple(tys) => Overlay::Tuple(tys.iter().map(|ty| ty.as_ov(customs)).collect()),
-            Type::Variants(tys) => Overlay::Variants(tys.map_refs(|_, ty| ty.as_ov(customs))),
-            Type::SelfCustom(id) => Overlay::SelfCustom(*id),
-            Type::Custom(id, ov_subst, _) => Overlay::Custom(*id, ov_subst.clone()),
-            Type::Array(slot, _, _) => Overlay::Array(*slot),
-            Type::HoleArray(slot, _, _) => Overlay::HoleArray(*slot),
-            Type::Boxed(slot, _, _) => Overlay::Boxed(*slot),
+            LtData::Bool => LtData::Bool,
+            LtData::Num(n) => LtData::Num(*n),
+            LtData::Tuple(lts) => LtData::Tuple(lts.iter().map(|lt| lt.hydrate(subst)).collect()),
+            LtData::Variants(lts) => LtData::Variants(lts.map_refs(|_, lt| lt.hydrate(subst))),
+            LtData::SelfCustom(id) => LtData::SelfCustom(*id),
+            LtData::Custom(id, old_subst) => LtData::Custom(
+                *id,
+                btree_map_refs(old_subst, |_, slot| subst.get(slot).unwrap().clone()),
+            ),
+            LtData::Array(slot, lt) => LtData::Array(
+                subst.get(slot).unwrap().clone(),
+                Box::new(lt.hydrate(subst)),
+            ),
+            LtData::HoleArray(slot, lt) => LtData::HoleArray(
+                subst.get(slot).unwrap().clone(),
+                Box::new(lt.hydrate(subst)),
+            ),
+            LtData::Boxed(slot, lt) => LtData::Boxed(
+                subst.get(slot).unwrap().clone(),
+                Box::new(lt.hydrate(subst)),
+            ),
         }
     }
 }
 
-pub fn remap_ty(ty: &Type<CustomSlotId>, map: &IdVec<CustomSlotId, SlotId>) -> Type<SlotId> {
-    match ty {
-        Type::Bool => Type::Bool,
-        Type::Num(n) => Type::Num(*n),
-        Type::Tuple(tys) => Type::Tuple(tys.iter().map(|ty| remap_ty(ty, map)).collect()),
-        Type::Variants(tys) => Type::Variants(tys.map_refs(|_, ty| remap_ty(ty, map))),
-        Type::SelfCustom(id) => Type::SelfCustom(*id),
-        Type::Custom(id, ov_subst, ty_subst) => {
-            let ty_subst = ty_subst.map_refs(|_, slot| map[*slot]);
-            let ov_subst = btree_map_refs(ov_subst, |_, slot| map[*slot]);
-            Type::Custom(*id, ov_subst, ty_subst)
+impl LtData<Lt> {
+    pub fn join(&self, other: &LtData<Lt>) -> LtData<Lt> {
+        debug_assert_eq!(self.shape(), other.shape());
+        self.iter()
+            .zip_eq(other.iter())
+            .map(|(lt1, lt2)| lt1.join(lt2))
+            .collect_lt_data(self)
+    }
+}
+
+impl<T> LtData<T> {
+    // Must produce the order expected by `collect_lt_data`
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &T> + '_> {
+        match self {
+            LtData::Bool => Box::new(iter::empty()),
+            LtData::Num(_) => Box::new(iter::empty()),
+            LtData::Tuple(lts) => Box::new(lts.iter().flat_map(LtData::iter)),
+            LtData::Variants(lts) => Box::new(lts.values().flat_map(LtData::iter)),
+            LtData::SelfCustom(_) => Box::new(iter::empty()),
+            LtData::Custom(_, subst) => Box::new(subst.values()),
+            LtData::Array(lt, item) => Box::new(iter::once(lt).chain(item.iter())),
+            LtData::HoleArray(lt, item) => Box::new(iter::once(lt).chain(item.iter())),
+            LtData::Boxed(lt, item) => Box::new(iter::once(lt).chain(item.iter())),
         }
-        Type::Array(slot, ov, ty) => {
-            Type::Array(map[*slot], remap_ov(ov, map), Box::new(remap_ty(ty, map)))
+    }
+
+    pub fn iter_overlay<'a>(
+        &'a self,
+        customs: &'a CustomTypes,
+    ) -> Box<dyn Iterator<Item = &'a T> + 'a> {
+        match self {
+            LtData::Bool => Box::new(iter::empty()),
+            LtData::Num(_) => Box::new(iter::empty()),
+            LtData::Tuple(lts) => Box::new(lts.iter().flat_map(|lt| lt.iter_overlay(customs))),
+            LtData::Variants(lts) => Box::new(lts.values().flat_map(|lt| lt.iter_overlay(customs))),
+            LtData::SelfCustom(_) => Box::new(iter::empty()),
+            LtData::Custom(id, subst) => Box::new(
+                customs.types[*id]
+                    .ty
+                    .lts()
+                    .iter_overlay(customs)
+                    .map(|slot| &subst[slot]),
+            ),
+            LtData::Array(lt, _) => Box::new(iter::once(lt)),
+            LtData::HoleArray(lt, _) => Box::new(iter::once(lt)),
+            LtData::Boxed(lt, _) => Box::new(iter::once(lt)),
         }
-        Type::HoleArray(slot, ov, ty) => {
-            Type::HoleArray(map[*slot], remap_ov(ov, map), Box::new(remap_ty(ty, map)))
+    }
+
+    pub fn shape(&self) -> Shape {
+        match self {
+            LtData::Bool => Shape::Bool,
+            LtData::Num(n) => Shape::Num(*n),
+            LtData::Tuple(lts) => Shape::Tuple(lts.iter().map(LtData::shape).collect()),
+            LtData::Variants(lts) => Shape::Variants(lts.map_refs(|_, lt| lt.shape())),
+            LtData::SelfCustom(id) => Shape::SelfCustom(*id),
+            LtData::Custom(id, subst) => Shape::Custom(*id, subst.keys().copied().collect()),
+            LtData::Array(_, lt) => Shape::Array(Box::new(lt.shape())),
+            LtData::HoleArray(_, lt) => Shape::HoleArray(Box::new(lt.shape())),
+            LtData::Boxed(_, lt) => Shape::Boxed(Box::new(lt.shape())),
         }
-        Type::Boxed(slot, ov, ty) => {
-            Type::Boxed(map[*slot], remap_ov(ov, map), Box::new(remap_ty(ty, map)))
+    }
+}
+
+pub trait CollectLtData<T> {
+    fn collect_lt_data<U>(self, orig: &LtData<U>) -> LtData<T>;
+}
+
+impl<T, I: Iterator<Item = T>> CollectLtData<T> for I {
+    fn collect_lt_data<U>(mut self, orig: &LtData<U>) -> LtData<T> {
+        collect_lt_data(&mut self, orig)
+    }
+}
+
+// Must expect the order produced by `LtData::iter`
+fn collect_lt_data<T, U>(iter: &mut impl Iterator<Item = T>, orig: &LtData<U>) -> LtData<T> {
+    match orig {
+        LtData::Bool => LtData::Bool,
+        LtData::Num(n) => LtData::Num(*n),
+        LtData::Tuple(items) => LtData::Tuple(
+            items
+                .iter()
+                .map(|item| collect_lt_data(iter, item))
+                .collect(),
+        ),
+        LtData::Variants(items) => {
+            LtData::Variants(items.map_refs(|_, item| collect_lt_data(iter, item)))
+        }
+        LtData::SelfCustom(id) => LtData::SelfCustom(*id),
+        LtData::Custom(id, subst) => {
+            LtData::Custom(*id, btree_map_refs(subst, |_, _| iter.next().unwrap()))
+        }
+        LtData::Array(_, item) => {
+            LtData::Array(iter.next().unwrap(), Box::new(collect_lt_data(iter, item)))
+        }
+        LtData::HoleArray(_, item) => {
+            LtData::HoleArray(iter.next().unwrap(), Box::new(collect_lt_data(iter, item)))
+        }
+        LtData::Boxed(_, item) => {
+            LtData::Boxed(iter.next().unwrap(), Box::new(collect_lt_data(iter, item)))
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct AnnotType<A, B> {
-    pub ty: Type<SlotId>,
-    pub ms: BTreeMap<SlotId, A>,
-    pub ls: BTreeMap<SlotId, B>,
+pub enum ModeData<T> {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<ModeData<T>>),
+    Variants(IdVec<first_ord::VariantId, ModeData<T>>),
+    SelfCustom(CustomTypeId),
+    Custom(
+        CustomTypeId,
+        BTreeMap<SlotId, T>, // Overlay
+        IdVec<SlotId, T>,    // Substitution
+    ),
+    Array(T, Overlay<T>, Box<ModeData<T>>),
+    HoleArray(T, Overlay<T>, Box<ModeData<T>>),
+    Boxed(T, Overlay<T>, Box<ModeData<T>>),
 }
 
-/// Returns the meet of two types over the lifetime lattice. This meet is "left" in the sense that
-/// the modes of the first argument are retained.
-pub fn left_meet<M>(this: &mut AnnotType<M, Lt>, other: &AnnotType<M, Lt>) {
-    debug_assert_eq!(this.ty, other.ty);
-    for (l1, l2) in this.ls.values_mut().zip_eq(other.ls.values()) {
-        l1.join(l2);
+impl ModeData<SlotId> {
+    pub fn hydrate<T: Clone>(&self, subst: &IdVec<SlotId, T>) -> ModeData<T> {
+        match self {
+            ModeData::Bool => ModeData::Bool,
+            ModeData::Num(n) => ModeData::Num(*n),
+            ModeData::Tuple(tys) => {
+                ModeData::Tuple(tys.iter().map(|ty| ty.hydrate(subst)).collect())
+            }
+            ModeData::Variants(tys) => ModeData::Variants(tys.map_refs(|_, ty| ty.hydrate(subst))),
+            ModeData::SelfCustom(id) => ModeData::SelfCustom(*id),
+            ModeData::Custom(id, osub, tsub) => ModeData::Custom(
+                *id,
+                btree_map_refs(osub, |_, slot| subst[*slot].clone()),
+                tsub.map_refs(|_, slot| subst[*slot].clone()),
+            ),
+            ModeData::Array(m, ov, ty) => ModeData::Array(
+                subst[*m].clone(),
+                ov.hydrate(subst),
+                Box::new(ty.hydrate(subst)),
+            ),
+            ModeData::HoleArray(m, ov, ty) => ModeData::HoleArray(
+                subst[*m].clone(),
+                ov.hydrate(subst),
+                Box::new(ty.hydrate(subst)),
+            ),
+            ModeData::Boxed(m, ov, ty) => ModeData::Boxed(
+                subst[*m].clone(),
+                ov.hydrate(subst),
+                Box::new(ty.hydrate(subst)),
+            ),
+        }
+    }
+
+    pub fn extract_lts(&self, customs: &impl Map<K = CustomTypeId, V = TypeDef>) -> LtData<SlotId> {
+        match self {
+            ModeData::Bool => LtData::Bool,
+            ModeData::Num(n) => LtData::Num(*n),
+            ModeData::Tuple(tys) => {
+                LtData::Tuple(tys.iter().map(|ty| ty.extract_lts(customs)).collect())
+            }
+            ModeData::Variants(tys) => {
+                LtData::Variants(tys.map_refs(|_, ty| ty.extract_lts(customs)))
+            }
+            ModeData::SelfCustom(id) => LtData::SelfCustom(*id),
+            ModeData::Custom(id, _, subst) => {
+                let custom = customs.get(id).unwrap();
+                let subst = custom
+                    .lt_slots
+                    .iter()
+                    .map(|&key| (key, subst[key]))
+                    .collect();
+                LtData::Custom(*id, subst)
+            }
+            ModeData::Array(slot, _, ty) => LtData::Array(*slot, Box::new(ty.extract_lts(customs))),
+            ModeData::HoleArray(slot, _, ty) => {
+                LtData::HoleArray(*slot, Box::new(ty.extract_lts(customs)))
+            }
+            ModeData::Boxed(slot, _, ty) => LtData::Boxed(*slot, Box::new(ty.extract_lts(customs))),
+        }
+    }
+}
+
+impl<T> ModeData<T> {
+    // Must produce the order expected by `collect_mode_data`
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &T> + '_> {
+        match self {
+            ModeData::Bool => Box::new(iter::empty()),
+            ModeData::Num(_) => Box::new(iter::empty()),
+            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(ModeData::iter)),
+            ModeData::Variants(tys) => Box::new(tys.values().flat_map(ModeData::iter)),
+            ModeData::SelfCustom(_) => Box::new(iter::empty()),
+            ModeData::Custom(_, ov, tys) => Box::new(ov.values().chain(tys.values())),
+            ModeData::Array(m, ov, ty) => Box::new(iter::once(m).chain(ov.iter()).chain(ty.iter())),
+            ModeData::HoleArray(m, ov, ty) => {
+                Box::new(iter::once(m).chain(ov.iter()).chain(ty.iter()))
+            }
+            ModeData::Boxed(m, ov, ty) => Box::new(iter::once(m).chain(ov.iter()).chain(ty.iter())),
+        }
+    }
+
+    pub fn iter_lts<'a>(
+        &'a self,
+        customs: &'a CustomTypes,
+    ) -> Box<dyn Iterator<Item = &'a T> + 'a> {
+        match self {
+            ModeData::Bool => Box::new(iter::empty()),
+            ModeData::Num(_) => Box::new(iter::empty()),
+            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(|ty| ty.iter_lts(customs))),
+            ModeData::Variants(tys) => Box::new(tys.values().flat_map(|ty| ty.iter_lts(customs))),
+            ModeData::SelfCustom(_) => Box::new(iter::empty()),
+            ModeData::Custom(id, _, subst) => {
+                let custom = &customs.types[*id].ty.modes();
+                Box::new(custom.iter_lts(customs).map(|slot| &subst[*slot]))
+            }
+            ModeData::Array(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_lts(customs))),
+            ModeData::HoleArray(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_lts(customs))),
+            ModeData::Boxed(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_lts(customs))),
+        }
+    }
+
+    pub fn iter_overlay<'a>(&'a self) -> Box<dyn Iterator<Item = &'a T> + 'a> {
+        match self {
+            ModeData::Bool => Box::new(iter::empty()),
+            ModeData::Num(_) => Box::new(iter::empty()),
+            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(|ty| ty.iter_overlay())),
+            ModeData::Variants(tys) => Box::new(tys.values().flat_map(|ty| ty.iter_overlay())),
+            ModeData::SelfCustom(_) => Box::new(iter::empty()),
+            ModeData::Custom(id, ov, _) => Box::new(ov.values()),
+            ModeData::Array(m, _, _) => Box::new(iter::once(m)),
+            ModeData::HoleArray(m, _, _) => Box::new(iter::once(m)),
+            ModeData::Boxed(m, _, _) => Box::new(iter::once(m)),
+        }
+    }
+
+    pub fn apply_overlay(&self, ov: &Overlay<T>) -> ModeData<T>
+    where
+        T: Clone,
+    {
+        match (self, ov) {
+            (ModeData::Bool, Overlay::Bool) => ModeData::Bool,
+            (ModeData::Num(n1), Overlay::Num(n2)) if n1 == n2 => ModeData::Num(*n1),
+            (ModeData::Tuple(tys), Overlay::Tuple(ovs)) => ModeData::Tuple(
+                tys.iter()
+                    .zip_eq(ovs)
+                    .map(|(ty, ov)| ty.apply_overlay(ov))
+                    .collect(),
+            ),
+            (ModeData::Variants(tys), Overlay::Variants(ovs)) => {
+                ModeData::Variants(IdVec::from_vec(
+                    tys.values()
+                        .zip_eq(ovs.values())
+                        .map(|(ty, ov)| ty.apply_overlay(ov))
+                        .collect(),
+                ))
+            }
+            (ModeData::SelfCustom(id1), Overlay::SelfCustom(id2)) if id1 == id2 => {
+                ModeData::SelfCustom(*id1)
+            }
+            (ModeData::Custom(id1, ov1, subst), Overlay::Custom(id2, ov2)) if id1 == id2 => {
+                debug_assert!(ov1.keys().zip_eq(ov2.keys()).all(|(k1, k2)| k1 == k2));
+                ModeData::Custom(*id1, ov2.clone(), subst.clone())
+            }
+            (ModeData::Array(_, _, ty), Overlay::Array(m)) => {
+                ModeData::Array(m.clone(), ov.clone(), ty.clone())
+            }
+            (ModeData::HoleArray(_, ov, ty), Overlay::HoleArray(m)) => {
+                ModeData::HoleArray(m.clone(), ov.clone(), ty.clone())
+            }
+            (ModeData::Boxed(_, ov, ty), Overlay::Boxed(m)) => {
+                ModeData::Boxed(m.clone(), ov.clone(), ty.clone())
+            }
+            _ => panic!("type/overlay mismatch"),
+        }
+    }
+
+    pub fn unapply_overlay(&self) -> Overlay<T>
+    where
+        T: Clone,
+    {
+        match self {
+            ModeData::Bool => Overlay::Bool,
+            ModeData::Num(n) => Overlay::Num(*n),
+            ModeData::Tuple(tys) => {
+                Overlay::Tuple(tys.iter().map(ModeData::unapply_overlay).collect())
+            }
+            ModeData::Variants(tys) => {
+                Overlay::Variants(tys.map_refs(|_, ty| ty.unapply_overlay()))
+            }
+            ModeData::SelfCustom(id) => Overlay::SelfCustom(*id),
+            ModeData::Custom(id, ov, _) => Overlay::Custom(*id, ov.clone()),
+            ModeData::Array(m, _, _) => Overlay::Array(m.clone()),
+            ModeData::HoleArray(m, _, _) => Overlay::HoleArray(m.clone()),
+            ModeData::Boxed(m, _, _) => Overlay::Boxed(m.clone()),
+        }
+    }
+
+    pub fn shape(&self) -> Shape {
+        match self {
+            ModeData::Bool => Shape::Bool,
+            ModeData::Num(n) => Shape::Num(*n),
+            ModeData::Tuple(tys) => Shape::Tuple(tys.iter().map(ModeData::shape).collect()),
+            ModeData::Variants(tys) => Shape::Variants(tys.map_refs(|_, ty| ty.shape())),
+            ModeData::SelfCustom(id) => Shape::SelfCustom(*id),
+            ModeData::Custom(id, subst, _) => Shape::Custom(*id, subst.keys().copied().collect()),
+            ModeData::Array(_, _, ty) => Shape::Array(Box::new(ty.shape())),
+            ModeData::HoleArray(_, _, ty) => Shape::HoleArray(Box::new(ty.shape())),
+            ModeData::Boxed(_, _, ty) => Shape::Boxed(Box::new(ty.shape())),
+        }
+    }
+}
+
+pub trait CollectModeData<T> {
+    fn collect_mode_data<U>(self, orig: &ModeData<U>) -> ModeData<T>;
+}
+
+impl<T, I: Iterator<Item = T>> CollectModeData<T> for I {
+    fn collect_mode_data<U>(mut self, orig: &ModeData<U>) -> ModeData<T> {
+        collect_mode_data(&mut self, orig)
+    }
+}
+
+// Must expect the order produced by `ModeData::iter`
+fn collect_mode_data<T, U>(iter: &mut impl Iterator<Item = T>, orig: &ModeData<U>) -> ModeData<T> {
+    match orig {
+        ModeData::Bool => ModeData::Bool,
+        ModeData::Num(n) => ModeData::Num(*n),
+        ModeData::Tuple(items) => ModeData::Tuple(
+            items
+                .iter()
+                .map(|item| collect_mode_data(iter, item))
+                .collect(),
+        ),
+        ModeData::Variants(items) => {
+            ModeData::Variants(items.map_refs(|_, item| collect_mode_data(iter, item)))
+        }
+        ModeData::SelfCustom(id) => ModeData::SelfCustom(*id),
+        ModeData::Custom(id, ov, subst) => ModeData::Custom(
+            *id,
+            btree_map_refs(ov, |_, _| iter.next().unwrap()),
+            subst.map_refs(|_, _| iter.next().unwrap()),
+        ),
+        ModeData::Array(_, ov, item) => ModeData::Array(
+            iter.next().unwrap(),
+            collect_overlay(iter, ov),
+            Box::new(collect_mode_data(iter, item)),
+        ),
+        ModeData::HoleArray(_, ov, item) => ModeData::HoleArray(
+            iter.next().unwrap(),
+            collect_overlay(iter, ov),
+            Box::new(collect_mode_data(iter, item)),
+        ),
+        ModeData::Boxed(_, ov, item) => ModeData::Boxed(
+            iter.next().unwrap(),
+            collect_overlay(iter, ov),
+            Box::new(collect_mode_data(iter, item)),
+        ),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Type<M, L> {
+    lts: LtData<L>,
+    modes: ModeData<M>,
+}
+
+impl Type<SlotId, SlotId> {
+    pub fn hydrate<M: Clone, L: Clone>(
+        &self,
+        lt_subst: &BTreeMap<SlotId, L>,
+        mode_subst: &IdVec<SlotId, M>,
+    ) -> Type<M, L> {
+        Type {
+            lts: self.lts.hydrate(lt_subst),
+            modes: self.modes.hydrate(mode_subst),
+        }
+    }
+}
+
+impl<M: Clone> Type<M, Lt> {
+    pub fn left_meet(&self, other: &Type<M, Lt>) -> Type<M, Lt> {
+        Type {
+            lts: self.lts.join(&other.lts),
+            modes: self.modes.clone(),
+        }
+    }
+}
+
+impl<M, L> Type<M, L> {
+    pub fn new(lts: LtData<L>, modes: ModeData<M>) -> Self {
+        debug_assert_eq!(lts.shape(), modes.shape());
+        Self { lts, modes }
+    }
+
+    pub fn shape(&self) -> Shape {
+        self.modes.shape()
+    }
+
+    pub fn lts(&self) -> &LtData<L> {
+        &self.lts
+    }
+
+    pub fn lts_mut(&mut self) -> &mut LtData<L> {
+        &mut self.lts
+    }
+
+    pub fn modes(&self) -> &ModeData<M> {
+        &self.modes
+    }
+
+    pub fn modes_mut(&mut self) -> &mut ModeData<M> {
+        &mut self.modes
+    }
+
+    pub fn map_modes<N>(&self, f: impl Fn(&M) -> N) -> Type<N, L>
+    where
+        L: Clone,
+    {
+        let lts = self.lts.clone();
+        let modes = self.modes.iter().map(f).collect_mode_data(&self.modes);
+        Type { lts, modes }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Occur<M, L> {
     pub id: flat::LocalId,
-    pub ty: AnnotType<M, L>,
+    pub ty: Type<M, L>,
 }
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp<M, L> {
     Get(
-        AnnotType<M, L>, // Item type (of input)
-        Occur<M, L>,     // Array
-        Occur<M, L>,     // Index
-        AnnotType<M, L>, // Return type; needed for retain/release insertion
+        Type<M, L>,  // Item type (of input)
+        Occur<M, L>, // Array
+        Occur<M, L>, // Index
+        Type<M, L>,  // Return type; needed for retain/release insertion
     ), // Returns item
     Extract(
-        AnnotType<M, L>, // Item type (of input)
-        Occur<M, L>,     // Array
-        Occur<M, L>,     // Index
+        Type<M, L>,  // Item type (of input)
+        Occur<M, L>, // Array
+        Occur<M, L>, // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        AnnotType<M, L>, // Item type (of input)
-        Occur<M, L>,     // Array
+        Type<M, L>,  // Item type (of input)
+        Occur<M, L>, // Array
     ), // Returns int
     Push(
-        AnnotType<M, L>, // Item type (of input)
-        Occur<M, L>,     // Array
-        Occur<M, L>,     // Item
+        Type<M, L>,  // Item type (of input)
+        Occur<M, L>, // Array
+        Occur<M, L>, // Item
     ), // Returns new array
     Pop(
-        AnnotType<M, L>, // Item type (of input)
-        Occur<M, L>,     // Array
+        Type<M, L>,  // Item type (of input)
+        Occur<M, L>, // Array
     ), // Returns tuple (array, item)
     Replace(
-        AnnotType<M, L>, // Item type (of input)
-        Occur<M, L>,     // Hole array
-        Occur<M, L>,     // Item
+        Type<M, L>,  // Item type (of input)
+        Occur<M, L>, // Hole array
+        Occur<M, L>, // Item
     ), // Returns new array
     Reserve(
-        AnnotType<M, L>, // Item type (of input)
-        Occur<M, L>,     // Array
-        Occur<M, L>,     // Capacity
+        Type<M, L>,  // Item type (of input)
+        Occur<M, L>, // Array
+        Occur<M, L>, // Capacity
     ), // Returns new array
 }
 
@@ -397,31 +871,27 @@ pub enum IoOp<M, L> {
 pub enum Expr<M, L> {
     Local(Occur<M, L>),
     Call(Purity, first_ord::CustomFuncId, Occur<M, L>),
-    Branch(
-        Occur<M, L>,
-        Vec<(Condition<M, L>, Expr<M, L>)>,
-        AnnotType<M, L>,
-    ),
+    Branch(Occur<M, L>, Vec<(Condition<M, L>, Expr<M, L>)>, Type<M, L>),
     LetMany(
-        Vec<(AnnotType<M, L>, Expr<M, L>)>, // Bound values; each is assigned a new sequential `LocalId`
-        Occur<M, L>,                        // Result
+        Vec<(Type<M, L>, Expr<M, L>)>, // Bound values; each is assigned a new sequential `LocalId`
+        Occur<M, L>,                   // Result
     ),
 
     Tuple(Vec<Occur<M, L>>),
     TupleField(Occur<M, L>, usize),
     WrapVariant(
-        IdVec<first_ord::VariantId, AnnotType<M, L>>,
+        IdVec<first_ord::VariantId, Type<M, L>>,
         first_ord::VariantId,
         Occur<M, L>,
     ),
     UnwrapVariant(first_ord::VariantId, Occur<M, L>),
     WrapBoxed(
         Occur<M, L>,
-        AnnotType<M, L>, // Inner type
+        Type<M, L>, // Inner type
     ),
     UnwrapBoxed(
         Occur<M, L>,
-        AnnotType<M, L>, // Inner type
+        Type<M, L>, // Inner type
     ),
     WrapCustom(CustomTypeId, Occur<M, L>),
     UnwrapCustom(CustomTypeId, Occur<M, L>),
@@ -429,9 +899,9 @@ pub enum Expr<M, L> {
     Intrinsic(Intrinsic, Occur<M, L>),
     ArrayOp(ArrayOp<M, L>),
     IoOp(IoOp<M, L>),
-    Panic(AnnotType<M, L>, Occur<M, L>),
+    Panic(Type<M, L>, Occur<M, L>),
 
-    ArrayLit(AnnotType<M, L>, Vec<Occur<M, L>>),
+    ArrayLit(Type<M, L>, Vec<Occur<M, L>>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -445,7 +915,7 @@ pub enum Condition<M, L> {
     Variant(first_ord::VariantId, Box<Condition<M, L>>),
     Boxed(
         Box<Condition<M, L>>,
-        AnnotType<M, L>, // Inner type
+        Type<M, L>, // Inner type
     ),
     Custom(CustomTypeId, Box<Condition<M, L>>),
     BoolConst(bool),
@@ -465,8 +935,8 @@ pub struct Constrs {
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub purity: Purity,
-    pub arg_ty: AnnotType<ModeParam, Lt>,
-    pub ret_ty: AnnotType<ModeParam, LtParam>,
+    pub arg_ty: Type<ModeParam, Lt>,
+    pub ret_ty: Type<ModeParam, LtParam>,
     pub constrs: Constrs,
 
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
@@ -478,10 +948,11 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct TypeDef {
     // `ov` is computable from `ty`, but kept around for convenience
-    pub ty: Type<CustomSlotId>,
-    pub ov: Overlay<CustomSlotId>,
-    pub num_slots: Count<CustomSlotId>,
-    pub num_overlay_slots: Count<CustomSlotId>,
+    pub ty: Type<SlotId, SlotId>,
+    pub ov: Overlay<SlotId>,
+    pub slot_count: Count<SlotId>,
+    pub ov_slots: BTreeSet<SlotId>,
+    pub lt_slots: BTreeSet<SlotId>,
 }
 
 #[derive(Clone, Debug)]

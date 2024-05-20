@@ -1635,6 +1635,12 @@ fn reify_expr(
 #[id_type]
 struct ModeSpecFuncId(usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Strategy {
+    ElideOps,
+    Trivial,
+}
+
 pub fn rc_specialize(program: &annot::Program, progress: impl ProgressLogger) -> rc::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
 

@@ -26,6 +26,14 @@ impl<T: Ord> Extend<T> for NonEmptySet<T> {
     }
 }
 
+impl<T: Ord + Clone> std::ops::BitOr for &NonEmptySet<T> {
+    type Output = NonEmptySet<T>;
+
+    fn bitor(self, rhs: &NonEmptySet<T>) -> Self::Output {
+        NonEmptySet(&self.0 | &rhs.0)
+    }
+}
+
 impl<T> TryFrom<BTreeSet<T>> for NonEmptySet<T> {
     type Error = ();
 
