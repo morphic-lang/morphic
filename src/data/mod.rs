@@ -42,7 +42,7 @@ pub mod mode_annot_ast;
 pub mod mode_annot_ast2;
 
 pub mod rc_specialized_ast;
-// pub mod rc_specialized_ast2;
+pub mod rc_specialized_ast2;
 
 // end new passes
 

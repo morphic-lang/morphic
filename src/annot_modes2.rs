@@ -653,11 +653,11 @@ fn unfold_overlay(
     }
 }
 
-fn unfold_lts(
+fn unfold_lts<L: Clone>(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    self_sub: &BTreeMap<SlotId, Lt>,
-    lts: &LtData<Lt>,
-) -> LtData<Lt> {
+    self_sub: &BTreeMap<SlotId, L>,
+    lts: &LtData<L>,
+) -> LtData<L> {
     match lts {
         LtData::Bool => LtData::Bool,
         LtData::Num(num_ty) => LtData::Num(*num_ty),
@@ -721,13 +721,13 @@ fn unfold_modes(
     }
 }
 
-fn unfold_custom(
+fn unfold_custom<L: Clone>(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     msub: &IdVec<SlotId, ModeVar>,
-    lsub: &BTreeMap<SlotId, Lt>,
+    lsub: &BTreeMap<SlotId, L>,
     osub: &BTreeMap<SlotId, ModeVar>,
     id: CustomTypeId,
-) -> annot::Type<ModeVar, Lt> {
+) -> annot::Type<ModeVar, L> {
     let custom = &customs[id];
     let folded = custom.ty.hydrate(lsub, msub);
     let extracted = custom
@@ -870,11 +870,10 @@ impl TrackedContext {
 }
 
 fn instantiate_overlay<M>(constrs: &mut ConstrGraph, ov: &Overlay<M>) -> Overlay<ModeVar> {
-    ov.iter().map(|m| constrs.fresh_var()).collect_overlay(ov)
+    ov.iter().map(|_| constrs.fresh_var()).collect_overlay(ov)
 }
 
 fn instantiate_type<M, L1, L2>(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     fresh_lt: &mut impl FnMut() -> L2,
     ty: &annot::Type<M, L1>,
@@ -894,11 +893,10 @@ fn instantiate_type<M, L1, L2>(
 
 // Replaces parameters with fresh variables from the constraint graph.
 fn instantiate_type_unused<M, L>(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     ty: &annot::Type<M, L>,
 ) -> annot::Type<ModeVar, Lt> {
-    instantiate_type(customs, constrs, &mut || Lt::Empty, ty)
+    instantiate_type(constrs, &mut || Lt::Empty, ty)
 }
 
 fn instantiate_condition(
@@ -919,7 +917,7 @@ fn instantiate_condition(
         }
         flat::Condition::Boxed(cond, ty) => annot::Condition::Boxed(
             Box::new(instantiate_condition(customs, constrs, cond)),
-            instantiate_type_unused(customs, constrs, &parameterize_type_simple(customs, ty)),
+            instantiate_type_unused(constrs, &parameterize_type_simple(customs, ty)),
         ),
         flat::Condition::Custom(id, cond) => {
             annot::Condition::Custom(*id, Box::new(instantiate_condition(customs, constrs, cond)))
@@ -990,16 +988,6 @@ fn instantiate_occur(
     )
 }
 
-fn instantiate_prim_lts<L>(ty: &intr::Type) -> LtData<L> {
-    match ty {
-        intr::Type::Bool => LtData::Bool,
-        intr::Type::Num(n) => LtData::Num(*n),
-        intr::Type::Tuple(items) => {
-            LtData::Tuple(items.iter().map(|ty| instantiate_prim_lts(ty)).collect())
-        }
-    }
-}
-
 fn instantiate_prim_modes<M>(ty: &intr::Type) -> ModeData<M> {
     match ty {
         intr::Type::Bool => ModeData::Bool,
@@ -1010,17 +998,18 @@ fn instantiate_prim_modes<M>(ty: &intr::Type) -> ModeData<M> {
     }
 }
 
-fn instantiate_prim_type<M, L>(ty: &intr::Type) -> annot::Type<M, L> {
-    annot::Type::new(instantiate_prim_lts(ty), instantiate_prim_modes(ty))
+fn instantiate_prim_lts<L>(ty: &intr::Type) -> LtData<L> {
+    match ty {
+        intr::Type::Bool => LtData::Bool,
+        intr::Type::Num(n) => LtData::Num(*n),
+        intr::Type::Tuple(items) => {
+            LtData::Tuple(items.iter().map(|ty| instantiate_prim_lts(ty)).collect())
+        }
+    }
 }
 
-fn instantiate_int_occur<M, L>(ctx: &TrackedContext, id: LocalId) -> Occur<M, L> {
-    assert!(matches!(
-        ctx.local_binding(id).modes(),
-        ModeData::Num(NumType::Int)
-    ));
-    let ty = annot::Type::new(LtData::Num(NumType::Int), ModeData::Num(NumType::Int));
-    Occur { id, ty }
+fn instantiate_prim_type<M, L>(ty: &intr::Type) -> annot::Type<M, L> {
+    annot::Type::new(instantiate_prim_lts(ty), instantiate_prim_modes(ty))
 }
 
 /// Used during lifetime fixed point iteration. `know_defs` contains the definitions of all
@@ -1055,23 +1044,66 @@ impl<'a> SignatureAssumptions<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
-struct SolverScc {
-    func_args: BTreeMap<CustomFuncId, annot::Type<ModeVar, Lt>>,
-    func_rets: BTreeMap<CustomFuncId, annot::Type<ModeVar, LtParam>>,
-    func_bodies: BTreeMap<CustomFuncId, annot::Expr<ModeVar, Lt>>,
-    scc_constrs: ConstrGraph,
-}
-
 mod model {
-    use crate::data::first_order_ast::{NumType, VariantId};
-    use id_collections::{id_type, IdVec};
+    use super::{ConstrGraph, LocalContext, LocalId, Strategy, TrackedContext};
+    use crate::data::first_order_ast::{CustomTypeId, NumType};
+    use crate::data::mode_annot_ast2::{self as annot, LtData, ModeData};
+    use crate::util::iter::IterExt;
+    use id_collections::{id_type, Id, IdMap, IdVec};
     use once_cell::sync::Lazy;
     use std::collections::BTreeSet;
+
+    #[id_type]
+    struct Mode(usize);
+
+    #[id_type]
+    struct Lt(usize);
+
+    #[id_type]
+    struct TypeVar(usize);
+
+    #[derive(Clone, Debug)]
+    enum ItemType {
+        Var(TypeVar),
+        Num(NumType),
+    }
+
+    use ItemType::Num as NumItem;
+
+    fn var_item(n: usize) -> ItemType {
+        ItemType::Var(TypeVar(n))
+    }
+
+    #[derive(Clone, Debug)]
+    enum Type {
+        Var(TypeVar),
+        Num(NumType),
+        Tuple(Vec<Type>),
+        Array(Mode, Lt, ItemType),
+        HoleArray(Mode, Lt, ItemType),
+    }
+
+    use Type::{Array, HoleArray, Num, Tuple};
+
+    fn var(n: usize) -> Type {
+        Type::Var(TypeVar(n))
+    }
+
+    /// A signature which can be used during expression instantiation to constrain the argument and
+    /// return types of calls to built-in operations. The modeling language is expressive enough to
+    /// represent the signatures of most (but not all) built-ins.
+    #[derive(Clone, Debug)]
+    pub struct BuiltinSig {
+        args: Vec<Type>,
+        ret: Type,
+        owned: BTreeSet<Mode>,
+        accessed: BTreeSet<Lt>,
+    }
 
     macro_rules! set {
         ($($item:expr),*) => {
             {
+                #[allow(unused_mut)] // This is a false positive.
                 let mut set = BTreeSet::new();
                 $(set.insert($item);)*
                 set
@@ -1079,74 +1111,313 @@ mod model {
         };
     }
 
+    pub static SIG_ARRAY_EXTRACT: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![Array(Mode(0), Lt(0), var_item(0)), Num(NumType::Int)],
+        ret: Tuple(vec![HoleArray(Mode(0), Lt(0), var_item(0)), var(0)]),
+        owned: set![Mode(0)],
+        accessed: set![Lt(0)],
+    });
+
+    pub static SIG_ARRAY_LEN: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![Array(Mode(0), Lt(0), var_item(0))],
+        ret: Num(NumType::Int),
+        owned: set![Mode(0)],
+        accessed: set![Lt(0)],
+    });
+
+    pub static SIG_ARRAY_PUSH: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![Array(Mode(0), Lt(0), var_item(0)), var(0)],
+        ret: Array(Mode(0), Lt(0), var_item(0)),
+        owned: set![Mode(0)],
+        accessed: set![Lt(0)],
+    });
+
+    pub static SIG_ARRAY_POP: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![Array(Mode(0), Lt(0), var_item(0))],
+        ret: Tuple(vec![Array(Mode(0), Lt(0), var_item(0)), var(0)]),
+        owned: set![Mode(0)],
+        accessed: set![Lt(0)],
+    });
+
+    pub static SIG_ARRAY_REPLACE: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![HoleArray(Mode(0), Lt(0), var_item(0)), var(0)],
+        ret: Array(Mode(0), Lt(0), var_item(0)),
+        owned: set![Mode(0)],
+        accessed: set![Lt(0)],
+    });
+
+    pub static SIG_ARRAY_RESERVE: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![Array(Mode(0), Lt(0), var_item(0)), Num(NumType::Int)],
+        ret: Array(Mode(0), Lt(0), var_item(0)),
+        owned: set![Mode(0)],
+        accessed: set![Lt(0)],
+    });
+
+    pub static SIG_IO_INPUT: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![],
+        ret: Array(Mode(0), Lt(0), NumItem(NumType::Byte)),
+        owned: set![Mode(0)],
+        accessed: set![],
+    });
+
+    pub static SIG_IO_OUTPUT: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![Array(Mode(0), Lt(0), NumItem(NumType::Byte))],
+        ret: Tuple(vec![]),
+        owned: set![],
+        accessed: set![Lt(0)],
+    });
+
+    pub static SIG_PANIC: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
+        args: vec![Array(Mode(0), Lt(0), NumItem(NumType::Byte))],
+        ret: Tuple(vec![]),
+        owned: set![],
+        accessed: set![Lt(0)],
+    });
+
     #[derive(Clone, Debug)]
-    pub struct Sig {
-        pub arg: Type,
-        pub ret: Type,
-        pub consumed: BTreeSet<Mode>,
-        pub accessed: BTreeSet<Lt>,
+    struct SigData {
+        modes: IdMap<Mode, annot::ModeVar>,
+        lts: IdMap<Lt, annot::Lt>,
+        tys: IdMap<TypeVar, annot::Type<annot::ModeVar, annot::Lt>>,
+        // Only present for type variables that appear in item position.
+        ovs: IdMap<TypeVar, annot::Overlay<annot::ModeVar>>,
     }
 
-    #[derive(Clone, Debug)]
-    pub struct Mode(usize);
+    fn extract_annot(
+        result: &mut SigData,
+        model: &Type,
+        modes: &ModeData<annot::ModeVar>,
+        lts: &LtData<annot::Lt>,
+    ) {
+        fn insert<I: Id, T>(map: &mut IdMap<I, T>, id: I, val: T) {
+            debug_assert!(
+                !map.contains_key(id),
+                "duplicate variables are not supported in model return types"
+            );
+            map.insert(id, val);
+        }
 
-    #[derive(Clone, Debug)]
-    pub struct Lt(usize);
-
-    #[derive(Clone, Debug)]
-    pub enum Type {
-        Var(usize),
-        Bool,
-        Num(NumType),
-        Tuple(Vec<Type>),
-        Variants(IdVec<VariantId, Type>),
-        Array(Mode, Lt, Box<Type>),
-        HoleArray(Mode, Lt, Box<Type>),
-        Boxed(Mode, Lt, Box<Type>),
+        use LtData as L;
+        use ModeData as M;
+        match (model, modes, lts) {
+            (Type::Var(v), modes, lts) => {
+                insert(
+                    &mut result.tys,
+                    *v,
+                    annot::Type::new(lts.clone(), modes.clone()),
+                );
+            }
+            (Num(n1), M::Num(n2), L::Num(n3)) if n1 == n2 && n1 == n3 => {}
+            (Tuple(items1), M::Tuple(items2), L::Tuple(items3)) => {
+                for ((item1, item2), item3) in items1.iter().zip_eq(items2).zip_eq(items3) {
+                    extract_annot(result, item1, item2, item3);
+                }
+            }
+            (Array(m1, lt1, item1), M::Array(m2, ov, item2), L::Array(lt2, item3))
+            | (HoleArray(m1, lt1, item1), M::HoleArray(m2, ov, item2), L::HoleArray(lt2, item3)) => {
+                insert(&mut result.modes, *m1, *m2);
+                insert(&mut result.lts, *lt1, lt2.clone());
+                match item1 {
+                    ItemType::Num(_) => {}
+                    ItemType::Var(v) => {
+                        insert(&mut result.ovs, *v, ov.clone());
+                        insert(
+                            &mut result.tys,
+                            *v,
+                            annot::Type::new((**item3).clone(), (**item2).clone()),
+                        );
+                    }
+                }
+            }
+            _ => panic!("type does not match model"),
+        }
     }
 
-    use Type::*;
+    fn fill_vacant(
+        data: &mut SigData,
+        customs: &IdVec<CustomTypeId, annot::TypeDef>,
+        constrs: &mut ConstrGraph,
+        path: &annot::Path,
+        accessed: &BTreeSet<Lt>,
+        model: &Type,
+        modes: &ModeData<annot::ModeVar>,
+        lts: &LtData<annot::Lt>,
+    ) {
+        use LtData as L;
+        use ModeData as M;
+        match (model, modes, lts) {
+            (Type::Var(v), modes, lts) => {
+                if !data.tys.contains_key(*v) {
+                    data.tys.insert(
+                        *v,
+                        super::instantiate_type_unused(
+                            constrs,
+                            &annot::Type::new(lts.clone(), modes.clone()),
+                        ),
+                    );
+                }
+            }
+            (Num(n1), M::Num(n2), L::Num(n3)) if n1 == n2 && n1 == n3 => {}
+            (Tuple(items1), M::Tuple(items2), L::Tuple(items3)) => {
+                for ((item1, item2), item3) in items1.iter().zip_eq(items2).zip_eq(items3) {
+                    fill_vacant(data, customs, constrs, path, accessed, item1, item2, item3);
+                }
+            }
+            (Array(m, lt, item1), M::Array(_, _, item2), L::Array(_, item3))
+            | (HoleArray(m, lt, item1), M::HoleArray(_, _, item2), L::HoleArray(_, item3)) => {
+                if !data.modes.contains_key(*m) {
+                    data.modes.insert(*m, constrs.fresh_var());
+                }
+                if !data.lts.contains_key(*lt) {
+                    data.lts.insert(
+                        *lt,
+                        if accessed.contains(lt) {
+                            path.as_lt()
+                        } else {
+                            annot::Lt::Empty
+                        },
+                    );
+                }
+                match item1 {
+                    ItemType::Num(_) => {}
+                    ItemType::Var(v) => {
+                        if !data.tys.contains_key(*v) {
+                            assert!(!data.ovs.contains_key(*v));
+                            data.ovs.insert(
+                                *v,
+                                super::instantiate_overlay(constrs, &item2.unapply_overlay()),
+                            );
+                            data.tys.insert(
+                                *v,
+                                super::instantiate_type_unused(
+                                    constrs,
+                                    &annot::Type::new((**item3).clone(), (**item2).clone()),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            _ => panic!("type does not match model"),
+        }
+    }
 
-    pub static SIG_ARRAY_EXTRACT: Lazy<Sig> = todo!();
+    fn instantiate_model_modes(data: &SigData, model: &Type) -> ModeData<annot::ModeVar> {
+        match model {
+            Type::Var(v) => data.tys[v].modes().clone(),
+            Num(n) => ModeData::Num(*n),
+            Tuple(items) => ModeData::Tuple(
+                items
+                    .iter()
+                    .map(|item| instantiate_model_modes(data, item))
+                    .collect(),
+            ),
+            Array(m, _, item) => {
+                let (ov, item) = match item {
+                    ItemType::Num(n) => (annot::Overlay::Num(*n), annot::ModeData::Num(*n)),
+                    ItemType::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
+                };
+                ModeData::Array(data.modes[m], ov, Box::new(item))
+            }
+            HoleArray(m, _, item) => {
+                let (ov, item) = match item {
+                    ItemType::Num(n) => (annot::Overlay::Num(*n), annot::ModeData::Num(*n)),
+                    ItemType::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
+                };
+                ModeData::HoleArray(data.modes[m], ov, Box::new(item))
+            }
+        }
+    }
 
-    pub static SIG_ARRAY_LEN: Lazy<Sig> = todo!();
+    fn instantiate_model_lts(data: &SigData, model: &Type) -> LtData<annot::Lt> {
+        match model {
+            Type::Var(v) => data.tys[v].lts().clone(),
+            Num(n) => LtData::Num(*n),
+            Tuple(items) => LtData::Tuple(
+                items
+                    .iter()
+                    .map(|item| instantiate_model_lts(data, item))
+                    .collect(),
+            ),
+            Array(_, lt, item) | HoleArray(_, lt, item) => {
+                let item = match item {
+                    ItemType::Num(n) => annot::LtData::Num(*n),
+                    ItemType::Var(v) => data.tys[v].lts().clone(),
+                };
+                LtData::Array(data.lts[lt].clone(), Box::new(item))
+            }
+        }
+    }
 
-    pub static SIG_ARRAY_PUSH: Lazy<Sig> = todo!();
+    /// Signatures are interpreted as follows:
+    /// - if a mode, lifetime, or type variable is present in the return, it is assigned its value
+    ///   from the return everywhere
+    /// - any modes not present in the return are assigned fresh variables
+    /// - any modes in `sig.owned` are constrained to be owned
+    /// - any lifetimes not present in the return are assigned the current path if they are present
+    ///   in `sig.accessed` and the empty lifetime otherwise
+    /// - any type variables not present in the return are assigned fresh, unconstrained, unused
+    ///   types (and overlays) of the correct shape
+    ///
+    /// NOTE: we currently do not support duplicate modes, lifetimes, or type variables in the
+    /// return, though such an extension would be straightforward.
+    pub fn instantiate_model(
+        sig: &BuiltinSig,
+        strategy: Strategy,
+        customs: &IdVec<CustomTypeId, annot::TypeDef>,
+        constrs: &mut ConstrGraph,
+        ctx: &mut TrackedContext,
+        scopes: &mut LocalContext<LocalId, annot::Path>,
+        path: &annot::Path,
+        args: &[LocalId],
+        ret_modes: &ModeData<annot::ModeVar>,
+        ret_lts: &LtData<annot::Lt>,
+    ) -> Vec<annot::Occur<annot::ModeVar, annot::Lt>> {
+        let mut data = SigData {
+            modes: IdMap::new(),
+            lts: IdMap::new(),
+            tys: IdMap::new(),
+            ovs: IdMap::new(),
+        };
 
-    pub static SIG_ARRAY_POP: Lazy<Sig> = todo!();
+        extract_annot(&mut data, &sig.ret, ret_modes, ret_lts);
+        for (i, arg) in args.iter().enumerate() {
+            let ty = ctx.local_binding(*arg);
+            fill_vacant(
+                &mut data,
+                customs,
+                constrs,
+                path,
+                &sig.accessed,
+                &sig.args[i],
+                ty.modes(),
+                ty.lts(),
+            );
+        }
 
-    pub static SIG_ARRAY_REPLACE: Lazy<Sig> = todo!();
+        for m in &sig.owned {
+            super::require_owned(constrs, data.modes[m]);
+        }
 
-    pub static SIG_ARRAY_RESERVE: Lazy<Sig> = Lazy::new(|| Sig {
-        arg: Tuple(vec![
-            Array(Mode(0), Lt(0), Box::new(Var(0))),
-            Num(NumType::Int),
-        ]),
-        ret: Array(Mode(0), Lt(0), Box::new(Var(0))),
-        consumed: set![Mode(0)],
-        accessed: set![Lt(0)],
-    });
+        // `.rev()` ensures the calls to `instantiate_occur` are in the correct order
+        let mut occurs = Vec::new();
+        debug_assert_eq!(args.len(), sig.args.len());
+        for (arg_id, arg) in args.iter().zip(&sig.args).rev() {
+            occurs.push(super::instantiate_occur(
+                strategy,
+                customs,
+                ctx,
+                scopes,
+                constrs,
+                *arg_id,
+                &instantiate_model_modes(&data, arg),
+                &instantiate_model_lts(&data, arg),
+            ));
+        }
 
-    pub static SIG_IO_INPUT: Lazy<Sig> = Lazy::new(|| Sig {
-        arg: Tuple(vec![]),
-        ret: Array(Mode(0), Lt(0), Box::new(Num(NumType::Byte))),
-        consumed: set![Mode(0)],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_IO_OUTPUT: Lazy<Sig> = Lazy::new(|| Sig {
-        arg: Array(Mode(0), Lt(0), Box::new(Num(NumType::Byte))),
-        ret: Tuple(vec![]),
-        consumed: set![],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_PANIC: Lazy<Sig> = Lazy::new(|| Sig {
-        arg: Array(Mode(0), Lt(0), Box::new(Num(NumType::Byte))),
-        ret: Tuple(vec![]),
-        consumed: set![],
-        accessed: set![Lt(0)],
-    });
+        occurs.reverse();
+        occurs
+    }
 }
 
 // This function is the core logic for this pass. It implements the judgement from the paper:
@@ -1168,7 +1439,6 @@ fn instantiate_expr(
     expr: &TailExpr,
     renderer: &CustomTypeRenderer<CustomTypeId>,
 ) -> (annot::Expr<ModeVar, Lt>, LocalUpdates) {
-    /*
     use LtData as L;
     use ModeData as M;
 
@@ -1263,7 +1533,6 @@ fn instantiate_expr(
 
             for (binding_ty, _) in bindings {
                 let annot_ty = instantiate_type_unused(
-                    customs,
                     constrs,
                     &parameterize_type_simple(customs, binding_ty),
                 );
@@ -1351,14 +1620,16 @@ fn instantiate_expr(
         }
 
         TailExpr::TupleField(tuple_id, idx) => {
-            let tuple_ty = instantiate_type_unused(customs, constrs, ctx.local_binding(*tuple_id));
-            let (M::Tuple(mut item_modes), L::Tuple(mut item_lts)) =
-                (tuple_ty.modes_mut(), tuple_ty.lts_mut())
-            else {
+            let mut tuple_ty = instantiate_type_unused(constrs, ctx.local_binding(*tuple_id));
+
+            let M::Tuple(item_modes) = tuple_ty.modes_mut() else {
                 unreachable!();
             };
-
             item_modes[*idx] = fut_modes.clone();
+
+            let L::Tuple(item_lts) = tuple_ty.lts_mut() else {
+                unreachable!();
+            };
             item_lts[*idx] = fut_lts.clone();
 
             let tuple_occur = instantiate_occur(
@@ -1404,14 +1675,16 @@ fn instantiate_expr(
         }
 
         TailExpr::UnwrapVariant(variant_id, wrapped) => {
-            let wrapped_ty = instantiate_type_unused(customs, constrs, ctx.local_binding(*wrapped));
-            let (M::Variants(mut variant_modes), L::Variants(mut variant_lts)) =
-                (wrapped_ty.modes(), wrapped_ty.lts())
-            else {
+            let mut wrapped_ty = instantiate_type_unused(constrs, ctx.local_binding(*wrapped));
+
+            let M::Variants(variant_modes) = wrapped_ty.modes_mut() else {
                 unreachable!();
             };
-
             variant_modes[*variant_id] = fut_modes.clone();
+
+            let L::Variants(variant_lts) = wrapped_ty.lts_mut() else {
+                unreachable!();
+            };
             variant_lts[*variant_id] = fut_lts.clone();
 
             let wrapped_occur = instantiate_occur(
@@ -1477,23 +1750,34 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapCustom(custom_id, content) => {
-            let ModeData::Custom(fut_id, fut_tsub, fut_osub) = fut_ty else {
+            let (M::Custom(fut_id1, fut_osub, fut_msub), L::Custom(fut_id2, fut_lsub)) =
+                (fut_modes, fut_lts)
+            else {
                 unreachable!();
             };
 
-            debug_assert_eq!(*custom_id, *fut_id);
+            debug_assert_eq!(*custom_id, *fut_id1);
+            debug_assert_eq!(*custom_id, *fut_id2);
 
-            let unfolded_ty = unfold_custom(customs, fut_tsub, fut_osub, *custom_id);
-            let unfolded_ov = &unfold_overlay(
+            let unfolded_ty = unfold_custom(customs, fut_msub, fut_lsub, fut_osub, *custom_id);
+            let unfolded_ov = unfold_overlay(
                 customs,
                 &fut_osub,
-                &fut_osub.apply_to(&customs[*custom_id].overlay),
+                &customs[*custom_id].ov.hydrate(fut_osub),
             );
 
-            let content_ty = apply_overlay(&unfolded_ty, &unfolded_ov);
-
-            let content_occur =
-                instantiate_occur(customs, &mut ctx, scopes, constrs, *content, &content_ty);
+            let content_modes = unfolded_ty.modes().apply_overlay(&unfolded_ov);
+            let content_lts = unfolded_ty.lts();
+            let content_occur = instantiate_occur(
+                strategy,
+                customs,
+                &mut ctx,
+                scopes,
+                constrs,
+                *content,
+                &content_modes,
+                content_lts,
+            );
 
             annot::Expr::WrapCustom(*custom_id, content_occur)
         }
@@ -1501,27 +1785,61 @@ fn instantiate_expr(
         TailExpr::UnwrapCustom(custom_id, folded) => {
             let custom = &customs[custom_id];
 
-            let folded_os = fresh_overlay_subst(constrs, &custom.overlay_params);
-            let folded_ov = folded_os.apply_to(&custom.overlay);
-            let folded_ts = TypeSubst {
-                ms: IdVec::from_count_with(custom.num_mode_params, |_| constrs.fresh_var()),
-                lts: IdVec::from_count_with(custom.num_lt_params, |_| lt_count.inc()),
-            };
+            let folded_ov = custom
+                .ov_slots
+                .iter()
+                .map(|_| constrs.fresh_var())
+                .collect_overlay(&custom.ov);
+            let folded_osub = custom
+                .ov_slots
+                .iter()
+                .zip(folded_ov.iter())
+                .map(|(slot, m)| (*slot, *m))
+                .collect();
 
-            let unfolded_ty = apply_overlay(
-                &unfold_custom(customs, &folded_ts, &folded_os, *custom_id),
-                &unfold_overlay(customs, &folded_os, &folded_ov),
+            let folded_modes = custom
+                .slot_count
+                .into_iter()
+                .map(|_| constrs.fresh_var())
+                .collect_mode_data(ctx.local_binding(*folded).modes());
+            let folded_msub = IdVec::from_vec(folded_modes.iter().copied().collect());
+
+            let folded_lsub = custom
+                .lt_slots
+                .iter()
+                .map(|slot| (*slot, lt_count.inc()))
+                .collect();
+
+            let raw_unfolded_ty = unfold_custom(
+                customs,
+                &folded_msub,
+                &folded_lsub,
+                &folded_osub,
+                *custom_id,
             );
+            let unfolded_ov = unfold_overlay(customs, &folded_osub, &folded_ov);
+            let unfolded_modes = raw_unfolded_ty.modes().apply_overlay(&unfolded_ov);
+            let unfolded_lts = raw_unfolded_ty.lts();
 
-            mode_bind(constrs, &unfolded_ty, fut_ty);
+            for (m1, m2) in unfolded_modes.iter().zip_eq(fut_modes.iter()) {
+                constrs.require_eq(*m1, *m2);
+            }
 
-            let folded_ty = subst_lts(
-                &wrap_lt_params(&ModeData::Custom(*custom_id, folded_ts, folded_os)),
-                &lt_bind(&unfolded_ty, fut_ty),
+            let lt_subst = lt_bind(&unfolded_lts, fut_lts);
+            let folded_lts = folded_lsub
+                .iter()
+                .map(|(_, lt)| lt_subst[lt].clone())
+                .collect_lt_data(ctx.local_binding(*folded).lts());
+            let folded_occur = instantiate_occur(
+                strategy,
+                customs,
+                &mut ctx,
+                scopes,
+                constrs,
+                *folded,
+                &folded_modes,
+                &folded_lts,
             );
-
-            let folded_occur =
-                instantiate_occur(customs, &mut ctx, scopes, constrs, *folded, &folded_ty);
 
             annot::Expr::UnwrapCustom(*custom_id, folded_occur)
         }
@@ -1537,246 +1855,200 @@ fn instantiate_expr(
 
         // See I-Get
         TailExpr::ArrayOp(flat::ArrayOp::Get(_, arr_id, idx_id)) => {
-            let item_ty = replace_modes(|_| constrs.fresh_var(), fut_ty);
-            let item_ov = unapply_overlay(customs, &fut_ty);
+            let item_modes = fut_modes
+                .iter()
+                .map(|_| constrs.fresh_var())
+                .collect_mode_data(fut_modes);
+            let item_ov = fut_modes.unapply_overlay();
 
-            let arr_ty = ModeData::Array(
-                constrs.fresh_var(),
-                path.as_lt(),
-                Box::new(item_ty.clone()),
-                item_ov,
+            let arr_modes = ModeData::Array(constrs.fresh_var(), item_ov, Box::new(item_modes));
+            let arr_lts = LtData::Array(path.as_lt(), Box::new(fut_lts.clone()));
+
+            let idx_occur = instantiate_occur(
+                strategy,
+                customs,
+                &mut ctx,
+                scopes,
+                constrs,
+                *idx_id,
+                &M::Num(NumType::Int),
+                &L::Num(NumType::Int),
             );
-
-            let idx_occur = instantiate_int_occur(&ctx, *idx_id);
-            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
+            let arr_occur = instantiate_occur(
+                strategy, customs, &mut ctx, scopes, constrs, *arr_id, &arr_modes, &arr_lts,
+            );
 
             annot::Expr::ArrayOp(annot::ArrayOp::Get(
-                item_ty,
                 arr_occur,
                 idx_occur,
-                fut_ty.clone(),
+                annot::Type::new(fut_lts.clone(), fut_modes.clone()),
             ))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Extract(item_ty, arr_id, idx_id)) => {
-            let ModeData::Tuple(ret_tys) = fut_ty else {
-                unreachable!();
-            };
-            debug_assert_eq!(ret_tys.len(), 2);
-            let ModeData::HoleArray(fut_mode, _, fut_item_ty, _) = &ret_tys[1] else {
-                unreachable!();
-            };
-            let fut_extracted_ty = &ret_tys[0];
-
-            require_owned(constrs, *fut_mode);
-            mode_bind(constrs, fut_extracted_ty, fut_item_ty);
-
-            let arr_mode = constrs.fresh_var();
-            require_owned(constrs, arr_mode);
-
-            let arr_ty = ModeData::Array(
-                arr_mode,
-                path.as_lt(),
-                Box::new(fut_extracted_ty.clone()),
-                instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
+        TailExpr::ArrayOp(flat::ArrayOp::Extract(_item_ty, arr_id, idx_id)) => {
+            let occurs = model::instantiate_model(
+                &*model::SIG_ARRAY_EXTRACT,
+                strategy,
+                customs,
+                constrs,
+                &mut ctx,
+                scopes,
+                &path,
+                &[*arr_id, *idx_id],
+                fut_modes,
+                fut_lts,
             );
-
-            let idx_occur = instantiate_int_occur(&ctx, *idx_id);
-            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
-
+            let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Extract(
-                fut_extracted_ty.clone(),
-                arr_occur,
-                idx_occur,
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
             ))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Len(item_ty, arr_id)) => {
-            debug_assert_eq!(fut_ty, &ModeData::Num(NumType::Int));
-
-            let annot_item_ty = instantiate_type_unused(customs, constrs, item_ty);
-            let arr_ty = ModeData::Array(
-                constrs.fresh_var(),
-                path.as_lt(),
-                Box::new(annot_item_ty.clone()),
-                instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
+        TailExpr::ArrayOp(flat::ArrayOp::Len(_item_ty, arr_id)) => {
+            let occurs = model::instantiate_model(
+                &*model::SIG_ARRAY_LEN,
+                strategy,
+                customs,
+                constrs,
+                &mut ctx,
+                scopes,
+                &path,
+                &[*arr_id],
+                fut_modes,
+                fut_lts,
             );
-
-            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
-
-            annot::Expr::ArrayOp(annot::ArrayOp::Len(annot_item_ty, arr_occur))
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Len(occurs.next().unwrap()))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Push(item_ty, arr_id, item_id)) => {
-            let (M::Array(fut_mode, _, fut_item_modes), L::Array(_, fut_item_lts)) =
-                (fut_modes, fut_lts)
-            else {
-                unreachable!();
-            };
-            let ModeData::Array(fut_mode, _, fut_item_ty, _) = fut_ty else {
-                unreachable!();
-            };
-            require_owned(constrs, *fut_mode);
-
-            let arr_mode = constrs.fresh_var();
-            require_owned(constrs, arr_mode);
-
-            let arr_ty = ModeData::Array(
-                arr_mode,
-                path.as_lt(),
-                Box::new((**fut_item_ty).clone()),
-                instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
+        TailExpr::ArrayOp(flat::ArrayOp::Push(_item_ty, arr_id, item_id)) => {
+            let occurs = model::instantiate_model(
+                &*model::SIG_ARRAY_PUSH,
+                strategy,
+                customs,
+                constrs,
+                &mut ctx,
+                scopes,
+                &path,
+                &[*arr_id, *item_id],
+                fut_modes,
+                fut_lts,
             );
-
-            let item_occur =
-                instantiate_occur(customs, &mut ctx, scopes, constrs, *item_id, &fut_item_ty);
-
-            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
-
+            let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Push(
-                (**fut_item_ty).clone(),
-                arr_occur,
-                item_occur,
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
             ))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Pop(item_ty, arr_id)) => {
-            let ModeData::Tuple(ret_tys) = fut_ty else {
-                unreachable!();
-            };
-            debug_assert_eq!(ret_tys.len(), 2);
-            let ModeData::Array(fut_arr_mode, _, fut_item_ty, _) = &ret_tys[0] else {
-                unreachable!();
-            };
-            let fut_popped_ty = &ret_tys[1];
-
-            require_owned(constrs, *fut_arr_mode);
-            mode_bind(constrs, fut_popped_ty, fut_item_ty);
-
-            let arr_mode = constrs.fresh_var();
-            require_owned(constrs, arr_mode);
-
-            let arr_ty = ModeData::Array(
-                arr_mode,
-                path.as_lt(),
-                Box::new(fut_popped_ty.clone()),
-                instantiate_overlay(customs, constrs, item_ty.overlay_items(None)),
+        TailExpr::ArrayOp(flat::ArrayOp::Pop(_item_ty, arr_id)) => {
+            let occurs = model::instantiate_model(
+                &*model::SIG_ARRAY_POP,
+                strategy,
+                customs,
+                constrs,
+                &mut ctx,
+                scopes,
+                &path,
+                &[*arr_id],
+                fut_modes,
+                fut_lts,
             );
-
-            let arr_occur = instantiate_occur(customs, &mut ctx, scopes, constrs, *arr_id, &arr_ty);
-            annot::Expr::ArrayOp(annot::ArrayOp::Pop(fut_popped_ty.clone(), arr_occur))
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Pop(occurs.next().unwrap()))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Replace(item_ty, hole_id, item_id)) => {
-            let (M::Array(fut_mode, _, fut_item_modes), L::Array(_, fut_item_lts)) =
-                (fut_modes, fut_lts)
-            else {
-                unreachable!();
-            };
-
-            require_owned(constrs, *fut_mode);
-
-            let item_occur = instantiate_occur(
+        TailExpr::ArrayOp(flat::ArrayOp::Replace(_item_ty, hole_id, item_id)) => {
+            let occurs = model::instantiate_model(
+                &*model::SIG_ARRAY_REPLACE,
                 strategy,
                 customs,
+                constrs,
                 &mut ctx,
                 scopes,
-                constrs,
-                *item_id,
-                fut_item_modes,
-                fut_item_lts,
+                &path,
+                &[*hole_id, *item_id],
+                fut_modes,
+                fut_lts,
             );
-
-            let hole_mode = constrs.fresh_var();
-            require_owned(constrs, hole_mode);
-
-            let hole_modes = ModeData::HoleArray(
-                hole_mode,
-                instantiate_overlay(constrs, &fut_item_modes.unapply_overlay()),
-                fut_item_modes.clone(),
-            );
-            let hole_lts = L::HoleArray(path.as_lt(), fut_item_lts.clone());
-            let hole_occur = instantiate_occur(
-                strategy,
-                customs,
-                &mut ctx,
-                scopes,
-                constrs,
-                *hole_id,
-                &hole_modes,
-                &hole_lts,
-            );
-
+            let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Replace(
-                annot::Type::new((**fut_item_lts).clone(), (**fut_item_modes).clone()),
-                hole_occur,
-                item_occur,
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
             ))
         }
 
         TailExpr::ArrayOp(flat::ArrayOp::Reserve(_item_ty, arr_id, cap_id)) => {
-            let (M::Array(fut_mode, _, fut_item_modes), L::Array(_, fut_item_lts)) =
-                (fut_modes, fut_lts)
-            else {
-                unreachable!();
-            };
-
-            require_owned(constrs, *fut_mode);
-
-            let cap_occur = instantiate_int_occur(&ctx, *cap_id);
-            let arr_occur = instantiate_occur(
-                strategy, customs, &mut ctx, scopes, constrs, *arr_id, fut_modes, fut_lts,
+            let occurs = model::instantiate_model(
+                &*model::SIG_ARRAY_RESERVE,
+                strategy,
+                customs,
+                constrs,
+                &mut ctx,
+                scopes,
+                &path,
+                &[*arr_id, *cap_id],
+                fut_modes,
+                fut_lts,
             );
+            let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Reserve(
-                annot::Type::new((**fut_item_lts).clone(), (**fut_item_modes).clone()),
-                arr_occur,
-                cap_occur,
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
             ))
         }
 
         TailExpr::IoOp(flat::IoOp::Input) => {
-            let (M::Array(fut_mode, _, fut_item_modes), L::Array(_, fut_item_lts)) =
-                (fut_modes, fut_lts)
-            else {
-                unreachable!();
-            };
-
-            require_owned(constrs, *fut_mode);
-            assert!(matches!(**fut_item_modes, M::Num(NumType::Byte)));
-            assert!(matches!(**fut_item_lts, L::Num(NumType::Byte)));
-
+            let _ = model::instantiate_model(
+                &*model::SIG_IO_INPUT,
+                strategy,
+                customs,
+                constrs,
+                &mut ctx,
+                scopes,
+                &path,
+                &[],
+                fut_modes,
+                fut_lts,
+            );
             annot::Expr::IoOp(annot::IoOp::Input)
         }
 
         TailExpr::IoOp(flat::IoOp::Output(arr_id)) => {
-            let arr_modes = M::Array(
-                constrs.fresh_var(),
-                annot::Overlay::Num(NumType::Byte),
-                Box::new(M::Num(NumType::Byte)),
+            let occurs = model::instantiate_model(
+                &*model::SIG_IO_OUTPUT,
+                strategy,
+                customs,
+                constrs,
+                &mut ctx,
+                scopes,
+                &path,
+                &[*arr_id],
+                fut_modes,
+                fut_lts,
             );
-            let arr_lts = LtData::Array(path.as_lt(), Box::new(L::Num(NumType::Byte)));
-            let arr_occur = instantiate_occur(
-                strategy, customs, &mut ctx, scopes, constrs, *arr_id, &arr_modes, &arr_lts,
-            );
-            annot::Expr::IoOp(annot::IoOp::Output(arr_occur))
+            let mut occurs = occurs.into_iter();
+            annot::Expr::IoOp(annot::IoOp::Output(occurs.next().unwrap()))
         }
 
-        TailExpr::Panic(ret_ty, msg_id) => {
-            debug_assert!(same_shape(ret_ty, fut_modes));
-
-            let arr_modes = M::Array(
-                constrs.fresh_var(),
-                annot::Overlay::Num(NumType::Byte),
-                Box::new(M::Num(NumType::Byte)),
+        TailExpr::Panic(_ret_ty, msg_id) => {
+            let occurs = model::instantiate_model(
+                &*model::SIG_PANIC,
+                strategy,
+                customs,
+                constrs,
+                &mut ctx,
+                scopes,
+                &path,
+                &[*msg_id],
+                fut_modes,
+                fut_lts,
             );
-            let arr_lts = LtData::Array(path.as_lt(), Box::new(L::Num(NumType::Byte)));
-            let msg_occur = instantiate_occur(
-                strategy, customs, &mut ctx, scopes, constrs, *msg_id, &arr_modes, &arr_lts,
-            );
-
+            let mut occurs = occurs.into_iter();
             annot::Expr::Panic(
                 annot::Type::new(fut_lts.clone(), fut_modes.clone()),
-                msg_occur,
+                occurs.next().unwrap(),
             )
         }
 
@@ -1829,8 +2101,14 @@ fn instantiate_expr(
     };
 
     (expr_annot, ctx.into_updates())
-    */
-    todo!()
+}
+
+#[derive(Clone, Debug)]
+struct SolverScc {
+    func_args: BTreeMap<CustomFuncId, annot::Type<ModeVar, Lt>>,
+    func_rets: BTreeMap<CustomFuncId, annot::Type<ModeVar, LtParam>>,
+    func_bodies: BTreeMap<CustomFuncId, annot::Expr<ModeVar, Lt>>,
+    scc_constrs: ConstrGraph,
 }
 
 fn instantiate_scc(
@@ -1855,7 +2133,6 @@ fn instantiate_scc(
                     (
                         *id,
                         instantiate_type_unused(
-                            customs,
                             &mut constrs,
                             &parameterize_type_simple(customs, &funcs[id].arg_type),
                         ),
@@ -1871,7 +2148,6 @@ fn instantiate_scc(
                     (
                         *id,
                         instantiate_type(
-                            customs,
                             &mut constrs,
                             &mut || next_lt.inc(),
                             &parameterize_type_simple(customs, &funcs[id].ret_type),
@@ -1904,7 +2180,6 @@ fn instantiate_scc(
 
                     let mut ctx = ImmutContext::new();
                     let arg_ty = instantiate_type_unused(
-                        customs,
                         &mut constrs,
                         &parameterize_type_simple(customs, &func.arg_type),
                     );
@@ -2102,53 +2377,40 @@ fn extract_expr(
         E::WrapCustom(id, content) => E::WrapCustom(*id, extract_occur(solution, content)),
         E::UnwrapCustom(id, wrapped) => E::UnwrapCustom(*id, extract_occur(solution, wrapped)),
         E::Intrinsic(intr, arg) => E::Intrinsic(*intr, extract_occur(solution, arg)),
-        E::ArrayOp(annot::ArrayOp::Get(item_ty, arr, idx, out_ty)) => {
-            E::ArrayOp(annot::ArrayOp::Get(
-                extract_type(solution, item_ty),
-                extract_occur(solution, arr),
-                extract_occur(solution, idx),
-                extract_type(solution, out_ty),
-            ))
-        }
-        E::ArrayOp(annot::ArrayOp::Extract(item_ty, arr, idx)) => {
-            E::ArrayOp(annot::ArrayOp::Extract(
-                extract_type(solution, item_ty),
-                extract_occur(solution, arr),
-                extract_occur(solution, idx),
-            ))
-        }
-        E::ArrayOp(annot::ArrayOp::Len(item_ty, arr)) => E::ArrayOp(annot::ArrayOp::Len(
-            extract_type(solution, item_ty),
+        E::ArrayOp(annot::ArrayOp::Get(arr, idx, out_ty)) => E::ArrayOp(annot::ArrayOp::Get(
             extract_occur(solution, arr),
+            extract_occur(solution, idx),
+            extract_type(solution, out_ty),
         )),
-        E::ArrayOp(annot::ArrayOp::Push(item_ty, arr, item)) => E::ArrayOp(annot::ArrayOp::Push(
-            extract_type(solution, item_ty),
+        E::ArrayOp(annot::ArrayOp::Extract(arr, idx)) => E::ArrayOp(annot::ArrayOp::Extract(
+            extract_occur(solution, arr),
+            extract_occur(solution, idx),
+        )),
+        E::ArrayOp(annot::ArrayOp::Len(arr)) => {
+            E::ArrayOp(annot::ArrayOp::Len(extract_occur(solution, arr)))
+        }
+        E::ArrayOp(annot::ArrayOp::Push(arr, item)) => E::ArrayOp(annot::ArrayOp::Push(
             extract_occur(solution, arr),
             extract_occur(solution, item),
         )),
-        E::ArrayOp(annot::ArrayOp::Pop(item_ty, arr)) => E::ArrayOp(annot::ArrayOp::Pop(
-            extract_type(solution, item_ty),
-            extract_occur(solution, arr),
+        E::ArrayOp(annot::ArrayOp::Pop(arr)) => {
+            E::ArrayOp(annot::ArrayOp::Pop(extract_occur(solution, arr)))
+        }
+        E::ArrayOp(annot::ArrayOp::Replace(hole, item)) => E::ArrayOp(annot::ArrayOp::Replace(
+            extract_occur(solution, hole),
+            extract_occur(solution, item),
         )),
-        E::ArrayOp(annot::ArrayOp::Replace(item_ty, hole, item)) => {
-            E::ArrayOp(annot::ArrayOp::Replace(
-                extract_type(solution, item_ty),
-                extract_occur(solution, hole),
-                extract_occur(solution, item),
-            ))
-        }
-        E::ArrayOp(annot::ArrayOp::Reserve(item_ty, arr, cap)) => {
-            E::ArrayOp(annot::ArrayOp::Reserve(
-                extract_type(solution, item_ty),
-                extract_occur(solution, arr),
-                extract_occur(solution, cap),
-            ))
-        }
+        E::ArrayOp(annot::ArrayOp::Reserve(arr, cap)) => E::ArrayOp(annot::ArrayOp::Reserve(
+            extract_occur(solution, arr),
+            extract_occur(solution, cap),
+        )),
         E::IoOp(annot::IoOp::Input) => E::IoOp(annot::IoOp::Input),
         E::IoOp(annot::IoOp::Output(arr)) => {
             E::IoOp(annot::IoOp::Output(extract_occur(solution, arr)))
         }
-        E::Panic(ty, msg) => E::Panic(extract_type(solution, ty), extract_occur(solution, msg)),
+        E::Panic(ret_ty, msg) => {
+            E::Panic(extract_type(solution, ret_ty), extract_occur(solution, msg))
+        }
         E::ArrayLit(item_ty, items) => E::ArrayLit(
             extract_type(solution, item_ty),
             items
