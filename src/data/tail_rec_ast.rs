@@ -2,10 +2,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::rc_specialized_ast as rc;
-use crate::data::repr_constrained_ast as constrain;
-use crate::data::repr_specialized_ast as special;
-use crate::data::repr_unified_ast as unif;
+use crate::data::rc_specialized_ast2 as rc;
 use crate::data::resolved_ast as res;
 use id_collections::{id_type, IdVec};
 
@@ -20,45 +17,36 @@ pub enum Expr {
     Local(rc::LocalId),
     Call(Purity, CustomFuncId, rc::LocalId),
     TailCall(TailFuncId, rc::LocalId),
-    Branch(rc::LocalId, Vec<(special::Condition, Expr)>, special::Type),
-    LetMany(Vec<(special::Type, Expr)>, rc::LocalId),
+    Branch(rc::LocalId, Vec<(rc::Condition, Expr)>, rc::Type),
+    LetMany(Vec<(rc::Type, Expr)>, rc::LocalId),
 
     Tuple(Vec<rc::LocalId>),
     TupleField(rc::LocalId, usize),
     WrapVariant(
-        IdVec<first_ord::VariantId, special::Type>,
+        IdVec<first_ord::VariantId, rc::Type>,
         first_ord::VariantId,
         rc::LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, rc::LocalId),
     WrapBoxed(
         rc::LocalId,
-        special::Type, // Inner type
+        rc::Type, // Inner type
     ),
     UnwrapBoxed(
         rc::LocalId,
-        special::Type, // Inner type
+        rc::Type, // Inner type
     ),
-    WrapCustom(special::CustomTypeId, rc::LocalId),
-    UnwrapCustom(special::CustomTypeId, rc::LocalId),
+    WrapCustom(rc::CustomTypeId, rc::LocalId),
+    UnwrapCustom(rc::CustomTypeId, rc::LocalId),
 
-    RcOp(
-        rc::RcOp,
-        unif::ContainerType<constrain::RepChoice>,
-        special::Type,
-        rc::LocalId,
-    ),
+    RcOp(rc::RcOp, rc::Type, rc::LocalId),
 
     Intrinsic(Intrinsic, rc::LocalId),
-    ArrayOp(
-        constrain::RepChoice,
-        special::Type, // Item type
-        unif::ArrayOp,
-    ),
-    IoOp(constrain::RepChoice, special::IoOp),
-    Panic(special::Type, constrain::RepChoice, rc::LocalId),
+    ArrayOp(rc::ArrayOp),
+    IoOp(rc::IoOp),
+    Panic(rc::Type, rc::LocalId),
 
-    ArrayLit(constrain::RepChoice, special::Type, Vec<rc::LocalId>),
+    ArrayLit(rc::Type, Vec<rc::LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -67,7 +55,7 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub struct TailFunc {
-    pub arg_type: special::Type,
+    pub arg_type: rc::Type,
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
 }
@@ -85,8 +73,8 @@ pub struct FuncDef {
     pub tail_funcs: IdVec<TailFuncId, TailFunc>,
 
     pub purity: Purity,
-    pub arg_type: special::Type,
-    pub ret_type: special::Type,
+    pub arg_type: rc::Type,
+    pub ret_type: rc::Type,
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
 }
@@ -94,7 +82,7 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: IdVec<special::CustomTypeId, special::Type>,
+    pub custom_types: rc::CustomTypes,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,

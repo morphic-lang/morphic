@@ -1,8 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
-use crate::data::repr_constrained_ast as constrain;
-use crate::data::repr_specialized_ast as special;
+use crate::data::rc_specialized_ast2 as rc;
 use crate::data::resolved_ast as res;
 use crate::data::tail_rec_ast as tail;
 use id_collections::{id_type, IdVec};
@@ -14,11 +13,11 @@ use id_collections::{id_type, IdVec};
 pub struct LocalId(pub usize);
 #[id_type]
 pub struct CustomFuncId(pub usize);
-pub type CustomTypeId = special::CustomTypeId;
+pub type CustomTypeId = rc::CustomTypeId;
 
-pub type Type = special::Type;
+pub type Type = rc::Type;
 
-// Mutable operations on persistent arrays with refcount 1 should mutate
+// Mutable operations on arrays with refcount 1 should mutate
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     New(),
@@ -85,7 +84,7 @@ pub enum Expr {
     TailCall(tail::TailFuncId, LocalId),
     If(LocalId, Box<Expr>, Box<Expr>),
     LetMany(
-        Vec<(Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        Vec<(Type, Expr)>, // bound values. Each is assigned a new sequential LocalId
         LocalId,           // body
     ),
     Unreachable(Type),
@@ -120,13 +119,12 @@ pub enum Expr {
     CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
 
     Intrinsic(Intrinsic, LocalId),
-    ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
-    IoOp(constrain::RepChoice, IoOp),
+    ArrayOp(Type, ArrayOp), // Type is the item type
+    IoOp(IoOp),
     // Takes message by borrow (not that it matters when the program is about to end anyway...)
     Panic(
-        Type,                 // Return type
-        constrain::RepChoice, // Message representation
-        LocalId,              // Message
+        Type,    // Return type
+        LocalId, // Message
     ),
 
     BoolLit(bool),
@@ -160,7 +158,9 @@ pub struct FuncDef {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: IdVec<CustomTypeId, Type>,
+    // pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    // pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

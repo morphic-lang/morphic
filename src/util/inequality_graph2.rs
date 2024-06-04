@@ -69,6 +69,10 @@ where
         ConstrGraph { vars: IdVec::new() }
     }
 
+    pub fn inner(&self) -> &IdVec<SolverVar, VarConstrs<SolverVar, T>> {
+        &self.vars
+    }
+
     pub fn var_count(&self) -> Count<SolverVar> {
         self.vars.count()
     }

@@ -9,11 +9,10 @@ use id_collections::{id_type, IdVec};
 #[id_type]
 pub struct LocalId(pub usize);
 
-#[id_type]
-pub struct CustomTypeId(pub usize);
+pub const ARG_LOCAL: LocalId = LocalId(0);
 
 #[id_type]
-pub struct CustomTypeSccId(pub usize);
+pub struct CustomTypeId(pub usize);
 
 #[id_type]
 pub struct CustomFuncId(pub usize);
@@ -24,7 +23,6 @@ pub enum Type {
     Num(first_ord::NumType),
     Tuple(Vec<Type>),
     Variants(IdVec<first_ord::VariantId, Type>),
-    SelfCustom(CustomTypeId),
     Custom(CustomTypeId),
     Array(annot::Mode, Box<Type>),
     HoleArray(annot::Mode, Box<Type>),
@@ -35,12 +33,6 @@ pub enum Type {
 pub enum RcOp {
     Retain,
     Release,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RcOpDebugInfo {
-    MustPreserve,
-    MayElide,
 }
 
 #[derive(Clone, Debug)]
@@ -114,7 +106,7 @@ pub enum Expr {
 
     // `Type` is not redundant with the binding type of `LocalId`. If the operation is a retain,
     // some additional fields of the argument may be treated as borrowed, as indicated by `Type`.
-    RcOp(RcOp, RcOpDebugInfo, Type, LocalId),
+    RcOp(RcOp, Type, LocalId),
 
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),
@@ -157,23 +149,17 @@ pub struct FuncDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct TypeDef {
-    pub content: Type,
-    pub scc: CustomTypeSccId,
-}
-
-#[derive(Clone, Debug)]
 pub struct CustomTypes {
-    pub types: IdVec<CustomTypeId, TypeDef>,
+    pub types: IdVec<CustomTypeId, Type>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
-    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
+    // pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
-    pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
+    // pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

@@ -3,6 +3,7 @@
 //! core logic for the pass is contained in `instantiate_expr`.
 
 use crate::data::anon_sum_ast as anon;
+use crate::data::borrow_spec as spec;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType, VariantId};
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
 use crate::data::intrinsics as intr;
@@ -612,10 +613,6 @@ fn subst_lts(lts: &LtData<Lt>, subst: &BTreeMap<LtParam, Lt>) -> LtData<Lt> {
         .collect_lt_data(lts)
 }
 
-fn wrap_lt_params(lts: &LtData<LtParam>) -> LtData<Lt> {
-    lts.iter().copied().map(Lt::var).collect_lt_data(lts)
-}
-
 fn join_everywhere(lts: &LtData<Lt>, new_lt: &Lt) -> LtData<Lt> {
     lts.iter()
         .map(|lt| Lt::join(lt, new_lt))
@@ -1045,142 +1042,21 @@ impl<'a> SignatureAssumptions<'a> {
 }
 
 mod model {
+    use crate::data::borrow_spec::*;
+
     use super::{ConstrGraph, LocalContext, LocalId, Strategy, TrackedContext};
-    use crate::data::first_order_ast::{CustomTypeId, NumType};
+    use crate::data::first_order_ast::CustomTypeId;
     use crate::data::mode_annot_ast2::{self as annot, LtData, ModeData};
     use crate::util::iter::IterExt;
-    use id_collections::{id_type, Id, IdMap, IdVec};
-    use once_cell::sync::Lazy;
+    use id_collections::{Id, IdMap, IdVec};
     use std::collections::BTreeSet;
-
-    #[id_type]
-    struct Mode(usize);
-
-    #[id_type]
-    struct Lt(usize);
-
-    #[id_type]
-    struct TypeVar(usize);
-
-    #[derive(Clone, Debug)]
-    enum ItemType {
-        Var(TypeVar),
-        Num(NumType),
-    }
-
-    use ItemType::Num as NumItem;
-
-    fn var_item(n: usize) -> ItemType {
-        ItemType::Var(TypeVar(n))
-    }
-
-    #[derive(Clone, Debug)]
-    enum Type {
-        Var(TypeVar),
-        Num(NumType),
-        Tuple(Vec<Type>),
-        Array(Mode, Lt, ItemType),
-        HoleArray(Mode, Lt, ItemType),
-    }
-
-    use Type::{Array, HoleArray, Num, Tuple};
-
-    fn var(n: usize) -> Type {
-        Type::Var(TypeVar(n))
-    }
-
-    /// A signature which can be used during expression instantiation to constrain the argument and
-    /// return types of calls to built-in operations. The modeling language is expressive enough to
-    /// represent the signatures of most (but not all) built-ins.
-    #[derive(Clone, Debug)]
-    pub struct BuiltinSig {
-        args: Vec<Type>,
-        ret: Type,
-        owned: BTreeSet<Mode>,
-        accessed: BTreeSet<Lt>,
-    }
-
-    macro_rules! set {
-        ($($item:expr),*) => {
-            {
-                #[allow(unused_mut)] // This is a false positive.
-                let mut set = BTreeSet::new();
-                $(set.insert($item);)*
-                set
-            }
-        };
-    }
-
-    pub static SIG_ARRAY_EXTRACT: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![Array(Mode(0), Lt(0), var_item(0)), Num(NumType::Int)],
-        ret: Tuple(vec![HoleArray(Mode(0), Lt(0), var_item(0)), var(0)]),
-        owned: set![Mode(0)],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_ARRAY_LEN: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![Array(Mode(0), Lt(0), var_item(0))],
-        ret: Num(NumType::Int),
-        owned: set![Mode(0)],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_ARRAY_PUSH: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![Array(Mode(0), Lt(0), var_item(0)), var(0)],
-        ret: Array(Mode(0), Lt(0), var_item(0)),
-        owned: set![Mode(0)],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_ARRAY_POP: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![Array(Mode(0), Lt(0), var_item(0))],
-        ret: Tuple(vec![Array(Mode(0), Lt(0), var_item(0)), var(0)]),
-        owned: set![Mode(0)],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_ARRAY_REPLACE: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![HoleArray(Mode(0), Lt(0), var_item(0)), var(0)],
-        ret: Array(Mode(0), Lt(0), var_item(0)),
-        owned: set![Mode(0)],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_ARRAY_RESERVE: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![Array(Mode(0), Lt(0), var_item(0)), Num(NumType::Int)],
-        ret: Array(Mode(0), Lt(0), var_item(0)),
-        owned: set![Mode(0)],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_IO_INPUT: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![],
-        ret: Array(Mode(0), Lt(0), NumItem(NumType::Byte)),
-        owned: set![Mode(0)],
-        accessed: set![],
-    });
-
-    pub static SIG_IO_OUTPUT: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![Array(Mode(0), Lt(0), NumItem(NumType::Byte))],
-        ret: Tuple(vec![]),
-        owned: set![],
-        accessed: set![Lt(0)],
-    });
-
-    pub static SIG_PANIC: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
-        args: vec![Array(Mode(0), Lt(0), NumItem(NumType::Byte))],
-        ret: Tuple(vec![]),
-        owned: set![],
-        accessed: set![Lt(0)],
-    });
 
     #[derive(Clone, Debug)]
     struct SigData {
         modes: IdMap<Mode, annot::ModeVar>,
         lts: IdMap<Lt, annot::Lt>,
         tys: IdMap<TypeVar, annot::Type<annot::ModeVar, annot::Lt>>,
-        // Only present for type variables that appear in item position.
-        ovs: IdMap<TypeVar, annot::Overlay<annot::ModeVar>>,
+        ovs: IdMap<TypeVar, annot::Overlay<annot::ModeVar>>, // only present for item types
     }
 
     fn extract_annot(
@@ -1199,22 +1075,28 @@ mod model {
 
         use LtData as L;
         use ModeData as M;
+        use Type as T;
+
         match (model, modes, lts) {
-            (Type::Var(v), modes, lts) => {
+            (T::Var(v), modes, lts) => {
                 insert(
                     &mut result.tys,
                     *v,
                     annot::Type::new(lts.clone(), modes.clone()),
                 );
             }
-            (Num(n1), M::Num(n2), L::Num(n3)) if n1 == n2 && n1 == n3 => {}
-            (Tuple(items1), M::Tuple(items2), L::Tuple(items3)) => {
+            (T::Num(n1), M::Num(n2), L::Num(n3)) if n1 == n2 && n1 == n3 => {}
+            (T::Tuple(items1), M::Tuple(items2), L::Tuple(items3)) => {
                 for ((item1, item2), item3) in items1.iter().zip_eq(items2).zip_eq(items3) {
                     extract_annot(result, item1, item2, item3);
                 }
             }
-            (Array(m1, lt1, item1), M::Array(m2, ov, item2), L::Array(lt2, item3))
-            | (HoleArray(m1, lt1, item1), M::HoleArray(m2, ov, item2), L::HoleArray(lt2, item3)) => {
+            (T::Array(m1, lt1, item1), M::Array(m2, ov, item2), L::Array(lt2, item3))
+            | (
+                T::HoleArray(m1, lt1, item1),
+                M::HoleArray(m2, ov, item2),
+                L::HoleArray(lt2, item3),
+            ) => {
                 insert(&mut result.modes, *m1, *m2);
                 insert(&mut result.lts, *lt1, lt2.clone());
                 match item1 {
@@ -1245,8 +1127,10 @@ mod model {
     ) {
         use LtData as L;
         use ModeData as M;
+        use Type as T;
+
         match (model, modes, lts) {
-            (Type::Var(v), modes, lts) => {
+            (T::Var(v), modes, lts) => {
                 if !data.tys.contains_key(*v) {
                     data.tys.insert(
                         *v,
@@ -1257,14 +1141,14 @@ mod model {
                     );
                 }
             }
-            (Num(n1), M::Num(n2), L::Num(n3)) if n1 == n2 && n1 == n3 => {}
-            (Tuple(items1), M::Tuple(items2), L::Tuple(items3)) => {
+            (T::Num(n1), M::Num(n2), L::Num(n3)) if n1 == n2 && n1 == n3 => {}
+            (T::Tuple(items1), M::Tuple(items2), L::Tuple(items3)) => {
                 for ((item1, item2), item3) in items1.iter().zip_eq(items2).zip_eq(items3) {
                     fill_vacant(data, customs, constrs, path, accessed, item1, item2, item3);
                 }
             }
-            (Array(m, lt, item1), M::Array(_, _, item2), L::Array(_, item3))
-            | (HoleArray(m, lt, item1), M::HoleArray(_, _, item2), L::HoleArray(_, item3)) => {
+            (T::Array(m, lt, item1), M::Array(_, _, item2), L::Array(_, item3))
+            | (T::HoleArray(m, lt, item1), M::HoleArray(_, _, item2), L::HoleArray(_, item3)) => {
                 if !data.modes.contains_key(*m) {
                     data.modes.insert(*m, constrs.fresh_var());
                 }
@@ -1305,21 +1189,21 @@ mod model {
     fn instantiate_model_modes(data: &SigData, model: &Type) -> ModeData<annot::ModeVar> {
         match model {
             Type::Var(v) => data.tys[v].modes().clone(),
-            Num(n) => ModeData::Num(*n),
-            Tuple(items) => ModeData::Tuple(
+            Type::Num(n) => ModeData::Num(*n),
+            Type::Tuple(items) => ModeData::Tuple(
                 items
                     .iter()
                     .map(|item| instantiate_model_modes(data, item))
                     .collect(),
             ),
-            Array(m, _, item) => {
+            Type::Array(m, _, item) => {
                 let (ov, item) = match item {
                     ItemType::Num(n) => (annot::Overlay::Num(*n), annot::ModeData::Num(*n)),
                     ItemType::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
                 };
                 ModeData::Array(data.modes[m], ov, Box::new(item))
             }
-            HoleArray(m, _, item) => {
+            Type::HoleArray(m, _, item) => {
                 let (ov, item) = match item {
                     ItemType::Num(n) => (annot::Overlay::Num(*n), annot::ModeData::Num(*n)),
                     ItemType::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
@@ -1332,14 +1216,14 @@ mod model {
     fn instantiate_model_lts(data: &SigData, model: &Type) -> LtData<annot::Lt> {
         match model {
             Type::Var(v) => data.tys[v].lts().clone(),
-            Num(n) => LtData::Num(*n),
-            Tuple(items) => LtData::Tuple(
+            Type::Num(n) => LtData::Num(*n),
+            Type::Tuple(items) => LtData::Tuple(
                 items
                     .iter()
                     .map(|item| instantiate_model_lts(data, item))
                     .collect(),
             ),
-            Array(_, lt, item) | HoleArray(_, lt, item) => {
+            Type::Array(_, lt, item) | Type::HoleArray(_, lt, item) => {
                 let item = match item {
                     ItemType::Num(n) => annot::LtData::Num(*n),
                     ItemType::Var(v) => data.tys[v].lts().clone(),
@@ -1887,7 +1771,7 @@ fn instantiate_expr(
 
         TailExpr::ArrayOp(flat::ArrayOp::Extract(_item_ty, arr_id, idx_id)) => {
             let occurs = model::instantiate_model(
-                &*model::SIG_ARRAY_EXTRACT,
+                &*spec::SIG_ARRAY_EXTRACT,
                 strategy,
                 customs,
                 constrs,
@@ -1907,7 +1791,7 @@ fn instantiate_expr(
 
         TailExpr::ArrayOp(flat::ArrayOp::Len(_item_ty, arr_id)) => {
             let occurs = model::instantiate_model(
-                &*model::SIG_ARRAY_LEN,
+                &*spec::SIG_ARRAY_LEN,
                 strategy,
                 customs,
                 constrs,
@@ -1924,7 +1808,7 @@ fn instantiate_expr(
 
         TailExpr::ArrayOp(flat::ArrayOp::Push(_item_ty, arr_id, item_id)) => {
             let occurs = model::instantiate_model(
-                &*model::SIG_ARRAY_PUSH,
+                &*spec::SIG_ARRAY_PUSH,
                 strategy,
                 customs,
                 constrs,
@@ -1944,7 +1828,7 @@ fn instantiate_expr(
 
         TailExpr::ArrayOp(flat::ArrayOp::Pop(_item_ty, arr_id)) => {
             let occurs = model::instantiate_model(
-                &*model::SIG_ARRAY_POP,
+                &*spec::SIG_ARRAY_POP,
                 strategy,
                 customs,
                 constrs,
@@ -1961,7 +1845,7 @@ fn instantiate_expr(
 
         TailExpr::ArrayOp(flat::ArrayOp::Replace(_item_ty, hole_id, item_id)) => {
             let occurs = model::instantiate_model(
-                &*model::SIG_ARRAY_REPLACE,
+                &*spec::SIG_ARRAY_REPLACE,
                 strategy,
                 customs,
                 constrs,
@@ -1981,7 +1865,7 @@ fn instantiate_expr(
 
         TailExpr::ArrayOp(flat::ArrayOp::Reserve(_item_ty, arr_id, cap_id)) => {
             let occurs = model::instantiate_model(
-                &*model::SIG_ARRAY_RESERVE,
+                &*spec::SIG_ARRAY_RESERVE,
                 strategy,
                 customs,
                 constrs,
@@ -2001,7 +1885,7 @@ fn instantiate_expr(
 
         TailExpr::IoOp(flat::IoOp::Input) => {
             let _ = model::instantiate_model(
-                &*model::SIG_IO_INPUT,
+                &*spec::SIG_IO_INPUT,
                 strategy,
                 customs,
                 constrs,
@@ -2017,7 +1901,7 @@ fn instantiate_expr(
 
         TailExpr::IoOp(flat::IoOp::Output(arr_id)) => {
             let occurs = model::instantiate_model(
-                &*model::SIG_IO_OUTPUT,
+                &*spec::SIG_IO_OUTPUT,
                 strategy,
                 customs,
                 constrs,
@@ -2034,7 +1918,7 @@ fn instantiate_expr(
 
         TailExpr::Panic(_ret_ty, msg_id) => {
             let occurs = model::instantiate_model(
-                &*model::SIG_PANIC,
+                &*spec::SIG_PANIC,
                 strategy,
                 customs,
                 constrs,
@@ -2187,7 +2071,7 @@ fn instantiate_scc(
                     debug_assert_eq!(arg_id, flat::ARG_LOCAL);
 
                     let mut scopes = LocalContext::new();
-                    let arg_id = scopes.add_local(annot::Path::root().seq(1));
+                    let arg_id = scopes.add_local(annot::ARG_SCOPE());
                     debug_assert_eq!(arg_id, flat::ARG_LOCAL);
 
                     let ret_ty = &ret_tys[id];
@@ -2199,10 +2083,9 @@ fn instantiate_scc(
                         &mut next_lt,
                         &ctx,
                         &mut scopes,
-                        // Should end before `scopes[arg_id]`
-                        annot::Path::root().seq(0),
+                        annot::FUNC_BODY_PATH(),
                         ret_ty.modes(),
-                        &wrap_lt_params(ret_ty.lts()),
+                        &ret_ty.lts().wrap_params(),
                         &func.body,
                         renderer,
                     );

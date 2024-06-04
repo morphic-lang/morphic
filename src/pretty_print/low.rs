@@ -6,7 +6,7 @@ use crate::data::low_ast::IoOp;
 use crate::data::low_ast::LocalId;
 use crate::data::low_ast::Program;
 use crate::data::low_ast::Type;
-use crate::data::repr_constrained_ast::RepChoice;
+use crate::data::mode_annot_ast2::Mode;
 use crate::intrinsic_config::intrinsic_to_name;
 use std::io;
 use std::io::Write;
@@ -33,12 +33,11 @@ impl Context {
     }
 }
 
-fn write_repchoice(w: &mut dyn Write, rep: &RepChoice) -> io::Result<()> {
-    let s = match &rep {
-        RepChoice::FallbackImmut => "immut",
-        RepChoice::OptimizedMut => "mut",
-    };
-    write![w, "{}", s]
+fn write_mode(w: &mut dyn Write, mode: Mode) -> io::Result<()> {
+    match mode {
+        Mode::Borrowed => write!(w, "&"),
+        Mode::Owned => Ok(()),
+    }
 }
 
 fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
@@ -47,15 +46,15 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
         Type::Num(NumType::Byte) => write![w, "Byte"],
         Type::Num(NumType::Int) => write![w, "Int"],
         Type::Num(NumType::Float) => write![w, "Float"],
-        Type::Array(rep, item_type) => {
-            write_repchoice(w, rep)?;
-            write![w, " Array ("]?;
+        Type::Array(mode, item_type) => {
+            write_mode(w, *mode)?;
+            write![w, "Array ("]?;
             write_type(w, item_type)?;
             write![w, ")"]
         }
-        Type::HoleArray(rep, item_type) => {
-            write_repchoice(w, rep)?;
-            write![w, " HoleArray ("]?;
+        Type::HoleArray(mode, item_type) => {
+            write_mode(w, *mode)?;
+            write![w, "HoleArray ("]?;
             write_type(w, item_type)?;
             write![w, ")"]
         }
@@ -96,7 +95,8 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
             }
             Ok(())
         }
-        Type::Boxed(box_type) => {
+        Type::Boxed(mode, box_type) => {
+            write_mode(w, *mode)?;
             write![w, "Box ("]?;
             write_type(w, box_type)?;
             write![w, ")"]
@@ -202,8 +202,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             local_id.0
         ],
 
-        Expr::ArrayOp(rep, _item_type, array_op) => {
-            write_repchoice(w, rep)?;
+        Expr::ArrayOp(_item_type, array_op) => {
             write![w, " "]?;
             match array_op {
                 ArrayOp::New() => write![w, "new"],
@@ -225,8 +224,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             }
         }
 
-        Expr::IoOp(rep, ioop) => {
-            write_repchoice(w, rep)?;
+        Expr::IoOp(ioop) => {
             write![w, " "]?;
             match ioop {
                 IoOp::Input => write![w, "input"],
@@ -234,8 +232,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             }
         }
 
-        Expr::Panic(_ret_type, rep, local_id) => {
-            write_repchoice(w, rep)?;
+        Expr::Panic(_ret_type, local_id) => {
             write![w, " "]?;
             write_single(w, "panic", local_id)
         }

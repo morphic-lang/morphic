@@ -1,9 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
-use crate::data::rc_specialized_ast as rc;
-use crate::data::repr_specialized_ast as special;
-use crate::data::repr_unified_ast as unif;
+use crate::data::rc_specialized_ast2 as rc;
 use crate::data::tail_rec_ast as tail;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::ProgressLogger;
@@ -66,14 +64,14 @@ fn build_comp(
 
 fn lower_condition(
     discrim: low::LocalId,
-    condition: &special::Condition,
+    condition: &rc::Condition,
     builder: &mut LowAstBuilder,
     match_type: &low::Type,
-    typedefs: &IdVec<special::CustomTypeId, low::Type>,
+    typedefs: &IdVec<rc::CustomTypeId, low::Type>,
 ) -> low::LocalId {
     match condition {
-        special::Condition::Any => builder.add_expr(low::Type::Bool, low::Expr::BoolLit(true)),
-        special::Condition::Tuple(subconditions) => {
+        rc::Condition::Any => builder.add_expr(low::Type::Bool, low::Expr::BoolLit(true)),
+        rc::Condition::Tuple(subconditions) => {
             let item_types = if let low::Type::Tuple(item_types) = match_type {
                 item_types
             } else {
@@ -99,7 +97,7 @@ fn lower_condition(
 
             builder.add_expr(low::Type::Bool, if_expr)
         }
-        special::Condition::Variant(variant_id, subcondition) => {
+        rc::Condition::Variant(variant_id, subcondition) => {
             let variant_id = first_ord::VariantId(variant_id.0);
 
             let variant_check = builder.add_expr(
@@ -142,7 +140,7 @@ fn lower_condition(
                 ),
             )
         }
-        special::Condition::Boxed(subcondition, content_type) => {
+        rc::Condition::Boxed(subcondition, content_type) => {
             let content = builder.add_expr(
                 content_type.clone(),
                 low::Expr::UnwrapBoxed(discrim, content_type.clone()),
@@ -150,7 +148,7 @@ fn lower_condition(
 
             lower_condition(content, subcondition, builder, content_type, typedefs)
         }
-        special::Condition::Custom(custom_type_id, subcondition) => {
+        rc::Condition::Custom(custom_type_id, subcondition) => {
             let content_type = &typedefs[custom_type_id];
 
             let content = builder.add_expr(
@@ -160,7 +158,7 @@ fn lower_condition(
 
             lower_condition(content, subcondition, builder, content_type, typedefs)
         }
-        special::Condition::BoolConst(val) => {
+        rc::Condition::BoolConst(val) => {
             if *val {
                 discrim
             } else {
@@ -174,7 +172,7 @@ fn lower_condition(
                 )
             }
         }
-        special::Condition::ByteConst(val) => {
+        rc::Condition::ByteConst(val) => {
             let val_id = builder.add_expr(
                 low::Type::Num(first_ord::NumType::Byte),
                 low::Expr::ByteLit(*val),
@@ -188,7 +186,7 @@ fn lower_condition(
                 builder,
             )
         }
-        special::Condition::IntConst(val) => {
+        rc::Condition::IntConst(val) => {
             let val_id = builder.add_expr(
                 low::Type::Num(first_ord::NumType::Int),
                 low::Expr::IntLit(*val),
@@ -203,7 +201,7 @@ fn lower_condition(
             )
         }
 
-        special::Condition::FloatConst(val) => {
+        rc::Condition::FloatConst(val) => {
             let val_id = builder.add_expr(
                 low::Type::Num(first_ord::NumType::Float),
                 low::Expr::FloatLit(*val),
@@ -222,11 +220,11 @@ fn lower_condition(
 
 fn lower_branch(
     discrim: rc::LocalId,
-    cases: &[(special::Condition, tail::Expr)],
+    cases: &[(rc::Condition, tail::Expr)],
     result_type: &low::Type,
-    context: &mut LocalContext<rc::LocalId, (special::Type, low::LocalId)>,
+    context: &mut LocalContext<rc::LocalId, (rc::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
-    typedefs: &IdVec<special::CustomTypeId, special::Type>,
+    typedefs: &IdVec<rc::CustomTypeId, rc::Type>,
 ) -> low::LocalId {
     match cases.first() {
         None => builder.add_expr(
@@ -272,7 +270,7 @@ fn lower_branch(
 impl rc::LocalId {
     fn lookup_in(
         &self,
-        context: &LocalContext<rc::LocalId, (special::Type, low::LocalId)>,
+        context: &LocalContext<rc::LocalId, (rc::Type, low::LocalId)>,
     ) -> low::LocalId {
         context.local_binding(*self).1
     }
@@ -281,9 +279,9 @@ impl rc::LocalId {
 fn lower_expr(
     expr: &tail::Expr,
     result_type: &low::Type,
-    context: &mut LocalContext<rc::LocalId, (special::Type, low::LocalId)>,
+    context: &mut LocalContext<rc::LocalId, (rc::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
-    typedefs: &IdVec<special::CustomTypeId, special::Type>,
+    typedefs: &IdVec<rc::CustomTypeId, rc::Type>,
 ) -> low::LocalId {
     match expr {
         tail::Expr::LetMany(bindings, final_local_id) => context.with_scope(|subcontext| {
@@ -343,7 +341,7 @@ fn lower_expr(
         tail::Expr::UnwrapVariant(variant_id, content_id) => {
             builder.add_expr(result_type.clone(), {
                 let variant_type = &context.local_binding(*content_id).0;
-                let variants = if let special::Type::Variants(variants) = variant_type {
+                let variants = if let rc::Type::Variants(variants) = variant_type {
                     variants
                 } else {
                     panic![];
@@ -364,77 +362,72 @@ fn lower_expr(
             typedefs[type_id].clone(),
             low::Expr::UnwrapCustom(*type_id, wrapped_id.lookup_in(context)),
         ),
-        tail::Expr::RcOp(op, container, inner_type, local_id) => {
-            let container_type = match container {
-                &unif::ContainerType::Array(rep) => {
-                    low::Type::Array(rep, Box::new(inner_type.clone()))
-                }
-                &unif::ContainerType::HoleArray(rep) => {
-                    low::Type::HoleArray(rep, Box::new(inner_type.clone()))
-                }
-                &unif::ContainerType::Boxed => low::Type::Boxed(Box::new(inner_type.clone())),
-            };
-            match op {
-                rc::RcOp::Retain => builder.add_expr(
-                    low::Type::Tuple(vec![]),
-                    low::Expr::Retain(local_id.lookup_in(context), container_type),
-                ),
-                rc::RcOp::Release => builder.add_expr(
-                    low::Type::Tuple(vec![]),
-                    low::Expr::Release(local_id.lookup_in(context), container_type),
-                ),
-            }
-        }
+        tail::Expr::RcOp(op, ty, local_id) => match op {
+            rc::RcOp::Retain => builder.add_expr(
+                low::Type::Tuple(vec![]),
+                low::Expr::Retain(local_id.lookup_in(context), ty.clone()),
+            ),
+            rc::RcOp::Release => builder.add_expr(
+                low::Type::Tuple(vec![]),
+                low::Expr::Release(local_id.lookup_in(context), ty.clone()),
+            ),
+        },
         tail::Expr::Intrinsic(intr, local_id) => builder.add_expr(
             result_type.clone(),
             low::Expr::Intrinsic(*intr, local_id.lookup_in(context)),
         ),
-        tail::Expr::ArrayOp(rep, item_type, array_op) => {
-            let array_expr = match array_op {
-                unif::ArrayOp::Get(array_id, index_id) => {
-                    low::ArrayOp::Get(array_id.lookup_in(context), index_id.lookup_in(context))
+        tail::Expr::ArrayOp(array_op) => {
+            let (item_type, array_expr) = match array_op {
+                rc::ArrayOp::Get(item_type, array_id, index_id) => (
+                    item_type,
+                    low::ArrayOp::Get(array_id.lookup_in(context), index_id.lookup_in(context)),
+                ),
+                rc::ArrayOp::Extract(item_type, array_id, index_id) => (
+                    item_type,
+                    low::ArrayOp::Extract(array_id.lookup_in(context), index_id.lookup_in(context)),
+                ),
+                rc::ArrayOp::Len(item_type, array_id) => {
+                    (item_type, low::ArrayOp::Len(array_id.lookup_in(context)))
                 }
-                unif::ArrayOp::Extract(array_id, index_id) => {
-                    low::ArrayOp::Extract(array_id.lookup_in(context), index_id.lookup_in(context))
+                rc::ArrayOp::Push(item_type, array_id, item_id) => (
+                    item_type,
+                    low::ArrayOp::Push(array_id.lookup_in(context), item_id.lookup_in(context)),
+                ),
+                rc::ArrayOp::Pop(item_type, array_id) => {
+                    (item_type, low::ArrayOp::Pop(array_id.lookup_in(context)))
                 }
-                unif::ArrayOp::Len(array_id) => low::ArrayOp::Len(array_id.lookup_in(context)),
-                unif::ArrayOp::Push(array_id, item_id) => {
-                    low::ArrayOp::Push(array_id.lookup_in(context), item_id.lookup_in(context))
-                }
-                unif::ArrayOp::Pop(array_id) => low::ArrayOp::Pop(array_id.lookup_in(context)),
-                unif::ArrayOp::Replace(array_id, item_id) => {
-                    low::ArrayOp::Replace(array_id.lookup_in(context), item_id.lookup_in(context))
-                }
-                unif::ArrayOp::Reserve(array_id, capacity_id) => low::ArrayOp::Reserve(
-                    array_id.lookup_in(context),
-                    capacity_id.lookup_in(context),
+                rc::ArrayOp::Replace(item_type, array_id, item_id) => (
+                    item_type,
+                    low::ArrayOp::Replace(array_id.lookup_in(context), item_id.lookup_in(context)),
+                ),
+                rc::ArrayOp::Reserve(item_type, array_id, capacity_id) => (
+                    item_type,
+                    low::ArrayOp::Reserve(
+                        array_id.lookup_in(context),
+                        capacity_id.lookup_in(context),
+                    ),
                 ),
             };
             builder.add_expr(
                 result_type.clone(),
-                low::Expr::ArrayOp(*rep, item_type.clone(), array_expr),
+                low::Expr::ArrayOp(item_type.clone(), array_expr),
             )
         }
-        tail::Expr::IoOp(rep, io_type) => builder.add_expr(
+        tail::Expr::IoOp(io_type) => builder.add_expr(
             result_type.clone(),
-            low::Expr::IoOp(
-                *rep,
-                match io_type {
-                    special::IoOp::Input => low::IoOp::Input,
-                    special::IoOp::Output(output_id) => {
-                        low::IoOp::Output(output_id.lookup_in(context))
-                    }
-                },
-            ),
+            low::Expr::IoOp(match io_type {
+                rc::IoOp::Input => low::IoOp::Input,
+                rc::IoOp::Output(output_id) => low::IoOp::Output(output_id.lookup_in(context)),
+            }),
         ),
-        tail::Expr::Panic(ret_type, rep, message) => builder.add_expr(
+        tail::Expr::Panic(ret_type, message) => builder.add_expr(
             result_type.clone(),
-            low::Expr::Panic(ret_type.clone(), *rep, message.lookup_in(context)),
+            low::Expr::Panic(ret_type.clone(), message.lookup_in(context)),
         ),
-        tail::Expr::ArrayLit(rep, elem_type, elems) => {
+        tail::Expr::ArrayLit(elem_type, elems) => {
             let mut result_id = builder.add_expr(
                 result_type.clone(),
-                low::Expr::ArrayOp(*rep, elem_type.clone(), low::ArrayOp::New()),
+                low::Expr::ArrayOp(elem_type.clone(), low::ArrayOp::New()),
             );
 
             let capacity_id = builder.add_expr(
@@ -445,7 +438,6 @@ fn lower_expr(
             result_id = builder.add_expr(
                 result_type.clone(),
                 low::Expr::ArrayOp(
-                    *rep,
                     elem_type.clone(),
                     low::ArrayOp::Reserve(result_id, capacity_id),
                 ),
@@ -455,7 +447,6 @@ fn lower_expr(
                 result_id = builder.add_expr(
                     result_type.clone(),
                     low::Expr::ArrayOp(
-                        *rep,
                         elem_type.clone(),
                         low::ArrayOp::Push(result_id, elem_id.lookup_in(context)),
                     ),
@@ -474,9 +465,9 @@ fn lower_expr(
 }
 
 fn lower_function_body(
-    typedefs: &IdVec<special::CustomTypeId, special::Type>,
-    arg_type: &special::Type,
-    ret_type: &special::Type,
+    typedefs: &IdVec<rc::CustomTypeId, rc::Type>,
+    arg_type: &rc::Type,
+    ret_type: &rc::Type,
     body: tail::Expr,
 ) -> low::Expr {
     let mut builder = LowAstBuilder::new(low::LocalId(1));
@@ -492,7 +483,7 @@ fn lower_function_body(
 
 fn lower_function(
     func: tail::FuncDef,
-    typedefs: &IdVec<special::CustomTypeId, special::Type>,
+    typedefs: &IdVec<rc::CustomTypeId, rc::Type>,
 ) -> low::FuncDef {
     // Appease the borrow checker
     let ret_type = &func.ret_type;
@@ -517,7 +508,7 @@ fn lower_function(
 pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -> low::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
-    let typedefs = program.custom_types;
+    let typedefs = program.custom_types.types;
 
     let lowered_funcs = program
         .funcs

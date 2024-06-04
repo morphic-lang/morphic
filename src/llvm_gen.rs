@@ -1,6 +1,5 @@
 use crate::builtins::array::ArrayImpl;
 use crate::builtins::cow_array::{CowArrayImpl, CowArrayIoImpl};
-use crate::builtins::flat_array::{FlatArrayImpl, FlatArrayIoImpl};
 use crate::builtins::prof_report::{
     define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
 };
@@ -10,8 +9,8 @@ use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
+use crate::data::mode_annot_ast2::Mode;
 use crate::data::profile as prof;
-use crate::data::repr_constrained_ast as constrain;
 use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::graph::{self, Graph};
@@ -253,8 +252,6 @@ fn declare_profile_points<'a>(
 }
 
 struct Instances<'a> {
-    flat_arrays: RefCell<BTreeMap<low::Type, Rc<dyn ArrayImpl<'a> + 'a>>>,
-    flat_array_io: FlatArrayIoImpl<'a>,
     cow_arrays: RefCell<BTreeMap<low::Type, Rc<dyn ArrayImpl<'a> + 'a>>>,
     cow_array_io: CowArrayIoImpl<'a>,
     rcs: RefCell<BTreeMap<low::Type, RcBoxBuiltin<'a>>>,
@@ -262,21 +259,6 @@ struct Instances<'a> {
 
 impl<'a> Instances<'a> {
     fn new<'b>(globals: &Globals<'a, 'b>) -> Self {
-        let mut flat_arrays = BTreeMap::new();
-        let byte_flat_builtin = FlatArrayImpl::declare(
-            globals.context,
-            globals.target,
-            globals.module,
-            globals.context.i8_type().into(),
-        );
-
-        flat_arrays.insert(
-            low::Type::Num(first_ord::NumType::Byte),
-            Rc::new(byte_flat_builtin) as Rc<dyn ArrayImpl<'a>>,
-        );
-        let flat_array_io =
-            FlatArrayIoImpl::declare(globals.context, globals.module, byte_flat_builtin);
-
         let mut cow_arrays = BTreeMap::new();
         let byte_cow_builtin = CowArrayImpl::declare(
             globals.context,
@@ -293,42 +275,10 @@ impl<'a> Instances<'a> {
             CowArrayIoImpl::declare(globals.context, globals.module, byte_cow_builtin);
 
         Self {
-            flat_arrays: RefCell::new(flat_arrays),
-            flat_array_io,
             cow_arrays: RefCell::new(cow_arrays),
             cow_array_io: cow_array_io,
             rcs: RefCell::new(BTreeMap::new()),
         }
-    }
-
-    fn get_flat_array<'b>(
-        &self,
-        globals: &Globals<'a, 'b>,
-        item_type: &low::Type,
-    ) -> Rc<dyn ArrayImpl<'a> + 'a> {
-        if let Some(existing) = self.flat_arrays.borrow().get(&item_type.clone()) {
-            return existing.clone();
-        }
-        let ty = get_llvm_type(globals, self, item_type);
-        let new_builtin = if is_zero_sized(globals, item_type) {
-            Rc::new(ZeroSizedArrayImpl::declare(
-                globals.context,
-                globals.target,
-                globals.module,
-                ty,
-            )) as Rc<dyn ArrayImpl<'a>>
-        } else {
-            Rc::new(FlatArrayImpl::declare(
-                globals.context,
-                globals.target,
-                globals.module,
-                ty,
-            )) as Rc<dyn ArrayImpl<'a>>
-        };
-        self.flat_arrays
-            .borrow_mut()
-            .insert(item_type.clone(), new_builtin.clone());
-        new_builtin
     }
 
     fn get_cow_array<'b>(
@@ -378,7 +328,6 @@ impl<'a> Instances<'a> {
         &self,
         globals: &Globals<'a, 'b>,
         rc_progress: impl ProgressLogger,
-        flat_progress: impl ProgressLogger,
         cow_progress: impl ProgressLogger,
     ) {
         let builder = globals.context.create_builder();
@@ -431,104 +380,6 @@ impl<'a> Instances<'a> {
             rc_progress.update(1);
         }
         rc_progress.finish();
-
-        // flat arrays
-        let mut flat_progress =
-            flat_progress.start_session(Some(self.flat_arrays.borrow().len() + 1));
-        for (i, (inner_type, flat_array_builtin)) in self.flat_arrays.borrow().iter().enumerate() {
-            let llvm_inner_type = get_llvm_type(globals, self, inner_type);
-
-            let retain_func = globals.module.add_function(
-                &format!("flat_array_retain_{}", i),
-                void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
-                    false,
-                ),
-                Some(Linkage::Internal),
-            );
-
-            let retain_entry = globals
-                .context
-                .append_basic_block(retain_func, "retain_entry");
-
-            builder.position_at_end(retain_entry);
-            let arg = retain_func.get_nth_param(0).unwrap();
-
-            let arg = builder
-                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
-                .unwrap();
-
-            gen_rc_op(
-                RcOp::Retain,
-                &builder,
-                self,
-                globals,
-                retain_func,
-                inner_type,
-                arg,
-            );
-
-            builder.build_return(None).unwrap();
-
-            let release_func = globals.module.add_function(
-                &format!("flat_array_release_{}", i),
-                void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
-                    false,
-                ),
-                Some(Linkage::Internal),
-            );
-
-            let release_entry = globals
-                .context
-                .append_basic_block(release_func, "release_entry");
-
-            builder.position_at_end(release_entry);
-            let arg = release_func.get_nth_param(0).unwrap();
-
-            let arg = builder
-                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
-                .unwrap();
-
-            gen_rc_op(
-                RcOp::Release,
-                &builder,
-                self,
-                globals,
-                release_func,
-                inner_type,
-                arg,
-            );
-
-            builder.build_return(None).unwrap();
-
-            // TODO: dont generate retains/releases that aren't used
-            if is_zero_sized(globals, inner_type) {
-                flat_array_builtin.define(
-                    globals.context,
-                    globals.target,
-                    &globals.tal,
-                    None,
-                    None,
-                );
-            } else {
-                flat_array_builtin.define(
-                    globals.context,
-                    globals.target,
-                    &globals.tal,
-                    Some(retain_func),
-                    Some(release_func),
-                );
-            }
-
-            flat_progress.update(1);
-        }
-
-        self.flat_array_io
-            .define(globals.context, globals.target, &globals.tal);
-        flat_progress.update(1);
-
-        flat_progress.finish();
 
         // cow arrays
         let mut cow_progress = cow_progress.start_session(Some(self.cow_arrays.borrow().len() + 1));
@@ -710,22 +561,12 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Num(first_ord::NumType::Byte) => globals.context.i8_type().into(),
         low::Type::Num(first_ord::NumType::Int) => globals.context.i64_type().into(),
         low::Type::Num(first_ord::NumType::Float) => globals.context.f64_type().into(),
-        low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => instances
-            .get_flat_array(globals, item_type)
-            .interface()
-            .array_type
-            .into(),
-        low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => instances
+        low::Type::Array(_, item_type) => instances
             .get_cow_array(globals, item_type)
             .interface()
             .array_type
             .into(),
-        low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => instances
-            .get_flat_array(globals, item_type)
-            .interface()
-            .hole_array_type
-            .into(),
-        low::Type::HoleArray(constrain::RepChoice::FallbackImmut, item_type) => instances
+        low::Type::HoleArray(_, item_type) => instances
             .get_cow_array(globals, item_type)
             .interface()
             .hole_array_type
@@ -740,7 +581,7 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Variants(variants) => {
             get_llvm_variant_type(globals, instances, &variants).into()
         }
-        low::Type::Boxed(type_) => instances
+        low::Type::Boxed(_, type_) => instances
             .get_rc(globals, type_)
             .rc_type
             .ptr_type(AddressSpace::default())
@@ -767,84 +608,48 @@ fn gen_rc_op<'a, 'b>(
     match ty {
         low::Type::Bool => {}
         low::Type::Num(_) => {}
-        low::Type::Array(constrain::RepChoice::OptimizedMut, item_type) => match op {
-            RcOp::Retain => {
-                let retain_func = instances
-                    .get_flat_array(globals, item_type)
-                    .interface()
-                    .retain_array;
-                builder
-                    .build_call(retain_func, &[arg.into()], "retain_flat_array")
-                    .unwrap();
-            }
-            RcOp::Release => {
-                let release_func = instances
-                    .get_flat_array(globals, item_type)
-                    .interface()
-                    .release_array;
-                builder
-                    .build_call(release_func, &[arg.into()], "release_flat_array")
-                    .unwrap();
-            }
-        },
-        low::Type::Array(constrain::RepChoice::FallbackImmut, item_type) => match op {
+        low::Type::Array(mode, item_type) => match op {
             RcOp::Retain => {
                 let retain_func = instances
                     .get_cow_array(globals, item_type)
                     .interface()
                     .retain_array;
                 builder
-                    .build_call(retain_func, &[arg.into()], "retain_pers_array")
+                    .build_call(retain_func, &[arg.into()], "retain_cow_array")
                     .unwrap();
             }
             RcOp::Release => {
-                let release_func = instances
-                    .get_cow_array(globals, item_type)
-                    .interface()
-                    .release_array;
-                builder
-                    .build_call(release_func, &[arg.into()], "release_pers_array")
-                    .unwrap();
+                if *mode == Mode::Owned {
+                    let release_func = instances
+                        .get_cow_array(globals, item_type)
+                        .interface()
+                        .release_array;
+                    builder
+                        .build_call(release_func, &[arg.into()], "release_cow_array")
+                        .unwrap();
+                }
             }
         },
-        low::Type::HoleArray(constrain::RepChoice::OptimizedMut, item_type) => match op {
-            RcOp::Retain => {
-                let retain_func = instances
-                    .get_flat_array(globals, item_type)
-                    .interface()
-                    .retain_hole;
-                builder
-                    .build_call(retain_func, &[arg.into()], "retain_flat_hole_array")
-                    .unwrap();
-            }
-            RcOp::Release => {
-                let release_func = instances
-                    .get_flat_array(globals, item_type)
-                    .interface()
-                    .release_hole;
-                builder
-                    .build_call(release_func, &[arg.into()], "release_flat_hole_array")
-                    .unwrap();
-            }
-        },
-        low::Type::HoleArray(constrain::RepChoice::FallbackImmut, item_type) => match op {
+        low::Type::HoleArray(mode, item_type) => match op {
             RcOp::Retain => {
                 let retain_func = instances
                     .get_cow_array(globals, item_type)
                     .interface()
                     .retain_hole;
                 builder
-                    .build_call(retain_func, &[arg.into()], "retain_pers_hole_array")
+                    .build_call(retain_func, &[arg.into()], "retain_cow_hole_array")
                     .unwrap();
             }
             RcOp::Release => {
-                let release_func = instances
-                    .get_cow_array(globals, item_type)
-                    .interface()
-                    .release_hole;
-                builder
-                    .build_call(release_func, &[arg.into()], "release_pers_hole_array")
-                    .unwrap();
+                if *mode == Mode::Owned {
+                    let release_func = instances
+                        .get_cow_array(globals, item_type)
+                        .interface()
+                        .release_hole;
+                    builder
+                        .build_call(release_func, &[arg.into()], "release_cow_hole_array")
+                        .unwrap();
+                }
             }
         },
         low::Type::Tuple(item_types) => {
@@ -918,7 +723,7 @@ fn gen_rc_op<'a, 'b>(
 
             builder.position_at_end(next_block);
         }
-        low::Type::Boxed(inner_type) => match op {
+        low::Type::Boxed(mode, inner_type) => match op {
             RcOp::Retain => {
                 let retain_func = instances.get_rc(globals, inner_type).retain;
                 builder
@@ -926,10 +731,12 @@ fn gen_rc_op<'a, 'b>(
                     .unwrap();
             }
             RcOp::Release => {
-                let release_func = instances.get_rc(globals, inner_type).release;
-                builder
-                    .build_call(release_func, &[arg.into()], "release_boxed")
-                    .unwrap();
+                if *mode == Mode::Owned {
+                    let release_func = instances.get_rc(globals, inner_type).release;
+                    builder
+                        .build_call(release_func, &[arg.into()], "release_boxed")
+                        .unwrap();
+                }
             }
         },
         low::Type::Custom(type_id) => match op {
@@ -1704,240 +1511,118 @@ fn gen_expr<'a, 'b>(
                     .unwrap()
             }
         },
-        E::ArrayOp(rep, item_type, array_op) => match rep {
-            constrain::RepChoice::OptimizedMut => {
-                let builtin = instances.get_flat_array(globals, item_type);
-                match array_op {
-                    low::ArrayOp::New() => builder
-                        .build_call(builtin.interface().new, &[], "flat_array_new")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Get(array_id, index_id) => builder
-                        .build_call(
-                            builtin.interface().get,
-                            &[locals[array_id].into(), locals[index_id].into()],
-                            "flat_array_get",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Extract(array_id, index_id) => builder
-                        .build_call(
-                            builtin.interface().extract,
-                            &[locals[array_id].into(), locals[index_id].into()],
-                            "flat_array_extract",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Len(array_id) => builder
-                        .build_call(
-                            builtin.interface().len,
-                            &[locals[array_id].into()],
-                            "flat_array_len",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Push(array_id, item_id) => builder
-                        .build_call(
-                            builtin.interface().push,
-                            &[locals[array_id].into(), locals[item_id].into()],
-                            "flat_array_push",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Pop(array_id) => builder
-                        .build_call(
-                            builtin.interface().pop,
-                            &[locals[array_id].into()],
-                            "flat_array_pop",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Replace(array_id, item_id) => builder
-                        .build_call(
-                            builtin.interface().replace,
-                            &[locals[array_id].into(), locals[item_id].into()],
-                            "flat_array_replace",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Reserve(array_id, capacity_id) => builder
-                        .build_call(
-                            builtin.interface().reserve,
-                            &[locals[array_id].into(), locals[capacity_id].into()],
-                            "flat_array_reserve",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                }
+        E::ArrayOp(item_type, array_op) => {
+            let builtin = instances.get_cow_array(globals, item_type);
+            match array_op {
+                low::ArrayOp::New() => builder
+                    .build_call(builtin.interface().new, &[], "cow_array_new")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
+                low::ArrayOp::Get(array_id, index_id) => builder
+                    .build_call(
+                        builtin.interface().get,
+                        &[locals[array_id].into(), locals[index_id].into()],
+                        "cow_array_get",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
+                low::ArrayOp::Extract(array_id, index_id) => builder
+                    .build_call(
+                        builtin.interface().extract,
+                        &[locals[array_id].into(), locals[index_id].into()],
+                        "cow_array_extract",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
+                low::ArrayOp::Len(array_id) => builder
+                    .build_call(
+                        builtin.interface().len,
+                        &[locals[array_id].into()],
+                        "cow_array_len",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
+                low::ArrayOp::Push(array_id, item_id) => builder
+                    .build_call(
+                        builtin.interface().push,
+                        &[locals[array_id].into(), locals[item_id].into()],
+                        "cow_array_push",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
+                low::ArrayOp::Pop(array_id) => builder
+                    .build_call(
+                        builtin.interface().pop,
+                        &[locals[array_id].into()],
+                        "cow_array_pop",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
+                low::ArrayOp::Replace(array_id, item_id) => builder
+                    .build_call(
+                        builtin.interface().replace,
+                        &[locals[array_id].into(), locals[item_id].into()],
+                        "cow_array_replace",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
+                low::ArrayOp::Reserve(array_id, capacity_id) => builder
+                    .build_call(
+                        builtin.interface().reserve,
+                        &[locals[array_id].into(), locals[capacity_id].into()],
+                        "cow_array_reserve",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
             }
-            constrain::RepChoice::FallbackImmut => {
-                let builtin = instances.get_cow_array(globals, item_type);
-                match array_op {
-                    low::ArrayOp::New() => builder
-                        .build_call(builtin.interface().new, &[], "pers_array_new")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Get(array_id, index_id) => builder
-                        .build_call(
-                            builtin.interface().get,
-                            &[locals[array_id].into(), locals[index_id].into()],
-                            "pers_array_get",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Extract(array_id, index_id) => builder
-                        .build_call(
-                            builtin.interface().extract,
-                            &[locals[array_id].into(), locals[index_id].into()],
-                            "pers_array_extract",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Len(array_id) => builder
-                        .build_call(
-                            builtin.interface().len,
-                            &[locals[array_id].into()],
-                            "pers_array_len",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Push(array_id, item_id) => builder
-                        .build_call(
-                            builtin.interface().push,
-                            &[locals[array_id].into(), locals[item_id].into()],
-                            "pers_array_push",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Pop(array_id) => builder
-                        .build_call(
-                            builtin.interface().pop,
-                            &[locals[array_id].into()],
-                            "pers_array_pop",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Replace(array_id, item_id) => builder
-                        .build_call(
-                            builtin.interface().replace,
-                            &[locals[array_id].into(), locals[item_id].into()],
-                            "pers_array_replace",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::ArrayOp::Reserve(array_id, capacity_id) => builder
-                        .build_call(
-                            builtin.interface().reserve,
-                            &[locals[array_id].into(), locals[capacity_id].into()],
-                            "pers_array_reserve",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                }
-            }
-        },
-        E::IoOp(rep, io_op) => match rep {
-            constrain::RepChoice::OptimizedMut => {
-                let builtin_io = instances.flat_array_io;
-                match io_op {
-                    low::IoOp::Input => builder
-                        .build_call(builtin_io.input, &[], "flat_array_input")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::IoOp::Output(array_id) => {
-                        builder
-                            .build_call(
-                                builtin_io.output,
-                                &[locals[array_id].into()],
-                                "flat_array_output",
-                            )
-                            .unwrap();
-
-                        context.struct_type(&[], false).get_undef().into()
-                    }
-                }
-            }
-            constrain::RepChoice::FallbackImmut => {
-                let builtin_io = instances.cow_array_io;
-                match io_op {
-                    low::IoOp::Input => builder
-                        .build_call(builtin_io.input, &[], "pers_array_input")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap(),
-                    low::IoOp::Output(array_id) => {
-                        builder
-                            .build_call(
-                                builtin_io.output,
-                                &[locals[array_id].into()],
-                                "pers_array_output",
-                            )
-                            .unwrap();
-
-                        context.struct_type(&[], false).get_undef().into()
-                    }
-                }
-            }
-        },
-        E::Panic(ret_type, rep, message_id) => {
-            match rep {
-                constrain::RepChoice::OptimizedMut => {
-                    let builtin_io = instances.flat_array_io;
+        }
+        E::IoOp(io_op) => {
+            let builtin_io = instances.cow_array_io;
+            match io_op {
+                low::IoOp::Input => builder
+                    .build_call(builtin_io.input, &[], "cow_array_input")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap(),
+                low::IoOp::Output(array_id) => {
                     builder
                         .build_call(
-                            builtin_io.output_error,
-                            &[locals[message_id].into()],
-                            "flat_array_panic",
+                            builtin_io.output,
+                            &[locals[array_id].into()],
+                            "cow_array_output",
                         )
                         .unwrap();
-                }
 
-                constrain::RepChoice::FallbackImmut => {
-                    let builtin_io = instances.cow_array_io;
-                    builder
-                        .build_call(
-                            builtin_io.output_error,
-                            &[locals[message_id].into()],
-                            "pers_array_panic",
-                        )
-                        .unwrap();
+                    context.struct_type(&[], false).get_undef().into()
                 }
             }
+        }
+        E::Panic(ret_type, message_id) => {
+            let builtin_io = instances.cow_array_io;
+            builder
+                .build_call(
+                    builtin_io.output_error,
+                    &[locals[message_id].into()],
+                    "cow_array_panic",
+                )
+                .unwrap();
 
             builder
                 .build_call(
@@ -2237,7 +1922,7 @@ fn add_size_deps(type_: &low::Type, deps: &mut BTreeSet<low::CustomTypeId>) {
     match type_ {
         low::Type::Bool | low::Type::Num(_) => {}
 
-        low::Type::Array(_, _) | low::Type::HoleArray(_, _) | low::Type::Boxed(_) => {}
+        low::Type::Array(_, _) | low::Type::HoleArray(_, _) | low::Type::Boxed(_, _) => {}
 
         low::Type::Tuple(items) => {
             for item in items {
@@ -2290,7 +1975,7 @@ fn is_zero_sized_with(
         | low::Type::Num(_)
         | low::Type::Array(_, _)
         | low::Type::HoleArray(_, _)
-        | low::Type::Boxed(_) => false,
+        | low::Type::Boxed(_, _) => false,
 
         low::Type::Tuple(items) => items
             .iter()
@@ -2343,7 +2028,6 @@ fn gen_program<'a>(
     context: &'a Context,
     func_progress: impl ProgressLogger,
     rc_progress: impl ProgressLogger,
-    flat_progress: impl ProgressLogger,
     cow_progress: impl ProgressLogger,
     type_progress: impl ProgressLogger,
 ) -> Module<'a> {
@@ -2428,7 +2112,7 @@ fn gen_program<'a>(
 
     func_progress.finish();
 
-    instances.define(&globals, rc_progress, flat_progress, cow_progress);
+    instances.define(&globals, rc_progress, cow_progress);
 
     let mut type_progress = type_progress.start_session(Some(program.custom_types.len()));
     for (type_id, type_decls) in &globals.custom_types {
@@ -2637,7 +2321,6 @@ fn compile_to_executable(
         &context,
         progress_ui::bar(progress, "gen_program: functions"),
         progress_ui::bar(progress, "gen_program: rc boxes"),
-        progress_ui::bar(progress, "gen_program: flat arrays"),
         progress_ui::bar(progress, "gen_program: cow arrays"),
         progress_ui::bar(progress, "gen_program: custom types"),
     );

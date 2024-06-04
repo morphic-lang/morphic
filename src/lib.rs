@@ -395,75 +395,28 @@ fn compile_to_low_ast(
 
     let flat = flatten::flatten(split, progress_ui::bar(progress, "flatten"));
 
-    // if let Some(artifact_dir) = artifact_dir {
-    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("flat"))
-    //         .map_err(ErrorKind::WriteIrFailed)?;
-
-    //     pretty_print::flat::write_program(&mut out_file, &flat)
-    //         .map_err(ErrorKind::WriteIrFailed)?;
-
-    //     let mode_annot2 = annot_modes2::annot_modes(
-    //         &flat,
-    //         annot_modes2::Strategy::Aggressive,
-    //         progress_ui::bar(progress, "annot_modes2"),
-    //     );
-
-    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("mode-annot2"))
-    //         .map_err(ErrorKind::WriteIrFailed)?;
-
-    //     pretty_print::mode_annot::write_program(&mut out_file, &mode_annot2)
-    //         .map_err(ErrorKind::WriteIrFailed)?;
-    // }
-
-    let alias_annot =
-        annot_aliases::annot_aliases(flat, progress_ui::bar(progress, "annot_aliases"));
-
-    let mut_annot =
-        annot_mutation::annot_mutation(alias_annot, progress_ui::bar(progress, "annot_mutation"));
-
-    let fate_annot = annot_fates::annot_fates(
-        mut_annot,
-        progress_ui::bar(progress, "annot_fates"),
-        pass_options.rc_mode,
-    );
-
-    let alias_spec = specialize_aliases::specialize_aliases(
-        fate_annot,
-        progress_ui::bar(progress, "specialize_aliases"),
-    );
-
-    let mode_annot = annot_modes::annot_modes(
-        alias_spec,
-        pass_options.rc_mode,
-        progress_ui::bar(progress, "annot_modes"),
-    );
-
-    let rc_spec =
-        rc_specialize::rc_specialize(mode_annot, progress_ui::bar(progress, "rc_specialize"));
-
-    let repr_unified = unify_reprs::unify_reprs(rc_spec, progress_ui::bar(progress, "unify_reprs"));
-
-    let repr_constrained = constrain_reprs::constrain_reprs(
-        repr_unified,
-        progress_ui::bar(progress, "constrain_reprs"),
-        pass_options.mutation_mode,
-    );
-
-    let repr_specialized = specialize_reprs::specialize_reprs(
-        repr_constrained,
-        progress_ui::bar(progress, "specialize_reprs"),
-    );
-
     if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("repr-spec-ir"))
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("flat"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::repr_specialized::write_program(&mut out_file, &repr_specialized)
+        pretty_print::flat::write_program(&mut out_file, &flat)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
+    let mode_annot = annot_modes2::annot_modes(
+        flat,
+        annot_modes2::Strategy::Default,
+        progress_ui::bar(progress, "annot_modes"),
+    );
+
+    let rc_specialized = rc_specialize2::rc_specialize(
+        mode_annot,
+        rc_specialize2::Strategy::Default,
+        progress_ui::bar(progress, "rc_specialize"),
+    );
+
     let tail_rec = tail_call_elim::tail_call_elim(
-        repr_specialized.clone(),
+        rc_specialized.clone(),
         progress_ui::bar(progress, "tail_call_elim"),
     );
 

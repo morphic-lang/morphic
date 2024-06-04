@@ -2,8 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::first_order_ast as first_ord;
 use crate::data::purity::Purity;
-use crate::data::rc_specialized_ast as rc;
-use crate::data::repr_specialized_ast as special;
+use crate::data::rc_specialized_ast2 as rc;
 use crate::data::tail_rec_ast as tail;
 use crate::util::graph::{self, Graph};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
@@ -19,22 +18,22 @@ fn last_index<T>(slice: &[T]) -> Option<usize> {
 
 // This function should only be called on 'expr' when the expression occurs in tail position.
 fn add_tail_call_deps(
-    deps: &mut BTreeSet<special::CustomFuncId>,
+    deps: &mut BTreeSet<rc::CustomFuncId>,
     vars_in_scope: usize,
-    expr: &special::Expr,
+    expr: &rc::Expr,
 ) {
     match expr {
-        special::Expr::Call(_purity, id, _arg) => {
+        rc::Expr::Call(_purity, id, _arg) => {
             deps.insert(*id);
         }
 
-        special::Expr::Branch(_discrim, cases, _result_type) => {
+        rc::Expr::Branch(_discrim, cases, _result_type) => {
             for (_cond, body) in cases {
                 add_tail_call_deps(deps, vars_in_scope, body);
             }
         }
 
-        special::Expr::LetMany(bindings, final_local) => {
+        rc::Expr::LetMany(bindings, final_local) => {
             if let Some(last_i) = last_index(bindings) {
                 if final_local == &rc::LocalId(vars_in_scope + last_i) {
                     add_tail_call_deps(deps, vars_in_scope + last_i, &bindings[last_i].1);
@@ -61,26 +60,26 @@ enum Position {
 }
 
 fn mark_call_modes(
-    modes: &mut IdVec<special::CustomFuncId, CallMode>,
-    curr_scc: &BTreeSet<special::CustomFuncId>,
+    modes: &mut IdVec<rc::CustomFuncId, CallMode>,
+    curr_scc: &BTreeSet<rc::CustomFuncId>,
     pos: Position,
     vars_in_scope: usize,
-    expr: &special::Expr,
+    expr: &rc::Expr,
 ) {
     match expr {
-        special::Expr::Call(_purity, id, _arg) => {
+        rc::Expr::Call(_purity, id, _arg) => {
             if pos != Position::Tail || !curr_scc.contains(id) {
                 modes[id] = CallMode::NotAlwaysTail;
             }
         }
 
-        special::Expr::Branch(_discrim, cases, _result_type) => {
+        rc::Expr::Branch(_discrim, cases, _result_type) => {
             for (_cond, body) in cases {
                 mark_call_modes(modes, curr_scc, pos, vars_in_scope, body);
             }
         }
 
-        special::Expr::LetMany(bindings, final_local) => {
+        rc::Expr::LetMany(bindings, final_local) => {
             for (i, (_type, binding)) in bindings.iter().enumerate() {
                 let sub_pos =
                     if i + 1 == bindings.len() && final_local == &rc::LocalId(vars_in_scope + i) {
@@ -102,7 +101,7 @@ enum FuncMapping {
     Direct(tail::CustomFuncId),
     Variant(
         tail::CustomFuncId,
-        IdVec<first_ord::VariantId, special::Type>,
+        IdVec<first_ord::VariantId, rc::Type>,
         first_ord::VariantId,
     ),
 }
@@ -115,17 +114,17 @@ enum EntryPoint {
 }
 
 fn trans_expr(
-    funcs: &IdVec<special::CustomFuncId, special::FuncDef>,
-    mappings: &IdVec<special::CustomFuncId, Option<FuncMapping>>,
-    local_tail_mappings: &BTreeMap<special::CustomFuncId, tail::TailFuncId>,
+    funcs: &IdVec<rc::CustomFuncId, rc::FuncDef>,
+    mappings: &IdVec<rc::CustomFuncId, Option<FuncMapping>>,
+    local_tail_mappings: &BTreeMap<rc::CustomFuncId, tail::TailFuncId>,
     pos: Position,
     vars_in_scope: usize,
-    expr: &special::Expr,
+    expr: &rc::Expr,
 ) -> tail::Expr {
     match expr {
-        special::Expr::Local(id) => tail::Expr::Local(*id),
+        rc::Expr::Local(id) => tail::Expr::Local(*id),
 
-        special::Expr::Call(purity, func, arg) => {
+        rc::Expr::Call(purity, func, arg) => {
             if pos == Position::Tail && local_tail_mappings.contains_key(func) {
                 tail::Expr::TailCall(local_tail_mappings[func], *arg)
             } else {
@@ -142,7 +141,7 @@ fn trans_expr(
                         tail::Expr::LetMany(
                             vec![
                                 (
-                                    special::Type::Variants(variant_types.clone()),
+                                    rc::Type::Variants(variant_types.clone()),
                                     tail::Expr::WrapVariant(variant_types.clone(), *variant, *arg),
                                 ),
                                 (
@@ -157,7 +156,7 @@ fn trans_expr(
             }
         }
 
-        special::Expr::Branch(discrim, cases, result_type) => tail::Expr::Branch(
+        rc::Expr::Branch(discrim, cases, result_type) => tail::Expr::Branch(
             *discrim,
             cases
                 .iter()
@@ -178,7 +177,7 @@ fn trans_expr(
             result_type.clone(),
         ),
 
-        special::Expr::LetMany(bindings, final_local) => tail::Expr::LetMany(
+        rc::Expr::LetMany(bindings, final_local) => tail::Expr::LetMany(
             bindings
                 .iter()
                 .enumerate()
@@ -208,58 +207,50 @@ fn trans_expr(
             *final_local,
         ),
 
-        special::Expr::Tuple(items) => tail::Expr::Tuple(items.clone()),
+        rc::Expr::Tuple(items) => tail::Expr::Tuple(items.clone()),
 
-        special::Expr::TupleField(tuple, idx) => tail::Expr::TupleField(*tuple, *idx),
+        rc::Expr::TupleField(tuple, idx) => tail::Expr::TupleField(*tuple, *idx),
 
-        special::Expr::WrapVariant(variant_types, variant, content) => {
+        rc::Expr::WrapVariant(variant_types, variant, content) => {
             tail::Expr::WrapVariant(variant_types.clone(), *variant, *content)
         }
 
-        special::Expr::UnwrapVariant(variant, wrapped) => {
-            tail::Expr::UnwrapVariant(*variant, *wrapped)
-        }
+        rc::Expr::UnwrapVariant(variant, wrapped) => tail::Expr::UnwrapVariant(*variant, *wrapped),
 
-        special::Expr::WrapBoxed(content, content_type) => {
+        rc::Expr::WrapBoxed(content, content_type) => {
             tail::Expr::WrapBoxed(*content, content_type.clone())
         }
 
-        special::Expr::UnwrapBoxed(content, content_type) => {
+        rc::Expr::UnwrapBoxed(content, content_type) => {
             tail::Expr::UnwrapBoxed(*content, content_type.clone())
         }
 
-        special::Expr::WrapCustom(custom, content) => tail::Expr::WrapCustom(*custom, *content),
+        rc::Expr::WrapCustom(custom, content) => tail::Expr::WrapCustom(*custom, *content),
 
-        special::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
+        rc::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
 
-        special::Expr::RcOp(op, container, inner_type, local) => {
-            tail::Expr::RcOp(*op, *container, inner_type.clone(), *local)
+        rc::Expr::RcOp(op, ty, local) => tail::Expr::RcOp(*op, ty.clone(), *local),
+
+        rc::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
+
+        rc::Expr::ArrayOp(op) => tail::Expr::ArrayOp(op.clone()),
+
+        rc::Expr::IoOp(op) => tail::Expr::IoOp(op.clone()),
+
+        rc::Expr::Panic(ret_type, message) => tail::Expr::Panic(ret_type.clone(), *message),
+
+        rc::Expr::ArrayLit(item_type, items) => {
+            tail::Expr::ArrayLit(item_type.clone(), items.clone())
         }
 
-        special::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
-
-        special::Expr::ArrayOp(rep, item_type, op) => {
-            tail::Expr::ArrayOp(*rep, item_type.clone(), *op)
-        }
-
-        special::Expr::IoOp(rep, op) => tail::Expr::IoOp(*rep, *op),
-
-        special::Expr::Panic(ret_type, rep, message) => {
-            tail::Expr::Panic(ret_type.clone(), *rep, *message)
-        }
-
-        special::Expr::ArrayLit(rep, item_type, items) => {
-            tail::Expr::ArrayLit(*rep, item_type.clone(), items.clone())
-        }
-
-        &special::Expr::BoolLit(val) => tail::Expr::BoolLit(val),
-        &special::Expr::ByteLit(val) => tail::Expr::ByteLit(val),
-        &special::Expr::IntLit(val) => tail::Expr::IntLit(val),
-        &special::Expr::FloatLit(val) => tail::Expr::FloatLit(val),
+        &rc::Expr::BoolLit(val) => tail::Expr::BoolLit(val),
+        &rc::Expr::ByteLit(val) => tail::Expr::ByteLit(val),
+        &rc::Expr::IntLit(val) => tail::Expr::IntLit(val),
+        &rc::Expr::FloatLit(val) => tail::Expr::FloatLit(val),
     }
 }
 
-pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) -> tail::Program {
+pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> tail::Program {
     let progress = progress.start_session(None);
 
     let tail_call_deps = Graph {
@@ -326,7 +317,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
     // controlled via a sum type argument.  'entry_points' provides information about a function
     // "from the inside", i.e. for use in generating its internal implementation.
     let (mappings, entry_points) = {
-        let mut mappings: IdVec<special::CustomFuncId, Option<FuncMapping>> =
+        let mut mappings: IdVec<rc::CustomFuncId, Option<FuncMapping>> =
             IdVec::from_vec(vec![None; program.funcs.len()]);
 
         let entry_points = sccs.map_refs(|new_func_id, scc| match scc {
@@ -357,7 +348,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                     _ => {
                         let entry_variants: IdVec<
                             first_ord::VariantId,
-                            (tail::TailFuncId, special::CustomFuncId),
+                            (tail::TailFuncId, rc::CustomFuncId),
                         > = IdVec::from_vec(not_always_tail_funcs);
 
                         let variant_types = entry_variants
@@ -471,9 +462,9 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                                 let call_result_var = rc::LocalId(2);
 
                                 (
-                                    special::Condition::Variant(
+                                    rc::Condition::Variant(
                                         variant_id,
-                                        Box::new(special::Condition::Any),
+                                        Box::new(rc::Condition::Any),
                                     ),
                                     tail::Expr::LetMany(
                                         vec![
@@ -497,7 +488,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                         ret_type.clone(),
                     );
 
-                    (special::Type::Variants(arg_variant_types), body)
+                    (rc::Type::Variants(arg_variant_types), body)
                 }
             };
 
@@ -522,15 +513,15 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                 tail_funcs: IdVec::new(),
 
                 purity: Purity::Impure,
-                arg_type: special::Type::Tuple(Vec::new()),
-                ret_type: special::Type::Tuple(Vec::new()),
+                arg_type: rc::Type::Tuple(Vec::new()),
+                ret_type: rc::Type::Tuple(Vec::new()),
                 body: trans_expr(
                     &program.funcs,
                     &mappings,
                     &BTreeMap::new(),
                     Position::Tail,
                     1,
-                    &special::Expr::Call(Purity::Impure, program.main, rc::ARG_LOCAL),
+                    &rc::Expr::Call(Purity::Impure, program.main, rc::ARG_LOCAL),
                 ),
                 profile_point: None,
             };
