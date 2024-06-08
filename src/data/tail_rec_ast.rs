@@ -2,6 +2,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
+use crate::data::rc_annot_ast::RcOp;
 use crate::data::rc_specialized_ast2 as rc;
 use crate::data::resolved_ast as res;
 use id_collections::{id_type, IdVec};
@@ -39,7 +40,7 @@ pub enum Expr {
     WrapCustom(rc::CustomTypeId, rc::LocalId),
     UnwrapCustom(rc::CustomTypeId, rc::LocalId),
 
-    RcOp(rc::RcOp, rc::Type, rc::LocalId),
+    RcOp(RcOp, rc::Type, rc::LocalId),
 
     Intrinsic(Intrinsic, rc::LocalId),
     ArrayOp(rc::ArrayOp),

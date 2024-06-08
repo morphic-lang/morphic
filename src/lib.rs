@@ -73,6 +73,10 @@ mod specialize_aliases;
 mod annot_modes;
 mod annot_modes2;
 
+mod annot_obligations;
+
+mod annot_rcs;
+
 mod rc_specialize;
 mod rc_specialize2;
 
@@ -408,6 +412,14 @@ fn compile_to_low_ast(
         annot_modes2::Strategy::Default,
         progress_ui::bar(progress, "annot_modes"),
     );
+
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("mode_annot"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::mode_annot::write_program(&mut out_file, &mode_annot)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
 
     let rc_specialized = rc_specialize2::rc_specialize(
         mode_annot,

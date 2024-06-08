@@ -1,0 +1,395 @@
+use crate::data::first_order_ast as first_ord;
+use crate::data::flat_ast as flat;
+use crate::data::mode_annot_ast2::{
+    self as annot, CollectOverlay, Lt, Mode, ModeParam, ModeSolution, Path,
+};
+use crate::data::obligation_annot_ast::{
+    self as ob, ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
+};
+use crate::util::instance_queue::InstanceQueue;
+use crate::util::iter::IterExt;
+use crate::util::local_context::LocalContext;
+use crate::util::progress_logger::ProgressLogger;
+use crate::util::progress_logger::ProgressSession;
+use id_collections::IdVec;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct FuncSpec {
+    old_id: first_ord::CustomFuncId,
+    params: IdVec<ModeParam, Mode>,
+}
+
+type FuncInstances = InstanceQueue<FuncSpec, CustomFuncId>;
+
+fn get_slot_obligation(occur_path: &Path, mode_src: Mode, mode_dst: Mode, lt_dst: &Lt) -> Lt {
+    match (mode_src, mode_dst) {
+        (Mode::Owned, Mode::Borrowed) => lt_dst.clone(),
+        (Mode::Owned, Mode::Owned) => occur_path.as_lt(),
+        (Mode::Borrowed, _) => Lt::Empty,
+    }
+}
+
+fn get_occur_obligation(
+    customs: &annot::CustomTypes,
+    occur_path: &Path,
+    ty_src: &Type,
+    ty_dst: &Type,
+) -> StackLt {
+    ty_src
+        .modes()
+        .iter_overlay()
+        .zip_eq(ty_dst.modes().iter_overlay())
+        .zip_eq(ty_dst.lts().iter_overlay(customs))
+        .map(|((mode_src, mode_dst), lt_dst)| {
+            get_slot_obligation(occur_path, *mode_src, *mode_dst, lt_dst)
+        })
+        .collect_overlay(&ty_src.modes().unapply_overlay())
+}
+
+fn instantiate_type(
+    inst_params: &IdVec<ModeParam, Mode>,
+    ty: &annot::Type<ModeSolution, Lt>,
+) -> Type {
+    ty.map_modes(|solution| solution.lb.instantiate(inst_params))
+}
+
+fn instantiate_occur(
+    inst_params: &IdVec<ModeParam, Mode>,
+    occur: &annot::Occur<ModeSolution, Lt>,
+) -> Occur {
+    Occur {
+        id: occur.id,
+        ty: instantiate_type(inst_params, &occur.ty),
+    }
+}
+
+fn instantiate_cond(
+    inst_params: &IdVec<ModeParam, Mode>,
+    cond: &annot::Condition<ModeSolution, Lt>,
+) -> annot::Condition<Mode, Lt> {
+    match cond {
+        annot::Condition::Any => annot::Condition::Any,
+        annot::Condition::Tuple(conds) => annot::Condition::Tuple(
+            conds
+                .iter()
+                .map(|cond| instantiate_cond(inst_params, cond))
+                .collect(),
+        ),
+        annot::Condition::Variant(variant_id, cond) => {
+            annot::Condition::Variant(*variant_id, Box::new(instantiate_cond(inst_params, cond)))
+        }
+        annot::Condition::Boxed(cond, item_ty) => annot::Condition::Boxed(
+            Box::new(instantiate_cond(inst_params, cond)),
+            instantiate_type(inst_params, item_ty),
+        ),
+        annot::Condition::Custom(custom_id, cond) => {
+            annot::Condition::Custom(*custom_id, Box::new(instantiate_cond(inst_params, cond)))
+        }
+        annot::Condition::BoolConst(lit) => annot::Condition::BoolConst(*lit),
+        annot::Condition::ByteConst(lit) => annot::Condition::ByteConst(*lit),
+        annot::Condition::IntConst(lit) => annot::Condition::IntConst(*lit),
+        annot::Condition::FloatConst(lit) => annot::Condition::FloatConst(*lit),
+    }
+}
+
+fn add_unused_local(
+    ctx: &mut LocalContext<flat::LocalId, (Type, StackLt)>,
+    ty: Type,
+) -> flat::LocalId {
+    let ov = ty.modes().unapply_overlay();
+    let init_lt = ov.iter().map(|_| Lt::Empty).collect_overlay(&ov);
+    let binding_id = ctx.add_local((ty, init_lt));
+    binding_id
+}
+
+fn annot_expr(
+    customs: &annot::CustomTypes,
+    funcs: &IdVec<first_ord::CustomFuncId, annot::FuncDef>,
+    insts: &mut FuncInstances,
+    inst_params: &IdVec<ModeParam, Mode>,
+    path: &Path,
+    ctx: &mut LocalContext<flat::LocalId, (Type, StackLt)>,
+    ret_ty: &Type,
+    expr: &annot::Expr<ModeSolution, Lt>,
+) -> Expr {
+    // Occurrences must be handled in reverse execution order so that lifetime obligations are
+    // correct when generating RC ops
+    let handle_occur = |ctx: &mut LocalContext<_, (_, StackLt)>, occur: &annot::Occur<_, _>| {
+        let occur = instantiate_occur(inst_params, occur);
+        let (ty, lt) = ctx.local_binding_mut(occur.id);
+
+        // We must update the lifetime obligation of the binding to reflect this occurrence.
+        let obligation = get_occur_obligation(customs, path, &ty, &occur.ty);
+        *lt = lt.join(&obligation);
+        occur
+    };
+
+    match expr {
+        annot::Expr::Local(occur) => Expr::Local(handle_occur(ctx, occur)),
+
+        annot::Expr::Call(purity, func_id, arg) => {
+            let params = funcs[func_id]
+                .constrs
+                .sig
+                .map_refs(|_, solution| solution.instantiate(inst_params));
+            let new_func_id = insts.resolve(FuncSpec {
+                old_id: *func_id,
+                params: params,
+            });
+            Expr::Call(*purity, new_func_id, handle_occur(ctx, arg))
+        }
+
+        annot::Expr::Branch(cond, arms, ty) => {
+            let num_arms = arms.len();
+
+            // It is OK to instantiate the arms in any order and using the same (mutable) context
+            // because we only care about the `does_not_exceed` relation in this pass and that
+            // relation does not care about the content of parallel lifetime branches
+            let new_arms = arms
+                .into_iter()
+                .enumerate()
+                .map(|(i, (cond, expr))| {
+                    (
+                        instantiate_cond(inst_params, &cond),
+                        annot_expr(
+                            customs,
+                            funcs,
+                            insts,
+                            inst_params,
+                            &path.par(i, num_arms),
+                            ctx,
+                            ret_ty,
+                            expr,
+                        ),
+                    )
+                })
+                .collect();
+
+            let new_cond = handle_occur(ctx, cond);
+            Expr::Branch(new_cond, new_arms, instantiate_type(inst_params, &ty))
+        }
+
+        // We use `with_scope` to express our intent. In fact, all the bindings we add are popped
+        // from the context before we return.
+        annot::Expr::LetMany(bindings, ret) => ctx.with_scope(|ctx| {
+            let mut new_exprs = Vec::new();
+            for (i, (ty, expr)) in bindings.into_iter().enumerate() {
+                let ty = instantiate_type(inst_params, &ty);
+                let _ = add_unused_local(ctx, ty.clone());
+                let new_expr = annot_expr(
+                    customs,
+                    funcs,
+                    insts,
+                    inst_params,
+                    &path.seq(i),
+                    ctx,
+                    &ty,
+                    expr,
+                );
+                new_exprs.push(new_expr);
+            }
+
+            let mut new_bindings_rev = Vec::new();
+            for expr in new_exprs.into_iter().rev() {
+                let (_, (ty, obligation)) = ctx.pop_local();
+                new_bindings_rev.push((ty, obligation, expr));
+            }
+
+            let new_bindings = {
+                new_bindings_rev.reverse();
+                new_bindings_rev
+            };
+            Expr::LetMany(new_bindings, handle_occur(ctx, ret))
+        }),
+
+        annot::Expr::Tuple(fields) => {
+            let mut fields_rev: Vec<_> = fields
+                .into_iter()
+                .rev()
+                .map(|occur| handle_occur(ctx, occur))
+                .collect();
+
+            let fields = {
+                fields_rev.reverse();
+                fields_rev
+            };
+
+            Expr::Tuple(fields)
+        }
+
+        annot::Expr::TupleField(tup, idx) => Expr::TupleField(handle_occur(ctx, tup), *idx),
+
+        annot::Expr::WrapVariant(variants, variant, content) => Expr::WrapVariant(
+            variants.map_refs(|_, ty| instantiate_type(inst_params, ty)),
+            *variant,
+            handle_occur(ctx, content),
+        ),
+
+        annot::Expr::UnwrapVariant(variant, wrapped) => {
+            Expr::UnwrapVariant(*variant, handle_occur(ctx, wrapped))
+        }
+
+        annot::Expr::WrapBoxed(content, ty) => Expr::WrapBoxed(
+            handle_occur(ctx, content),
+            instantiate_type(inst_params, &ty),
+        ),
+
+        annot::Expr::UnwrapBoxed(wrapped, ty) => Expr::UnwrapBoxed(
+            handle_occur(ctx, wrapped),
+            instantiate_type(inst_params, &ty),
+        ),
+
+        annot::Expr::WrapCustom(id, content) => {
+            Expr::WrapCustom(*id, handle_occur(ctx, content), ret_ty.clone())
+        }
+
+        annot::Expr::UnwrapCustom(id, wrapped) => {
+            Expr::UnwrapCustom(*id, handle_occur(ctx, wrapped))
+        }
+
+        annot::Expr::Intrinsic(intrinsic, occur) => {
+            Expr::Intrinsic(*intrinsic, handle_occur(ctx, occur))
+        }
+
+        annot::Expr::ArrayOp(annot::ArrayOp::Get(arr, idx, ty)) => {
+            let idx = handle_occur(ctx, idx);
+            let arr = handle_occur(ctx, arr);
+            Expr::ArrayOp(ArrayOp::Get(arr, idx, instantiate_type(inst_params, &ty)))
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Extract(arr, idx)) => {
+            let idx = handle_occur(ctx, idx);
+            let arr = handle_occur(ctx, arr);
+            Expr::ArrayOp(ArrayOp::Extract(arr, idx))
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Len(arr)) => {
+            Expr::ArrayOp(ArrayOp::Len(handle_occur(ctx, arr)))
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Push(arr, item)) => {
+            let item = handle_occur(ctx, item);
+            let arr = handle_occur(ctx, arr);
+            Expr::ArrayOp(ArrayOp::Push(arr, item))
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Pop(arr)) => {
+            Expr::ArrayOp(ArrayOp::Pop(handle_occur(ctx, arr)))
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Replace(arr, item)) => {
+            let item = handle_occur(ctx, item);
+            let arr = handle_occur(ctx, arr);
+            Expr::ArrayOp(ArrayOp::Replace(arr, item))
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Reserve(arr, cap)) => {
+            let cap = handle_occur(ctx, cap);
+            let arr = handle_occur(ctx, arr);
+            Expr::ArrayOp(ArrayOp::Reserve(arr, cap))
+        }
+        annot::Expr::IoOp(annot::IoOp::Input) => Expr::IoOp(IoOp::Input),
+        annot::Expr::IoOp(annot::IoOp::Output(occur)) => {
+            Expr::IoOp(IoOp::Output(handle_occur(ctx, occur)))
+        }
+
+        annot::Expr::Panic(ret_ty, occur) => Expr::Panic(
+            instantiate_type(inst_params, &ret_ty),
+            handle_occur(ctx, occur),
+        ),
+        annot::Expr::ArrayLit(ty, elems) => {
+            let mut elems_rev: Vec<_> = elems
+                .into_iter()
+                .rev()
+                .map(|occur| handle_occur(ctx, occur))
+                .collect();
+
+            let elems = {
+                elems_rev.reverse();
+                elems_rev
+            };
+
+            Expr::ArrayLit(instantiate_type(inst_params, &ty), elems)
+        }
+
+        annot::Expr::BoolLit(lit) => Expr::BoolLit(*lit),
+        annot::Expr::ByteLit(lit) => Expr::ByteLit(*lit),
+        annot::Expr::IntLit(lit) => Expr::IntLit(*lit),
+        annot::Expr::FloatLit(lit) => Expr::FloatLit(*lit),
+    }
+}
+
+fn annot_func(
+    customs: &annot::CustomTypes,
+    funcs: &IdVec<first_ord::CustomFuncId, annot::FuncDef>,
+    func_insts: &mut FuncInstances,
+    inst_params: &IdVec<ModeParam, Mode>,
+    id: first_ord::CustomFuncId,
+) -> FuncDef {
+    let func = &funcs[id];
+
+    let mut context = LocalContext::new();
+    let arg_ty = func.arg_ty.map_modes(|param| inst_params[param]);
+    let arg_id = add_unused_local(&mut context, arg_ty);
+    debug_assert_eq!(arg_id, flat::ARG_LOCAL);
+
+    let ret_ty = func
+        .ret_ty
+        .map(|param| inst_params[param], |lt| Lt::var(lt.clone()));
+    let body = annot_expr(
+        customs,
+        funcs,
+        func_insts,
+        inst_params,
+        &annot::FUNC_BODY_PATH(),
+        &mut context,
+        &ret_ty,
+        &func.body,
+    );
+
+    let (_, (arg_type, arg_obligation)) = context.pop_local();
+    FuncDef {
+        purity: func.purity,
+        arg_ty,
+        ret_ty,
+        arg_obligation,
+        body,
+        profile_point: func.profile_point,
+    }
+}
+
+pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger) -> ob::Program {
+    let mut progress = progress.start_session(Some(program.funcs.len()));
+    let mut func_insts = FuncInstances::new();
+
+    let main_params = program.funcs[program.main]
+        .constrs
+        .sig
+        .map_refs(|_, solution| solution.lb_const);
+    let main = func_insts.resolve(FuncSpec {
+        old_id: program.main,
+        params: main_params,
+    });
+
+    let mut funcs = IdVec::new();
+    while let Some((new_id, spec)) = func_insts.pop_pending() {
+        let annot = annot_func(
+            &program.custom_types,
+            &program.funcs,
+            &mut func_insts,
+            &spec.params,
+            spec.old_id,
+        );
+
+        let pushed_id = funcs.push(annot);
+        debug_assert_eq!(pushed_id, new_id);
+        progress.update(1);
+    }
+
+    progress.finish();
+
+    let custom_types = ob::CustomTypes {
+        types: program.custom_types.types,
+    };
+    ob::Program {
+        mod_symbols: program.mod_symbols,
+        custom_types: custom_types,
+        funcs,
+        profile_points: program.profile_points,
+        main,
+    }
+}

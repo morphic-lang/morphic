@@ -16,6 +16,7 @@ use crate::data::purity::Purity;
 use crate::intrinsic_config::intrinsic_sig;
 use crate::pretty_print::utils::CustomTypeRenderer;
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
+use crate::util::immut_context as immut;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
@@ -25,6 +26,10 @@ use id_collections::{id_type, Count, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+
+type ImmutContext = immut::ImmutContext<LocalId, annot::Type<ModeVar, Lt>>;
+type LocalUpdates = immut::LocalUpdates<LocalId, annot::Type<ModeVar, Lt>>;
+type TrackedContext = immut::TrackedContext<LocalId, annot::Type<ModeVar, Lt>>;
 
 // It is crucial that RC specialization (the next pass) does not inhibit tail calls by inserting
 // retains/releases after them. To that end, this pass must handle tail calls specially during
@@ -737,135 +742,6 @@ fn unfold_custom<L: Clone>(
     annot::Type::new(unfolded_lts, unfolded_ms)
 }
 
-/// A typing context that can be cheaply cloned.
-#[derive(Clone, Debug)]
-struct ImmutContext {
-    count: Count<LocalId>,
-    stack: im_rc::Vector<Rc<annot::Type<ModeVar, Lt>>>,
-}
-
-impl ImmutContext {
-    fn new() -> Self {
-        Self {
-            count: Count::new(),
-            stack: im_rc::Vector::new(),
-        }
-    }
-
-    fn add_local(&mut self, binding: Rc<annot::Type<ModeVar, Lt>>) -> LocalId {
-        let id = self.count.inc();
-        self.stack.push_back(binding);
-        id
-    }
-
-    fn truncate(&mut self, count: Count<LocalId>) {
-        if count < self.count {
-            self.count = count;
-            self.stack.truncate(count.to_value());
-        }
-    }
-
-    fn update_local(&mut self, local: LocalId, binding: Rc<annot::Type<ModeVar, Lt>>) {
-        self.stack[local.0] = binding;
-    }
-
-    fn local_binding(&self, local: LocalId) -> &Rc<annot::Type<ModeVar, Lt>> {
-        &self.stack[local.0]
-    }
-}
-
-#[derive(Clone, Debug)]
-struct LocalUpdates(BTreeMap<LocalId, Rc<annot::Type<ModeVar, Lt>>>);
-
-impl LocalUpdates {
-    fn new() -> Self {
-        LocalUpdates(BTreeMap::new())
-    }
-
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    fn record_update(&mut self, id: LocalId, binding: Rc<annot::Type<ModeVar, Lt>>) {
-        self.0.insert(id, binding);
-    }
-
-    fn truncate(&mut self, count: Count<LocalId>) {
-        // TODO: in practice we only remove the last element, so we could optimize this.
-        self.0.retain(|id, _| id.0 < count.to_value());
-    }
-
-    fn local_binding(&self, local: LocalId) -> Option<&Rc<annot::Type<ModeVar, Lt>>> {
-        self.0.get(&local)
-    }
-
-    fn meet(&mut self, _constrs: &mut ConstrGraph, other: &Self) {
-        use std::collections::btree_map::Entry;
-        for (id, ty) in &other.0 {
-            match self.0.entry(*id) {
-                Entry::Vacant(entry) => {
-                    entry.insert(ty.clone());
-                }
-                Entry::Occupied(mut entry) => {
-                    let old = entry.get_mut();
-                    *old = Rc::new(old.left_meet(&ty));
-                }
-            }
-        }
-    }
-}
-
-/// An `ImmutContext` that tracks all updates to local bindings so that they can be replayed on
-/// another context.
-#[derive(Clone, Debug)]
-struct TrackedContext {
-    ctx: ImmutContext,
-    updates: LocalUpdates,
-}
-
-impl TrackedContext {
-    fn new(ctx: &ImmutContext) -> Self {
-        Self {
-            ctx: ctx.clone(),
-            updates: LocalUpdates::new(),
-        }
-    }
-
-    fn add_local(&mut self, binding: Rc<annot::Type<ModeVar, Lt>>) -> LocalId {
-        let local = self.ctx.add_local(binding.clone());
-        self.updates.record_update(local, binding);
-        local
-    }
-
-    fn truncate(&mut self, count: Count<LocalId>) {
-        self.ctx.truncate(count);
-        self.updates.truncate(count);
-    }
-
-    fn update_local(&mut self, local: LocalId, binding: Rc<annot::Type<ModeVar, Lt>>) {
-        self.ctx.update_local(local, binding.clone());
-        self.updates.record_update(local, binding);
-    }
-
-    fn apply_updates(&mut self, updates: &LocalUpdates) {
-        for (id, binding) in &updates.0 {
-            self.update_local(*id, binding.clone());
-        }
-    }
-
-    fn local_binding(&self, local: LocalId) -> &Rc<annot::Type<ModeVar, Lt>> {
-        self.ctx.local_binding(local)
-    }
-
-    fn as_untracked(&self) -> &ImmutContext {
-        &self.ctx
-    }
-
-    fn into_updates(self) -> LocalUpdates {
-        self.updates
-    }
-}
-
 fn instantiate_overlay<M>(constrs: &mut ConstrGraph, ov: &Overlay<M>) -> Overlay<ModeVar> {
     ov.iter().map(|_| constrs.fresh_var()).collect_overlay(ov)
 }
@@ -1385,13 +1261,13 @@ fn instantiate_expr(
 
                 // Record the updates, but DO NOT apply them to the context. Every branch should be
                 // checked in the original context.
-                updates.meet(constrs, &body_updates);
+                updates.merge_with(&body_updates, |ty1, ty2| ty1.left_meet(&ty2));
 
                 cases_annot.push((cond_annot, body_annot));
             }
 
             // Finally, apply the updates before instantiating the discriminant.
-            ctx.apply_updates(&updates);
+            ctx.update_all(&updates);
 
             let fut_ty = ctx.local_binding(*discrim_id).clone();
             let discrim_occur = instantiate_occur(
@@ -1455,7 +1331,7 @@ fn instantiate_expr(
 
                 // Apply the updates to the context. It is important that the enclosing loop is in
                 // reverse order to ensure that each binding is checked in the correct context.
-                ctx.apply_updates(&expr_updates);
+                ctx.update_all(&expr_updates);
 
                 bindings_annot_rev.push((fut_ty, expr_annot));
             }

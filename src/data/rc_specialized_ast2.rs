@@ -3,6 +3,7 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::mode_annot_ast2 as annot;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
+use crate::data::rc_annot_ast::RcOp;
 use crate::data::resolved_ast as res;
 use id_collections::{id_type, IdVec};
 
@@ -27,12 +28,6 @@ pub enum Type {
     Array(annot::Mode, Box<Type>),
     HoleArray(annot::Mode, Box<Type>),
     Boxed(annot::Mode, Box<Type>),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RcOp {
-    Retain,
-    Release,
 }
 
 #[derive(Clone, Debug)]

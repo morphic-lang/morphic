@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
+use crate::data::rc_annot_ast::RcOp;
 use crate::data::rc_specialized_ast2 as rc;
 use crate::data::tail_rec_ast as tail;
 use crate::util::local_context::LocalContext;
@@ -363,11 +364,11 @@ fn lower_expr(
             low::Expr::UnwrapCustom(*type_id, wrapped_id.lookup_in(context)),
         ),
         tail::Expr::RcOp(op, ty, local_id) => match op {
-            rc::RcOp::Retain => builder.add_expr(
+            RcOp::Retain => builder.add_expr(
                 low::Type::Tuple(vec![]),
                 low::Expr::Retain(local_id.lookup_in(context), ty.clone()),
             ),
-            rc::RcOp::Release => builder.add_expr(
+            RcOp::Release => builder.add_expr(
                 low::Type::Tuple(vec![]),
                 low::Expr::Release(local_id.lookup_in(context), ty.clone()),
             ),

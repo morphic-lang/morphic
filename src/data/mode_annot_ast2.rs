@@ -168,6 +168,11 @@ impl Lt {
 }
 
 impl LocalLt {
+    pub fn zoom(&self, path: &Path) -> Option<&Self> {
+        let mut result = self;
+        for elem in path.elems() {}
+    }
+
     pub fn join(&self, rhs: &Self) -> Self {
         match (self, rhs) {
             (LocalLt::Final, _) | (_, LocalLt::Final) => LocalLt::Final,
@@ -864,6 +869,10 @@ impl<M, L> Type<M, L> {
         &mut self.modes
     }
 
+    pub fn into_modes(self) -> ModeData<M> {
+        self.modes
+    }
+
     pub fn map<M2, L2>(&self, f: impl Fn(&M) -> M2, g: impl Fn(&L) -> L2) -> Type<M2, L2> {
         let lts = self.lts.iter().map(g).collect_lt_data(&self.lts);
         let modes = self.modes.iter().map(f).collect_mode_data(&self.modes);
@@ -899,7 +908,7 @@ pub enum ArrayOp<M, L> {
     Get(
         Occur<M, L>, // Array
         Occur<M, L>, // Index
-        Type<M, L>,  // Return type; needed for retain/release insertion
+        Type<M, L>,  // Return type; needed for retain insertion
     ), // Returns item
     Extract(
         Occur<M, L>, // Array

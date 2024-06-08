@@ -43,6 +43,10 @@ pub mod borrow_spec;
 pub mod mode_annot_ast;
 pub mod mode_annot_ast2;
 
+pub mod obligation_annot_ast;
+
+pub mod rc_annot_ast;
+
 pub mod rc_specialized_ast;
 pub mod rc_specialized_ast2;
 

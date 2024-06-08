@@ -5,6 +5,8 @@ pub mod id_gen;
 
 pub mod local_context;
 
+pub mod immut_context;
+
 pub mod graph;
 
 pub mod constraint_graph;
@@ -31,6 +33,8 @@ pub mod map_ext;
 pub mod intern;
 
 pub mod non_empty_set;
+
+pub mod let_builder;
 
 pub fn with_scope<T, R, F: for<'a> FnOnce(&'a mut Vec<T>) -> R>(vec: &mut Vec<T>, func: F) -> R {
     let old_len = vec.len();
