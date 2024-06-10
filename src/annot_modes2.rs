@@ -14,7 +14,7 @@ use crate::data::mode_annot_ast2::{
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::intrinsic_config::intrinsic_sig;
-use crate::pretty_print::utils::CustomTypeRenderer;
+use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
 use crate::util::immut_context as immut;
 use crate::util::inequality_graph2 as in_eq;
@@ -1269,7 +1269,7 @@ fn instantiate_expr(
             // Finally, apply the updates before instantiating the discriminant.
             ctx.update_all(&updates);
 
-            let fut_ty = ctx.local_binding(*discrim_id).clone();
+            let discrim_fut_ty = ctx.local_binding(*discrim_id).clone();
             let discrim_occur = instantiate_occur(
                 strategy,
                 customs,
@@ -1277,11 +1277,15 @@ fn instantiate_expr(
                 scopes,
                 constrs,
                 *discrim_id,
-                fut_ty.modes(),
-                fut_ty.lts(),
+                discrim_fut_ty.modes(),
+                discrim_fut_ty.lts(),
             );
 
-            annot::Expr::Branch(discrim_occur, cases_annot, (*fut_ty).clone())
+            annot::Expr::Branch(
+                discrim_occur,
+                cases_annot,
+                annot::Type::new(fut_lts.clone(), fut_modes.clone()),
+            )
         }
 
         // We're only using `with_scope` here for its debug assertion, and to signal intent; by the
@@ -2249,6 +2253,218 @@ fn solve_scc(
     }
 }
 
+fn sanity_check_expr<M, L>(
+    renderer: &CustomTypeRenderer<CustomTypeId>,
+    funcs: &IdVec<CustomFuncId, annot::FuncDef>,
+    param_count: Count<ModeParam>,
+    path: &annot::Path,
+    ctx: &mut LocalContext<LocalId, LtData<Lt>>,
+    ret_ty: &annot::Type<M, L>,
+    expr: &annot::Expr<ModeSolution, Lt>,
+) {
+    // Check that the variable's binding and occurrence types are consistent
+    let check_occur = |ctx: &mut LocalContext<_, LtData<Lt>>, occur: &Occur<_, _>| {
+        assert!(ctx.local_binding(occur.id).shape() == occur.ty.shape());
+    };
+
+    // Check that the variable is live at the current path
+    let access = |ctx: &mut LocalContext<_, LtData<Lt>>, occur: &annot::Occur<_, _>| {
+        let lt = match ctx.local_binding(occur.id) {
+            LtData::Array(lt, _) => lt,
+            LtData::HoleArray(lt, _) => lt,
+            LtData::Boxed(lt, _) => lt,
+            _ => panic!("expected array or boxed type"),
+        };
+        assert!(lt.contains(path));
+    };
+
+    match expr {
+        annot::Expr::Local(local) => {
+            check_occur(ctx, local);
+        }
+
+        annot::Expr::Call(_, func, arg) => {
+            check_occur(ctx, arg);
+
+            // Check that the function is called correctly
+            let func = &funcs[*func];
+            assert!(func.arg_ty.shape() == arg.ty.shape());
+            assert!(func.ret_ty.shape() == ret_ty.shape());
+        }
+
+        annot::Expr::LetMany(bindings, _) => ctx.with_scope(|ctx| {
+            for (i, (ty, body)) in bindings.iter().enumerate() {
+                // Check that all type parameters also appear in the signature
+                for solution in ty.modes().iter() {
+                    for param in &solution.lb.lb_vars {
+                        assert!(param_count.contains(param));
+                    }
+                }
+
+                sanity_check_expr(renderer, funcs, param_count, &path.seq(i), ctx, ty, body);
+                ctx.add_local(ty.lts().clone());
+            }
+        }),
+
+        annot::Expr::Branch(discrim, cases, ty) => {
+            assert!(ty.shape() == ret_ty.shape());
+            check_occur(ctx, discrim);
+            for (i, (_, body)) in cases.iter().enumerate() {
+                sanity_check_expr(
+                    renderer,
+                    funcs,
+                    param_count,
+                    &path.par(i, cases.len()),
+                    ctx,
+                    ret_ty,
+                    body,
+                );
+            }
+        }
+
+        annot::Expr::Tuple(items) => {
+            for item in items {
+                check_occur(ctx, item);
+            }
+        }
+        annot::Expr::TupleField(tup, idx) => {
+            let annot::ModeData::Tuple(item_tys) = tup.ty.modes() else {
+                panic!("expected tuple type");
+            };
+            assert!(item_tys[*idx].shape() == ret_ty.modes().shape());
+            check_occur(ctx, tup);
+        }
+        annot::Expr::WrapVariant(variants, _variant_id, wrapped) => {
+            let annot::ModeData::Variants(ret_tys) = ret_ty.modes() else {
+                panic!("expected variant type");
+            };
+            for (ty1, ty2) in variants.values().zip_eq(ret_tys.values()) {
+                assert!(ty1.shape() == ty2.shape());
+            }
+            check_occur(ctx, wrapped);
+        }
+        annot::Expr::UnwrapVariant(_, wrapped) => {
+            check_occur(ctx, wrapped);
+        }
+        annot::Expr::WrapBoxed(content, _) => {
+            check_occur(ctx, content);
+        }
+        annot::Expr::UnwrapBoxed(wrapped, _) => {
+            access(ctx, wrapped);
+            check_occur(ctx, wrapped);
+        }
+        annot::Expr::WrapCustom(_, content) => {
+            check_occur(ctx, content);
+        }
+        annot::Expr::UnwrapCustom(_, wrapped) => {
+            check_occur(ctx, wrapped);
+        }
+        annot::Expr::Intrinsic(_, arg) => {
+            check_occur(ctx, arg);
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Get(arr, idx, ty)) => {
+            assert!(ty.shape() == ret_ty.shape());
+            access(ctx, arr);
+            check_occur(ctx, arr);
+            check_occur(ctx, idx);
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Extract(arr, idx)) => {
+            access(ctx, arr);
+            check_occur(ctx, arr);
+            check_occur(ctx, idx);
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Len(arr)) => {
+            check_occur(ctx, arr);
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Push(arr, item)) => {
+            access(ctx, arr);
+            check_occur(ctx, arr);
+            check_occur(ctx, item);
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Pop(arr)) => {
+            access(ctx, arr);
+            check_occur(ctx, arr);
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Replace(hole, item)) => {
+            access(ctx, hole);
+            check_occur(ctx, hole);
+            check_occur(ctx, item);
+        }
+        annot::Expr::ArrayOp(annot::ArrayOp::Reserve(arr, cap)) => {
+            access(ctx, arr);
+            check_occur(ctx, arr);
+            check_occur(ctx, cap);
+        }
+        annot::Expr::IoOp(annot::IoOp::Input) => {}
+        annot::Expr::IoOp(annot::IoOp::Output(arr)) => {
+            access(ctx, arr);
+            check_occur(ctx, arr);
+        }
+        annot::Expr::Panic(ty, msg) => {
+            assert!(ty.shape() == ret_ty.shape());
+            check_occur(ctx, msg);
+        }
+        annot::Expr::ArrayLit(item_ty, items) => {
+            for item in items {
+                assert!(item_ty.shape() == item.ty.shape());
+                check_occur(ctx, item);
+            }
+        }
+        annot::Expr::BoolLit(_) => {
+            assert!(ret_ty.shape() == annot::Shape::Bool);
+        }
+        annot::Expr::ByteLit(_) => {
+            assert!(ret_ty.shape() == annot::Shape::Num(NumType::Byte));
+        }
+        annot::Expr::IntLit(_) => {
+            assert!(ret_ty.shape() == annot::Shape::Num(NumType::Int));
+        }
+        annot::Expr::FloatLit(_) => {
+            assert!(ret_ty.shape() == annot::Shape::Num(NumType::Float));
+        }
+    }
+}
+
+fn sanity_check_funcs(
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    _func_renderer: &FuncRenderer<CustomFuncId>,
+    funcs: &IdVec<CustomFuncId, annot::FuncDef>,
+) {
+    for (_func_id, func) in funcs {
+        let param_count = func.constrs.sig.count();
+
+        // Check that constrains only refer to signature parameters
+        for lb in func.constrs.sig.values() {
+            for param in lb.lb_vars.iter() {
+                assert!(param_count.contains(param));
+            }
+        }
+
+        // Check that all signature parameters are used and that there are no missing parameters
+        let mut present = IdVec::from_count_with(param_count, |_| false);
+        for param in func.arg_ty.modes().iter() {
+            present[param] = true;
+        }
+        for param in func.ret_ty.modes().iter() {
+            present[param] = true;
+        }
+        assert!(present.into_values().all(|b| b));
+
+        // Sanity check the body of the function
+        let mut ctx = LocalContext::new();
+        ctx.add_local(func.arg_ty.lts().clone());
+        sanity_check_expr(
+            type_renderer,
+            funcs,
+            param_count,
+            &annot::FUNC_BODY_PATH(),
+            &mut ctx,
+            &func.ret_ty,
+            &func.body,
+        );
+    }
+}
+
 fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &TailExpr) {
     match expr {
         TailExpr::Call(_, _, other, _) => {
@@ -2294,7 +2510,8 @@ pub fn annot_modes(
     strategy: Strategy,
     progress: impl ProgressLogger,
 ) -> annot::Program {
-    let renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
+    let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
+    let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
     let custom_sccs = convert_type_sccs(&program.custom_types.sccs);
     let mut rev_custom_sccs = IdMap::new();
@@ -2322,9 +2539,21 @@ pub fn annot_modes(
 
     let mut funcs_annot = IdMap::new();
     for (_, scc) in &func_sccs {
-        solve_scc(strategy, &customs, &funcs, &mut funcs_annot, scc, &renderer);
+        solve_scc(
+            strategy,
+            &customs,
+            &funcs,
+            &mut funcs_annot,
+            scc,
+            &type_renderer,
+        );
         progress.update(scc.nodes.len());
     }
+
+    let funcs = funcs_annot.to_id_vec(funcs.count());
+
+    #[cfg(debug_assertions)]
+    sanity_check_funcs(&type_renderer, &func_renderer, &funcs);
 
     progress.finish();
 
@@ -2332,7 +2561,7 @@ pub fn annot_modes(
         mod_symbols: program.mod_symbols,
         custom_types: annot::CustomTypes { types: customs },
         custom_type_symbols: program.custom_type_symbols,
-        funcs: funcs_annot.to_id_vec(funcs.count()),
+        funcs,
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,

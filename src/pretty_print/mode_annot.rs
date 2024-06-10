@@ -5,10 +5,10 @@ use crate::data::mode_annot_ast2::{
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
-use std::io;
-use std::io::Write;
+use std::io::{self, Write};
 
 const TAB_SIZE: usize = 2;
+const CONSTRS_PER_LINE: usize = 10;
 
 type Type = annot::Type<ModeSolution, Lt>;
 type Occur = annot::Occur<ModeSolution, Lt>;
@@ -588,17 +588,24 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
 }
 
 fn write_constrs(w: &mut dyn Write, constrs: &Constrs) -> io::Result<()> {
+    let mut num_written = 0;
     for (p, bound) in &constrs.sig {
         for lb in &bound.lb_vars {
             write_mode_param(w, lb)?;
             write!(w, " ≤ ")?;
             write_mode_param(w, &p)?;
             write!(w, ", ")?;
+            num_written += 1;
         }
         if bound.lb_const == Mode::Owned {
             write!(w, "● ≤ ")?;
             write_mode_param(w, &p)?;
             write!(w, ", ")?;
+            num_written += 1;
+        }
+        if num_written > 0 && num_written % CONSTRS_PER_LINE == 0 {
+            writeln!(w)?;
+            write!(w, "{}", " ".repeat(TAB_SIZE))?;
         }
     }
 
@@ -610,11 +617,17 @@ fn write_constrs(w: &mut dyn Write, constrs: &Constrs) -> io::Result<()> {
             write!(w, " ≤ ")?;
             write_mode_var(w, &v)?;
             write!(w, ", ")?;
+            num_written += 1;
         }
         if bound.lb_const == Mode::Owned {
             write!(w, "● ≤ ")?;
             write_mode_var(w, &v)?;
             write!(w, ", ")?;
+            num_written += 1;
+        }
+        if num_written > 0 && num_written % CONSTRS_PER_LINE == 0 {
+            writeln!(w)?;
+            write!(w, "{}", " ".repeat(TAB_SIZE))?;
         }
     }
 
@@ -622,7 +635,7 @@ fn write_constrs(w: &mut dyn Write, constrs: &Constrs) -> io::Result<()> {
     Ok(())
 }
 
-fn write_func(
+pub fn write_func(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     func_renderer: &FuncRenderer<CustomFuncId>,

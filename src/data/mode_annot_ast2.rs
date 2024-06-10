@@ -90,14 +90,9 @@ impl Path {
         Self(elems)
     }
 
-    /// An iterator over the elements of path from root to leaf.
-    fn elems(&self) -> impl Iterator<Item = PathElem> + '_ {
-        self.0.iter().copied().rev()
-    }
-
     pub fn as_local_lt(&self) -> LocalLt {
         let mut result = LocalLt::Final;
-        for elem in self.elems() {
+        for elem in self.0.iter().copied().rev() {
             match elem {
                 PathElem::Seq(i) => {
                     result = LocalLt::Seq(Box::new(result), i);
@@ -154,6 +149,14 @@ impl Lt {
         }
     }
 
+    pub fn contains(&self, other: &Path) -> bool {
+        match (self, other) {
+            (Lt::Empty, _) => false,
+            (Lt::Local(l), p) => l.contains(p),
+            (Lt::Join(_), _) => true,
+        }
+    }
+
     /// True iff no leaf of `self` occurs "later in time" than `other`. This condition is
     /// reflexive, but non-transitive.
     ///
@@ -170,20 +173,20 @@ impl Lt {
 impl LocalLt {
     pub fn zoom(&self, path: &Path) -> Option<&Self> {
         let mut res = self;
-        for elem in path.elems() {
+        for elem in &path.0 {
             match (res, elem) {
                 (LocalLt::Seq(inner, i1), PathElem::Seq(i2)) => {
-                    if *i1 == i2 {
+                    if i1 == i2 {
                         res = inner;
                     } else {
                         return None;
                     }
                 }
                 (LocalLt::Par(par), PathElem::Par { i, n }) => {
-                    if par.len() != n {
+                    if par.len() != *n {
                         panic!("incompatible lifetimes");
                     }
-                    res = par[i].as_ref()?;
+                    res = par[*i].as_ref()?;
                 }
                 _ => {
                     panic!("incompatible lifetimes");
@@ -221,17 +224,67 @@ impl LocalLt {
         }
     }
 
-    pub fn does_not_exceed(&self, rhs: &Path) -> bool {
+    pub fn contains(&self, rhs: &Path) -> bool {
         let mut lhs = self;
-        for elem in rhs.elems() {
+        for elem in &rhs.0 {
             match (lhs, elem) {
                 (LocalLt::Final, _) => {
-                    return false;
+                    panic!(
+                        "compared lifetimes of different lengths (while technically well-defined, \
+                         this is almost certainly a bug)"
+                    )
                 }
                 (LocalLt::Seq(inner, i1), PathElem::Seq(i2)) => {
-                    if *i1 < i2 {
+                    if i1 < i2 {
+                        return false;
+                    } else if i1 > i2 {
                         return true;
-                    } else if *i1 > i2 {
+                    } else {
+                        lhs = inner;
+                        continue;
+                    }
+                }
+                (LocalLt::Par(par), PathElem::Par { i, n }) => {
+                    if par.len() != *n {
+                        panic!("incompatible lifetimes");
+                    }
+                    match &par[*i] {
+                        None => {
+                            return false;
+                        }
+                        Some(inner) => {
+                            lhs = inner;
+                            continue;
+                        }
+                    }
+                }
+                _ => {
+                    panic!("incompatible lifetimes");
+                }
+            }
+        }
+        assert!(
+            *lhs == LocalLt::Final,
+            "compared lifetimes of different lengths (while technically well-defined, this is \
+             almost certainly a bug)"
+        );
+        true
+    }
+
+    pub fn does_not_exceed(&self, rhs: &Path) -> bool {
+        let mut lhs = self;
+        for elem in &rhs.0 {
+            match (lhs, elem) {
+                (LocalLt::Final, _) => {
+                    panic!(
+                        "compared lifetimes of different lengths (while technically well-defined, \
+                         this is almost certainly a bug)"
+                    )
+                }
+                (LocalLt::Seq(inner, i1), PathElem::Seq(i2)) => {
+                    if i1 < i2 {
+                        return true;
+                    } else if i1 > i2 {
                         return false;
                     } else {
                         lhs = inner;
@@ -239,10 +292,10 @@ impl LocalLt {
                     }
                 }
                 (LocalLt::Par(par), PathElem::Par { i, n }) => {
-                    if par.len() != n {
+                    if par.len() != *n {
                         panic!("incompatible lifetimes");
                     }
-                    match &par[i] {
+                    match &par[*i] {
                         None => {
                             return true;
                         }
@@ -257,8 +310,11 @@ impl LocalLt {
                 }
             }
         }
-        // If we reach the end of `rhs`, then `rhs` is a prefix of or equal to `self` along the
-        // relevant branch. Hence, `self` points to a subscope of the scope pointed to by `rhs`.
+        assert!(
+            *lhs == LocalLt::Final,
+            "compared lifetimes of different lengths (while technically well-defined, this is \
+             almost certainly a bug)"
+        );
         true
     }
 }
@@ -1073,4 +1129,90 @@ pub struct Program {
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: first_ord::CustomFuncId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_as_lt() {
+        let path = Path::root().seq(0).par(1, 3).seq(2276);
+        let expected = Lt::Local(LocalLt::Seq(
+            Box::new(LocalLt::Par(vec![
+                None,
+                Some(LocalLt::Seq(Box::new(LocalLt::Final), 2276)),
+                None,
+            ])),
+            0,
+        ));
+        assert_eq!(path.as_lt(), expected);
+    }
+
+    #[test]
+    fn test_lt_zoom() {
+        let par = LocalLt::Par(vec![
+            None,
+            Some(LocalLt::Seq(Box::new(LocalLt::Final), 2276)),
+            None,
+        ]);
+        let lt = LocalLt::Seq(Box::new(par.clone()), 0);
+
+        let zoomed = lt.zoom(&Path::root().seq(0).par(1, 3).seq(2276));
+        assert_eq!(zoomed, Some(&LocalLt::Final));
+
+        let zoomed = lt.zoom(&Path::root().seq(0));
+        assert_eq!(zoomed, Some(&par));
+
+        let zoomed = lt.zoom(&Path::root().seq(0).par(1, 3).seq(2275));
+        assert_eq!(zoomed, None);
+
+        let zoomed = lt.zoom(&Path::root().seq(0).par(2, 3));
+        assert_eq!(zoomed, None);
+    }
+
+    #[test]
+    fn test_lt_order() {
+        let lt = Lt::Local(LocalLt::Seq(
+            Box::new(LocalLt::Par(vec![
+                None,
+                Some(LocalLt::Seq(Box::new(LocalLt::Final), 2276)),
+                None,
+            ])),
+            0,
+        ));
+
+        let before = Path::root().seq(0).par(1, 3).seq(2275);
+        let eq = Path::root().seq(0).par(1, 3).seq(2276);
+        let after = Path::root().seq(0).par(1, 3).seq(2277);
+
+        assert!(!lt.does_not_exceed(&before));
+        assert!(lt.does_not_exceed(&eq));
+        assert!(lt.does_not_exceed(&after));
+
+        assert!(lt.contains(&before));
+        assert!(lt.contains(&eq));
+        assert!(!lt.contains(&after));
+    }
+
+    #[test]
+    fn test_mode_data_iter() {
+        use crate::util::map_ext::FnWrapper;
+
+        let modes = ModeData::Array(
+            0,
+            Overlay::Array(1),
+            Box::new(ModeData::Array(2, Overlay::Bool, Box::new(ModeData::Bool))),
+        );
+
+        assert_eq!(modes.iter().copied().collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(modes.iter_overlay().copied().collect::<Vec<_>>(), vec![0]);
+        assert_eq!(
+            modes
+                .iter_lts(FnWrapper::wrap(|_| None))
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+    }
 }

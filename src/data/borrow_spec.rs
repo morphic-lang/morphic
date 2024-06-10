@@ -80,7 +80,9 @@ pub static SIG_ARRAY_LEN: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
     args: vec![Array(Mode(0), Lt(0), var_item(0))],
     ret: Num(NumType::Int),
     owned: set![],
-    accessed: set![Lt(0)],
+    // Since the `len` field lives on the stack, it's technically OK to read it after the array has
+    // been release (i.e. it's backing buffer has been deallocated).
+    accessed: set![],
 });
 
 pub static SIG_ARRAY_PUSH: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {

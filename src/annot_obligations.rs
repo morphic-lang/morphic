@@ -12,12 +12,12 @@ use crate::util::iter::IterExt;
 use crate::util::local_context;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
-use id_collections::IdVec;
+use id_collections::{IdMap, IdVec};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct FuncSpec {
     old_id: first_ord::CustomFuncId,
-    params: IdVec<ModeParam, Mode>,
+    subst: IdVec<ModeParam, Mode>,
 }
 
 type FuncInstances = InstanceQueue<FuncSpec, CustomFuncId>;
@@ -129,14 +129,26 @@ fn annot_expr(
         annot::Expr::Local(occur) => Expr::Local(handle_occur(ctx, occur)),
 
         annot::Expr::Call(purity, func_id, arg) => {
-            let params = funcs[func_id]
+            let func = &funcs[*func_id];
+            let arg_ty = &ctx.local_binding(arg.id).0;
+
+            // The parameters should be in-order, but we do this out of an abundance of caution.
+            let mut call_params = IdMap::new();
+            for (param, value) in func.arg_ty.modes().iter().zip_eq(arg_ty.iter()) {
+                call_params.insert(*param, *value);
+            }
+
+            let call_params = call_params.to_id_vec(func.constrs.sig.count());
+            let call_subst = func
                 .constrs
                 .sig
-                .map_refs(|_, solution| solution.instantiate(inst_params));
+                .map_refs(|_, solution| solution.instantiate(&call_params));
+
             let new_func_id = insts.resolve(FuncSpec {
                 old_id: *func_id,
-                params: params,
+                subst: call_subst,
             });
+
             Expr::Call(*purity, new_func_id, handle_occur(ctx, arg))
         }
 
@@ -170,24 +182,26 @@ fn annot_expr(
         annot::Expr::LetMany(bindings, ret) => ctx.with_scope(|ctx| {
             let mut new_exprs = Vec::new();
             for (i, (ty, expr)) in bindings.into_iter().enumerate() {
-                let ty = instantiate_type(inst_params, &ty);
-                let _ = add_unused_local(ctx, ty);
                 let new_expr =
                     annot_expr(customs, funcs, insts, inst_params, &path.seq(i), ctx, expr);
+                let ty = instantiate_type(inst_params, &ty);
+                let _ = add_unused_local(ctx, ty);
                 new_exprs.push(new_expr);
             }
+
+            let ret_occur = handle_occur(ctx, ret);
 
             let mut new_bindings_rev = Vec::new();
             for expr in new_exprs.into_iter().rev() {
                 let (_, (ty, obligation)) = ctx.pop_local();
                 new_bindings_rev.push((ty, obligation, expr));
             }
-
             let new_bindings = {
                 new_bindings_rev.reverse();
                 new_bindings_rev
             };
-            Expr::LetMany(new_bindings, handle_occur(ctx, ret))
+
+            Expr::LetMany(new_bindings, ret_occur)
         }),
 
         annot::Expr::Tuple(fields) => {
@@ -308,9 +322,9 @@ fn annot_func(
 ) -> FuncDef {
     let func = &funcs[id];
 
-    let mut context = LocalContext::new();
+    let mut ctx = LocalContext::new();
     let arg_ty = func.arg_ty.map_modes(|param| inst_params[param]);
-    let arg_id = add_unused_local(&mut context, arg_ty.modes().clone());
+    let arg_id = add_unused_local(&mut ctx, arg_ty.modes().clone());
     debug_assert_eq!(arg_id, flat::ARG_LOCAL);
 
     let ret_ty = func
@@ -322,11 +336,11 @@ fn annot_func(
         func_insts,
         inst_params,
         &annot::FUNC_BODY_PATH(),
-        &mut context,
+        &mut ctx,
         &func.body,
     );
 
-    let (_, (_, arg_obligation)) = context.pop_local();
+    let (_, (_, arg_obligation)) = ctx.pop_local();
     FuncDef {
         purity: func.purity,
         arg_ty: arg_ty.into_modes(),
@@ -347,7 +361,7 @@ pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger)
         .map_refs(|_, solution| solution.lb_const);
     let main = func_insts.resolve(FuncSpec {
         old_id: program.main,
-        params: main_params,
+        subst: main_params,
     });
 
     let mut funcs = IdVec::new();
@@ -356,7 +370,7 @@ pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger)
             &program.custom_types,
             &program.funcs,
             &mut func_insts,
-            &spec.params,
+            &spec.subst,
             spec.old_id,
         );
 

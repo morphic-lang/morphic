@@ -251,7 +251,13 @@ fn annot_expr(
                         rc::Expr::RcOp(RcOp::Retain, drop_sel, drop_id),
                     ));
                 }
-                let final_local = annot_expr(ctx, &path.par(i, num_arms), expr, &ret_ty, builder);
+                let final_local = annot_expr(
+                    ctx,
+                    &path.par(i, num_arms),
+                    expr,
+                    &ret_ty,
+                    &mut case_builder,
+                );
                 new_arms.push((cond, case_builder.to_expr(final_local)));
             }
 
@@ -411,16 +417,19 @@ fn annot_expr(
 }
 
 fn annot_func(func: ob::FuncDef) -> rc::FuncDef {
-    let mut ctx = LocalContext::new();
-    let mut builder = LetManyBuilder::new(Count::from_value(1));
+    let arg_drops = select_empty(&func.arg_obligation);
 
+    let mut ctx = LocalContext::new();
+    ctx.add_local(LocalInfo {
+        new_id: rc::ARG_LOCAL,
+        ty: func.arg_ty.clone(),
+        obligation: func.arg_obligation,
+    });
+
+    let mut builder = LetManyBuilder::new(Count::from_value(1));
     builder.add_binding((
         rc::Type::Tuple(vec![]),
-        rc::Expr::RcOp(
-            RcOp::Release,
-            select_empty(&func.arg_obligation),
-            rc::ARG_LOCAL,
-        ),
+        rc::Expr::RcOp(RcOp::Release, arg_drops, rc::ARG_LOCAL),
     ));
 
     let ret_local = annot_expr(

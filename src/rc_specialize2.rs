@@ -422,8 +422,8 @@ fn lower_expr(
         // The only interesting case...
         annot::Expr::RcOp(op, sel, arg) => {
             let plan = RcOpPlan::from_sel(customs, sel);
-            let arg = ctx.local_binding(*arg).new_id;
-            let unit = build_plan(customs, insts, *op, arg, ret_ty, &plan, builder);
+            let arg = ctx.local_binding(*arg);
+            let unit = build_plan(customs, insts, *op, arg.new_id, &arg.ty, &plan, builder);
             rc::Expr::Local(unit)
         }
 
@@ -588,14 +588,21 @@ fn lower_func(
     insts: &mut TypeInstances,
     func: &annot::FuncDef,
 ) -> rc::FuncDef {
-    let mut builder = LetManyBuilder::new(Count::from_value(1));
-
+    let arg_type = lower_type(insts, customs, &func.arg_ty);
     let ret_type = lower_type(insts, customs, &func.ret_ty);
+
+    let mut ctx = LocalContext::new();
+    ctx.add_local(LocalInfo {
+        ty: arg_type.clone(),
+        new_id: rc::ARG_LOCAL,
+    });
+
+    let mut builder = LetManyBuilder::new(Count::from_value(1));
     let final_local = lower_expr(
         funcs,
         customs,
         insts,
-        &mut LocalContext::new(),
+        &mut ctx,
         &FUNC_BODY_PATH(),
         &func.body,
         &ret_type,
@@ -604,7 +611,7 @@ fn lower_func(
 
     rc::FuncDef {
         purity: func.purity,
-        arg_type: lower_type(insts, customs, &func.arg_ty),
+        arg_type,
         ret_type,
         body: builder.to_expr(final_local),
         profile_point: func.profile_point,
