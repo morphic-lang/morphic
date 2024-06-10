@@ -20,7 +20,7 @@ use crate::util::immut_context as immut;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::Map;
+use crate::util::map_ext::MapRef;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, Count, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
@@ -239,8 +239,8 @@ fn compute_tail_calls(
 // We start by lifting the set of custom type definitions from the previous pass into the current
 // pass by annotating them with fresh mode and lifetime parameters.
 
-fn parameterize_mode_data(
-    customs: &impl Map<K = CustomTypeId, V = annot::TypeDef>,
+fn parameterize_mode_data<'a>(
+    customs: impl MapRef<'a, CustomTypeId, annot::TypeDef>,
     sccs: Option<(CustomTypeSccId, &IdVec<CustomTypeId, CustomTypeSccId>)>,
     count: &mut Count<SlotId>,
     ty: &anon::Type,
@@ -294,8 +294,8 @@ fn parameterize_mode_data(
 /// `sccs` determines whether `SelfCustom` nodes are generated. If parameterizing the body of a
 /// custom type, `sccs` should be a tuple of the SCC ID of that custom type's SCC and the full list
 /// of SCCs. Otherwise, `sccs` should be `None`.
-fn parameterize_type(
-    customs: &impl Map<K = CustomTypeId, V = annot::TypeDef>,
+fn parameterize_type<'a>(
+    customs: impl MapRef<'a, CustomTypeId, annot::TypeDef>,
     sccs: Option<(CustomTypeSccId, &IdVec<CustomTypeId, CustomTypeSccId>)>,
     count: &mut Count<SlotId>,
     ty: &anon::Type,

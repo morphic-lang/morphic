@@ -1,14 +1,15 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::mode_annot_ast2::CollectModeData;
 use crate::data::mode_annot_ast2::{
-    self as annot, CollectOverlay, Lt, Mode, ModeParam, ModeSolution, Path,
+    self as annot, CollectOverlay, Lt, LtData, Mode, ModeData, ModeParam, ModeSolution, Path,
 };
 use crate::data::obligation_annot_ast::{
-    self as ob, ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
+    self as ob, ArrayOp, Condition, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
 };
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
-use crate::util::local_context::LocalContext;
+use crate::util::local_context;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
 use id_collections::IdVec;
@@ -21,9 +22,9 @@ struct FuncSpec {
 
 type FuncInstances = InstanceQueue<FuncSpec, CustomFuncId>;
 
-fn get_slot_obligation(occur_path: &Path, mode_src: Mode, mode_dst: Mode, lt_dst: &Lt) -> Lt {
-    match (mode_src, mode_dst) {
-        (Mode::Owned, Mode::Borrowed) => lt_dst.clone(),
+fn get_slot_obligation(occur_path: &Path, src_mode: Mode, dst_mode: Mode, dst_lt: &Lt) -> Lt {
+    match (src_mode, dst_mode) {
+        (Mode::Owned, Mode::Borrowed) => dst_lt.clone(),
         (Mode::Owned, Mode::Owned) => occur_path.as_lt(),
         (Mode::Borrowed, _) => Lt::Empty,
     }
@@ -32,25 +33,28 @@ fn get_slot_obligation(occur_path: &Path, mode_src: Mode, mode_dst: Mode, lt_dst
 fn get_occur_obligation(
     customs: &annot::CustomTypes,
     occur_path: &Path,
-    ty_src: &Type,
-    ty_dst: &Type,
+    src_modes: &ModeData<Mode>,
+    dst_modes: &ModeData<Mode>,
+    dst_lts: &LtData<Lt>,
 ) -> StackLt {
-    ty_src
-        .modes()
+    src_modes
         .iter_overlay()
-        .zip_eq(ty_dst.modes().iter_overlay())
-        .zip_eq(ty_dst.lts().iter_overlay(customs))
-        .map(|((mode_src, mode_dst), lt_dst)| {
-            get_slot_obligation(occur_path, *mode_src, *mode_dst, lt_dst)
+        .zip_eq(dst_modes.iter_overlay())
+        .zip_eq(dst_lts.iter_overlay(customs))
+        .map(|((src_mode, dst_mode), dst_lt)| {
+            get_slot_obligation(occur_path, *src_mode, *dst_mode, dst_lt)
         })
-        .collect_overlay(&ty_src.modes().unapply_overlay())
+        .collect_overlay(&src_modes.unapply_overlay())
 }
 
 fn instantiate_type(
     inst_params: &IdVec<ModeParam, Mode>,
     ty: &annot::Type<ModeSolution, Lt>,
 ) -> Type {
-    ty.map_modes(|solution| solution.lb.instantiate(inst_params))
+    ty.modes()
+        .iter()
+        .map(|solution| solution.lb.instantiate(inst_params))
+        .collect_mode_data(ty.modes())
 }
 
 fn instantiate_occur(
@@ -66,37 +70,36 @@ fn instantiate_occur(
 fn instantiate_cond(
     inst_params: &IdVec<ModeParam, Mode>,
     cond: &annot::Condition<ModeSolution, Lt>,
-) -> annot::Condition<Mode, Lt> {
+) -> Condition {
     match cond {
-        annot::Condition::Any => annot::Condition::Any,
-        annot::Condition::Tuple(conds) => annot::Condition::Tuple(
+        annot::Condition::Any => Condition::Any,
+        annot::Condition::Tuple(conds) => Condition::Tuple(
             conds
                 .iter()
                 .map(|cond| instantiate_cond(inst_params, cond))
                 .collect(),
         ),
         annot::Condition::Variant(variant_id, cond) => {
-            annot::Condition::Variant(*variant_id, Box::new(instantiate_cond(inst_params, cond)))
+            Condition::Variant(*variant_id, Box::new(instantiate_cond(inst_params, cond)))
         }
-        annot::Condition::Boxed(cond, item_ty) => annot::Condition::Boxed(
+        annot::Condition::Boxed(cond, item_ty) => Condition::Boxed(
             Box::new(instantiate_cond(inst_params, cond)),
             instantiate_type(inst_params, item_ty),
         ),
         annot::Condition::Custom(custom_id, cond) => {
-            annot::Condition::Custom(*custom_id, Box::new(instantiate_cond(inst_params, cond)))
+            Condition::Custom(*custom_id, Box::new(instantiate_cond(inst_params, cond)))
         }
-        annot::Condition::BoolConst(lit) => annot::Condition::BoolConst(*lit),
-        annot::Condition::ByteConst(lit) => annot::Condition::ByteConst(*lit),
-        annot::Condition::IntConst(lit) => annot::Condition::IntConst(*lit),
-        annot::Condition::FloatConst(lit) => annot::Condition::FloatConst(*lit),
+        annot::Condition::BoolConst(lit) => Condition::BoolConst(*lit),
+        annot::Condition::ByteConst(lit) => Condition::ByteConst(*lit),
+        annot::Condition::IntConst(lit) => Condition::IntConst(*lit),
+        annot::Condition::FloatConst(lit) => Condition::FloatConst(*lit),
     }
 }
 
-fn add_unused_local(
-    ctx: &mut LocalContext<flat::LocalId, (Type, StackLt)>,
-    ty: Type,
-) -> flat::LocalId {
-    let ov = ty.modes().unapply_overlay();
+type LocalContext = local_context::LocalContext<flat::LocalId, (ModeData<Mode>, StackLt)>;
+
+fn add_unused_local(ctx: &mut LocalContext, ty: ModeData<Mode>) -> flat::LocalId {
+    let ov = ty.unapply_overlay();
     let init_lt = ov.iter().map(|_| Lt::Empty).collect_overlay(&ov);
     let binding_id = ctx.add_local((ty, init_lt));
     binding_id
@@ -108,19 +111,17 @@ fn annot_expr(
     insts: &mut FuncInstances,
     inst_params: &IdVec<ModeParam, Mode>,
     path: &Path,
-    ctx: &mut LocalContext<flat::LocalId, (Type, StackLt)>,
-    ret_ty: &Type,
+    ctx: &mut LocalContext,
     expr: &annot::Expr<ModeSolution, Lt>,
 ) -> Expr {
-    // Occurrences must be handled in reverse execution order so that lifetime obligations are
-    // correct when generating RC ops
-    let handle_occur = |ctx: &mut LocalContext<_, (_, StackLt)>, occur: &annot::Occur<_, _>| {
+    let handle_occur = |ctx: &mut LocalContext, occur: &annot::Occur<ModeSolution, _>| {
+        let occur_lts = occur.ty.lts();
         let occur = instantiate_occur(inst_params, occur);
-        let (ty, lt) = ctx.local_binding_mut(occur.id);
+        let (src_ty, src_lt) = ctx.local_binding_mut(occur.id);
 
         // We must update the lifetime obligation of the binding to reflect this occurrence.
-        let obligation = get_occur_obligation(customs, path, &ty, &occur.ty);
-        *lt = lt.join(&obligation);
+        let obligation = get_occur_obligation(customs, path, src_ty, &occur.ty, occur_lts);
+        *src_lt = src_lt.join(&obligation);
         occur
     };
 
@@ -141,10 +142,6 @@ fn annot_expr(
 
         annot::Expr::Branch(cond, arms, ty) => {
             let num_arms = arms.len();
-
-            // It is OK to instantiate the arms in any order and using the same (mutable) context
-            // because we only care about the `does_not_exceed` relation in this pass and that
-            // relation does not care about the content of parallel lifetime branches
             let new_arms = arms
                 .into_iter()
                 .enumerate()
@@ -158,7 +155,6 @@ fn annot_expr(
                             inst_params,
                             &path.par(i, num_arms),
                             ctx,
-                            ret_ty,
                             expr,
                         ),
                     )
@@ -175,17 +171,9 @@ fn annot_expr(
             let mut new_exprs = Vec::new();
             for (i, (ty, expr)) in bindings.into_iter().enumerate() {
                 let ty = instantiate_type(inst_params, &ty);
-                let _ = add_unused_local(ctx, ty.clone());
-                let new_expr = annot_expr(
-                    customs,
-                    funcs,
-                    insts,
-                    inst_params,
-                    &path.seq(i),
-                    ctx,
-                    &ty,
-                    expr,
-                );
+                let _ = add_unused_local(ctx, ty);
+                let new_expr =
+                    annot_expr(customs, funcs, insts, inst_params, &path.seq(i), ctx, expr);
                 new_exprs.push(new_expr);
             }
 
@@ -239,9 +227,7 @@ fn annot_expr(
             instantiate_type(inst_params, &ty),
         ),
 
-        annot::Expr::WrapCustom(id, content) => {
-            Expr::WrapCustom(*id, handle_occur(ctx, content), ret_ty.clone())
-        }
+        annot::Expr::WrapCustom(id, content) => Expr::WrapCustom(*id, handle_occur(ctx, content)),
 
         annot::Expr::UnwrapCustom(id, wrapped) => {
             Expr::UnwrapCustom(*id, handle_occur(ctx, wrapped))
@@ -324,7 +310,7 @@ fn annot_func(
 
     let mut context = LocalContext::new();
     let arg_ty = func.arg_ty.map_modes(|param| inst_params[param]);
-    let arg_id = add_unused_local(&mut context, arg_ty);
+    let arg_id = add_unused_local(&mut context, arg_ty.modes().clone());
     debug_assert_eq!(arg_id, flat::ARG_LOCAL);
 
     let ret_ty = func
@@ -337,15 +323,14 @@ fn annot_func(
         inst_params,
         &annot::FUNC_BODY_PATH(),
         &mut context,
-        &ret_ty,
         &func.body,
     );
 
-    let (_, (arg_type, arg_obligation)) = context.pop_local();
+    let (_, (_, arg_obligation)) = context.pop_local();
     FuncDef {
         purity: func.purity,
-        arg_ty,
-        ret_ty,
+        arg_ty: arg_ty.into_modes(),
+        ret_ty: ret_ty.into_modes(),
         arg_obligation,
         body,
         profile_point: func.profile_point,
@@ -383,8 +368,21 @@ pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger)
     progress.finish();
 
     let custom_types = ob::CustomTypes {
-        types: program.custom_types.types,
+        types: IdVec::from_vec(
+            program
+                .custom_types
+                .types
+                .into_values()
+                .map(|typedef| ob::TypeDef {
+                    ty: typedef.ty.into_modes(),
+                    ov: typedef.ov,
+                    slot_count: typedef.slot_count,
+                    ov_slots: typedef.ov_slots,
+                })
+                .collect(),
+        ),
     };
+
     ob::Program {
         mod_symbols: program.mod_symbols,
         custom_types: custom_types,

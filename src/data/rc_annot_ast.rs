@@ -1,15 +1,12 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
-use crate::data::mode_annot_ast2::CollectOverlay;
-use crate::data::mode_annot_ast2::{self as annot, Lt, Mode, Overlay, SlotId};
-use crate::data::obligation_annot_ast as ob;
+use crate::data::mode_annot_ast2::{CollectOverlay, Overlay};
+use crate::data::obligation_annot_ast::{self as ob, TypeDef};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::iter::IterExt;
-use id_collections::Count;
 use id_collections::{id_type, IdVec};
-use std::collections::BTreeSet;
 
 pub type Selector = Overlay<bool>;
 
@@ -37,13 +34,12 @@ impl std::ops::BitOr for &Selector {
 
 pub type CustomFuncId = ob::CustomFuncId;
 pub type CustomTypeId = first_ord::CustomTypeId;
-
-// Since we insert let bindings in this pass (for retains and releases), the lifetime data from the
-// previous pass is no longer meaningful.
-pub type Type = annot::ModeData<Mode>;
+pub type Type = ob::Type;
 
 #[id_type]
 pub struct LocalId(pub usize);
+
+pub const ARG_LOCAL: LocalId = LocalId(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RcOp {
@@ -53,13 +49,13 @@ pub enum RcOp {
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
-    Get(LocalId, LocalId, Type),
-    Extract(LocalId, LocalId),
-    Len(LocalId),
-    Push(LocalId, LocalId),
-    Pop(LocalId),
-    Replace(LocalId, LocalId),
-    Reserve(LocalId, LocalId),
+    Get(Type, LocalId, LocalId),
+    Extract(Type, LocalId, LocalId),
+    Len(Type, LocalId),
+    Push(Type, LocalId, LocalId),
+    Pop(Type, LocalId),
+    Replace(Type, LocalId, LocalId),
+    Reserve(Type, LocalId, LocalId),
 }
 
 #[derive(Clone, Debug)]
@@ -72,7 +68,7 @@ pub enum IoOp {
 pub enum Expr {
     Local(LocalId),
     Call(Purity, CustomFuncId, LocalId),
-    Branch(LocalId, Vec<(annot::Condition<Mode, Lt>, Expr)>, Type),
+    Branch(LocalId, Vec<(Condition, Expr)>, Type),
     LetMany(Vec<(Type, Expr)>, LocalId),
 
     Tuple(Vec<LocalId>),
@@ -85,11 +81,7 @@ pub enum Expr {
     UnwrapVariant(first_ord::VariantId, LocalId),
     WrapBoxed(LocalId, Type),
     UnwrapBoxed(LocalId, Type),
-    WrapCustom(
-        first_ord::CustomTypeId,
-        LocalId, // The unwrapped argument value
-        Type,    // The wrapped return type (needed for lowering)
-    ),
+    WrapCustom(first_ord::CustomTypeId, LocalId),
     UnwrapCustom(first_ord::CustomTypeId, LocalId),
 
     RcOp(RcOp, Selector, LocalId),
@@ -106,6 +98,8 @@ pub enum Expr {
     FloatLit(f64),
 }
 
+pub type Condition = ob::Condition;
+
 #[derive(Clone, Debug)]
 
 pub struct FuncDef {
@@ -115,15 +109,6 @@ pub struct FuncDef {
 
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TypeDef {
-    // `ov` is computable from `ty`, but kept around for convenience
-    pub ty: annot::ModeData<SlotId>,
-    pub ov: Overlay<SlotId>,
-    pub slot_count: Count<SlotId>,
-    pub ov_slots: BTreeSet<SlotId>,
 }
 
 #[derive(Clone, Debug)]

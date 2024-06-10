@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::mode_annot_ast2 as annot;
+use crate::data::obligation_annot_ast as ob;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::rc_annot_ast::RcOp;
@@ -15,8 +16,7 @@ pub const ARG_LOCAL: LocalId = LocalId(0);
 #[id_type]
 pub struct CustomTypeId(pub usize);
 
-#[id_type]
-pub struct CustomFuncId(pub usize);
+pub type CustomFuncId = ob::CustomFuncId;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
@@ -152,9 +152,7 @@ pub struct CustomTypes {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
-    // pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
-    // pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

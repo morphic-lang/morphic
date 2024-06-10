@@ -1,12 +1,13 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::intrinsics::Intrinsic;
-use crate::data::mode_annot_ast2::{self as annot, CollectOverlay, Lt, Mode, Overlay};
+use crate::data::mode_annot_ast2::{self as annot, CollectOverlay, Lt, Mode, Overlay, SlotId};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::iter::IterExt;
-use id_collections::{id_type, IdVec};
+use id_collections::{id_type, Count, IdVec};
+use std::collections::BTreeSet;
 
 // To determine lifetime obligations, we need to know concrete modes. Therefore, this pass
 // specializes functions (though not types) with respect to modes.
@@ -24,11 +25,7 @@ impl StackLt {
 }
 
 pub type CustomTypeId = first_ord::CustomTypeId;
-pub type TypeDef = annot::TypeDef;
-
-pub type Type = annot::Type<Mode, Lt>;
-pub type ModeData = annot::ModeData<Mode>;
-pub type LtData = annot::LtData<Lt>;
+pub type Type = annot::ModeData<Mode>;
 
 #[id_type]
 pub struct CustomFuncId(usize);
@@ -60,7 +57,7 @@ pub enum IoOp {
 pub enum Expr {
     Local(Occur),
     Call(Purity, CustomFuncId, Occur),
-    Branch(Occur, Vec<(annot::Condition<Mode, Lt>, Expr)>, Type),
+    Branch(Occur, Vec<(Condition, Expr)>, Type),
     LetMany(Vec<(Type, StackLt, Expr)>, Occur),
 
     Tuple(Vec<Occur>),
@@ -73,11 +70,7 @@ pub enum Expr {
     UnwrapVariant(first_ord::VariantId, Occur),
     WrapBoxed(Occur, Type),
     UnwrapBoxed(Occur, Type),
-    WrapCustom(
-        first_ord::CustomTypeId,
-        Occur, // The unwrapped argument value
-        Type,  // The wrapped return type (needed for lowering)
-    ),
+    WrapCustom(first_ord::CustomTypeId, Occur),
     UnwrapCustom(first_ord::CustomTypeId, Occur),
 
     Intrinsic(Intrinsic, Occur),
@@ -93,6 +86,22 @@ pub enum Expr {
 }
 
 #[derive(Clone, Debug)]
+pub enum Condition {
+    Any,
+    Tuple(Vec<Condition>),
+    Variant(first_ord::VariantId, Box<Condition>),
+    Boxed(
+        Box<Condition>,
+        Type, // Inner type
+    ),
+    Custom(CustomTypeId, Box<Condition>),
+    BoolConst(bool),
+    ByteConst(u8),
+    IntConst(i64),
+    FloatConst(f64),
+}
+
+#[derive(Clone, Debug)]
 
 pub struct FuncDef {
     pub purity: Purity,
@@ -102,6 +111,15 @@ pub struct FuncDef {
 
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeDef {
+    // `ov` is computable from `ty`, but kept around for convenience
+    pub ty: annot::ModeData<SlotId>,
+    pub ov: Overlay<SlotId>,
+    pub slot_count: Count<SlotId>,
+    pub ov_slots: BTreeSet<SlotId>,
 }
 
 #[derive(Clone, Debug)]

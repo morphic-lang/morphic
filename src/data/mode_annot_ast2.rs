@@ -15,7 +15,7 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
-use crate::util::map_ext::{btree_map_refs, Map};
+use crate::util::map_ext::{btree_map_refs, MapRef};
 use crate::util::non_empty_set::NonEmptySet;
 use id_collections::{id_type, Count, IdVec};
 use std::collections::{BTreeMap, BTreeSet};
@@ -169,8 +169,28 @@ impl Lt {
 
 impl LocalLt {
     pub fn zoom(&self, path: &Path) -> Option<&Self> {
-        let mut result = self;
-        for elem in path.elems() {}
+        let mut res = self;
+        for elem in path.elems() {
+            match (res, elem) {
+                (LocalLt::Seq(inner, i1), PathElem::Seq(i2)) => {
+                    if *i1 == i2 {
+                        res = inner;
+                    } else {
+                        return None;
+                    }
+                }
+                (LocalLt::Par(par), PathElem::Par { i, n }) => {
+                    if par.len() != n {
+                        panic!("incompatible lifetimes");
+                    }
+                    res = par[i].as_ref()?;
+                }
+                _ => {
+                    panic!("incompatible lifetimes");
+                }
+            }
+        }
+        Some(res)
     }
 
     pub fn join(&self, rhs: &Self) -> Self {
@@ -273,7 +293,7 @@ pub enum Overlay<T> {
 }
 
 impl Overlay<SlotId> {
-    pub fn hydrate<T: Clone>(&self, subst: &impl Map<K = SlotId, V = T>) -> Overlay<T> {
+    pub fn hydrate<'a, T: Clone + 'a>(&self, subst: impl MapRef<'a, SlotId, T>) -> Overlay<T> {
         match self {
             Overlay::Bool => Overlay::Bool,
             Overlay::Num(n) => Overlay::Num(*n),
@@ -331,9 +351,12 @@ impl<T> Overlay<T> {
     }
 
     /// Returns true if the overlay is zero-sized, i.e. it does not contain any data.
-    pub fn is_zero_sized(&self, customs: &CustomTypes) -> bool {
-        fn visit<T>(
-            customs: &CustomTypes,
+    pub fn is_zero_sized<'a>(
+        &self,
+        customs: impl MapRef<'a, CustomTypeId, Overlay<SlotId>>,
+    ) -> bool {
+        fn visit<'a, T>(
+            customs: impl MapRef<'a, CustomTypeId, Overlay<SlotId>>,
             visited: &mut BTreeSet<CustomTypeId>,
             this: &Overlay<T>,
         ) -> bool {
@@ -349,7 +372,7 @@ impl<T> Overlay<T> {
                         true
                     } else {
                         visited.insert(*id);
-                        visit(customs, visited, &customs.types[*id].ov)
+                        visit(customs, visited, customs.get(id).unwrap())
                     }
                 }
                 Overlay::Array(_) => false,
@@ -422,7 +445,7 @@ pub enum LtData<T> {
 }
 
 impl LtData<SlotId> {
-    pub fn hydrate<T: Clone>(&self, subst: &impl Map<K = SlotId, V = T>) -> LtData<T> {
+    pub fn hydrate<'a, T: Clone + 'a>(&self, subst: impl MapRef<'a, SlotId, T>) -> LtData<T> {
         match self {
             LtData::Bool => LtData::Bool,
             LtData::Num(n) => LtData::Num(*n),
@@ -609,7 +632,10 @@ impl ModeData<SlotId> {
         }
     }
 
-    pub fn extract_lts(&self, customs: &impl Map<K = CustomTypeId, V = TypeDef>) -> LtData<SlotId> {
+    pub fn extract_lts<'a>(
+        &self,
+        customs: impl MapRef<'a, CustomTypeId, TypeDef>,
+    ) -> LtData<SlotId> {
         match self {
             ModeData::Bool => LtData::Bool,
             ModeData::Num(n) => LtData::Num(*n),
@@ -658,16 +684,18 @@ impl<T> ModeData<T> {
 
     pub fn iter_lts<'a>(
         &'a self,
-        customs: &'a CustomTypes,
+        customs: impl MapRef<'a, CustomTypeId, ModeData<SlotId>> + 'a,
     ) -> Box<dyn Iterator<Item = &'a T> + 'a> {
         match self {
             ModeData::Bool => Box::new(iter::empty()),
             ModeData::Num(_) => Box::new(iter::empty()),
-            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(|ty| ty.iter_lts(customs))),
-            ModeData::Variants(tys) => Box::new(tys.values().flat_map(|ty| ty.iter_lts(customs))),
+            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(move |ty| ty.iter_lts(customs))),
+            ModeData::Variants(tys) => {
+                Box::new(tys.values().flat_map(move |ty| ty.iter_lts(customs)))
+            }
             ModeData::SelfCustom(_) => Box::new(iter::empty()),
             ModeData::Custom(id, _, subst) => {
-                let custom = customs.types[*id].ty.modes();
+                let custom = customs.get(id).unwrap();
                 Box::new(custom.iter_lts(customs).map(|slot| &subst[*slot]))
             }
             ModeData::Array(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_lts(customs))),
@@ -763,6 +791,16 @@ impl<T> ModeData<T> {
             ModeData::Array(_, _, ty) => Shape::Array(Box::new(ty.shape())),
             ModeData::HoleArray(_, _, ty) => Shape::HoleArray(Box::new(ty.shape())),
             ModeData::Boxed(_, _, ty) => Shape::Boxed(Box::new(ty.shape())),
+        }
+    }
+
+    /// If `self` is `Array`, `HoleArray`, or `Boxed`, return the modes of the inner type.
+    pub fn unwrap_item_modes(&self) -> &ModeData<T> {
+        match self {
+            ModeData::Array(_, _, item)
+            | ModeData::HoleArray(_, _, item)
+            | ModeData::Boxed(_, _, item) => item,
+            _ => panic!("expected an array, hole array, or boxed type"),
         }
     }
 }
@@ -884,16 +922,6 @@ impl<M, L> Type<M, L> {
         L: Clone,
     {
         self.map(f, Clone::clone)
-    }
-
-    /// If `self` is `Array`, `HoleArray`, or `Boxed`, return the modes of the inner type.
-    pub fn unwrap_item_modes(&self) -> &ModeData<M> {
-        match self.modes() {
-            ModeData::Array(_, _, item)
-            | ModeData::HoleArray(_, _, item)
-            | ModeData::Boxed(_, _, item) => item,
-            _ => panic!("expected an array, hole array, or boxed type"),
-        }
     }
 }
 

@@ -1,37 +1,61 @@
 use id_collections::{Id, IdMap, IdVec};
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
-pub trait Map {
-    type K;
-    type V;
-
-    fn get(&self, k: &Self::K) -> Option<&Self::V>;
+/// An abstraction over references to map-like data structures.
+pub trait MapRef<'a, K, V>: Copy {
+    fn get(self, k: &K) -> Option<&'a V>;
 }
 
-impl<K: Ord, V> Map for BTreeMap<K, V> {
-    type K = K;
-    type V = V;
-
-    fn get(&self, k: &K) -> Option<&V> {
+impl<'a, K: Ord, V> MapRef<'a, K, V> for &'a BTreeMap<K, V> {
+    fn get(self, k: &K) -> Option<&'a V> {
         self.get(k)
     }
 }
 
-impl<I: Id, V> Map for IdVec<I, V> {
-    type K = I;
-    type V = V;
-
-    fn get(&self, k: &I) -> Option<&V> {
+impl<'a, I: Id, V> MapRef<'a, I, V> for &'a IdVec<I, V> {
+    fn get(self, k: &I) -> Option<&'a V> {
         self.get(*k)
     }
 }
 
-impl<I: Id, V> Map for IdMap<I, V> {
-    type K = I;
-    type V = V;
-
-    fn get(&self, k: &I) -> Option<&V> {
+impl<'a, I: Id, V> MapRef<'a, I, V> for &'a IdMap<I, V> {
+    fn get(self, k: &I) -> Option<&'a V> {
         self.get(*k)
+    }
+}
+
+/// A wrapper for functions which implements `MapRef`. Rust's type inference around closures is
+/// quite sketchy and trying to implement `MapRef` directly on closures produces weird type errors
+/// at usage sites.
+pub struct FnWrapper<'a, K, V, F>(F, PhantomData<(K, &'a V)>);
+
+impl<'a, K, V, F> FnWrapper<'a, K, V, F>
+where
+    // `FnWrapper` only exists to help the type checker. To that end, the key is this bound.
+    F: Fn(&K) -> Option<&'a V> + Copy + 'a,
+{
+    pub fn wrap(f: F) -> Self {
+        Self(f, PhantomData)
+    }
+}
+
+// `#[derive(Copy)]` isn't smart enough to produce this because `K` needn't be `Copy`.
+impl<'a, K, V, F: Copy> Copy for FnWrapper<'a, K, V, F> {}
+
+// `#[derive(Clone)]` isn't smart enough to produce this because `K` needn't be `Clone`.
+impl<'a, K, V, F: Clone> Clone for FnWrapper<'a, K, V, F> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), PhantomData)
+    }
+}
+
+impl<'a, K, V, F> MapRef<'a, K, V> for FnWrapper<'a, K, V, F>
+where
+    F: Fn(&K) -> Option<&'a V> + Copy + 'a,
+{
+    fn get(self, k: &K) -> Option<&'a V> {
+        (self.0)(k)
     }
 }
 

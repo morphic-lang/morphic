@@ -12,6 +12,10 @@ impl<Var: Id, T> LocalContext<Var, T> {
         }
     }
 
+    pub fn inner(&self) -> &IdVec<Var, T> {
+        &self.stack
+    }
+
     pub fn add_local(&mut self, binding: T) -> Var {
         self.stack.push(binding)
     }

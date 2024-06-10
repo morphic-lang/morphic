@@ -421,8 +421,15 @@ fn compile_to_low_ast(
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    let rc_specialized = rc_specialize2::rc_specialize(
+    let obligation_annot = annot_obligations::annot_obligations(
         mode_annot,
+        progress_ui::bar(progress, "annot_obligations"),
+    );
+
+    let rc_annot = annot_rcs::annot_rcs(obligation_annot, progress_ui::bar(progress, "annot_rcs"));
+
+    let rc_specialized = rc_specialize2::rc_specialize(
+        rc_annot,
         rc_specialize2::Strategy::Default,
         progress_ui::bar(progress, "rc_specialize"),
     );
