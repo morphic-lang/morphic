@@ -5,6 +5,8 @@ use crate::data::mode_annot_ast2::{
 };
 use crate::data::obligation_annot_ast::{self as ob, StackLt};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
+use crate::pretty_print::mode_annot::write_lifetime;
+use crate::util::drop_bomb::DropBomb;
 use crate::util::iter::IterExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
@@ -12,15 +14,6 @@ use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
 use std::collections::BTreeMap;
 use std::iter;
-
-impl FromBindings for Expr {
-    type LocalId = LocalId;
-    type Binding = (rc::Type, Expr);
-
-    fn from_bindings(bindings: Vec<Self::Binding>, ret: LocalId) -> Self {
-        Expr::LetMany(bindings, ret)
-    }
-}
 
 fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
     match (src_mode, dst_mode) {
@@ -72,7 +65,7 @@ fn select_owned(ty: &ob::Type) -> Selector {
         .collect_overlay(&ty.unapply_overlay())
 }
 
-fn select_empty(lt: &StackLt) -> Selector {
+fn select_unused(lt: &StackLt) -> Selector {
     lt.iter().map(|lt| *lt == Lt::Empty).collect_overlay(&lt)
 }
 
@@ -167,6 +160,55 @@ fn iterate_slots<'a, T>(ov: &'a Overlay<T>) -> Box<dyn Iterator<Item = SlotPath<
     iterate_slots_impl(im_rc::Vector::new(), ov)
 }
 
+impl FromBindings for Expr {
+    type LocalId = LocalId;
+    type Binding = (rc::Type, Expr);
+
+    fn from_bindings(bindings: Vec<Self::Binding>, ret: LocalId) -> Self {
+        Expr::LetMany(bindings, ret)
+    }
+}
+
+fn build_rc_op(op: RcOp, slots: Selector, target: LocalId, builder: &mut LetManyBuilder<Expr>) {
+    if slots.iter().any(|x| *x) {
+        builder.add_binding((rc::Type::Tuple(vec![]), rc::Expr::RcOp(op, slots, target)));
+    }
+}
+
+#[derive(Debug)]
+struct DeferredDrops {
+    bomb: DropBomb,
+    inner: BTreeMap<LocalId, Selector>,
+}
+
+impl DeferredDrops {
+    fn new() -> Self {
+        DeferredDrops {
+            bomb: DropBomb::new("some deferred drops were not processed"),
+            inner: BTreeMap::new(),
+        }
+    }
+
+    fn defer(&mut self, local: LocalId, sel: Selector) {
+        use std::collections::btree_map::Entry::*;
+        match self.inner.entry(local) {
+            Vacant(entry) => {
+                entry.insert(sel);
+            }
+            Occupied(mut entry) => {
+                *entry.get_mut() = entry.get() | &sel;
+            }
+        }
+    }
+
+    fn build(mut self, builder: &mut LetManyBuilder<Expr>) {
+        for (local, sel) in self.inner {
+            build_rc_op(RcOp::Release, sel, local, builder);
+        }
+        self.bomb.defuse();
+    }
+}
+
 #[derive(Clone, Debug)]
 struct LocalInfo {
     new_id: LocalId,
@@ -178,22 +220,27 @@ fn annot_occur(
     ctx: &mut LocalContext<flat::LocalId, LocalInfo>,
     path: &Path,
     occur: ob::Occur,
+    defer: &mut DeferredDrops,
     builder: &mut LetManyBuilder<Expr>,
 ) -> LocalId {
     let binding = ctx.local_binding(occur.id);
 
     let dups = select_dups(path, &binding.ty, &occur.ty, &binding.obligation);
-    builder.add_binding((
-        rc::Type::Tuple(vec![]),
-        rc::Expr::RcOp(RcOp::Retain, dups, binding.new_id),
-    ));
+    build_rc_op(RcOp::Retain, dups, binding.new_id, builder);
 
     let drops = select_drops(path, &binding.ty, &occur.ty, &binding.obligation);
-    builder.add_binding((
-        rc::Type::Tuple(vec![]),
-        rc::Expr::RcOp(RcOp::Release, drops, binding.new_id),
-    ));
 
+    if binding.obligation.iter().any(|lt| lt != &Lt::Empty) {
+        for lt in binding.obligation.iter() {
+            write_lifetime(&mut std::io::stdout(), lt).unwrap();
+            print!(" ");
+        }
+        print!("@ ");
+        write_lifetime(&mut std::io::stdout(), &path.as_lt()).unwrap();
+        println!(" ; drops: {:?}", drops);
+    }
+
+    defer.defer(binding.new_id, drops);
     binding.new_id
 }
 
@@ -202,13 +249,20 @@ fn annot_expr(
     path: &Path,
     expr: ob::Expr,
     ret_ty: &ob::Type,
+    defer: &mut DeferredDrops,
     builder: &mut LetManyBuilder<Expr>,
 ) -> rc::LocalId {
     let new_expr = match expr {
-        ob::Expr::Local(local) => rc::Expr::Local(annot_occur(ctx, path, local, builder)),
+        ob::Expr::Local(local) => rc::Expr::Local(annot_occur(ctx, path, local, defer, builder)),
 
         ob::Expr::Call(purity, func_id, arg) => {
-            rc::Expr::Call(purity, func_id, annot_occur(ctx, path, arg, builder))
+            // println!("--------------------");
+            // println!("arg: {:?}", arg);
+            // println!("func_id: {:?}", func_id);
+            // println!("defer {:?}", defer.inner);
+            let expr = rc::Expr::Call(purity, func_id, annot_occur(ctx, path, arg, defer, builder));
+            // println!("defer {:?}", defer.inner);
+            expr
         }
 
         ob::Expr::Branch(discrim, arms, ret_ty) => {
@@ -240,24 +294,27 @@ fn annot_expr(
                 }
             }
 
-            let discrim = annot_occur(ctx, path, discrim, builder);
+            let discrim = annot_occur(ctx, path, discrim, defer, builder);
             let mut new_arms = Vec::new();
             for entry in arms.into_iter().zip_eq(drops.into_iter()).enumerate() {
                 let (i, ((cond, expr), drops)) = entry;
                 let mut case_builder = builder.child();
+                let mut case_defer = DeferredDrops::new();
+
                 for (drop_id, drop_sel) in drops {
-                    case_builder.add_binding((
-                        rc::Type::Tuple(vec![]),
-                        rc::Expr::RcOp(RcOp::Retain, drop_sel, drop_id),
-                    ));
+                    build_rc_op(RcOp::Release, drop_sel, drop_id, &mut case_builder);
                 }
+
                 let final_local = annot_expr(
                     ctx,
                     &path.par(i, num_arms),
                     expr,
                     &ret_ty,
+                    &mut case_defer,
                     &mut case_builder,
                 );
+
+                case_defer.build(&mut case_builder);
                 new_arms.push((cond, case_builder.to_expr(final_local)));
             }
 
@@ -266,18 +323,20 @@ fn annot_expr(
 
         ob::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
-                for (i, (ty, obligation, expr)) in bindings.into_iter().enumerate() {
-                    let drop_immediately = select_empty(&obligation);
-                    let final_local = annot_expr(ctx, &path.seq(i), expr, &ty, builder);
+                for (i, (ty, obligation, body)) in bindings.into_iter().enumerate() {
+                    let drop_immediately = select_unused(&obligation);
+                    let mut body_defer = DeferredDrops::new();
+
+                    let final_local =
+                        annot_expr(ctx, &path.seq(i), body, &ty, &mut body_defer, builder);
                     ctx.add_local(LocalInfo {
                         new_id: final_local,
                         ty,
                         obligation,
                     });
-                    builder.add_binding((
-                        rc::Type::Tuple(vec![]),
-                        rc::Expr::RcOp(RcOp::Release, drop_immediately, final_local),
-                    ));
+
+                    build_rc_op(RcOp::Release, drop_immediately, final_local, builder);
+                    body_defer.build(builder);
                 }
                 ctx.local_binding(ret.id).new_id
             });
@@ -291,42 +350,42 @@ fn annot_expr(
         ob::Expr::Tuple(fields) => rc::Expr::Tuple(
             fields
                 .into_iter()
-                .map(|field| annot_occur(ctx, path, field, builder))
+                .map(|field| annot_occur(ctx, path, field, defer, builder))
                 .collect(),
         ),
 
         ob::Expr::TupleField(tuple, idx) => {
-            rc::Expr::TupleField(annot_occur(ctx, path, tuple, builder), idx)
+            rc::Expr::TupleField(annot_occur(ctx, path, tuple, defer, builder), idx)
         }
 
         ob::Expr::WrapVariant(variants, variant_id, content) => rc::Expr::WrapVariant(
             variants,
             variant_id,
-            annot_occur(ctx, path, content, builder),
+            annot_occur(ctx, path, content, defer, builder),
         ),
 
         ob::Expr::UnwrapVariant(variant_id, wrapped) => {
-            rc::Expr::UnwrapVariant(variant_id, annot_occur(ctx, path, wrapped, builder))
+            rc::Expr::UnwrapVariant(variant_id, annot_occur(ctx, path, wrapped, defer, builder))
         }
 
         ob::Expr::WrapBoxed(content, item_ty) => {
-            rc::Expr::WrapBoxed(annot_occur(ctx, path, content, builder), item_ty)
+            rc::Expr::WrapBoxed(annot_occur(ctx, path, content, defer, builder), item_ty)
         }
 
         ob::Expr::UnwrapBoxed(wrapped, item_ty) => {
-            rc::Expr::UnwrapBoxed(annot_occur(ctx, path, wrapped, builder), item_ty)
+            rc::Expr::UnwrapBoxed(annot_occur(ctx, path, wrapped, defer, builder), item_ty)
         }
 
         ob::Expr::WrapCustom(id, content) => {
-            rc::Expr::WrapCustom(id, annot_occur(ctx, path, content, builder))
+            rc::Expr::WrapCustom(id, annot_occur(ctx, path, content, defer, builder))
         }
 
         ob::Expr::UnwrapCustom(id, wrapped) => {
-            rc::Expr::UnwrapCustom(id, annot_occur(ctx, path, wrapped, builder))
+            rc::Expr::UnwrapCustom(id, annot_occur(ctx, path, wrapped, defer, builder))
         }
 
         ob::Expr::Intrinsic(intr, arg) => {
-            rc::Expr::Intrinsic(intr, annot_occur(ctx, path, arg, builder))
+            rc::Expr::Intrinsic(intr, annot_occur(ctx, path, arg, defer, builder))
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Get(arr, idx, ret_ty)) => {
@@ -334,73 +393,70 @@ fn annot_expr(
 
             let get_op = rc::Expr::ArrayOp(rc::ArrayOp::Get(
                 arr.ty.unwrap_item_modes().clone(),
-                annot_occur(ctx, path, arr, builder),
-                annot_occur(ctx, path, idx, builder),
+                annot_occur(ctx, path, arr, defer, builder),
+                annot_occur(ctx, path, idx, defer, builder),
             ));
             let get_id = builder.add_binding((ret_ty, get_op));
 
-            builder.add_binding((
-                rc::Type::Tuple(vec![]),
-                rc::Expr::RcOp(RcOp::Retain, item_retains, get_id),
-            ));
+            build_rc_op(RcOp::Retain, item_retains, get_id, builder);
             return get_id;
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Extract(arr, idx)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Extract(
                 arr.ty.unwrap_item_modes().clone(),
-                annot_occur(ctx, path, arr, builder),
-                annot_occur(ctx, path, idx, builder),
+                annot_occur(ctx, path, arr, defer, builder),
+                annot_occur(ctx, path, idx, defer, builder),
             ))
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Len(arr)) => rc::Expr::ArrayOp(rc::ArrayOp::Len(
             arr.ty.unwrap_item_modes().clone(),
-            annot_occur(ctx, path, arr, builder),
+            annot_occur(ctx, path, arr, defer, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Push(arr, item)) => rc::Expr::ArrayOp(rc::ArrayOp::Push(
             arr.ty.unwrap_item_modes().clone(),
-            annot_occur(ctx, path, arr, builder),
-            annot_occur(ctx, path, item, builder),
+            annot_occur(ctx, path, arr, defer, builder),
+            annot_occur(ctx, path, item, defer, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Pop(arr)) => rc::Expr::ArrayOp(rc::ArrayOp::Pop(
             arr.ty.unwrap_item_modes().clone(),
-            annot_occur(ctx, path, arr, builder),
+            annot_occur(ctx, path, arr, defer, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Replace(arr, item)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Replace(
                 arr.ty.unwrap_item_modes().clone(),
-                annot_occur(ctx, path, arr, builder),
-                annot_occur(ctx, path, item, builder),
+                annot_occur(ctx, path, arr, defer, builder),
+                annot_occur(ctx, path, item, defer, builder),
             ))
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Reserve(arr, cap)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Reserve(
                 arr.ty.unwrap_item_modes().clone(),
-                annot_occur(ctx, path, arr, builder),
-                annot_occur(ctx, path, cap, builder),
+                annot_occur(ctx, path, arr, defer, builder),
+                annot_occur(ctx, path, cap, defer, builder),
             ))
         }
 
         ob::Expr::IoOp(ob::IoOp::Input) => rc::Expr::IoOp(rc::IoOp::Input),
 
-        ob::Expr::IoOp(ob::IoOp::Output(val)) => {
-            rc::Expr::IoOp(rc::IoOp::Output(annot_occur(ctx, path, val, builder)))
-        }
+        ob::Expr::IoOp(ob::IoOp::Output(val)) => rc::Expr::IoOp(rc::IoOp::Output(annot_occur(
+            ctx, path, val, defer, builder,
+        ))),
 
         ob::Expr::Panic(ret_ty, msg) => {
-            rc::Expr::Panic(ret_ty, annot_occur(ctx, path, msg, builder))
+            rc::Expr::Panic(ret_ty, annot_occur(ctx, path, msg, defer, builder))
         }
 
         ob::Expr::ArrayLit(item_ty, items) => rc::Expr::ArrayLit(
             item_ty,
             items
                 .into_iter()
-                .map(|item| annot_occur(ctx, path, item, builder))
+                .map(|item| annot_occur(ctx, path, item, defer, builder))
                 .collect(),
         ),
 
@@ -417,7 +473,7 @@ fn annot_expr(
 }
 
 fn annot_func(func: ob::FuncDef) -> rc::FuncDef {
-    let arg_drops = select_empty(&func.arg_obligation);
+    let arg_drops = select_unused(&func.arg_obligation);
 
     let mut ctx = LocalContext::new();
     ctx.add_local(LocalInfo {
@@ -427,24 +483,26 @@ fn annot_func(func: ob::FuncDef) -> rc::FuncDef {
     });
 
     let mut builder = LetManyBuilder::new(Count::from_value(1));
-    builder.add_binding((
-        rc::Type::Tuple(vec![]),
-        rc::Expr::RcOp(RcOp::Release, arg_drops, rc::ARG_LOCAL),
-    ));
+    build_rc_op(RcOp::Release, arg_drops, rc::ARG_LOCAL, &mut builder);
 
+    let mut defer = DeferredDrops::new();
     let ret_local = annot_expr(
         &mut ctx,
         &annot::FUNC_BODY_PATH(),
         func.body,
         &func.ret_ty,
+        &mut defer,
         &mut builder,
     );
+    defer.build(&mut builder);
 
+    let body = builder.to_expr(ret_local);
+    // println!("body: {:#?}", body);
     rc::FuncDef {
         purity: func.purity,
         arg_ty: func.arg_ty,
         ret_ty: func.ret_ty,
-        body: builder.to_expr(ret_local),
+        body: body,
         profile_point: func.profile_point,
     }
 }

@@ -302,6 +302,9 @@ fn parameterize_type<'a>(
 ) -> annot::Type<SlotId, SlotId> {
     let modes = parameterize_mode_data(customs, sccs, count, ty);
     let lts = modes.extract_lts(customs);
+    // println!("----------------------------");
+    // println!("modes: {:?}", modes);
+    // println!("lts: {:?}", lts);
     annot::Type::new(lts, modes)
 }
 
@@ -373,6 +376,7 @@ fn parameterize_customs(
         );
 
         for (id, typedef) in to_populate {
+            println!("{:?}: {:?}", id, typedef);
             parameterized.insert(id, typedef);
         }
     }
@@ -1875,6 +1879,14 @@ struct SolverScc {
     scc_constrs: ConstrGraph,
 }
 
+fn process_arg_ty(ty: &annot::Type<ModeVar, Lt>) -> annot::Type<ModeVar, Lt> {
+    ty.map_lts(|lt| match lt {
+        Lt::Empty => Lt::Empty,
+        Lt::Local(_) => Lt::Empty,
+        Lt::Join(vars) => Lt::Join(vars.clone()),
+    })
+}
+
 fn instantiate_scc(
     strategy: Strategy,
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
@@ -1976,7 +1988,8 @@ fn instantiate_scc(
                         ctx.update_local(flat::ARG_LOCAL, update.clone());
                     }
 
-                    new_arg_tys.insert(*id, (**ctx.local_binding(flat::ARG_LOCAL)).clone());
+                    let raw_arg_ty = ctx.local_binding(flat::ARG_LOCAL);
+                    new_arg_tys.insert(*id, process_arg_ty(raw_arg_ty));
                 }
 
                 debug_assert!(

@@ -7,6 +7,7 @@ use crate::data::mode_annot_ast2::{
 use crate::data::obligation_annot_ast::{
     self as ob, ArrayOp, Condition, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
 };
+use crate::pretty_print::mode_annot::write_lifetime;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
 use crate::util::local_context;
@@ -200,6 +201,17 @@ fn annot_expr(
                 new_bindings_rev.reverse();
                 new_bindings_rev
             };
+
+            for (ty, obligation, _expr) in new_bindings.iter() {
+                if obligation.iter().any(|lt| lt != &Lt::Empty) {
+                    print!("{ty:?} @ ");
+                    for lt in obligation.iter() {
+                        write_lifetime(&mut std::io::stdout(), lt).unwrap();
+                        print!(" ");
+                    }
+                    println!();
+                }
+            }
 
             Expr::LetMany(new_bindings, ret_occur)
         }),

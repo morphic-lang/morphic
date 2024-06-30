@@ -979,6 +979,13 @@ impl<M, L> Type<M, L> {
     {
         self.map(f, Clone::clone)
     }
+
+    pub fn map_lts<L2>(&self, f: impl Fn(&L) -> L2) -> Type<M, L2>
+    where
+        M: Clone,
+    {
+        self.map(Clone::clone, f)
+    }
 }
 
 #[derive(Clone, Debug)]
