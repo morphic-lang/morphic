@@ -1256,7 +1256,7 @@ fn instantiate_expr(
                     lt_count,
                     ctx.as_untracked(),
                     scopes,
-                    path.par(i, cases.len()),
+                    path.alt(i, cases.len()),
                     fut_modes,
                     fut_lts,
                     body,
@@ -1478,7 +1478,7 @@ fn instantiate_expr(
             };
 
             require_owned(constrs, *fut_mode);
-            for (m1, m2) in fut_item_modes.iter_overlay().zip_eq(fut_ov.iter()) {
+            for (m1, m2) in fut_item_modes.iter_stack().zip_eq(fut_ov.iter()) {
                 constrs.require_eq(*m1, *m2);
             }
 
@@ -2327,7 +2327,7 @@ fn sanity_check_expr<M, L>(
                     renderer,
                     funcs,
                     param_count,
-                    &path.par(i, cases.len()),
+                    &path.alt(i, cases.len()),
                     ctx,
                     ret_ty,
                     body,

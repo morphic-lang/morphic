@@ -32,6 +32,14 @@ impl std::ops::BitOr for &Selector {
     }
 }
 
+impl std::ops::Not for &Selector {
+    type Output = Selector;
+
+    fn not(self) -> Selector {
+        self.iter().map(|&b| !b).collect_overlay(&self)
+    }
+}
+
 pub type CustomFuncId = ob::CustomFuncId;
 pub type CustomTypeId = first_ord::CustomTypeId;
 pub type Type = ob::Type;

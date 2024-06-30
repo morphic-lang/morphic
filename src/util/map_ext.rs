@@ -28,11 +28,11 @@ impl<'a, I: Id, V> MapRef<'a, I, V> for &'a IdMap<I, V> {
 /// A wrapper for functions which implements `MapRef`. Rust's type inference around closures is
 /// quite sketchy and trying to implement `MapRef` directly on closures produces weird type errors
 /// at usage sites.
-pub struct FnWrapper<'a, K, V, F>(F, PhantomData<(K, &'a V)>);
+pub struct FnWrap<'a, K, V, F>(F, PhantomData<(K, &'a V)>);
 
-impl<'a, K, V, F> FnWrapper<'a, K, V, F>
+impl<'a, K, V, F> FnWrap<'a, K, V, F>
 where
-    // `FnWrapper` only exists to help the type checker. To that end, the key is this bound.
+    // `FnWrap` only exists to help the type checker. To that end, the key is this bound.
     F: Fn(&K) -> Option<&'a V> + Copy + 'a,
 {
     pub fn wrap(f: F) -> Self {
@@ -41,16 +41,16 @@ where
 }
 
 // `#[derive(Copy)]` isn't smart enough to produce this because `K` needn't be `Copy`.
-impl<'a, K, V, F: Copy> Copy for FnWrapper<'a, K, V, F> {}
+impl<'a, K, V, F: Copy> Copy for FnWrap<'a, K, V, F> {}
 
 // `#[derive(Clone)]` isn't smart enough to produce this because `K` needn't be `Clone`.
-impl<'a, K, V, F: Clone> Clone for FnWrapper<'a, K, V, F> {
+impl<'a, K, V, F: Clone> Clone for FnWrap<'a, K, V, F> {
     fn clone(&self) -> Self {
         Self(self.0.clone(), PhantomData)
     }
 }
 
-impl<'a, K, V, F> MapRef<'a, K, V> for FnWrapper<'a, K, V, F>
+impl<'a, K, V, F> MapRef<'a, K, V> for FnWrap<'a, K, V, F>
 where
     F: Fn(&K) -> Option<&'a V> + Copy + 'a,
 {

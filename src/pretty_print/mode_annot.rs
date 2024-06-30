@@ -116,7 +116,7 @@ fn write_local_lifetime(w: &mut dyn Write, lt: &LocalLt) -> io::Result<()> {
             write_local_lifetime(w, child)?;
             Ok(())
         }
-        LocalLt::Par(branches) => {
+        LocalLt::Alt(branches) => {
             write!(w, "(")?;
             assert!(!branches.is_empty());
             for (i, branch) in branches.iter().enumerate() {

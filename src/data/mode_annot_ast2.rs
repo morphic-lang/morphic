@@ -66,7 +66,7 @@ pub struct ModeSolution {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathElem {
     Seq(usize),
-    Par { i: usize, n: usize },
+    Alt { i: usize, n: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,9 +84,9 @@ impl Path {
         Self(elems)
     }
 
-    pub fn par(&self, i: usize, n: usize) -> Self {
+    pub fn alt(&self, i: usize, n: usize) -> Self {
         let mut elems = self.0.clone();
-        elems.push_back(PathElem::Par { i, n });
+        elems.push_back(PathElem::Alt { i, n });
         Self(elems)
     }
 
@@ -97,10 +97,10 @@ impl Path {
                 PathElem::Seq(i) => {
                     result = LocalLt::Seq(Box::new(result), i);
                 }
-                PathElem::Par { i, n } => {
-                    let mut par = vec![None; n];
-                    par[i] = Some(result);
-                    result = LocalLt::Par(par);
+                PathElem::Alt { i, n } => {
+                    let mut alt = vec![None; n];
+                    alt[i] = Some(result);
+                    result = LocalLt::Alt(alt);
                 }
             }
         }
@@ -128,7 +128,7 @@ pub enum LocalLt {
     // Represents ordered "events", e.g. the binding and body of a let.
     Seq(Box<LocalLt>, usize),
     // Represents unordered "events", e.g. the arms of a match. Always contains at least one `Some`.
-    Par(Vec<Option<LocalLt>>),
+    Alt(Vec<Option<LocalLt>>),
 }
 
 impl Lt {
@@ -182,11 +182,11 @@ impl LocalLt {
                         return None;
                     }
                 }
-                (LocalLt::Par(par), PathElem::Par { i, n }) => {
-                    if par.len() != *n {
+                (LocalLt::Alt(alt), PathElem::Alt { i, n }) => {
+                    if alt.len() != *n {
                         panic!("incompatible lifetimes");
                     }
-                    res = par[*i].as_ref()?;
+                    res = alt[*i].as_ref()?;
                 }
                 _ => {
                     panic!("incompatible lifetimes");
@@ -208,7 +208,7 @@ impl LocalLt {
                     LocalLt::Seq(Box::new(l1.join(l2)), *i1)
                 }
             }
-            (LocalLt::Par(p1), LocalLt::Par(p2)) => LocalLt::Par(
+            (LocalLt::Alt(p1), LocalLt::Alt(p2)) => LocalLt::Alt(
                 p1.iter()
                     .zip_eq(p2.iter())
                     .map(|(l1, l2)| match (l1, l2) {
@@ -218,7 +218,7 @@ impl LocalLt {
                     })
                     .collect(),
             ),
-            (LocalLt::Seq(_, _), LocalLt::Par(_)) | (LocalLt::Par(_), LocalLt::Seq(_, _)) => {
+            (LocalLt::Seq(_, _), LocalLt::Alt(_)) | (LocalLt::Alt(_), LocalLt::Seq(_, _)) => {
                 panic!("incompatible lifetimes");
             }
         }
@@ -244,11 +244,11 @@ impl LocalLt {
                         continue;
                     }
                 }
-                (LocalLt::Par(par), PathElem::Par { i, n }) => {
-                    if par.len() != *n {
+                (LocalLt::Alt(alt), PathElem::Alt { i, n }) => {
+                    if alt.len() != *n {
                         panic!("incompatible lifetimes");
                     }
-                    match &par[*i] {
+                    match &alt[*i] {
                         None => {
                             return false;
                         }
@@ -291,11 +291,11 @@ impl LocalLt {
                         continue;
                     }
                 }
-                (LocalLt::Par(par), PathElem::Par { i, n }) => {
-                    if par.len() != *n {
+                (LocalLt::Alt(alt), PathElem::Alt { i, n }) => {
+                    if alt.len() != *n {
                         panic!("incompatible lifetimes");
                     }
-                    match &par[*i] {
+                    match &alt[*i] {
                         None => {
                             return true;
                         }
@@ -560,21 +560,21 @@ impl<T> LtData<T> {
         }
     }
 
-    pub fn iter_overlay<'a>(
+    pub fn iter_stack<'a>(
         &'a self,
         customs: &'a CustomTypes,
     ) -> Box<dyn Iterator<Item = &'a T> + 'a> {
         match self {
             LtData::Bool => Box::new(iter::empty()),
             LtData::Num(_) => Box::new(iter::empty()),
-            LtData::Tuple(lts) => Box::new(lts.iter().flat_map(|lt| lt.iter_overlay(customs))),
-            LtData::Variants(lts) => Box::new(lts.values().flat_map(|lt| lt.iter_overlay(customs))),
+            LtData::Tuple(lts) => Box::new(lts.iter().flat_map(|lt| lt.iter_stack(customs))),
+            LtData::Variants(lts) => Box::new(lts.values().flat_map(|lt| lt.iter_stack(customs))),
             LtData::SelfCustom(_) => Box::new(iter::empty()),
             LtData::Custom(id, subst) => Box::new(
                 customs.types[*id]
                     .ty
                     .lts()
-                    .iter_overlay(customs)
+                    .iter_stack(customs)
                     .map(|slot| &subst[slot]),
             ),
             LtData::Array(lt, _) => Box::new(iter::once(lt)),
@@ -738,34 +738,34 @@ impl<T> ModeData<T> {
         }
     }
 
-    pub fn iter_lts<'a>(
+    pub fn iter_store<'a>(
         &'a self,
         customs: impl MapRef<'a, CustomTypeId, ModeData<SlotId>> + 'a,
     ) -> Box<dyn Iterator<Item = &'a T> + 'a> {
         match self {
             ModeData::Bool => Box::new(iter::empty()),
             ModeData::Num(_) => Box::new(iter::empty()),
-            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(move |ty| ty.iter_lts(customs))),
+            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(move |ty| ty.iter_store(customs))),
             ModeData::Variants(tys) => {
-                Box::new(tys.values().flat_map(move |ty| ty.iter_lts(customs)))
+                Box::new(tys.values().flat_map(move |ty| ty.iter_store(customs)))
             }
             ModeData::SelfCustom(_) => Box::new(iter::empty()),
             ModeData::Custom(id, _, subst) => {
                 let custom = customs.get(id).unwrap();
-                Box::new(custom.iter_lts(customs).map(|slot| &subst[*slot]))
+                Box::new(custom.iter_store(customs).map(|slot| &subst[*slot]))
             }
-            ModeData::Array(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_lts(customs))),
-            ModeData::HoleArray(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_lts(customs))),
-            ModeData::Boxed(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_lts(customs))),
+            ModeData::Array(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_store(customs))),
+            ModeData::HoleArray(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_store(customs))),
+            ModeData::Boxed(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_store(customs))),
         }
     }
 
-    pub fn iter_overlay<'a>(&'a self) -> Box<dyn Iterator<Item = &'a T> + 'a> {
+    pub fn iter_stack<'a>(&'a self) -> Box<dyn Iterator<Item = &'a T> + 'a> {
         match self {
             ModeData::Bool => Box::new(iter::empty()),
             ModeData::Num(_) => Box::new(iter::empty()),
-            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(|ty| ty.iter_overlay())),
-            ModeData::Variants(tys) => Box::new(tys.values().flat_map(|ty| ty.iter_overlay())),
+            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(|ty| ty.iter_stack())),
+            ModeData::Variants(tys) => Box::new(tys.values().flat_map(|ty| ty.iter_stack())),
             ModeData::SelfCustom(_) => Box::new(iter::empty()),
             ModeData::Custom(_, ov, _) => Box::new(ov.values()),
             ModeData::Array(m, _, _) => Box::new(iter::once(m)),
@@ -1144,9 +1144,9 @@ mod tests {
 
     #[test]
     fn test_path_as_lt() {
-        let path = Path::root().seq(0).par(1, 3).seq(2276);
+        let path = Path::root().seq(0).alt(1, 3).seq(2276);
         let expected = Lt::Local(LocalLt::Seq(
-            Box::new(LocalLt::Par(vec![
+            Box::new(LocalLt::Alt(vec![
                 None,
                 Some(LocalLt::Seq(Box::new(LocalLt::Final), 2276)),
                 None,
@@ -1158,30 +1158,30 @@ mod tests {
 
     #[test]
     fn test_lt_zoom() {
-        let par = LocalLt::Par(vec![
+        let alt = LocalLt::Alt(vec![
             None,
             Some(LocalLt::Seq(Box::new(LocalLt::Final), 2276)),
             None,
         ]);
-        let lt = LocalLt::Seq(Box::new(par.clone()), 0);
+        let lt = LocalLt::Seq(Box::new(alt.clone()), 0);
 
-        let zoomed = lt.zoom(&Path::root().seq(0).par(1, 3).seq(2276));
+        let zoomed = lt.zoom(&Path::root().seq(0).alt(1, 3).seq(2276));
         assert_eq!(zoomed, Some(&LocalLt::Final));
 
         let zoomed = lt.zoom(&Path::root().seq(0));
-        assert_eq!(zoomed, Some(&par));
+        assert_eq!(zoomed, Some(&alt));
 
-        let zoomed = lt.zoom(&Path::root().seq(0).par(1, 3).seq(2275));
+        let zoomed = lt.zoom(&Path::root().seq(0).alt(1, 3).seq(2275));
         assert_eq!(zoomed, None);
 
-        let zoomed = lt.zoom(&Path::root().seq(0).par(2, 3));
+        let zoomed = lt.zoom(&Path::root().seq(0).alt(2, 3));
         assert_eq!(zoomed, None);
     }
 
     #[test]
     fn test_lt_order() {
         let lt = Lt::Local(LocalLt::Seq(
-            Box::new(LocalLt::Par(vec![
+            Box::new(LocalLt::Alt(vec![
                 None,
                 Some(LocalLt::Seq(Box::new(LocalLt::Final), 2276)),
                 None,
@@ -1189,9 +1189,9 @@ mod tests {
             0,
         ));
 
-        let before = Path::root().seq(0).par(1, 3).seq(2275);
-        let eq = Path::root().seq(0).par(1, 3).seq(2276);
-        let after = Path::root().seq(0).par(1, 3).seq(2277);
+        let before = Path::root().seq(0).alt(1, 3).seq(2275);
+        let eq = Path::root().seq(0).alt(1, 3).seq(2276);
+        let after = Path::root().seq(0).alt(1, 3).seq(2277);
 
         assert!(!lt.does_not_exceed(&before));
         assert!(lt.does_not_exceed(&eq));
@@ -1204,7 +1204,7 @@ mod tests {
 
     #[test]
     fn test_mode_data_iter() {
-        use crate::util::map_ext::FnWrapper;
+        use crate::util::map_ext::FnWrap;
 
         let modes = ModeData::Array(
             0,
@@ -1213,10 +1213,10 @@ mod tests {
         );
 
         assert_eq!(modes.iter().copied().collect::<Vec<_>>(), vec![0, 1, 2]);
-        assert_eq!(modes.iter_overlay().copied().collect::<Vec<_>>(), vec![0]);
+        assert_eq!(modes.iter_stack().copied().collect::<Vec<_>>(), vec![0]);
         assert_eq!(
             modes
-                .iter_lts(FnWrapper::wrap(|_| None))
+                .iter_store(FnWrap::wrap(|_| None))
                 .copied()
                 .collect::<Vec<_>>(),
             vec![0, 2]

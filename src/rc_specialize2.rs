@@ -7,9 +7,9 @@ use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
 use crate::util::let_builder::{self, FromBindings};
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::{FnWrapper, MapRef};
+use crate::util::map_ext::{FnWrap, MapRef};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
-use id_collections::{id_type, Count, IdVec};
+use id_collections::{Count, IdVec};
 use std::collections::BTreeMap;
 
 // TODO: Thread type and function symbols through specialization.
@@ -40,16 +40,12 @@ impl TypeSpec {
         osub: impl MapRef<'a, SlotId, Mode>,
         tsub: impl MapRef<'a, SlotId, Mode>,
     ) -> Self {
-        let get = FnWrapper::wrap(|id| customs.types.get(id).map(|def| &def.ty));
+        let get_custom = FnWrap::wrap(|id| customs.types.get(id).map(|def| &def.ty));
+        let get_mode = |slot| *osub.get(slot).unwrap_or_else(|| tsub.get(slot).unwrap());
         let subst = customs.types[id]
             .ty
-            .iter_lts(get)
-            .map(|slot| {
-                (
-                    *slot,
-                    *osub.get(slot).unwrap_or_else(|| tsub.get(slot).unwrap()),
-                )
-            })
+            .iter_store(get_custom)
+            .map(|slot| (*slot, get_mode(slot)))
             .collect();
         Self { id, subst }
     }
@@ -59,10 +55,10 @@ impl TypeSpec {
         id: first_ord::CustomTypeId,
         tsub: impl MapRef<'a, SlotId, Mode>,
     ) -> Self {
-        let get = FnWrapper::wrap(|id| customs.types.get(id).map(|def| &def.ty));
+        let get_custom = FnWrap::wrap(|id| customs.types.get(id).map(|def| &def.ty));
         let subst = customs.types[id]
             .ty
-            .iter_lts(get)
+            .iter_store(get_custom)
             .map(|slot| (*slot, *tsub.get(slot).unwrap()))
             .collect();
         Self { id, subst }
@@ -137,8 +133,8 @@ fn lower_custom_type(
         ModeData::Custom(id, osub, tsub) => rc::Type::Custom(insts.resolve(TypeSpec::new_head(
             customs,
             *id,
-            FnWrapper::wrap(|slot| osub.get(slot).and_then(|slot| subst.get(slot))),
-            FnWrapper::wrap(|slot| tsub.get(slot).and_then(|slot| subst.get(slot))),
+            FnWrap::wrap(|slot| osub.get(slot).and_then(|slot| subst.get(slot))),
+            FnWrap::wrap(|slot| tsub.get(slot).and_then(|slot| subst.get(slot))),
         ))),
         ModeData::Array(mode, _, item_ty) => rc::Type::Array(
             subst[mode],
@@ -237,7 +233,7 @@ impl RcOpPlan {
             // with boxes (e.g. if we inserted the minimal number of boxes to do cycle breaking).
             Overlay::SelfCustom(id) => {
                 debug_assert!({
-                    let get = FnWrapper::wrap(|id| customs.types.get(id).map(|def| &def.ov));
+                    let get = FnWrap::wrap(|id| customs.types.get(id).map(|def| &def.ov));
                     customs.types[*id].ov.is_zero_sized(get)
                 });
                 Self::NoOp
@@ -617,11 +613,6 @@ fn lower_func(
         profile_point: func.profile_point,
     }
 }
-
-/// We want to deduplicate specializations w.r.t. their retains and releases. This happens in two
-/// stages. First, we deduplicate w.r.t. modes and label specializations using `ModeSpecFuncId`.
-#[id_type]
-struct ModeSpecFuncId(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {

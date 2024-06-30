@@ -50,4 +50,8 @@ impl<Var: Id, T> LocalContext<Var, T> {
     pub fn len(&self) -> usize {
         self.stack.len()
     }
+
+    pub fn count(&self) -> Count<Var> {
+        self.stack.count()
+    }
 }

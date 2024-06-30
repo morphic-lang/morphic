@@ -39,9 +39,9 @@ fn get_occur_obligation(
     dst_lts: &LtData<Lt>,
 ) -> StackLt {
     src_modes
-        .iter_overlay()
-        .zip_eq(dst_modes.iter_overlay())
-        .zip_eq(dst_lts.iter_overlay(customs))
+        .iter_stack()
+        .zip_eq(dst_modes.iter_stack())
+        .zip_eq(dst_lts.iter_stack(customs))
         .map(|((src_mode, dst_mode), dst_lt)| {
             get_slot_obligation(occur_path, *src_mode, *dst_mode, dst_lt)
         })
@@ -166,7 +166,7 @@ fn annot_expr(
                             funcs,
                             insts,
                             inst_params,
-                            &path.par(i, num_arms),
+                            &path.alt(i, num_arms),
                             ctx,
                             expr,
                         ),

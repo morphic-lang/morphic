@@ -5,68 +5,73 @@ use crate::data::mode_annot_ast2::{
 };
 use crate::data::obligation_annot_ast::{self as ob, StackLt};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
-use crate::pretty_print::mode_annot::write_lifetime;
-use crate::util::drop_bomb::DropBomb;
 use crate::util::iter::IterExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
+use once_cell::sync::Lazy;
 use std::collections::BTreeMap;
 use std::iter;
 
-fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
-    match (src_mode, dst_mode) {
-        (_, Mode::Borrowed) => false,
-        (Mode::Borrowed, Mode::Owned) => {
-            panic!("borrowed to owned transitions should be prevented by constraint generation")
-        }
-        (Mode::Owned, Mode::Owned) => !lt.does_not_exceed(path),
-    }
+fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt, already_moved: bool) -> bool {
+    debug_assert!(
+        !(src_mode == Mode::Borrowed && dst_mode == Mode::Owned),
+        "borrowed to owned transitions should be prevented by constraint generation"
+    );
+    dst_mode == Mode::Owned && (!lt.does_not_exceed(path) || already_moved)
 }
 
+/// Unlike in the formalism, only `LetMany` and `Branch` introduce new path nodes. This is mostly
+/// fine because the program is A-normal but it does mean we have to be careful when inserting
+/// retains and releases. In particular, `select_dups` needs to know if there is another moving
+/// occurrence of the binding at the same path which has already "claimed" the move opportunity.
 fn select_dups(
     path: &Path,
     src_ty: &ob::Type,
     dst_ty: &ob::Type,
     lt_obligation: &StackLt,
+    moves: &Selector,
 ) -> Selector {
     src_ty
-        .iter_overlay()
-        .zip_eq(dst_ty.iter_overlay())
+        .iter_stack()
+        .zip_eq(dst_ty.iter_stack())
         .zip_eq(lt_obligation.iter())
-        .map(|((src_mode, dst_mode), lt)| should_dup(path, *src_mode, *dst_mode, lt))
+        .zip_eq(moves.iter())
+        .map(|(((src_mode, dst_mode), lt), already_moved)| {
+            should_dup(path, *src_mode, *dst_mode, lt, *already_moved)
+        })
         .collect_overlay(lt_obligation)
 }
 
-fn should_drop(path: &Path, _src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
-    // If the destination is owned, either this is a dup, and therefore not the final occurrence of
-    // this variable, or this is a move
-    dst_mode == Mode::Borrowed && lt.does_not_exceed(path)
+/// Returns the fields that should be moved if they have not *already* been moved at this path (see
+/// `select_dups`).
+fn should_move(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
+    debug_assert!(
+        !(src_mode == Mode::Borrowed && dst_mode == Mode::Owned),
+        "borrowed to owned transitions should be prevented by constraint generation"
+    );
+    dst_mode == Mode::Owned && lt.does_not_exceed(path)
 }
 
-fn select_drops(
+fn select_moves(
     path: &Path,
     src_ty: &ob::Type,
     dst_ty: &ob::Type,
     lt_obligation: &StackLt,
 ) -> Selector {
     src_ty
-        .iter_overlay()
-        .zip_eq(dst_ty.iter_overlay())
+        .iter_stack()
+        .zip_eq(dst_ty.iter_stack())
         .zip_eq(lt_obligation.iter())
-        .map(|((src_mode, dst_mode), lt)| should_drop(path, *src_mode, *dst_mode, lt))
+        .map(|((src_mode, dst_mode), lt)| should_move(path, *src_mode, *dst_mode, lt))
         .collect_overlay(lt_obligation)
 }
 
 fn select_owned(ty: &ob::Type) -> Selector {
-    ty.iter_overlay()
+    ty.iter_stack()
         .map(|&mode| mode == Mode::Owned)
         .collect_overlay(&ty.unapply_overlay())
-}
-
-fn select_unused(lt: &StackLt) -> Selector {
-    lt.iter().map(|lt| *lt == Lt::Empty).collect_overlay(&lt)
 }
 
 #[derive(Clone, Debug)]
@@ -175,37 +180,222 @@ fn build_rc_op(op: RcOp, slots: Selector, target: LocalId, builder: &mut LetMany
     }
 }
 
-#[derive(Debug)]
-struct DeferredDrops {
-    bomb: DropBomb,
-    inner: BTreeMap<LocalId, Selector>,
+type LocalDrops = BTreeMap<flat::LocalId, Selector>;
+
+#[derive(Clone, Debug)]
+enum BodyDrops {
+    Branch {
+        prologues: Vec<LocalDrops>,
+        sub_drops: Vec<Option<BodyDrops>>,
+    },
+    LetMany {
+        epilogues: Vec<LocalDrops>,
+        sub_drops: Vec<Option<BodyDrops>>,
+    },
 }
 
-impl DeferredDrops {
-    fn new() -> Self {
-        DeferredDrops {
-            bomb: DropBomb::new("some deferred drops were not processed"),
-            inner: BTreeMap::new(),
+/// The set of locations where variables' lifetimes end. This corresponds to the set of drop points
+/// modulo where variables are moved.
+#[derive(Clone, Debug)]
+struct FuncDrops {
+    arg_drops: Selector,
+    body_drops: Option<BodyDrops>,
+}
+
+fn empty_drops(expr: &ob::Expr) -> Option<BodyDrops> {
+    match expr {
+        ob::Expr::Branch(_, arms, _) => {
+            let prologues = arms.iter().map(|_| LocalDrops::new()).collect();
+            let sub_drops = arms.iter().map(|(_, expr)| empty_drops(expr)).collect();
+            Some(BodyDrops::Branch {
+                prologues,
+                sub_drops,
+            })
+        }
+
+        ob::Expr::LetMany(bindings, _) => {
+            let epilogues = bindings.iter().map(|_| LocalDrops::new()).collect();
+            let sub_drops = bindings
+                .iter()
+                .map(|(_, _, expr)| empty_drops(expr))
+                .collect();
+            Some(BodyDrops::LetMany {
+                epilogues,
+                sub_drops,
+            })
+        }
+
+        _ => None,
+    }
+}
+
+// TODO: using `Selector`s here (as we've currently defined them) is quite inefficient. We
+// should use a data structure which can *sparsely* represent a subset of fields.
+fn register_drops_for_slot_rec(
+    drops: &mut BodyDrops,
+    num_locals: Count<flat::LocalId>,
+    binding: flat::LocalId,
+    slot: &Selector,
+    obligation: &LocalLt,
+) {
+    let register_to = |drops: &mut LocalDrops| {
+        drops
+            .entry(binding)
+            .and_modify(|old_slots| *old_slots = &*old_slots | slot)
+            .or_insert_with(|| slot.clone());
+    };
+
+    match obligation {
+        LocalLt::Final => unreachable!(),
+
+        LocalLt::Seq(obligation, idx) => {
+            let BodyDrops::LetMany {
+                epilogues,
+                sub_drops,
+            } = drops
+            else {
+                unreachable!()
+            };
+
+            if **obligation == LocalLt::Final {
+                register_to(&mut epilogues[*idx]);
+            } else {
+                let drops = sub_drops[*idx].as_mut().unwrap();
+                let num_locals = Count::from_value(num_locals.to_value() + idx);
+                register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
+            }
+        }
+
+        LocalLt::Alt(obligations) => {
+            debug_assert!(obligations.iter().any(|x| x.is_some()));
+
+            let BodyDrops::Branch {
+                prologues,
+                sub_drops,
+            } = drops
+            else {
+                unreachable!()
+            };
+
+            for (idx, obligation) in obligations.iter().enumerate() {
+                if let Some(obligation) = obligation {
+                    let drops = sub_drops[idx].as_mut().unwrap();
+                    register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
+                } else {
+                    if num_locals.contains(binding) {
+                        // This binding is declared in an enclosing scope and this slot unused in
+                        // this branch (but moved along some other branch), so we drop the slot
+                        // immediately.
+                        register_to(&mut prologues[idx]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn register_drops_for_slot(
+    drops: &mut BodyDrops,
+    binding: flat::LocalId,
+    slot: &Selector,
+    obligation: &LocalLt,
+) {
+    let LocalLt::Seq(obligation, idx) = obligation else {
+        unreachable!()
+    };
+    debug_assert_eq!(*idx, 0);
+
+    // We must start `num_locals` at 1 to account for the function argument.
+    register_drops_for_slot_rec(drops, Count::from_value(1), binding, slot, obligation);
+}
+
+fn register_drops_for_binding(
+    drops: &mut BodyDrops,
+    binding_id: flat::LocalId,
+    binding_ty: &ob::Type,
+    binding_path: &Path,
+    obligation: &StackLt,
+) {
+    let absent = Selector::from_const(&binding_ty.unapply_overlay(), false);
+    let binding_path = Lazy::new(|| binding_path.as_local_lt());
+
+    for path in iterate_slots(obligation) {
+        let mut slot = absent.clone();
+        set_selector_slot(&mut slot, &path);
+        match get_slot_data(&path) {
+            // We don't need to do anything since the binding escapes into the caller's scope.
+            Lt::Join(_) => {}
+            // The binding is unused, so we can drop it immediately.
+            Lt::Empty => {
+                register_drops_for_slot(drops, binding_id, &slot, &*binding_path);
+            }
+            Lt::Local(lt) => {
+                register_drops_for_slot(drops, binding_id, &slot, lt);
+            }
+        }
+    }
+}
+
+fn register_drops_for_expr(
+    drops: &mut BodyDrops,
+    mut num_locals: Count<flat::LocalId>,
+    path: &Path,
+    expr: &ob::Expr,
+) {
+    match expr {
+        ob::Expr::Branch(_, arms, _) => {
+            for (i, (_, expr)) in arms.iter().enumerate() {
+                let path = path.alt(i, arms.len());
+                register_drops_for_expr(drops, num_locals, &path, expr);
+            }
+        }
+
+        ob::Expr::LetMany(bindings, _) => {
+            for (i, (ty, obligation, sub_expr)) in bindings.iter().enumerate() {
+                let path = path.seq(i);
+                register_drops_for_expr(drops, num_locals, &path, sub_expr);
+
+                // Only increment `num_locals` after recursing into `sub_expr`.
+                let binding_id = num_locals.inc();
+                register_drops_for_binding(drops, binding_id, ty, &path, obligation);
+            }
+        }
+
+        _ => {}
+    }
+}
+
+fn drops_for_func(func: &ob::FuncDef) -> FuncDrops {
+    let none = Selector::from_const(&func.arg_ty.unapply_overlay(), false);
+    let mut arg_drops = none.clone();
+    let mut body_drops = empty_drops(&func.body);
+
+    for path in iterate_slots(&func.arg_obligation) {
+        let mut sel = none.clone();
+        set_selector_slot(&mut sel, &path);
+        match get_slot_data(&path) {
+            Lt::Join(_) => {}
+            Lt::Empty => {
+                arg_drops = &arg_drops | &sel;
+            }
+            Lt::Local(lt) => {
+                let body_drops = body_drops.as_mut().unwrap();
+                register_drops_for_slot(body_drops, flat::ARG_LOCAL, &sel, lt);
+            }
         }
     }
 
-    fn defer(&mut self, local: LocalId, sel: Selector) {
-        use std::collections::btree_map::Entry::*;
-        match self.inner.entry(local) {
-            Vacant(entry) => {
-                entry.insert(sel);
-            }
-            Occupied(mut entry) => {
-                *entry.get_mut() = entry.get() | &sel;
-            }
-        }
-    }
+    // We must start `num_locals` at 1 to account for the function argument.
+    register_drops_for_expr(
+        body_drops.as_mut().unwrap(),
+        Count::from_value(1),
+        &annot::FUNC_BODY_PATH(),
+        &func.body,
+    );
 
-    fn build(mut self, builder: &mut LetManyBuilder<Expr>) {
-        for (local, sel) in self.inner {
-            build_rc_op(RcOp::Release, sel, local, builder);
-        }
-        self.bomb.defuse();
+    FuncDrops {
+        arg_drops,
+        body_drops,
     }
 }
 
@@ -214,33 +404,26 @@ struct LocalInfo {
     new_id: LocalId,
     ty: rc::Type,
     obligation: StackLt,
+    moves: Selector,
 }
 
+/// This function updates `moves`, but note that e.g. if `f` takes two owned aguements and we are
+/// processing the expression `f(x, x)` then exactly one retain will be generated regardless of
+/// which occurrence we process first, and we will get `let () = retain(x) in f(x, x)`.
 fn annot_occur(
     ctx: &mut LocalContext<flat::LocalId, LocalInfo>,
     path: &Path,
     occur: ob::Occur,
-    defer: &mut DeferredDrops,
     builder: &mut LetManyBuilder<Expr>,
 ) -> LocalId {
-    let binding = ctx.local_binding(occur.id);
+    let binding = ctx.local_binding_mut(occur.id);
+    let moves = &mut binding.moves;
 
-    let dups = select_dups(path, &binding.ty, &occur.ty, &binding.obligation);
+    let dups = select_dups(path, &binding.ty, &occur.ty, &binding.obligation, moves);
     build_rc_op(RcOp::Retain, dups, binding.new_id, builder);
 
-    let drops = select_drops(path, &binding.ty, &occur.ty, &binding.obligation);
-
-    if binding.obligation.iter().any(|lt| lt != &Lt::Empty) {
-        for lt in binding.obligation.iter() {
-            write_lifetime(&mut std::io::stdout(), lt).unwrap();
-            print!(" ");
-        }
-        print!("@ ");
-        write_lifetime(&mut std::io::stdout(), &path.as_lt()).unwrap();
-        println!(" ; drops: {:?}", drops);
-    }
-
-    defer.defer(binding.new_id, drops);
+    // After computing `dups`, we can update `moves`.
+    *moves = &*moves | &select_moves(path, &binding.ty, &occur.ty, &binding.obligation);
     binding.new_id
 }
 
@@ -249,94 +432,78 @@ fn annot_expr(
     path: &Path,
     expr: ob::Expr,
     ret_ty: &ob::Type,
-    defer: &mut DeferredDrops,
+    drops: &Option<BodyDrops>,
     builder: &mut LetManyBuilder<Expr>,
 ) -> rc::LocalId {
     let new_expr = match expr {
-        ob::Expr::Local(local) => rc::Expr::Local(annot_occur(ctx, path, local, defer, builder)),
+        ob::Expr::Local(local) => rc::Expr::Local(annot_occur(ctx, path, local, builder)),
 
         ob::Expr::Call(purity, func_id, arg) => {
-            // println!("--------------------");
-            // println!("arg: {:?}", arg);
-            // println!("func_id: {:?}", func_id);
-            // println!("defer {:?}", defer.inner);
-            let expr = rc::Expr::Call(purity, func_id, annot_occur(ctx, path, arg, defer, builder));
-            // println!("defer {:?}", defer.inner);
-            expr
+            rc::Expr::Call(purity, func_id, annot_occur(ctx, path, arg, builder))
         }
 
         ob::Expr::Branch(discrim, arms, ret_ty) => {
-            let num_arms = arms.len();
-            let mut drops = vec![BTreeMap::new(); num_arms];
+            let BodyDrops::Branch {
+                prologues,
+                sub_drops,
+            } = drops.as_ref().unwrap()
+            else {
+                unreachable!();
+            };
 
-            // Determine the variables which are used along some, but not all, branches
-            // TODO: These loops are expensive!
-            for info in ctx.inner().values() {
-                for slot in iterate_slots(&info.obligation) {
-                    match get_slot_data(&slot) {
-                        Lt::Empty | Lt::Join(_) => {}
-                        Lt::Local(slot_lt) => {
-                            if let Some(suffix_lt) = slot_lt.zoom(&path) {
-                                let LocalLt::Par(arm_lts) = suffix_lt else {
-                                    unreachable!();
-                                };
-                                for (arm_lt, drops) in arm_lts.iter().zip_eq(drops.iter_mut()) {
-                                    if *arm_lt == None {
-                                        let sel = drops.entry(info.new_id).or_insert_with(|| {
-                                            Selector::from_const(&info.ty.unapply_overlay(), false)
-                                        });
-                                        set_selector_slot(sel, &slot);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let discrim = annot_occur(ctx, path, discrim, defer, builder);
+            let n = arms.len();
             let mut new_arms = Vec::new();
-            for entry in arms.into_iter().zip_eq(drops.into_iter()).enumerate() {
-                let (i, ((cond, expr), drops)) = entry;
-                let mut case_builder = builder.child();
-                let mut case_defer = DeferredDrops::new();
 
-                for (drop_id, drop_sel) in drops {
-                    build_rc_op(RcOp::Release, drop_sel, drop_id, &mut case_builder);
+            for (i, (cond, expr)) in arms.into_iter().enumerate() {
+                let mut case_builder = builder.child();
+
+                for (old_id, drop_sel) in &prologues[i] {
+                    let new_id = ctx.local_binding(*old_id).new_id;
+                    build_rc_op(RcOp::Release, drop_sel.clone(), new_id, &mut case_builder);
                 }
 
                 let final_local = annot_expr(
                     ctx,
-                    &path.par(i, num_arms),
+                    &path.alt(i, n),
                     expr,
                     &ret_ty,
-                    &mut case_defer,
+                    &sub_drops[i],
                     &mut case_builder,
                 );
 
-                case_defer.build(&mut case_builder);
                 new_arms.push((cond, case_builder.to_expr(final_local)));
             }
 
+            let discrim = annot_occur(ctx, path, discrim, builder);
             rc::Expr::Branch(discrim, new_arms, ret_ty)
         }
 
         ob::Expr::LetMany(bindings, ret) => {
+            let BodyDrops::LetMany {
+                epilogues,
+                sub_drops,
+            } = drops.as_ref().unwrap()
+            else {
+                unreachable!();
+            };
+
             let final_local = ctx.with_scope(|ctx| {
                 for (i, (ty, obligation, body)) in bindings.into_iter().enumerate() {
-                    let drop_immediately = select_unused(&obligation);
-                    let mut body_defer = DeferredDrops::new();
-
                     let final_local =
-                        annot_expr(ctx, &path.seq(i), body, &ty, &mut body_defer, builder);
+                        annot_expr(ctx, &path.seq(i), body, &ty, &sub_drops[i], builder);
+
+                    let fresh_moves = Selector::from_const(&ty.unapply_overlay(), false);
                     ctx.add_local(LocalInfo {
                         new_id: final_local,
                         ty,
                         obligation,
+                        moves: fresh_moves,
                     });
 
-                    build_rc_op(RcOp::Release, drop_immediately, final_local, builder);
-                    body_defer.build(builder);
+                    for (old_id, drop_sel) in &epilogues[i] {
+                        let new_id = ctx.local_binding(*old_id).new_id;
+                        build_rc_op(RcOp::Release, drop_sel.clone(), new_id, builder);
+                    }
                 }
                 ctx.local_binding(ret.id).new_id
             });
@@ -350,42 +517,42 @@ fn annot_expr(
         ob::Expr::Tuple(fields) => rc::Expr::Tuple(
             fields
                 .into_iter()
-                .map(|field| annot_occur(ctx, path, field, defer, builder))
+                .map(|field| annot_occur(ctx, path, field, builder))
                 .collect(),
         ),
 
         ob::Expr::TupleField(tuple, idx) => {
-            rc::Expr::TupleField(annot_occur(ctx, path, tuple, defer, builder), idx)
+            rc::Expr::TupleField(annot_occur(ctx, path, tuple, builder), idx)
         }
 
         ob::Expr::WrapVariant(variants, variant_id, content) => rc::Expr::WrapVariant(
             variants,
             variant_id,
-            annot_occur(ctx, path, content, defer, builder),
+            annot_occur(ctx, path, content, builder),
         ),
 
         ob::Expr::UnwrapVariant(variant_id, wrapped) => {
-            rc::Expr::UnwrapVariant(variant_id, annot_occur(ctx, path, wrapped, defer, builder))
+            rc::Expr::UnwrapVariant(variant_id, annot_occur(ctx, path, wrapped, builder))
         }
 
         ob::Expr::WrapBoxed(content, item_ty) => {
-            rc::Expr::WrapBoxed(annot_occur(ctx, path, content, defer, builder), item_ty)
+            rc::Expr::WrapBoxed(annot_occur(ctx, path, content, builder), item_ty)
         }
 
         ob::Expr::UnwrapBoxed(wrapped, item_ty) => {
-            rc::Expr::UnwrapBoxed(annot_occur(ctx, path, wrapped, defer, builder), item_ty)
+            rc::Expr::UnwrapBoxed(annot_occur(ctx, path, wrapped, builder), item_ty)
         }
 
         ob::Expr::WrapCustom(id, content) => {
-            rc::Expr::WrapCustom(id, annot_occur(ctx, path, content, defer, builder))
+            rc::Expr::WrapCustom(id, annot_occur(ctx, path, content, builder))
         }
 
         ob::Expr::UnwrapCustom(id, wrapped) => {
-            rc::Expr::UnwrapCustom(id, annot_occur(ctx, path, wrapped, defer, builder))
+            rc::Expr::UnwrapCustom(id, annot_occur(ctx, path, wrapped, builder))
         }
 
         ob::Expr::Intrinsic(intr, arg) => {
-            rc::Expr::Intrinsic(intr, annot_occur(ctx, path, arg, defer, builder))
+            rc::Expr::Intrinsic(intr, annot_occur(ctx, path, arg, builder))
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Get(arr, idx, ret_ty)) => {
@@ -393,8 +560,8 @@ fn annot_expr(
 
             let get_op = rc::Expr::ArrayOp(rc::ArrayOp::Get(
                 arr.ty.unwrap_item_modes().clone(),
-                annot_occur(ctx, path, arr, defer, builder),
-                annot_occur(ctx, path, idx, defer, builder),
+                annot_occur(ctx, path, arr, builder),
+                annot_occur(ctx, path, idx, builder),
             ));
             let get_id = builder.add_binding((ret_ty, get_op));
 
@@ -405,58 +572,58 @@ fn annot_expr(
         ob::Expr::ArrayOp(ob::ArrayOp::Extract(arr, idx)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Extract(
                 arr.ty.unwrap_item_modes().clone(),
-                annot_occur(ctx, path, arr, defer, builder),
-                annot_occur(ctx, path, idx, defer, builder),
+                annot_occur(ctx, path, arr, builder),
+                annot_occur(ctx, path, idx, builder),
             ))
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Len(arr)) => rc::Expr::ArrayOp(rc::ArrayOp::Len(
             arr.ty.unwrap_item_modes().clone(),
-            annot_occur(ctx, path, arr, defer, builder),
+            annot_occur(ctx, path, arr, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Push(arr, item)) => rc::Expr::ArrayOp(rc::ArrayOp::Push(
             arr.ty.unwrap_item_modes().clone(),
-            annot_occur(ctx, path, arr, defer, builder),
-            annot_occur(ctx, path, item, defer, builder),
+            annot_occur(ctx, path, arr, builder),
+            annot_occur(ctx, path, item, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Pop(arr)) => rc::Expr::ArrayOp(rc::ArrayOp::Pop(
             arr.ty.unwrap_item_modes().clone(),
-            annot_occur(ctx, path, arr, defer, builder),
+            annot_occur(ctx, path, arr, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Replace(arr, item)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Replace(
                 arr.ty.unwrap_item_modes().clone(),
-                annot_occur(ctx, path, arr, defer, builder),
-                annot_occur(ctx, path, item, defer, builder),
+                annot_occur(ctx, path, arr, builder),
+                annot_occur(ctx, path, item, builder),
             ))
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Reserve(arr, cap)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Reserve(
                 arr.ty.unwrap_item_modes().clone(),
-                annot_occur(ctx, path, arr, defer, builder),
-                annot_occur(ctx, path, cap, defer, builder),
+                annot_occur(ctx, path, arr, builder),
+                annot_occur(ctx, path, cap, builder),
             ))
         }
 
         ob::Expr::IoOp(ob::IoOp::Input) => rc::Expr::IoOp(rc::IoOp::Input),
 
-        ob::Expr::IoOp(ob::IoOp::Output(val)) => rc::Expr::IoOp(rc::IoOp::Output(annot_occur(
-            ctx, path, val, defer, builder,
-        ))),
+        ob::Expr::IoOp(ob::IoOp::Output(val)) => {
+            rc::Expr::IoOp(rc::IoOp::Output(annot_occur(ctx, path, val, builder)))
+        }
 
         ob::Expr::Panic(ret_ty, msg) => {
-            rc::Expr::Panic(ret_ty, annot_occur(ctx, path, msg, defer, builder))
+            rc::Expr::Panic(ret_ty, annot_occur(ctx, path, msg, builder))
         }
 
         ob::Expr::ArrayLit(item_ty, items) => rc::Expr::ArrayLit(
             item_ty,
             items
                 .into_iter()
-                .map(|item| annot_occur(ctx, path, item, defer, builder))
+                .map(|item| annot_occur(ctx, path, item, builder))
                 .collect(),
         ),
 
@@ -472,32 +639,82 @@ fn annot_expr(
     builder.add_binding((ret_ty.clone(), new_expr))
 }
 
+// fn print_body_drops(drops: &BodyDrops, indent: usize) {
+//     match drops {
+//         BodyDrops::Branch {
+//             prologues,
+//             sub_drops,
+//         } => {
+//             for (i, (prologue, sub_drops)) in prologues.iter().zip_eq(sub_drops.iter()).enumerate()
+//             {
+//                 print!("{:indent$}Branch {} ", "", i, indent = indent);
+//                 if prologue.is_empty() {
+//                     println!("(no prologue)");
+//                 } else {
+//                     print!("prologue:");
+//                     for (local, slots) in prologue {
+//                         print!(" {}: {:?},", local.0, slots);
+//                     }
+//                     println!();
+//                 }
+//                 if let Some(sub_drops) = sub_drops {
+//                     print_body_drops(sub_drops, indent + 1);
+//                 }
+//             }
+//         }
+
+//         BodyDrops::LetMany {
+//             epilogues,
+//             sub_drops,
+//         } => {
+//             for (i, (epilogue, sub_drops)) in epilogues.iter().zip_eq(sub_drops.iter()).enumerate()
+//             {
+//                 print!("{:indent$}LetMany {} ", "", i, indent = indent);
+//                 if epilogue.is_empty() {
+//                     println!("(no epilogue)");
+//                 } else {
+//                     print!("epilogue:");
+//                     for (local, slots) in epilogue {
+//                         print!(" {}: {:?},", local.0, slots);
+//                     }
+//                     println!();
+//                 }
+//                 if let Some(sub_drops) = sub_drops {
+//                     print_body_drops(sub_drops, indent + 1);
+//                 }
+//             }
+//         }
+//     }
+// }
+
 fn annot_func(func: ob::FuncDef) -> rc::FuncDef {
-    let arg_drops = select_unused(&func.arg_obligation);
+    let drops = drops_for_func(&func);
+    // println!("{:?}", drops.arg_drops);
+    // if let Some(drops) = &drops.body_drops {
+    //     print_body_drops(drops, 0);
+    // }
 
     let mut ctx = LocalContext::new();
     ctx.add_local(LocalInfo {
         new_id: rc::ARG_LOCAL,
         ty: func.arg_ty.clone(),
         obligation: func.arg_obligation,
+        moves: Selector::from_const(&func.arg_ty.unapply_overlay(), false),
     });
 
     let mut builder = LetManyBuilder::new(Count::from_value(1));
-    build_rc_op(RcOp::Release, arg_drops, rc::ARG_LOCAL, &mut builder);
+    build_rc_op(RcOp::Release, drops.arg_drops, rc::ARG_LOCAL, &mut builder);
 
-    let mut defer = DeferredDrops::new();
     let ret_local = annot_expr(
         &mut ctx,
         &annot::FUNC_BODY_PATH(),
         func.body,
         &func.ret_ty,
-        &mut defer,
+        &drops.body_drops,
         &mut builder,
     );
-    defer.build(&mut builder);
 
     let body = builder.to_expr(ret_local);
-    // println!("body: {:#?}", body);
     rc::FuncDef {
         purity: func.purity,
         arg_ty: func.arg_ty,
