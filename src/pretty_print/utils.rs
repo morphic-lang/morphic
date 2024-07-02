@@ -3,6 +3,7 @@ use crate::data::mono_ast as mono;
 use id_collections::{Id, IdVec};
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct BaseName(String);
@@ -107,5 +108,38 @@ impl<FuncId: Id + Ord> FuncRenderer<FuncId> {
         let (BaseName(base_name), suffix) = self.table.get_name(func);
         debug_assert!(base_name.find(|c: char| c.is_whitespace()).is_none());
         format!("{}#{}", base_name, suffix)
+    }
+}
+
+pub fn write_delimited<'a, T, I, J>(
+    w: &mut dyn Write,
+    elems: J,
+    ldelim: &str,
+    rdelim: &str,
+    sep: &str,
+    write_elem: impl Fn(&mut dyn Write, &T) -> io::Result<()>,
+) -> io::Result<()>
+where
+    T: 'a,
+    I: ExactSizeIterator<Item = &'a T>,
+    J: IntoIterator<Item = &'a T, IntoIter = I>,
+{
+    let mut elems = elems.into_iter();
+    let len = elems.len();
+    if len == 0 {
+        write!(w, "{ldelim}{rdelim}")
+    } else if len == 1 {
+        write!(w, "{ldelim}")?;
+        write_elem(w, elems.next().unwrap())?;
+        write!(w, "{sep}{rdelim}")
+    } else {
+        write!(w, "{ldelim}")?;
+        for _ in 0..len - 1 {
+            let elem = elems.next().unwrap();
+            write_elem(w, elem)?;
+            write!(w, "{sep} ")?;
+        }
+        write_elem(w, elems.next().unwrap())?;
+        write!(w, "{rdelim}")
     }
 }

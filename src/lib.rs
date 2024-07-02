@@ -426,6 +426,14 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "annot_obligations"),
     );
 
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("ob_annot"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::obligation_annot::write_program(&mut out_file, &obligation_annot)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
     let rc_annot = annot_rcs::annot_rcs(obligation_annot, progress_ui::bar(progress, "annot_rcs"));
 
     let rc_specialized = rc_specialize2::rc_specialize(

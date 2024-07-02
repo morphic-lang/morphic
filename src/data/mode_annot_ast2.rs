@@ -329,7 +329,7 @@ pub enum OverlayShape {
     Tuple(Vec<OverlayShape>),
     Variants(IdVec<first_ord::VariantId, OverlayShape>),
     SelfCustom(CustomTypeId),
-    Custom(CustomTypeId, BTreeSet<SlotId>),
+    Custom(CustomTypeId),
     Array,
     HoleArray,
     Boxed,
@@ -397,9 +397,7 @@ impl<T> Overlay<T> {
             Overlay::Tuple(ovs) => OverlayShape::Tuple(ovs.iter().map(Overlay::shape).collect()),
             Overlay::Variants(ovs) => OverlayShape::Variants(ovs.map_refs(|_, ov| ov.shape())),
             Overlay::SelfCustom(id) => OverlayShape::SelfCustom(*id),
-            Overlay::Custom(id, subst) => {
-                OverlayShape::Custom(*id, subst.keys().copied().collect())
-            }
+            Overlay::Custom(id, _) => OverlayShape::Custom(*id),
             Overlay::Array(_) => OverlayShape::Array,
             Overlay::HoleArray(_) => OverlayShape::HoleArray,
             Overlay::Boxed(_) => OverlayShape::Boxed,
@@ -481,7 +479,7 @@ pub enum Shape {
     Tuple(Vec<Shape>),
     Variants(IdVec<first_ord::VariantId, Shape>),
     SelfCustom(CustomTypeId),
-    Custom(CustomTypeId, BTreeSet<SlotId>),
+    Custom(CustomTypeId),
     Array(Box<Shape>),
     HoleArray(Box<Shape>),
     Boxed(Box<Shape>),
@@ -562,16 +560,20 @@ impl<T> LtData<T> {
 
     pub fn iter_stack<'a>(
         &'a self,
-        customs: &'a CustomTypes,
+        customs: impl MapRef<'a, CustomTypeId, TypeDef> + 'a,
     ) -> Box<dyn Iterator<Item = &'a T> + 'a> {
         match self {
             LtData::Bool => Box::new(iter::empty()),
             LtData::Num(_) => Box::new(iter::empty()),
-            LtData::Tuple(lts) => Box::new(lts.iter().flat_map(|lt| lt.iter_stack(customs))),
-            LtData::Variants(lts) => Box::new(lts.values().flat_map(|lt| lt.iter_stack(customs))),
+            LtData::Tuple(lts) => Box::new(lts.iter().flat_map(move |lt| lt.iter_stack(customs))),
+            LtData::Variants(lts) => {
+                Box::new(lts.values().flat_map(move |lt| lt.iter_stack(customs)))
+            }
             LtData::SelfCustom(_) => Box::new(iter::empty()),
             LtData::Custom(id, subst) => Box::new(
-                customs.types[*id]
+                customs
+                    .get(id)
+                    .unwrap()
                     .ty
                     .lts()
                     .iter_stack(customs)
@@ -590,7 +592,7 @@ impl<T> LtData<T> {
             LtData::Tuple(lts) => Shape::Tuple(lts.iter().map(LtData::shape).collect()),
             LtData::Variants(lts) => Shape::Variants(lts.map_refs(|_, lt| lt.shape())),
             LtData::SelfCustom(id) => Shape::SelfCustom(*id),
-            LtData::Custom(id, subst) => Shape::Custom(*id, subst.keys().copied().collect()),
+            LtData::Custom(id, _) => Shape::Custom(*id),
             LtData::Array(_, lt) => Shape::Array(Box::new(lt.shape())),
             LtData::HoleArray(_, lt) => Shape::HoleArray(Box::new(lt.shape())),
             LtData::Boxed(_, lt) => Shape::Boxed(Box::new(lt.shape())),
@@ -802,7 +804,7 @@ impl<T> ModeData<T> {
                 debug_assert!(ov1.keys().zip_eq(ov2.keys()).all(|(k1, k2)| k1 == k2));
                 ModeData::Custom(*id1, ov2.clone(), subst.clone())
             }
-            (ModeData::Array(_, _, ty), Overlay::Array(m)) => {
+            (ModeData::Array(_, ov, ty), Overlay::Array(m)) => {
                 ModeData::Array(m.clone(), ov.clone(), ty.clone())
             }
             (ModeData::HoleArray(_, ov, ty), Overlay::HoleArray(m)) => {
@@ -843,7 +845,7 @@ impl<T> ModeData<T> {
             ModeData::Tuple(tys) => Shape::Tuple(tys.iter().map(ModeData::shape).collect()),
             ModeData::Variants(tys) => Shape::Variants(tys.map_refs(|_, ty| ty.shape())),
             ModeData::SelfCustom(id) => Shape::SelfCustom(*id),
-            ModeData::Custom(id, subst, _) => Shape::Custom(*id, subst.keys().copied().collect()),
+            ModeData::Custom(id, _, _) => Shape::Custom(*id),
             ModeData::Array(_, _, ty) => Shape::Array(Box::new(ty.shape())),
             ModeData::HoleArray(_, _, ty) => Shape::HoleArray(Box::new(ty.shape())),
             ModeData::Boxed(_, _, ty) => Shape::Boxed(Box::new(ty.shape())),
@@ -1194,7 +1196,7 @@ mod tests {
         let after = Path::root().seq(0).alt(1, 3).seq(2277);
 
         assert!(!lt.does_not_exceed(&before));
-        assert!(lt.does_not_exceed(&eq));
+        assert!(lt.does_not_exceed(&eq)); // reflexivity
         assert!(lt.does_not_exceed(&after));
 
         assert!(lt.contains(&before));

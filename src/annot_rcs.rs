@@ -5,6 +5,7 @@ use crate::data::mode_annot_ast2::{
 };
 use crate::data::obligation_annot_ast::{self as ob, StackLt};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
+use crate::pretty_print::borrow_common::write_lifetime;
 use crate::util::iter::IterExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
@@ -14,57 +15,25 @@ use once_cell::sync::Lazy;
 use std::collections::BTreeMap;
 use std::iter;
 
-fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt, already_moved: bool) -> bool {
+fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
     debug_assert!(
         !(src_mode == Mode::Borrowed && dst_mode == Mode::Owned),
         "borrowed to owned transitions should be prevented by constraint generation"
     );
-    dst_mode == Mode::Owned && (!lt.does_not_exceed(path) || already_moved)
+    dst_mode == Mode::Owned && !lt.does_not_exceed(path)
 }
 
-/// Unlike in the formalism, only `LetMany` and `Branch` introduce new path nodes. This is mostly
-/// fine because the program is A-normal but it does mean we have to be careful when inserting
-/// retains and releases. In particular, `select_dups` needs to know if there is another moving
-/// occurrence of the binding at the same path which has already "claimed" the move opportunity.
 fn select_dups(
     path: &Path,
     src_ty: &ob::Type,
     dst_ty: &ob::Type,
     lt_obligation: &StackLt,
-    moves: &Selector,
 ) -> Selector {
     src_ty
         .iter_stack()
         .zip_eq(dst_ty.iter_stack())
         .zip_eq(lt_obligation.iter())
-        .zip_eq(moves.iter())
-        .map(|(((src_mode, dst_mode), lt), already_moved)| {
-            should_dup(path, *src_mode, *dst_mode, lt, *already_moved)
-        })
-        .collect_overlay(lt_obligation)
-}
-
-/// Returns the fields that should be moved if they have not *already* been moved at this path (see
-/// `select_dups`).
-fn should_move(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
-    debug_assert!(
-        !(src_mode == Mode::Borrowed && dst_mode == Mode::Owned),
-        "borrowed to owned transitions should be prevented by constraint generation"
-    );
-    dst_mode == Mode::Owned && lt.does_not_exceed(path)
-}
-
-fn select_moves(
-    path: &Path,
-    src_ty: &ob::Type,
-    dst_ty: &ob::Type,
-    lt_obligation: &StackLt,
-) -> Selector {
-    src_ty
-        .iter_stack()
-        .zip_eq(dst_ty.iter_stack())
-        .zip_eq(lt_obligation.iter())
-        .map(|((src_mode, dst_mode), lt)| should_move(path, *src_mode, *dst_mode, lt))
+        .map(|((src_mode, dst_mode), lt)| should_dup(path, *src_mode, *dst_mode, lt))
         .collect_overlay(lt_obligation)
 }
 
@@ -194,8 +163,6 @@ enum BodyDrops {
     },
 }
 
-/// The set of locations where variables' lifetimes end. This corresponds to the set of drop points
-/// modulo where variables are moved.
 #[derive(Clone, Debug)]
 struct FuncDrops {
     arg_drops: Selector,
@@ -257,12 +224,19 @@ fn register_drops_for_slot_rec(
                 unreachable!()
             };
 
-            if **obligation == LocalLt::Final {
-                register_to(&mut epilogues[*idx]);
-            } else {
-                let drops = sub_drops[*idx].as_mut().unwrap();
+            // This slot is the return value of the `LetMany`. We don't need to register any drops.
+            if *idx == sub_drops.len() {
+                return;
+            }
+
+            // If there are no sub-drops, then the expression that matches up with this path is a
+            // "leaf" and either `obligation` is `LtLocal::Final` or obligation consists "ghost"
+            // nodes used to track argument order e.g. in a tuple expression
+            if let Some(drops) = sub_drops[*idx].as_mut() {
                 let num_locals = Count::from_value(num_locals.to_value() + idx);
                 register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
+            } else {
+                register_to(&mut epilogues[*idx]);
             }
         }
 
@@ -300,6 +274,7 @@ fn register_drops_for_slot(
     slot: &Selector,
     obligation: &LocalLt,
 ) {
+    // Every path starts `Seq(0)` since the scope of the function argument is `Seq(1)`
     let LocalLt::Seq(obligation, idx) = obligation else {
         unreachable!()
     };
@@ -404,12 +379,8 @@ struct LocalInfo {
     new_id: LocalId,
     ty: rc::Type,
     obligation: StackLt,
-    moves: Selector,
 }
 
-/// This function updates `moves`, but note that e.g. if `f` takes two owned aguements and we are
-/// processing the expression `f(x, x)` then exactly one retain will be generated regardless of
-/// which occurrence we process first, and we will get `let () = retain(x) in f(x, x)`.
 fn annot_occur(
     ctx: &mut LocalContext<flat::LocalId, LocalInfo>,
     path: &Path,
@@ -417,13 +388,10 @@ fn annot_occur(
     builder: &mut LetManyBuilder<Expr>,
 ) -> LocalId {
     let binding = ctx.local_binding_mut(occur.id);
-    let moves = &mut binding.moves;
 
-    let dups = select_dups(path, &binding.ty, &occur.ty, &binding.obligation, moves);
+    let dups = select_dups(path, &binding.ty, &occur.ty, &binding.obligation);
     build_rc_op(RcOp::Retain, dups, binding.new_id, builder);
 
-    // After computing `dups`, we can update `moves`.
-    *moves = &*moves | &select_moves(path, &binding.ty, &occur.ty, &binding.obligation);
     binding.new_id
 }
 
@@ -492,12 +460,10 @@ fn annot_expr(
                     let final_local =
                         annot_expr(ctx, &path.seq(i), body, &ty, &sub_drops[i], builder);
 
-                    let fresh_moves = Selector::from_const(&ty.unapply_overlay(), false);
                     ctx.add_local(LocalInfo {
                         new_id: final_local,
                         ty,
                         obligation,
-                        moves: fresh_moves,
                     });
 
                     for (old_id, drop_sel) in &epilogues[i] {
@@ -639,67 +605,14 @@ fn annot_expr(
     builder.add_binding((ret_ty.clone(), new_expr))
 }
 
-// fn print_body_drops(drops: &BodyDrops, indent: usize) {
-//     match drops {
-//         BodyDrops::Branch {
-//             prologues,
-//             sub_drops,
-//         } => {
-//             for (i, (prologue, sub_drops)) in prologues.iter().zip_eq(sub_drops.iter()).enumerate()
-//             {
-//                 print!("{:indent$}Branch {} ", "", i, indent = indent);
-//                 if prologue.is_empty() {
-//                     println!("(no prologue)");
-//                 } else {
-//                     print!("prologue:");
-//                     for (local, slots) in prologue {
-//                         print!(" {}: {:?},", local.0, slots);
-//                     }
-//                     println!();
-//                 }
-//                 if let Some(sub_drops) = sub_drops {
-//                     print_body_drops(sub_drops, indent + 1);
-//                 }
-//             }
-//         }
-
-//         BodyDrops::LetMany {
-//             epilogues,
-//             sub_drops,
-//         } => {
-//             for (i, (epilogue, sub_drops)) in epilogues.iter().zip_eq(sub_drops.iter()).enumerate()
-//             {
-//                 print!("{:indent$}LetMany {} ", "", i, indent = indent);
-//                 if epilogue.is_empty() {
-//                     println!("(no epilogue)");
-//                 } else {
-//                     print!("epilogue:");
-//                     for (local, slots) in epilogue {
-//                         print!(" {}: {:?},", local.0, slots);
-//                     }
-//                     println!();
-//                 }
-//                 if let Some(sub_drops) = sub_drops {
-//                     print_body_drops(sub_drops, indent + 1);
-//                 }
-//             }
-//         }
-//     }
-// }
-
 fn annot_func(func: ob::FuncDef) -> rc::FuncDef {
     let drops = drops_for_func(&func);
-    // println!("{:?}", drops.arg_drops);
-    // if let Some(drops) = &drops.body_drops {
-    //     print_body_drops(drops, 0);
-    // }
 
     let mut ctx = LocalContext::new();
     ctx.add_local(LocalInfo {
         new_id: rc::ARG_LOCAL,
         ty: func.arg_ty.clone(),
         obligation: func.arg_obligation,
-        moves: Selector::from_const(&func.arg_ty.unapply_overlay(), false),
     });
 
     let mut builder = LetManyBuilder::new(Count::from_value(1));
@@ -730,8 +643,8 @@ pub fn annot_rcs(program: ob::Program, progress: impl ProgressLogger) -> rc::Pro
     let funcs = IdVec::from_vec(
         program
             .funcs
-            .into_values()
-            .map(|func| {
+            .into_iter()
+            .map(|(func_id, func)| {
                 let annot = annot_func(func);
                 progress.update(1);
                 annot

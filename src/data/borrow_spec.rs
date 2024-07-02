@@ -127,6 +127,8 @@ pub static SIG_IO_OUTPUT: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
     accessed: set![Lt(0)],
 });
 
+/// Panic actually returns bottom, but it's convenient to model it as returning unit and handle
+/// coercions elsewhere.
 pub static SIG_PANIC: Lazy<BuiltinSig> = Lazy::new(|| BuiltinSig {
     args: vec![Array(Mode(0), Lt(0), NumItem(NumType::Byte))],
     ret: Tuple(vec![]),

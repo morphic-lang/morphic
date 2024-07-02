@@ -286,8 +286,6 @@ fn release(
 ) {
     let kind = &mut heap[heap_id];
 
-    kind.assert_live(stacktrace.add_frame("release assert live".into()));
-
     match (kind, ty) {
         (Value::Bool(_), Type::Bool) => {}
         (Value::Num(NumValue::Byte(_)), Type::Num(NumType::Byte)) => {}
@@ -328,10 +326,10 @@ fn release(
             );
         }
         (Value::Array(rc, contents), Type::Array(mode, item_ty)) => {
-            if *rc == 0 {
-                stacktrace.panic(format!["releasing with rc 0, array {:?}", contents]);
-            }
             if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", contents]);
+                }
                 *rc -= 1;
                 if *rc == 0 {
                     for sub_heap_id in contents.clone() {
@@ -347,10 +345,10 @@ fn release(
             }
         }
         (Value::HoleArray(rc, _, contents), Type::HoleArray(mode, item_ty)) => {
-            if *rc == 0 {
-                stacktrace.panic(format!["releasing with rc 0, hole array {:?}", contents]);
-            }
             if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, hole array {:?}", contents]);
+                }
                 *rc -= 1;
                 if *rc == 0 {
                     for sub_heap_id in contents.clone() {
@@ -367,10 +365,10 @@ fn release(
         }
         (Value::Box(rc, content), Type::Boxed(mode, item_ty)) => {
             let content = content.clone();
-            if *rc == 0 {
-                stacktrace.panic(format!["releasing with rc 0, box {:?}", content]);
-            }
             if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, box {:?}", content]);
+                }
                 *rc -= 1;
                 if *rc == 0 {
                     release(

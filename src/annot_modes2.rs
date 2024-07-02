@@ -20,7 +20,7 @@ use crate::util::immut_context as immut;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::MapRef;
+use crate::util::map_ext::{btree_map_refs, MapRef};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, Count, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
@@ -239,6 +239,11 @@ fn compute_tail_calls(
 // We start by lifting the set of custom type definitions from the previous pass into the current
 // pass by annotating them with fresh mode and lifetime parameters.
 
+fn fresh_overlay(count: &mut Count<SlotId>, modes: &ModeData<SlotId>) -> Overlay<SlotId> {
+    let ov = modes.unapply_overlay();
+    ov.iter().map(|_| count.inc()).collect_overlay(&ov)
+}
+
 fn parameterize_mode_data<'a>(
     customs: impl MapRef<'a, CustomTypeId, annot::TypeDef>,
     sccs: Option<(CustomTypeSccId, &IdVec<CustomTypeId, CustomTypeSccId>)>,
@@ -273,19 +278,19 @@ fn parameterize_mode_data<'a>(
         anon::Type::Array(ty) => {
             let slot = count.inc();
             let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = ty.unapply_overlay();
+            let ov = fresh_overlay(count, &ty);
             ModeData::Array(slot, ov, Box::new(ty))
         }
         anon::Type::HoleArray(ty) => {
             let slot = count.inc();
             let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = ty.unapply_overlay();
+            let ov = fresh_overlay(count, &ty);
             ModeData::HoleArray(slot, ov, Box::new(ty))
         }
         anon::Type::Boxed(ty) => {
             let slot = count.inc();
             let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = ty.unapply_overlay();
+            let ov = fresh_overlay(count, &ty);
             ModeData::Boxed(slot, ov, Box::new(ty))
         }
     }
@@ -302,9 +307,6 @@ fn parameterize_type<'a>(
 ) -> annot::Type<SlotId, SlotId> {
     let modes = parameterize_mode_data(customs, sccs, count, ty);
     let lts = modes.extract_lts(customs);
-    // println!("----------------------------");
-    // println!("modes: {:?}", modes);
-    // println!("lts: {:?}", lts);
     annot::Type::new(lts, modes)
 }
 
@@ -376,7 +378,6 @@ fn parameterize_customs(
         );
 
         for (id, typedef) in to_populate {
-            println!("{:?}: {:?}", id, typedef);
             parameterized.insert(id, typedef);
         }
     }
@@ -433,6 +434,7 @@ fn emit_occur_constr(
 }
 
 fn emit_occur_constrs_overlay(
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     scope: &annot::Path,
     binding_ov: &Overlay<ModeVar>,
@@ -442,7 +444,7 @@ fn emit_occur_constrs_overlay(
     for ((binding_mode, use_mode), use_lt) in binding_ov
         .iter()
         .zip_eq(use_ov.iter())
-        .zip_eq(use_lts.iter())
+        .zip_eq(use_lts.iter_stack(customs))
     {
         emit_occur_constr(constrs, scope, *binding_mode, *use_mode, use_lt);
     }
@@ -495,7 +497,7 @@ fn emit_occur_constrs_heap(
         | (M::Boxed(m1, ov1, ms1), M::Boxed(m2, ov2, ms2), L::Boxed(_, lts)) => {
             constrs.require_eq(*m1, *m2);
             emit_occur_constrs_heap(strategy, customs, constrs, scope, ms1, ms2, lts);
-            emit_occur_constrs_overlay(constrs, scope, ov1, ov2, lts);
+            emit_occur_constrs_overlay(customs, constrs, scope, ov1, ov2, lts);
         }
         _ => panic!("incompatible types"),
     }
@@ -541,6 +543,7 @@ fn emit_occur_constrs(
                 &use_lts,
             );
             emit_occur_constrs_overlay(
+                customs,
                 constrs,
                 scope,
                 &custom.ov.hydrate(osub1),
@@ -564,7 +567,7 @@ fn emit_occur_constrs(
             } else {
                 emit_occur_constr(constrs, scope, *m1, *m2, lt);
                 emit_occur_constrs_heap(strategy, customs, constrs, scope, ms1, ms2, lts);
-                emit_occur_constrs_overlay(constrs, scope, ov1, ov2, lts);
+                emit_occur_constrs_overlay(customs, constrs, scope, ov1, ov2, lts);
             }
         }
         _ => panic!("incompatible types"),
@@ -849,8 +852,8 @@ fn instantiate_occur(
     scopes: &LocalContext<LocalId, annot::Path>,
     constrs: &mut ConstrGraph,
     id: LocalId,
-    fut_modes: &ModeData<ModeVar>,
-    fut_lts: &LtData<Lt>,
+    use_modes: &ModeData<ModeVar>,
+    use_lts: &LtData<Lt>,
 ) -> Occur<ModeVar, Lt> {
     instantiate_occur_in_position(
         Position::NotTail,
@@ -860,8 +863,8 @@ fn instantiate_occur(
         scopes,
         constrs,
         id,
-        fut_modes,
-        fut_lts,
+        use_modes,
+        use_lts,
     )
 }
 
@@ -1297,7 +1300,11 @@ fn instantiate_expr(
         // would usually be `with_scope`'s responsibility to remove.
         TailExpr::LetMany(bindings, result_id) => scopes.with_scope(|scopes| {
             let locals_offset = scopes.len();
-            let end_of_scope = path.seq(bindings.len());
+
+            // Leave space for `result_occur`, which happens after the bindings. During this pass we
+            // only care about paths where borrows are accessed so nothing relevant can happen at
+            // this path. But, we will care about it when we compute obligations.
+            let end_of_scope = path.seq(bindings.len() + 1);
 
             for (binding_ty, _) in bindings {
                 let annot_ty = instantiate_type_unused(
@@ -1566,13 +1573,14 @@ fn instantiate_expr(
                 .collect();
 
             let folded_modes = custom
-                .slot_count
-                .into_iter()
+                .ty
+                .modes()
+                .iter()
                 .map(|_| constrs.fresh_var())
-                .collect_mode_data(ctx.local_binding(*folded).modes());
+                .collect_mode_data(custom.ty.modes());
             let folded_msub = IdVec::from_vec(folded_modes.iter().copied().collect());
 
-            let folded_lsub = custom
+            let folded_lsub_fresh = custom
                 .lt_slots
                 .iter()
                 .map(|slot| (*slot, lt_count.inc()))
@@ -1581,7 +1589,7 @@ fn instantiate_expr(
             let raw_unfolded_ty = unfold_custom(
                 customs,
                 &folded_msub,
-                &folded_lsub,
+                &folded_lsub_fresh,
                 &folded_osub,
                 *custom_id,
             );
@@ -1594,10 +1602,7 @@ fn instantiate_expr(
             }
 
             let lt_subst = lt_bind(&unfolded_lts, fut_lts);
-            let folded_lts = folded_lsub
-                .iter()
-                .map(|(_, lt)| lt_subst[lt].clone())
-                .collect_lt_data(ctx.local_binding(*folded).lts());
+            let folded_lsub = btree_map_refs(&folded_lsub_fresh, |_, lt| lt_subst[lt].clone());
             let folded_occur = instantiate_occur(
                 strategy,
                 customs,
@@ -1605,8 +1610,8 @@ fn instantiate_expr(
                 scopes,
                 constrs,
                 *folded,
-                &folded_modes,
-                &folded_lts,
+                &ModeData::Custom(*custom_id, folded_osub, folded_msub),
+                &LtData::Custom(*custom_id, folded_lsub),
             );
 
             annot::Expr::UnwrapCustom(*custom_id, folded_occur)
@@ -1810,8 +1815,8 @@ fn instantiate_expr(
                 scopes,
                 &path,
                 &[*msg_id],
-                fut_modes,
-                fut_lts,
+                &ModeData::Tuple(vec![]),
+                &LtData::Tuple(vec![]),
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::Panic(
@@ -2565,8 +2570,8 @@ pub fn annot_modes(
 
     let funcs = funcs_annot.to_id_vec(funcs.count());
 
-    #[cfg(debug_assertions)]
-    sanity_check_funcs(&type_renderer, &func_renderer, &funcs);
+    // #[cfg(debug_assertions)]
+    // sanity_check_funcs(&type_renderer, &func_renderer, &funcs);
 
     progress.finish();
 

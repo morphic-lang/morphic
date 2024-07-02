@@ -1,3 +1,10 @@
+//! This pass annotates every binding with its lifetime "obligation." This represents the lifetime
+//! of the binding as one might understand it in Rust. This is in contrast to the lifetimes we
+//! computed in the previous pass which were conservative because we did not know what was owned or
+//! borrowed. As the previous sentence implies, to determine lifetime obligations we need to know
+//! concrete modes. Therefore, this pass specializes functions with respect to modes (though it is
+//! convenient to let custom types remain mode polymorphic until the next pass).
+
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::intrinsics::Intrinsic;
@@ -8,9 +15,6 @@ use crate::data::resolved_ast as res;
 use crate::util::iter::IterExt;
 use id_collections::{id_type, Count, IdVec};
 use std::collections::BTreeSet;
-
-// To determine lifetime obligations, we need to know concrete modes. Therefore, this pass
-// specializes functions (though not types) with respect to modes.
 
 pub type StackLt = Overlay<Lt>;
 
@@ -131,7 +135,9 @@ pub struct CustomTypes {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }
