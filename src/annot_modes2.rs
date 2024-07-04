@@ -20,7 +20,7 @@ use crate::util::immut_context as immut;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::{btree_map_refs, MapRef};
+use crate::util::map_ext::{btree_map_refs, set, FnWrap, MapRef};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, Count, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
@@ -426,7 +426,7 @@ fn emit_occur_constr(
 ) {
     if use_lt.does_not_exceed(scope) {
         // Case: this is a non-escaping, ("opportunistic" or "borrow") occurrence.
-        constrs.require_lte(use_mode, binding_mode);
+        constrs.require_le(use_mode, binding_mode);
     } else {
         // Case: this is an escaping ("move" or "dup") occurrence.
         constrs.require_eq(binding_mode, use_mode);
@@ -466,12 +466,12 @@ fn emit_occur_constrs_heap(
         (M::Num(n1), M::Num(n2), L::Num(_)) if n1 == n2 => {}
         (M::Tuple(ms1), M::Tuple(ms2), L::Tuple(lts)) => {
             for ((m1, m2), lt) in ms1.iter().zip_eq(ms2).zip_eq(lts) {
-                emit_occur_constrs(strategy, customs, constrs, scope, m1, m2, lt);
+                emit_occur_constrs_heap(strategy, customs, constrs, scope, m1, m2, lt);
             }
         }
         (M::Variants(ms1), M::Variants(ms2), L::Variants(lts)) => {
             for ((m1, m2), lt) in ms1.values().zip_eq(ms2.values()).zip_eq(lts.values()) {
-                emit_occur_constrs(strategy, customs, constrs, scope, m1, m2, lt);
+                emit_occur_constrs_heap(strategy, customs, constrs, scope, m1, m2, lt);
             }
         }
         (M::SelfCustom(id1), M::SelfCustom(id2), L::SelfCustom(_)) if id1 == id2 => {}
@@ -533,7 +533,7 @@ fn emit_occur_constrs(
         {
             let custom = &customs[id1];
             let use_lts = custom.ty.lts().hydrate(lsub);
-            emit_occur_constrs(
+            emit_occur_constrs_heap(
                 strategy,
                 customs,
                 constrs,
@@ -821,6 +821,7 @@ fn instantiate_occur_in_position(
     use_lts: &LtData<Lt>,
 ) -> Occur<ModeVar, Lt> {
     let binding_ty = ctx.local_binding(id);
+    println!("binding_ty: {:?}", binding_ty.modes());
 
     if pos == Position::Tail {
         mode_bind(constrs, &binding_ty.modes(), &use_modes);
@@ -834,6 +835,17 @@ fn instantiate_occur_in_position(
             use_modes,
             use_lts,
         );
+        let incident_vars = binding_ty
+            .modes()
+            .iter()
+            .chain(use_modes.iter())
+            .copied()
+            .collect::<Vec<_>>();
+        for var in incident_vars {
+            if let Some(lb) = constrs.inner().get(var) {
+                println!("{:?} <= {:?}", lb, var);
+            }
+        }
     }
 
     let use_ty = annot::Type::new(use_lts.clone(), use_modes.clone());
@@ -1211,6 +1223,10 @@ fn instantiate_expr(
 
     let mut ctx = TrackedContext::new(ctx);
 
+    if !matches!(expr, TailExpr::LetMany(_, _)) && !matches!(expr, TailExpr::Branch(_, _, _)) {
+        println!("expr: {:?}", expr);
+    }
+
     let expr_annot = match expr {
         TailExpr::Local(local) => {
             let occur = instantiate_occur(
@@ -1221,6 +1237,8 @@ fn instantiate_expr(
 
         TailExpr::Call(purity, pos, func, arg) => {
             let (arg_ty, ret_ty) = sigs.sig_of(constrs, *func);
+            println!("++++++++++++++++++++++++++");
+            println!("arg_ty: {:?}", arg_ty.modes());
 
             mode_bind(constrs, ret_ty.modes(), fut_modes);
             let lt_subst = lt_bind(ret_ty.lts(), fut_lts);
@@ -1239,6 +1257,7 @@ fn instantiate_expr(
                 arg_ty.modes(),
                 &arg_lts,
             );
+            println!("--------------------------");
 
             annot::Expr::Call(*purity, *func, arg)
         }
@@ -1485,9 +1504,10 @@ fn instantiate_expr(
             };
 
             require_owned(constrs, *fut_mode);
-            for (m1, m2) in fut_item_modes.iter_stack().zip_eq(fut_ov.iter()) {
-                constrs.require_eq(*m1, *m2);
-            }
+            fut_item_modes
+                .iter_stack(FnWrap::wrap(|id| customs.get(id).map(|def| def.ty.modes())))
+                .zip_eq(fut_ov.iter())
+                .for_each(|(m1, m2)| constrs.require_eq(*m1, *m2));
 
             let content_occur = instantiate_occur(
                 strategy,
@@ -2271,23 +2291,71 @@ fn solve_scc(
     }
 }
 
-fn sanity_check_expr<M, L>(
+fn sanity_check_modes(customs: &IdVec<CustomTypeId, annot::TypeDef>, ty: &ModeData<ModeSolution>) {
+    match ty {
+        // Check that the custom type has the correct set of parameters
+        ModeData::Custom(id, osub, tsub) => {
+            let custom = &customs[*id];
+            assert_eq!(custom.slot_count, tsub.count());
+            assert_eq!(
+                custom.ov_slots,
+                osub.keys().copied().collect::<BTreeSet<_>>()
+            );
+        }
+        _ => {}
+    }
+}
+
+fn sanity_check_lts(customs: &IdVec<CustomTypeId, annot::TypeDef>, ty: &LtData<Lt>) {
+    match ty {
+        // Check that the custom type has the correct set of parameters
+        LtData::Custom(id, lsub) => {
+            let custom = &customs[*id];
+            assert_eq!(
+                custom.lt_slots,
+                lsub.keys().copied().collect::<BTreeSet<_>>()
+            );
+        }
+        _ => {}
+    }
+}
+
+fn sanity_check_type(
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
+    param_count: Count<ModeParam>,
+    ty: &annot::Type<ModeSolution, Lt>,
+) {
+    // Check that all type parameters also appear in the signature
+    for solution in ty.modes().iter() {
+        for param in &solution.lb.lb_vars {
+            assert!(param_count.contains(param));
+        }
+    }
+
+    sanity_check_modes(customs, ty.modes());
+    sanity_check_lts(customs, ty.lts());
+}
+
+fn sanity_check_expr(
     renderer: &CustomTypeRenderer<CustomTypeId>,
     funcs: &IdVec<CustomFuncId, annot::FuncDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     param_count: Count<ModeParam>,
     path: &annot::Path,
-    ctx: &mut LocalContext<LocalId, LtData<Lt>>,
-    ret_ty: &annot::Type<M, L>,
+    ctx: &mut LocalContext<LocalId, annot::Type<ModeSolution, Lt>>,
+    ret_ty: &annot::Type<ModeSolution, Lt>,
     expr: &annot::Expr<ModeSolution, Lt>,
 ) {
-    // Check that the variable's binding and occurrence types are consistent
-    let check_occur = |ctx: &mut LocalContext<_, LtData<Lt>>, occur: &Occur<_, _>| {
-        assert!(ctx.local_binding(occur.id).shape() == occur.ty.shape());
+    let check_occur = |ctx: &mut LocalContext<_, _>, occur: &Occur<_, _>| {
+        let binding_ty = ctx.local_binding(occur.id);
+        sanity_check_type(customs, param_count, &occur.ty);
+        sanity_check_type(customs, param_count, &binding_ty);
+        assert!(binding_ty.shape() == occur.ty.shape());
     };
 
-    // Check that the variable is live at the current path
-    let access = |ctx: &mut LocalContext<_, LtData<Lt>>, occur: &annot::Occur<_, _>| {
-        let lt = match ctx.local_binding(occur.id) {
+    // Check that a variable is live at the current path
+    let access = |ctx: &mut LocalContext<_, annot::Type<_, Lt>>, occur: &annot::Occur<_, _>| {
+        let lt = match ctx.local_binding(occur.id).lts() {
             LtData::Array(lt, _) => lt,
             LtData::HoleArray(lt, _) => lt,
             LtData::Boxed(lt, _) => lt,
@@ -2312,15 +2380,18 @@ fn sanity_check_expr<M, L>(
 
         annot::Expr::LetMany(bindings, _) => ctx.with_scope(|ctx| {
             for (i, (ty, body)) in bindings.iter().enumerate() {
-                // Check that all type parameters also appear in the signature
-                for solution in ty.modes().iter() {
-                    for param in &solution.lb.lb_vars {
-                        assert!(param_count.contains(param));
-                    }
-                }
-
-                sanity_check_expr(renderer, funcs, param_count, &path.seq(i), ctx, ty, body);
-                ctx.add_local(ty.lts().clone());
+                sanity_check_type(customs, param_count, ty);
+                sanity_check_expr(
+                    renderer,
+                    funcs,
+                    customs,
+                    param_count,
+                    &path.seq(i),
+                    ctx,
+                    ty,
+                    body,
+                );
+                ctx.add_local(ty.clone());
             }
         }),
 
@@ -2331,6 +2402,7 @@ fn sanity_check_expr<M, L>(
                 sanity_check_expr(
                     renderer,
                     funcs,
+                    customs,
                     param_count,
                     &path.alt(i, cases.len()),
                     ctx,
@@ -2447,6 +2519,7 @@ fn sanity_check_funcs(
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     _func_renderer: &FuncRenderer<CustomFuncId>,
     funcs: &IdVec<CustomFuncId, annot::FuncDef>,
+    customs: &IdVec<CustomTypeId, annot::TypeDef>,
 ) {
     for (_func_id, func) in funcs {
         let param_count = func.constrs.sig.count();
@@ -2458,7 +2531,7 @@ fn sanity_check_funcs(
             }
         }
 
-        // Check that all signature parameters are used and that there are no missing parameters
+        // Check that the set of signature parameters is correct
         let mut present = IdVec::from_count_with(param_count, |_| false);
         for param in func.arg_ty.modes().iter() {
             present[param] = true;
@@ -2469,15 +2542,26 @@ fn sanity_check_funcs(
         assert!(present.into_values().all(|b| b));
 
         // Sanity check the body of the function
+        let wrap_mode = |mode: &ModeParam| ModeSolution {
+            solver_var: ModeVar(0), // This is just debug info; we can use a dummy value
+            lb: in_eq::LowerBound {
+                lb_vars: set![*mode],
+                lb_const: Mode::Borrowed,
+            },
+        };
+        let arg_ty = func.arg_ty.map_modes(wrap_mode);
+        let ret_ty = func.ret_ty.map(wrap_mode, |&lt| Lt::var(lt));
+
         let mut ctx = LocalContext::new();
-        ctx.add_local(func.arg_ty.lts().clone());
+        ctx.add_local(arg_ty);
         sanity_check_expr(
             type_renderer,
             funcs,
+            customs,
             param_count,
             &annot::FUNC_BODY_PATH(),
             &mut ctx,
-            &func.ret_ty,
+            &ret_ty,
             &func.body,
         );
     }
@@ -2555,8 +2639,21 @@ pub fn annot_modes(
 
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
+    println!("function symbols:");
+    for (k, v) in &program.func_symbols {
+        println!("{:?}: {:?}", k, v);
+    }
+    println!();
+
     let mut funcs_annot = IdMap::new();
     for (_, scc) in &func_sccs {
+        println!(
+            "\n\nsolving for SCC with functions: {:?}\n\n",
+            scc.nodes
+                .iter()
+                .map(|id| &program.func_symbols[*id])
+                .collect::<Vec<_>>()
+        );
         solve_scc(
             strategy,
             &customs,
@@ -2570,8 +2667,8 @@ pub fn annot_modes(
 
     let funcs = funcs_annot.to_id_vec(funcs.count());
 
-    // #[cfg(debug_assertions)]
-    // sanity_check_funcs(&type_renderer, &func_renderer, &funcs);
+    #[cfg(debug_assertions)]
+    sanity_check_funcs(&type_renderer, &func_renderer, &funcs, &customs);
 
     progress.finish();
 
@@ -2583,5 +2680,119 @@ pub fn annot_modes(
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::map_ext::{map, set};
+
+    /// Returns `type List { Nil, Cons(Box((Array Int, List))) }`.
+    fn list_type() -> (anon::Type, annot::TypeDef) {
+        let anon_ty = anon::Type::Variants(IdVec::from_vec(vec![
+            anon::Type::Tuple(vec![]),
+            anon::Type::Boxed(Box::new(anon::Type::Tuple(vec![
+                anon::Type::Array(Box::new(anon::Type::Num(NumType::Int))),
+                anon::Type::Custom(CustomTypeId(0)),
+            ]))),
+        ]));
+        let modes = annot::ModeData::Variants(IdVec::from_vec(vec![
+            annot::ModeData::Tuple(vec![]),
+            annot::ModeData::Boxed(
+                SlotId(0),
+                Overlay::Tuple(vec![
+                    Overlay::Array(SlotId(2)),
+                    Overlay::SelfCustom(CustomTypeId(0)),
+                ]),
+                Box::new(annot::ModeData::Tuple(vec![
+                    annot::ModeData::Array(
+                        SlotId(1),
+                        Overlay::Num(NumType::Int),
+                        Box::new(annot::ModeData::Num(NumType::Int)),
+                    ),
+                    annot::ModeData::SelfCustom(CustomTypeId(0)),
+                ])),
+            ),
+        ]));
+        let lts = annot::LtData::Variants(IdVec::from_vec(vec![
+            annot::LtData::Tuple(vec![]),
+            annot::LtData::Boxed(
+                SlotId(0),
+                Box::new(annot::LtData::Tuple(vec![
+                    annot::LtData::Array(SlotId(1), Box::new(annot::LtData::Num(NumType::Int))),
+                    annot::LtData::SelfCustom(CustomTypeId(0)),
+                ])),
+            ),
+        ]));
+        let annot_ty = annot::Type::new(lts, modes);
+        let ov = annot_ty.modes().unapply_overlay();
+        let annot_def = annot::TypeDef {
+            ty: annot_ty,
+            ov,
+            slot_count: Count::from_value(3),
+            ov_slots: set![SlotId(0)],
+            lt_slots: set![SlotId(0), SlotId(1)],
+        };
+        (anon_ty, annot_def)
+    }
+
+    #[test]
+    fn test_parameterize_type() {
+        let customs = IdVec::new();
+        let sccs = IdVec::from_vec(vec![CustomTypeSccId(0)]);
+        let sccs = Some((CustomTypeSccId(0), &sccs));
+
+        let (input, expected) = list_type();
+        let actual = parameterize_type(&customs, sccs, &mut Count::new(), &input);
+        debug_assert_eq!(expected.ty, actual);
+    }
+
+    #[test]
+    fn test_emit_occur_constrs() {
+        let constrs = || {
+            let mut result = ConstrGraph::new();
+            for _ in 0..8 {
+                result.fresh_var();
+            }
+            result
+        };
+
+        let mut actual_constrs = constrs();
+        let (_, def) = list_type();
+        let fst = annot::Path::root().seq(0).as_lt();
+        let snd = annot::Path::root().seq(1);
+
+        let binding_modes = annot::ModeData::Custom(
+            CustomTypeId(0),
+            map![SlotId(0) => ModeVar(0)],
+            IdVec::from_vec(vec![ModeVar(1), ModeVar(2), ModeVar(3)]),
+        );
+        let use_modes = annot::ModeData::Custom(
+            CustomTypeId(0),
+            map![SlotId(0) => ModeVar(4)],
+            IdVec::from_vec(vec![ModeVar(5), ModeVar(6), ModeVar(7)]),
+        );
+        let use_lts = annot::LtData::Custom(
+            CustomTypeId(0),
+            map![SlotId(0) => fst.clone(), SlotId(1) => fst],
+        );
+        emit_occur_constrs(
+            Strategy::Default,
+            &IdVec::from_vec(vec![def]),
+            &mut actual_constrs,
+            &snd,
+            &binding_modes,
+            &use_modes,
+            &use_lts,
+        );
+
+        let mut expected_constrs = constrs();
+        expected_constrs.require_le(ModeVar(4), ModeVar(0));
+        expected_constrs.require_eq(ModeVar(5), ModeVar(1));
+        expected_constrs.require_eq(ModeVar(6), ModeVar(2));
+        expected_constrs.require_le(ModeVar(7), ModeVar(3));
+
+        assert_eq!(actual_constrs.inner(), expected_constrs.inner());
     }
 }

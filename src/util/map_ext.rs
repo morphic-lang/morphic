@@ -78,3 +78,32 @@ where
 {
     x.iter().map(|(k, v)| (k.clone(), f(k, v))).collect()
 }
+
+#[allow(unused_macros)]
+macro_rules! map {
+    ($($key:expr => $value:expr),* $(,)?) => {
+        {
+            let mut map = BTreeMap::new();
+            $(map.insert($key, $value);)*
+            map
+        }
+    };
+}
+
+#[allow(unused_imports)]
+pub(crate) use map;
+
+#[allow(unused_macros)]
+macro_rules! set {
+    ($($elem:expr),* $(,)?) => {
+        {
+            use std::collections::BTreeSet;
+            let mut set = BTreeSet::new();
+            $(set.insert($elem);)*
+            set
+        }
+    };
+}
+
+#[allow(unused_imports)]
+pub(crate) use set;

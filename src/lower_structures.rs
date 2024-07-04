@@ -524,7 +524,7 @@ pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -
     progress.finish();
 
     low::Program {
-        mod_symbols: program.mod_symbols.clone(),
+        mod_symbols: program.mod_symbols,
         custom_types: typedefs,
         funcs: IdVec::from_vec(lowered_funcs),
         profile_points: program.profile_points,

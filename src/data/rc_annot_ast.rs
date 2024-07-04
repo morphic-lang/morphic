@@ -1,11 +1,12 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
-use crate::data::mode_annot_ast2::{CollectOverlay, Overlay};
+use crate::data::mode_annot_ast2::{CollectOverlay, ModeData, Overlay, SlotId};
 use crate::data::obligation_annot_ast::{self as ob, TypeDef};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::iter::IterExt;
+use crate::util::map_ext::{FnWrap, MapRef};
 use id_collections::{id_type, IdVec};
 
 pub type Selector = Overlay<bool>;
@@ -124,11 +125,19 @@ pub struct CustomTypes {
     pub types: IdVec<CustomTypeId, TypeDef>,
 }
 
+impl CustomTypes {
+    pub fn view_types(&self) -> impl MapRef<'_, CustomTypeId, ModeData<SlotId>> {
+        FnWrap::wrap(|id| self.types.get(id).map(|def| &def.ty))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<ob::CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: ob::CustomFuncId,
 }

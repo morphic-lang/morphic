@@ -247,33 +247,71 @@ impl Heap<'_> {
     }
 }
 
-fn retain(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
+fn retain(
+    customs: &IdVec<CustomTypeId, Type>,
+    heap: &mut Heap,
+    heap_id: HeapId,
+    ty: &Type,
+    stacktrace: StackTrace,
+) {
     let kind = &mut heap[heap_id];
 
-    kind.assert_live(stacktrace.add_frame("retain assert live".into()));
-
-    match kind {
-        Value::Bool(_) | Value::Num(_) => {}
-        Value::Tuple(contents) => {
-            for sub_heap_id in contents.clone() {
+    match (kind, ty) {
+        (Value::Bool(_), Type::Bool) => {}
+        (Value::Num(NumValue::Byte(_)), Type::Num(NumType::Byte)) => {}
+        (Value::Num(NumValue::Int(_)), Type::Num(NumType::Int)) => {}
+        (Value::Num(NumValue::Float(_)), Type::Num(NumType::Float)) => {}
+        (Value::Tuple(content), Type::Tuple(field_tys)) => {
+            let content = content.clone();
+            for (sub_heap_id, field_ty) in content.iter().zip_eq(field_tys) {
                 retain(
+                    customs,
                     heap,
-                    sub_heap_id,
+                    *sub_heap_id,
+                    field_ty,
                     stacktrace.add_frame("retaining subtuple".into()),
                 );
             }
         }
-        Value::Array(rc, _) | Value::HoleArray(rc, _, _) | Value::Box(rc, _) => {
-            *rc += 1;
-        }
-        Value::Variant(_, content) | Value::Custom(_, content) => {
+        (Value::Variant(idx, content), Type::Variants(variant_tys)) => {
+            let idx = *idx;
             let content = content.clone();
             retain(
+                customs,
                 heap,
                 content,
-                stacktrace.add_frame("retaining subthing".into()),
+                &variant_tys[idx],
+                stacktrace.add_frame("retain subthing".into()),
             );
         }
+        (Value::Array(rc, content), Type::Array(mode, _)) => {
+            if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
+                }
+                *rc += 1;
+            }
+        }
+        (Value::HoleArray(rc, _, content), Type::HoleArray(mode, _)) => {
+            if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
+                }
+                *rc += 1;
+            }
+        }
+        (Value::Box(rc, content), Type::Boxed(mode, _)) => {
+            if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
+                }
+                *rc += 1;
+            }
+        }
+        kind => stacktrace.panic(format![
+            "in retain call: {:?} does not match {:?}",
+            kind, ty
+        ]),
     }
 }
 
@@ -291,9 +329,9 @@ fn release(
         (Value::Num(NumValue::Byte(_)), Type::Num(NumType::Byte)) => {}
         (Value::Num(NumValue::Int(_)), Type::Num(NumType::Int)) => {}
         (Value::Num(NumValue::Float(_)), Type::Num(NumType::Float)) => {}
-        (Value::Tuple(contents), Type::Tuple(field_tys)) => {
-            let contents = contents.clone();
-            for (sub_heap_id, field_ty) in contents.iter().zip_eq(field_tys) {
+        (Value::Tuple(content), Type::Tuple(field_tys)) => {
+            let content = content.clone();
+            for (sub_heap_id, field_ty) in content.iter().zip_eq(field_tys) {
                 release(
                     customs,
                     heap,
@@ -325,14 +363,14 @@ fn release(
                 stacktrace.add_frame("release subthing".into()),
             );
         }
-        (Value::Array(rc, contents), Type::Array(mode, item_ty)) => {
+        (Value::Array(rc, content), Type::Array(mode, item_ty)) => {
             if *mode == Mode::Owned {
                 if *rc == 0 {
-                    stacktrace.panic(format!["releasing with rc 0, array {:?}", contents]);
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
                 }
                 *rc -= 1;
                 if *rc == 0 {
-                    for sub_heap_id in contents.clone() {
+                    for sub_heap_id in content.clone() {
                         release(
                             customs,
                             heap,
@@ -344,14 +382,14 @@ fn release(
                 }
             }
         }
-        (Value::HoleArray(rc, _, contents), Type::HoleArray(mode, item_ty)) => {
+        (Value::HoleArray(rc, _, content), Type::HoleArray(mode, item_ty)) => {
             if *mode == Mode::Owned {
                 if *rc == 0 {
-                    stacktrace.panic(format!["releasing with rc 0, hole array {:?}", contents]);
+                    stacktrace.panic(format!["releasing with rc 0, hole array {:?}", content]);
                 }
                 *rc -= 1;
                 if *rc == 0 {
-                    for sub_heap_id in contents.clone() {
+                    for sub_heap_id in content.clone() {
                         release(
                             customs,
                             heap,
@@ -381,7 +419,10 @@ fn release(
                 }
             }
         }
-        kind => panic!["in release call: {:?} does not match {:?}", kind, ty],
+        kind => stacktrace.panic(format![
+            "in release call: {:?} does not match {:?}",
+            kind, ty
+        ]),
     }
 }
 
@@ -514,19 +555,16 @@ fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace)
 
         Type::Custom(custom_type_id) => {
             if let Value::Custom(type_id, heap_id) = kind {
-                if *custom_type_id != *type_id {
+                let customs = &heap.program.custom_types;
+
+                if !customs[*custom_type_id].can_coerce_to(customs, &customs[*type_id]) {
                     stacktrace.panic(format![
-                        "differing custom type ids {:?} != {:?}",
-                        *custom_type_id, *type_id
+                        "differing custom type ids {id1:?} != {id2:?}\n{id1:?}: {:?}\n{id2:?}: {:?}",
+                        customs[*custom_type_id], customs[*type_id], id1 = custom_type_id, id2 = type_id,
                     ]);
                 }
 
-                typecheck(
-                    heap,
-                    *heap_id,
-                    &heap.program.custom_types[custom_type_id],
-                    stacktrace,
-                );
+                typecheck(heap, *heap_id, &customs[*type_id], stacktrace);
             } else {
                 stacktrace.panic(format!["expected a custom received {:?}", kind]);
             }
@@ -655,12 +693,20 @@ fn unwrap_array(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<Hea
     }
 }
 
-fn unwrap_array_retain(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<HeapId> {
+fn unwrap_array_retain(
+    customs: &IdVec<CustomTypeId, Type>,
+    heap: &mut Heap,
+    heap_id: HeapId,
+    item_type: &Type,
+    stacktrace: StackTrace,
+) -> Vec<HeapId> {
     let result = unwrap_array(heap, heap_id, stacktrace.clone());
     for &item_id in &result {
         retain(
+            customs,
             heap,
             item_id,
+            item_type,
             stacktrace.add_frame("unwrap array retain".into()),
         );
     }
@@ -677,15 +723,19 @@ fn unwrap_hole_array(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (i
 }
 
 fn unwrap_hole_array_retain(
+    customs: &IdVec<CustomTypeId, Type>,
     heap: &mut Heap,
     heap_id: HeapId,
+    item_type: &Type,
     stacktrace: StackTrace,
 ) -> (i64, Vec<HeapId>) {
     let (idx, result) = unwrap_hole_array(heap, heap_id, stacktrace.clone());
     for &item_id in &result {
         retain(
+            customs,
             heap,
             item_id,
+            item_type,
             stacktrace.add_frame("unwrap hole array retain".into()),
         );
     }
@@ -1048,7 +1098,7 @@ fn interpret_expr(
                     &type_,
                     stacktrace.add_frame("retain typecheck".into()),
                 );
-                retain(heap, locals[local_id], stacktrace);
+                retain(customs, heap, locals[local_id], type_, stacktrace);
 
                 HeapId(0)
             }
@@ -1481,8 +1531,13 @@ fn interpret_expr(
                 let array_heap_id = locals[array_id];
                 let item_heap_id = locals[item_id];
 
-                let mut array =
-                    unwrap_array_retain(heap, array_heap_id, stacktrace.add_frame("push".into()));
+                let mut array = unwrap_array_retain(
+                    customs,
+                    heap,
+                    array_heap_id,
+                    item_type,
+                    stacktrace.add_frame("push".into()),
+                );
 
                 release(
                     customs,
@@ -1500,8 +1555,13 @@ fn interpret_expr(
             Expr::ArrayOp(item_type, ArrayOp::Pop(array_id)) => {
                 let array_heap_id = locals[array_id];
 
-                let mut array =
-                    unwrap_array_retain(heap, array_heap_id, stacktrace.add_frame("pop".into()));
+                let mut array = unwrap_array_retain(
+                    customs,
+                    heap,
+                    array_heap_id,
+                    item_type,
+                    stacktrace.add_frame("pop".into()),
+                );
 
                 release(
                     customs,
@@ -1548,8 +1608,10 @@ fn interpret_expr(
                 let index_heap_id = locals[index_id];
 
                 let array = unwrap_array_retain(
+                    customs,
                     heap,
                     array_heap_id,
+                    item_type,
                     stacktrace.add_frame("extract array".into()),
                 );
 
@@ -1572,7 +1634,13 @@ fn interpret_expr(
                 bounds_check(stderr, array.len(), index.0)?;
 
                 let get_item = array[index.0 as usize];
-                retain(heap, get_item, stacktrace.add_frame("item retain".into()));
+                retain(
+                    customs,
+                    heap,
+                    get_item,
+                    item_type,
+                    stacktrace.add_frame("item retain".into()),
+                );
                 heap.add(Value::Tuple(vec![get_item, hole_array_id]))
             }
 
@@ -1581,8 +1649,10 @@ fn interpret_expr(
                 let item_heap_id = locals[item_id];
 
                 let (index, mut array) = unwrap_hole_array_retain(
+                    customs,
                     heap,
                     array_heap_id,
+                    item_type,
                     stacktrace.add_frame("replace array".into()),
                 );
 
@@ -1616,8 +1686,13 @@ fn interpret_expr(
                     stacktrace.add_frame("reserve capacity".into()),
                 );
 
-                let array =
-                    unwrap_array_retain(heap, array_heap_id, stacktrace.add_frame("push".into()));
+                let array = unwrap_array_retain(
+                    customs,
+                    heap,
+                    array_heap_id,
+                    item_type,
+                    stacktrace.add_frame("push".into()),
+                );
 
                 release(
                     customs,

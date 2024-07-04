@@ -81,17 +81,11 @@ fn write_condition(
     }
 }
 
-// pub fn write_mode_var(w: &mut dyn Write, m: &ModeVar) -> io::Result<()> {
-//     write!(w, "!{}", m.0)
-// }
-
 pub fn write_mode_param(w: &mut dyn Write, m: &ModeParam) -> io::Result<()> {
     write!(w, "${}", m.0)
 }
 
 fn write_mode(w: &mut dyn Write, m: &ModeSolution) -> io::Result<()> {
-    // write_mode_var(w, &m.solver_var)?;
-    // write!(w, " @ ")?;
     if m.lb.lb_const == Mode::Owned {
         write!(w, "●")?;
     } else if !m.lb.lb_vars.is_empty() {
@@ -237,11 +231,12 @@ pub fn write_type<M, L>(
                 write!(w, " | ")?;
 
                 for (i, (p, m)) in tsub.iter().enumerate() {
-                    write_mode(w, m)?;
-                    if let Some(om) = osub.get(p) {
-                        write!(w, "/")?;
-                        write_mode(w, om)?;
+                    if let Some(m) = osub.get(p) {
+                        write!(w, "[")?;
+                        write_mode(w, m)?;
+                        write!(w, "]")?;
                     }
+                    write_mode(w, m)?;
                     if i < tsub.len() - 1 {
                         write!(w, ", ")?;
                     }
@@ -284,7 +279,7 @@ pub fn write_type<M, L>(
         }
         (M::Boxed(m, overlay, item_modes), L::Boxed(lt, item_lts)) => {
             write_mode_and_lifetime(w, write_mode, write_lifetime, m, lt)?;
-            write!(w, " Boxed (")?;
+            write!(w, " Box (")?;
             write_type(
                 w,
                 type_renderer,
@@ -637,17 +632,15 @@ fn write_typedef(
     typedef: &TypeDef,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
-    write!(w, "custom type {} = ", type_renderer.render(type_id))?;
-
-    write_type_template(w, Some(type_renderer), typedef.ty.modes(), typedef.ty.lts())?;
-    write!(w, " as ")?;
-    write_overlay(
+    write!(
         w,
-        Some(type_renderer),
-        &|w, slot| write_mode_param(w, &cast_to_mode(slot)),
-        &typedef.ov,
+        "custom type {}<{} | [{}]{}> = ",
+        type_renderer.render(type_id),
+        typedef.lt_slots.len(),
+        typedef.ov_slots.len(),
+        typedef.slot_count.to_value(),
     )?;
-    writeln!(w)?;
+    write_type_template(w, Some(type_renderer), typedef.ty.modes(), typedef.ty.lts())?;
     Ok(())
 }
 

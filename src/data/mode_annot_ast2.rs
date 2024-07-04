@@ -15,12 +15,12 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
-use crate::util::map_ext::{btree_map_refs, MapRef};
+use crate::util::map_ext::{btree_map_refs, FnWrap, MapRef};
 use crate::util::non_empty_set::NonEmptySet;
 use id_collections::{id_type, Count, IdVec};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
-use std::iter;
+use std::{fmt, iter};
 
 #[allow(non_snake_case)]
 pub fn ARG_SCOPE() -> Path {
@@ -36,6 +36,15 @@ pub fn FUNC_BODY_PATH() -> Path {
 pub enum Mode {
     Borrowed,
     Owned,
+}
+
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Mode::Borrowed => write!(f, "&"),
+            Mode::Owned => write!(f, "●"),
+        }
+    }
 }
 
 impl in_eq::BoundedSemilattice for Mode {
@@ -73,8 +82,7 @@ enum PathElem {
 pub struct Path(im_rc::Vector<PathElem>);
 
 impl Path {
-    // Private because the analysis passes should always start from `FUNC_BODY_PATH` or `ARG_SCOPE`.
-    fn root() -> Self {
+    pub fn root() -> Self {
         Self(im_rc::Vector::new())
     }
 
@@ -335,7 +343,7 @@ pub enum OverlayShape {
     Boxed,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overlay<T> {
     Bool,
     Num(first_ord::NumType),
@@ -485,7 +493,7 @@ pub enum Shape {
     Boxed(Box<Shape>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LtData<T> {
     Bool,
     Num(first_ord::NumType),
@@ -640,7 +648,7 @@ fn collect_lt_data<T, U>(iter: &mut impl Iterator<Item = T>, orig: &LtData<U>) -
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModeData<T> {
     Bool,
     Num(first_ord::NumType),
@@ -762,14 +770,22 @@ impl<T> ModeData<T> {
         }
     }
 
-    pub fn iter_stack<'a>(&'a self) -> Box<dyn Iterator<Item = &'a T> + 'a> {
+    pub fn iter_stack<'a>(
+        &'a self,
+        customs: impl MapRef<'a, CustomTypeId, ModeData<SlotId>> + 'a,
+    ) -> Box<dyn Iterator<Item = &'a T> + 'a> {
         match self {
             ModeData::Bool => Box::new(iter::empty()),
             ModeData::Num(_) => Box::new(iter::empty()),
-            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(|ty| ty.iter_stack())),
-            ModeData::Variants(tys) => Box::new(tys.values().flat_map(|ty| ty.iter_stack())),
+            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(move |ty| ty.iter_stack(customs))),
+            ModeData::Variants(tys) => {
+                Box::new(tys.values().flat_map(move |ty| ty.iter_stack(customs)))
+            }
             ModeData::SelfCustom(_) => Box::new(iter::empty()),
-            ModeData::Custom(_, ov, _) => Box::new(ov.values()),
+            ModeData::Custom(id, ov, _) => {
+                let custom = customs.get(id).unwrap();
+                Box::new(custom.iter_stack(customs).map(|slot| &ov[slot]))
+            }
             ModeData::Array(m, _, _) => Box::new(iter::once(m)),
             ModeData::HoleArray(m, _, _) => Box::new(iter::once(m)),
             ModeData::Boxed(m, _, _) => Box::new(iter::once(m)),
@@ -911,7 +927,7 @@ fn collect_mode_data<T, U>(iter: &mut impl Iterator<Item = T>, orig: &ModeData<U
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Type<M, L> {
     lts: LtData<L>,
     modes: ModeData<M>,
@@ -1129,6 +1145,12 @@ pub struct CustomTypes {
     pub types: IdVec<CustomTypeId, TypeDef>,
 }
 
+impl CustomTypes {
+    pub fn view_modes(&self) -> impl MapRef<'_, CustomTypeId, ModeData<SlotId>> {
+        FnWrap::wrap(|id| self.types.get(id).map(|def| def.ty.modes()))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
@@ -1214,13 +1236,15 @@ mod tests {
             Box::new(ModeData::Array(2, Overlay::Bool, Box::new(ModeData::Bool))),
         );
 
+        let customs = FnWrap::wrap(|_| None);
+
         assert_eq!(modes.iter().copied().collect::<Vec<_>>(), vec![0, 1, 2]);
-        assert_eq!(modes.iter_stack().copied().collect::<Vec<_>>(), vec![0]);
         assert_eq!(
-            modes
-                .iter_store(FnWrap::wrap(|_| None))
-                .copied()
-                .collect::<Vec<_>>(),
+            modes.iter_stack(customs).copied().collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert_eq!(
+            modes.iter_store(customs).copied().collect::<Vec<_>>(),
             vec![0, 2]
         );
     }

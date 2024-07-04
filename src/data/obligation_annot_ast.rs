@@ -13,6 +13,7 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::iter::IterExt;
+use crate::util::map_ext::{FnWrap, MapRef};
 use id_collections::{id_type, Count, IdVec};
 use std::collections::BTreeSet;
 
@@ -129,6 +130,12 @@ pub struct TypeDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
     pub types: IdVec<CustomTypeId, TypeDef>,
+}
+
+impl CustomTypes {
+    pub fn view_types(&self) -> impl MapRef<'_, CustomTypeId, annot::ModeData<SlotId>> {
+        FnWrap::wrap(|id| self.types.get(id).map(|def| &def.ty))
+    }
 }
 
 #[derive(Clone, Debug)]

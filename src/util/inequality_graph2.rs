@@ -6,6 +6,7 @@
 use id_collections::{id_type, Count, Id, IdVec};
 use id_graph_sccs::{find_components, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 /// Types for which you can take the join (i.e. least upper bound) of two elements, and which have a
 /// least element.
@@ -17,7 +18,7 @@ pub trait BoundedSemilattice {
     fn least() -> Self;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VarConstrs<Var, T> {
     /// If a variable `v` has a `VarConstrs` struct whose `lb_vars` vec contains a variable `u`,
     /// that encodes the constraint `u <= v`.
@@ -85,7 +86,12 @@ where
     }
 
     /// Add the constraint `var1 <= var2`.
-    pub fn require_lte(&mut self, var1: SolverVar, var2: SolverVar) {
+    pub fn require_le(&mut self, var1: SolverVar, var2: SolverVar) {
+        println!(
+            "adding constraint {:?} <= {:?}",
+            var1.to_index(),
+            var2.to_index()
+        );
         // Small optimization (not necessary for correctness): don't add reflexive `<=` constraints.
         // This isn't very important, but it's so easy that it feels silly not to do it.
         if var1 != var2 {
@@ -95,8 +101,8 @@ where
 
     /// Add the constraint `var1 = var2`.
     pub fn require_eq(&mut self, var1: SolverVar, var2: SolverVar) {
-        self.require_lte(var1, var2);
-        self.require_lte(var2, var1);
+        self.require_le(var1, var2);
+        self.require_le(var2, var1);
     }
 
     /// Add the constraint `value <= var`.
@@ -182,11 +188,29 @@ where
 
         for (external, upper_bound) in subgraph {
             for other_external in &upper_bound.lb_vars {
-                self.require_lte(vars[external], vars[other_external]);
+                self.require_le(vars[external], vars[other_external]);
             }
             self.require_lte_const(&upper_bound.lb_const, vars[external]);
         }
 
         vars
+    }
+}
+
+impl<Var: Id, T: fmt::Display> fmt::Display for ConstrGraph<Var, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[ ")?;
+        for (i, (var, constrs)) in self.vars.iter().enumerate() {
+            write!(f, "{} ≤ {}", constrs.lb_const, var.to_index())?;
+            for lb_var in constrs.lb_vars.iter() {
+                write!(f, ", ")?;
+                write!(f, "{} ≤ {}", lb_var.to_index(), var.to_index())?;
+            }
+            if i + 1 < self.vars.len() {
+                write!(f, ", ")?;
+            }
+        }
+        write!(f, " ]")?;
+        Ok(())
     }
 }

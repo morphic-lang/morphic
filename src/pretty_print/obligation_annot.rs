@@ -1,5 +1,5 @@
 use crate::data::first_order_ast::NumType;
-use crate::data::mode_annot_ast2::{self as annot, Mode, Overlay, SlotId};
+use crate::data::mode_annot_ast2::{self as annot, Overlay, SlotId};
 use crate::data::obligation_annot_ast::{
     ArrayOp, Condition, CustomFuncId, CustomTypeId, Expr, FuncDef, IoOp, Occur, Program, StackLt,
     Type, TypeDef,
@@ -68,13 +68,6 @@ fn write_condition(
     }
 }
 
-fn write_mode(w: &mut dyn Write, m: &Mode) -> io::Result<()> {
-    match m {
-        Mode::Owned => write!(w, "●"),
-        Mode::Borrowed => write!(w, "&"),
-    }
-}
-
 fn write_custom(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
@@ -116,7 +109,7 @@ fn write_overlay<M>(
             if remaining > 0 {
                 write!(w, "<")?;
                 for (param, m) in subst.iter() {
-                    write!(w, "${} = ", param.0)?;
+                    write!(w, "%{} = ", param.0)?;
                     write_data(w, m)?;
                     remaining -= 1;
                     if remaining >= 1 {
@@ -171,11 +164,12 @@ pub fn write_type<M>(
                 write!(w, "<")?;
 
                 for (i, (p, m)) in tsub.iter().enumerate() {
-                    write_mode(w, m)?;
-                    if let Some(om) = osub.get(p) {
-                        write!(w, "/")?;
-                        write_mode(w, om)?;
+                    if let Some(m) = osub.get(p) {
+                        write!(w, "[")?;
+                        write_mode(w, m)?;
+                        write!(w, "]")?;
                     }
+                    write_mode(w, m)?;
                     if i < tsub.len() - 1 {
                         write!(w, ", ")?;
                     }
@@ -204,7 +198,7 @@ pub fn write_type<M>(
         }
         M::Boxed(m, overlay, item) => {
             write_mode(w, m)?;
-            write!(w, " Boxed (")?;
+            write!(w, " Box (")?;
             write_type(w, type_renderer, write_mode, item)?;
             write!(w, " as ")?;
             write_overlay(w, type_renderer, write_mode, overlay)?;
@@ -436,7 +430,7 @@ pub fn write_func(
     write_type(w, Some(type_renderer), &write_mode, &func.arg_ty)?;
     write!(w, "): ")?;
     write_type(w, Some(type_renderer), &write_mode, &func.ret_ty)?;
-    write!(w, "=\n")?;
+    write!(w, " =\n")?;
 
     let context = Context {
         type_renderer,
@@ -456,20 +450,18 @@ fn write_typedef(
     typedef: &TypeDef,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
-    write!(w, "custom type {} = ", type_renderer.render(type_id))?;
-
+    write!(
+        w,
+        "custom type {}<[{}]{}> = ",
+        type_renderer.render(type_id),
+        typedef.ov_slots.len(),
+        typedef.slot_count.to_value(),
+    )?;
     write_type(
         w,
         Some(type_renderer),
         &|w, slot: &SlotId| write!(w, "%{}", slot.0),
         &typedef.ty,
-    )?;
-    write!(w, " as ")?;
-    write_overlay(
-        w,
-        Some(type_renderer),
-        &|w, slot: &SlotId| write!(w, "%{}", slot.0),
-        &typedef.ov,
     )?;
     writeln!(w)?;
     Ok(())

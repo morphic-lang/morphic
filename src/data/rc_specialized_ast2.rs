@@ -30,6 +30,36 @@ pub enum Type {
     Boxed(annot::Mode, Box<Type>),
 }
 
+impl Type {
+    pub fn can_coerce_to(&self, customs: &IdVec<CustomTypeId, Type>, to: &Type) -> bool {
+        match (self, to) {
+            (Type::Bool, Type::Bool) => true,
+            (Type::Num(from), Type::Num(to)) => from == to,
+            (Type::Tuple(from), Type::Tuple(to)) => {
+                from.len() == to.len()
+                    && from
+                        .iter()
+                        .zip(to.iter())
+                        .all(|(from, to)| from.can_coerce_to(customs, to))
+            }
+            (Type::Variants(from), Type::Variants(to)) => {
+                from.len() == to.len()
+                    && from
+                        .values()
+                        .zip(to.values())
+                        .all(|(from, to)| from.can_coerce_to(customs, to))
+            }
+            (Type::Custom(from), Type::Custom(to)) => {
+                customs[*from].can_coerce_to(customs, &customs[*to])
+            }
+            (Type::Array(_, from), Type::Array(_, to)) => from == to,
+            (Type::HoleArray(_, from), Type::HoleArray(_, to)) => from == to,
+            (Type::Boxed(_, from), Type::Boxed(_, to)) => from == to,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Get(
@@ -152,7 +182,9 @@ pub struct CustomTypes {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

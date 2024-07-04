@@ -6,8 +6,8 @@ use crate::data::low_ast::IoOp;
 use crate::data::low_ast::LocalId;
 use crate::data::low_ast::Program;
 use crate::data::low_ast::Type;
-use crate::data::mode_annot_ast2::Mode;
 use crate::intrinsic_config::intrinsic_to_name;
+use crate::pretty_print::borrow_common::write_mode;
 use std::io;
 use std::io::Write;
 
@@ -33,13 +33,6 @@ impl Context {
     }
 }
 
-fn write_mode(w: &mut dyn Write, mode: Mode) -> io::Result<()> {
-    match mode {
-        Mode::Borrowed => write!(w, "&"),
-        Mode::Owned => Ok(()),
-    }
-}
-
 fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
     match type_ {
         Type::Bool => write![w, "Bool"],
@@ -47,14 +40,14 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
         Type::Num(NumType::Int) => write![w, "Int"],
         Type::Num(NumType::Float) => write![w, "Float"],
         Type::Array(mode, item_type) => {
-            write_mode(w, *mode)?;
-            write![w, "Array ("]?;
+            write_mode(w, mode)?;
+            write![w, " Array ("]?;
             write_type(w, item_type)?;
             write![w, ")"]
         }
         Type::HoleArray(mode, item_type) => {
-            write_mode(w, *mode)?;
-            write![w, "HoleArray ("]?;
+            write_mode(w, mode)?;
+            write![w, " HoleArray ("]?;
             write_type(w, item_type)?;
             write![w, ")"]
         }
@@ -96,8 +89,8 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
             Ok(())
         }
         Type::Boxed(mode, box_type) => {
-            write_mode(w, *mode)?;
-            write![w, "Box ("]?;
+            write_mode(w, mode)?;
+            write![w, " Box ("]?;
             write_type(w, box_type)?;
             write![w, ")"]
         }

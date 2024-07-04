@@ -1,13 +1,12 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::mode_annot_ast2::CollectModeData;
 use crate::data::mode_annot_ast2::{
     self as annot, CollectOverlay, Lt, LtData, Mode, ModeData, ModeParam, ModeSolution, Path,
 };
-use crate::data::mode_annot_ast2::{CollectModeData, LtParam};
 use crate::data::obligation_annot_ast::{
     self as ob, ArrayOp, Condition, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
 };
-use crate::pretty_print::borrow_common::write_lifetime;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
 use crate::util::local_context;
@@ -38,8 +37,8 @@ fn get_occur_obligation(
     dst_lts: &LtData<Lt>,
 ) -> StackLt {
     src_modes
-        .iter_stack()
-        .zip_eq(dst_modes.iter_stack())
+        .iter_stack(customs.view_modes())
+        .zip_eq(dst_modes.iter_stack(customs.view_modes()))
         .zip_eq(dst_lts.iter_stack(&customs.types))
         .map(|((src_mode, dst_mode), dst_lt)| {
             get_slot_obligation(occur_path, *src_mode, *dst_mode, dst_lt)

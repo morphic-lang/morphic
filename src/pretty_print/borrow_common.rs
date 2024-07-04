@@ -1,5 +1,12 @@
-use crate::data::mode_annot_ast2::{LocalLt, Lt, LtParam, Path};
+use crate::data::mode_annot_ast2::{LocalLt, Lt, LtParam, Mode, Path};
 use std::io::{self, Write};
+
+pub fn write_mode(w: &mut dyn Write, m: &Mode) -> io::Result<()> {
+    match m {
+        Mode::Owned => write!(w, "●"),
+        Mode::Borrowed => write!(w, "&"),
+    }
+}
 
 pub fn write_lifetime_param(w: &mut dyn Write, lt: &LtParam) -> io::Result<()> {
     write!(w, "'{}", lt.0)
