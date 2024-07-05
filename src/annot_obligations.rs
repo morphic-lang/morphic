@@ -144,7 +144,7 @@ fn annot_expr(
                             funcs,
                             insts,
                             inst_params,
-                            &path.alt(i, num_arms),
+                            &path.seq(0).alt(i, num_arms),
                             ctx,
                             expr,
                             ret_ty,
@@ -153,7 +153,7 @@ fn annot_expr(
                 })
                 .collect();
 
-            let new_cond = handle_occur(ctx, path, cond);
+            let new_cond = handle_occur(ctx, &path.seq(1), cond);
             Expr::Branch(new_cond, new_arms, instantiate_type(inst_params, &ty))
         }
 

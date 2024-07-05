@@ -1389,7 +1389,10 @@ fn instantiate_expr(
                     lt_count,
                     ctx.as_untracked(),
                     scopes,
-                    path.alt(i, cases.len()),
+                    // The discriminate happens at `path.seq(1)`, but this is not apparent from the
+                    // surrounding code because we do not care about the discriminant's path until
+                    // the next pass.
+                    path.seq(0).alt(i, cases.len()),
                     fut_modes,
                     fut_lts,
                     body,
@@ -1436,8 +1439,8 @@ fn instantiate_expr(
         TailExpr::LetMany(bindings, result_id) => scopes.with_scope(|scopes| {
             let locals_offset = scopes.len();
 
-            // Leave space for `result_occur`, which happens after the bindings. During this pass we
-            // only care about paths where borrows are accessed so nothing relevant can happen at
+            // Leave space for the result, which happens after all the bindings. During this pass we
+            // only care about paths where borrows are accessed, so nothing relevant can happen at
             // this path. But, we will care about it when we compute obligations.
             let end_of_scope = path.seq(bindings.len() + 1);
 
@@ -2500,7 +2503,7 @@ fn sanity_check_expr(
                     funcs,
                     customs,
                     param_count,
-                    &path.alt(i, cases.len()),
+                    &path.seq(0).alt(i, cases.len()),
                     ctx,
                     ret_ty,
                     body,

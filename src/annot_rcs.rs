@@ -6,7 +6,7 @@ use crate::data::mode_annot_ast2::{
 use crate::data::obligation_annot_ast::{self as ob, StackLt};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
 use crate::pretty_print::borrow_common::{write_lifetime, write_path};
-use crate::pretty_print::obligation_annot::write_type;
+use crate::pretty_print::obligation_annot::{self, write_type};
 use crate::util::iter::IterExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
@@ -262,6 +262,73 @@ fn register_drops_for_slot_rec(
             .or_insert_with(|| slot.clone());
     };
 
+    match drops {
+        BodyDrops::LetMany {
+            epilogues,
+            sub_drops,
+        } => {
+            let LocalLt::Seq(obligation, idx) = obligation else {
+                unreachable!();
+            };
+
+            if *idx == sub_drops.len() {
+                // This slot's obligation ends in the return position of a `LetMany`. We don't need
+                // to register any drops. Usually, we defer the final decision about whether to drop
+                // until we've compute the move status in `annot_expr`, but it is convenient to
+                // "short circuit" here.
+                return;
+            }
+
+            if let Some(drops) = sub_drops[*idx].as_mut() {
+                // Since `sub_drops` is `Some`, the obligation points into a `Branch` or `LetMany`.
+                let num_locals = Count::from_value(num_locals.to_value() + idx);
+                register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
+            } else {
+                // If there are no sub-drops, then the expression that matches up with this path is
+                // a "leaf" and either `obligation` is `LtLocal::Final` or obligation consists
+                // "ghost" nodes used to track argument order e.g. in a tuple expression
+                register_to(&mut epilogues[*idx]);
+            }
+        },
+        BodyDrops::Branch {
+            prologues,
+            sub_drops,
+        } => {
+            let LocalLt::Seq(obligation, idx) = obligation else {
+                unreachable!();
+            };
+
+            if *idx == 0 {
+                // The obligation points to the discriminant of a `Branch`.
+                assert_eq!(**obligation, LocalLt::Final);
+                for prologue in prologues.iter_mut() {
+                    register_to(prologue);
+                }
+            } else {
+                // The obligation points inside a `Branch` arm.
+                assert_eq!(*idx, 1);
+                let LocalLt::Alt(obligations) = &**obligation else {
+                    unreachable!();
+                };
+
+                for (idx, obligation) in obligations.iter().enumerate() {
+                    if let Some(obligation) = obligation {
+                        let drops = sub_drops[idx].as_mut().unwrap();
+                        register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
+                    } else {
+                        if num_locals.contains(binding) {
+                            // This binding is declared in an enclosing scope and this slot unused
+                            // in this branch (but moved along some other branch), so we drop the
+                            // slot immediately.
+                            register_to(&mut prologues[idx]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /*
     match obligation {
         LocalLt::Final => unreachable!(),
 
@@ -283,15 +350,20 @@ fn register_drops_for_slot_rec(
             }
 
             if let Some(drops) = sub_drops[*idx].as_mut() {
-                if **obligation == LocalLt::Final {
-                    // Since we have `sub_drops`, there must be a `LetMany` or a `Branch` at this
-                    // `idx`. Only a `Branch` has a variable directly at its path (rather than at a
-                    // sub-path). Namely, it has the discriminant.
-                    let BodyDrops::Branch { prologues, .. } = drops else {
-                        unreachable!()
+                // Since `sub_drops` is `Some`, the obligation points into a `Branch` or `LetMany`.
+                if let BodyDrops::Branch { prologues, .. } = drops {
+                    let LocalLt::Seq(obligation, idx) = &**obligation else {
+                        unreachable!();
                     };
-                    for prologue in prologues.iter_mut() {
-                        register_to(prologue);
+                    if *idx == 0 {
+                        // The obligation points to the discriminant of a `Branch`.
+                        for prologue in prologues.iter_mut() {
+                            register_to(prologue);
+                        }
+                    } else {
+                        // The obligation points inside a `Branch` arm.
+                        assert_eq!(*idx, 1);
+                        register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
                     }
                 } else {
                     let num_locals = Count::from_value(num_locals.to_value() + idx);
@@ -331,6 +403,7 @@ fn register_drops_for_slot_rec(
             }
         }
     }
+    */
 }
 
 fn register_drops_for_slot(
@@ -384,7 +457,7 @@ fn register_drops_for_expr(
     match expr {
         ob::Expr::Branch(_, arms, _) => {
             for (i, (_, expr)) in arms.iter().enumerate() {
-                let path = path.alt(i, arms.len());
+                let path = path.seq(0).alt(i, arms.len());
                 register_drops_for_expr(drops, num_locals, &path, expr);
             }
         }
@@ -506,7 +579,7 @@ fn annot_expr(
                 let final_local = annot_expr(
                     customs,
                     ctx,
-                    &path.alt(i, n),
+                    &path.seq(0).alt(i, n),
                     expr,
                     &ret_ty,
                     &sub_drops[i],
