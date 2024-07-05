@@ -49,8 +49,10 @@ fn write_condition(
             write!(w, ")")?;
             Ok(())
         }
-        Condition::Boxed(subcondition, _content_type) => {
-            write!(w, "boxed (")?;
+        Condition::Boxed(subcondition, item_type) => {
+            write!(w, "boxed <")?;
+            write_type(w, Some(type_renderer), &write_mode, item_type)?;
+            write!(w, "> (")?;
             write_condition(w, type_renderer, subcondition)?;
             write!(w, ")")?;
             Ok(())
