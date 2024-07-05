@@ -5,6 +5,8 @@ use crate::data::mode_annot_ast2::{
 };
 use crate::data::obligation_annot_ast::{self as ob, StackLt};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
+use crate::pretty_print::borrow_common::{write_lifetime, write_path};
+use crate::pretty_print::obligation_annot::write_type;
 use crate::util::iter::IterExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
@@ -22,6 +24,11 @@ fn assert_transition_ok(src_mode: Mode, dst_mode: Mode) {
 }
 
 fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
+    print!("should_dup: ");
+    write_path(&mut std::io::stdout(), path).unwrap();
+    print!("    ");
+    write_lifetime(&mut std::io::stdout(), lt).unwrap();
+    println!();
     assert_transition_ok(src_mode, dst_mode);
     dst_mode == Mode::Owned && !lt.does_not_exceed(path)
 }
@@ -33,6 +40,22 @@ fn select_dups(
     dst_ty: &ob::Type,
     lt_obligation: &StackLt,
 ) -> Selector {
+    write_type(
+        &mut std::io::stdout(),
+        None,
+        &|w, mode| write!(w, "{mode}"),
+        src_ty,
+    )
+    .unwrap();
+    println!();
+    write_type(
+        &mut std::io::stdout(),
+        None,
+        &|w, mode| write!(w, "{mode}"),
+        dst_ty,
+    )
+    .unwrap();
+    println!();
     src_ty
         .iter_stack(customs.view_types())
         .zip_eq(dst_ty.iter_stack(customs.view_types()))
@@ -711,7 +734,11 @@ pub fn annot_rcs(program: ob::Program, progress: impl ProgressLogger) -> rc::Pro
         program
             .funcs
             .into_iter()
-            .map(|(_func_id, func)| {
+            .map(|(func_id, func)| {
+                println!(
+                    "\n\nannotating function: {:?}\n",
+                    program.func_symbols[func_id]
+                );
                 let annot = annot_func(&program.custom_types, func);
                 progress.update(1);
                 annot

@@ -848,8 +848,6 @@ fn instantiate_occur_in_position(
 ) -> Occur<ModeVar, Lt> {
     let binding_ty = ctx.local_binding(id);
 
-    // println!("-----------------------------");
-
     if pos == Position::Tail {
         mode_bind(constrs, &binding_ty.modes(), &use_modes);
     } else {
@@ -867,8 +865,6 @@ fn instantiate_occur_in_position(
     let use_ty = annot::Type::new(use_lts.clone(), use_modes.clone());
     let new_ty = Rc::new(binding_ty.left_meet(&use_ty));
     ctx.update_local(id, new_ty);
-
-    // println!("+++++++++++++++++++++++++++++");
 
     annot::Occur { id, ty: use_ty }
 }
@@ -1338,7 +1334,7 @@ fn instantiate_expr(
     fut_modes: &ModeData<ModeVar>,
     fut_lts: &LtData<Lt>,
     expr: &TailExpr,
-    renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
 ) -> (annot::Expr<ModeVar, Lt>, LocalUpdates) {
     use LtData as L;
     use ModeData as M;
@@ -1354,6 +1350,7 @@ fn instantiate_expr(
 
         TailExpr::Call(purity, pos, func, arg) => {
             let (arg_ty, ret_ty) = sigs.sig_of(constrs, *func);
+            let arg_ty = prepare_arg_type(&path, &arg_ty);
 
             mode_bind(constrs, ret_ty.modes(), fut_modes);
             let lt_subst = lt_bind(ret_ty.lts(), fut_lts);
@@ -1396,7 +1393,7 @@ fn instantiate_expr(
                     fut_modes,
                     fut_lts,
                     body,
-                    renderer,
+                    type_renderer,
                 );
 
                 // Record the updates, but DO NOT apply them to the context. Every branch should be
@@ -1479,7 +1476,7 @@ fn instantiate_expr(
                     fut_ty.modes(),
                     fut_ty.lts(),
                     binding_expr,
-                    renderer,
+                    type_renderer,
                 );
 
                 // Apply the updates to the context. It is important that the enclosing loop is in
@@ -2020,10 +2017,15 @@ struct SolverScc {
     scc_constrs: ConstrGraph,
 }
 
-fn process_arg_ty(ty: &annot::Type<ModeVar, Lt>) -> annot::Type<ModeVar, Lt> {
+/// Our analysis makes the following approximation: from the perspective of a function's caller all
+/// accesses the callee makes to its arguments happen at the same time. To implement this behavior,
+/// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
+/// current path. Even if we didn't make this approximation, we would have to do something to the
+/// local lifetimes in the arugment since they are not meaningful in the caller's scope.
+fn prepare_arg_type(path: &annot::Path, ty: &annot::Type<ModeVar, Lt>) -> annot::Type<ModeVar, Lt> {
     ty.map_lts(|lt| match lt {
         Lt::Empty => Lt::Empty,
-        Lt::Local(_) => Lt::Empty,
+        Lt::Local(_) => path.as_lt(),
         Lt::Join(vars) => Lt::Join(vars.clone()),
     })
 }
@@ -2034,7 +2036,8 @@ fn instantiate_scc(
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
-    renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    _func_renderer: &FuncRenderer<CustomFuncId>,
 ) -> SolverScc {
     match scc.kind {
         SccKind::Acyclic | SccKind::Cyclic => {
@@ -2120,7 +2123,7 @@ fn instantiate_scc(
                         ret_ty.modes(),
                         &ret_ty.lts().wrap_params(),
                         &func.body,
-                        renderer,
+                        type_renderer,
                     );
                     bodies.insert(*id, expr);
 
@@ -2129,8 +2132,7 @@ fn instantiate_scc(
                         ctx.update_local(flat::ARG_LOCAL, update.clone());
                     }
 
-                    let raw_arg_ty = ctx.local_binding(flat::ARG_LOCAL);
-                    new_arg_tys.insert(*id, process_arg_ty(raw_arg_ty));
+                    new_arg_tys.insert(*id, (**ctx.local_binding(flat::ARG_LOCAL)).clone());
                 }
 
                 debug_assert!(
@@ -2320,9 +2322,18 @@ fn solve_scc(
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &mut IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
-    renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    func_renderer: &FuncRenderer<CustomFuncId>,
 ) {
-    let instantiated = instantiate_scc(strategy, customs, funcs, funcs_annot, scc, renderer);
+    let instantiated = instantiate_scc(
+        strategy,
+        customs,
+        funcs,
+        funcs_annot,
+        scc,
+        type_renderer,
+        func_renderer,
+    );
 
     let mut sig_vars = BTreeSet::new();
     for func_id in scc.nodes {
@@ -2443,6 +2454,9 @@ fn sanity_check_expr(
             LtData::Boxed(lt, _) => lt,
             _ => panic!("expected array or boxed type"),
         };
+        if !lt.contains(path) {
+            panic!("lifetime {:?} does not contain {:?}", lt, path);
+        }
         assert!(lt.contains(path));
     };
 
@@ -2730,6 +2744,7 @@ pub fn annot_modes(
             &mut funcs_annot,
             scc,
             &type_renderer,
+            &func_renderer,
         );
         progress.update(scc.nodes.len());
     }
