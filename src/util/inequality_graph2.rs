@@ -87,11 +87,6 @@ where
 
     /// Add the constraint `var1 <= var2`.
     pub fn require_le(&mut self, var1: SolverVar, var2: SolverVar) {
-        println!(
-            "adding constraint {:?} <= {:?}",
-            var1.to_index(),
-            var2.to_index()
-        );
         // Small optimization (not necessary for correctness): don't add reflexive `<=` constraints.
         // This isn't very important, but it's so easy that it feels silly not to do it.
         if var1 != var2 {

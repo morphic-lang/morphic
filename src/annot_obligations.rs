@@ -136,10 +136,10 @@ fn annot_expr(
 
         annot::Expr::Call(purity, func_id, arg) => {
             let func = &funcs[*func_id];
-            let arg_ty = &ctx.local_binding(arg.id).0;
+            let arg = handle_occur(ctx, path, arg);
 
             let mut call_params = IdMap::new();
-            for (param, value) in func.arg_ty.modes().iter().zip_eq(arg_ty.iter()) {
+            for (param, value) in func.arg_ty.modes().iter().zip_eq(arg.ty.iter()) {
                 call_params.insert(*param, *value);
             }
             for (param, value) in func.ret_ty.modes().iter().zip_eq(ret_ty.iter()) {
@@ -157,7 +157,7 @@ fn annot_expr(
                 subst: call_subst,
             });
 
-            Expr::Call(*purity, new_func_id, handle_occur(ctx, path, arg))
+            Expr::Call(*purity, new_func_id, arg)
         }
 
         annot::Expr::Branch(cond, arms, ty) => {

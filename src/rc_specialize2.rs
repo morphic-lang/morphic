@@ -12,8 +12,6 @@ use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
 use std::collections::BTreeMap;
 
-// TODO: Thread type and function symbols through specialization.
-
 impl FromBindings for rc::Expr {
     type LocalId = rc::LocalId;
     type Binding = (rc::Type, rc::Expr);
@@ -647,71 +645,6 @@ fn lower_func(
     }
 }
 
-// fn sanity_check_cond(customs: &rc::CustomTypes, ty: &rc::Type, cond: &rc::Condition) {
-//     use rc::Condition as C;
-//     use rc::Type as T;
-//     match (ty, cond) {
-//         (T::Tuple(fields), C::Tuple(conds)) => {
-//             for (ty, cond) in fields.iter().zip_eq(conds) {
-//                 sanity_check_cond(customs, ty, cond);
-//             }
-//         }
-//         (T::Variants(variants), C::Variant(variant_id, cond)) => {
-//             sanity_check_cond(customs, &variants[*variant_id], cond);
-//         }
-//         (T::Boxed(_, item_ty), C::Boxed(cond, cond_ty)) => {
-//             assert_eq!(&**item_ty, cond_ty);
-//             sanity_check_cond(customs, cond_ty, cond);
-//         }
-//         (T::Custom(custom_id), C::Custom(cond_id, cond)) => {
-//             assert_eq!(custom_id, cond_id);
-//             sanity_check_cond(customs, &customs.types[*cond_id], cond);
-//         }
-//         _ => {}
-//     }
-// }
-
-// fn sanity_check_expr(
-//     customs: &rc::CustomTypes,
-//     ctx: &mut LocalContext<rc::LocalId, rc::Type>,
-//     ty: &rc::Type,
-//     expr: &rc::Expr,
-// ) {
-//     use rc::Expr as E;
-//     match expr {
-//         E::Branch(_, arms, _) => {
-//             for (cond, expr) in arms {
-//                 sanity_check_expr(customs, ctx, ty, expr);
-//                 sanity_check_cond(customs, ty, cond);
-//             }
-//         }
-//         E::LetMany(bindings, ret_id) => ctx.with_scope(|ctx| {
-//             for (binding_ty, expr) in bindings {
-//                 sanity_check_expr(customs, ctx, binding_ty, expr);
-//                 ctx.add_local(binding_ty.clone());
-//             }
-//             assert_eq!(ty, ctx.local_binding(*ret_id));
-//         }),
-//         E::WrapCustom(id, _) => {
-//             assert_eq!(ty, &rc::Type::Custom(*id));
-//         }
-//         E::UnwrapCustom(id, _) => {
-//             println!("{:?}", &customs.types[rc::CustomTypeId(1)]);
-//             println!("{:?}", &customs.types[rc::CustomTypeId(2)]);
-//             assert_eq!(ty, &customs.types[*id]);
-//         }
-//         _ => {}
-//     }
-// }
-
-// fn sanity_check_funcs(customs: &rc::CustomTypes, funcs: &IdVec<rc::CustomFuncId, rc::FuncDef>) {
-//     for (_, func) in funcs {
-//         let mut ctx = LocalContext::new();
-//         ctx.add_local(func.arg_type.clone());
-//         sanity_check_expr(customs, &mut ctx, &func.ret_type, &func.body);
-//     }
-// }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
     Default,
@@ -737,8 +670,8 @@ pub fn rc_specialize(
     progress.finish();
 
     let (provenance, types) = insts.finish(&program.custom_types);
-    let custom_types = rc::CustomTypes { types };
     let custom_type_symbols = provenance.map_refs(|_, id| program.custom_type_symbols[id].clone());
+    let custom_types = rc::CustomTypes { types, provenance };
 
     // #[cfg(debug_assertions)]
     // sanity_check_funcs(&custom_types, &funcs);

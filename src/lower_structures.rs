@@ -509,13 +509,11 @@ fn lower_function(
 pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -> low::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
-    let typedefs = program.custom_types.types;
-
     let lowered_funcs = program
         .funcs
         .into_values()
         .map(|func| {
-            let lowered = lower_function(func, &typedefs);
+            let lowered = lower_function(func, &program.custom_types.types);
             progress.update(1);
             lowered
         })
@@ -525,7 +523,7 @@ pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -
 
     low::Program {
         mod_symbols: program.mod_symbols,
-        custom_types: typedefs,
+        custom_types: program.custom_types,
         funcs: IdVec::from_vec(lowered_funcs),
         profile_points: program.profile_points,
         main: low::CustomFuncId(program.main.0),

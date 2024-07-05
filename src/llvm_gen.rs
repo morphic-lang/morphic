@@ -17,7 +17,7 @@ use crate::util::graph::{self, Graph};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use crate::{cli, progress_ui};
 use find_clang::find_default_clang;
-use id_collections::IdVec;
+use id_collections::{IdMap, IdVec};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -98,6 +98,13 @@ struct Globals<'a, 'b> {
     profile_points: IdVec<prof::ProfilePointId, ProfilePointDecls<'a>>,
 }
 
+/// One annoying consequence of the current design of borrow inference is that the `low_ast` is only
+/// well-typed modulo modes. To ensure the LLVM we generate is well-formed, we need to take care to
+/// generate a single, unique LLVM type for each set of `low_ast` types with the same "provenance",
+/// i.e., which are derived from the same `first_ord` type.
+///
+/// To achieve this, first call `CustomTypeDecls::declare_type` for each `first_ord::CustomTypeId`,
+/// then call `CustomTypeDecls::declare` for each associated `low::CustomTypeId` with the result.
 #[derive(Clone, Copy, Debug)]
 struct CustomTypeDecls<'a> {
     ty: StructType<'a>,
@@ -106,16 +113,25 @@ struct CustomTypeDecls<'a> {
 }
 
 impl<'a> CustomTypeDecls<'a> {
-    fn declare(context: &'a Context, module: &Module<'a>, type_id: low::CustomTypeId) -> Self {
-        let ty = context.opaque_struct_type(&format!("type_{}", type_id.0));
+    fn declare_type(context: &'a Context, id: first_ord::CustomTypeId) -> StructType<'a> {
+        context.opaque_struct_type(&format!("type_{}", id.0))
+    }
+
+    fn declare(
+        context: &'a Context,
+        module: &Module<'a>,
+        first_ord_id: first_ord::CustomTypeId,
+        low_id: low::CustomTypeId,
+        ty: StructType<'a>,
+    ) -> Self {
         let void_type = context.void_type();
         let release_func = module.add_function(
-            &format!("release_{}", type_id.0),
+            &format!("release_{}_{}", first_ord_id.0, low_id.0),
             void_type.fn_type(&[ty.into()], false),
             Some(Linkage::Internal),
         );
         let retain_func = module.add_function(
-            &format!("retain_{}", type_id.0),
+            &format!("retain_{}_{}", first_ord_id.0, low_id.0),
             void_type.fn_type(&[ty.into()], false),
             Some(Linkage::Internal),
         );
@@ -551,6 +567,7 @@ fn get_llvm_variant_type<'a, 'b>(
     globals.context.struct_type(field_types, false)
 }
 
+// This function MUST NOT depend on any mode annotations.
 fn get_llvm_type<'a, 'b>(
     globals: &Globals<'a, 'b>,
     instances: &Instances<'a>,
@@ -561,16 +578,6 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Num(first_ord::NumType::Byte) => globals.context.i8_type().into(),
         low::Type::Num(first_ord::NumType::Int) => globals.context.i64_type().into(),
         low::Type::Num(first_ord::NumType::Float) => globals.context.f64_type().into(),
-        low::Type::Array(_, item_type) => instances
-            .get_cow_array(globals, item_type)
-            .interface()
-            .array_type
-            .into(),
-        low::Type::HoleArray(_, item_type) => instances
-            .get_cow_array(globals, item_type)
-            .interface()
-            .hole_array_type
-            .into(),
         low::Type::Tuple(item_types) => {
             let mut field_types = vec![];
             for item_type in item_types.iter() {
@@ -581,12 +588,22 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Variants(variants) => {
             get_llvm_variant_type(globals, instances, &variants).into()
         }
+        low::Type::Custom(type_id) => globals.custom_types[type_id].ty.into(),
+        low::Type::Array(_, item_type) => instances
+            .get_cow_array(globals, item_type)
+            .interface()
+            .array_type
+            .into(),
+        low::Type::HoleArray(_, item_type) => instances
+            .get_cow_array(globals, item_type)
+            .interface()
+            .hole_array_type
+            .into(),
         low::Type::Boxed(_, type_) => instances
             .get_rc(globals, type_)
             .rc_type
             .ptr_type(AddressSpace::default())
             .into(),
-        low::Type::Custom(type_id) => globals.custom_types[type_id].ty.into(),
     }
 }
 
@@ -2022,6 +2039,20 @@ fn find_zero_sized(
     custom_types_zero_sized.map(|_, zero_sized| zero_sized.unwrap())
 }
 
+fn declare_customs<'a>(
+    context: &'a Context,
+    module: &Module<'a>,
+    provenance: &IdVec<low::CustomTypeId, first_ord::CustomTypeId>,
+) -> IdVec<low::CustomTypeId, CustomTypeDecls<'a>> {
+    let mut llvm_types = IdMap::new();
+    provenance.map_refs(|low_id, &first_ord_id| {
+        let type_ = llvm_types
+            .entry(first_ord_id)
+            .or_insert_with(|| CustomTypeDecls::declare_type(context, first_ord_id));
+        CustomTypeDecls::declare(context, module, first_ord_id, low_id, *type_)
+    })
+}
+
 fn gen_program<'a>(
     program: low::Program,
     target_machine: &TargetMachine,
@@ -2041,24 +2072,24 @@ fn gen_program<'a>(
         .any(|(_, prof_point)| prof_point.record_rc);
 
     let tal = Tal::declare(
-        &context,
+        context,
         &module,
         &target_machine.get_target_data(),
         profile_record_rc,
     );
 
-    let custom_types = program
-        .custom_types
-        .map_refs(|type_id, _type| CustomTypeDecls::declare(&context, &module, type_id));
+    let custom_types = declare_customs(context, &module, &program.custom_types.provenance);
 
     let profile_points = declare_profile_points(&context, &module, &program);
 
-    let type_dep_order = custom_type_dep_order(&program.custom_types);
+    let type_dep_order = custom_type_dep_order(&program.custom_types.types);
 
-    let custom_types_zero_sized = find_zero_sized(&program.custom_types, &type_dep_order);
+    // TODO: we are doing unnecessary work here because `low_ast` types with the same provenance
+    // have the same LLVM type.
+    let custom_types_zero_sized = find_zero_sized(&program.custom_types.types, &type_dep_order);
 
     let globals = Globals {
-        context: &context,
+        context,
         module: &module,
         target: &target_machine.get_target_data(),
         tal,
@@ -2071,7 +2102,7 @@ fn gen_program<'a>(
 
     for type_id in type_dep_order {
         let type_decls = &globals.custom_types[type_id];
-        type_decls.define_type(&globals, &instances, &program.custom_types[type_id]);
+        type_decls.define_type(&globals, &instances, &program.custom_types.types[type_id]);
 
         debug_assert!(type_decls.ty.is_sized());
 
@@ -2114,9 +2145,9 @@ fn gen_program<'a>(
 
     instances.define(&globals, rc_progress, cow_progress);
 
-    let mut type_progress = type_progress.start_session(Some(program.custom_types.len()));
+    let mut type_progress = type_progress.start_session(Some(program.custom_types.types.len()));
     for (type_id, type_decls) in &globals.custom_types {
-        type_decls.define(&globals, &instances, &program.custom_types[type_id]);
+        type_decls.define(&globals, &instances, &program.custom_types.types[type_id]);
         type_progress.update(1);
     }
     type_progress.finish();

@@ -157,7 +157,7 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: IdVec<CustomTypeId, Type>,
+    pub custom_types: rc::CustomTypes,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,

@@ -30,33 +30,32 @@ pub enum Type {
     Boxed(annot::Mode, Box<Type>),
 }
 
-impl Type {
-    pub fn can_coerce_to(&self, customs: &IdVec<CustomTypeId, Type>, to: &Type) -> bool {
-        match (self, to) {
-            (Type::Bool, Type::Bool) => true,
-            (Type::Num(from), Type::Num(to)) => from == to,
-            (Type::Tuple(from), Type::Tuple(to)) => {
-                from.len() == to.len()
-                    && from
-                        .iter()
-                        .zip(to.iter())
-                        .all(|(from, to)| from.can_coerce_to(customs, to))
-            }
-            (Type::Variants(from), Type::Variants(to)) => {
-                from.len() == to.len()
-                    && from
-                        .values()
-                        .zip(to.values())
-                        .all(|(from, to)| from.can_coerce_to(customs, to))
-            }
-            (Type::Custom(from), Type::Custom(to)) => {
-                customs[*from].can_coerce_to(customs, &customs[*to])
-            }
-            (Type::Array(_, from), Type::Array(_, to)) => from == to,
-            (Type::HoleArray(_, from), Type::HoleArray(_, to)) => from == to,
-            (Type::Boxed(_, from), Type::Boxed(_, to)) => from == to,
-            _ => false,
+/// Checks if `ty1` and `ty2` are equivalent modulo mode annotations.
+pub fn interconvertible(customs: &IdVec<CustomTypeId, Type>, ty1: &Type, ty2: &Type) -> bool {
+    match (ty1, ty2) {
+        (Type::Bool, Type::Bool) => true,
+        (Type::Num(ty1), Type::Num(ty2)) => ty1 == ty2,
+        (Type::Tuple(ty1), Type::Tuple(ty2)) => {
+            ty1.len() == ty2.len()
+                && ty1
+                    .iter()
+                    .zip(ty2.iter())
+                    .all(|(ty1, ty2)| interconvertible(customs, ty1, ty2))
         }
+        (Type::Variants(ty1), Type::Variants(ty2)) => {
+            ty1.len() == ty2.len()
+                && ty1
+                    .values()
+                    .zip(ty2.values())
+                    .all(|(ty1, ty2)| interconvertible(customs, ty1, ty2))
+        }
+        (Type::Custom(ty1), Type::Custom(ty2)) => {
+            interconvertible(customs, &customs[*ty1], &customs[*ty2])
+        }
+        (Type::Array(_, ty1), Type::Array(_, ty2)) => ty1 == ty2,
+        (Type::HoleArray(_, ty1), Type::HoleArray(_, ty2)) => ty1 == ty2,
+        (Type::Boxed(_, ty1), Type::Boxed(_, ty2)) => ty1 == ty2,
+        _ => false,
     }
 }
 
@@ -176,6 +175,7 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
     pub types: IdVec<CustomTypeId, Type>,
+    pub provenance: IdVec<CustomTypeId, first_ord::CustomTypeId>,
 }
 
 #[derive(Clone, Debug)]

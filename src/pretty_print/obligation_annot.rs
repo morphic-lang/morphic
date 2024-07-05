@@ -157,20 +157,20 @@ pub fn write_type<M>(
             write_custom(w, type_renderer, *type_id)?;
             write!(w, "#self")
         }
-        M::Custom(type_id, tsub, osub) => {
+        M::Custom(type_id, osub, tsub) => {
             write_custom(w, type_renderer, *type_id)?;
 
             if tsub.len() > 0 {
                 write!(w, "<")?;
 
                 for (i, (p, m)) in tsub.iter().enumerate() {
-                    if let Some(m) = osub.get(p) {
+                    if let Some(m) = osub.get(&p) {
                         write!(w, "[")?;
                         write_mode(w, m)?;
                         write!(w, "]")?;
                     }
                     write_mode(w, m)?;
-                    if i < tsub.len() - 1 {
+                    if i + 1 < tsub.len() {
                         write!(w, ", ")?;
                     }
                 }

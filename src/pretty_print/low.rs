@@ -280,7 +280,7 @@ fn write_custom_type(w: &mut dyn Write, type_: &Type, type_id: usize) -> io::Res
 }
 
 pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
-    for (i, type_) in program.custom_types.values().enumerate() {
+    for (i, type_) in program.custom_types.types.values().enumerate() {
         write_custom_type(w, type_, i)?;
     }
     writeln![w]?;

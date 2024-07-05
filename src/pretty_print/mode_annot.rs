@@ -216,14 +216,14 @@ pub fn write_type<M, L>(
             write_custom(w, type_renderer, *type_id)?;
             write!(w, "#self")
         }
-        (M::Custom(type_id, tsub, osub), L::Custom(_, lsub)) => {
+        (M::Custom(type_id, osub, tsub), L::Custom(_, lsub)) => {
             write_custom(w, type_renderer, *type_id)?;
 
             if lsub.len() > 0 || tsub.len() > 0 {
                 write!(w, "<")?;
                 for (i, (_, lt)) in lsub.iter().enumerate() {
                     write_lifetime(w, lt)?;
-                    if i < lsub.len() - 1 {
+                    if i + 1 < lsub.len() {
                         write!(w, ", ")?;
                     }
                 }
@@ -231,13 +231,13 @@ pub fn write_type<M, L>(
                 write!(w, " | ")?;
 
                 for (i, (p, m)) in tsub.iter().enumerate() {
-                    if let Some(m) = osub.get(p) {
+                    if let Some(m) = osub.get(&p) {
                         write!(w, "[")?;
                         write_mode(w, m)?;
                         write!(w, "]")?;
                     }
                     write_mode(w, m)?;
-                    if i < tsub.len() - 1 {
+                    if i + 1 < tsub.len() {
                         write!(w, ", ")?;
                     }
                 }
@@ -560,27 +560,6 @@ fn write_constrs(w: &mut dyn Write, constrs: &Constrs) -> io::Result<()> {
         }
     }
     write!(w, "}}")?;
-
-    // for (v, bound) in constrs.all.inner() {
-    //     for lb in &bound.lb_vars {
-    //         write_mode_var(w, lb)?;
-    //         write!(w, " ≤ ")?;
-    //         write_mode_var(w, &v)?;
-    //         write!(w, ", ")?;
-    //         num_written += 1;
-    //     }
-    //     if bound.lb_const == Mode::Owned {
-    //         write!(w, "● ≤ ")?;
-    //         write_mode_var(w, &v)?;
-    //         write!(w, ", ")?;
-    //         num_written += 1;
-    //     }
-    //     if num_written > 0 && num_written % CONSTRS_PER_LINE == 0 {
-    //         writeln!(w)?;
-    //         write!(w, "{}", " ".repeat(TAB_SIZE))?;
-    //     }
-    // }
-
     Ok(())
 }
 
@@ -626,21 +605,22 @@ pub fn write_func(
     Ok(())
 }
 
-fn write_typedef(
+pub fn write_typedef(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
     typedef: &TypeDef,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
+    write!(w, "custom type ")?;
+    write_custom(w, type_renderer, type_id)?;
     write!(
         w,
-        "custom type {}<{} | [{}]{}> = ",
-        type_renderer.render(type_id),
+        "<{} | [{}]{}> = ",
         typedef.lt_slots.len(),
         typedef.ov_slots.len(),
         typedef.slot_count.to_value(),
     )?;
-    write_type_template(w, Some(type_renderer), typedef.ty.modes(), typedef.ty.lts())?;
+    write_type_template(w, type_renderer, typedef.ty.modes(), typedef.ty.lts())?;
     Ok(())
 }
 
@@ -649,7 +629,7 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
     for (i, typedef) in &program.custom_types.types {
-        write_typedef(w, &type_renderer, typedef, i)?;
+        write_typedef(w, Some(&type_renderer), typedef, i)?;
         writeln!(w)?;
     }
     for (i, func) in &program.funcs {

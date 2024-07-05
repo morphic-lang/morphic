@@ -4,6 +4,7 @@ use crate::data::low_ast::{
     ArrayOp, CustomFuncId, CustomTypeId, Expr, IoOp, LocalId, Program, Type,
 };
 use crate::data::mode_annot_ast2::Mode;
+use crate::data::rc_specialized_ast2::interconvertible;
 use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_thread, Child, ExitStatus, Stdio};
 use crate::util::iter::IterExt;
@@ -437,6 +438,20 @@ fn typecheck_many(heap: &Heap, heap_ids: &[HeapId], type_: &Type, stacktrace: St
     }
 }
 
+fn check_custom_compatibility(
+    customs: &IdVec<CustomTypeId, Type>,
+    id1: CustomTypeId,
+    id2: CustomTypeId,
+    stacktrace: &StackTrace,
+) {
+    if !interconvertible(customs, &customs[id1], &customs[id2]) {
+        stacktrace.panic(format![
+            "{id1:?} is not interconvertible with {id2:?}\n  * {id1:?}: {:?}\n  * {id2:?}: {:?}",
+            customs[id1], customs[id2],
+        ]);
+    }
+}
+
 fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace) {
     let val = &heap[heap_id];
     let kind = &val;
@@ -555,15 +570,8 @@ fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace)
 
         Type::Custom(custom_type_id) => {
             if let Value::Custom(type_id, heap_id) = kind {
-                let customs = &heap.program.custom_types;
-
-                if !customs[*custom_type_id].can_coerce_to(customs, &customs[*type_id]) {
-                    stacktrace.panic(format![
-                        "differing custom type ids {id1:?} != {id2:?}\n{id1:?}: {:?}\n{id2:?}: {:?}",
-                        customs[*custom_type_id], customs[*type_id], id1 = custom_type_id, id2 = type_id,
-                    ]);
-                }
-
+                let customs = &heap.program.custom_types.types;
+                check_custom_compatibility(customs, *custom_type_id, *type_id, &stacktrace);
                 typecheck(heap, *heap_id, &customs[*type_id], stacktrace);
             } else {
                 stacktrace.panic(format!["expected a custom received {:?}", kind]);
@@ -1054,12 +1062,7 @@ fn interpret_expr(
                 let (runtime_custom_id, local_custom_id) =
                     unwrap_custom(heap, heap_id, stacktrace.add_frame("unwrap custom".into()));
 
-                if runtime_custom_id != *custom_id {
-                    stacktrace.panic(format![
-                        "unwrap custom ids not equal, expected {:?} got {:?}",
-                        custom_id, runtime_custom_id
-                    ]);
-                }
+                check_custom_compatibility(customs, runtime_custom_id, *custom_id, &stacktrace);
 
                 local_custom_id
             }
@@ -1789,7 +1792,7 @@ pub fn interpret(stdio: Stdio, program: Program) -> Child {
     spawn_thread(stdio, move |stdin, stdout, stderr| {
         let mut heap = Heap::new(&program);
         match interpret_call(
-            &program.custom_types,
+            &program.custom_types.types,
             program.main,
             HeapId(0),
             stdin,
