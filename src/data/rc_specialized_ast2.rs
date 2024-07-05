@@ -17,6 +17,7 @@ pub const ARG_LOCAL: LocalId = LocalId(0);
 pub struct CustomTypeId(pub usize);
 
 pub type CustomFuncId = ob::CustomFuncId;
+pub type Condition = ob::Condition;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
@@ -145,22 +146,6 @@ pub enum Expr {
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-}
-
-#[derive(Clone, Debug)]
-pub enum Condition {
-    Any,
-    Tuple(Vec<Condition>),
-    Variant(first_ord::VariantId, Box<Condition>),
-    Boxed(
-        Box<Condition>,
-        Type, // Inner type
-    ),
-    Custom(CustomTypeId, Box<Condition>),
-    BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
 }
 
 #[derive(Clone, Debug)]

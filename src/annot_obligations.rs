@@ -5,7 +5,7 @@ use crate::data::mode_annot_ast2::{
     self as annot, CollectOverlay, Lt, LtData, Mode, ModeData, ModeParam, ModeSolution, Path,
 };
 use crate::data::obligation_annot_ast::{
-    self as ob, ArrayOp, Condition, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
+    self as ob, ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
 };
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
@@ -63,35 +63,6 @@ fn instantiate_occur(
     Occur {
         id: occur.id,
         ty: instantiate_type(inst_params, &occur.ty),
-    }
-}
-
-fn instantiate_cond(
-    inst_params: &IdVec<ModeParam, Mode>,
-    cond: &annot::Condition<ModeSolution, Lt>,
-) -> Condition {
-    match cond {
-        annot::Condition::Any => Condition::Any,
-        annot::Condition::Tuple(conds) => Condition::Tuple(
-            conds
-                .iter()
-                .map(|cond| instantiate_cond(inst_params, cond))
-                .collect(),
-        ),
-        annot::Condition::Variant(variant_id, cond) => {
-            Condition::Variant(*variant_id, Box::new(instantiate_cond(inst_params, cond)))
-        }
-        annot::Condition::Boxed(cond, item_ty) => Condition::Boxed(
-            Box::new(instantiate_cond(inst_params, cond)),
-            instantiate_type(inst_params, item_ty),
-        ),
-        annot::Condition::Custom(custom_id, cond) => {
-            Condition::Custom(*custom_id, Box::new(instantiate_cond(inst_params, cond)))
-        }
-        annot::Condition::BoolConst(lit) => Condition::BoolConst(*lit),
-        annot::Condition::ByteConst(lit) => Condition::ByteConst(*lit),
-        annot::Condition::IntConst(lit) => Condition::IntConst(*lit),
-        annot::Condition::FloatConst(lit) => Condition::FloatConst(*lit),
     }
 }
 
@@ -167,7 +138,7 @@ fn annot_expr(
                 .enumerate()
                 .map(|(i, (cond, expr))| {
                     (
-                        instantiate_cond(inst_params, &cond),
+                        cond.clone(),
                         annot_expr(
                             customs,
                             funcs,

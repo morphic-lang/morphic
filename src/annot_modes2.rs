@@ -486,10 +486,6 @@ fn emit_occur_constrs_heap(
     use_modes: &ModeData<ModeVar>,
     use_lts: &LtData<Lt>,
 ) {
-    println!(
-        "emit_occur_constrs_heap:\n\t{:?}\n\t{:?}",
-        binding_modes, use_modes
-    );
     use LtData as L;
     use ModeData as M;
     match (binding_modes, use_modes, use_lts) {
@@ -543,10 +539,6 @@ fn emit_occur_constrs(
     use_modes: &ModeData<ModeVar>,
     use_lts: &LtData<Lt>,
 ) {
-    println!(
-        "emit_occur_constrs:\n\t{:?}\n\t{:?}",
-        binding_modes, use_modes
-    );
     use LtData as L;
     use ModeData as M;
     match (binding_modes, use_modes, use_lts) {
@@ -818,7 +810,7 @@ fn instantiate_condition(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     cond: &flat::Condition,
-) -> annot::Condition<ModeVar, Lt> {
+) -> annot::Condition {
     match cond {
         flat::Condition::Any => annot::Condition::Any,
         flat::Condition::Tuple(conds) => annot::Condition::Tuple(
@@ -830,12 +822,11 @@ fn instantiate_condition(
         flat::Condition::Variant(id, cond) => {
             annot::Condition::Variant(*id, Box::new(instantiate_condition(customs, constrs, cond)))
         }
-        flat::Condition::Boxed(cond, ty) => annot::Condition::Boxed(
-            Box::new(instantiate_condition(customs, constrs, cond)),
-            instantiate_type_unused(constrs, &parameterize_type_simple(customs, ty)),
-        ),
-        flat::Condition::Custom(id, cond) => {
-            annot::Condition::Custom(*id, Box::new(instantiate_condition(customs, constrs, cond)))
+        flat::Condition::Boxed(cond, _ty) => {
+            annot::Condition::Boxed(Box::new(instantiate_condition(customs, constrs, cond)))
+        }
+        flat::Condition::Custom(_id, cond) => {
+            annot::Condition::Custom(Box::new(instantiate_condition(customs, constrs, cond)))
         }
         flat::Condition::BoolConst(v) => annot::Condition::BoolConst(*v),
         flat::Condition::ByteConst(v) => annot::Condition::ByteConst(*v),
@@ -857,7 +848,7 @@ fn instantiate_occur_in_position(
 ) -> Occur<ModeVar, Lt> {
     let binding_ty = ctx.local_binding(id);
 
-    println!("-----------------------------");
+    // println!("-----------------------------");
 
     if pos == Position::Tail {
         mode_bind(constrs, &binding_ty.modes(), &use_modes);
@@ -877,7 +868,7 @@ fn instantiate_occur_in_position(
     let new_ty = Rc::new(binding_ty.left_meet(&use_ty));
     ctx.update_local(id, new_ty);
 
-    println!("+++++++++++++++++++++++++++++");
+    // println!("+++++++++++++++++++++++++++++");
 
     annot::Occur { id, ty: use_ty }
 }
@@ -1389,9 +1380,9 @@ fn instantiate_expr(
             debug_assert!(same_shape(ret_ty, fut_modes));
 
             let mut updates = LocalUpdates::new();
-            let mut cases_annot = Vec::new();
 
-            for (i, (cond, body)) in cases.iter().enumerate() {
+            let mut cases_annot_rev = Vec::new();
+            for (i, (cond, body)) in cases.iter().enumerate().rev() {
                 let cond_annot = instantiate_condition(customs, constrs, cond);
                 let (body_annot, body_updates) = instantiate_expr(
                     strategy,
@@ -1412,8 +1403,13 @@ fn instantiate_expr(
                 // checked in the original context.
                 updates.merge_with(&body_updates, |ty1, ty2| ty1.left_meet(&ty2));
 
-                cases_annot.push((cond_annot, body_annot));
+                cases_annot_rev.push((cond_annot, body_annot));
             }
+
+            let cases_annot = {
+                cases_annot_rev.reverse();
+                cases_annot_rev
+            };
 
             // Finally, apply the updates before instantiating the discriminant.
             ctx.update_all(&updates);
@@ -1659,17 +1655,6 @@ fn instantiate_expr(
             let box_lts = L::Boxed(path.as_lt(), Box::new(item_lts));
             let wrapped_occur = instantiate_occur(
                 strategy, customs, &mut ctx, scopes, constrs, *wrapped, &box_modes, &box_lts,
-            );
-
-            let binding_ty = ctx.local_binding(*wrapped);
-            debug_print_constrs(
-                customs,
-                constrs,
-                scopes.local_binding(*wrapped),
-                binding_ty.lts(),
-                binding_ty.modes(),
-                fut_lts,
-                fut_modes,
             );
 
             annot::Expr::UnwrapBoxed(
@@ -2228,35 +2213,6 @@ fn extract_occur(
     }
 }
 
-fn extract_condition(
-    solution: &Solution,
-    cond: &annot::Condition<ModeVar, Lt>,
-) -> annot::Condition<ModeSolution, Lt> {
-    match cond {
-        annot::Condition::Any => annot::Condition::Any,
-        annot::Condition::Tuple(conds) => annot::Condition::Tuple(
-            conds
-                .iter()
-                .map(|cond| extract_condition(solution, cond))
-                .collect(),
-        ),
-        annot::Condition::Variant(id, cond) => {
-            annot::Condition::Variant(*id, Box::new(extract_condition(solution, cond)))
-        }
-        annot::Condition::Boxed(cond, ty) => annot::Condition::Boxed(
-            Box::new(extract_condition(solution, cond)),
-            extract_type(solution, ty),
-        ),
-        annot::Condition::Custom(id, cond) => {
-            annot::Condition::Custom(*id, Box::new(extract_condition(solution, cond)))
-        }
-        annot::Condition::BoolConst(v) => annot::Condition::BoolConst(*v),
-        annot::Condition::ByteConst(v) => annot::Condition::ByteConst(*v),
-        annot::Condition::IntConst(v) => annot::Condition::IntConst(*v),
-        annot::Condition::FloatConst(v) => annot::Condition::FloatConst(*v),
-    }
-}
-
 fn extract_expr(
     solution: &Solution,
     expr: &annot::Expr<ModeVar, Lt>,
@@ -2269,12 +2225,7 @@ fn extract_expr(
             extract_occur(solution, discrim),
             branches
                 .iter()
-                .map(|(cond, body)| {
-                    (
-                        extract_condition(solution, cond),
-                        extract_expr(solution, body),
-                    )
-                })
+                .map(|(cond, body)| (cond.clone(), extract_expr(solution, body)))
                 .collect(),
             extract_type(solution, ret_ty),
         ),
@@ -2772,13 +2723,6 @@ pub fn annot_modes(
 
     let mut funcs_annot = IdMap::new();
     for (_, scc) in &func_sccs {
-        println!(
-            "\n\nsolving for SCC with functions: {:?}\n\n",
-            scc.nodes
-                .iter()
-                .map(|id| &program.func_symbols[*id])
-                .collect::<Vec<_>>()
-        );
         solve_scc(
             strategy,
             &customs,

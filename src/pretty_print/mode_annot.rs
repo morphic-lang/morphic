@@ -1,7 +1,7 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::mode_annot_ast2::{
-    self as annot, ArrayOp, Constrs, FuncDef, IoOp, Lt, LtParam, Mode, ModeParam, ModeSolution,
-    Overlay, Program, SlotId, TypeDef,
+    self as annot, ArrayOp, Condition, Constrs, FuncDef, IoOp, Lt, LtParam, Mode, ModeParam,
+    ModeSolution, Overlay, Program, SlotId, TypeDef,
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common::*;
@@ -14,7 +14,6 @@ const CONSTRS_PER_LINE: usize = 10;
 type Type = annot::Type<ModeSolution, Lt>;
 type Occur = annot::Occur<ModeSolution, Lt>;
 type Expr = annot::Expr<ModeSolution, Lt>;
-type Condition = annot::Condition<ModeSolution, Lt>;
 
 #[derive(Clone, Debug, Copy)]
 struct Context<'a> {
@@ -62,16 +61,14 @@ fn write_condition(
             write!(w, ")")?;
             Ok(())
         }
-        Condition::Boxed(subcondition, item_type) => {
-            write!(w, "boxed <")?;
-            write_type_concrete(w, type_renderer, item_type)?;
-            write!(w, "> (")?;
+        Condition::Boxed(subcondition) => {
+            write!(w, "boxed (")?;
             write_condition(w, type_renderer, subcondition)?;
             write!(w, ")")?;
             Ok(())
         }
-        Condition::Custom(type_id, subcondition) => {
-            write!(w, "custom {} (", type_renderer.render(type_id))?;
+        Condition::Custom(subcondition) => {
+            write!(w, "custom (")?;
             write_condition(w, type_renderer, subcondition)?;
             write!(w, ")")?;
             Ok(())

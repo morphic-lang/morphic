@@ -1,10 +1,8 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::mode_annot_ast2::{Mode, ModeData, Overlay, Path, SlotId, FUNC_BODY_PATH};
-use crate::data::num_type::NumType;
 use crate::data::rc_annot_ast::{self as annot, RcOp, Selector};
 use crate::data::rc_specialized_ast2 as rc;
 use crate::util::instance_queue::InstanceQueue;
-use crate::util::iter::IterExt;
 use crate::util::let_builder::{self, FromBindings};
 use crate::util::local_context::LocalContext;
 use crate::util::map_ext::{btree_map_refs, FnWrap, MapRef};
@@ -387,48 +385,6 @@ fn build_plan(
     }
 }
 
-fn lower_cond(
-    customs: &annot::CustomTypes,
-    insts: &mut TypeInstances,
-    cond: &annot::Condition,
-    discrim: &rc::Type,
-) -> rc::Condition {
-    use annot::Condition as C;
-    use rc::Type as T;
-    match (cond, discrim) {
-        (C::Any, _) => rc::Condition::Any,
-        (C::Tuple(conds), T::Tuple(fields)) => rc::Condition::Tuple(
-            conds
-                .iter()
-                .zip_eq(fields)
-                .map(|(cond, field)| lower_cond(customs, insts, cond, field))
-                .collect(),
-        ),
-        (C::Variant(variant_id, cond), T::Variants(variants)) => rc::Condition::Variant(
-            *variant_id,
-            Box::new(lower_cond(customs, insts, cond, &variants[*variant_id])),
-        ),
-        (C::Boxed(cond, item_ty), T::Boxed(_, content)) => rc::Condition::Boxed(
-            Box::new(lower_cond(customs, insts, cond, content)),
-            lower_type(insts, customs, item_ty),
-        ),
-        (C::Custom(_old_custom_id, cond), T::Custom(custom_id)) => {
-            // `lookup_resolved` won't panic because we must have resolved this type when creating
-            // the binding that we are conditioning on
-            let content_ty = insts.lookup_resolved(customs, *custom_id).clone();
-            rc::Condition::Custom(
-                *custom_id,
-                Box::new(lower_cond(customs, insts, cond, &content_ty)),
-            )
-        }
-        (C::BoolConst(lit), T::Bool) => rc::Condition::BoolConst(*lit),
-        (C::ByteConst(lit), T::Num(NumType::Byte)) => rc::Condition::ByteConst(*lit),
-        (C::IntConst(lit), T::Num(NumType::Int)) => rc::Condition::IntConst(*lit),
-        (C::FloatConst(lit), T::Num(NumType::Float)) => rc::Condition::FloatConst(*lit),
-        _ => unreachable!(),
-    }
-}
-
 #[derive(Clone, Debug)]
 struct LocalInfo {
     ty: rc::Type,
@@ -463,7 +419,6 @@ fn lower_expr(
             let mut new_arms = Vec::new();
             for (cond, expr) in arms {
                 let mut case_builder = builder.child();
-                let cond = lower_cond(customs, insts, cond, &ctx.local_binding(*discrim).ty);
                 let final_local = lower_expr(
                     funcs,
                     customs,
@@ -474,18 +429,19 @@ fn lower_expr(
                     &ret_ty,
                     &mut case_builder,
                 );
-                new_arms.push((cond, case_builder.to_expr(final_local)));
+                new_arms.push((cond.clone(), case_builder.to_expr(final_local)));
             }
             rc::Expr::Branch(ctx.local_binding(*discrim).new_id, new_arms, ret_ty)
         }
         annot::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
                 for (binding_ty, expr) in bindings {
-                    let binding_ty = lower_type(insts, customs, binding_ty);
+                    let low_ty = lower_type(insts, customs, binding_ty);
+
                     let final_local =
-                        lower_expr(funcs, customs, insts, ctx, path, expr, &binding_ty, builder);
+                        lower_expr(funcs, customs, insts, ctx, path, expr, &low_ty, builder);
                     ctx.add_local(LocalInfo {
-                        ty: binding_ty,
+                        ty: low_ty,
                         new_id: final_local,
                     });
                 }
@@ -673,9 +629,6 @@ pub fn rc_specialize(
     let custom_type_symbols = provenance.map_refs(|_, id| program.custom_type_symbols[id].clone());
     let custom_types = rc::CustomTypes { types, provenance };
 
-    // #[cfg(debug_assertions)]
-    // sanity_check_funcs(&custom_types, &funcs);
-
     rc::Program {
         mod_symbols: program.mod_symbols,
         custom_types,
@@ -690,6 +643,7 @@ pub fn rc_specialize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::first_order_ast::NumType;
 
     #[test]
     fn test_spec_list() {

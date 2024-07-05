@@ -73,10 +73,8 @@ fn lower_condition(
     match condition {
         rc::Condition::Any => builder.add_expr(low::Type::Bool, low::Expr::BoolLit(true)),
         rc::Condition::Tuple(subconditions) => {
-            let item_types = if let low::Type::Tuple(item_types) = match_type {
-                item_types
-            } else {
-                unreachable![];
+            let low::Type::Tuple(item_types) = match_type else {
+                unreachable!();
             };
 
             let subcondition_ids = item_types
@@ -107,10 +105,8 @@ fn lower_condition(
             );
 
             let mut new_builder = builder.child();
-            let variant_types = if let low::Type::Variants(variant_types) = match_type {
-                variant_types
-            } else {
-                unreachable![];
+            let low::Type::Variants(variant_types) = match_type else {
+                unreachable!();
             };
 
             let variant_type = &variant_types[variant_id];
@@ -141,17 +137,24 @@ fn lower_condition(
                 ),
             )
         }
-        rc::Condition::Boxed(subcondition, content_type) => {
+        rc::Condition::Boxed(subcondition) => {
+            let low::Type::Boxed(_, content_type) = match_type else {
+                unreachable!();
+            };
+
             let content = builder.add_expr(
-                content_type.clone(),
-                low::Expr::UnwrapBoxed(discrim, content_type.clone()),
+                (**content_type).clone(),
+                low::Expr::UnwrapBoxed(discrim, (**content_type).clone()),
             );
 
             lower_condition(content, subcondition, builder, content_type, typedefs)
         }
-        rc::Condition::Custom(custom_type_id, subcondition) => {
-            let content_type = &typedefs[custom_type_id];
+        rc::Condition::Custom(subcondition) => {
+            let low::Type::Custom(custom_type_id) = match_type else {
+                unreachable!();
+            };
 
+            let content_type = &typedefs[custom_type_id];
             let content = builder.add_expr(
                 content_type.clone(),
                 low::Expr::UnwrapCustom(*custom_type_id, discrim),
@@ -342,10 +345,8 @@ fn lower_expr(
         tail::Expr::UnwrapVariant(variant_id, content_id) => {
             builder.add_expr(result_type.clone(), {
                 let variant_type = &context.local_binding(*content_id).0;
-                let variants = if let rc::Type::Variants(variants) = variant_type {
-                    variants
-                } else {
-                    panic![];
+                let rc::Type::Variants(variants) = variant_type else {
+                    unreachable!()
                 };
 
                 low::Expr::UnwrapVariant(

@@ -1053,7 +1053,7 @@ pub enum IoOp<M, L> {
 pub enum Expr<M, L> {
     Local(Occur<M, L>),
     Call(Purity, first_ord::CustomFuncId, Occur<M, L>),
-    Branch(Occur<M, L>, Vec<(Condition<M, L>, Expr<M, L>)>, Type<M, L>),
+    Branch(Occur<M, L>, Vec<(Condition, Expr<M, L>)>, Type<M, L>),
     LetMany(
         Vec<(Type<M, L>, Expr<M, L>)>, // Bound values; each is assigned a new sequential `LocalId`
         Occur<M, L>,                   // Result
@@ -1093,16 +1093,18 @@ pub enum Expr<M, L> {
     FloatLit(f64),
 }
 
+/// Previous passes have an item type annotation on `Boxed` and an ID annotation on `Custom`. These
+/// annotations are use during `lower_structures`, which unrolls `Condition`s into a series of
+/// eliminators and boolean checks. However, to produce the correct annotations during mode
+/// inference, we would have to know what operations each `Condition` will become, which is a mess.
+/// Instead, we infer these annotations during `lower_structures`.
 #[derive(Clone, Debug)]
-pub enum Condition<M, L> {
+pub enum Condition {
     Any,
-    Tuple(Vec<Condition<M, L>>),
-    Variant(first_ord::VariantId, Box<Condition<M, L>>),
-    Boxed(
-        Box<Condition<M, L>>,
-        Type<M, L>, // Inner type
-    ),
-    Custom(CustomTypeId, Box<Condition<M, L>>),
+    Tuple(Vec<Condition>),
+    Variant(first_ord::VariantId, Box<Condition>),
+    Boxed(Box<Condition>),
+    Custom(Box<Condition>),
     BoolConst(bool),
     ByteConst(u8),
     IntConst(i64),

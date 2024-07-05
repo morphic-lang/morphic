@@ -31,6 +31,7 @@ impl StackLt {
 
 pub type CustomTypeId = first_ord::CustomTypeId;
 pub type Type = annot::ModeData<Mode>;
+pub type Condition = annot::Condition;
 
 #[id_type]
 pub struct CustomFuncId(usize);
@@ -88,22 +89,6 @@ pub enum Expr {
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-}
-
-#[derive(Clone, Debug)]
-pub enum Condition {
-    Any,
-    Tuple(Vec<Condition>),
-    Variant(first_ord::VariantId, Box<Condition>),
-    Boxed(
-        Box<Condition>,
-        Type, // Inner type
-    ),
-    Custom(CustomTypeId, Box<Condition>),
-    BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
 }
 
 #[derive(Clone, Debug)]
