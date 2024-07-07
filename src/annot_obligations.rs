@@ -7,6 +7,8 @@ use crate::data::mode_annot_ast2::{
 use crate::data::obligation_annot_ast::{
     self as ob, ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
 };
+use crate::pretty_print::borrow_common::{write_lifetime, write_path};
+use crate::pretty_print::obligation_annot::write_overlay;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
 use crate::util::local_context;
@@ -98,7 +100,17 @@ fn annot_expr(
 
             // We must update the lifetime obligation of the binding to reflect this occurrence.
             let obligation = get_occur_obligation(customs, path, src_ty, &occur.ty, occur_lts);
+
+            // print!("joining ");
+            // write_overlay(&mut std::io::stdout(), None, &write_lifetime, &src_lt).unwrap();
+            // print!(" with ");
+            // write_overlay(&mut std::io::stdout(), None, &write_lifetime, &obligation).unwrap();
+
             *src_lt = src_lt.join(&obligation);
+
+            // print!(" to get ");
+            // write_overlay(&mut std::io::stdout(), None, &write_lifetime, &src_lt).unwrap();
+            // println!();
             occur
         };
 
@@ -116,6 +128,9 @@ fn annot_expr(
             for (param, value) in func.ret_ty.modes().iter().zip_eq(ret_ty.iter()) {
                 call_params.insert(*param, *value);
             }
+
+            println!("sig: {:?}", func.constrs.sig.count());
+            println!("call_params: {:?}", call_params);
 
             let call_params = call_params.to_id_vec(func.constrs.sig.count());
             let call_subst = func
@@ -144,7 +159,7 @@ fn annot_expr(
                             funcs,
                             insts,
                             inst_params,
-                            &path.seq(0).alt(i, num_arms),
+                            &path.seq(1).alt(i, num_arms),
                             ctx,
                             expr,
                             ret_ty,
@@ -153,7 +168,37 @@ fn annot_expr(
                 })
                 .collect();
 
-            let new_cond = handle_occur(ctx, &path.seq(1), cond);
+            // println!("----------------------------------");
+            // println!("cond: {:?}", cond.id);
+
+            // print!("obligation before: ");
+            // write_overlay(
+            //     &mut std::io::stdout(),
+            //     None,
+            //     &write_lifetime,
+            //     &ctx.local_binding(cond.id).1,
+            // )
+            // .unwrap();
+            // println!();
+
+            // print!("at ");
+            // write_path(&mut std::io::stdout(), &path.seq(0)).unwrap();
+            // println!();
+
+            let new_cond = handle_occur(ctx, &path.seq(0), cond);
+
+            // println!();
+            // print!("obligation after: ");
+            // write_overlay(
+            //     &mut std::io::stdout(),
+            //     None,
+            //     &write_lifetime,
+            //     &ctx.local_binding(cond.id).1,
+            // )
+            // .unwrap();
+            // println!();
+            // println!("----------------------------------");
+
             Expr::Branch(new_cond, new_arms, instantiate_type(inst_params, &ty))
         }
 
@@ -360,6 +405,8 @@ pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger)
     let mut funcs = IdVec::new();
     let mut func_symbols = IdVec::new();
     while let Some((new_id, spec)) = func_insts.pop_pending() {
+        println!("func {:?}", program.func_symbols[spec.old_id]);
+
         let annot = annot_func(
             &program.custom_types,
             &program.funcs,

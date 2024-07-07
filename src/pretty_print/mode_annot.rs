@@ -153,20 +153,14 @@ fn write_overlay<M>(
         }
         Overlay::Custom(type_id, subst) => {
             write_custom(w, type_renderer, *type_id)?;
-            let mut remaining = subst.len();
-            if remaining > 0 {
-                write!(w, "<")?;
-                for (param, m) in subst.iter() {
-                    write_mode_param(w, &cast_to_mode(param))?;
-                    write!(w, " = ")?;
-                    write_mode(w, m)?;
-                    remaining -= 1;
-                    if remaining >= 1 {
-                        write!(w, ", ")?;
-                    }
+            write!(w, "<")?;
+            for (i, (_param, m)) in subst.iter().enumerate() {
+                write_mode(w, m)?;
+                if i + 1 < subst.len() {
+                    write!(w, ", ")?;
                 }
-                write!(w, ">")?;
             }
+            write!(w, ">")?;
             Ok(())
         }
         Overlay::Array(m) => {

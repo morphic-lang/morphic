@@ -80,7 +80,7 @@ fn write_custom(
     }
 }
 
-fn write_overlay<M>(
+pub fn write_overlay<M>(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
     write_data: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
@@ -105,19 +105,14 @@ fn write_overlay<M>(
         }
         Overlay::Custom(type_id, subst) => {
             write_custom(w, type_renderer, *type_id)?;
-            let mut remaining = subst.len();
-            if remaining > 0 {
-                write!(w, "<")?;
-                for (param, m) in subst.iter() {
-                    write!(w, "%{} = ", param.0)?;
-                    write_data(w, m)?;
-                    remaining -= 1;
-                    if remaining >= 1 {
-                        write!(w, ", ")?;
-                    }
+            write!(w, "<")?;
+            for (i, (_param, m)) in subst.iter().enumerate() {
+                write_data(w, m)?;
+                if i + 1 < subst.len() {
+                    write!(w, ", ")?;
                 }
-                write!(w, ">")?;
             }
+            write!(w, ">")?;
             Ok(())
         }
         Overlay::Array(m) => {
@@ -302,9 +297,9 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                 } else {
                     let (binding_type, obligation, binding_expr) = &bindings[index];
                     new_context.writeln(w)?;
-                    write!(w, "{}: %{} ; ", index, context.num_locals + index)?;
+                    write!(w, "{}: %{}: ", index, context.num_locals + index)?;
                     write_overlay(w, Some(context.type_renderer), &write_lifetime, obligation)?;
-                    write!(w, ": ")?;
+                    write!(w, " ; ")?;
                     write_type(w, Some(context.type_renderer), &write_mode, binding_type)?;
                     write!(w, " = ")?;
                     write_expr(
@@ -427,6 +422,13 @@ pub fn write_func(
     func_id: CustomFuncId,
 ) -> io::Result<()> {
     write!(w, "func {} (%0: ", func_renderer.render(func_id))?;
+    write_overlay(
+        w,
+        Some(type_renderer),
+        &write_lifetime,
+        &func.arg_obligation,
+    )?;
+    write!(w, " ; ")?;
     write_type(w, Some(type_renderer), &write_mode, &func.arg_ty)?;
     write!(w, "): ")?;
     write_type(w, Some(type_renderer), &write_mode, &func.ret_ty)?;

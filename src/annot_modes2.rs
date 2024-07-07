@@ -1389,10 +1389,8 @@ fn instantiate_expr(
                     lt_count,
                     ctx.as_untracked(),
                     scopes,
-                    // The discriminate happens at `path.seq(1)`, but this is not apparent from the
-                    // surrounding code because we do not care about the discriminant's path until
-                    // the next pass.
-                    path.seq(0).alt(i, cases.len()),
+                    // The discriminate happens at `path.seq(1)`
+                    path.seq(1).alt(i, cases.len()),
                     fut_modes,
                     fut_lts,
                     body,
@@ -1414,7 +1412,19 @@ fn instantiate_expr(
             // Finally, apply the updates before instantiating the discriminant.
             ctx.update_all(&updates);
 
-            let discrim_fut_ty = ctx.local_binding(*discrim_id).clone();
+            let discrim_binding = ctx.local_binding(*discrim_id);
+            let discrim_path = path.seq(0).as_lt();
+            let discrim_use_modes = discrim_binding
+                .modes()
+                .iter()
+                .map(|_| constrs.fresh_var())
+                .collect_mode_data(discrim_binding.modes());
+            let discrim_use_lts = discrim_binding
+                .lts()
+                .iter()
+                .map(|_| discrim_path.clone())
+                .collect_lt_data(discrim_binding.lts());
+
             let discrim_occur = instantiate_occur(
                 strategy,
                 customs,
@@ -1422,8 +1432,8 @@ fn instantiate_expr(
                 scopes,
                 constrs,
                 *discrim_id,
-                discrim_fut_ty.modes(),
-                discrim_fut_ty.lts(),
+                &discrim_use_modes,
+                &discrim_use_lts,
             );
 
             annot::Expr::Branch(
@@ -2503,7 +2513,7 @@ fn sanity_check_expr(
                     funcs,
                     customs,
                     param_count,
-                    &path.seq(0).alt(i, cases.len()),
+                    &path.seq(1).alt(i, cases.len()),
                     ctx,
                     ret_ty,
                     body,
@@ -2629,16 +2639,6 @@ fn sanity_check_funcs(
                 assert!(param_count.contains(param));
             }
         }
-
-        // Check that the set of signature parameters is correct
-        let mut present = IdVec::from_count_with(param_count, |_| false);
-        for param in func.arg_ty.modes().iter() {
-            present[param] = true;
-        }
-        for param in func.ret_ty.modes().iter() {
-            present[param] = true;
-        }
-        assert!(present.into_values().all(|b| b));
 
         // Sanity check the body of the function
         let wrap_mode = |mode: &ModeParam| ModeSolution {

@@ -210,7 +210,7 @@ impl LocalLt {
             (LocalLt::Seq(l1, i1), LocalLt::Seq(l2, i2)) => {
                 if i1 < i2 {
                     LocalLt::Seq(l2.clone(), *i2)
-                } else if i2 > i1 {
+                } else if i2 < i1 {
                     LocalLt::Seq(l1.clone(), *i1)
                 } else {
                     LocalLt::Seq(Box::new(l1.join(l2)), *i1)
@@ -1202,6 +1202,27 @@ mod tests {
 
         let zoomed = lt.zoom(&Path::root().seq(0).alt(2, 3));
         assert_eq!(zoomed, None);
+    }
+
+    #[test]
+    fn test_join() {
+        let lhs = Lt::Local(LocalLt::Seq(
+            Box::new(LocalLt::Seq(
+                Box::new(LocalLt::Seq(
+                    Box::new(LocalLt::Alt(vec![
+                        Some(LocalLt::Seq(Box::new(LocalLt::Final), 0)),
+                        Some(LocalLt::Seq(Box::new(LocalLt::Final), 0)),
+                        Some(LocalLt::Seq(Box::new(LocalLt::Final), 0)),
+                    ])),
+                    1,
+                )),
+                0,
+            )),
+            0,
+        ));
+        let rhs = Path::root().seq(0).seq(0).seq(0).as_lt();
+        let actual = lhs.join(&rhs);
+        assert_eq!(actual, lhs);
     }
 
     #[test]

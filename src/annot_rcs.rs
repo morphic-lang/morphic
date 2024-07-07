@@ -6,7 +6,7 @@ use crate::data::mode_annot_ast2::{
 use crate::data::obligation_annot_ast::{self as ob, StackLt};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
 use crate::pretty_print::borrow_common::{write_lifetime, write_path};
-use crate::pretty_print::obligation_annot::{self, write_type};
+use crate::pretty_print::obligation_annot::write_type;
 use crate::util::iter::IterExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
@@ -24,11 +24,11 @@ fn assert_transition_ok(src_mode: Mode, dst_mode: Mode) {
 }
 
 fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
-    print!("should_dup: ");
-    write_path(&mut std::io::stdout(), path).unwrap();
-    print!("    ");
-    write_lifetime(&mut std::io::stdout(), lt).unwrap();
-    println!();
+    // print!("should_dup: ");
+    // write_path(&mut std::io::stdout(), path).unwrap();
+    // print!("    ");
+    // write_lifetime(&mut std::io::stdout(), lt).unwrap();
+    // println!();
     assert_transition_ok(src_mode, dst_mode);
     dst_mode == Mode::Owned && !lt.does_not_exceed(path)
 }
@@ -40,22 +40,6 @@ fn select_dups(
     dst_ty: &ob::Type,
     lt_obligation: &StackLt,
 ) -> Selector {
-    write_type(
-        &mut std::io::stdout(),
-        None,
-        &|w, mode| write!(w, "{mode}"),
-        src_ty,
-    )
-    .unwrap();
-    println!();
-    write_type(
-        &mut std::io::stdout(),
-        None,
-        &|w, mode| write!(w, "{mode}"),
-        dst_ty,
-    )
-    .unwrap();
-    println!();
     src_ty
         .iter_stack(customs.view_types())
         .zip_eq(dst_ty.iter_stack(customs.view_types()))
@@ -289,7 +273,7 @@ fn register_drops_for_slot_rec(
                 // "ghost" nodes used to track argument order e.g. in a tuple expression
                 register_to(&mut epilogues[*idx]);
             }
-        },
+        }
         BodyDrops::Branch {
             prologues,
             sub_drops,
@@ -327,83 +311,6 @@ fn register_drops_for_slot_rec(
             }
         }
     }
-
-    /*
-    match obligation {
-        LocalLt::Final => unreachable!(),
-
-        LocalLt::Seq(obligation, idx) => {
-            let BodyDrops::LetMany {
-                epilogues,
-                sub_drops,
-            } = drops
-            else {
-                unreachable!()
-            };
-
-            if *idx == sub_drops.len() {
-                // This slot's obligation ends in the return position of a `LetMany`. We don't need
-                // to register any drops. Usually, we defer the final decision about whether to drop
-                // until we've compute the move status in `annot_expr`, but it is convenient to
-                // "short circuit" here.
-                return;
-            }
-
-            if let Some(drops) = sub_drops[*idx].as_mut() {
-                // Since `sub_drops` is `Some`, the obligation points into a `Branch` or `LetMany`.
-                if let BodyDrops::Branch { prologues, .. } = drops {
-                    let LocalLt::Seq(obligation, idx) = &**obligation else {
-                        unreachable!();
-                    };
-                    if *idx == 0 {
-                        // The obligation points to the discriminant of a `Branch`.
-                        for prologue in prologues.iter_mut() {
-                            register_to(prologue);
-                        }
-                    } else {
-                        // The obligation points inside a `Branch` arm.
-                        assert_eq!(*idx, 1);
-                        register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
-                    }
-                } else {
-                    let num_locals = Count::from_value(num_locals.to_value() + idx);
-                    register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
-                }
-            } else {
-                // If there are no sub-drops, then the expression that matches up with this path is
-                // a "leaf" and either `obligation` is `LtLocal::Final` or obligation consists
-                // "ghost" nodes used to track argument order e.g. in a tuple expression
-                register_to(&mut epilogues[*idx]);
-            }
-        }
-
-        LocalLt::Alt(obligations) => {
-            debug_assert!(obligations.iter().any(|x| x.is_some()));
-
-            let BodyDrops::Branch {
-                prologues,
-                sub_drops,
-            } = drops
-            else {
-                unreachable!()
-            };
-
-            for (idx, obligation) in obligations.iter().enumerate() {
-                if let Some(obligation) = obligation {
-                    let drops = sub_drops[idx].as_mut().unwrap();
-                    register_drops_for_slot_rec(drops, num_locals, binding, slot, obligation);
-                } else {
-                    if num_locals.contains(binding) {
-                        // This binding is declared in an enclosing scope and this slot unused in
-                        // this branch (but moved along some other branch), so we drop the slot
-                        // immediately.
-                        register_to(&mut prologues[idx]);
-                    }
-                }
-            }
-        }
-    }
-    */
 }
 
 fn register_drops_for_slot(
@@ -412,6 +319,10 @@ fn register_drops_for_slot(
     slot: &Selector,
     obligation: &LocalLt,
 ) {
+    // print!("binding: {binding:?} obligation: ");
+    // write_lifetime(&mut std::io::stdout(), &Lt::Local(obligation.clone())).unwrap();
+    // println!();
+
     // Every path starts `Seq(0)` since the scope of the function argument is `Seq(1)`
     let LocalLt::Seq(obligation, idx) = obligation else {
         unreachable!()
@@ -457,7 +368,7 @@ fn register_drops_for_expr(
     match expr {
         ob::Expr::Branch(_, arms, _) => {
             for (i, (_, expr)) in arms.iter().enumerate() {
-                let path = path.seq(0).alt(i, arms.len());
+                let path = path.seq(1).alt(i, arms.len());
                 register_drops_for_expr(drops, num_locals, &path, expr);
             }
         }
@@ -528,6 +439,24 @@ fn annot_occur(
 ) -> LocalId {
     let binding = ctx.local_binding_mut(occur.id);
 
+    // print!("binding: {:?} : ", binding.new_id);
+    // write_type(
+    //     &mut std::io::stdout(),
+    //     None,
+    //     &|w, mode| write!(w, "{mode}"),
+    //     &binding.ty,
+    // )
+    // .unwrap();
+    // print!("  ->  ");
+    // write_type(
+    //     &mut std::io::stdout(),
+    //     None,
+    //     &|w, mode| write!(w, "{mode}"),
+    //     &occur.ty,
+    // )
+    // .unwrap();
+    // println!();
+
     let dups = select_dups(customs, path, &binding.ty, &occur.ty, &binding.obligation);
     build_rc_op(RcOp::Retain, dups, binding.new_id, builder);
 
@@ -579,7 +508,7 @@ fn annot_expr(
                 let final_local = annot_expr(
                     customs,
                     ctx,
-                    &path.seq(0).alt(i, n),
+                    &path.seq(1).alt(i, n),
                     expr,
                     &ret_ty,
                     &sub_drops[i],
@@ -808,10 +737,10 @@ pub fn annot_rcs(program: ob::Program, progress: impl ProgressLogger) -> rc::Pro
             .funcs
             .into_iter()
             .map(|(func_id, func)| {
-                println!(
-                    "\n\nannotating function: {:?}\n",
-                    program.func_symbols[func_id]
-                );
+                // println!(
+                //     "\n\nannotating function: {:?}\n",
+                //     program.func_symbols[func_id]
+                // );
                 let annot = annot_func(&program.custom_types, func);
                 progress.update(1);
                 annot
