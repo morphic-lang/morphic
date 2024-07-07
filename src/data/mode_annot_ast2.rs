@@ -27,13 +27,15 @@ pub fn ARG_SCOPE() -> Path {
     Path::root().seq(1)
 }
 
+/// Invariant: `FUNC_BODY_PATH` < `ARG_SCOPE`
 #[allow(non_snake_case)]
 pub fn FUNC_BODY_PATH() -> Path {
-    Path::root().seq(0) // Must have `FUNC_BODY_PATH` < `ARG_SCOPE`
+    Path::root().seq(0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
+    // Do not reorder these variants; it will break the derived `Ord`
     Borrowed,
     Owned,
 }

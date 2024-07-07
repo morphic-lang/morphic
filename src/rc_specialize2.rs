@@ -5,10 +5,10 @@ use crate::data::rc_specialized_ast2 as rc;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::let_builder::{self, FromBindings};
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::{btree_map_refs, FnWrap, MapRef};
+use crate::util::map_ext::{btree_map_refs, FnWrap};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl FromBindings for rc::Expr {
     type LocalId = rc::LocalId;
@@ -24,53 +24,32 @@ type LetManyBuilder = let_builder::LetManyBuilder<rc::Expr>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct TypeSpec {
     id: first_ord::CustomTypeId,
-    subst: BTreeMap<SlotId, Mode>,
-    tail_subst: BTreeMap<SlotId, Mode>,
+    head_sub: IdVec<SlotId, Mode>,
+    tail_sub: IdVec<SlotId, Mode>,
 }
 
 // We only care about storage modes when lowering custom types, so we throw out any other modes
 // to avoid duplicate specializations.
 impl TypeSpec {
     fn new_head<'a>(
-        customs: &annot::CustomTypes,
         id: first_ord::CustomTypeId,
-        osub: impl MapRef<'a, SlotId, Mode>,
-        tsub: impl MapRef<'a, SlotId, Mode>,
+        osub: BTreeMap<SlotId, Mode>,
+        tsub: IdVec<SlotId, Mode>,
     ) -> Self {
-        let head_mode = |slot| *osub.get(slot).unwrap_or_else(|| tsub.get(slot).unwrap());
-        let subst = customs.types[id]
-            .ty
-            .iter_store(customs.view_types())
-            .map(|slot| (*slot, head_mode(slot)))
-            .collect::<BTreeMap<_, _>>();
-        let tail_subst = customs.types[id]
-            .ty
-            .iter_store(customs.view_types())
-            .map(|slot| (*slot, *tsub.get(slot).unwrap()))
-            .collect::<BTreeMap<_, _>>();
+        let head_sub =
+            tsub.map_refs(|slot, _| *osub.get(&slot).unwrap_or_else(|| tsub.get(slot).unwrap()));
         Self {
             id,
-            subst,
-            tail_subst,
+            head_sub,
+            tail_sub: tsub,
         }
     }
 
-    fn new_tail<'a>(
-        customs: &annot::CustomTypes,
-        id: first_ord::CustomTypeId,
-        tsub: impl MapRef<'a, SlotId, Mode>,
-    ) -> Self {
-        let get_custom = FnWrap::wrap(|id| customs.types.get(id).map(|def| &def.ty));
-        let subst = customs.types[id]
-            .ty
-            .iter_store(get_custom)
-            .map(|slot| (*slot, *tsub.get(slot).unwrap()))
-            .collect::<BTreeMap<_, _>>();
-        let tail_subst = subst.clone();
+    fn new_tail<'a>(id: first_ord::CustomTypeId, tsub: IdVec<SlotId, Mode>) -> Self {
         Self {
             id,
-            subst,
-            tail_subst,
+            head_sub: tsub.clone(),
+            tail_sub: tsub,
         }
     }
 }
@@ -93,11 +72,12 @@ impl TypeInstances {
 
     fn force(&mut self, customs: &annot::CustomTypes) {
         while let Some((id, spec)) = self.queue.pop_pending() {
+            // println!("forcing {:?} with spec: {:?}", id, spec);
+
             let ty = lower_custom_type(
                 &mut self.queue,
-                customs,
-                &spec.subst,
-                &spec.tail_subst,
+                &spec.head_sub,
+                &spec.tail_sub,
                 &customs.types[spec.id].ty,
             );
 
@@ -133,49 +113,49 @@ impl TypeInstances {
 
 fn lower_custom_type(
     insts: &mut InstanceQueue<TypeSpec, rc::CustomTypeId>,
-    customs: &annot::CustomTypes,
-    subst: &BTreeMap<SlotId, Mode>,
-    tail_subst: &BTreeMap<SlotId, Mode>,
+    head_sub: &IdVec<SlotId, Mode>,
+    tail_sub: &IdVec<SlotId, Mode>,
     ty: &ModeData<SlotId>,
 ) -> rc::Type {
+    // println!("\nlowering {:?} with subst: {:?}\n", ty, subst);
     match ty {
         ModeData::Bool => rc::Type::Bool,
         ModeData::Num(n) => rc::Type::Num(*n),
         ModeData::Tuple(tys) => rc::Type::Tuple(
             tys.iter()
-                .map(|ty| lower_custom_type(insts, customs, subst, tail_subst, ty))
+                .map(|ty| lower_custom_type(insts, head_sub, tail_sub, ty))
                 .collect(),
         ),
         ModeData::Variants(tys) => rc::Type::Variants(
-            tys.map_refs(|_, ty| lower_custom_type(insts, customs, subst, tail_subst, ty)),
+            tys.map_refs(|_, ty| lower_custom_type(insts, head_sub, tail_sub, ty)),
         ),
         ModeData::SelfCustom(id) => {
-            let spec = TypeSpec::new_tail(customs, *id, tail_subst);
+            let spec = TypeSpec::new_tail(*id, tail_sub.clone());
             rc::Type::Custom(insts.resolve(spec))
         }
-        ModeData::Custom(id, osub, tsub) => {
-            let osub_concrete = btree_map_refs(osub, |_, slot| subst[slot]);
-            let tsub_concrete = tsub.map_refs(|_, slot| subst[slot]);
-            let spec = TypeSpec::new_head(customs, *id, &osub_concrete, &tsub_concrete);
+        ModeData::Custom(id, oslots, tslots) => {
+            assert!(oslots
+                .values()
+                .collect::<BTreeSet<_>>()
+                .is_disjoint(&tslots.values().collect::<BTreeSet<_>>()));
+
+            let osub = btree_map_refs(oslots, |_, slot| head_sub[slot]);
+            let tsub = tslots.map_refs(|_, slot| head_sub[slot]);
+
+            let spec = TypeSpec::new_head(*id, osub, tsub);
             rc::Type::Custom(insts.resolve(spec))
         }
         ModeData::Array(mode, _, item_ty) => rc::Type::Array(
-            subst[mode],
-            Box::new(lower_custom_type(
-                insts, customs, subst, tail_subst, item_ty,
-            )),
+            head_sub[mode],
+            Box::new(lower_custom_type(insts, head_sub, tail_sub, item_ty)),
         ),
         ModeData::HoleArray(mode, _, item_ty) => rc::Type::HoleArray(
-            subst[mode],
-            Box::new(lower_custom_type(
-                insts, customs, subst, tail_subst, item_ty,
-            )),
+            head_sub[mode],
+            Box::new(lower_custom_type(insts, head_sub, tail_sub, item_ty)),
         ),
         ModeData::Boxed(mode, _, item_ty) => rc::Type::Boxed(
-            subst[mode],
-            Box::new(lower_custom_type(
-                insts, customs, subst, tail_subst, item_ty,
-            )),
+            head_sub[mode],
+            Box::new(lower_custom_type(insts, head_sub, tail_sub, item_ty)),
         ),
     }
 }
@@ -185,6 +165,7 @@ fn lower_type(
     customs: &annot::CustomTypes,
     ty: &annot::Type,
 ) -> rc::Type {
+    // println!("\nlowering type {ty:?}\n");
     match ty {
         annot::Type::Bool => rc::Type::Bool,
         annot::Type::Num(n) => rc::Type::Num(*n),
@@ -197,9 +178,9 @@ fn lower_type(
             rc::Type::Variants(tys.map_refs(|_, ty| lower_type(insts, customs, ty)))
         }
         annot::Type::SelfCustom(_) => unreachable!(),
-        annot::Type::Custom(id, osub, tsub) => {
-            rc::Type::Custom(insts.resolve(customs, TypeSpec::new_head(customs, *id, osub, tsub)))
-        }
+        annot::Type::Custom(id, osub, tsub) => rc::Type::Custom(
+            insts.resolve(customs, TypeSpec::new_head(*id, osub.clone(), tsub.clone())),
+        ),
         annot::Type::Array(mode, _, item_ty) => {
             rc::Type::Array(*mode, Box::new(lower_type(insts, customs, &*item_ty)))
         }
@@ -436,6 +417,10 @@ fn lower_expr(
         annot::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
                 for (binding_ty, expr) in bindings {
+                    // print!("%{} : ", ctx.len());
+                    // write_type(&mut std::io::stdout(), None, &write_mode, binding_ty).unwrap();
+                    // println!(" = {expr:?}");
+
                     let low_ty = lower_type(insts, customs, binding_ty);
 
                     let final_local =
@@ -614,9 +599,15 @@ pub fn rc_specialize(
 ) -> rc::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
+    // for (id, ty) in &program.custom_types.types {
+    //     println!("{id:?}: {:?} = {ty:?}", &program.custom_type_symbols[id]);
+    // }
+
     let mut insts = TypeInstances::new();
     let mut funcs = IdVec::new();
     for (id, func) in &program.funcs {
+        // println!("\n\nSpecializing function: {}\n", func_renderer.render(id));
+
         let new_func = lower_func(&program.custom_types, &program.funcs, &mut insts, &func);
         let pushed_id = funcs.push(new_func);
         debug_assert_eq!(pushed_id, id);
@@ -683,10 +674,7 @@ mod tests {
         let osub = map! [ SlotId(0) => Mode::Borrowed ];
         let tsub = IdVec::from_vec(vec![Mode::Owned, Mode::Owned, Mode::Owned]);
         let mut insts = TypeInstances::new();
-        insts.resolve(
-            &customs,
-            TypeSpec::new_head(&customs, CustomTypeId(0), &osub, &tsub),
-        );
+        insts.resolve(&customs, TypeSpec::new_head(CustomTypeId(0), osub, tsub));
 
         let expected_head = rc::Type::Variants(IdVec::from_vec(vec![
             rc::Type::Tuple(vec![]),

@@ -691,89 +691,83 @@ fn unfold_overlay(
 
 fn unfold_lts<L: Clone>(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    self_sub: &BTreeMap<SlotId, L>,
-    lts: &LtData<L>,
+    lsub: &BTreeMap<SlotId, L>,
+    ty: &LtData<SlotId>,
 ) -> LtData<L> {
-    match lts {
+    match ty {
         LtData::Bool => LtData::Bool,
         LtData::Num(num_ty) => LtData::Num(*num_ty),
-        LtData::Tuple(lts) => LtData::Tuple(
-            lts.iter()
-                .map(|lt| unfold_lts(customs, self_sub, lt))
-                .collect(),
-        ),
-        LtData::Variants(lts) => {
-            LtData::Variants(lts.map_refs(|_, lt| unfold_lts(customs, self_sub, lt)))
+        LtData::Tuple(ty) => {
+            LtData::Tuple(ty.iter().map(|ty| unfold_lts(customs, lsub, ty)).collect())
         }
-        LtData::SelfCustom(id) => LtData::Custom(*id, self_sub.clone()),
-        LtData::Custom(id, sub) => LtData::Custom(*id, sub.clone()),
-        LtData::Array(lt, item) => {
-            LtData::Array(lt.clone(), Box::new(unfold_lts(customs, self_sub, item)))
+        LtData::Variants(ty) => {
+            LtData::Variants(ty.map_refs(|_, ty| unfold_lts(customs, lsub, ty)))
         }
-        LtData::HoleArray(lt, item) => {
-            LtData::HoleArray(lt.clone(), Box::new(unfold_lts(customs, self_sub, item)))
+        LtData::Custom(id, lslots) => {
+            LtData::Custom(*id, btree_map_refs(lslots, |_, slot| lsub[slot].clone()))
         }
-        LtData::Boxed(lt, item) => {
-            LtData::Boxed(lt.clone(), Box::new(unfold_lts(customs, self_sub, item)))
+        LtData::SelfCustom(id) => LtData::Custom(*id, lsub.clone()),
+        LtData::Array(slot, ty) => {
+            let ty_unfold = unfold_lts(customs, lsub, ty);
+            LtData::Array(lsub[slot].clone(), Box::new(ty_unfold))
+        }
+        LtData::HoleArray(slot, ty) => {
+            let ty_unfold = unfold_lts(customs, lsub, ty);
+            LtData::HoleArray(lsub[slot].clone(), Box::new(ty_unfold))
+        }
+        LtData::Boxed(slot, ty) => {
+            let ty_unfold = unfold_lts(customs, lsub, ty);
+            LtData::Boxed(lsub[slot].clone(), Box::new(ty_unfold))
         }
     }
 }
 
 fn unfold_modes(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    extracted: &BTreeMap<SlotId, ModeVar>,
-    ty_orig: &IdVec<SlotId, ModeVar>,
-    ov_orig: &BTreeMap<SlotId, ModeVar>,
-    ty: &ModeData<ModeVar>,
+    osub: &BTreeMap<SlotId, ModeVar>,
+    tsub: &IdVec<SlotId, ModeVar>,
+    ty: &ModeData<SlotId>,
 ) -> ModeData<ModeVar> {
+    let subst = |var| osub.get(&var).copied().unwrap_or_else(|| tsub[var]);
     match ty {
         ModeData::Bool => ModeData::Bool,
         ModeData::Num(num_ty) => ModeData::Num(*num_ty),
-        ModeData::Tuple(tys) => ModeData::Tuple(
-            tys.iter()
-                .map(|ty| unfold_modes(customs, extracted, ty_orig, ov_orig, ty))
+        ModeData::Tuple(ty) => ModeData::Tuple(
+            ty.iter()
+                .map(|ty| unfold_modes(customs, osub, tsub, ty))
                 .collect(),
         ),
-        ModeData::Variants(tys) => ModeData::Variants(
-            tys.map_refs(|_, ty| unfold_modes(customs, extracted, ty_orig, ov_orig, ty)),
+        ModeData::Variants(ty) => {
+            ModeData::Variants(ty.map_refs(|_, ty| unfold_modes(customs, osub, tsub, ty)))
+        }
+        ModeData::Custom(id, oslots, tslots) => ModeData::Custom(
+            *id,
+            btree_map_refs(oslots, |_, &slot| subst(slot)),
+            tslots.map_refs(|_, &slot| subst(slot)),
         ),
-        ModeData::SelfCustom(id) => ModeData::Custom(*id, extracted.clone(), ty_orig.clone()),
-        ModeData::Custom(id, osub, tsub) => ModeData::Custom(*id, osub.clone(), tsub.clone()),
-        ModeData::Array(m, ov, ty) => ModeData::Array(
-            *m,
-            unfold_overlay(customs, ov_orig, ov),
-            Box::new(unfold_modes(customs, extracted, ty_orig, ov_orig, ty)),
-        ),
-        ModeData::HoleArray(m, ov, ty) => ModeData::HoleArray(
-            *m,
-            unfold_overlay(customs, ov_orig, ov),
-            Box::new(unfold_modes(customs, extracted, ty_orig, ov_orig, ty)),
-        ),
-        ModeData::Boxed(m, ov, ty) => ModeData::Boxed(
-            *m,
-            unfold_overlay(customs, ov_orig, ov),
-            Box::new(unfold_modes(customs, extracted, ty_orig, ov_orig, ty)),
-        ),
+        ModeData::SelfCustom(id) => ModeData::Custom(*id, osub.clone(), tsub.clone()),
+        ModeData::Array(slot, oslots, ty) => {
+            let slot_unfold = subst(*slot);
+            let ov_unfold = oslots.iter().copied().map(subst).collect_overlay(oslots);
+            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
+            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
+            ModeData::Array(slot_unfold, ov_unfold, Box::new(ty_unfold))
+        }
+        ModeData::HoleArray(slot, oslots, ty) => {
+            let slot_unfold = subst(*slot);
+            let ov_unfold = oslots.iter().copied().map(subst).collect_overlay(oslots);
+            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
+            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
+            ModeData::HoleArray(slot_unfold, ov_unfold, Box::new(ty_unfold))
+        }
+        ModeData::Boxed(slot, oslots, ty) => {
+            let slot_unfold = subst(*slot);
+            let ov_unfold = oslots.iter().copied().map(subst).collect_overlay(oslots);
+            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
+            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
+            ModeData::Boxed(slot_unfold, ov_unfold, Box::new(ty_unfold))
+        }
     }
-}
-
-fn unfold_custom<L: Clone>(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    msub: &IdVec<SlotId, ModeVar>,
-    lsub: &BTreeMap<SlotId, L>,
-    osub: &BTreeMap<SlotId, ModeVar>,
-    id: CustomTypeId,
-) -> annot::Type<ModeVar, L> {
-    let custom = &customs[id];
-    let folded = custom.ty.hydrate(lsub, msub);
-    let extracted = custom
-        .ov_slots
-        .iter()
-        .map(|&key| (key, msub[key]))
-        .collect();
-    let unfolded_lts = unfold_lts(customs, lsub, &folded.lts());
-    let unfolded_ms = unfold_modes(customs, &extracted, msub, osub, &folded.modes());
-    annot::Type::new(unfolded_lts, unfolded_ms)
 }
 
 fn instantiate_overlay<M>(constrs: &mut ConstrGraph, ov: &Overlay<M>) -> Overlay<ModeVar> {
@@ -1327,7 +1321,6 @@ fn instantiate_expr(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     sigs: SignatureAssumptions,
     constrs: &mut ConstrGraph,
-    lt_count: &mut Count<LtParam>,
     ctx: &ImmutContext,
     scopes: &mut LocalContext<LocalId, annot::Path>,
     path: annot::Path,
@@ -1386,7 +1379,6 @@ fn instantiate_expr(
                     customs,
                     sigs,
                     constrs,
-                    lt_count,
                     ctx.as_untracked(),
                     scopes,
                     // The discriminate happens at `path.seq(1)`
@@ -1482,7 +1474,6 @@ fn instantiate_expr(
                     customs,
                     sigs,
                     constrs,
-                    lt_count,
                     ctx.as_untracked(),
                     scopes,
                     path.seq(i),
@@ -1674,7 +1665,7 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapCustom(custom_id, content) => {
-            let (M::Custom(fut_id1, fut_osub, fut_msub), L::Custom(fut_id2, fut_lsub)) =
+            let (M::Custom(fut_id1, fut_osub, fut_tsub), L::Custom(fut_id2, fut_lsub)) =
                 (fut_modes, fut_lts)
             else {
                 unreachable!();
@@ -1683,15 +1674,10 @@ fn instantiate_expr(
             debug_assert_eq!(*custom_id, *fut_id1);
             debug_assert_eq!(*custom_id, *fut_id2);
 
-            let unfolded_ty = unfold_custom(customs, fut_msub, fut_lsub, fut_osub, *custom_id);
-            let unfolded_ov = unfold_overlay(
-                customs,
-                &fut_osub,
-                &customs[*custom_id].ov.hydrate(fut_osub),
-            );
+            let unfolded_modes =
+                unfold_modes(customs, fut_osub, fut_tsub, customs[*custom_id].ty.modes());
+            let unfolded_lts = unfold_lts(customs, fut_lsub, customs[*custom_id].ty.lts());
 
-            let content_modes = unfolded_ty.modes().apply_overlay(&unfolded_ov);
-            let content_lts = unfolded_ty.lts();
             let content_occur = instantiate_occur(
                 strategy,
                 customs,
@@ -1699,8 +1685,8 @@ fn instantiate_expr(
                 scopes,
                 constrs,
                 *content,
-                &content_modes,
-                content_lts,
+                &unfolded_modes,
+                &unfolded_lts,
             );
 
             annot::Expr::WrapCustom(*custom_id, content_occur)
@@ -1709,49 +1695,33 @@ fn instantiate_expr(
         TailExpr::UnwrapCustom(custom_id, folded) => {
             let custom = &customs[custom_id];
 
-            let folded_ov = custom
-                .ov_slots
-                .iter()
-                .map(|_| constrs.fresh_var())
-                .collect_overlay(&custom.ov);
             let folded_osub = custom
                 .ov_slots
                 .iter()
-                .zip(folded_ov.iter())
-                .map(|(slot, m)| (*slot, *m))
+                .map(|&slot| (slot, constrs.fresh_var()))
                 .collect();
+            let folded_tsub = IdVec::from_count_with(custom.slot_count, |_| constrs.fresh_var());
+            let unfolded_modes = unfold_modes(
+                customs,
+                &folded_osub,
+                &folded_tsub,
+                customs[*custom_id].ty.modes(),
+            );
 
-            let folded_modes = custom
-                .ty
-                .modes()
-                .iter()
-                .map(|_| constrs.fresh_var())
-                .collect_mode_data(custom.ty.modes());
-            let folded_msub = IdVec::from_vec(folded_modes.iter().copied().collect());
+            mode_bind(constrs, fut_modes, &unfolded_modes);
 
+            let mut lt_count = Count::new();
             let folded_lsub_fresh = custom
                 .lt_slots
                 .iter()
                 .map(|slot| (*slot, lt_count.inc()))
                 .collect();
-
-            let raw_unfolded_ty = unfold_custom(
-                customs,
-                &folded_msub,
-                &folded_lsub_fresh,
-                &folded_osub,
-                *custom_id,
-            );
-            let unfolded_ov = unfold_overlay(customs, &folded_osub, &folded_ov);
-            let unfolded_modes = raw_unfolded_ty.modes().apply_overlay(&unfolded_ov);
-            let unfolded_lts = raw_unfolded_ty.lts();
-
-            for (m1, m2) in unfolded_modes.iter().zip_eq(fut_modes.iter()) {
-                constrs.require_eq(*m1, *m2);
-            }
+            let unfolded_lts =
+                unfold_lts(customs, &folded_lsub_fresh, customs[*custom_id].ty.lts());
 
             let lt_subst = lt_bind(&unfolded_lts, fut_lts);
             let folded_lsub = btree_map_refs(&folded_lsub_fresh, |_, lt| lt_subst[lt].clone());
+
             let folded_occur = instantiate_occur(
                 strategy,
                 customs,
@@ -1759,7 +1729,7 @@ fn instantiate_expr(
                 scopes,
                 constrs,
                 *folded,
-                &ModeData::Custom(*custom_id, folded_osub, folded_msub),
+                &ModeData::Custom(*custom_id, folded_osub, folded_tsub),
                 &LtData::Custom(*custom_id, folded_lsub),
             );
 
@@ -2129,7 +2099,6 @@ fn instantiate_scc(
                         customs,
                         assumptions,
                         &mut constrs,
-                        &mut next_lt,
                         &ctx,
                         &mut scopes,
                         annot::FUNC_BODY_PATH(),

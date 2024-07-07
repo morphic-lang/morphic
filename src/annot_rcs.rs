@@ -5,8 +5,6 @@ use crate::data::mode_annot_ast2::{
 };
 use crate::data::obligation_annot_ast::{self as ob, StackLt};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
-use crate::pretty_print::borrow_common::{write_lifetime, write_path};
-use crate::pretty_print::obligation_annot::write_type;
 use crate::util::iter::IterExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
@@ -736,7 +734,7 @@ pub fn annot_rcs(program: ob::Program, progress: impl ProgressLogger) -> rc::Pro
         program
             .funcs
             .into_iter()
-            .map(|(func_id, func)| {
+            .map(|(_func_id, func)| {
                 // println!(
                 //     "\n\nannotating function: {:?}\n",
                 //     program.func_symbols[func_id]

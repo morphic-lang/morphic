@@ -7,14 +7,13 @@ use crate::data::mode_annot_ast2::{
 use crate::data::obligation_annot_ast::{
     self as ob, ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
 };
-use crate::pretty_print::borrow_common::{write_lifetime, write_path};
-use crate::pretty_print::obligation_annot::write_overlay;
+use crate::pretty_print::utils::FuncRenderer;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
 use crate::util::local_context;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
-use id_collections::{IdMap, IdVec};
+use id_collections::IdVec;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct FuncSpec {
@@ -85,6 +84,7 @@ fn add_unused_local(ctx: &mut LocalContext, ty: ModeData<Mode>) -> flat::LocalId
 fn annot_expr(
     customs: &annot::CustomTypes,
     funcs: &IdVec<first_ord::CustomFuncId, annot::FuncDef>,
+    func_renderer: &FuncRenderer<first_ord::CustomFuncId>,
     insts: &mut FuncInstances,
     inst_params: &IdVec<ModeParam, Mode>,
     path: &Path,
@@ -121,18 +121,21 @@ fn annot_expr(
             let func = &funcs[*func_id];
             let arg = handle_occur(ctx, path, arg);
 
-            let mut call_params = IdMap::new();
+            // Mode inference solves for all functions in an SCC jointly and annotates each function
+            // with the complete set of signature vairables for the SCC. Therefore, in general,
+            // `arg.ty` and `ret_ty` constrain only a subset of the parameters. It suffices to let
+            // the rest of the parameters be `Mode::Borrow`, which will ultimately result in them
+            // being assigned their minimal solutions according to the signature constraints.
+            let mut call_params =
+                IdVec::from_count_with(func.constrs.sig.count(), |_| Mode::Borrowed);
+
             for (param, value) in func.arg_ty.modes().iter().zip_eq(arg.ty.iter()) {
-                call_params.insert(*param, *value);
+                call_params[*param] = *value;
             }
             for (param, value) in func.ret_ty.modes().iter().zip_eq(ret_ty.iter()) {
-                call_params.insert(*param, *value);
+                call_params[*param] = *value;
             }
 
-            println!("sig: {:?}", func.constrs.sig.count());
-            println!("call_params: {:?}", call_params);
-
-            let call_params = call_params.to_id_vec(func.constrs.sig.count());
             let call_subst = func
                 .constrs
                 .sig
@@ -157,6 +160,7 @@ fn annot_expr(
                         annot_expr(
                             customs,
                             funcs,
+                            func_renderer,
                             insts,
                             inst_params,
                             &path.seq(1).alt(i, num_arms),
@@ -211,6 +215,7 @@ fn annot_expr(
                 let new_expr = annot_expr(
                     customs,
                     funcs,
+                    func_renderer,
                     insts,
                     inst_params,
                     &path.seq(i),
@@ -354,6 +359,7 @@ fn annot_expr(
 fn annot_func(
     customs: &annot::CustomTypes,
     funcs: &IdVec<first_ord::CustomFuncId, annot::FuncDef>,
+    func_renderer: &FuncRenderer<first_ord::CustomFuncId>,
     func_insts: &mut FuncInstances,
     inst_params: &IdVec<ModeParam, Mode>,
     id: first_ord::CustomFuncId,
@@ -370,6 +376,7 @@ fn annot_func(
     let body = annot_expr(
         customs,
         funcs,
+        func_renderer,
         func_insts,
         inst_params,
         &annot::FUNC_BODY_PATH(),
@@ -404,12 +411,13 @@ pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger)
 
     let mut funcs = IdVec::new();
     let mut func_symbols = IdVec::new();
-    while let Some((new_id, spec)) = func_insts.pop_pending() {
-        println!("func {:?}", program.func_symbols[spec.old_id]);
 
+    let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
+    while let Some((new_id, spec)) = func_insts.pop_pending() {
         let annot = annot_func(
             &program.custom_types,
             &program.funcs,
+            &func_renderer,
             &mut func_insts,
             &spec.subst,
             spec.old_id,
