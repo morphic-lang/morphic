@@ -98,6 +98,7 @@ macro_rules! set {
     ($($elem:expr),* $(,)?) => {
         {
             use std::collections::BTreeSet;
+            #[allow(unused_mut)] // compiler bug (?)
             let mut set = BTreeSet::new();
             $(set.insert($elem);)*
             set

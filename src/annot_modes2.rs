@@ -663,29 +663,30 @@ fn lt_equiv(lts1: &LtData<Lt>, lts2: &LtData<Lt>) -> bool {
     lts1.iter().zip_eq(lts2.iter()).all(|(lt1, lt2)| lt1 == lt2)
 }
 
-/// Computes the nominal equivalent of `o'[a |-> mu a. o]` where `o'` is `overlay` and `o` is
-/// `self_sub`.
 fn unfold_overlay(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    self_sub: &BTreeMap<SlotId, ModeVar>,
-    overlay: &Overlay<ModeVar>,
+    self_osub: &BTreeMap<SlotId, ModeVar>,
+    rest_sub: &IdVec<SlotId, ModeVar>,
+    ov: &Overlay<SlotId>,
 ) -> Overlay<ModeVar> {
-    match overlay {
+    match ov {
         Overlay::Bool => Overlay::Bool,
         Overlay::Num(num_ty) => Overlay::Num(*num_ty),
-        Overlay::Tuple(os) => Overlay::Tuple(
-            os.iter()
-                .map(|o| unfold_overlay(customs, self_sub, o))
+        Overlay::Tuple(ovs) => Overlay::Tuple(
+            ovs.iter()
+                .map(|ov| unfold_overlay(customs, self_osub, rest_sub, ov))
                 .collect(),
         ),
-        Overlay::Variants(os) => {
-            Overlay::Variants(os.map_refs(|_, o| unfold_overlay(customs, self_sub, o)))
+        Overlay::Variants(ovs) => Overlay::Variants(
+            ovs.map_refs(|_, ov| unfold_overlay(customs, self_osub, rest_sub, ov)),
+        ),
+        Overlay::SelfCustom(id) => Overlay::Custom(*id, self_osub.clone()),
+        Overlay::Custom(id, oslots) => {
+            Overlay::Custom(*id, btree_map_refs(oslots, |_, slot| rest_sub[slot]))
         }
-        Overlay::SelfCustom(id) => Overlay::Custom(*id, self_sub.clone()),
-        Overlay::Custom(id, osub) => Overlay::Custom(*id, osub.clone()),
-        Overlay::Array(m) => Overlay::Array(*m),
-        Overlay::HoleArray(m) => Overlay::HoleArray(*m),
-        Overlay::Boxed(m) => Overlay::Boxed(*m),
+        Overlay::Array(m) => Overlay::Array(rest_sub[m]),
+        Overlay::HoleArray(m) => Overlay::HoleArray(rest_sub[m]),
+        Overlay::Boxed(m) => Overlay::Boxed(rest_sub[m]),
     }
 }
 
@@ -722,6 +723,11 @@ fn unfold_lts<L: Clone>(
     }
 }
 
+// This unfolding operation is imprecise in that if the access modes on the output end up required
+// to be owned then the head modes on the input will end up required to be owned as well, even if we
+// should be able to borrow at the head. The problem arises from our use of `osub` in the places
+// marked "HERE". Fixing this imprecision requires reworking overlays on customs. We just don't have
+// enough information to do the "right" thing as it stands.
 fn unfold_modes(
     customs: &IdVec<CustomTypeId, annot::TypeDef>,
     osub: &BTreeMap<SlotId, ModeVar>,
@@ -746,23 +752,23 @@ fn unfold_modes(
             tslots.map_refs(|_, &slot| subst(slot)),
         ),
         ModeData::SelfCustom(id) => ModeData::Custom(*id, osub.clone(), tsub.clone()),
-        ModeData::Array(slot, oslots, ty) => {
+        ModeData::Array(slot, ov, ty) => {
             let slot_unfold = subst(*slot);
-            let ov_unfold = oslots.iter().copied().map(subst).collect_overlay(oslots);
+            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
             let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
             let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
             ModeData::Array(slot_unfold, ov_unfold, Box::new(ty_unfold))
         }
-        ModeData::HoleArray(slot, oslots, ty) => {
+        ModeData::HoleArray(slot, ov, ty) => {
             let slot_unfold = subst(*slot);
-            let ov_unfold = oslots.iter().copied().map(subst).collect_overlay(oslots);
+            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
             let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
             let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
             ModeData::HoleArray(slot_unfold, ov_unfold, Box::new(ty_unfold))
         }
-        ModeData::Boxed(slot, oslots, ty) => {
+        ModeData::Boxed(slot, ov, ty) => {
             let slot_unfold = subst(*slot);
-            let ov_unfold = oslots.iter().copied().map(subst).collect_overlay(oslots);
+            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
             let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
             let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
             ModeData::Boxed(slot_unfold, ov_unfold, Box::new(ty_unfold))
@@ -945,71 +951,77 @@ impl<'a> SignatureAssumptions<'a> {
 }
 
 mod model {
-    use crate::data::borrow_spec::*;
-
     use super::{ConstrGraph, LocalContext, LocalId, Strategy, TrackedContext};
+    use crate::data::borrow_spec::*;
     use crate::data::first_order_ast::CustomTypeId;
-    use crate::data::mode_annot_ast2::{self as annot, LtData, ModeData};
+    use crate::data::mode_annot_ast2::{
+        self as annot, Lt, LtData, ModeData, ModeVar, Overlay, Type, TypeDef,
+    };
     use crate::util::iter::IterExt;
     use id_collections::{Id, IdMap, IdVec};
     use std::collections::BTreeSet;
 
     #[derive(Clone, Debug)]
+    struct RawSigData {
+        modes: IdMap<ModelMode, Vec<ModeVar>>,
+        lts: IdMap<ModelLt, Vec<Lt>>,
+        tys: IdMap<ModelTVar, Vec<Type<ModeVar, Lt>>>,
+        ovs: IdMap<ModelTVar, Vec<Overlay<ModeVar>>>,
+    }
+
+    #[derive(Clone, Debug)]
     struct SigData {
-        modes: IdMap<ModelMode, annot::ModeVar>,
-        lts: IdMap<ModelLt, annot::Lt>,
-        tys: IdMap<ModelTypeVar, annot::Type<annot::ModeVar, annot::Lt>>,
-        ovs: IdMap<ModelTypeVar, annot::Overlay<annot::ModeVar>>, // only present for item types
+        modes: IdMap<ModelMode, ModeVar>,
+        lts: IdMap<ModelLt, Lt>,
+        tys: IdMap<ModelTVar, Type<ModeVar, Lt>>,
+        ovs: IdMap<ModelTVar, Overlay<ModeVar>>,
     }
 
     /// Fills in `data` by matching the model against `ret_modes` and `ret_lts`.
     fn extract_ret_data(
-        data: &mut SigData,
+        data: &mut RawSigData,
         ret_model: &ModelType,
-        ret_modes: &ModeData<annot::ModeVar>,
-        ret_lts: &LtData<annot::Lt>,
+        ret_modes: &ModeData<ModeVar>,
+        ret_lts: &LtData<Lt>,
     ) {
-        use LtData as L;
-        use ModeData as M;
-        use ModelType as T;
-
-        fn insert<I: Id, V>(map: &mut IdMap<I, V>, id: I, val: V) {
-            debug_assert!(
-                !map.contains_key(id),
-                "duplicate variables are not supported in model return types"
-            );
-            map.insert(id, val);
+        fn insert<I: Id, V>(map: &mut IdMap<I, Vec<V>>, id: I, val: V) {
+            map.entry(id).or_insert_with(Vec::new).push(val);
         }
 
         match (ret_model, ret_modes, ret_lts) {
-            (T::Var(v), ret_modes, ret_lts) => {
-                let ty = annot::Type::new(ret_lts.clone(), ret_modes.clone());
-                insert(&mut data.tys, *v, ty);
+            (ModelType::Var(var), ret_modes, ret_lts) => {
+                let ty = Type::new(ret_lts.clone(), ret_modes.clone());
+                insert(&mut data.tys, *var, ty);
             }
-            (T::Num(n1), M::Num(n2), L::Num(n3)) if n1 == n2 && n1 == n3 => {}
-            (T::Tuple(items1), M::Tuple(items2), L::Tuple(items3)) => {
+            (ModelType::Num(n1), ModeData::Num(n2), LtData::Num(n3)) if n1 == n2 && n1 == n3 => {}
+            (ModelType::Tuple(items1), ModeData::Tuple(items2), LtData::Tuple(items3)) => {
                 for ((item1, item2), item3) in items1.iter().zip_eq(items2).zip_eq(items3) {
                     extract_ret_data(data, item1, item2, item3);
                 }
             }
-            (T::Array(m1, lt1, item1), M::Array(m2, ov, item2), L::Array(lt2, item3))
+            (
+                ModelType::Array(mode_model, lt_model, item_model),
+                ModeData::Array(mode, ov, item_modes),
+                LtData::Array(lt, item_lts),
+            )
             | (
-                T::HoleArray(m1, lt1, item1),
-                M::HoleArray(m2, ov, item2),
-                L::HoleArray(lt2, item3),
+                ModelType::HoleArray(mode_model, lt_model, item_model),
+                ModeData::HoleArray(mode, ov, item_modes),
+                LtData::HoleArray(lt, item_lts),
             ) => {
-                insert(&mut data.modes, *m1, *m2);
-                insert(&mut data.lts, *lt1, lt2.clone());
-                match item1 {
-                    ModelItem::Num(_) => {}
-                    ModelItem::Var(v) => {
-                        let item_ty = annot::Type::new((**item3).clone(), (**item2).clone());
-                        insert(&mut data.ovs, *v, ov.clone());
-                        insert(&mut data.tys, *v, item_ty);
+                insert(&mut data.modes, *mode_model, *mode);
+                insert(&mut data.lts, *lt_model, lt.clone());
+                match &**item_model {
+                    ModelType::Num(_) => {}
+                    ModelType::Var(var) => {
+                        let item_ty = Type::new((**item_lts).clone(), (**item_modes).clone());
+                        insert(&mut data.tys, *var, item_ty);
+                        insert(&mut data.ovs, *var, ov.clone());
                     }
+                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
                 }
             }
-            _ => panic!("type does not match model"),
+            _ => panic!("return type does not match model return type"),
         }
     }
 
@@ -1018,78 +1030,139 @@ mod model {
     /// empty lifetimes where they are not accessed and `path` where they are acessed. If a variable
     /// has already been assigned, e.g. by `extract_ret_data`, it is not overwritten.
     fn extract_arg_data(
-        data: &mut SigData,
-        customs: &IdVec<CustomTypeId, annot::TypeDef>,
+        data: &mut RawSigData,
+        customs: &IdVec<CustomTypeId, TypeDef>,
         constrs: &mut ConstrGraph,
         path: &annot::Path,
         accessed: &BTreeSet<ModelLt>,
         arg_model: &ModelType,
-        arg_modes: &ModeData<annot::ModeVar>,
-        arg_lts: &LtData<annot::Lt>,
+        arg_modes: &ModeData<ModeVar>,
+        arg_lts: &LtData<Lt>,
     ) {
-        use LtData as L;
-        use ModeData as M;
-        use ModelType as T;
+        fn insert<I: Id, V>(map: &mut IdMap<I, Vec<V>>, id: I, mut val: impl FnMut() -> V) {
+            // If the entry already exists, do nothing.
+            map.entry(id).or_insert_with(|| vec![val()]);
+        }
 
         match (arg_model, arg_modes, arg_lts) {
-            (T::Var(v), arg_modes, arg_lts) => {
-                if !data.tys.contains_key(*v) {
-                    data.tys.insert(
-                        *v,
-                        super::instantiate_type_unused(
-                            constrs,
-                            &annot::Type::new(arg_lts.clone(), arg_modes.clone()),
-                        ),
-                    );
-                }
+            (ModelType::Var(var), arg_modes, arg_lts) => {
+                insert(&mut data.tys, *var, || {
+                    super::instantiate_type_unused(
+                        constrs,
+                        &Type::new(arg_lts.clone(), arg_modes.clone()),
+                    )
+                });
             }
-            (T::Num(n1), M::Num(n2), L::Num(n3)) if n1 == n2 && n1 == n3 => {}
-            (T::Tuple(items1), M::Tuple(items2), L::Tuple(items3)) => {
+            (ModelType::Num(n1), ModeData::Num(n2), LtData::Num(n3)) if n1 == n2 && n1 == n3 => {}
+            (ModelType::Tuple(items1), ModeData::Tuple(items2), LtData::Tuple(items3)) => {
                 for ((item1, item2), item3) in items1.iter().zip_eq(items2).zip_eq(items3) {
                     extract_arg_data(data, customs, constrs, path, accessed, item1, item2, item3);
                 }
             }
-            (T::Array(m, lt, item1), M::Array(_, _, item2), L::Array(_, item3))
-            | (T::HoleArray(m, lt, item1), M::HoleArray(_, _, item2), L::HoleArray(_, item3)) => {
-                if !data.modes.contains_key(*m) {
-                    data.modes.insert(*m, constrs.fresh_var());
-                }
-                if !data.lts.contains_key(*lt) {
-                    data.lts.insert(
-                        *lt,
-                        if accessed.contains(lt) {
-                            path.as_lt()
-                        } else {
-                            annot::Lt::Empty
-                        },
-                    );
-                }
-                match item1 {
-                    ModelItem::Num(_) => {}
-                    ModelItem::Var(v) => {
-                        if !data.tys.contains_key(*v) {
-                            assert!(!data.ovs.contains_key(*v));
-                            data.ovs.insert(
-                                *v,
-                                super::instantiate_overlay(constrs, &item2.unapply_overlay()),
-                            );
-                            data.tys.insert(
-                                *v,
-                                super::instantiate_type_unused(
-                                    constrs,
-                                    &annot::Type::new((**item3).clone(), (**item2).clone()),
-                                ),
-                            );
-                        }
+            (
+                ModelType::Array(m, lt, item1),
+                ModeData::Array(_, _, item2),
+                LtData::Array(_, item3),
+            )
+            | (
+                ModelType::HoleArray(m, lt, item1),
+                ModeData::HoleArray(_, _, item2),
+                LtData::HoleArray(_, item3),
+            ) => {
+                insert(&mut data.modes, *m, || constrs.fresh_var());
+                insert(&mut data.lts, *lt, || {
+                    if accessed.contains(lt) {
+                        path.as_lt()
+                    } else {
+                        Lt::Empty
                     }
+                });
+                match &**item1 {
+                    ModelType::Num(_) => {}
+                    ModelType::Var(var) => {
+                        insert(&mut data.tys, *var, || {
+                            super::instantiate_type_unused(
+                                constrs,
+                                &Type::new((**item3).clone(), (**item2).clone()),
+                            )
+                        });
+                        insert(&mut data.ovs, *var, || {
+                            super::instantiate_overlay(constrs, &item2.unapply_overlay())
+                        });
+                    }
+                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
                 }
             }
-            _ => panic!("type does not match model"),
+            _ => panic!("argument type does not match model argument type"),
+        }
+    }
+
+    fn resolve_sig_data(constrs: &mut ConstrGraph, data: RawSigData) -> SigData {
+        let mut res_modes = IdMap::new();
+        let mut res_lts = IdMap::new();
+        let mut res_tys = IdMap::new();
+        let mut res_ovs = IdMap::new();
+
+        for (model, modes) in data.modes {
+            assert!(modes.len() > 0);
+            if modes.len() == 1 {
+                res_modes.insert(model, modes[0]);
+            } else {
+                let res_mode = constrs.fresh_var();
+                for mode in modes {
+                    constrs.require_eq(res_mode, mode);
+                }
+                res_modes.insert(model, res_mode);
+            };
+        }
+
+        for (model, lts) in data.lts {
+            assert_eq!(
+                lts.len(),
+                1,
+                "a lifetime variable should only appear once in a signature model"
+            );
+            res_lts.insert(model, lts[0].clone());
+        }
+
+        for (model, tys) in data.tys {
+            assert!(tys.len() > 0);
+            if tys.len() == 1 {
+                res_tys.insert(model, tys[0].clone());
+            } else {
+                let res_ty = super::instantiate_type_unused(constrs, &tys[0]);
+                for ty in tys {
+                    super::mode_bind(constrs, &res_ty.modes(), &ty.modes());
+                }
+                res_tys.insert(model, res_ty);
+            }
+        }
+
+        for (mode, ovs) in data.ovs {
+            assert!(ovs.len() > 0);
+            if ovs.len() == 1 {
+                res_ovs.insert(mode, ovs[0].clone());
+            } else {
+                let res_ov = super::instantiate_overlay(constrs, &ovs[0]);
+                for ov in ovs {
+                    for (mode1, mode2) in res_ov.iter().zip_eq(ov.iter()) {
+                        constrs.require_eq(*mode1, *mode2);
+                    }
+                }
+                res_ovs.insert(mode, res_ov);
+            }
+        }
+
+        SigData {
+            modes: res_modes,
+            lts: res_lts,
+            tys: res_tys,
+            ovs: res_ovs,
         }
     }
 
     /// Produces `ModeData` from a model by filling it in with modes from `data`.
-    fn instantiate_model_modes(data: &SigData, model: &ModelType) -> ModeData<annot::ModeVar> {
+    fn instantiate_model_modes(data: &SigData, model: &ModelType) -> ModeData<ModeVar> {
         match model {
             ModelType::Var(v) => data.tys[v].modes().clone(),
             ModelType::Num(n) => ModeData::Num(*n),
@@ -1100,16 +1173,18 @@ mod model {
                     .collect(),
             ),
             ModelType::Array(m, _, item) => {
-                let (ov, item) = match item {
-                    ModelItem::Num(n) => (annot::Overlay::Num(*n), annot::ModeData::Num(*n)),
-                    ModelItem::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
+                let (ov, item) = match &**item {
+                    ModelType::Num(n) => (Overlay::Num(*n), annot::ModeData::Num(*n)),
+                    ModelType::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
+                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
                 };
                 ModeData::Array(data.modes[m], ov, Box::new(item))
             }
             ModelType::HoleArray(m, _, item) => {
-                let (ov, item) = match item {
-                    ModelItem::Num(n) => (annot::Overlay::Num(*n), annot::ModeData::Num(*n)),
-                    ModelItem::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
+                let (ov, item) = match &**item {
+                    ModelType::Num(n) => (Overlay::Num(*n), annot::ModeData::Num(*n)),
+                    ModelType::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
+                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
                 };
                 ModeData::HoleArray(data.modes[m], ov, Box::new(item))
             }
@@ -1117,7 +1192,7 @@ mod model {
     }
 
     /// Produces `LtData` from a model by filling it in with lifetimes from `data`.
-    fn instantiate_model_lts(data: &SigData, model: &ModelType) -> LtData<annot::Lt> {
+    fn instantiate_model_lts(data: &SigData, model: &ModelType) -> LtData<Lt> {
         match model {
             ModelType::Var(v) => data.tys[v].lts().clone(),
             ModelType::Num(n) => LtData::Num(*n),
@@ -1128,9 +1203,10 @@ mod model {
                     .collect(),
             ),
             ModelType::Array(_, lt, item) | ModelType::HoleArray(_, lt, item) => {
-                let item = match item {
-                    ModelItem::Num(n) => annot::LtData::Num(*n),
-                    ModelItem::Var(v) => data.tys[v].lts().clone(),
+                let item = match &**item {
+                    ModelType::Num(n) => LtData::Num(*n),
+                    ModelType::Var(v) => data.tys[v].lts().clone(),
+                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
                 };
                 LtData::Array(data.lts[lt].clone(), Box::new(item))
             }
@@ -1146,22 +1222,19 @@ mod model {
     ///   in `sig.accessed` and the empty lifetime otherwise.
     /// - Any type variables not present in the return are assigned fresh, unconstrained, unused
     ///   types (and overlays) of the correct shape.
-    ///
-    /// NOTE: we currently do not support duplicate modes, lifetimes, or type variables in the
-    /// return, though such an extension would be straightforward.
     pub fn instantiate_model(
         sig: &BuiltinSig,
         strategy: Strategy,
-        customs: &IdVec<CustomTypeId, annot::TypeDef>,
+        customs: &IdVec<CustomTypeId, TypeDef>,
         constrs: &mut ConstrGraph,
         ctx: &mut TrackedContext,
         scopes: &mut LocalContext<LocalId, annot::Path>,
         path: &annot::Path,
         args: &[LocalId],
-        ret_modes: &ModeData<annot::ModeVar>,
-        ret_lts: &LtData<annot::Lt>,
-    ) -> Vec<annot::Occur<annot::ModeVar, annot::Lt>> {
-        let mut data = SigData {
+        ret_modes: &ModeData<ModeVar>,
+        ret_lts: &LtData<Lt>,
+    ) -> Vec<annot::Occur<ModeVar, Lt>> {
+        let mut data = RawSigData {
             modes: IdMap::new(),
             lts: IdMap::new(),
             tys: IdMap::new(),
@@ -1169,6 +1242,7 @@ mod model {
         };
 
         extract_ret_data(&mut data, &sig.ret, ret_modes, ret_lts);
+
         for (i, arg) in args.iter().enumerate() {
             let ty = ctx.local_binding(*arg);
             extract_arg_data(
@@ -1182,6 +1256,8 @@ mod model {
                 ty.lts(),
             );
         }
+
+        let data = resolve_sig_data(constrs, data);
 
         for m in &sig.owned {
             super::require_owned(constrs, data.modes[m]);
@@ -1707,6 +1783,37 @@ fn instantiate_expr(
                 &folded_tsub,
                 customs[*custom_id].ty.modes(),
             );
+
+            println!(
+                "custom_id: {:?} {:?} {:?}",
+                custom_id,
+                custom.ov_slots,
+                custom.ov.iter().collect::<Vec<_>>()
+            );
+            crate::pretty_print::obligation_annot::write_type(
+                &mut std::io::stdout(),
+                None,
+                &|w, var: &SlotId| write!(w, "%{}", var.0),
+                customs[*custom_id].ty.modes(),
+            )
+            .unwrap();
+            println!();
+            crate::pretty_print::obligation_annot::write_type(
+                &mut std::io::stdout(),
+                None,
+                &|w, var: &ModeVar| write!(w, "?{}", var.0),
+                fut_modes,
+            )
+            .unwrap();
+            println!();
+            crate::pretty_print::obligation_annot::write_type(
+                &mut std::io::stdout(),
+                None,
+                &|w, var: &ModeVar| write!(w, "?{}", var.0),
+                &unfolded_modes,
+            )
+            .unwrap();
+            println!();
 
             mode_bind(constrs, fut_modes, &unfolded_modes);
 
