@@ -15,7 +15,7 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
-use crate::util::map_ext::{btree_map_refs, FnWrap, MapRef};
+use crate::util::collection_ext::{BTreeMapExt, FnWrap, MapRef};
 use crate::util::non_empty_set::NonEmptySet;
 use id_collections::{id_type, Count, IdVec};
 use std::collections::{BTreeMap, BTreeSet};
@@ -366,13 +366,12 @@ impl Overlay<SlotId> {
             Overlay::Tuple(ovs) => Overlay::Tuple(ovs.iter().map(|ov| ov.hydrate(subst)).collect()),
             Overlay::Variants(ovs) => Overlay::Variants(ovs.map_refs(|_, ov| ov.hydrate(subst))),
             Overlay::SelfCustom(id) => Overlay::SelfCustom(*id),
-            Overlay::Custom(id, old_subst) => Overlay::Custom(
-                *id,
-                btree_map_refs(old_subst, |_, slot| subst.get(slot).unwrap().clone()),
-            ),
-            Overlay::Array(slot) => Overlay::Array(subst.get(slot).unwrap().clone()),
-            Overlay::HoleArray(slot) => Overlay::HoleArray(subst.get(slot).unwrap().clone()),
-            Overlay::Boxed(slot) => Overlay::Boxed(subst.get(slot).unwrap().clone()),
+            Overlay::Custom(id, old_subst) => {
+                Overlay::Custom(*id, old_subst.map_refs(|_, slot| subst.get(slot).clone()))
+            }
+            Overlay::Array(slot) => Overlay::Array(subst.get(slot).clone()),
+            Overlay::HoleArray(slot) => Overlay::HoleArray(subst.get(slot).clone()),
+            Overlay::Boxed(slot) => Overlay::Boxed(subst.get(slot).clone()),
         }
     }
 }
@@ -413,64 +412,23 @@ impl<T> Overlay<T> {
             Overlay::Boxed(_) => OverlayShape::Boxed,
         }
     }
-
-    /// Returns true if the overlay is zero-sized, i.e. it does not contain any data.
-    pub fn is_zero_sized<'a>(
-        &self,
-        customs: impl MapRef<'a, CustomTypeId, Overlay<SlotId>>,
-    ) -> bool {
-        fn visit<'a, T>(
-            customs: impl MapRef<'a, CustomTypeId, Overlay<SlotId>>,
-            visited: &mut BTreeSet<CustomTypeId>,
-            this: &Overlay<T>,
-        ) -> bool {
-            match this {
-                Overlay::Bool => false,
-                Overlay::Num(_) => false,
-                Overlay::Tuple(ovs) => ovs.iter().all(|ov| visit(customs, visited, ov)),
-                Overlay::Variants(ovs) => ovs.values().all(|ov| visit(customs, visited, ov)),
-                Overlay::SelfCustom(id) | Overlay::Custom(id, _) => {
-                    if visited.contains(id) {
-                        // It's OK to return true here because if the answer was false, we caught it
-                        // when we actually visited the type.
-                        true
-                    } else {
-                        visited.insert(*id);
-                        visit(customs, visited, customs.get(id).unwrap())
-                    }
-                }
-                Overlay::Array(_) => false,
-                Overlay::HoleArray(_) => false,
-                Overlay::Boxed(_) => false,
-            }
-        }
-
-        // TODO: maybe it would be cleaner to track type SCCs in `CustomTypes`
-        let mut visited = BTreeSet::new();
-        visit(customs, &mut visited, self)
-    }
-}
-
-pub trait CollectOverlay<T> {
-    fn collect_overlay<U>(self, orig: &Overlay<U>) -> Overlay<T>;
-}
-
-impl<T, J: Iterator<Item = T>> CollectOverlay<T> for J {
-    fn collect_overlay<U>(mut self, orig: &Overlay<U>) -> Overlay<T> {
-        collect_overlay(&mut self, orig)
-    }
 }
 
 // Must expect the order produced by `Overlay::iter`
-fn collect_overlay<T, U>(iter: &mut impl Iterator<Item = T>, orig: &Overlay<U>) -> Overlay<T> {
-    match orig {
+fn collect_overlay_impl<T, U>(
+    iter: &mut impl Iterator<Item = T>,
+    shape: &Overlay<U>,
+) -> Overlay<T> {
+    match shape {
         Overlay::Bool => Overlay::Bool,
         Overlay::Num(n) => Overlay::Num(*n),
-        Overlay::Tuple(ovs) => {
-            Overlay::Tuple(ovs.iter().map(|ov| collect_overlay(iter, ov)).collect())
-        }
+        Overlay::Tuple(ovs) => Overlay::Tuple(
+            ovs.iter()
+                .map(|ov| collect_overlay_impl(iter, ov))
+                .collect(),
+        ),
         Overlay::Variants(ovs) => {
-            Overlay::Variants(ovs.map_refs(|_, ov| collect_overlay(iter, ov)))
+            Overlay::Variants(ovs.map_refs(|_, ov| collect_overlay_impl(iter, ov)))
         }
         Overlay::SelfCustom(id) => Overlay::SelfCustom(*id),
         Overlay::Custom(id, subst) => {
@@ -479,6 +437,16 @@ fn collect_overlay<T, U>(iter: &mut impl Iterator<Item = T>, orig: &Overlay<U>) 
         Overlay::Array(_) => Overlay::Array(iter.next().unwrap()),
         Overlay::HoleArray(_) => Overlay::HoleArray(iter.next().unwrap()),
         Overlay::Boxed(_) => Overlay::Boxed(iter.next().unwrap()),
+    }
+}
+
+pub trait CollectOverlay<T> {
+    fn collect_overlay<U>(self, shape: &Overlay<U>) -> Overlay<T>;
+}
+
+impl<T, J: Iterator<Item = T>> CollectOverlay<T> for J {
+    fn collect_overlay<U>(mut self, shape: &Overlay<U>) -> Overlay<T> {
+        collect_overlay_impl(&mut self, shape)
     }
 }
 
@@ -542,13 +510,13 @@ impl LtData<Lt> {
         self.iter()
             .zip_eq(other.iter())
             .map(|(lt1, lt2)| lt1.join(lt2))
-            .collect_lt_data(self)
+            .collect_lts(self)
     }
 }
 
 impl LtData<LtParam> {
     pub fn wrap_params(&self) -> LtData<Lt> {
-        self.iter().copied().map(Lt::var).collect_lt_data(self)
+        self.iter().copied().map(Lt::var).collect_lts(self)
     }
 }
 
@@ -610,43 +578,43 @@ impl<T> LtData<T> {
     }
 }
 
-pub trait CollectLtData<T> {
-    fn collect_lt_data<U>(self, orig: &LtData<U>) -> LtData<T>;
-}
-
-impl<T, J: Iterator<Item = T>> CollectLtData<T> for J {
-    fn collect_lt_data<U>(mut self, orig: &LtData<U>) -> LtData<T> {
-        collect_lt_data(&mut self, orig)
-    }
-}
-
 // Must expect the order produced by `LtData::iter`
-fn collect_lt_data<T, U>(iter: &mut impl Iterator<Item = T>, orig: &LtData<U>) -> LtData<T> {
-    match orig {
+fn collect_lts_impl<T, U>(iter: &mut impl Iterator<Item = T>, shape: &LtData<U>) -> LtData<T> {
+    match shape {
         LtData::Bool => LtData::Bool,
         LtData::Num(n) => LtData::Num(*n),
         LtData::Tuple(items) => LtData::Tuple(
             items
                 .iter()
-                .map(|item| collect_lt_data(iter, item))
+                .map(|item| collect_lts_impl(iter, item))
                 .collect(),
         ),
         LtData::Variants(items) => {
-            LtData::Variants(items.map_refs(|_, item| collect_lt_data(iter, item)))
+            LtData::Variants(items.map_refs(|_, item| collect_lts_impl(iter, item)))
         }
         LtData::SelfCustom(id) => LtData::SelfCustom(*id),
         LtData::Custom(id, subst) => {
             LtData::Custom(*id, btree_map_refs(subst, |_, _| iter.next().unwrap()))
         }
         LtData::Array(_, item) => {
-            LtData::Array(iter.next().unwrap(), Box::new(collect_lt_data(iter, item)))
+            LtData::Array(iter.next().unwrap(), Box::new(collect_lts_impl(iter, item)))
         }
         LtData::HoleArray(_, item) => {
-            LtData::HoleArray(iter.next().unwrap(), Box::new(collect_lt_data(iter, item)))
+            LtData::HoleArray(iter.next().unwrap(), Box::new(collect_lts_impl(iter, item)))
         }
         LtData::Boxed(_, item) => {
-            LtData::Boxed(iter.next().unwrap(), Box::new(collect_lt_data(iter, item)))
+            LtData::Boxed(iter.next().unwrap(), Box::new(collect_lts_impl(iter, item)))
         }
+    }
+}
+
+pub trait CollectLts<T> {
+    fn collect_lts<U>(self, shape: &LtData<U>) -> LtData<T>;
+}
+
+impl<T, J: Iterator<Item = T>> CollectLts<T> for J {
+    fn collect_lts<U>(mut self, shape: &LtData<U>) -> LtData<T> {
+        collect_lts_impl(&mut self, shape)
     }
 }
 
@@ -657,11 +625,7 @@ pub enum ModeData<T> {
     Tuple(Vec<ModeData<T>>),
     Variants(IdVec<first_ord::VariantId, ModeData<T>>),
     SelfCustom(CustomTypeId),
-    Custom(
-        CustomTypeId,
-        BTreeMap<SlotId, T>, // Overlay
-        IdVec<SlotId, T>,    // Substitution
-    ),
+    Custom(CustomTypeId, IdVec<SlotId, T>),
     Array(T, Overlay<T>, Box<ModeData<T>>),
     HoleArray(T, Overlay<T>, Box<ModeData<T>>),
     Boxed(T, Overlay<T>, Box<ModeData<T>>),
@@ -677,11 +641,9 @@ impl ModeData<SlotId> {
             }
             ModeData::Variants(tys) => ModeData::Variants(tys.map_refs(|_, ty| ty.hydrate(subst))),
             ModeData::SelfCustom(id) => ModeData::SelfCustom(*id),
-            ModeData::Custom(id, osub, tsub) => ModeData::Custom(
-                *id,
-                btree_map_refs(osub, |_, slot| subst[*slot].clone()),
-                tsub.map_refs(|_, slot| subst[*slot].clone()),
-            ),
+            ModeData::Custom(id, custom_subst) => {
+                ModeData::Custom(*id, custom_subst.map_refs(|_, slot| subst[*slot].clone()))
+            }
             ModeData::Array(m, ov, ty) => ModeData::Array(
                 subst[*m].clone(),
                 ov.hydrate(subst),
@@ -714,9 +676,9 @@ impl ModeData<SlotId> {
                 LtData::Variants(tys.map_refs(|_, ty| ty.extract_lts(customs)))
             }
             ModeData::SelfCustom(id) => LtData::SelfCustom(*id),
-            ModeData::Custom(id, _, subst) => {
-                let custom = customs.get(id).unwrap();
-                let subst = custom
+            ModeData::Custom(id, subst) => {
+                let subst = customs
+                    .get(id)
                     .lt_slots
                     .iter()
                     .map(|&key| (key, subst[key]))
@@ -741,34 +703,12 @@ impl<T> ModeData<T> {
             ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(ModeData::iter)),
             ModeData::Variants(tys) => Box::new(tys.values().flat_map(ModeData::iter)),
             ModeData::SelfCustom(_) => Box::new(iter::empty()),
-            ModeData::Custom(_, ov, tys) => Box::new(ov.values().chain(tys.values())),
+            ModeData::Custom(_, tys) => Box::new(tys.values()),
             ModeData::Array(m, ov, ty) => Box::new(iter::once(m).chain(ov.iter()).chain(ty.iter())),
             ModeData::HoleArray(m, ov, ty) => {
                 Box::new(iter::once(m).chain(ov.iter()).chain(ty.iter()))
             }
             ModeData::Boxed(m, ov, ty) => Box::new(iter::once(m).chain(ov.iter()).chain(ty.iter())),
-        }
-    }
-
-    pub fn iter_store<'a>(
-        &'a self,
-        customs: impl MapRef<'a, CustomTypeId, ModeData<SlotId>> + 'a,
-    ) -> Box<dyn Iterator<Item = &'a T> + 'a> {
-        match self {
-            ModeData::Bool => Box::new(iter::empty()),
-            ModeData::Num(_) => Box::new(iter::empty()),
-            ModeData::Tuple(tys) => Box::new(tys.iter().flat_map(move |ty| ty.iter_store(customs))),
-            ModeData::Variants(tys) => {
-                Box::new(tys.values().flat_map(move |ty| ty.iter_store(customs)))
-            }
-            ModeData::SelfCustom(_) => Box::new(iter::empty()),
-            ModeData::Custom(id, _, subst) => {
-                let custom = customs.get(id).unwrap();
-                Box::new(custom.iter_store(customs).map(|slot| &subst[*slot]))
-            }
-            ModeData::Array(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_store(customs))),
-            ModeData::HoleArray(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_store(customs))),
-            ModeData::Boxed(m, _, ty) => Box::new(iter::once(m).chain(ty.iter_store(customs))),
         }
     }
 
@@ -784,9 +724,8 @@ impl<T> ModeData<T> {
                 Box::new(tys.values().flat_map(move |ty| ty.iter_stack(customs)))
             }
             ModeData::SelfCustom(_) => Box::new(iter::empty()),
-            ModeData::Custom(id, ov, _) => {
-                let custom = customs.get(id).unwrap();
-                Box::new(custom.iter_stack(customs).map(|slot| &ov[slot]))
+            ModeData::Custom(id, subst) => {
+                Box::new(customs.get(id).iter_stack(customs).map(|slot| &subst[slot]))
             }
             ModeData::Array(m, _, _) => Box::new(iter::once(m)),
             ModeData::HoleArray(m, _, _) => Box::new(iter::once(m)),
@@ -818,9 +757,11 @@ impl<T> ModeData<T> {
             (ModeData::SelfCustom(id1), Overlay::SelfCustom(id2)) if id1 == id2 => {
                 ModeData::SelfCustom(*id1)
             }
-            (ModeData::Custom(id1, ov1, subst), Overlay::Custom(id2, ov2)) if id1 == id2 => {
-                debug_assert!(ov1.keys().zip_eq(ov2.keys()).all(|(k1, k2)| k1 == k2));
-                ModeData::Custom(*id1, ov2.clone(), subst.clone())
+            (ModeData::Custom(id1, subst), Overlay::Custom(id2, ov)) if id1 == id2 => {
+                ModeData::Custom(
+                    *id1,
+                    subst.map_refs(|param, val| ov.get(&param).unwrap_or(val).clone()),
+                )
             }
             (ModeData::Array(_, ov, ty), Overlay::Array(m)) => {
                 ModeData::Array(m.clone(), ov.clone(), ty.clone())
@@ -835,7 +776,7 @@ impl<T> ModeData<T> {
         }
     }
 
-    pub fn unapply_overlay(&self) -> Overlay<T>
+    pub fn unapply_overlay<'a>(&self, customs: impl MapRef<'a, CustomTypeId, TypeDef>) -> Overlay<T>
     where
         T: Clone,
     {
@@ -843,13 +784,22 @@ impl<T> ModeData<T> {
             ModeData::Bool => Overlay::Bool,
             ModeData::Num(n) => Overlay::Num(*n),
             ModeData::Tuple(tys) => {
-                Overlay::Tuple(tys.iter().map(ModeData::unapply_overlay).collect())
+                Overlay::Tuple(tys.iter().map(|ty| ty.unapply_overlay(customs)).collect())
             }
             ModeData::Variants(tys) => {
-                Overlay::Variants(tys.map_refs(|_, ty| ty.unapply_overlay()))
+                Overlay::Variants(tys.map_refs(|_, ty| ty.unapply_overlay(customs)))
             }
             ModeData::SelfCustom(id) => Overlay::SelfCustom(*id),
-            ModeData::Custom(id, ov, _) => Overlay::Custom(*id, ov.clone()),
+            ModeData::Custom(id, subst) => {
+                let ov_subst = customs
+                    .get(id)
+                    .unwrap()
+                    .ov_slots
+                    .iter()
+                    .map(|&slot| (slot, subst[slot].clone()))
+                    .collect();
+                Overlay::Custom(*id, ov_subst)
+            }
             ModeData::Array(m, _, _) => Overlay::Array(m.clone()),
             ModeData::HoleArray(m, _, _) => Overlay::HoleArray(m.clone()),
             ModeData::Boxed(m, _, _) => Overlay::Boxed(m.clone()),
@@ -863,7 +813,7 @@ impl<T> ModeData<T> {
             ModeData::Tuple(tys) => Shape::Tuple(tys.iter().map(ModeData::shape).collect()),
             ModeData::Variants(tys) => Shape::Variants(tys.map_refs(|_, ty| ty.shape())),
             ModeData::SelfCustom(id) => Shape::SelfCustom(*id),
-            ModeData::Custom(id, _, _) => Shape::Custom(*id),
+            ModeData::Custom(id, _) => Shape::Custom(*id),
             ModeData::Array(_, _, ty) => Shape::Array(Box::new(ty.shape())),
             ModeData::HoleArray(_, _, ty) => Shape::HoleArray(Box::new(ty.shape())),
             ModeData::Boxed(_, _, ty) => Shape::Boxed(Box::new(ty.shape())),
@@ -881,51 +831,52 @@ impl<T> ModeData<T> {
     }
 }
 
-pub trait CollectModeData<T> {
-    fn collect_mode_data<U>(self, orig: &ModeData<U>) -> ModeData<T>;
-}
-
-impl<T, J: Iterator<Item = T>> CollectModeData<T> for J {
-    fn collect_mode_data<U>(mut self, orig: &ModeData<U>) -> ModeData<T> {
-        collect_mode_data(&mut self, orig)
-    }
-}
-
 // Must expect the order produced by `ModeData::iter`
-fn collect_mode_data<T, U>(iter: &mut impl Iterator<Item = T>, orig: &ModeData<U>) -> ModeData<T> {
-    match orig {
+fn collect_modes_impl<T, U>(
+    iter: &mut impl Iterator<Item = T>,
+    shape: &ModeData<U>,
+) -> ModeData<T> {
+    match shape {
         ModeData::Bool => ModeData::Bool,
         ModeData::Num(n) => ModeData::Num(*n),
         ModeData::Tuple(items) => ModeData::Tuple(
             items
                 .iter()
-                .map(|item| collect_mode_data(iter, item))
+                .map(|item| collect_modes_impl(iter, item))
                 .collect(),
         ),
         ModeData::Variants(items) => {
-            ModeData::Variants(items.map_refs(|_, item| collect_mode_data(iter, item)))
+            ModeData::Variants(items.map_refs(|_, item| collect_modes_impl(iter, item)))
         }
         ModeData::SelfCustom(id) => ModeData::SelfCustom(*id),
-        ModeData::Custom(id, ov, subst) => ModeData::Custom(
-            *id,
-            btree_map_refs(ov, |_, _| iter.next().unwrap()),
-            subst.map_refs(|_, _| iter.next().unwrap()),
-        ),
+        ModeData::Custom(id, subst) => {
+            ModeData::Custom(*id, subst.map_refs(|_, _| iter.next().unwrap()))
+        }
         ModeData::Array(_, ov, item) => ModeData::Array(
             iter.next().unwrap(),
-            collect_overlay(iter, ov),
-            Box::new(collect_mode_data(iter, item)),
+            collect_overlay_impl(iter, ov),
+            Box::new(collect_modes_impl(iter, item)),
         ),
         ModeData::HoleArray(_, ov, item) => ModeData::HoleArray(
             iter.next().unwrap(),
-            collect_overlay(iter, ov),
-            Box::new(collect_mode_data(iter, item)),
+            collect_overlay_impl(iter, ov),
+            Box::new(collect_modes_impl(iter, item)),
         ),
         ModeData::Boxed(_, ov, item) => ModeData::Boxed(
             iter.next().unwrap(),
-            collect_overlay(iter, ov),
-            Box::new(collect_mode_data(iter, item)),
+            collect_overlay_impl(iter, ov),
+            Box::new(collect_modes_impl(iter, item)),
         ),
+    }
+}
+
+pub trait CollectModes<T> {
+    fn collect_modes<U>(self, shape: &ModeData<U>) -> ModeData<T>;
+}
+
+impl<T, J: Iterator<Item = T>> CollectModes<T> for J {
+    fn collect_modes<U>(mut self, shape: &ModeData<U>) -> ModeData<T> {
+        collect_modes_impl(&mut self, shape)
     }
 }
 
@@ -988,8 +939,8 @@ impl<M, L> Type<M, L> {
     }
 
     pub fn map<M2, L2>(&self, f: impl Fn(&M) -> M2, g: impl Fn(&L) -> L2) -> Type<M2, L2> {
-        let lts = self.lts.iter().map(g).collect_lt_data(&self.lts);
-        let modes = self.modes.iter().map(f).collect_mode_data(&self.modes);
+        let lts = self.lts.iter().map(g).collect_lts(&self.lts);
+        let modes = self.modes.iter().map(f).collect_modes(&self.modes);
         Type { lts, modes }
     }
 
@@ -1253,7 +1204,7 @@ mod tests {
 
     #[test]
     fn test_mode_data_iter() {
-        use crate::util::map_ext::FnWrap;
+        use crate::util::collection_ext::FnWrap;
 
         let modes = ModeData::Array(
             0,
@@ -1267,10 +1218,6 @@ mod tests {
         assert_eq!(
             modes.iter_stack(customs).copied().collect::<Vec<_>>(),
             vec![0]
-        );
-        assert_eq!(
-            modes.iter_store(customs).copied().collect::<Vec<_>>(),
-            vec![0, 2]
         );
     }
 }

@@ -5,7 +5,7 @@ use crate::data::rc_specialized_ast2 as rc;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::let_builder::{self, FromBindings};
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::{btree_map_refs, FnWrap};
+use crate::util::collection_ext::{btree_map_refs, FnWrap};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
 use std::collections::{BTreeMap, BTreeSet};
@@ -640,7 +640,7 @@ mod tests {
     fn test_spec_list() {
         use crate::data::mode_annot_ast2::SlotId;
         use crate::data::obligation_annot_ast as ob;
-        use crate::util::map_ext::{map, set};
+        use crate::util::collection_ext::{map, set};
         use first_ord::CustomTypeId;
 
         // type List { Nil, Cons(Box((Array Int, List))) }

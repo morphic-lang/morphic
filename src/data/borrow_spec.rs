@@ -2,7 +2,7 @@
 //! operation.
 
 use crate::data::first_order_ast::NumType;
-use crate::util::map_ext::set;
+use crate::util::collection_ext::set;
 use id_collections::id_type;
 use once_cell::sync::Lazy;
 use std::collections::BTreeSet;

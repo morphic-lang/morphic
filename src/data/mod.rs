@@ -40,6 +40,8 @@ pub mod alias_specialized_ast;
 
 pub mod borrow_spec;
 
+pub mod guarded_ast;
+
 pub mod mode_annot_ast;
 pub mod mode_annot_ast2;
 

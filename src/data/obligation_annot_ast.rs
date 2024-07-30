@@ -12,8 +12,8 @@ use crate::data::mode_annot_ast2::{self as annot, CollectOverlay, Lt, Mode, Over
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::collection_ext::{FnWrap, MapRef};
 use crate::util::iter::IterExt;
-use crate::util::map_ext::{FnWrap, MapRef};
 use id_collections::{id_type, Count, IdVec};
 use std::collections::BTreeSet;
 

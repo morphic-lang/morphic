@@ -8,8 +8,8 @@ use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType, VariantI
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
-    self as annot, CollectLtData, CollectModeData, CollectOverlay, Lt, LtData, LtParam, Mode,
-    ModeData, ModeParam, ModeSolution, ModeVar, Occur, Overlay, SlotId,
+    self as annot, CollectLts, CollectModes, CollectOverlay, Lt, LtData, LtParam, Mode, ModeData,
+    ModeParam, ModeSolution, ModeVar, Occur, Overlay, SlotId,
 };
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -17,12 +17,12 @@ use crate::intrinsic_config::intrinsic_sig;
 use crate::pretty_print::borrow_common::{write_lifetime, write_path};
 use crate::pretty_print::mode_annot::write_typedef;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
+use crate::util::collection_ext::{set, BTreeMapExt, FnWrap, MapRef};
 use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
 use crate::util::immut_context as immut;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::{btree_map_refs, set, FnWrap, MapRef};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, Count, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
@@ -266,8 +266,8 @@ fn parameterize_mode_data<'a>(
             if sccs.map_or(false, |(scc_id, sccs)| sccs[id] == scc_id) {
                 ModeData::SelfCustom(*id)
             } else {
-                let custom = customs.get(id).unwrap();
-                let osub = custom
+                let osub = customs
+                    .get(id)
                     .ov_slots
                     .iter()
                     .map(|key| (*key, count.inc()))
@@ -279,19 +279,19 @@ fn parameterize_mode_data<'a>(
         anon::Type::Array(ty) => {
             let slot = count.inc();
             let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = freshen_overlay(count, &ty.unapply_overlay());
+            let ov = freshen_overlay(count, &ty.unapply_overlay(customs));
             ModeData::Array(slot, ov, Box::new(ty))
         }
         anon::Type::HoleArray(ty) => {
             let slot = count.inc();
             let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = freshen_overlay(count, &ty.unapply_overlay());
+            let ov = freshen_overlay(count, &ty.unapply_overlay(customs));
             ModeData::HoleArray(slot, ov, Box::new(ty))
         }
         anon::Type::Boxed(ty) => {
             let slot = count.inc();
             let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = freshen_overlay(count, &ty.unapply_overlay());
+            let ov = freshen_overlay(count, &ty.unapply_overlay(customs));
             ModeData::Boxed(slot, ov, Box::new(ty))
         }
     }
@@ -649,13 +649,11 @@ fn subst_lts(lts: &LtData<Lt>, subst: &BTreeMap<LtParam, Lt>) -> LtData<Lt> {
                 .map(|p| &subst[p])
                 .fold(Lt::Empty, |lt1, lt2| Lt::join(&lt1, lt2)),
         })
-        .collect_lt_data(lts)
+        .collect_lts(lts)
 }
 
 fn join_everywhere(lts: &LtData<Lt>, new_lt: &Lt) -> LtData<Lt> {
-    lts.iter()
-        .map(|lt| Lt::join(lt, new_lt))
-        .collect_lt_data(lts)
+    lts.iter().map(|lt| Lt::join(lt, new_lt)).collect_lts(lts)
 }
 
 fn lt_equiv(lts1: &LtData<Lt>, lts2: &LtData<Lt>) -> bool {
@@ -690,92 +688,6 @@ fn unfold_overlay(
     }
 }
 
-fn unfold_lts<L: Clone>(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    lsub: &BTreeMap<SlotId, L>,
-    ty: &LtData<SlotId>,
-) -> LtData<L> {
-    match ty {
-        LtData::Bool => LtData::Bool,
-        LtData::Num(num_ty) => LtData::Num(*num_ty),
-        LtData::Tuple(ty) => {
-            LtData::Tuple(ty.iter().map(|ty| unfold_lts(customs, lsub, ty)).collect())
-        }
-        LtData::Variants(ty) => {
-            LtData::Variants(ty.map_refs(|_, ty| unfold_lts(customs, lsub, ty)))
-        }
-        LtData::Custom(id, lslots) => {
-            LtData::Custom(*id, btree_map_refs(lslots, |_, slot| lsub[slot].clone()))
-        }
-        LtData::SelfCustom(id) => LtData::Custom(*id, lsub.clone()),
-        LtData::Array(slot, ty) => {
-            let ty_unfold = unfold_lts(customs, lsub, ty);
-            LtData::Array(lsub[slot].clone(), Box::new(ty_unfold))
-        }
-        LtData::HoleArray(slot, ty) => {
-            let ty_unfold = unfold_lts(customs, lsub, ty);
-            LtData::HoleArray(lsub[slot].clone(), Box::new(ty_unfold))
-        }
-        LtData::Boxed(slot, ty) => {
-            let ty_unfold = unfold_lts(customs, lsub, ty);
-            LtData::Boxed(lsub[slot].clone(), Box::new(ty_unfold))
-        }
-    }
-}
-
-// This unfolding operation is imprecise in that if the access modes on the output end up required
-// to be owned then the head modes on the input will end up required to be owned as well, even if we
-// should be able to borrow at the head. The problem arises from our use of `osub` in the places
-// marked "HERE". Fixing this imprecision requires reworking overlays on customs. We just don't have
-// enough information to do the "right" thing as it stands.
-fn unfold_modes(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    osub: &BTreeMap<SlotId, ModeVar>,
-    tsub: &IdVec<SlotId, ModeVar>,
-    ty: &ModeData<SlotId>,
-) -> ModeData<ModeVar> {
-    let subst = |var| osub.get(&var).copied().unwrap_or_else(|| tsub[var]);
-    match ty {
-        ModeData::Bool => ModeData::Bool,
-        ModeData::Num(num_ty) => ModeData::Num(*num_ty),
-        ModeData::Tuple(ty) => ModeData::Tuple(
-            ty.iter()
-                .map(|ty| unfold_modes(customs, osub, tsub, ty))
-                .collect(),
-        ),
-        ModeData::Variants(ty) => {
-            ModeData::Variants(ty.map_refs(|_, ty| unfold_modes(customs, osub, tsub, ty)))
-        }
-        ModeData::Custom(id, oslots, tslots) => ModeData::Custom(
-            *id,
-            btree_map_refs(oslots, |_, &slot| subst(slot)),
-            tslots.map_refs(|_, &slot| subst(slot)),
-        ),
-        ModeData::SelfCustom(id) => ModeData::Custom(*id, osub.clone(), tsub.clone()),
-        ModeData::Array(slot, ov, ty) => {
-            let slot_unfold = subst(*slot);
-            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
-            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
-            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
-            ModeData::Array(slot_unfold, ov_unfold, Box::new(ty_unfold))
-        }
-        ModeData::HoleArray(slot, ov, ty) => {
-            let slot_unfold = subst(*slot);
-            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
-            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
-            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
-            ModeData::HoleArray(slot_unfold, ov_unfold, Box::new(ty_unfold))
-        }
-        ModeData::Boxed(slot, ov, ty) => {
-            let slot_unfold = subst(*slot);
-            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
-            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
-            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
-            ModeData::Boxed(slot_unfold, ov_unfold, Box::new(ty_unfold))
-        }
-    }
-}
-
 fn instantiate_overlay<M>(constrs: &mut ConstrGraph, ov: &Overlay<M>) -> Overlay<ModeVar> {
     ov.iter().map(|_| constrs.fresh_var()).collect_overlay(ov)
 }
@@ -785,16 +697,12 @@ fn instantiate_type<M, L1, L2>(
     fresh_lt: &mut impl FnMut() -> L2,
     ty: &annot::Type<M, L1>,
 ) -> annot::Type<ModeVar, L2> {
-    let lts = ty
-        .lts()
-        .iter()
-        .map(|_| fresh_lt())
-        .collect_lt_data(ty.lts());
+    let lts = ty.lts().iter().map(|_| fresh_lt()).collect_lts(ty.lts());
     let modes = ty
         .modes()
         .iter()
         .map(|_| constrs.fresh_var())
-        .collect_mode_data(ty.modes());
+        .collect_modes(ty.modes());
     annot::Type::new(lts, modes)
 }
 
@@ -1138,10 +1046,10 @@ mod model {
             }
         }
 
-        for (mode, ovs) in data.ovs {
+        for (model, ovs) in data.ovs {
             assert!(ovs.len() > 0);
             if ovs.len() == 1 {
-                res_ovs.insert(mode, ovs[0].clone());
+                res_ovs.insert(model, ovs[0].clone());
             } else {
                 let res_ov = super::instantiate_overlay(constrs, &ovs[0]);
                 for ov in ovs {
@@ -1149,7 +1057,7 @@ mod model {
                         constrs.require_eq(*mode1, *mode2);
                     }
                 }
-                res_ovs.insert(mode, res_ov);
+                res_ovs.insert(model, res_ov);
             }
         }
 
@@ -1486,12 +1394,12 @@ fn instantiate_expr(
                 .modes()
                 .iter()
                 .map(|_| constrs.fresh_var())
-                .collect_mode_data(discrim_binding.modes());
+                .collect_modes(discrim_binding.modes());
             let discrim_use_lts = discrim_binding
                 .lts()
                 .iter()
                 .map(|_| discrim_path.clone())
-                .collect_lt_data(discrim_binding.lts());
+                .collect_lts(discrim_binding.lts());
 
             let discrim_occur = instantiate_occur(
                 strategy,
@@ -2849,7 +2757,7 @@ pub fn annot_modes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::map_ext::{map, set};
+    use crate::util::collection_ext::{map, set};
 
     /// Returns `type List { Nil, Cons(Box((Array Int, List))) }`.
     fn list_type() -> (anon::Type, annot::TypeDef) {

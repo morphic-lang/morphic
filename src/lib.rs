@@ -70,6 +70,8 @@ mod annot_fates;
 
 mod specialize_aliases;
 
+mod guard_types;
+
 mod annot_modes;
 mod annot_modes2;
 

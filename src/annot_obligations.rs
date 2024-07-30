@@ -1,6 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
-use crate::data::mode_annot_ast2::CollectModeData;
+use crate::data::mode_annot_ast2::CollectModes;
 use crate::data::mode_annot_ast2::{
     self as annot, CollectOverlay, Lt, LtData, Mode, ModeData, ModeParam, ModeSolution, Path,
 };
@@ -54,7 +54,7 @@ fn instantiate_type(
     ty.modes()
         .iter()
         .map(|solution| solution.lb.instantiate(inst_params))
-        .collect_mode_data(ty.modes())
+        .collect_modes(ty.modes())
 }
 
 fn instantiate_occur(

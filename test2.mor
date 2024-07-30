@@ -1,0 +1,18 @@
+type List {
+  Cons((Array Int), List),
+  Nil,
+}
+
+f(x: List): Int =
+  match x {
+    Cons(a, _) -> get(a, 0),
+    Nil -> 0,
+  }
+
+new(): List =
+  Cons([1, 2, 3], Cons([1, 2, 3], Nil))
+
+proc main(): () =
+  let a = new() in
+  let _ = f(a) in
+  do output("Completed all tests\n")

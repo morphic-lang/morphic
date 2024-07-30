@@ -28,7 +28,7 @@ pub mod progress_logger;
 
 pub mod iter;
 
-pub mod map_ext;
+pub mod collection_ext;
 
 pub mod intern;
 
