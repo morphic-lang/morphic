@@ -42,6 +42,8 @@ pub mod borrow_model;
 
 pub mod guarded_ast;
 
+pub mod guarded_ast;
+
 pub mod mode_annot_ast;
 pub mod mode_annot_ast2;
 
