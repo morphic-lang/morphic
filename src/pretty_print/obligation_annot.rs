@@ -1,8 +1,8 @@
 use crate::data::first_order_ast::NumType;
 use crate::data::mode_annot_ast2::{self as annot, Overlay, SlotId};
 use crate::data::obligation_annot_ast::{
-    ArrayOp, Condition, CustomFuncId, CustomTypeId, Expr, FuncDef, IoOp, Occur, Program, StackLt,
-    Type, TypeDef,
+    ArrayOp, Condition, CustomFuncId, CustomTypeDef, CustomTypeId, Expr, FuncDef, IoOp, Occur,
+    Program, StackLt, Type,
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common::*;
@@ -449,7 +449,7 @@ pub fn write_func(
 fn write_typedef(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
-    typedef: &TypeDef,
+    typedef: &CustomTypeDef,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
     write!(

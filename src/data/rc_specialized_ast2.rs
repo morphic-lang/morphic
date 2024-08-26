@@ -13,11 +13,10 @@ pub struct LocalId(pub usize);
 
 pub const ARG_LOCAL: LocalId = LocalId(0);
 
+pub type CustomFuncId = ob::CustomFuncId;
+
 #[id_type]
 pub struct CustomTypeId(pub usize);
-
-pub type CustomFuncId = ob::CustomFuncId;
-pub type Condition = ob::Condition;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
@@ -103,6 +102,8 @@ pub enum IoOp {
     Output(LocalId),
 }
 
+pub type Condition = annot::Condition;
+
 #[derive(Clone, Debug)]
 pub enum Expr {
     Local(LocalId),
@@ -129,8 +130,8 @@ pub enum Expr {
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
 
-    // `Type` is not redundant with the binding type of `LocalId`. If the operation is a retain,
-    // some additional fields of the argument may be treated as borrowed, as indicated by `Type`.
+    // This `Type` is not redundant with the binding type of `LocalId`. If the op is a retain, some
+    // additional fields of the argument may be treated as borrowed, as indicated by `Type`.
     RcOp(RcOp, Type, LocalId),
 
     Intrinsic(Intrinsic, LocalId),

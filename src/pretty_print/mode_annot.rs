@@ -1,7 +1,7 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::mode_annot_ast2::{
-    self as annot, ArrayOp, Condition, Constrs, FuncDef, IoOp, Lt, LtParam, Mode, ModeParam,
-    ModeSolution, Overlay, Program, SlotId, TypeDef,
+    self as annot, ArrayOp, Condition, Constrs, CustomTypeDef, FuncDef, IoOp, Lt, LtParam, Mode,
+    ModeParam, ModeSolution, Overlay, Program, SlotId,
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common::*;
@@ -601,7 +601,7 @@ pub fn write_func(
 pub fn write_typedef(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    typedef: &TypeDef,
+    typedef: &CustomTypeDef,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
     write!(w, "custom type ")?;
@@ -613,7 +613,12 @@ pub fn write_typedef(
         typedef.ov_slots.len(),
         typedef.slot_count.to_value(),
     )?;
-    write_type_template(w, type_renderer, typedef.ty.modes(), typedef.ty.lts())?;
+    write_type_template(
+        w,
+        type_renderer,
+        typedef.content.modes(),
+        typedef.content.lts(),
+    )?;
     Ok(())
 }
 

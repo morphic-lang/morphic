@@ -112,7 +112,7 @@ pub fn stack_paths_in_excluding(
                 if !exclude.contains(&scc_id) {
                     let mut sub_exclude = exclude.clone();
                     sub_exclude.insert(scc_id);
-                    for scc_type in &typedefs.sccs[scc_id] {
+                    for scc_type in typedefs.sccs.component(scc_id).nodes {
                         add_paths(
                             typedefs,
                             paths,

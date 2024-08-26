@@ -1,0 +1,14 @@
+type Expr {
+  Val(Int),
+  Add(Expr, Expr),
+}
+
+append_add(e0: Expr, e3: Expr): Expr =
+  match e0 {
+    Add(e1,e2) -> Add(e1, append_add(e2, e3)),
+    _          -> Add(e0, e3),
+  }
+
+proc main(): () =
+  let _ = reassoc(Add(Val(1))) in
+  do output("Completed all tests\n")

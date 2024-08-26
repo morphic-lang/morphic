@@ -1,24 +1,52 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
-use crate::data::mode_annot_ast2::{CollectOverlay, ModeData, Overlay, SlotId};
-use crate::data::obligation_annot_ast::{self as ob, TypeDef};
+use crate::data::mode_annot_ast2::{self as annot, Shape, SlotId};
+use crate::data::obligation_annot_ast::{self as ob, CustomTypeDef};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::iter::IterExt;
-use crate::util::map_ext::{FnWrap, MapRef};
 use id_collections::{id_type, IdVec};
+use std::collections::BTreeSet;
 
-pub type Selector = Overlay<bool>;
+#[derive(Clone, Debug)]
+pub struct Selector {
+    pub shape: annot::Shape,
+    pub true_: BTreeSet<SlotId>,
+}
+
+impl Selector {
+    pub fn none(shape: &Shape) -> Selector {
+        Selector {
+            shape: shape.clone(),
+            true_: BTreeSet::new(),
+        }
+    }
+
+    pub fn one(shape: &Shape, slot: SlotId) -> Selector {
+        Selector {
+            shape: shape.clone(),
+            true_: std::iter::once(slot).collect(),
+        }
+    }
+
+    pub fn insert(&mut self, slot: SlotId) {
+        self.true_.insert(slot);
+    }
+
+    pub fn nonempty(&self) -> bool {
+        !self.true_.is_empty()
+    }
+}
 
 impl std::ops::BitAnd for &Selector {
     type Output = Selector;
 
     fn bitand(self, other: &Selector) -> Selector {
-        self.iter()
-            .zip_eq(other.iter())
-            .map(|(&b1, &b2)| b1 && b2)
-            .collect_overlay(&self)
+        debug_assert_eq!(self.shape, other.shape);
+        Selector {
+            shape: self.shape.clone(),
+            true_: &self.true_ & &other.true_,
+        }
     }
 }
 
@@ -26,24 +54,25 @@ impl std::ops::BitOr for &Selector {
     type Output = Selector;
 
     fn bitor(self, other: &Selector) -> Selector {
-        self.iter()
-            .zip_eq(other.iter())
-            .map(|(&b1, &b2)| b1 || b2)
-            .collect_overlay(&self)
+        debug_assert_eq!(self.shape, other.shape);
+        Selector {
+            shape: self.shape.clone(),
+            true_: &self.true_ | &other.true_,
+        }
     }
 }
 
-impl std::ops::Not for &Selector {
+impl std::ops::Sub for &Selector {
     type Output = Selector;
 
-    fn not(self) -> Selector {
-        self.iter().map(|&b| !b).collect_overlay(&self)
+    fn sub(self, other: &Selector) -> Selector {
+        debug_assert_eq!(self.shape, other.shape);
+        Selector {
+            shape: self.shape.clone(),
+            true_: &self.true_ - &other.true_,
+        }
     }
 }
-
-pub type CustomFuncId = ob::CustomFuncId;
-pub type CustomTypeId = first_ord::CustomTypeId;
-pub type Type = ob::Type;
 
 #[id_type]
 pub struct LocalId(pub usize);
@@ -58,13 +87,13 @@ pub enum RcOp {
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
-    Get(Type, LocalId, LocalId),
-    Extract(Type, LocalId, LocalId),
-    Len(Type, LocalId),
-    Push(Type, LocalId, LocalId),
-    Pop(Type, LocalId),
-    Replace(Type, LocalId, LocalId),
-    Reserve(Type, LocalId, LocalId),
+    Get(ob::Type, LocalId, LocalId),
+    Extract(ob::Type, LocalId, LocalId),
+    Len(ob::Type, LocalId),
+    Push(ob::Type, LocalId, LocalId),
+    Pop(ob::Type, LocalId),
+    Replace(ob::Type, LocalId, LocalId),
+    Reserve(ob::Type, LocalId, LocalId),
 }
 
 #[derive(Clone, Debug)]
@@ -76,20 +105,20 @@ pub enum IoOp {
 #[derive(Clone, Debug)]
 pub enum Expr {
     Local(LocalId),
-    Call(Purity, CustomFuncId, LocalId),
-    Branch(LocalId, Vec<(Condition, Expr)>, Type),
-    LetMany(Vec<(Type, Expr)>, LocalId),
+    Call(Purity, ob::CustomFuncId, LocalId),
+    Branch(LocalId, Vec<(annot::Condition, Expr)>, ob::Type),
+    LetMany(Vec<(ob::Type, Expr)>, LocalId),
 
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),
     WrapVariant(
-        IdVec<first_ord::VariantId, Type>,
+        IdVec<first_ord::VariantId, ob::Type>,
         first_ord::VariantId,
         LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, LocalId),
-    WrapBoxed(LocalId, Type),
-    UnwrapBoxed(LocalId, Type),
+    WrapBoxed(LocalId, ob::Type),
+    UnwrapBoxed(LocalId, ob::Type),
     WrapCustom(first_ord::CustomTypeId, LocalId),
     UnwrapCustom(first_ord::CustomTypeId, LocalId),
 
@@ -98,23 +127,21 @@ pub enum Expr {
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
-    Panic(Type, LocalId),
+    Panic(ob::Type, LocalId),
 
-    ArrayLit(Type, Vec<LocalId>),
+    ArrayLit(ob::Type, Vec<LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
 }
 
-pub type Condition = ob::Condition;
-
 #[derive(Clone, Debug)]
 
 pub struct FuncDef {
     pub purity: Purity,
-    pub arg_ty: Type,
-    pub ret_ty: Type,
+    pub arg_ty: ob::Type,
+    pub ret_ty: ob::Type,
 
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
@@ -122,22 +149,16 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
-    pub types: IdVec<CustomTypeId, TypeDef>,
-}
-
-impl CustomTypes {
-    pub fn view_types(&self) -> impl MapRef<'_, CustomTypeId, ModeData<SlotId>> {
-        FnWrap::wrap(|id| self.types.get(id).map(|def| &def.ty))
-    }
+    pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
-    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
+    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<ob::CustomFuncId, FuncDef>,
-    pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
+    pub func_symbols: IdVec<ob::CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: ob::CustomFuncId,
 }

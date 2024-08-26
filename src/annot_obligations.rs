@@ -1,8 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
-use crate::data::mode_annot_ast2::CollectModeData;
 use crate::data::mode_annot_ast2::{
-    self as annot, CollectOverlay, Lt, LtData, Mode, ModeData, ModeParam, ModeSolution, Path,
+    self as annot, Interner, Lt, Mode, ModeParam, ModeSolution, Path, Res, ResModes, SlotId,
 };
 use crate::data::obligation_annot_ast::{
     self as ob, ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
@@ -23,38 +22,60 @@ struct FuncSpec {
 
 type FuncInstances = InstanceQueue<FuncSpec, CustomFuncId>;
 
-fn get_slot_obligation(occur_path: &Path, src_mode: Mode, dst_mode: Mode, dst_lt: &Lt) -> Lt {
+fn get_slot_obligation(
+    interner: &Interner,
+    occur_path: &Path,
+    src_mode: Mode,
+    dst_mode: Mode,
+    dst_lt: &Lt,
+) -> Lt {
     match (src_mode, dst_mode) {
         (Mode::Owned, Mode::Borrowed) => dst_lt.clone(),
-        _ => occur_path.as_lt(),
+        _ => occur_path.as_lt(interner),
     }
 }
 
+/// We need the instantiated mode solutions and lifetimes of the destination type. We end up getting
+/// this data in a bit of an awkward format, where the (uninstantiated) mode solutions are stuck to
+/// the lifetimes in `dst_lts`.
 fn get_occur_obligation(
+    interner: &Interner,
     customs: &annot::CustomTypes,
     occur_path: &Path,
-    src_modes: &ModeData<Mode>,
-    dst_modes: &ModeData<Mode>,
-    dst_lts: &LtData<Lt>,
+    src: &Type,
+    dst: &Type,
+    dst_lts: &IdVec<SlotId, Res<ModeSolution, Lt>>,
 ) -> StackLt {
-    src_modes
-        .iter_stack(customs.view_modes())
-        .zip_eq(dst_modes.iter_stack(customs.view_modes()))
-        .zip_eq(dst_lts.iter_stack(&customs.types))
-        .map(|((src_mode, dst_mode), dst_lt)| {
-            get_slot_obligation(occur_path, *src_mode, *dst_mode, dst_lt)
-        })
-        .collect_overlay(&src_modes.unapply_overlay())
+    debug_assert!(src.shape == dst.shape);
+    let slots = src.shape.top_level_slots(customs.view_shapes());
+    let data = slots.into_iter().map(|slot| {
+        let obligation = get_slot_obligation(
+            interner,
+            occur_path,
+            *src.res[slot].unwrap_stack(),
+            *dst.res[slot].unwrap_stack(),
+            &dst_lts[slot].lt,
+        );
+        (slot, obligation)
+    });
+    StackLt {
+        shape: src.shape.clone(),
+        data: data.collect(),
+    }
+}
+
+fn instantiate_type_with<M, L>(ty: &annot::Type<M, L>, f: impl Fn(&M) -> Mode) -> Type {
+    Type {
+        shape: ty.shape.clone(),
+        res: ty.res.map_refs(|_, res| res.modes.map(&f)),
+    }
 }
 
 fn instantiate_type(
     inst_params: &IdVec<ModeParam, Mode>,
     ty: &annot::Type<ModeSolution, Lt>,
 ) -> Type {
-    ty.modes()
-        .iter()
-        .map(|solution| solution.lb.instantiate(inst_params))
-        .collect_mode_data(ty.modes())
+    instantiate_type_with(ty, |solution| solution.lb.instantiate(inst_params))
 }
 
 fn instantiate_occur(
@@ -67,21 +88,27 @@ fn instantiate_occur(
     }
 }
 
-type LocalContext = local_context::LocalContext<flat::LocalId, (ModeData<Mode>, StackLt)>;
+type LocalContext = local_context::LocalContext<flat::LocalId, (Type, StackLt)>;
 
-fn add_unused_local(ctx: &mut LocalContext, ty: ModeData<Mode>) -> flat::LocalId {
-    let ov = ty.unapply_overlay();
-    let init_lt = ov.iter().map(|_| Lt::Empty).collect_overlay(&ov);
-    let binding_id = ctx.add_local((ty, init_lt));
-    binding_id
+fn add_unused_local(
+    customs: &annot::CustomTypes,
+    ctx: &mut LocalContext,
+    ty: &Type,
+) -> flat::LocalId {
+    let lt = StackLt {
+        shape: ty.shape.clone(),
+        data: ty
+            .shape
+            .top_level_slots(customs.view_shapes())
+            .into_iter()
+            .map(|slot| (slot, Lt::Empty))
+            .collect(),
+    };
+    ctx.add_local((ty.clone(), lt))
 }
 
-/// We use `escape_lts` to track the lifetime parameters that flow from the function's return type.
-/// The way we currently consume lifetime obligations, all that matters is that the obligation is
-/// some escaping lifetime, not the particular lifetime parameter. We could encode this at the type
-/// level by having an obligation type distinct from `Lt`, but that approach has its own
-/// inconveniences.
 fn annot_expr(
+    interner: &Interner,
     customs: &annot::CustomTypes,
     funcs: &IdVec<first_ord::CustomFuncId, annot::FuncDef>,
     func_renderer: &FuncRenderer<first_ord::CustomFuncId>,
@@ -90,27 +117,25 @@ fn annot_expr(
     path: &Path,
     ctx: &mut LocalContext,
     expr: &annot::Expr<ModeSolution, Lt>,
-    ret_ty: &ModeData<Mode>,
+    ret_ty: &Type,
 ) -> Expr {
     let handle_occur =
-        |ctx: &mut LocalContext, path: &Path, occur: &annot::Occur<ModeSolution, _>| {
-            let occur_lts = occur.ty.lts();
-            let occur = instantiate_occur(inst_params, occur);
+        |ctx: &mut LocalContext, path: &Path, old_occur: &annot::Occur<ModeSolution, _>| {
+            let occur = instantiate_occur(inst_params, old_occur);
             let (src_ty, src_lt) = ctx.local_binding_mut(occur.id);
 
+            let obligation = get_occur_obligation(
+                interner,
+                customs,
+                path,
+                src_ty,
+                &occur.ty,
+                &old_occur.ty.res,
+            );
+
             // We must update the lifetime obligation of the binding to reflect this occurrence.
-            let obligation = get_occur_obligation(customs, path, src_ty, &occur.ty, occur_lts);
+            *src_lt = src_lt.join(interner, &obligation);
 
-            // print!("joining ");
-            // write_overlay(&mut std::io::stdout(), None, &write_lifetime, &src_lt).unwrap();
-            // print!(" with ");
-            // write_overlay(&mut std::io::stdout(), None, &write_lifetime, &obligation).unwrap();
-
-            *src_lt = src_lt.join(&obligation);
-
-            // print!(" to get ");
-            // write_overlay(&mut std::io::stdout(), None, &write_lifetime, &src_lt).unwrap();
-            // println!();
             occur
         };
 
@@ -129,11 +154,29 @@ fn annot_expr(
             let mut call_params =
                 IdVec::from_count_with(func.constrs.sig.count(), |_| Mode::Borrowed);
 
-            for (param, value) in func.arg_ty.modes().iter().zip_eq(arg.ty.iter()) {
-                call_params[*param] = *value;
+            for (param, value) in func.arg_ty.iter_modes().zip_eq(arg.ty.res.values()) {
+                match (param, value) {
+                    (ResModes::Stack(param), ResModes::Stack(value)) => {
+                        call_params[*param] = *value;
+                    }
+                    (ResModes::Heap(param), ResModes::Heap(value)) => {
+                        call_params[param.access] = value.access;
+                        call_params[param.storage] = value.storage;
+                    }
+                    _ => unreachable!(),
+                }
             }
-            for (param, value) in func.ret_ty.modes().iter().zip_eq(ret_ty.iter()) {
-                call_params[*param] = *value;
+            for (param, value) in func.ret_ty.iter_modes().zip_eq(ret_ty.res.values()) {
+                match (param, value) {
+                    (ResModes::Stack(param), ResModes::Stack(value)) => {
+                        call_params[*param] = *value;
+                    }
+                    (ResModes::Heap(param), ResModes::Heap(value)) => {
+                        call_params[param.access] = value.access;
+                        call_params[param.storage] = value.storage;
+                    }
+                    _ => unreachable!(),
+                }
             }
 
             let call_subst = func
@@ -158,6 +201,7 @@ fn annot_expr(
                     (
                         cond.clone(),
                         annot_expr(
+                            interner,
                             customs,
                             funcs,
                             func_renderer,
@@ -172,37 +216,7 @@ fn annot_expr(
                 })
                 .collect();
 
-            // println!("----------------------------------");
-            // println!("cond: {:?}", cond.id);
-
-            // print!("obligation before: ");
-            // write_overlay(
-            //     &mut std::io::stdout(),
-            //     None,
-            //     &write_lifetime,
-            //     &ctx.local_binding(cond.id).1,
-            // )
-            // .unwrap();
-            // println!();
-
-            // print!("at ");
-            // write_path(&mut std::io::stdout(), &path.seq(0)).unwrap();
-            // println!();
-
             let new_cond = handle_occur(ctx, &path.seq(0), cond);
-
-            // println!();
-            // print!("obligation after: ");
-            // write_overlay(
-            //     &mut std::io::stdout(),
-            //     None,
-            //     &write_lifetime,
-            //     &ctx.local_binding(cond.id).1,
-            // )
-            // .unwrap();
-            // println!();
-            // println!("----------------------------------");
-
             Expr::Branch(new_cond, new_arms, instantiate_type(inst_params, &ty))
         }
 
@@ -213,6 +227,7 @@ fn annot_expr(
             for (i, (ty, expr)) in bindings.into_iter().enumerate() {
                 let ret_ty = instantiate_type(inst_params, &ty);
                 let new_expr = annot_expr(
+                    interner,
                     customs,
                     funcs,
                     func_renderer,
@@ -223,13 +238,14 @@ fn annot_expr(
                     expr,
                     &ret_ty,
                 );
-                let _ = add_unused_local(ctx, ret_ty);
+                let _ = add_unused_local(customs, ctx, &ret_ty);
                 new_exprs.push(new_expr);
             }
 
             let ret_occur = handle_occur(ctx, &path.seq(bindings.len()), ret);
 
             let mut new_bindings_rev = Vec::new();
+
             for expr in new_exprs.into_iter().rev() {
                 let (_, (ty, obligation)) = ctx.pop_local();
                 new_bindings_rev.push((ty, obligation, expr));
@@ -244,18 +260,11 @@ fn annot_expr(
         }),
 
         annot::Expr::Tuple(fields) => {
-            let mut fields_rev: Vec<_> = fields
+            let fields = fields
                 .into_iter()
                 .enumerate()
-                .rev()
                 .map(|(i, occur)| handle_occur(ctx, &path.seq(i), occur))
                 .collect();
-
-            let fields = {
-                fields_rev.reverse();
-                fields_rev
-            };
-
             Expr::Tuple(fields)
         }
 
@@ -334,17 +343,11 @@ fn annot_expr(
             handle_occur(ctx, path, occur),
         ),
         annot::Expr::ArrayLit(ty, elems) => {
-            let mut elems_rev: Vec<_> = elems
+            let elems = elems
                 .into_iter()
                 .enumerate()
-                .rev()
                 .map(|(i, occur)| handle_occur(ctx, &path.seq(i), occur))
                 .collect();
-
-            let elems = {
-                elems_rev.reverse();
-                elems_rev
-            };
 
             Expr::ArrayLit(instantiate_type(inst_params, &ty), elems)
         }
@@ -357,6 +360,7 @@ fn annot_expr(
 }
 
 fn annot_func(
+    interner: &Interner,
     customs: &annot::CustomTypes,
     funcs: &IdVec<first_ord::CustomFuncId, annot::FuncDef>,
     func_renderer: &FuncRenderer<first_ord::CustomFuncId>,
@@ -367,13 +371,14 @@ fn annot_func(
     let func = &funcs[id];
 
     let mut ctx = LocalContext::new();
-    let arg_ty = func.arg_ty.map_modes(|param| inst_params[param]);
-    let arg_id = add_unused_local(&mut ctx, arg_ty.modes().clone());
+    let arg_ty = instantiate_type_with(&func.arg_ty, |param| inst_params[*param]);
+    let arg_id = add_unused_local(customs, &mut ctx, &arg_ty);
     debug_assert_eq!(arg_id, flat::ARG_LOCAL);
 
-    let ret_ty = func.ret_ty.map_modes(|param| inst_params[param]);
+    let ret_ty = instantiate_type_with(&func.ret_ty, |param| inst_params[*param]);
 
     let body = annot_expr(
+        interner,
         customs,
         funcs,
         func_renderer,
@@ -382,21 +387,25 @@ fn annot_func(
         &annot::FUNC_BODY_PATH(),
         &mut ctx,
         &func.body,
-        ret_ty.modes(),
+        &ret_ty,
     );
 
     let (_, (_, arg_obligation)) = ctx.pop_local();
     FuncDef {
         purity: func.purity,
-        arg_ty: arg_ty.into_modes(),
-        ret_ty: ret_ty.into_modes(),
+        arg_ty,
+        ret_ty,
         arg_obligation,
         body,
         profile_point: func.profile_point,
     }
 }
 
-pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger) -> ob::Program {
+pub fn annot_obligations(
+    interner: &Interner,
+    program: annot::Program,
+    progress: impl ProgressLogger,
+) -> ob::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
     let mut func_insts = FuncInstances::new();
 
@@ -415,6 +424,7 @@ pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger)
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
     while let Some((new_id, spec)) = func_insts.pop_pending() {
         let annot = annot_func(
+            interner,
             &program.custom_types,
             &program.funcs,
             &func_renderer,
@@ -438,11 +448,9 @@ pub fn annot_obligations(program: annot::Program, progress: impl ProgressLogger)
                 .custom_types
                 .types
                 .into_values()
-                .map(|typedef| ob::TypeDef {
-                    ty: typedef.ty.into_modes(),
-                    ov: typedef.ov,
-                    slot_count: typedef.slot_count,
-                    ov_slots: typedef.ov_slots,
+                .map(|typedef| ob::CustomTypeDef {
+                    content: typedef.content.shape,
+                    scc: typedef.scc,
                 })
                 .collect(),
         ),

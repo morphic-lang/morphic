@@ -22,6 +22,36 @@ where
     }
 }
 
+impl<I, J> DoubleEndedIterator for ZipEq<I, J>
+where
+    I: DoubleEndedIterator,
+    J: DoubleEndedIterator,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match (self.lhs.next_back(), self.rhs.next_back()) {
+            (Some(a), Some(b)) => Some((a, b)),
+            (None, None) => None,
+            (Some(_), None) => panic!(".zip_eq(): rhs iterator is shorter"),
+            (None, Some(_)) => panic!(".zip_eq(): lhs iterator is shorter"),
+        }
+    }
+}
+
+impl<I, J> ExactSizeIterator for ZipEq<I, J>
+where
+    I: ExactSizeIterator,
+    J: ExactSizeIterator,
+{
+    fn len(&self) -> usize {
+        assert_eq!(
+            self.lhs.len(),
+            self.rhs.len(),
+            ".zip_eq(): iterators have different lengths"
+        );
+        self.lhs.len()
+    }
+}
+
 pub trait IterExt {
     fn zip_eq<T>(self, other: T) -> ZipEq<Self, T::IntoIter>
     where

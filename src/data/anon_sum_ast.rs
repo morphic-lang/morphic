@@ -11,7 +11,7 @@
 // necessary, because they provide the only mechanism for expressing recursive types.
 
 use crate::data::first_order_ast as first_ord;
-use crate::data::intrinsics::Intrinsic;
+use crate::data::intrinsics::{self as intrs, Intrinsic};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -21,13 +21,23 @@ use id_collections::IdVec;
 pub enum Type {
     Bool,
     Num(first_ord::NumType),
-    Array(Box<Type>),
-    HoleArray(Box<Type>),
     // TODO: If sum type fields are indexed by typed ids, should products types be as well?
     Tuple(Vec<Type>),
     Variants(IdVec<first_ord::VariantId, Type>),
-    Boxed(Box<Type>),
     Custom(first_ord::CustomTypeId),
+    Array(Box<Type>),
+    HoleArray(Box<Type>),
+    Boxed(Box<Type>),
+}
+
+impl Type {
+    pub fn from_intr(type_: &intrs::Type) -> Type {
+        match type_ {
+            intrs::Type::Bool => Type::Bool,
+            intrs::Type::Num(num_type) => Type::Num(*num_type),
+            intrs::Type::Tuple(items) => Type::Tuple(items.iter().map(Self::from_intr).collect()),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

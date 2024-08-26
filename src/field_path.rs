@@ -80,7 +80,7 @@ fn get_names_in_excluding<'a>(
                 if !typedefs_on_path.contains(&scc_id) {
                     let mut sub_typedefs_on_path = typedefs_on_path.clone();
                     sub_typedefs_on_path.insert(scc_id);
-                    for scc_type in &type_defs.sccs[scc_id] {
+                    for scc_type in type_defs.sccs.component(scc_id).nodes {
                         add_names_from_type(
                             type_defs,
                             names,
@@ -195,7 +195,7 @@ pub fn get_fold_points_in<'a>(
                         },
                     ));
 
-                    for scc_type in &type_defs.sccs[scc_id] {
+                    for scc_type in type_defs.sccs.component(scc_id).nodes {
                         add_points_from_type(
                             type_defs,
                             points,
@@ -231,7 +231,7 @@ pub fn get_sub_names_in<'a>(
         }
         FoldPointKind::CustomScc(scc_id) => {
             let mut sub_names = Vec::new();
-            for scc_type in &type_defs.sccs[*scc_id] {
+            for scc_type in type_defs.sccs.component(*scc_id).nodes {
                 sub_names.extend(
                     get_names_in_excluding(
                         type_defs,
@@ -331,7 +331,7 @@ pub fn get_refs_in_excluding<'a>(
                 if !typedefs_on_path.contains(&scc_id) {
                     let mut sub_typedefs_on_path = typedefs_on_path.clone();
                     sub_typedefs_on_path.insert(scc_id);
-                    for scc_type in &type_defs.sccs[scc_id] {
+                    for scc_type in type_defs.sccs.component(scc_id).nodes {
                         add_refs_from_type(
                             type_defs,
                             refs,

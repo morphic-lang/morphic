@@ -3,41 +3,34 @@
 //! core logic for the pass is contained in `instantiate_expr`.
 
 use crate::data::anon_sum_ast as anon;
-use crate::data::borrow_spec as spec;
-use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType, VariantId};
+use crate::data::borrow_model as model;
+use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
+use crate::data::guarded_ast::{self as guarded, CanGuard};
 use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
-    self as annot, CollectLtData, CollectModeData, CollectOverlay, Lt, LtData, LtParam, Mode,
-    ModeData, ModeParam, ModeSolution, ModeVar, Occur, Overlay, SlotId,
+    self as annot, HeapModes, Interner, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur,
+    Position, Res, ResModes, SelfInfo, Shape, ShapeInner, SlotId, Type,
 };
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::intrinsic_config::intrinsic_sig;
-use crate::pretty_print::borrow_common::{write_lifetime, write_path};
-use crate::pretty_print::mode_annot::write_typedef;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
-use crate::util::graph as old_graph; // TODO: switch completely to `id_graph_sccs`
-use crate::util::immut_context as immut;
+use crate::util::collection_ext::{FnWrap, MapRef};
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::{btree_map_refs, set, FnWrap, MapRef};
+use crate::util::non_empty_set::NonEmptySet;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
-use id_collections::{id_type, Count, IdMap, IdVec};
+use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
-
-type ImmutContext = immut::ImmutContext<LocalId, annot::Type<ModeVar, Lt>>;
-type LocalUpdates = immut::LocalUpdates<LocalId, annot::Type<ModeVar, Lt>>;
-type TrackedContext = immut::TrackedContext<LocalId, annot::Type<ModeVar, Lt>>;
 
 // It is crucial that RC specialization (the next pass) does not inhibit tail calls by inserting
-// retains/releases after them. To that end, this pass must handle tail calls specially during
-// constraint generation. The machinery here is duplicative of the machinery during the actual tail
-// call elimination pass, but it is better to recompute later which calls are tail in case we
-// accidently *do* inhibit such a call.
+// retains/releases after them. Hence, this pass must detect tail calls during constraint
+// generation. The machinery here is duplicative of the machinery for the actual tail call
+// elimination pass, but it is better to recompute later which calls are tail in case we accidently
+// *do* inhibit such a call.
 
 fn last_index<T>(slice: &[T]) -> Option<usize> {
     if slice.is_empty() {
@@ -73,25 +66,25 @@ fn add_tail_call_deps(deps: &mut BTreeSet<CustomFuncId>, vars_in_scope: usize, e
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Position {
+enum IsTail {
     Tail,
     NotTail,
 }
 
 #[derive(Clone, Debug)]
 struct TailFuncDef {
-    pub purity: Purity,
-    pub arg_type: anon::Type,
-    pub ret_type: anon::Type,
-    pub body: TailExpr,
-    pub profile_point: Option<prof::ProfilePointId>,
+    purity: Purity,
+    arg_ty: anon::Type,
+    ret_ty: anon::Type,
+    body: TailExpr,
+    profile_point: Option<prof::ProfilePointId>,
 }
 
 /// A `flat::Expr` where all tail calls are marked.
 #[derive(Clone, Debug)]
 enum TailExpr {
     Local(LocalId),
-    Call(Purity, Position, CustomFuncId, LocalId),
+    Call(Purity, IsTail, CustomFuncId, LocalId),
     Branch(LocalId, Vec<(flat::Condition, TailExpr)>, anon::Type),
     LetMany(Vec<(anon::Type, TailExpr)>, LocalId),
 
@@ -118,7 +111,7 @@ enum TailExpr {
 
 fn mark_tail_calls(
     tail_candidates: &BTreeSet<CustomFuncId>,
-    pos: Position,
+    pos: IsTail,
     vars_in_scope: usize,
     expr: &flat::Expr,
 ) -> TailExpr {
@@ -126,10 +119,10 @@ fn mark_tail_calls(
         flat::Expr::Local(id) => TailExpr::Local(*id),
 
         flat::Expr::Call(purity, func, arg) => {
-            let actual_pos = if pos == Position::Tail && tail_candidates.contains(func) {
-                Position::Tail
+            let actual_pos = if pos == IsTail::Tail && tail_candidates.contains(func) {
+                IsTail::Tail
             } else {
-                Position::NotTail
+                IsTail::NotTail
             };
             TailExpr::Call(*purity, actual_pos, *func, *arg)
         }
@@ -159,7 +152,7 @@ fn mark_tail_calls(
                     let sub_pos = if is_final_binding {
                         pos
                     } else {
-                        Position::NotTail
+                        IsTail::NotTail
                     };
 
                     (
@@ -218,13 +211,13 @@ fn compute_tail_calls(
         let tail_candidates = scc.nodes.into_iter().copied().collect();
         for func_id in scc.nodes {
             let func = &funcs[func_id];
-            let body = mark_tail_calls(&tail_candidates, Position::Tail, 1, &func.body);
+            let body = mark_tail_calls(&tail_candidates, IsTail::Tail, 1, &func.body);
             tail_funcs.insert(
                 func_id,
                 TailFuncDef {
                     purity: func.purity,
-                    arg_type: func.arg_type.clone(),
-                    ret_type: func.ret_type.clone(),
+                    arg_ty: func.arg_type.clone(),
+                    ret_ty: func.ret_type.clone(),
                     body,
                     profile_point: func.profile_point,
                 },
@@ -241,122 +234,126 @@ fn compute_tail_calls(
 // We start by lifting the set of custom type definitions from the previous pass into the current
 // pass by annotating them with fresh mode and lifetime parameters.
 
-fn freshen_overlay(count: &mut Count<SlotId>, ov: &Overlay<SlotId>) -> Overlay<SlotId> {
-    ov.iter().map(|_| count.inc()).collect_overlay(&ov)
-}
-
-fn parameterize_mode_data<'a>(
-    customs: impl MapRef<'a, CustomTypeId, annot::TypeDef>,
-    sccs: Option<(CustomTypeSccId, &IdVec<CustomTypeId, CustomTypeSccId>)>,
-    count: &mut Count<SlotId>,
-    ty: &anon::Type,
-) -> ModeData<SlotId> {
-    match ty {
-        anon::Type::Bool => ModeData::Bool,
-        anon::Type::Num(n) => ModeData::Num(*n),
-        anon::Type::Tuple(tys) => ModeData::Tuple(
-            tys.iter()
-                .map(|ty| parameterize_mode_data(customs, sccs, count, ty))
-                .collect(),
-        ),
-        anon::Type::Variants(tys) => ModeData::Variants(
-            tys.map_refs(|_, ty| parameterize_mode_data(customs, sccs, count, ty)),
-        ),
-        anon::Type::Custom(id) => {
-            if sccs.map_or(false, |(scc_id, sccs)| sccs[id] == scc_id) {
-                ModeData::SelfCustom(*id)
-            } else {
-                let custom = customs.get(id).unwrap();
-                let osub = custom
-                    .ov_slots
-                    .iter()
-                    .map(|key| (*key, count.inc()))
-                    .collect();
-                let tsub = IdVec::from_count_with(custom.slot_count, |_| count.inc());
-                ModeData::Custom(*id, osub, tsub)
+fn positions_impl<'a>(
+    customs: impl MapRef<'a, CustomTypeId, annot::CustomTypeDef>,
+    pos: Position,
+    shape: &Shape,
+    result: &mut Vec<Position>,
+) {
+    match &*shape.inner {
+        ShapeInner::Bool | ShapeInner::Num(_) => {}
+        ShapeInner::Tuple(tys) => {
+            for ty in tys {
+                positions_impl(customs, pos, ty, result);
             }
         }
-        anon::Type::Array(ty) => {
-            let slot = count.inc();
-            let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = freshen_overlay(count, &ty.unapply_overlay());
-            ModeData::Array(slot, ov, Box::new(ty))
+        ShapeInner::Variants(tys) => {
+            for (_, ty) in tys {
+                positions_impl(customs, pos, ty, result);
+            }
         }
-        anon::Type::HoleArray(ty) => {
-            let slot = count.inc();
-            let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = freshen_overlay(count, &ty.unapply_overlay());
-            ModeData::HoleArray(slot, ov, Box::new(ty))
-        }
-        anon::Type::Boxed(ty) => {
-            let slot = count.inc();
-            let ty = parameterize_mode_data(customs, sccs, count, ty);
-            let ov = freshen_overlay(count, &ty.unapply_overlay());
-            ModeData::Boxed(slot, ov, Box::new(ty))
+        ShapeInner::Custom(id) => match pos {
+            Position::Stack => {
+                result.extend(&customs.get(id).pos);
+            }
+            Position::Heap => {
+                result.extend(customs.get(id).pos.iter().map(|_| Position::Heap));
+            }
+        },
+        ShapeInner::SelfCustom(_) => {}
+        ShapeInner::Array(ty) | ShapeInner::HoleArray(ty) | ShapeInner::Boxed(ty) => {
+            result.push(pos);
+            positions_impl(customs, Position::Heap, ty, result);
         }
     }
 }
 
-/// `sccs` determines whether `SelfCustom` nodes are generated. If parameterizing the body of a
-/// custom type, `sccs` should be a tuple of the SCC ID of that custom type's SCC and the full list
-/// of SCCs. Otherwise, `sccs` should be `None`.
-fn parameterize_type<'a>(
-    customs: impl MapRef<'a, CustomTypeId, annot::TypeDef>,
-    sccs: Option<(CustomTypeSccId, &IdVec<CustomTypeId, CustomTypeSccId>)>,
-    count: &mut Count<SlotId>,
-    ty: &anon::Type,
-) -> annot::Type<SlotId, SlotId> {
-    let modes = parameterize_mode_data(customs, sccs, count, ty);
-    let lts = modes.extract_lts(customs);
-    annot::Type::new(lts, modes)
+fn positions<'a>(
+    customs: impl MapRef<'a, CustomTypeId, annot::CustomTypeDef>,
+    shape: &Shape,
+) -> Vec<Position> {
+    let mut result = Vec::new();
+    positions_impl(customs, Position::Stack, shape, &mut result);
+    assert!(result.len() == shape.num_slots);
+    result
 }
 
-// TODO: We could remove this if we had a version of `instantiate_type` for `anon::Type`.
-fn parameterize_type_simple(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
+fn gen_resources<'a>(
+    customs: impl MapRef<'a, CustomTypeId, annot::CustomTypeDef>,
+    shape: &Shape,
+) -> IdVec<SlotId, Res<ModeParam, LtParam>> {
+    let mut next_mode = Count::new();
+    let mut next_lt = Count::new();
+    IdVec::from_vec(
+        positions(customs, shape)
+            .into_iter()
+            .map(|pos| Res {
+                modes: match pos {
+                    Position::Stack => ResModes::Stack(next_mode.inc()),
+                    Position::Heap => ResModes::Heap(HeapModes {
+                        access: next_mode.inc(),
+                        storage: next_mode.inc(),
+                    }),
+                },
+                lt: next_lt.inc(),
+            })
+            .collect(),
+    )
+}
+
+fn parameterize_type_in_scc<'a>(
+    interner: &Interner,
+    parameterized: impl MapRef<'a, CustomTypeId, annot::CustomTypeDef>,
+    sccs: impl MapRef<'a, CustomTypeId, flat::CustomTypeSccId>,
+    self_info: SelfInfo,
     ty: &anon::Type,
-) -> annot::Type<SlotId, SlotId> {
-    let mut count = Count::new();
-    parameterize_type(customs, None, &mut count, ty)
+) -> Type<ModeParam, LtParam> {
+    let shape = Shape::from_anon(interner, parameterized, sccs, self_info, ty);
+    let res = gen_resources(parameterized, &shape);
+    Type { shape, res }
+}
+
+fn parameterize_type<'a>(
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    self_info: SelfInfo,
+    ty: &anon::Type,
+) -> Type<ModeParam, LtParam> {
+    parameterize_type_in_scc(
+        interner,
+        customs,
+        FnWrap::wrap(|id| &customs[*id].scc),
+        self_info,
+        ty,
+    )
 }
 
 fn parameterize_custom_scc(
-    old_customs: &IdVec<CustomTypeId, flat::CustomTypeDef>,
-    parameterized: &IdMap<CustomTypeId, annot::TypeDef>,
-    sccs: &IdVec<CustomTypeId, CustomTypeSccId>,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, guarded::CustomTypeDef>,
+    parameterized: &IdMap<CustomTypeId, annot::CustomTypeDef>,
     scc_id: CustomTypeSccId,
-    scc: &old_graph::Scc<CustomTypeId>,
-) -> BTreeMap<CustomTypeId, annot::TypeDef> {
-    let mut count = Count::new();
-    let mut scc_ov_slots = BTreeSet::new();
-    let mut scc_lt_slots = BTreeSet::new();
-    let mut bodies = BTreeMap::new();
-
-    for id in scc.iter() {
-        let ty = parameterize_type(
-            parameterized,
-            Some((scc_id, sccs)),
-            &mut count,
-            &old_customs[*id].content,
-        );
-
-        let ov = ty.modes().unapply_overlay();
-        scc_ov_slots.extend(ov.iter().copied());
-        scc_lt_slots.extend(ty.lts().iter().copied());
-        bodies.insert(*id, (ty, ov));
-    }
-
-    bodies
-        .into_iter()
-        .map(|(id, (ty, ov))| {
+    scc: Scc<'_, CustomTypeId>,
+) -> BTreeMap<CustomTypeId, annot::CustomTypeDef> {
+    scc.nodes
+        .iter()
+        .map(|&id| {
+            let custom = &customs[id];
+            let content = parameterize_type_in_scc(
+                interner,
+                parameterized,
+                FnWrap::wrap(|id| &customs[*id].scc),
+                SelfInfo::Custom(scc_id),
+                &custom.content,
+            );
+            let pos = positions(parameterized, &content.shape);
             (
                 id,
-                annot::TypeDef {
-                    ty,
-                    ov,
-                    slot_count: count,
-                    ov_slots: scc_ov_slots.clone(),
-                    lt_slots: scc_lt_slots.clone(),
+                annot::CustomTypeDef {
+                    content,
+                    pos,
+                    scc: custom.scc,
+                    can_guard: custom.can_guard,
                 },
             )
         })
@@ -364,24 +361,19 @@ fn parameterize_custom_scc(
 }
 
 fn parameterize_customs(
-    customs: &flat::CustomTypes,
-    custom_sccs: &IdVec<CustomTypeId, CustomTypeSccId>,
-) -> IdVec<CustomTypeId, annot::TypeDef> {
+    interner: &Interner,
+    customs: &guarded::CustomTypes,
+) -> IdVec<CustomTypeId, annot::CustomTypeDef> {
     let mut parameterized = IdMap::new();
 
     for (scc_id, scc) in &customs.sccs {
         let to_populate =
-            parameterize_custom_scc(&customs.types, &parameterized, custom_sccs, scc_id, scc);
-
-        debug_assert_eq!(
-            to_populate.keys().collect::<BTreeSet<_>>(),
-            scc.iter().collect::<BTreeSet<_>>()
-        );
-
+            parameterize_custom_scc(interner, &customs.types, &parameterized, scc_id, scc);
         for (id, typedef) in to_populate {
-            parameterized.insert(id, typedef);
+            parameterized.insert_vacant(id, typedef);
         }
     }
+
     parameterized.to_id_vec(customs.types.count())
 }
 
@@ -407,407 +399,300 @@ fn parameterize_customs(
 
 type ConstrGraph = in_eq::ConstrGraph<ModeVar, Mode>;
 
-fn require_owned(constrs: &mut ConstrGraph, var: ModeVar) {
-    constrs.require_lte_const(&Mode::Owned, var);
-}
-
-fn mode_bind(constrs: &mut ConstrGraph, ty1: &ModeData<ModeVar>, ty2: &ModeData<ModeVar>) {
-    debug_assert_eq!(ty1.shape(), ty2.shape());
-    for (m1, m2) in ty1.iter().zip_eq(ty2.iter()) {
-        constrs.require_eq(*m1, *m2);
+fn require_owned(constrs: &mut ConstrGraph, modes: ResModes<ModeVar>) {
+    match modes {
+        ResModes::Stack(stack) => {
+            constrs.require_le_const(&Mode::Owned, stack);
+        }
+        ResModes::Heap(heap) => {
+            constrs.require_le_const(&Mode::Owned, heap.access);
+            constrs.require_le_const(&Mode::Owned, heap.storage);
+        }
     }
 }
 
-fn freshen_stack_modes(constrs: &mut ConstrGraph, ty: &ModeData<ModeVar>) -> ModeData<ModeVar> {
-    match ty {
-        ModeData::Bool => ModeData::Bool,
-        ModeData::Num(n) => ModeData::Num(*n),
-        ModeData::Tuple(tys) => ModeData::Tuple(
-            tys.iter()
-                .map(|ty| freshen_stack_modes(constrs, ty))
-                .collect(),
-        ),
-        ModeData::Variants(tys) => {
-            ModeData::Variants(tys.map_refs(|_, ty| freshen_stack_modes(constrs, ty)))
+fn require_eq(constrs: &mut ConstrGraph, modes1: &ResModes<ModeVar>, modes2: &ResModes<ModeVar>) {
+    match (modes1, modes2) {
+        (ResModes::Stack(stack1), ResModes::Stack(stack2)) => {
+            constrs.require_eq(*stack1, *stack2);
         }
-        ModeData::SelfCustom(_) => ModeData::Bool,
-        ModeData::Custom(id, osub, tsub) => ModeData::Custom(
-            *id,
-            btree_map_refs(osub, |_, _| constrs.fresh_var()),
-            tsub.clone(),
-        ),
-        ModeData::Array(_, ov, ty) => ModeData::Array(constrs.fresh_var(), ov.clone(), ty.clone()),
-        ModeData::HoleArray(_, ov, ty) => {
-            ModeData::HoleArray(constrs.fresh_var(), ov.clone(), ty.clone())
+        (ResModes::Heap(heap1), ResModes::Heap(heap2)) => {
+            constrs.require_eq(heap1.access, heap2.access);
+            constrs.require_eq(heap1.storage, heap2.storage);
         }
-        ModeData::Boxed(_, ov, ty) => ModeData::Boxed(constrs.fresh_var(), ov.clone(), ty.clone()),
+        _ => panic!("mismatched modes"),
+    }
+}
+
+fn bind_modes<L1, L2>(constrs: &mut ConstrGraph, ty1: &Type<ModeVar, L1>, ty2: &Type<ModeVar, L2>) {
+    debug_assert_eq!(ty1.shape, ty2.shape);
+    for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
+        require_eq(constrs, &res1.modes, &res2.modes);
+    }
+}
+
+// Unfortunately, we can't quite use `MapRef` as the type of `subst` here because, for the callers
+// of this function to be efficient, `subst` must return values (not references).
+fn subst_modes<M1: Clone, M2, L: Clone>(ty: &Type<M1, L>, subst: impl Fn(M1) -> M2) -> Type<M2, L> {
+    let f = |res: &Res<M1, L>| {
+        let modes = match &res.modes {
+            ResModes::Stack(stack) => ResModes::Stack(subst(stack.clone())),
+            ResModes::Heap(heap) => ResModes::Heap(HeapModes {
+                access: subst(heap.access.clone()),
+                storage: subst(heap.storage.clone()),
+            }),
+        };
+        let lt = res.lt.clone();
+        Res { modes, lt }
+    };
+    Type {
+        shape: ty.shape.clone(),
+        res: IdVec::from_vec(ty.iter().map(f).collect()),
     }
 }
 
 fn emit_occur_constr(
     constrs: &mut ConstrGraph,
     scope: &annot::Path,
-    binding_mode: ModeVar,
-    use_mode: ModeVar,
+    binding_modes: &ResModes<ModeVar>,
+    use_modes: &ResModes<ModeVar>,
     use_lt: &Lt,
 ) {
     if use_lt.does_not_exceed(scope) {
-        // Case: this is a non-escaping, ("opportunistic" or "borrow") occurrence.
-        constrs.require_le(use_mode, binding_mode);
+        // Case: this is a non-escaping ("opportunistic" or "borrow") occurrence.
+        match (binding_modes, use_modes) {
+            (ResModes::Stack(binding_stack), ResModes::Stack(use_stack)) => {
+                constrs.require_le(*use_stack, *binding_stack);
+            }
+            (ResModes::Heap(binding_heap), ResModes::Heap(use_heap)) => {
+                constrs.require_le(use_heap.access, binding_heap.access);
+                constrs.require_eq(use_heap.storage, binding_heap.storage);
+            }
+            _ => panic!("mismatched modes"),
+        }
     } else {
         // Case: this is an escaping ("move" or "dup") occurrence.
-        constrs.require_eq(binding_mode, use_mode);
-    }
-}
-
-fn emit_occur_constrs_overlay(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    constrs: &mut ConstrGraph,
-    scope: &annot::Path,
-    binding_ov: &Overlay<ModeVar>,
-    use_ov: &Overlay<ModeVar>,
-    use_lts: &LtData<Lt>,
-) {
-    for ((binding_mode, use_mode), use_lt) in binding_ov
-        .iter()
-        .zip_eq(use_ov.iter())
-        .zip_eq(use_lts.iter_stack(customs))
-    {
-        emit_occur_constr(constrs, scope, *binding_mode, *use_mode, use_lt);
-    }
-}
-
-fn emit_occur_constrs_heap(
-    strategy: Strategy,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    constrs: &mut ConstrGraph,
-    scope: &annot::Path,
-    binding_modes: &ModeData<ModeVar>,
-    use_modes: &ModeData<ModeVar>,
-    use_lts: &LtData<Lt>,
-) {
-    use LtData as L;
-    use ModeData as M;
-    match (binding_modes, use_modes, use_lts) {
-        (M::Bool, M::Bool, L::Bool) => {}
-        (M::Num(n1), M::Num(n2), L::Num(_)) if n1 == n2 => {}
-        (M::Tuple(ms1), M::Tuple(ms2), L::Tuple(lts)) => {
-            for ((m1, m2), lt) in ms1.iter().zip_eq(ms2).zip_eq(lts) {
-                emit_occur_constrs_heap(strategy, customs, constrs, scope, m1, m2, lt);
-            }
-        }
-        (M::Variants(ms1), M::Variants(ms2), L::Variants(lts)) => {
-            for ((m1, m2), lt) in ms1.values().zip_eq(ms2.values()).zip_eq(lts.values()) {
-                emit_occur_constrs_heap(strategy, customs, constrs, scope, m1, m2, lt);
-            }
-        }
-        (M::SelfCustom(id1), M::SelfCustom(id2), L::SelfCustom(_)) if id1 == id2 => {}
-        (M::Custom(id1, osub1, tsub1), M::Custom(id2, osub2, tsub2), L::Custom(_, lsub))
-            if id1 == id2 =>
-        {
-            for (m1, m2) in osub1.values().zip_eq(osub2.values()) {
-                constrs.require_eq(*m1, *m2);
-            }
-            let custom = &customs[id1];
-            emit_occur_constrs_heap(
-                strategy,
-                customs,
-                constrs,
-                scope,
-                &custom.ty.modes().hydrate(tsub1),
-                &custom.ty.modes().hydrate(tsub2),
-                &custom.ty.lts().hydrate(lsub),
-            );
-        }
-        (M::Array(m1, ov1, ms1), M::Array(m2, ov2, ms2), L::Array(_, lts))
-        | (M::HoleArray(m1, ov1, ms1), M::HoleArray(m2, ov2, ms2), L::HoleArray(_, lts))
-        | (M::Boxed(m1, ov1, ms1), M::Boxed(m2, ov2, ms2), L::Boxed(_, lts)) => {
-            constrs.require_eq(*m1, *m2);
-            emit_occur_constrs_heap(strategy, customs, constrs, scope, ms1, ms2, lts);
-            emit_occur_constrs_overlay(customs, constrs, scope, ov1, ov2, lts);
-        }
-        _ => panic!("incompatible types"),
+        require_eq(constrs, binding_modes, use_modes);
     }
 }
 
 fn emit_occur_constrs(
-    strategy: Strategy,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
     constrs: &mut ConstrGraph,
     scope: &annot::Path,
-    binding_modes: &ModeData<ModeVar>,
-    use_modes: &ModeData<ModeVar>,
-    use_lts: &LtData<Lt>,
+    binding_ty: &Type<ModeVar, Lt>,
+    use_ty: &Type<ModeVar, Lt>,
 ) {
-    use LtData as L;
-    use ModeData as M;
-    match (binding_modes, use_modes, use_lts) {
-        (M::Bool, M::Bool, L::Bool) => {}
-        (M::Num(n1), M::Num(n2), L::Num(_)) if n1 == n2 => {}
-        (M::Tuple(ms1), M::Tuple(ms2), L::Tuple(lts)) => {
-            for ((m1, m2), lt) in ms1.iter().zip_eq(ms2).zip_eq(lts) {
-                emit_occur_constrs(strategy, customs, constrs, scope, m1, m2, lt);
-            }
-        }
-        (M::Variants(ms1), M::Variants(ms2), L::Variants(lts)) => {
-            for ((m1, m2), lt) in ms1.values().zip_eq(ms2.values()).zip_eq(lts.values()) {
-                emit_occur_constrs(strategy, customs, constrs, scope, m1, m2, lt);
-            }
-        }
-        (M::SelfCustom(id1), M::SelfCustom(id2), L::SelfCustom(_)) if id1 == id2 => {}
-        (M::Custom(id1, osub1, tsub1), M::Custom(id2, osub2, tsub2), L::Custom(_, lsub))
-            if id1 == id2 =>
-        {
-            let custom = &customs[id1];
-            let use_lts = custom.ty.lts().hydrate(lsub);
-            emit_occur_constrs_heap(
-                strategy,
-                customs,
-                constrs,
-                scope,
-                &custom.ty.modes().hydrate(tsub1),
-                &custom.ty.modes().hydrate(tsub2),
-                &use_lts,
-            );
-            emit_occur_constrs_overlay(
-                customs,
-                constrs,
-                scope,
-                &custom.ov.hydrate(osub1),
-                &custom.ov.hydrate(osub2),
-                &use_lts,
-            )
-        }
-        (M::Array(m1, ov1, ms1), M::Array(m2, ov2, ms2), L::Array(lt, lts))
-        | (M::HoleArray(m1, ov1, ms1), M::HoleArray(m2, ov2, ms2), L::HoleArray(lt, lts))
-        | (M::Boxed(m1, ov1, ms1), M::Boxed(m2, ov2, ms2), L::Boxed(lt, lts)) => {
-            if strategy == Strategy::OnlyTrivialBorrows {
-                emit_occur_constr(constrs, scope, *m1, *m2, lt);
-                for m in ms1
-                    .iter()
-                    .chain(ms2.iter())
-                    .chain(ov1.iter())
-                    .chain(ov2.iter())
-                {
-                    require_owned(constrs, *m);
-                }
-            } else {
-                emit_occur_constr(constrs, scope, *m1, *m2, lt);
-                emit_occur_constrs_heap(strategy, customs, constrs, scope, ms1, ms2, lts);
-                emit_occur_constrs_overlay(customs, constrs, scope, ov1, ov2, lts);
-            }
-        }
-        _ => panic!("incompatible types"),
+    debug_assert_eq!(binding_ty.shape, use_ty.shape);
+    for (binding_res, use_res) in binding_ty.iter().zip_eq(use_ty.iter()) {
+        emit_occur_constr(
+            constrs,
+            scope,
+            &binding_res.modes,
+            &use_res.modes,
+            &use_res.lt,
+        );
     }
 }
 
-fn same_shape(ty1: &anon::Type, ty2: &ModeData<ModeVar>) -> bool {
-    match (ty1, ty2) {
-        (anon::Type::Bool, ModeData::Bool) => true,
-        (anon::Type::Num(n1), ModeData::Num(n2)) => n1 == n2,
-        (anon::Type::Tuple(items1), ModeData::Tuple(items2)) => {
-            items1.len() == items2.len()
-                && items1
-                    .iter()
-                    .zip(items2.iter())
-                    .all(|(ty1, ty2)| same_shape(ty1, ty2))
-        }
-        (anon::Type::Variants(variants1), ModeData::Variants(variants2)) => {
-            variants1.len() == variants2.len()
-                && variants1
-                    .iter()
-                    .zip(variants2.iter())
-                    .all(|((_, ty1), (_, ty2))| same_shape(ty1, ty2))
-        }
-        (anon::Type::Custom(id1), ModeData::SelfCustom(id2)) => id1 == id2,
-        (anon::Type::Custom(id1), ModeData::Custom(id2, _, _)) => id1 == id2,
-        (anon::Type::Array(ty1), ModeData::Array(_, _, ty2)) => same_shape(ty1, ty2),
-        (anon::Type::HoleArray(ty1), ModeData::HoleArray(_, _, ty2)) => same_shape(ty1, ty2),
-        (anon::Type::Boxed(ty1), ModeData::Boxed(_, _, ty2)) => same_shape(ty1, ty2),
-        _ => false,
+/// This meet is left-biased in that the modes of `ty1` are preserved. Note that types are
+/// contravariant in their lifetimes (unlike in Rust).
+fn left_meet(
+    interner: &Interner,
+    ty1: &Type<ModeVar, Lt>,
+    ty2: &Type<ModeVar, Lt>,
+) -> Type<ModeVar, Lt> {
+    debug_assert_eq!(ty1.shape, ty2.shape);
+    let f = |(res1, res2): (&Res<_, Lt>, &Res<_, Lt>)| Res {
+        modes: res1.modes.clone(),
+        lt: res1.lt.join(interner, &res2.lt),
+    };
+    Type {
+        shape: ty1.shape.clone(),
+        res: IdVec::from_vec(ty1.iter().zip_eq(ty2.iter()).map(f).collect()),
     }
 }
 
-fn lt_bind(lts1: &LtData<LtParam>, lts2: &LtData<Lt>) -> BTreeMap<LtParam, Lt> {
+fn wrap_lts<M: Clone>(ty: &Type<M, LtParam>) -> Type<M, Lt> {
+    let f = |res: &Res<M, LtParam>| Res {
+        modes: res.modes.clone(),
+        lt: Lt::Join(NonEmptySet::new(res.lt)),
+    };
+    Type {
+        shape: ty.shape.clone(),
+        res: IdVec::from_vec(ty.iter().map(f).collect()),
+    }
+}
+
+fn bind_lts<M>(
+    interner: &Interner,
+    ty1: &Type<M, LtParam>,
+    ty2: &Type<M, Lt>,
+) -> BTreeMap<LtParam, Lt> {
+    debug_assert_eq!(ty1.shape, ty2.shape);
     let mut result = BTreeMap::new();
-    for (param, lt) in lts1.iter().zip_eq(lts2.iter()) {
+    for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
         result
-            .entry(*param)
-            .and_modify(|old: &mut Lt| *old = old.join(&lt))
-            .or_insert_with(|| lt.clone());
+            .entry(res1.lt)
+            .and_modify(|old: &mut Lt| *old = old.join(interner, &res2.lt))
+            .or_insert_with(|| res2.lt.clone());
     }
     result
 }
 
-fn subst_lts(lts: &LtData<Lt>, subst: &BTreeMap<LtParam, Lt>) -> LtData<Lt> {
-    lts.iter()
-        .map(|lt| match lt {
+fn subst_lts<M: Clone>(
+    interner: &Interner,
+    ty: &Type<M, Lt>,
+    subst: &BTreeMap<LtParam, Lt>,
+) -> Type<M, Lt> {
+    let f = |res: &Res<M, Lt>| {
+        let modes = res.modes.clone();
+        let lt = match &res.lt {
             Lt::Empty => Lt::Empty,
             Lt::Local(lt) => Lt::Local(lt.clone()),
             Lt::Join(params) => params
                 .iter()
                 .map(|p| &subst[p])
-                .fold(Lt::Empty, |lt1, lt2| Lt::join(&lt1, lt2)),
+                .fold(Lt::Empty, |lt1, lt2| lt1.join(interner, lt2)),
+        };
+        Res { modes, lt }
+    };
+    Type {
+        shape: ty.shape.clone(),
+        res: IdVec::from_vec(ty.iter().map(f).collect()),
+    }
+}
+
+fn join_everywhere<M: Clone>(interner: &Interner, ty: &Type<M, Lt>, new_lt: &Lt) -> Type<M, Lt> {
+    let f = |res: &Res<M, Lt>| Res {
+        modes: res.modes.clone(),
+        lt: res.lt.join(interner, new_lt),
+    };
+    Type {
+        shape: ty.shape.clone(),
+        res: IdVec::from_vec(ty.iter().map(f).collect()),
+    }
+}
+
+fn lt_equiv<M>(ty1: &Type<M, Lt>, ty2: &Type<M, Lt>) -> bool {
+    debug_assert_eq!(ty1.shape, ty2.shape);
+    ty1.iter()
+        .zip_eq(ty2.iter())
+        .all(|(res1, res2)| res1.lt == res2.lt)
+}
+
+fn nth_res_bounds(shapes: &[Shape], n: usize) -> (usize, usize) {
+    let start = shapes.iter().map(|shape| shape.num_slots).take(n).sum();
+    let end = start + shapes[n + 1].num_slots;
+    (start, end)
+}
+
+struct ShapeIter<'a, M, L> {
+    shapes: std::slice::Iter<'a, Shape>,
+    res: &'a [Res<M, L>],
+    start: usize,
+}
+
+impl<'a, M, L> Iterator for ShapeIter<'a, M, L> {
+    type Item = (&'a Shape, &'a [Res<M, L>]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let shape = self.shapes.next()?;
+        let end = self.start + shape.num_slots;
+        let res = &self.res[self.start..end];
+        self.start = end;
+        Some((shape, res))
+    }
+}
+
+fn iter_shapes<'a, M, L>(
+    shapes: &'a [Shape],
+    res: &'a [Res<M, L>],
+) -> impl Iterator<Item = (&'a Shape, &'a [Res<M, L>])> {
+    ShapeIter {
+        shapes: shapes.iter(),
+        res,
+        start: 0,
+    }
+}
+
+fn split_shapes<M: Clone, L: Clone>(shapes: &[Shape], res: &[Res<M, L>]) -> Vec<Type<M, L>> {
+    iter_shapes(shapes, res)
+        .map(|(shape, res)| Type {
+            shape: shape.clone(),
+            res: IdVec::from_vec(res.iter().cloned().collect()),
         })
-        .collect_lt_data(lts)
+        .collect()
 }
 
-fn join_everywhere(lts: &LtData<Lt>, new_lt: &Lt) -> LtData<Lt> {
-    lts.iter()
-        .map(|lt| Lt::join(lt, new_lt))
-        .collect_lt_data(lts)
+fn elim_tuple<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> Vec<Type<M, L>> {
+    let ShapeInner::Tuple(shapes) = &*ty.shape.inner else {
+        panic!("expected `Tuple` type");
+    };
+    split_shapes(shapes, ty.res.as_slice())
 }
 
-fn lt_equiv(lts1: &LtData<Lt>, lts2: &LtData<Lt>) -> bool {
-    debug_assert_eq!(lts1.shape(), lts2.shape());
-    lts1.iter().zip_eq(lts2.iter()).all(|(lt1, lt2)| lt1 == lt2)
+fn elim_variants<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> IdVec<VariantId, Type<M, L>> {
+    let ShapeInner::Variants(shapes) = &*ty.shape.inner else {
+        panic!("expected `Tuple` type");
+    };
+    let result = split_shapes(shapes.as_slice(), ty.res.as_slice());
+    assert_eq!(result.len(), shapes.len());
+    IdVec::from_vec(result)
 }
 
-fn unfold_overlay(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    self_osub: &BTreeMap<SlotId, ModeVar>,
-    rest_sub: &IdVec<SlotId, ModeVar>,
-    ov: &Overlay<SlotId>,
-) -> Overlay<ModeVar> {
-    match ov {
-        Overlay::Bool => Overlay::Bool,
-        Overlay::Num(num_ty) => Overlay::Num(*num_ty),
-        Overlay::Tuple(ovs) => Overlay::Tuple(
-            ovs.iter()
-                .map(|ov| unfold_overlay(customs, self_osub, rest_sub, ov))
-                .collect(),
-        ),
-        Overlay::Variants(ovs) => Overlay::Variants(
-            ovs.map_refs(|_, ov| unfold_overlay(customs, self_osub, rest_sub, ov)),
-        ),
-        Overlay::SelfCustom(id) => Overlay::Custom(*id, self_osub.clone()),
-        Overlay::Custom(id, oslots) => {
-            Overlay::Custom(*id, btree_map_refs(oslots, |_, slot| rest_sub[slot]))
-        }
-        Overlay::Array(m) => Overlay::Array(rest_sub[m]),
-        Overlay::HoleArray(m) => Overlay::HoleArray(rest_sub[m]),
-        Overlay::Boxed(m) => Overlay::Boxed(rest_sub[m]),
-    }
+fn elim_box_like<M: Clone, L: Clone>(item: &Shape, res: &[Res<M, L>]) -> (Res<M, L>, Type<M, L>) {
+    (
+        res[0].clone(),
+        Type {
+            shape: item.clone(),
+            res: IdVec::from_vec(res[1..].iter().cloned().collect()),
+        },
+    )
 }
 
-fn unfold_lts<L: Clone>(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    lsub: &BTreeMap<SlotId, L>,
-    ty: &LtData<SlotId>,
-) -> LtData<L> {
-    match ty {
-        LtData::Bool => LtData::Bool,
-        LtData::Num(num_ty) => LtData::Num(*num_ty),
-        LtData::Tuple(ty) => {
-            LtData::Tuple(ty.iter().map(|ty| unfold_lts(customs, lsub, ty)).collect())
-        }
-        LtData::Variants(ty) => {
-            LtData::Variants(ty.map_refs(|_, ty| unfold_lts(customs, lsub, ty)))
-        }
-        LtData::Custom(id, lslots) => {
-            LtData::Custom(*id, btree_map_refs(lslots, |_, slot| lsub[slot].clone()))
-        }
-        LtData::SelfCustom(id) => LtData::Custom(*id, lsub.clone()),
-        LtData::Array(slot, ty) => {
-            let ty_unfold = unfold_lts(customs, lsub, ty);
-            LtData::Array(lsub[slot].clone(), Box::new(ty_unfold))
-        }
-        LtData::HoleArray(slot, ty) => {
-            let ty_unfold = unfold_lts(customs, lsub, ty);
-            LtData::HoleArray(lsub[slot].clone(), Box::new(ty_unfold))
-        }
-        LtData::Boxed(slot, ty) => {
-            let ty_unfold = unfold_lts(customs, lsub, ty);
-            LtData::Boxed(lsub[slot].clone(), Box::new(ty_unfold))
-        }
-    }
+fn elim_array<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
+    let ShapeInner::Array(shape) = &*ty.shape.inner else {
+        panic!("expected `Array` type");
+    };
+    elim_box_like(shape, ty.res.as_slice())
 }
 
-// This unfolding operation is imprecise in that if the access modes on the output end up required
-// to be owned then the head modes on the input will end up required to be owned as well, even if we
-// should be able to borrow at the head. The problem arises from our use of `osub` in the places
-// marked "HERE". Fixing this imprecision requires reworking overlays on customs. We just don't have
-// enough information to do the "right" thing as it stands.
-fn unfold_modes(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    osub: &BTreeMap<SlotId, ModeVar>,
-    tsub: &IdVec<SlotId, ModeVar>,
-    ty: &ModeData<SlotId>,
-) -> ModeData<ModeVar> {
-    let subst = |var| osub.get(&var).copied().unwrap_or_else(|| tsub[var]);
-    match ty {
-        ModeData::Bool => ModeData::Bool,
-        ModeData::Num(num_ty) => ModeData::Num(*num_ty),
-        ModeData::Tuple(ty) => ModeData::Tuple(
-            ty.iter()
-                .map(|ty| unfold_modes(customs, osub, tsub, ty))
-                .collect(),
-        ),
-        ModeData::Variants(ty) => {
-            ModeData::Variants(ty.map_refs(|_, ty| unfold_modes(customs, osub, tsub, ty)))
-        }
-        ModeData::Custom(id, oslots, tslots) => ModeData::Custom(
-            *id,
-            btree_map_refs(oslots, |_, &slot| subst(slot)),
-            tslots.map_refs(|_, &slot| subst(slot)),
-        ),
-        ModeData::SelfCustom(id) => ModeData::Custom(*id, osub.clone(), tsub.clone()),
-        ModeData::Array(slot, ov, ty) => {
-            let slot_unfold = subst(*slot);
-            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
-            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
-            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
-            ModeData::Array(slot_unfold, ov_unfold, Box::new(ty_unfold))
-        }
-        ModeData::HoleArray(slot, ov, ty) => {
-            let slot_unfold = subst(*slot);
-            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
-            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
-            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
-            ModeData::HoleArray(slot_unfold, ov_unfold, Box::new(ty_unfold))
-        }
-        ModeData::Boxed(slot, ov, ty) => {
-            let slot_unfold = subst(*slot);
-            let ov_unfold = unfold_overlay(customs, /* HERE */ osub, tsub, ov);
-            let inner_osub = btree_map_refs(osub, |slot, _| tsub[slot]);
-            let ty_unfold = unfold_modes(customs, &inner_osub, tsub, ty);
-            ModeData::Boxed(slot_unfold, ov_unfold, Box::new(ty_unfold))
-        }
-    }
+fn elim_boxed<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
+    let ShapeInner::Boxed(shape) = &*ty.shape.inner else {
+        panic!("expected `Boxed` type");
+    };
+    elim_box_like(shape, ty.res.as_slice())
 }
 
-fn instantiate_overlay<M>(constrs: &mut ConstrGraph, ov: &Overlay<M>) -> Overlay<ModeVar> {
-    ov.iter().map(|_| constrs.fresh_var()).collect_overlay(ov)
-}
-
-fn instantiate_type<M, L1, L2>(
+/// Replaces parameters with fresh variables from the constraint graph.
+fn freshen_type<M, L1, L2>(
     constrs: &mut ConstrGraph,
-    fresh_lt: &mut impl FnMut() -> L2,
-    ty: &annot::Type<M, L1>,
-) -> annot::Type<ModeVar, L2> {
-    let lts = ty
-        .lts()
-        .iter()
-        .map(|_| fresh_lt())
-        .collect_lt_data(ty.lts());
-    let modes = ty
-        .modes()
-        .iter()
-        .map(|_| constrs.fresh_var())
-        .collect_mode_data(ty.modes());
-    annot::Type::new(lts, modes)
+    mut fresh_lt: impl FnMut() -> L2,
+    ty: &Type<M, L1>,
+) -> Type<ModeVar, L2> {
+    let f = |res: &Res<_, _>| {
+        let modes = match res.modes {
+            ResModes::Stack(_) => ResModes::Stack(constrs.fresh_var()),
+            ResModes::Heap(_) => ResModes::Heap(HeapModes {
+                access: constrs.fresh_var(),
+                storage: constrs.fresh_var(),
+            }),
+        };
+        let lt = fresh_lt();
+        Res { modes, lt }
+    };
+    annot::Type {
+        shape: ty.shape.clone(),
+        res: IdVec::from_vec(ty.iter().map(f).collect()),
+    }
 }
 
-// Replaces parameters with fresh variables from the constraint graph.
-fn instantiate_type_unused<M, L>(
-    constrs: &mut ConstrGraph,
-    ty: &annot::Type<M, L>,
-) -> annot::Type<ModeVar, Lt> {
-    instantiate_type(constrs, &mut || Lt::Empty, ty)
+fn freshen_type_unused<M, L>(constrs: &mut ConstrGraph, ty: &Type<M, L>) -> Type<ModeVar, Lt> {
+    freshen_type(constrs, || Lt::Empty, ty)
 }
 
 fn instantiate_condition(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     constrs: &mut ConstrGraph,
     cond: &flat::Condition,
 ) -> annot::Condition {
@@ -836,86 +721,266 @@ fn instantiate_condition(
 }
 
 fn instantiate_occur_in_position(
-    pos: Position,
-    strategy: Strategy,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    ctx: &mut TrackedContext,
-    scopes: &LocalContext<LocalId, annot::Path>,
+    _strategy: Strategy,
+    interner: &Interner,
+    pos: IsTail,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
     constrs: &mut ConstrGraph,
     id: LocalId,
-    use_modes: &ModeData<ModeVar>,
-    use_lts: &LtData<Lt>,
+    use_ty: &Type<ModeVar, Lt>,
 ) -> Occur<ModeVar, Lt> {
-    let binding_ty = ctx.local_binding(id);
+    let binding = ctx.local_binding_mut(id);
 
-    if pos == Position::Tail {
-        mode_bind(constrs, &binding_ty.modes(), &use_modes);
+    if pos == IsTail::Tail {
+        bind_modes(constrs, &binding.ty, use_ty);
     } else {
-        emit_occur_constrs(
-            strategy,
-            customs,
-            constrs,
-            scopes.local_binding(id),
-            binding_ty.modes(),
-            use_modes,
-            use_lts,
-        );
+        emit_occur_constrs(constrs, &binding.scope, &binding.ty, use_ty);
     }
 
-    let use_ty = annot::Type::new(use_lts.clone(), use_modes.clone());
-    let new_ty = Rc::new(binding_ty.left_meet(&use_ty));
-    ctx.update_local(id, new_ty);
+    binding.ty = left_meet(interner, &binding.ty, &use_ty);
 
-    annot::Occur { id, ty: use_ty }
+    annot::Occur {
+        id,
+        ty: use_ty.clone(),
+    }
 }
 
-/// Generate occurrence constraints and merge `fut_ty` into the typing context. Corresponds to the
+/// Generate occurrence constraints and merge `use_ty` into the typing context. Corresponds to the
 /// I-Occur rule.
 fn instantiate_occur(
     strategy: Strategy,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    ctx: &mut TrackedContext,
-    scopes: &LocalContext<LocalId, annot::Path>,
+    interner: &Interner,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
     constrs: &mut ConstrGraph,
     id: LocalId,
-    use_modes: &ModeData<ModeVar>,
-    use_lts: &LtData<Lt>,
+    use_ty: &Type<ModeVar, Lt>,
 ) -> Occur<ModeVar, Lt> {
     instantiate_occur_in_position(
-        Position::NotTail,
         strategy,
-        customs,
+        interner,
+        IsTail::NotTail,
         ctx,
-        scopes,
         constrs,
         id,
-        use_modes,
-        use_lts,
+        use_ty,
     )
 }
 
-fn instantiate_prim_modes<M>(ty: &intr::Type) -> ModeData<M> {
-    match ty {
-        intr::Type::Bool => ModeData::Bool,
-        intr::Type::Num(n) => ModeData::Num(*n),
-        intr::Type::Tuple(items) => {
-            ModeData::Tuple(items.iter().map(|ty| instantiate_prim_modes(ty)).collect())
+fn extract_res_impl(
+    model: &model::Type,
+    shape: &Shape,
+    next_slot: usize,
+    out_res: &mut BTreeMap<SlotId, Res<ModeParam, LtParam>>,
+) -> usize {
+    match (model, &*shape.inner) {
+        (model::Type::Var(_), _) => next_slot + shape.num_slots,
+        (model::Type::Bool, ShapeInner::Bool) => next_slot,
+        (model::Type::Num(model), ShapeInner::Num(shape)) if model == shape => next_slot,
+        (model::Type::Tuple(models), ShapeInner::Tuple(shapes)) => {
+            let iter = models.iter().zip_eq(shapes);
+            iter.fold(next_slot, |start, (model, shape)| {
+                extract_res_impl(model, shape, start, out_res)
+            })
         }
+        (model::Type::Array(res, model), ShapeInner::Array(shape)) => {
+            out_res.insert(SlotId::from_index(next_slot), res.clone());
+            extract_res_impl(model, shape, next_slot + 1, out_res)
+        }
+        (model::Type::HoleArray(res, model), ShapeInner::HoleArray(shape)) => {
+            out_res.insert(SlotId::from_index(next_slot), res.clone());
+            extract_res_impl(model, shape, next_slot + 1, out_res)
+        }
+        (model::Type::Boxed(res, model), ShapeInner::Boxed(shape)) => {
+            out_res.insert(SlotId::from_index(next_slot), res.clone());
+            extract_res_impl(model, shape, next_slot + 1, out_res)
+        }
+        _ => panic!("type does not match model"),
     }
 }
 
-fn instantiate_prim_lts<L>(ty: &intr::Type) -> LtData<L> {
-    match ty {
-        intr::Type::Bool => LtData::Bool,
-        intr::Type::Num(n) => LtData::Num(*n),
-        intr::Type::Tuple(items) => {
-            LtData::Tuple(items.iter().map(|ty| instantiate_prim_lts(ty)).collect())
+fn extract_res(model: &model::Type, shape: &Shape) -> BTreeMap<SlotId, Res<ModeParam, LtParam>> {
+    let mut out_res = BTreeMap::new();
+    extract_res_impl(model, shape, 0, &mut out_res);
+    out_res
+}
+
+fn extract_vars(
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    model: &model::Type,
+    shape: &Shape,
+    res: &[Res<ModeVar, Lt>],
+    out_vars: &mut IdMap<model::TypeVar, Vec<Type<ModeVar, Lt>>>,
+) {
+    match (model, &*shape.inner) {
+        (model::Type::Var(var), _) => {
+            let entry = out_vars.entry(*var).or_insert_with(Vec::new);
+            entry.push(Type {
+                shape: shape.clone(),
+                res: IdVec::from_vec(res.iter().cloned().collect()),
+            });
         }
+        (model::Type::Bool, ShapeInner::Bool) => {}
+        (model::Type::Num(model), ShapeInner::Num(shape)) if model == shape => {}
+        (model::Type::Tuple(models), ShapeInner::Tuple(shapes)) => {
+            for (model, (shape, res)) in models.iter().zip_eq(iter_shapes(shapes, res)) {
+                extract_vars(customs, model, shape, res, out_vars);
+            }
+        }
+        (model::Type::Array(_res, model), ShapeInner::Array(shape)) => {
+            extract_vars(customs, model, shape, &res[1..], out_vars);
+        }
+        (model::Type::HoleArray(_res, model), ShapeInner::HoleArray(shape)) => {
+            extract_vars(customs, model, shape, &res[1..], out_vars);
+        }
+        (model::Type::Boxed(_res, model), ShapeInner::Boxed(shape)) => {
+            extract_vars(customs, model, shape, &res[1..], out_vars);
+        }
+        _ => panic!("type does not match model"),
     }
 }
 
-fn instantiate_prim_type<M, L>(ty: &intr::Type) -> annot::Type<M, L> {
-    annot::Type::new(instantiate_prim_lts(ty), instantiate_prim_modes(ty))
+fn extract_prop(prop: model::Prop, res: &ResModes<ModeVar>) -> ModeVar {
+    match prop {
+        model::Prop::Stack => match res {
+            ResModes::Stack(stack) => *stack,
+            _ => panic!("expected stack resource"),
+        },
+        model::Prop::Access => match res {
+            ResModes::Heap(heap) => heap.access,
+            _ => panic!("expected heap resource"),
+        },
+        model::Prop::Storage => match res {
+            ResModes::Heap(heap) => heap.storage,
+            _ => panic!("expected heap resource"),
+        },
+    }
+}
+
+fn instantiate_model(
+    sig: &model::Signature,
+    _strategy: Strategy,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    constrs: &mut ConstrGraph,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
+    path: &annot::Path,
+    args: &[LocalId],
+    ret: &Type<ModeVar, Lt>,
+) -> Vec<annot::Occur<ModeVar, Lt>> {
+    assert!(args.len() >= sig.args.fixed.len());
+
+    // Create fresh occurrences for each function argument.
+    let mut occurs = args
+        .iter()
+        .map(|&id| {
+            let ty = freshen_type_unused(constrs, &ctx.local_binding(id).ty);
+            annot::Occur { id, ty }
+        })
+        .collect::<Vec<_>>();
+
+    // Set up the mapping from model modes to concrete modes.
+    let mode_mapping = IdVec::from_count_with(sig.mode_count, |_| constrs.fresh_var());
+    for param in &sig.owned_modes {
+        constrs.require_le_const(&Mode::Owned, mode_mapping[param]);
+    }
+
+    let subst_modes = |modes| match modes {
+        ResModes::Stack(stack) => ResModes::Stack(mode_mapping[stack]),
+        ResModes::Heap(heap) => ResModes::Heap(HeapModes {
+            access: mode_mapping[heap.access],
+            storage: mode_mapping[heap.storage],
+        }),
+    };
+
+    // - Impose top-level mode constraints on the return type.
+    // - Record the mapping from model lifetimes to concrete lifetimes.
+    let mut lt_mapping = IdVec::from_count_with(sig.lt_count, |_| None);
+    for (slot, model_res) in extract_res(&sig.ret, &ret.shape) {
+        let res = &ret.res[slot];
+        require_eq(constrs, &subst_modes(model_res.modes), &res.modes);
+
+        if sig.unused_lts.contains(&model_res.lt) {
+            panic!("unused model lifetimes cannot be supplied in return position");
+        }
+        assert!(matches!(res.lt, Lt::Join(_)));
+        match &mut lt_mapping[model_res.lt] {
+            entry @ None => *entry = Some(res.lt.clone()),
+            Some(_) => {
+                panic!("a lifetime variable cannot appear more than once in a model return type");
+            }
+        }
+    }
+
+    let lt_mapping = lt_mapping;
+
+    // For each argument type:
+    // - Impose top-level mode constraints.
+    // - Substitute for model lifetimes using the mapping constructed from the return type.
+    for (arg, occur) in sig.args.iter().zip(&mut occurs) {
+        for (slot, model_res) in extract_res(arg, &occur.ty.shape) {
+            let res = &mut occur.ty.res[slot];
+            require_eq(constrs, &subst_modes(model_res.modes), &res.modes);
+
+            res.lt = if let Some(lt) = &lt_mapping[model_res.lt] {
+                lt.clone()
+            } else if sig.unused_lts.contains(&model_res.lt) {
+                Lt::Empty
+            } else {
+                path.as_lt(interner)
+            };
+        }
+    }
+
+    // Accumulate the resources for each occurrence of each type variable.
+    let mut vars = IdMap::new();
+    for (model, occur) in sig.args.iter().zip(&occurs) {
+        extract_vars(
+            customs,
+            model,
+            &occur.ty.shape,
+            occur.ty.res.as_slice(),
+            &mut vars,
+        );
+    }
+    extract_vars(customs, &sig.ret, &ret.shape, ret.res.as_slice(), &mut vars);
+    let vars = vars.to_id_vec(sig.var_count);
+
+    // Impose equality constraints between all occurrences of the same type variable.
+    for occurs in vars.values() {
+        if occurs.len() > 1 {
+            let rep = &occurs[0];
+            for occur in &occurs[1..] {
+                bind_modes(constrs, &rep, occur);
+            }
+        }
+    }
+
+    // Handle any constraints on type variables.
+    for constr in &sig.constrs {
+        let rep1 = &vars[constr.lhs.type_var][0];
+        let rep2 = &vars[constr.rhs.type_var][0];
+        debug_assert_eq!(rep1.shape, rep2.shape);
+
+        let prop1 = constr.lhs.prop;
+        let prop2 = constr.rhs.prop;
+
+        let pos = positions(customs, &rep1.shape);
+
+        for (pos, (res1, res2)) in pos.iter().zip_eq(rep1.iter().zip_eq(rep2.iter())) {
+            match pos {
+                Position::Stack => {
+                    let mode1 = extract_prop(prop1, &res1.modes);
+                    let mode2 = extract_prop(prop2, &res2.modes);
+                    constrs.require_eq(mode1, mode2);
+                }
+                Position::Heap => {
+                    require_eq(constrs, &res1.modes, &res2.modes);
+                }
+            }
+        }
+    }
+
+    occurs
 }
 
 /// Used during lifetime fixed point iteration. `know_defs` contains the definitions of all
@@ -924,8 +989,8 @@ fn instantiate_prim_type<M, L>(ty: &intr::Type) -> annot::Type<M, L> {
 #[derive(Clone, Copy, Debug)]
 struct SignatureAssumptions<'a> {
     known_defs: &'a IdMap<CustomFuncId, annot::FuncDef>,
-    pending_args: &'a BTreeMap<CustomFuncId, annot::Type<ModeVar, Lt>>,
-    pending_rets: &'a BTreeMap<CustomFuncId, annot::Type<ModeVar, LtParam>>,
+    pending_args: &'a BTreeMap<CustomFuncId, Type<ModeVar, Lt>>,
+    pending_rets: &'a BTreeMap<CustomFuncId, Type<ModeVar, LtParam>>,
 }
 
 impl<'a> SignatureAssumptions<'a> {
@@ -933,7 +998,7 @@ impl<'a> SignatureAssumptions<'a> {
         &self,
         constrs: &mut ConstrGraph,
         id: CustomFuncId,
-    ) -> (annot::Type<ModeVar, Lt>, annot::Type<ModeVar, LtParam>) {
+    ) -> (Type<ModeVar, Lt>, Type<ModeVar, LtParam>) {
         self.known_defs.get(id).map_or_else(
             || {
                 (
@@ -942,449 +1007,125 @@ impl<'a> SignatureAssumptions<'a> {
                 )
             },
             |def| {
-                let params_to_vars = constrs.instantiate_subgraph(&def.constrs.sig);
-                let map = |param: &ModeParam| params_to_vars[*param];
-                (def.arg_ty.map_modes(&map), def.ret_ty.map_modes(&map))
+                let subst = constrs.instantiate_subgraph(&def.constrs.sig);
+                (
+                    subst_modes(&def.arg_ty, |p| subst[p]),
+                    subst_modes(&def.ret_ty, |p| subst[p]),
+                )
             },
         )
     }
 }
 
-mod model {
-    use super::{ConstrGraph, LocalContext, LocalId, Strategy, TrackedContext};
-    use crate::data::borrow_spec::*;
-    use crate::data::first_order_ast::CustomTypeId;
-    use crate::data::mode_annot_ast2::{
-        self as annot, Lt, LtData, ModeData, ModeVar, Overlay, Type, TypeDef,
-    };
-    use crate::util::iter::IterExt;
-    use id_collections::{Id, IdMap, IdVec};
-    use std::collections::BTreeSet;
+struct LocalInfo {
+    scope: annot::Path,
+    ty: Type<ModeVar, Lt>,
+}
 
-    #[derive(Clone, Debug)]
-    struct RawSigData {
-        modes: IdMap<ModelMode, Vec<ModeVar>>,
-        lts: IdMap<ModelLt, Vec<Lt>>,
-        tys: IdMap<ModelTVar, Vec<Type<ModeVar, Lt>>>,
-        ovs: IdMap<ModelTVar, Vec<Overlay<ModeVar>>>,
-    }
-
-    #[derive(Clone, Debug)]
-    struct SigData {
-        modes: IdMap<ModelMode, ModeVar>,
-        lts: IdMap<ModelLt, Lt>,
-        tys: IdMap<ModelTVar, Type<ModeVar, Lt>>,
-        ovs: IdMap<ModelTVar, Overlay<ModeVar>>,
-    }
-
-    /// Fills in `data` by matching the model against `ret_modes` and `ret_lts`.
-    fn extract_ret_data(
-        data: &mut RawSigData,
-        ret_model: &ModelType,
-        ret_modes: &ModeData<ModeVar>,
-        ret_lts: &LtData<Lt>,
-    ) {
-        fn insert<I: Id, V>(map: &mut IdMap<I, Vec<V>>, id: I, val: V) {
-            map.entry(id).or_insert_with(Vec::new).push(val);
-        }
-
-        match (ret_model, ret_modes, ret_lts) {
-            (ModelType::Var(var), ret_modes, ret_lts) => {
-                let ty = Type::new(ret_lts.clone(), ret_modes.clone());
-                insert(&mut data.tys, *var, ty);
-            }
-            (ModelType::Num(n1), ModeData::Num(n2), LtData::Num(n3)) if n1 == n2 && n1 == n3 => {}
-            (ModelType::Tuple(items1), ModeData::Tuple(items2), LtData::Tuple(items3)) => {
-                for ((item1, item2), item3) in items1.iter().zip_eq(items2).zip_eq(items3) {
-                    extract_ret_data(data, item1, item2, item3);
-                }
-            }
-            (
-                ModelType::Array(mode_model, lt_model, item_model),
-                ModeData::Array(mode, ov, item_modes),
-                LtData::Array(lt, item_lts),
-            )
-            | (
-                ModelType::HoleArray(mode_model, lt_model, item_model),
-                ModeData::HoleArray(mode, ov, item_modes),
-                LtData::HoleArray(lt, item_lts),
-            ) => {
-                insert(&mut data.modes, *mode_model, *mode);
-                insert(&mut data.lts, *lt_model, lt.clone());
-                match &**item_model {
-                    ModelType::Num(_) => {}
-                    ModelType::Var(var) => {
-                        let item_ty = Type::new((**item_lts).clone(), (**item_modes).clone());
-                        insert(&mut data.tys, *var, item_ty);
-                        insert(&mut data.ovs, *var, ov.clone());
-                    }
-                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
-                }
-            }
-            _ => panic!("return type does not match model return type"),
-        }
-    }
-
-    /// Fills in `data` by matching the model against `arg_modes` and `arg_lts`. Note that `arg_lts`
-    /// is used only for its shape and that all types produced by this function are produced with
-    /// empty lifetimes where they are not accessed and `path` where they are acessed. If a variable
-    /// has already been assigned, e.g. by `extract_ret_data`, it is not overwritten.
-    fn extract_arg_data(
-        data: &mut RawSigData,
-        customs: &IdVec<CustomTypeId, TypeDef>,
-        constrs: &mut ConstrGraph,
-        path: &annot::Path,
-        accessed: &BTreeSet<ModelLt>,
-        arg_model: &ModelType,
-        arg_modes: &ModeData<ModeVar>,
-        arg_lts: &LtData<Lt>,
-    ) {
-        fn insert<I: Id, V>(map: &mut IdMap<I, Vec<V>>, id: I, mut val: impl FnMut() -> V) {
-            // If the entry already exists, do nothing.
-            map.entry(id).or_insert_with(|| vec![val()]);
-        }
-
-        match (arg_model, arg_modes, arg_lts) {
-            (ModelType::Var(var), arg_modes, arg_lts) => {
-                insert(&mut data.tys, *var, || {
-                    super::instantiate_type_unused(
-                        constrs,
-                        &Type::new(arg_lts.clone(), arg_modes.clone()),
-                    )
-                });
-            }
-            (ModelType::Num(n1), ModeData::Num(n2), LtData::Num(n3)) if n1 == n2 && n1 == n3 => {}
-            (ModelType::Tuple(items1), ModeData::Tuple(items2), LtData::Tuple(items3)) => {
-                for ((item1, item2), item3) in items1.iter().zip_eq(items2).zip_eq(items3) {
-                    extract_arg_data(data, customs, constrs, path, accessed, item1, item2, item3);
-                }
-            }
-            (
-                ModelType::Array(m, lt, item1),
-                ModeData::Array(_, _, item2),
-                LtData::Array(_, item3),
-            )
-            | (
-                ModelType::HoleArray(m, lt, item1),
-                ModeData::HoleArray(_, _, item2),
-                LtData::HoleArray(_, item3),
-            ) => {
-                insert(&mut data.modes, *m, || constrs.fresh_var());
-                insert(&mut data.lts, *lt, || {
-                    if accessed.contains(lt) {
-                        path.as_lt()
-                    } else {
-                        Lt::Empty
-                    }
-                });
-                match &**item1 {
-                    ModelType::Num(_) => {}
-                    ModelType::Var(var) => {
-                        insert(&mut data.tys, *var, || {
-                            super::instantiate_type_unused(
-                                constrs,
-                                &Type::new((**item3).clone(), (**item2).clone()),
-                            )
-                        });
-                        insert(&mut data.ovs, *var, || {
-                            super::instantiate_overlay(constrs, &item2.unapply_overlay())
-                        });
-                    }
-                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
-                }
-            }
-            _ => panic!("argument type does not match model argument type"),
-        }
-    }
-
-    fn resolve_sig_data(constrs: &mut ConstrGraph, data: RawSigData) -> SigData {
-        let mut res_modes = IdMap::new();
-        let mut res_lts = IdMap::new();
-        let mut res_tys = IdMap::new();
-        let mut res_ovs = IdMap::new();
-
-        for (model, modes) in data.modes {
-            assert!(modes.len() > 0);
-            if modes.len() == 1 {
-                res_modes.insert(model, modes[0]);
-            } else {
-                let res_mode = constrs.fresh_var();
-                for mode in modes {
-                    constrs.require_eq(res_mode, mode);
-                }
-                res_modes.insert(model, res_mode);
-            };
-        }
-
-        for (model, lts) in data.lts {
-            assert_eq!(
-                lts.len(),
-                1,
-                "a lifetime variable should only appear once in a signature model"
-            );
-            res_lts.insert(model, lts[0].clone());
-        }
-
-        for (model, tys) in data.tys {
-            assert!(tys.len() > 0);
-            if tys.len() == 1 {
-                res_tys.insert(model, tys[0].clone());
-            } else {
-                let res_ty = super::instantiate_type_unused(constrs, &tys[0]);
-                for ty in tys {
-                    super::mode_bind(constrs, &res_ty.modes(), &ty.modes());
-                }
-                res_tys.insert(model, res_ty);
-            }
-        }
-
-        for (mode, ovs) in data.ovs {
-            assert!(ovs.len() > 0);
-            if ovs.len() == 1 {
-                res_ovs.insert(mode, ovs[0].clone());
-            } else {
-                let res_ov = super::instantiate_overlay(constrs, &ovs[0]);
-                for ov in ovs {
-                    for (mode1, mode2) in res_ov.iter().zip_eq(ov.iter()) {
-                        constrs.require_eq(*mode1, *mode2);
-                    }
-                }
-                res_ovs.insert(mode, res_ov);
-            }
-        }
-
-        SigData {
-            modes: res_modes,
-            lts: res_lts,
-            tys: res_tys,
-            ovs: res_ovs,
-        }
-    }
-
-    /// Produces `ModeData` from a model by filling it in with modes from `data`.
-    fn instantiate_model_modes(data: &SigData, model: &ModelType) -> ModeData<ModeVar> {
-        match model {
-            ModelType::Var(v) => data.tys[v].modes().clone(),
-            ModelType::Num(n) => ModeData::Num(*n),
-            ModelType::Tuple(items) => ModeData::Tuple(
-                items
-                    .iter()
-                    .map(|item| instantiate_model_modes(data, item))
-                    .collect(),
-            ),
-            ModelType::Array(m, _, item) => {
-                let (ov, item) = match &**item {
-                    ModelType::Num(n) => (Overlay::Num(*n), annot::ModeData::Num(*n)),
-                    ModelType::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
-                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
-                };
-                ModeData::Array(data.modes[m], ov, Box::new(item))
-            }
-            ModelType::HoleArray(m, _, item) => {
-                let (ov, item) = match &**item {
-                    ModelType::Num(n) => (Overlay::Num(*n), annot::ModeData::Num(*n)),
-                    ModelType::Var(v) => (data.ovs[v].clone(), data.tys[v].modes().clone()),
-                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
-                };
-                ModeData::HoleArray(data.modes[m], ov, Box::new(item))
-            }
-        }
-    }
-
-    /// Produces `LtData` from a model by filling it in with lifetimes from `data`.
-    fn instantiate_model_lts(data: &SigData, model: &ModelType) -> LtData<Lt> {
-        match model {
-            ModelType::Var(v) => data.tys[v].lts().clone(),
-            ModelType::Num(n) => LtData::Num(*n),
-            ModelType::Tuple(items) => LtData::Tuple(
-                items
-                    .iter()
-                    .map(|item| instantiate_model_lts(data, item))
-                    .collect(),
-            ),
-            ModelType::Array(_, lt, item) | ModelType::HoleArray(_, lt, item) => {
-                let item = match &**item {
-                    ModelType::Num(n) => LtData::Num(*n),
-                    ModelType::Var(v) => data.tys[v].lts().clone(),
-                    _ => panic!("only `Num` and `Var` are currently supported as item types"),
-                };
-                LtData::Array(data.lts[lt].clone(), Box::new(item))
-            }
-        }
-    }
-
-    /// Signatures are interpreted as follows:
-    /// - If a mode, lifetime, or type variable is present in the return, it is assigned its value
-    ///   from the return everywhere.
-    /// - Any modes not present in the return are assigned fresh variables.
-    /// - Any modes in `sig.owned` are constrained to be owned.
-    /// - Any lifetimes not present in the return are assigned the current path if they are present
-    ///   in `sig.accessed` and the empty lifetime otherwise.
-    /// - Any type variables not present in the return are assigned fresh, unconstrained, unused
-    ///   types (and overlays) of the correct shape.
-    pub fn instantiate_model(
-        sig: &BuiltinSig,
-        strategy: Strategy,
-        customs: &IdVec<CustomTypeId, TypeDef>,
-        constrs: &mut ConstrGraph,
-        ctx: &mut TrackedContext,
-        scopes: &mut LocalContext<LocalId, annot::Path>,
-        path: &annot::Path,
-        args: &[LocalId],
-        ret_modes: &ModeData<ModeVar>,
-        ret_lts: &LtData<Lt>,
-    ) -> Vec<annot::Occur<ModeVar, Lt>> {
-        let mut data = RawSigData {
-            modes: IdMap::new(),
-            lts: IdMap::new(),
-            tys: IdMap::new(),
-            ovs: IdMap::new(),
+/// Our analysis makes the following approximation: from the perspective of a function's caller all
+/// accesses the callee makes to its arguments happen at the same time. To implement this behavior,
+/// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
+/// current path. Even if we didn't make this approximation, we would have to somehow relativize the
+/// local lifetimes in the argument since they are not meaningful in the caller's scope.
+fn prepare_arg_type(
+    interner: &Interner,
+    path: &annot::Path,
+    ty: &Type<ModeVar, Lt>,
+) -> Type<ModeVar, Lt> {
+    let f = |res: &Res<ModeVar, Lt>| {
+        let modes = res.modes.clone();
+        let lt = match &res.lt {
+            Lt::Empty => Lt::Empty,
+            Lt::Local(_) => path.as_lt(interner),
+            Lt::Join(vars) => Lt::Join(vars.clone()),
         };
-
-        extract_ret_data(&mut data, &sig.ret, ret_modes, ret_lts);
-
-        for (i, arg) in args.iter().enumerate() {
-            let ty = ctx.local_binding(*arg);
-            extract_arg_data(
-                &mut data,
-                customs,
-                constrs,
-                path,
-                &sig.accessed,
-                &sig.args[i],
-                ty.modes(),
-                ty.lts(),
-            );
-        }
-
-        let data = resolve_sig_data(constrs, data);
-
-        for m in &sig.owned {
-            super::require_owned(constrs, data.modes[m]);
-        }
-
-        // `.rev()` ensures the calls to `instantiate_occur` are in the correct order
-        let mut occurs = Vec::new();
-        debug_assert_eq!(args.len(), sig.args.len());
-        for (arg_id, arg) in args.iter().zip(&sig.args).rev() {
-            occurs.push(super::instantiate_occur(
-                strategy,
-                customs,
-                ctx,
-                scopes,
-                constrs,
-                *arg_id,
-                &instantiate_model_modes(&data, arg),
-                &instantiate_model_lts(&data, arg),
-            ));
-        }
-
-        occurs.reverse();
-        occurs
+        Res { modes, lt }
+    };
+    Type {
+        shape: ty.shape.clone(),
+        res: IdVec::from_vec(ty.res.values().map(f).collect()),
     }
 }
 
-fn customs_mentioned<L>(
-    out: &mut BTreeSet<CustomTypeId>,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    ty: &LtData<L>,
-) {
-    match ty {
-        LtData::Bool | LtData::Num(_) => {}
-        LtData::Tuple(lts) => lts
-            .iter()
-            .for_each(|lt| customs_mentioned(out, customs, lt)),
-        LtData::Variants(lts) => lts
-            .values()
-            .for_each(|lt| customs_mentioned(out, customs, lt)),
-        LtData::SelfCustom(id) => {
-            out.insert(*id);
+fn guard_type_impl<L: Clone>(
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    shape: &Shape,
+    res: &[Res<ModeVar, L>],
+    all_res: &[Res<ModeVar, L>],
+    out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
+) -> Shape {
+    let id_trivial = || {
+        debug_assert!(res.is_empty());
+        shape.clone()
+    };
+    let id = |out_res: &mut IdVec<_, _>| {
+        let _ = out_res.extend(res.iter().cloned());
+        shape.clone()
+    };
+    match &*shape.inner {
+        ShapeInner::Bool => id_trivial(),
+        ShapeInner::Num(_) => id_trivial(),
+        ShapeInner::Tuple(shapes) => {
+            let start = out_res.len();
+            let shapes = iter_shapes(shapes, res)
+                .map(|(shape, res)| {
+                    guard_type_impl(interner, customs, shape, res, all_res, out_res)
+                })
+                .collect::<Vec<_>>();
+
+            let num_slots = out_res.len() - start;
+            debug_assert!(num_slots == shapes.iter().map(|shape| shape.num_slots).sum::<usize>());
+
+            let inner = interner.shape.new(ShapeInner::Tuple(shapes));
+            Shape { inner, num_slots }
         }
-        LtData::Custom(id, _) => {
-            out.insert(*id);
-            customs_mentioned(out, customs, customs[*id].ty.lts())
+        ShapeInner::Variants(shapes) => {
+            let start = out_res.len();
+            let shapes = iter_shapes(shapes.as_slice(), res)
+                .map(|(shape, res)| {
+                    guard_type_impl(interner, customs, shape, res, all_res, out_res)
+                })
+                .collect::<Vec<_>>();
+
+            let num_slots = out_res.len() - start;
+            debug_assert!(num_slots == shapes.iter().map(|shape| shape.num_slots).sum::<usize>());
+
+            let inner = interner
+                .shape
+                .new(ShapeInner::Variants(IdVec::from_vec(shapes)));
+            Shape { inner, num_slots }
         }
-        LtData::Array(_, item) | LtData::HoleArray(_, item) | LtData::Boxed(_, item) => {
-            customs_mentioned(out, customs, item);
+        ShapeInner::SelfCustom(_) => id_trivial(),
+        ShapeInner::Custom(custom_id) => {
+            let custom = &customs[*custom_id];
+            match custom.can_guard {
+                CanGuard::Yes => guard_type_impl(
+                    interner,
+                    customs,
+                    &custom.content.shape,
+                    all_res,
+                    all_res,
+                    out_res,
+                ),
+                CanGuard::No => id(out_res),
+            }
         }
+        ShapeInner::Array(_) => id(out_res),
+        ShapeInner::HoleArray(_) => id(out_res),
+        ShapeInner::Boxed(_) => id(out_res),
     }
 }
 
-fn write_type(lts: &LtData<Lt>, modes: &ModeData<ModeVar>) -> std::io::Result<()> {
-    crate::pretty_print::mode_annot::write_type(
-        &mut std::io::stdout(),
-        None,
-        &|w, var: &ModeVar| write!(w, "?{}", var.0),
-        &write_lifetime,
-        modes,
-        lts,
-    )
-}
-
-fn debug_print_constrs(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    constrs: &ConstrGraph,
-    src_scope: &annot::Path,
-    src_lts: &LtData<Lt>,
-    src_modes: &ModeData<ModeVar>,
-    dst_lts: &LtData<Lt>,
-    dst_modes: &ModeData<ModeVar>,
-) {
-    let mut relevant_customs = BTreeSet::new();
-    customs_mentioned(&mut relevant_customs, customs, src_lts);
-    customs_mentioned(&mut relevant_customs, customs, dst_lts);
-    for id in relevant_customs {
-        write_typedef(&mut std::io::stdout(), None, &customs[id], id).unwrap();
-        print!("\n");
-    }
-
-    print!("scope: ");
-    write_path(&mut std::io::stdout(), src_scope).unwrap();
-    print!("\n");
-    print!("src: ");
-    write_type(src_lts, src_modes).unwrap();
-    print!("\n");
-    print!("dst: ");
-    write_type(dst_lts, dst_modes).unwrap();
-    print!("\n");
-
-    let src_modes = src_modes.iter().copied().collect::<BTreeSet<_>>();
-    let dst_modes = dst_modes.iter().copied().collect::<BTreeSet<_>>();
-
-    for src_var in src_modes.iter() {
-        if let Some(lb) = constrs.inner().get(src_var) {
-            if lb.lb_const == Mode::Owned {
-                println!("● ≤ {src_var:?}");
-            }
-            for var in &lb.lb_vars {
-                if dst_modes.contains(&var) {
-                    let is_eq = constrs
-                        .inner()
-                        .get(var)
-                        .map(|lb| lb.lb_vars.contains(src_var))
-                        .unwrap_or(false);
-                    if is_eq {
-                        println!("{var:?} ≤ {src_var:?}");
-                    } else {
-                        println!("{var:?} = {src_var:?}");
-                    }
-                }
-            }
-        }
-    }
-
-    for dst_var in dst_modes.iter() {
-        if let Some(lb) = constrs.inner().get(dst_var) {
-            if lb.lb_const == Mode::Owned {
-                println!("● ≤ {dst_var:?}");
-            }
-            for var in &lb.lb_vars {
-                if src_modes.contains(&var) {
-                    assert!(constrs.inner()[var].lb_vars.contains(dst_var));
-                }
-            }
-        }
-    }
+fn guard_type<L: Clone>(
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    ty: &Type<ModeVar, L>,
+) -> Type<ModeVar, L> {
+    let mut res = IdVec::new();
+    let all_res = ty.res.as_slice();
+    let shape = guard_type_impl(interner, customs, &ty.shape, all_res, all_res, &mut res);
+    Type { shape, res }
 }
 
 // This function is the core logic for this pass. It implements the judgement from the paper:
@@ -1394,80 +1135,62 @@ fn debug_print_constrs(
 // check all branches in the initial Γ.
 fn instantiate_expr(
     strategy: Strategy,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     sigs: SignatureAssumptions,
     constrs: &mut ConstrGraph,
-    ctx: &ImmutContext,
-    scopes: &mut LocalContext<LocalId, annot::Path>,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: annot::Path,
-    fut_modes: &ModeData<ModeVar>,
-    fut_lts: &LtData<Lt>,
+    fut_ty: &Type<ModeVar, Lt>,
     expr: &TailExpr,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
-) -> (annot::Expr<ModeVar, Lt>, LocalUpdates) {
-    use LtData as L;
-    use ModeData as M;
-
-    let mut ctx = TrackedContext::new(ctx);
-    let expr_annot = match expr {
+) -> annot::Expr<ModeVar, Lt> {
+    match expr {
         TailExpr::Local(local) => {
-            let occur = instantiate_occur(
-                strategy, customs, &mut ctx, scopes, constrs, *local, fut_modes, fut_lts,
-            );
+            let occur = instantiate_occur(strategy, interner, ctx, constrs, *local, fut_ty);
             annot::Expr::Local(occur)
         }
 
         TailExpr::Call(purity, pos, func, arg) => {
             let (arg_ty, ret_ty) = sigs.sig_of(constrs, *func);
-            let arg_ty = prepare_arg_type(&path, &arg_ty);
 
-            mode_bind(constrs, ret_ty.modes(), fut_modes);
-            let lt_subst = lt_bind(ret_ty.lts(), fut_lts);
+            bind_modes(constrs, &ret_ty, fut_ty);
+            let lt_subst = bind_lts(interner, &ret_ty, fut_ty);
+            let arg_ty = prepare_arg_type(interner, &path, &arg_ty);
+            let path = path.as_lt(interner);
 
             // This `join_everywhere` reflects the fact that we assume that functions access all of
             // their arguments. We could be more precise here.
-            let arg_lts = join_everywhere(&subst_lts(&arg_ty.lts(), &lt_subst), &path.as_lt());
+            let arg_ty = join_everywhere(interner, &subst_lts(interner, &arg_ty, &lt_subst), &path);
             let arg = instantiate_occur_in_position(
-                *pos,
-                strategy,
-                customs,
-                &mut ctx,
-                scopes,
-                constrs,
-                *arg,
-                arg_ty.modes(),
-                &arg_lts,
+                strategy, interner, *pos, ctx, constrs, *arg, &arg_ty,
             );
 
             annot::Expr::Call(*purity, *func, arg)
         }
 
-        TailExpr::Branch(discrim_id, cases, ret_ty) => {
-            debug_assert!(same_shape(ret_ty, fut_modes));
-
-            let mut updates = LocalUpdates::new();
-
+        TailExpr::Branch(discrim_id, cases, _ret_ty) => {
+            // This loop updates `ctx` in place on each iteration despite the fact that the branch
+            // arms happen "in parallel". This is fine: only the lifetimes of bindings are updated,
+            // these lifetimes are only used for the purpose of generating occurrence constraints,
+            // and the relevant lifetime comparisons are unaffected by joining the bindings'
+            // lifetimes with data from parallel arms.
             let mut cases_annot_rev = Vec::new();
             for (i, (cond, body)) in cases.iter().enumerate().rev() {
                 let cond_annot = instantiate_condition(customs, constrs, cond);
-                let (body_annot, body_updates) = instantiate_expr(
+                let body_annot = instantiate_expr(
                     strategy,
+                    interner,
                     customs,
                     sigs,
                     constrs,
-                    ctx.as_untracked(),
-                    scopes,
-                    // The discriminate happens at `path.seq(1)`
+                    ctx,
+                    // The discriminate happens at `path.seq(0)`
                     path.seq(1).alt(i, cases.len()),
-                    fut_modes,
-                    fut_lts,
+                    fut_ty,
                     body,
                     type_renderer,
                 );
-
-                // Record the updates, but DO NOT apply them to the context. Every branch should be
-                // checked in the original context.
-                updates.merge_with(&body_updates, |ty1, ty2| ty1.left_meet(&ty2));
 
                 cases_annot_rev.push((cond_annot, body_annot));
             }
@@ -1477,45 +1200,24 @@ fn instantiate_expr(
                 cases_annot_rev
             };
 
-            // Finally, apply the updates before instantiating the discriminant.
-            ctx.update_all(&updates);
-
-            let discrim_binding = ctx.local_binding(*discrim_id);
-            let discrim_path = path.seq(0).as_lt();
-            let discrim_use_modes = discrim_binding
-                .modes()
-                .iter()
-                .map(|_| constrs.fresh_var())
-                .collect_mode_data(discrim_binding.modes());
-            let discrim_use_lts = discrim_binding
-                .lts()
-                .iter()
-                .map(|_| discrim_path.clone())
-                .collect_lt_data(discrim_binding.lts());
-
+            let discrim_fut_ty = freshen_type_unused(constrs, &ctx.local_binding(*discrim_id).ty);
             let discrim_occur = instantiate_occur(
                 strategy,
-                customs,
-                &mut ctx,
-                scopes,
+                interner,
+                ctx,
                 constrs,
                 *discrim_id,
-                &discrim_use_modes,
-                &discrim_use_lts,
+                &discrim_fut_ty,
             );
 
-            annot::Expr::Branch(
-                discrim_occur,
-                cases_annot,
-                annot::Type::new(fut_lts.clone(), fut_modes.clone()),
-            )
+            annot::Expr::Branch(discrim_occur, cases_annot, fut_ty.clone())
         }
 
         // We're only using `with_scope` here for its debug assertion, and to signal intent; by the
         // time the passed closure returns, we've manually truncated away all the variables which it
         // would usually be `with_scope`'s responsibility to remove.
-        TailExpr::LetMany(bindings, result_id) => scopes.with_scope(|scopes| {
-            let locals_offset = scopes.len();
+        TailExpr::LetMany(bindings, result_id) => ctx.with_scope(|ctx| {
+            let locals_offset = ctx.len();
 
             // Leave space for the result, which happens after all the bindings. During this pass we
             // only care about paths where borrows are accessed, so nothing relevant can happen at
@@ -1523,45 +1225,39 @@ fn instantiate_expr(
             let end_of_scope = path.seq(bindings.len() + 1);
 
             for (binding_ty, _) in bindings {
-                let annot_ty = instantiate_type_unused(
+                let annot_ty = freshen_type_unused(
                     constrs,
-                    &parameterize_type_simple(customs, binding_ty),
+                    &parameterize_type(interner, customs, SelfInfo::Structural, binding_ty),
                 );
-                let local_id1 = scopes.add_local(end_of_scope.clone());
-                let local_id2 = ctx.add_local(Rc::new(annot_ty));
-                debug_assert_eq!(local_id1, local_id2);
+                let _ = ctx.add_local(LocalInfo {
+                    scope: end_of_scope.clone(),
+                    ty: annot_ty,
+                });
             }
 
-            let result_occur = instantiate_occur(
-                strategy, customs, &mut ctx, scopes, constrs, *result_id, fut_modes, fut_lts,
-            );
+            let result_occur =
+                instantiate_occur(strategy, interner, ctx, constrs, *result_id, fut_ty);
 
             let mut bindings_annot_rev = Vec::new();
             for (i, (_, binding_expr)) in bindings.iter().enumerate().rev() {
                 let local = LocalId(locals_offset + i);
-                let fut_ty = (**ctx.local_binding(local)).clone();
+                let fut_ty = ctx.local_binding(local).ty.clone();
 
                 // Only retain the locals *strictly* before this binding.
-                scopes.truncate(Count::from_value(local.0));
                 ctx.truncate(Count::from_value(local.0));
 
-                let (expr_annot, expr_updates) = instantiate_expr(
+                let expr_annot = instantiate_expr(
                     strategy,
+                    interner,
                     customs,
                     sigs,
                     constrs,
-                    ctx.as_untracked(),
-                    scopes,
+                    ctx,
                     path.seq(i),
-                    fut_ty.modes(),
-                    fut_ty.lts(),
+                    &fut_ty,
                     binding_expr,
                     type_renderer,
                 );
-
-                // Apply the updates to the context. It is important that the enclosing loop is in
-                // reverse order to ensure that each binding is checked in the correct context.
-                ctx.update_all(&expr_updates);
 
                 bindings_annot_rev.push((fut_ty, expr_annot));
             }
@@ -1575,33 +1271,17 @@ fn instantiate_expr(
         }),
 
         TailExpr::Tuple(item_ids) => {
-            let (M::Tuple(fut_item_modes), L::Tuple(fut_item_lts)) = (fut_modes, fut_lts) else {
-                unreachable!();
-            };
-
-            debug_assert_eq!(item_ids.len(), fut_item_modes.len());
-            debug_assert_eq!(item_ids.len(), fut_item_lts.len());
-
-            let mut occurs_rev: Vec<_> = item_ids
+            let fut_item_tys = elim_tuple(fut_ty);
+            // We must process the items in reverse order to ensure `instantiate_occur` (which
+            // updates the lifetimes in `ctx`) generates the correct constraints.
+            let mut occurs_rev = item_ids
                 .iter()
-                .zip(fut_item_modes.iter())
-                .zip(fut_item_lts.iter())
-                // We must process the items in reverse order to ensure `instantiate_occur` (which
-                // updates the lifetimes in `ctx`) generates the correct constraints.
+                .zip_eq(fut_item_tys)
                 .rev()
-                .map(|((item_id, item_fut_modes), item_fut_lts)| {
-                    instantiate_occur(
-                        strategy,
-                        customs,
-                        &mut ctx,
-                        scopes,
-                        constrs,
-                        *item_id,
-                        item_fut_modes,
-                        item_fut_lts,
-                    )
+                .map(|(item_id, item_ty)| {
+                    instantiate_occur(strategy, interner, ctx, constrs, *item_id, &item_ty)
                 })
-                .collect();
+                .collect::<Vec<_>>();
             let occurs = {
                 occurs_rev.reverse();
                 occurs_rev
@@ -1610,289 +1290,155 @@ fn instantiate_expr(
         }
 
         TailExpr::TupleField(tuple_id, idx) => {
-            let mut tuple_ty = instantiate_type_unused(constrs, ctx.local_binding(*tuple_id));
-
-            let M::Tuple(item_modes) = tuple_ty.modes_mut() else {
-                unreachable!();
+            let mut tuple_ty = freshen_type_unused(constrs, &ctx.local_binding(*tuple_id).ty);
+            let ShapeInner::Tuple(shapes) = &*tuple_ty.shape.inner else {
+                panic!("expected `Tuple` type");
             };
-            item_modes[*idx] = fut_modes.clone();
 
-            let L::Tuple(item_lts) = tuple_ty.lts_mut() else {
-                unreachable!();
-            };
-            item_lts[*idx] = fut_lts.clone();
+            let (start, end) = nth_res_bounds(shapes, *idx);
+            tuple_ty.res.as_mut_slice()[start..end].clone_from_slice(fut_ty.res.as_slice());
 
-            let tuple_occur = instantiate_occur(
-                strategy,
-                customs,
-                &mut ctx,
-                scopes,
-                constrs,
-                *tuple_id,
-                tuple_ty.modes(),
-                tuple_ty.lts(),
-            );
-
-            annot::Expr::TupleField(tuple_occur, *idx)
+            let occur = instantiate_occur(strategy, interner, ctx, constrs, *tuple_id, &tuple_ty);
+            annot::Expr::TupleField(occur, *idx)
         }
 
         TailExpr::WrapVariant(_variant_tys, variant_id, content) => {
-            let (M::Variants(fut_variant_modes), L::Variants(fut_variant_lts)) =
-                (fut_modes, fut_lts)
-            else {
-                unreachable!();
-            };
-
-            let content_occur = instantiate_occur(
+            let fut_variant_tys = elim_variants(fut_ty);
+            let occur = instantiate_occur(
                 strategy,
-                customs,
-                &mut ctx,
-                scopes,
+                interner,
+                ctx,
                 constrs,
                 *content,
-                &fut_variant_modes[*variant_id],
-                &fut_variant_lts[*variant_id],
+                &fut_variant_tys[*variant_id],
             );
-
-            let fut_variant_tys = IdVec::from_vec(
-                fut_variant_modes
-                    .values()
-                    .zip_eq(fut_variant_lts.values())
-                    .map(|(modes, lts)| annot::Type::new(lts.clone(), modes.clone()))
-                    .collect(),
-            );
-            annot::Expr::WrapVariant(fut_variant_tys, *variant_id, content_occur)
+            annot::Expr::WrapVariant(fut_variant_tys, *variant_id, occur)
         }
 
         TailExpr::UnwrapVariant(variant_id, wrapped) => {
-            let mut wrapped_ty = instantiate_type_unused(constrs, ctx.local_binding(*wrapped));
-
-            let M::Variants(variant_modes) = wrapped_ty.modes_mut() else {
-                unreachable!();
+            let mut variants_ty = freshen_type_unused(constrs, &ctx.local_binding(*wrapped).ty);
+            let ShapeInner::Variants(shapes) = &*variants_ty.shape.inner else {
+                panic!("expected `Variants` type");
             };
-            variant_modes[*variant_id] = fut_modes.clone();
 
-            let L::Variants(variant_lts) = wrapped_ty.lts_mut() else {
-                unreachable!();
-            };
-            variant_lts[*variant_id] = fut_lts.clone();
+            let (start, end) = nth_res_bounds(shapes.as_slice(), variant_id.to_index());
+            variants_ty.res.as_mut_slice()[start..end].clone_from_slice(fut_ty.res.as_slice());
 
-            let wrapped_occur = instantiate_occur(
-                strategy,
-                customs,
-                &mut ctx,
-                scopes,
-                constrs,
-                *wrapped,
-                wrapped_ty.modes(),
-                wrapped_ty.lts(),
-            );
-
-            annot::Expr::UnwrapVariant(*variant_id, wrapped_occur)
+            let occur = instantiate_occur(strategy, interner, ctx, constrs, *wrapped, &variants_ty);
+            annot::Expr::UnwrapVariant(*variant_id, occur)
         }
 
-        // See I-Rc; this is the operation that constructs new boxes
         TailExpr::WrapBoxed(content, _item_ty) => {
-            let (M::Boxed(fut_mode, fut_ov, fut_item_modes), L::Boxed(_, fut_item_lts)) =
-                (fut_modes, fut_lts)
-            else {
-                unreachable!();
-            };
-
-            require_owned(constrs, *fut_mode);
-            fut_item_modes
-                .iter_stack(FnWrap::wrap(|id| customs.get(id).map(|def| def.ty.modes())))
-                .zip_eq(fut_ov.iter())
-                .for_each(|(m1, m2)| constrs.require_eq(*m1, *m2));
-
-            let content_occur = instantiate_occur(
+            let mut occurs = instantiate_model(
+                &*model::box_new,
                 strategy,
+                interner,
                 customs,
-                &mut ctx,
-                scopes,
                 constrs,
-                *content,
-                fut_item_modes,
-                fut_item_lts,
+                ctx,
+                &path,
+                &[*content],
+                fut_ty,
             );
-
-            annot::Expr::WrapBoxed(
-                content_occur,
-                annot::Type::new((**fut_item_lts).clone(), (**fut_item_modes).clone()),
-            )
+            let (_, fut_item_ty) = elim_boxed(fut_ty);
+            annot::Expr::WrapBoxed(occurs.pop().unwrap(), fut_item_ty)
         }
 
-        // See I-Get
         TailExpr::UnwrapBoxed(wrapped, _item_ty) => {
-            let item_modes = freshen_stack_modes(constrs, fut_modes);
-            let item_lts = fut_lts.clone();
-            let item_ov = fut_modes.unapply_overlay();
-
-            let box_modes = M::Boxed(constrs.fresh_var(), item_ov, Box::new(item_modes));
-            let box_lts = L::Boxed(path.as_lt(), Box::new(item_lts));
-            let wrapped_occur = instantiate_occur(
-                strategy, customs, &mut ctx, scopes, constrs, *wrapped, &box_modes, &box_lts,
+            let mut occurs = instantiate_model(
+                &*model::box_get,
+                strategy,
+                interner,
+                customs,
+                constrs,
+                ctx,
+                &path,
+                &[*wrapped],
+                fut_ty,
             );
-
-            annot::Expr::UnwrapBoxed(
-                wrapped_occur,
-                annot::Type::new(fut_lts.clone(), fut_modes.clone()),
-            )
+            annot::Expr::UnwrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
         }
 
-        TailExpr::WrapCustom(custom_id, content) => {
-            let (M::Custom(fut_id1, fut_osub, fut_tsub), L::Custom(fut_id2, fut_lsub)) =
-                (fut_modes, fut_lts)
-            else {
-                unreachable!();
-            };
-
-            debug_assert_eq!(*custom_id, *fut_id1);
-            debug_assert_eq!(*custom_id, *fut_id2);
-
-            let unfolded_modes =
-                unfold_modes(customs, fut_osub, fut_tsub, customs[*custom_id].ty.modes());
-            let unfolded_lts = unfold_lts(customs, fut_lsub, customs[*custom_id].ty.lts());
-
-            let content_occur = instantiate_occur(
-                strategy,
-                customs,
-                &mut ctx,
-                scopes,
-                constrs,
-                *content,
-                &unfolded_modes,
-                &unfolded_lts,
-            );
-
-            annot::Expr::WrapCustom(*custom_id, content_occur)
+        TailExpr::WrapCustom(custom_id, unfolded) => {
+            let fut_unfolded = guard_type(interner, customs, fut_ty);
+            let occur =
+                instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
+            annot::Expr::WrapCustom(*custom_id, occur)
         }
 
         TailExpr::UnwrapCustom(custom_id, folded) => {
-            let custom = &customs[custom_id];
+            let fresh_folded = {
+                let mut lt_count = Count::new();
+                freshen_type(constrs, || lt_count.inc(), &ctx.local_binding(*folded).ty)
+            };
 
-            let folded_osub = custom
-                .ov_slots
-                .iter()
-                .map(|&slot| (slot, constrs.fresh_var()))
-                .collect();
-            let folded_tsub = IdVec::from_count_with(custom.slot_count, |_| constrs.fresh_var());
-            let unfolded_modes = unfold_modes(
-                customs,
-                &folded_osub,
-                &folded_tsub,
-                customs[*custom_id].ty.modes(),
-            );
+            let fresh_folded = {
+                // Instead of folding `fut_ty`, we unfold a fresh type, duplicating the modes and
+                // lifetimes which would be identified under folding into the proper positions.
+                // Imposing constraints between this unfolded type and `fut_ty` yields the same
+                // constraint system as folding `fut_ty`.
+                let fresh_unfolded = guard_type(interner, customs, &fresh_folded);
 
-            println!(
-                "custom_id: {:?} {:?} {:?}",
-                custom_id,
-                custom.ov_slots,
-                custom.ov.iter().collect::<Vec<_>>()
-            );
-            crate::pretty_print::obligation_annot::write_type(
-                &mut std::io::stdout(),
-                None,
-                &|w, var: &SlotId| write!(w, "%{}", var.0),
-                customs[*custom_id].ty.modes(),
-            )
-            .unwrap();
-            println!();
-            crate::pretty_print::obligation_annot::write_type(
-                &mut std::io::stdout(),
-                None,
-                &|w, var: &ModeVar| write!(w, "?{}", var.0),
-                fut_modes,
-            )
-            .unwrap();
-            println!();
-            crate::pretty_print::obligation_annot::write_type(
-                &mut std::io::stdout(),
-                None,
-                &|w, var: &ModeVar| write!(w, "?{}", var.0),
-                &unfolded_modes,
-            )
-            .unwrap();
-            println!();
+                // Equate the modes in `fut_ty` which are identified under folding.
+                bind_modes(constrs, &fresh_unfolded, fut_ty);
 
-            mode_bind(constrs, fut_modes, &unfolded_modes);
+                // Join the lifetimes in `fut_ty` which are identified under folding.
+                let lt_subst = bind_lts(interner, &fresh_unfolded, fut_ty);
+                subst_lts(interner, &wrap_lts(&fresh_folded), &lt_subst)
+            };
 
-            let mut lt_count = Count::new();
-            let folded_lsub_fresh = custom
-                .lt_slots
-                .iter()
-                .map(|slot| (*slot, lt_count.inc()))
-                .collect();
-            let unfolded_lts =
-                unfold_lts(customs, &folded_lsub_fresh, customs[*custom_id].ty.lts());
-
-            let lt_subst = lt_bind(&unfolded_lts, fut_lts);
-            let folded_lsub = btree_map_refs(&folded_lsub_fresh, |_, lt| lt_subst[lt].clone());
-
-            let folded_occur = instantiate_occur(
-                strategy,
-                customs,
-                &mut ctx,
-                scopes,
-                constrs,
-                *folded,
-                &ModeData::Custom(*custom_id, folded_osub, folded_tsub),
-                &LtData::Custom(*custom_id, folded_lsub),
-            );
-
-            annot::Expr::UnwrapCustom(*custom_id, folded_occur)
+            let occur = instantiate_occur(strategy, interner, ctx, constrs, *folded, &fresh_folded);
+            annot::Expr::UnwrapCustom(*custom_id, occur)
         }
 
         // Right now, all intrinsics are trivial from a mode inference perspective because they
         // operate on arithmetic types. If this changes, we will have to update this.
         TailExpr::Intrinsic(intr, arg) => {
             let sig = intrinsic_sig(*intr);
-            let ty = instantiate_prim_type(&sig.arg);
-            let arg_occur = Occur { id: *arg, ty };
-            annot::Expr::Intrinsic(*intr, arg_occur)
+            let ty = Type {
+                shape: Shape::from_anon(
+                    interner,
+                    customs,
+                    FnWrap::wrap(|id| &customs[*id].scc),
+                    SelfInfo::Structural,
+                    &anon::Type::from_intr(&sig.arg),
+                ),
+                res: IdVec::new(),
+            };
+            annot::Expr::Intrinsic(*intr, Occur { id: *arg, ty })
         }
 
-        // See I-Get
         TailExpr::ArrayOp(flat::ArrayOp::Get(_, arr_id, idx_id)) => {
-            let item_modes = freshen_stack_modes(constrs, fut_modes);
-            let item_lts = fut_lts.clone();
-            let item_ov = fut_modes.unapply_overlay();
-
-            let arr_modes = ModeData::Array(constrs.fresh_var(), item_ov, Box::new(item_modes));
-            let arr_lts = LtData::Array(path.as_lt(), Box::new(item_lts));
-            let idx_occur = instantiate_occur(
+            let occurs = instantiate_model(
+                &*model::array_get,
                 strategy,
+                interner,
                 customs,
-                &mut ctx,
-                scopes,
                 constrs,
-                *idx_id,
-                &M::Num(NumType::Int),
-                &L::Num(NumType::Int),
+                ctx,
+                &path,
+                &[*arr_id, *idx_id],
+                fut_ty,
             );
-            let arr_occur = instantiate_occur(
-                strategy, customs, &mut ctx, scopes, constrs, *arr_id, &arr_modes, &arr_lts,
-            );
-
+            let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Get(
-                arr_occur,
-                idx_occur,
-                annot::Type::new(fut_lts.clone(), fut_modes.clone()),
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
+                fut_ty.clone(),
             ))
         }
 
         TailExpr::ArrayOp(flat::ArrayOp::Extract(_item_ty, arr_id, idx_id)) => {
-            let occurs = model::instantiate_model(
-                &*spec::SIG_ARRAY_EXTRACT,
+            let occurs = instantiate_model(
+                &*model::array_extract,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[*arr_id, *idx_id],
-                fut_modes,
-                fut_lts,
+                fut_ty,
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Extract(
@@ -1902,34 +1448,32 @@ fn instantiate_expr(
         }
 
         TailExpr::ArrayOp(flat::ArrayOp::Len(_item_ty, arr_id)) => {
-            let occurs = model::instantiate_model(
-                &*spec::SIG_ARRAY_LEN,
+            let occurs = instantiate_model(
+                &*model::array_len,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[*arr_id],
-                fut_modes,
-                fut_lts,
+                fut_ty,
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Len(occurs.next().unwrap()))
         }
 
         TailExpr::ArrayOp(flat::ArrayOp::Push(_item_ty, arr_id, item_id)) => {
-            let occurs = model::instantiate_model(
-                &*spec::SIG_ARRAY_PUSH,
+            let occurs = instantiate_model(
+                &*model::array_push,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[*arr_id, *item_id],
-                fut_modes,
-                fut_lts,
+                fut_ty,
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Push(
@@ -1939,34 +1483,32 @@ fn instantiate_expr(
         }
 
         TailExpr::ArrayOp(flat::ArrayOp::Pop(_item_ty, arr_id)) => {
-            let occurs = model::instantiate_model(
-                &*spec::SIG_ARRAY_POP,
+            let occurs = instantiate_model(
+                &*model::array_pop,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[*arr_id],
-                fut_modes,
-                fut_lts,
+                fut_ty,
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Pop(occurs.next().unwrap()))
         }
 
         TailExpr::ArrayOp(flat::ArrayOp::Replace(_item_ty, hole_id, item_id)) => {
-            let occurs = model::instantiate_model(
-                &*spec::SIG_ARRAY_REPLACE,
+            let occurs = instantiate_model(
+                &*model::array_replace,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[*hole_id, *item_id],
-                fut_modes,
-                fut_lts,
+                fut_ty,
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Replace(
@@ -1976,17 +1518,16 @@ fn instantiate_expr(
         }
 
         TailExpr::ArrayOp(flat::ArrayOp::Reserve(_item_ty, arr_id, cap_id)) => {
-            let occurs = model::instantiate_model(
-                &*spec::SIG_ARRAY_RESERVE,
+            let occurs = instantiate_model(
+                &*model::array_reserve,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[*arr_id, *cap_id],
-                fut_modes,
-                fut_lts,
+                fut_ty,
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::ArrayOp(annot::ArrayOp::Reserve(
@@ -1996,95 +1537,69 @@ fn instantiate_expr(
         }
 
         TailExpr::IoOp(flat::IoOp::Input) => {
-            let _ = model::instantiate_model(
-                &*spec::SIG_IO_INPUT,
+            let _ = instantiate_model(
+                &*model::io_input,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[],
-                fut_modes,
-                fut_lts,
+                fut_ty,
             );
             annot::Expr::IoOp(annot::IoOp::Input)
         }
 
         TailExpr::IoOp(flat::IoOp::Output(arr_id)) => {
-            let occurs = model::instantiate_model(
-                &*spec::SIG_IO_OUTPUT,
+            let occurs = instantiate_model(
+                &*model::io_output,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[*arr_id],
-                fut_modes,
-                fut_lts,
+                fut_ty,
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::IoOp(annot::IoOp::Output(occurs.next().unwrap()))
         }
 
         TailExpr::Panic(_ret_ty, msg_id) => {
-            let occurs = model::instantiate_model(
-                &*spec::SIG_PANIC,
+            let occurs = instantiate_model(
+                &*model::panic,
                 strategy,
+                interner,
                 customs,
                 constrs,
-                &mut ctx,
-                scopes,
+                ctx,
                 &path,
                 &[*msg_id],
-                &ModeData::Tuple(vec![]),
-                &LtData::Tuple(vec![]),
+                &Type {
+                    shape: Shape::unit(interner),
+                    res: IdVec::new(),
+                },
             );
             let mut occurs = occurs.into_iter();
-            annot::Expr::Panic(
-                annot::Type::new(fut_lts.clone(), fut_modes.clone()),
-                occurs.next().unwrap(),
-            )
+            annot::Expr::Panic(fut_ty.clone(), occurs.next().unwrap())
         }
 
-        // See I-Rc; this is the operation that constructs new arrays
         TailExpr::ArrayLit(_item_ty, item_ids) => {
-            let (M::Array(fut_mode, _, fut_item_modes), L::Array(_, fut_item_lts)) =
-                (fut_modes, fut_lts)
-            else {
-                unreachable!();
-            };
-
-            require_owned(constrs, *fut_mode);
-
-            let mut item_occurs_rev: Vec<_> = item_ids
-                .iter()
-                // We must process the items in reverse order to ensure `instantiate_occur` (which
-                // updates the lifetimes in `ctx`) generates the correct constraints.
-                .rev()
-                .map(|item_id| {
-                    instantiate_occur(
-                        strategy,
-                        customs,
-                        &mut ctx,
-                        scopes,
-                        constrs,
-                        *item_id,
-                        fut_item_modes,
-                        fut_item_lts,
-                    )
-                })
-                .collect();
-
-            let item_occurs = {
-                item_occurs_rev.reverse();
-                item_occurs_rev
-            };
-            annot::Expr::ArrayLit(
-                annot::Type::new((**fut_item_lts).clone(), (**fut_item_modes).clone()),
-                item_occurs,
-            )
+            let occurs = instantiate_model(
+                &*model::array_new,
+                strategy,
+                interner,
+                customs,
+                constrs,
+                ctx,
+                &path,
+                item_ids,
+                fut_ty,
+            );
+            let (_, fut_item_ty) = elim_array(fut_ty);
+            annot::Expr::ArrayLit(fut_item_ty, occurs)
         }
 
         TailExpr::BoolLit(val) => annot::Expr::BoolLit(*val),
@@ -2094,35 +1609,21 @@ fn instantiate_expr(
         TailExpr::IntLit(val) => annot::Expr::IntLit(*val),
 
         TailExpr::FloatLit(val) => annot::Expr::FloatLit(*val),
-    };
-
-    (expr_annot, ctx.into_updates())
+    }
 }
 
 #[derive(Clone, Debug)]
 struct SolverScc {
-    func_args: BTreeMap<CustomFuncId, annot::Type<ModeVar, Lt>>,
-    func_rets: BTreeMap<CustomFuncId, annot::Type<ModeVar, LtParam>>,
+    func_args: BTreeMap<CustomFuncId, Type<ModeVar, Lt>>,
+    func_rets: BTreeMap<CustomFuncId, Type<ModeVar, LtParam>>,
     func_bodies: BTreeMap<CustomFuncId, annot::Expr<ModeVar, Lt>>,
     scc_constrs: ConstrGraph,
 }
 
-/// Our analysis makes the following approximation: from the perspective of a function's caller all
-/// accesses the callee makes to its arguments happen at the same time. To implement this behavior,
-/// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
-/// current path. Even if we didn't make this approximation, we would have to do something to the
-/// local lifetimes in the arugment since they are not meaningful in the caller's scope.
-fn prepare_arg_type(path: &annot::Path, ty: &annot::Type<ModeVar, Lt>) -> annot::Type<ModeVar, Lt> {
-    ty.map_lts(|lt| match lt {
-        Lt::Empty => Lt::Empty,
-        Lt::Local(_) => path.as_lt(),
-        Lt::Join(vars) => Lt::Join(vars.clone()),
-    })
-}
-
 fn instantiate_scc(
     strategy: Strategy,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
@@ -2142,9 +1643,14 @@ fn instantiate_scc(
                 .map(|id| {
                     (
                         *id,
-                        instantiate_type_unused(
+                        freshen_type_unused(
                             &mut constrs,
-                            &parameterize_type_simple(customs, &funcs[id].arg_type),
+                            &parameterize_type(
+                                interner,
+                                customs,
+                                SelfInfo::Structural,
+                                &funcs[id].arg_ty,
+                            ),
                         ),
                     )
                 })
@@ -2157,23 +1663,26 @@ fn instantiate_scc(
                 .map(|id| {
                     (
                         *id,
-                        instantiate_type(
+                        freshen_type(
                             &mut constrs,
                             &mut || next_lt.inc(),
-                            &parameterize_type_simple(customs, &funcs[id].ret_type),
+                            &parameterize_type(
+                                interner,
+                                customs,
+                                SelfInfo::Structural,
+                                &funcs[id].ret_ty,
+                            ),
                         ),
                     )
                 })
                 .collect::<BTreeMap<_, _>>();
 
-            let debug_sig_params = if cfg!(debug_assertions) {
+            let sig_params = {
                 let mut params = BTreeSet::new();
                 while first_lt != next_lt {
                     params.insert(first_lt.inc());
                 }
                 params
-            } else {
-                BTreeSet::new()
             };
 
             let (new_arg_tys, bodies) = loop {
@@ -2187,64 +1696,57 @@ fn instantiate_scc(
 
                 for id in scc.nodes {
                     let func = &funcs[id];
+                    let mut ctx = LocalContext::new();
 
-                    let mut ctx = ImmutContext::new();
-                    let arg_ty = instantiate_type_unused(
+                    let arg_ty = freshen_type_unused(
                         &mut constrs,
-                        &parameterize_type_simple(customs, &func.arg_type),
+                        &parameterize_type(interner, customs, SelfInfo::Structural, &func.arg_ty),
                     );
-                    let arg_id = ctx.add_local(Rc::new(arg_ty.clone())); // TODO: don't clone; use RC everywhere
+                    let arg_id = ctx.add_local(LocalInfo {
+                        scope: annot::ARG_SCOPE(),
+                        ty: arg_ty,
+                    });
                     debug_assert_eq!(arg_id, flat::ARG_LOCAL);
 
-                    let mut scopes = LocalContext::new();
-                    let arg_id = scopes.add_local(annot::ARG_SCOPE());
-                    debug_assert_eq!(arg_id, flat::ARG_LOCAL);
-
-                    let ret_ty = &ret_tys[id];
-                    let (expr, updates) = instantiate_expr(
+                    let ret_ty = wrap_lts(&ret_tys[id]);
+                    let expr = instantiate_expr(
                         strategy,
+                        interner,
                         customs,
                         assumptions,
                         &mut constrs,
-                        &ctx,
-                        &mut scopes,
+                        &mut ctx,
                         annot::FUNC_BODY_PATH(),
-                        ret_ty.modes(),
-                        &ret_ty.lts().wrap_params(),
+                        &ret_ty,
                         &func.body,
                         type_renderer,
                     );
                     bodies.insert(*id, expr);
 
-                    debug_assert!(updates.len() <= 1);
-                    if let Some(update) = updates.local_binding(flat::ARG_LOCAL) {
-                        ctx.update_local(flat::ARG_LOCAL, update.clone());
-                    }
-
-                    new_arg_tys.insert(*id, (**ctx.local_binding(flat::ARG_LOCAL)).clone());
+                    new_arg_tys.insert(*id, (ctx.local_binding(flat::ARG_LOCAL).ty).clone());
                 }
 
                 debug_assert!(
                     {
                         let params_found = new_arg_tys
                             .values()
-                            .flat_map(|ty| ty.lts().iter())
-                            .filter_map(|lt: &Lt| match lt {
+                            .flat_map(|ty| ty.iter().map(|res| &res.lt))
+                            .filter_map(|lt| match lt {
                                 Lt::Empty | Lt::Local(_) => None,
                                 Lt::Join(params) => Some(params.iter().copied()),
                             })
                             .flatten()
-                            .collect();
-                        debug_sig_params.is_superset(&params_found)
+                            .collect::<BTreeSet<_>>();
+                        params_found.is_subset(&sig_params)
                     },
                     "Some temporary lifetime parameters leaked into the function arguments during \
-                     expression instantiation. Only parameters from the return type should appear"
+                     expression instantiation. Only parameters from the return type should appear."
                 );
 
                 if new_arg_tys
                     .values()
                     .zip_eq(arg_tys.values())
-                    .all(|(new, old)| lt_equiv(new.lts(), old.lts()))
+                    .all(|(new, old)| lt_equiv(new, old))
                 {
                     break (new_arg_tys, bodies);
                 }
@@ -2252,17 +1754,19 @@ fn instantiate_scc(
                 arg_tys = new_arg_tys;
             };
 
-            // TODO: we could avoid a lot of the work in this case, but this is the simplest
+            // We could avoid a lot of the work in the "always owned" case, but this is the simplest
             // intervention point
             if strategy == Strategy::AlwaysOwned {
                 for var in constrs.var_count() {
-                    require_owned(&mut constrs, var);
+                    constrs.require_le_const(&Mode::Owned, var);
                 }
-            }
-
-            if strategy == Strategy::OnlyTrivialBorrows {
-                for var in ret_tys.values().flat_map(|ty| ty.modes().iter()) {
-                    require_owned(&mut constrs, *var);
+            } else if strategy == Strategy::OnlyTrivialBorrows {
+                for var in ret_tys
+                    .values()
+                    .flat_map(|ty| ty.iter_flat())
+                    .map(|(m, _)| *m)
+                {
+                    constrs.require_le_const(&Mode::Owned, var);
                 }
             }
 
@@ -2284,13 +1788,10 @@ fn instantiate_scc(
 
 type Solution = in_eq::Solution<ModeVar, ModeParam, Mode>;
 
-fn extract_type(
-    solution: &Solution,
-    ty: &annot::Type<ModeVar, Lt>,
-) -> annot::Type<ModeSolution, Lt> {
-    ty.map_modes(|m| ModeSolution {
-        lb: solution.lower_bounds[*m].clone(),
-        solver_var: *m,
+fn extract_type(solution: &Solution, ty: &Type<ModeVar, Lt>) -> Type<ModeSolution, Lt> {
+    subst_modes(ty, |m| ModeSolution {
+        lb: solution.lower_bounds[m].clone(),
+        solver_var: m,
     })
 }
 
@@ -2407,7 +1908,8 @@ fn extract_expr(
 
 fn solve_scc(
     strategy: Strategy,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &mut IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
@@ -2416,6 +1918,7 @@ fn solve_scc(
 ) {
     let instantiated = instantiate_scc(
         strategy,
+        interner,
         customs,
         funcs,
         funcs_annot,
@@ -2426,8 +1929,8 @@ fn solve_scc(
 
     let mut sig_vars = BTreeSet::new();
     for func_id in scc.nodes {
-        sig_vars.extend(instantiated.func_args[&func_id].modes().iter());
-        sig_vars.extend(instantiated.func_rets[&func_id].modes().iter());
+        sig_vars.extend(instantiated.func_args[&func_id].iter_flat().map(|(m, _)| m));
+        sig_vars.extend(instantiated.func_rets[&func_id].iter_flat().map(|(m, _)| m));
     }
 
     let solution: Solution = instantiated.scc_constrs.solve(&sig_vars);
@@ -2455,13 +1958,12 @@ fn solve_scc(
         let ret_ty = &instantiated.func_rets[&func_id];
 
         let func = &funcs[func_id];
-        let remap_internal = |internal: &ModeVar| solution.internal_to_external[internal];
         funcs_annot.insert_vacant(
             *func_id,
             annot::FuncDef {
                 purity: func.purity,
-                arg_ty: arg_ty.map_modes(remap_internal),
-                ret_ty: ret_ty.map_modes(remap_internal),
+                arg_ty: subst_modes(arg_ty, |m| solution.internal_to_external[&m]),
+                ret_ty: subst_modes(ret_ty, |m| solution.internal_to_external[&m]),
                 constrs: annot::Constrs {
                     sig: sig_constrs.clone(),
                     all: instantiated.scc_constrs.clone(),
@@ -2469,275 +1971,6 @@ fn solve_scc(
                 body: extract_expr(&solution, &instantiated.func_bodies[&func_id]),
                 profile_point: func.profile_point.clone(),
             },
-        );
-    }
-}
-
-fn sanity_check_modes(customs: &IdVec<CustomTypeId, annot::TypeDef>, ty: &ModeData<ModeSolution>) {
-    match ty {
-        // Check that the custom type has the correct set of parameters
-        ModeData::Custom(id, osub, tsub) => {
-            let custom = &customs[*id];
-            assert_eq!(custom.slot_count, tsub.count());
-            assert_eq!(
-                custom.ov_slots,
-                osub.keys().copied().collect::<BTreeSet<_>>()
-            );
-        }
-        _ => {}
-    }
-}
-
-fn sanity_check_lts(customs: &IdVec<CustomTypeId, annot::TypeDef>, ty: &LtData<Lt>) {
-    match ty {
-        // Check that the custom type has the correct set of parameters
-        LtData::Custom(id, lsub) => {
-            let custom = &customs[*id];
-            assert_eq!(
-                custom.lt_slots,
-                lsub.keys().copied().collect::<BTreeSet<_>>()
-            );
-        }
-        _ => {}
-    }
-}
-
-fn sanity_check_type(
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    param_count: Count<ModeParam>,
-    ty: &annot::Type<ModeSolution, Lt>,
-) {
-    // Check that all type parameters also appear in the signature
-    for solution in ty.modes().iter() {
-        for param in &solution.lb.lb_vars {
-            assert!(param_count.contains(param));
-        }
-    }
-
-    sanity_check_modes(customs, ty.modes());
-    sanity_check_lts(customs, ty.lts());
-}
-
-fn sanity_check_expr(
-    renderer: &CustomTypeRenderer<CustomTypeId>,
-    funcs: &IdVec<CustomFuncId, annot::FuncDef>,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-    param_count: Count<ModeParam>,
-    path: &annot::Path,
-    ctx: &mut LocalContext<LocalId, annot::Type<ModeSolution, Lt>>,
-    ret_ty: &annot::Type<ModeSolution, Lt>,
-    expr: &annot::Expr<ModeSolution, Lt>,
-) {
-    let check_occur = |ctx: &mut LocalContext<_, _>, occur: &Occur<_, _>| {
-        let binding_ty = ctx.local_binding(occur.id);
-        sanity_check_type(customs, param_count, &occur.ty);
-        sanity_check_type(customs, param_count, &binding_ty);
-        assert!(binding_ty.shape() == occur.ty.shape());
-    };
-
-    // Check that a variable is live at the current path
-    let access = |ctx: &mut LocalContext<_, annot::Type<_, Lt>>, occur: &annot::Occur<_, _>| {
-        let lt = match ctx.local_binding(occur.id).lts() {
-            LtData::Array(lt, _) => lt,
-            LtData::HoleArray(lt, _) => lt,
-            LtData::Boxed(lt, _) => lt,
-            _ => panic!("expected array or boxed type"),
-        };
-        if !lt.contains(path) {
-            panic!("lifetime {:?} does not contain {:?}", lt, path);
-        }
-        assert!(lt.contains(path));
-    };
-
-    match expr {
-        annot::Expr::Local(local) => {
-            check_occur(ctx, local);
-        }
-
-        annot::Expr::Call(_, func, arg) => {
-            check_occur(ctx, arg);
-
-            // Check that the function is called correctly
-            let func = &funcs[*func];
-            assert!(func.arg_ty.shape() == arg.ty.shape());
-            assert!(func.ret_ty.shape() == ret_ty.shape());
-        }
-
-        annot::Expr::LetMany(bindings, _) => ctx.with_scope(|ctx| {
-            for (i, (ty, body)) in bindings.iter().enumerate() {
-                sanity_check_type(customs, param_count, ty);
-                sanity_check_expr(
-                    renderer,
-                    funcs,
-                    customs,
-                    param_count,
-                    &path.seq(i),
-                    ctx,
-                    ty,
-                    body,
-                );
-                ctx.add_local(ty.clone());
-            }
-        }),
-
-        annot::Expr::Branch(discrim, cases, ty) => {
-            assert!(ty.shape() == ret_ty.shape());
-            check_occur(ctx, discrim);
-            for (i, (_, body)) in cases.iter().enumerate() {
-                sanity_check_expr(
-                    renderer,
-                    funcs,
-                    customs,
-                    param_count,
-                    &path.seq(1).alt(i, cases.len()),
-                    ctx,
-                    ret_ty,
-                    body,
-                );
-            }
-        }
-
-        annot::Expr::Tuple(items) => {
-            for item in items {
-                check_occur(ctx, item);
-            }
-        }
-        annot::Expr::TupleField(tup, idx) => {
-            let annot::ModeData::Tuple(item_tys) = tup.ty.modes() else {
-                panic!("expected tuple type");
-            };
-            assert!(item_tys[*idx].shape() == ret_ty.modes().shape());
-            check_occur(ctx, tup);
-        }
-        annot::Expr::WrapVariant(variants, _variant_id, wrapped) => {
-            let annot::ModeData::Variants(ret_tys) = ret_ty.modes() else {
-                panic!("expected variant type");
-            };
-            for (ty1, ty2) in variants.values().zip_eq(ret_tys.values()) {
-                assert!(ty1.shape() == ty2.shape());
-            }
-            check_occur(ctx, wrapped);
-        }
-        annot::Expr::UnwrapVariant(_, wrapped) => {
-            check_occur(ctx, wrapped);
-        }
-        annot::Expr::WrapBoxed(content, _) => {
-            check_occur(ctx, content);
-        }
-        annot::Expr::UnwrapBoxed(wrapped, _) => {
-            access(ctx, wrapped);
-            check_occur(ctx, wrapped);
-        }
-        annot::Expr::WrapCustom(_, content) => {
-            check_occur(ctx, content);
-        }
-        annot::Expr::UnwrapCustom(_, wrapped) => {
-            check_occur(ctx, wrapped);
-        }
-        annot::Expr::Intrinsic(_, arg) => {
-            check_occur(ctx, arg);
-        }
-        annot::Expr::ArrayOp(annot::ArrayOp::Get(arr, idx, ty)) => {
-            assert!(ty.shape() == ret_ty.shape());
-            access(ctx, arr);
-            check_occur(ctx, arr);
-            check_occur(ctx, idx);
-        }
-        annot::Expr::ArrayOp(annot::ArrayOp::Extract(arr, idx)) => {
-            access(ctx, arr);
-            check_occur(ctx, arr);
-            check_occur(ctx, idx);
-        }
-        annot::Expr::ArrayOp(annot::ArrayOp::Len(arr)) => {
-            check_occur(ctx, arr);
-        }
-        annot::Expr::ArrayOp(annot::ArrayOp::Push(arr, item)) => {
-            access(ctx, arr);
-            check_occur(ctx, arr);
-            check_occur(ctx, item);
-        }
-        annot::Expr::ArrayOp(annot::ArrayOp::Pop(arr)) => {
-            access(ctx, arr);
-            check_occur(ctx, arr);
-        }
-        annot::Expr::ArrayOp(annot::ArrayOp::Replace(hole, item)) => {
-            access(ctx, hole);
-            check_occur(ctx, hole);
-            check_occur(ctx, item);
-        }
-        annot::Expr::ArrayOp(annot::ArrayOp::Reserve(arr, cap)) => {
-            access(ctx, arr);
-            check_occur(ctx, arr);
-            check_occur(ctx, cap);
-        }
-        annot::Expr::IoOp(annot::IoOp::Input) => {}
-        annot::Expr::IoOp(annot::IoOp::Output(arr)) => {
-            access(ctx, arr);
-            check_occur(ctx, arr);
-        }
-        annot::Expr::Panic(ty, msg) => {
-            assert!(ty.shape() == ret_ty.shape());
-            check_occur(ctx, msg);
-        }
-        annot::Expr::ArrayLit(item_ty, items) => {
-            for item in items {
-                assert!(item_ty.shape() == item.ty.shape());
-                check_occur(ctx, item);
-            }
-        }
-        annot::Expr::BoolLit(_) => {
-            assert!(ret_ty.shape() == annot::Shape::Bool);
-        }
-        annot::Expr::ByteLit(_) => {
-            assert!(ret_ty.shape() == annot::Shape::Num(NumType::Byte));
-        }
-        annot::Expr::IntLit(_) => {
-            assert!(ret_ty.shape() == annot::Shape::Num(NumType::Int));
-        }
-        annot::Expr::FloatLit(_) => {
-            assert!(ret_ty.shape() == annot::Shape::Num(NumType::Float));
-        }
-    }
-}
-
-fn sanity_check_funcs(
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
-    _func_renderer: &FuncRenderer<CustomFuncId>,
-    funcs: &IdVec<CustomFuncId, annot::FuncDef>,
-    customs: &IdVec<CustomTypeId, annot::TypeDef>,
-) {
-    for (_func_id, func) in funcs {
-        let param_count = func.constrs.sig.count();
-
-        // Check that constrains only refer to signature parameters
-        for lb in func.constrs.sig.values() {
-            for param in lb.lb_vars.iter() {
-                assert!(param_count.contains(param));
-            }
-        }
-
-        // Sanity check the body of the function
-        let wrap_mode = |mode: &ModeParam| ModeSolution {
-            solver_var: ModeVar(0), // This is just debug info; we can use a dummy value
-            lb: in_eq::LowerBound {
-                lb_vars: set![*mode],
-                lb_const: Mode::Borrowed,
-            },
-        };
-        let arg_ty = func.arg_ty.map_modes(wrap_mode);
-        let ret_ty = func.ret_ty.map(wrap_mode, |&lt| Lt::var(lt));
-
-        let mut ctx = LocalContext::new();
-        ctx.add_local(arg_ty);
-        sanity_check_expr(
-            type_renderer,
-            funcs,
-            customs,
-            param_count,
-            &annot::FUNC_BODY_PATH(),
-            &mut ctx,
-            &ret_ty,
-            &func.body,
         );
     }
 }
@@ -2761,20 +1994,6 @@ fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &TailExpr) {
     }
 }
 
-fn convert_type_sccs(
-    orig: &IdVec<CustomTypeSccId, old_graph::Scc<CustomTypeId>>,
-) -> Sccs<CustomTypeSccId, CustomTypeId> {
-    let mut sccs: Sccs<CustomTypeSccId, _> = Sccs::new();
-    for (id, scc) in orig {
-        let push_id = match scc {
-            old_graph::Scc::Acyclic(node) => sccs.push_acyclic_component(*node),
-            old_graph::Scc::Cyclic(nodes) => sccs.push_cyclic_component(nodes),
-        };
-        debug_assert_eq!(push_id, id);
-    }
-    sccs
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strategy {
     Default,
@@ -2783,23 +2002,15 @@ pub enum Strategy {
 }
 
 pub fn annot_modes(
-    program: flat::Program,
     strategy: Strategy,
+    interner: &Interner,
+    program: guarded::Program,
     progress: impl ProgressLogger,
 ) -> annot::Program {
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
-    let custom_sccs = convert_type_sccs(&program.custom_types.sccs);
-    let mut rev_custom_sccs = IdMap::new();
-    for (scc_id, scc) in &custom_sccs {
-        for &custom_id in scc.nodes {
-            rev_custom_sccs.insert_vacant(custom_id, scc_id);
-        }
-    }
-
-    let rev_sccs = rev_custom_sccs.to_id_vec(program.custom_types.types.count());
-    let customs = parameterize_customs(&program.custom_types, &rev_sccs);
+    let customs = parameterize_customs(interner, &program.custom_types);
 
     let funcs = compute_tail_calls(&program.funcs);
 
@@ -2818,6 +2029,7 @@ pub fn annot_modes(
     for (_, scc) in &func_sccs {
         solve_scc(
             strategy,
+            interner,
             &customs,
             &funcs,
             &mut funcs_annot,
@@ -2830,132 +2042,18 @@ pub fn annot_modes(
 
     let funcs = funcs_annot.to_id_vec(funcs.count());
 
-    #[cfg(debug_assertions)]
-    sanity_check_funcs(&type_renderer, &func_renderer, &funcs, &customs);
-
     progress.finish();
 
     annot::Program {
         mod_symbols: program.mod_symbols,
-        custom_types: annot::CustomTypes { types: customs },
+        custom_types: annot::CustomTypes {
+            types: customs,
+            sccs: program.custom_types.sccs,
+        },
         custom_type_symbols: program.custom_type_symbols,
         funcs,
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::util::map_ext::{map, set};
-
-    /// Returns `type List { Nil, Cons(Box((Array Int, List))) }`.
-    fn list_type() -> (anon::Type, annot::TypeDef) {
-        let anon_ty = anon::Type::Variants(IdVec::from_vec(vec![
-            anon::Type::Tuple(vec![]),
-            anon::Type::Boxed(Box::new(anon::Type::Tuple(vec![
-                anon::Type::Array(Box::new(anon::Type::Num(NumType::Int))),
-                anon::Type::Custom(CustomTypeId(0)),
-            ]))),
-        ]));
-        let modes = annot::ModeData::Variants(IdVec::from_vec(vec![
-            annot::ModeData::Tuple(vec![]),
-            annot::ModeData::Boxed(
-                SlotId(0),
-                Overlay::Tuple(vec![
-                    Overlay::Array(SlotId(2)),
-                    Overlay::SelfCustom(CustomTypeId(0)),
-                ]),
-                Box::new(annot::ModeData::Tuple(vec![
-                    annot::ModeData::Array(
-                        SlotId(1),
-                        Overlay::Num(NumType::Int),
-                        Box::new(annot::ModeData::Num(NumType::Int)),
-                    ),
-                    annot::ModeData::SelfCustom(CustomTypeId(0)),
-                ])),
-            ),
-        ]));
-        let lts = annot::LtData::Variants(IdVec::from_vec(vec![
-            annot::LtData::Tuple(vec![]),
-            annot::LtData::Boxed(
-                SlotId(0),
-                Box::new(annot::LtData::Tuple(vec![
-                    annot::LtData::Array(SlotId(1), Box::new(annot::LtData::Num(NumType::Int))),
-                    annot::LtData::SelfCustom(CustomTypeId(0)),
-                ])),
-            ),
-        ]));
-        let annot_ty = annot::Type::new(lts, modes);
-        let ov = annot_ty.modes().unapply_overlay();
-        let annot_def = annot::TypeDef {
-            ty: annot_ty,
-            ov,
-            slot_count: Count::from_value(3),
-            ov_slots: set![SlotId(0)],
-            lt_slots: set![SlotId(0), SlotId(1)],
-        };
-        (anon_ty, annot_def)
-    }
-
-    #[test]
-    fn test_parameterize_type() {
-        let customs = IdVec::new();
-        let sccs = IdVec::from_vec(vec![CustomTypeSccId(0)]);
-        let sccs = Some((CustomTypeSccId(0), &sccs));
-
-        let (input, expected) = list_type();
-        let actual = parameterize_type(&customs, sccs, &mut Count::new(), &input);
-        debug_assert_eq!(expected.ty, actual);
-    }
-
-    #[test]
-    fn test_emit_occur_constrs() {
-        let constrs = || {
-            let mut result = ConstrGraph::new();
-            for _ in 0..8 {
-                result.fresh_var();
-            }
-            result
-        };
-
-        let mut actual_constrs = constrs();
-        let (_, def) = list_type();
-        let fst = annot::Path::root().seq(0).as_lt();
-        let snd = annot::Path::root().seq(1);
-
-        let binding_modes = annot::ModeData::Custom(
-            CustomTypeId(0),
-            map![SlotId(0) => ModeVar(0)],
-            IdVec::from_vec(vec![ModeVar(1), ModeVar(2), ModeVar(3)]),
-        );
-        let use_modes = annot::ModeData::Custom(
-            CustomTypeId(0),
-            map![SlotId(0) => ModeVar(4)],
-            IdVec::from_vec(vec![ModeVar(5), ModeVar(6), ModeVar(7)]),
-        );
-        let use_lts = annot::LtData::Custom(
-            CustomTypeId(0),
-            map![SlotId(0) => fst.clone(), SlotId(1) => fst],
-        );
-        emit_occur_constrs(
-            Strategy::Default,
-            &IdVec::from_vec(vec![def]),
-            &mut actual_constrs,
-            &snd,
-            &binding_modes,
-            &use_modes,
-            &use_lts,
-        );
-
-        let mut expected_constrs = constrs();
-        expected_constrs.require_le(ModeVar(4), ModeVar(0));
-        expected_constrs.require_eq(ModeVar(5), ModeVar(1));
-        expected_constrs.require_eq(ModeVar(6), ModeVar(2));
-        expected_constrs.require_le(ModeVar(7), ModeVar(3));
-
-        assert_eq!(actual_constrs.inner(), expected_constrs.inner());
     }
 }

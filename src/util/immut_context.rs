@@ -97,7 +97,7 @@ impl<I: Id, V> LocalUpdates<I, V> {
     }
 }
 
-/// An context that tracks all updates so that they can be replayed onto another context.
+/// A context that tracks all updates so that they can be replayed onto another context.
 #[derive(Clone, Debug)]
 pub struct TrackedContext<I: Id, V> {
     ctx: ImmutContext<I, V>,

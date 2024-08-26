@@ -8,33 +8,48 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::intrinsics::Intrinsic;
-use crate::data::mode_annot_ast2::{self as annot, CollectOverlay, Lt, Mode, Overlay, SlotId};
+use crate::data::mode_annot_ast2::{self as annot, Interner, Lt, Mode, ResModes, Shape, SlotId};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::collection_ext::{FnWrap, MapRef};
 use crate::util::iter::IterExt;
-use crate::util::map_ext::{FnWrap, MapRef};
-use id_collections::{id_type, Count, IdVec};
-use std::collections::BTreeSet;
-
-pub type StackLt = Overlay<Lt>;
-
-impl StackLt {
-    pub fn join(&self, other: &StackLt) -> StackLt {
-        debug_assert_eq!(self.shape(), other.shape());
-        self.iter()
-            .zip_eq(other.iter())
-            .map(|(lt1, lt2)| lt1.join(lt2))
-            .collect_overlay(self)
-    }
-}
-
-pub type CustomTypeId = first_ord::CustomTypeId;
-pub type Type = annot::ModeData<Mode>;
-pub type Condition = annot::Condition;
+use id_collections::{id_type, IdVec};
+use std::collections::BTreeMap;
 
 #[id_type]
 pub struct CustomFuncId(usize);
+
+#[derive(Clone, Debug)]
+pub struct StackLt {
+    pub shape: Shape,
+    pub data: BTreeMap<SlotId, Lt>,
+}
+
+impl StackLt {
+    pub fn join(&self, interner: &Interner, other: &StackLt) -> StackLt {
+        debug_assert_eq!(self.shape, other.shape);
+        let iter = self.data.iter().zip_eq(other.data.iter());
+        let data = iter.map(|((k1, v1), (k2, v2))| {
+            debug_assert_eq!(k1, k2);
+            (k1.clone(), v1.join(interner, v2))
+        });
+        StackLt {
+            shape: self.shape.clone(),
+            data: data.collect(),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&SlotId, &Lt)> {
+        self.data.iter()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Type {
+    pub shape: Shape,
+    pub res: IdVec<SlotId, ResModes<Mode>>,
+}
 
 #[derive(Clone, Debug)]
 pub struct Occur {
@@ -63,7 +78,7 @@ pub enum IoOp {
 pub enum Expr {
     Local(Occur),
     Call(Purity, CustomFuncId, Occur),
-    Branch(Occur, Vec<(Condition, Expr)>, Type),
+    Branch(Occur, Vec<(annot::Condition, Expr)>, Type),
     LetMany(Vec<(Type, StackLt, Expr)>, Occur),
 
     Tuple(Vec<Occur>),
@@ -104,22 +119,19 @@ pub struct FuncDef {
 }
 
 #[derive(Clone, Debug)]
-pub struct TypeDef {
-    // `ov` is computable from `ty`, but kept around for convenience
-    pub ty: annot::ModeData<SlotId>,
-    pub ov: Overlay<SlotId>,
-    pub slot_count: Count<SlotId>,
-    pub ov_slots: BTreeSet<SlotId>,
+pub struct CustomTypeDef {
+    pub content: Shape,
+    pub scc: flat::CustomTypeSccId,
 }
 
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
-    pub types: IdVec<CustomTypeId, TypeDef>,
+    pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
 }
 
 impl CustomTypes {
-    pub fn view_types(&self) -> impl MapRef<'_, CustomTypeId, annot::ModeData<SlotId>> {
-        FnWrap::wrap(|id| self.types.get(id).map(|def| &def.ty))
+    pub fn view_shapes(&self) -> impl MapRef<'_, first_ord::CustomTypeId, Shape> {
+        FnWrap::wrap(|id| &self.types[id].content)
     }
 }
 
@@ -127,7 +139,7 @@ impl CustomTypes {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
-    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
+    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,

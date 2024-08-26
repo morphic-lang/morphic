@@ -70,6 +70,8 @@ mod annot_fates;
 
 mod specialize_aliases;
 
+mod guard_types;
+
 mod annot_modes;
 mod annot_modes2;
 
@@ -407,34 +409,43 @@ fn compile_to_low_ast(
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
+    let guarded = guard_types::guard_types(flat);
+
+    let interner = crate::data::mode_annot_ast2::Interner::empty();
     let mode_annot = annot_modes2::annot_modes(
-        flat,
         annot_modes2::Strategy::Default,
+        &interner,
+        guarded,
         progress_ui::bar(progress, "annot_modes"),
     );
 
-    if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("mode_annot"))
-            .map_err(ErrorKind::WriteIrFailed)?;
+    // if let Some(artifact_dir) = artifact_dir {
+    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("mode_annot"))
+    //         .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::mode_annot::write_program(&mut out_file, &mode_annot)
-            .map_err(ErrorKind::WriteIrFailed)?;
-    }
+    //     pretty_print::mode_annot::write_program(&mut out_file, &mode_annot)
+    //         .map_err(ErrorKind::WriteIrFailed)?;
+    // }
 
     let obligation_annot = annot_obligations::annot_obligations(
+        &interner,
         mode_annot,
         progress_ui::bar(progress, "annot_obligations"),
     );
 
-    if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("ob_annot"))
-            .map_err(ErrorKind::WriteIrFailed)?;
+    // if let Some(artifact_dir) = artifact_dir {
+    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("ob_annot"))
+    //         .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::obligation_annot::write_program(&mut out_file, &obligation_annot)
-            .map_err(ErrorKind::WriteIrFailed)?;
-    }
+    //     pretty_print::obligation_annot::write_program(&mut out_file, &obligation_annot)
+    //         .map_err(ErrorKind::WriteIrFailed)?;
+    // }
 
-    let rc_annot = annot_rcs::annot_rcs(obligation_annot, progress_ui::bar(progress, "annot_rcs"));
+    let rc_annot = annot_rcs::annot_rcs(
+        &interner,
+        obligation_annot,
+        progress_ui::bar(progress, "annot_rcs"),
+    );
 
     let rc_specialized = rc_specialize2::rc_specialize(
         rc_annot,
@@ -452,13 +463,13 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "lower_structures"),
     );
 
-    if let Some(artifact_dir) = artifact_dir {
-        let mut out_file = fs::File::create(artifact_dir.artifact_path("low-ir"))
-            .map_err(ErrorKind::WriteIrFailed)?;
+    // if let Some(artifact_dir) = artifact_dir {
+    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("low-ir"))
+    //         .map_err(ErrorKind::WriteIrFailed)?;
 
-        pretty_print::low::write_program(&mut out_file, &lowered)
-            .map_err(ErrorKind::WriteIrFailed)?;
-    }
+    //     pretty_print::low::write_program(&mut out_file, &lowered)
+    //         .map_err(ErrorKind::WriteIrFailed)?;
+    // }
 
     Ok(lowered)
 }

@@ -101,7 +101,7 @@ where
     }
 
     /// Add the constraint `value <= var`.
-    pub fn require_lte_const(&mut self, value: &T, var: SolverVar) {
+    pub fn require_le_const(&mut self, value: &T, var: SolverVar) {
         self.vars[var].lb_const.join_mut(&value);
     }
 
@@ -185,7 +185,7 @@ where
             for other_external in &upper_bound.lb_vars {
                 self.require_le(vars[external], vars[other_external]);
             }
-            self.require_lte_const(&upper_bound.lb_const, vars[external]);
+            self.require_le_const(&upper_bound.lb_const, vars[external]);
         }
 
         vars

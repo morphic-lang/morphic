@@ -1,14 +1,20 @@
 use crate::data::first_order_ast as first_ord;
-use crate::data::mode_annot_ast2::{Mode, ModeData, Overlay, Path, SlotId, FUNC_BODY_PATH};
+use crate::data::mode_annot_ast2::{
+    Mode, Path, ResModes, Shape, ShapeInner, SlotId, FUNC_BODY_PATH,
+};
+use crate::data::obligation_annot_ast as ob;
 use crate::data::rc_annot_ast::{self as annot, RcOp, Selector};
 use crate::data::rc_specialized_ast2 as rc;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::let_builder::{self, FromBindings};
 use crate::util::local_context::LocalContext;
-use crate::util::map_ext::{btree_map_refs, FnWrap};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
 use std::collections::{BTreeMap, BTreeSet};
+
+// TODO:
+// - get rid of provenance (just do retain/release resolution)
+// - collect the types to be specialized eagerly (if so far as "specialization" is still needed)
 
 impl FromBindings for rc::Expr {
     type LocalId = rc::LocalId;
@@ -21,35 +27,28 @@ impl FromBindings for rc::Expr {
 
 type LetManyBuilder = let_builder::LetManyBuilder<rc::Expr>;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct TypeSpec {
-    id: first_ord::CustomTypeId,
-    head_sub: IdVec<SlotId, Mode>,
-    tail_sub: IdVec<SlotId, Mode>,
+// We only care about storage modes when lowering custom types, so we throw out any other
+// modes to avoid duplicate specializations.
+fn prepare_subst(res: &IdVec<SlotId, ResModes<Mode>>) -> Vec<Mode> {
+    res.values()
+        .map(|modes| match modes {
+            ResModes::Stack(mode) => *mode,
+            ResModes::Heap(modes) => modes.storage,
+        })
+        .collect()
 }
 
-// We only care about storage modes when lowering custom types, so we throw out any other modes
-// to avoid duplicate specializations.
-impl TypeSpec {
-    fn new_head<'a>(
-        id: first_ord::CustomTypeId,
-        osub: BTreeMap<SlotId, Mode>,
-        tsub: IdVec<SlotId, Mode>,
-    ) -> Self {
-        let head_sub =
-            tsub.map_refs(|slot, _| *osub.get(&slot).unwrap_or_else(|| tsub.get(slot).unwrap()));
-        Self {
-            id,
-            head_sub,
-            tail_sub: tsub,
-        }
-    }
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TypeSpec {
+    old_id: first_ord::CustomTypeId,
+    res: Vec<Mode>,
+}
 
-    fn new_tail<'a>(id: first_ord::CustomTypeId, tsub: IdVec<SlotId, Mode>) -> Self {
+impl TypeSpec {
+    fn new<'a>(old_id: first_ord::CustomTypeId, res: IdVec<SlotId, ResModes<Mode>>) -> Self {
         Self {
-            id,
-            head_sub: tsub.clone(),
-            tail_sub: tsub,
+            old_id,
+            res: prepare_subst(&res),
         }
     }
 }
@@ -72,26 +71,25 @@ impl TypeInstances {
 
     fn force(&mut self, customs: &annot::CustomTypes) {
         while let Some((id, spec)) = self.queue.pop_pending() {
-            // println!("forcing {:?} with spec: {:?}", id, spec);
-
-            let ty = lower_custom_type(
+            let ty = lower_type_impl(
                 &mut self.queue,
-                &spec.head_sub,
-                &spec.tail_sub,
-                &customs.types[spec.id].ty,
+                &customs.types[spec.old_id].content,
+                &spec.res,
             );
 
-            let pushed_id1 = self.provenance.push(spec.id);
+            let pushed_id1 = self.provenance.push(spec.old_id);
             let pushed_id2 = self.resolved.push(ty);
             debug_assert_eq!(pushed_id1, id);
             debug_assert_eq!(pushed_id2, id);
         }
     }
 
-    fn resolve(&mut self, customs: &annot::CustomTypes, spec: TypeSpec) -> rc::CustomTypeId {
-        let id = self.queue.resolve(spec);
-        self.force(customs);
-        id
+    fn resolve(&mut self, _customs: &annot::CustomTypes, spec: TypeSpec) -> rc::CustomTypeId {
+        self.queue.resolve(spec)
+    }
+
+    fn lower_type(&mut self, _customs: &annot::CustomTypes, ty: &ob::Type) -> rc::Type {
+        lower_type_impl(&mut self.queue, &ty.shape, &prepare_subst(&ty.res))
     }
 
     fn lookup_resolved(&mut self, customs: &annot::CustomTypes, id: rc::CustomTypeId) -> &rc::Type {
@@ -111,84 +109,49 @@ impl TypeInstances {
     }
 }
 
-fn lower_custom_type(
+fn lower_type_impl(
     insts: &mut InstanceQueue<TypeSpec, rc::CustomTypeId>,
-    head_sub: &IdVec<SlotId, Mode>,
-    tail_sub: &IdVec<SlotId, Mode>,
-    ty: &ModeData<SlotId>,
+    shape: &Shape,
+    res: &[Mode],
 ) -> rc::Type {
-    // println!("\nlowering {:?} with subst: {:?}\n", ty, subst);
-    match ty {
-        ModeData::Bool => rc::Type::Bool,
-        ModeData::Num(n) => rc::Type::Num(*n),
-        ModeData::Tuple(tys) => rc::Type::Tuple(
-            tys.iter()
-                .map(|ty| lower_custom_type(insts, head_sub, tail_sub, ty))
-                .collect(),
-        ),
-        ModeData::Variants(tys) => rc::Type::Variants(
-            tys.map_refs(|_, ty| lower_custom_type(insts, head_sub, tail_sub, ty)),
-        ),
-        ModeData::SelfCustom(id) => {
-            let spec = TypeSpec::new_tail(*id, tail_sub.clone());
-            rc::Type::Custom(insts.resolve(spec))
+    match &*shape.inner {
+        ShapeInner::Bool => rc::Type::Bool,
+        ShapeInner::Num(num_ty) => rc::Type::Num(*num_ty),
+        ShapeInner::Tuple(shapes) => {
+            // TODO: we have similar code in earlier inference phases
+            let mut start = 0;
+            let mut tys = Vec::with_capacity(shapes.len());
+            for shape in shapes {
+                let end = start + shape.num_slots;
+                tys.push(lower_type_impl(insts, shape, &res[start..end]));
+                start = end;
+            }
+            rc::Type::Tuple(tys)
         }
-        ModeData::Custom(id, oslots, tslots) => {
-            assert!(oslots
-                .values()
-                .collect::<BTreeSet<_>>()
-                .is_disjoint(&tslots.values().collect::<BTreeSet<_>>()));
-
-            let osub = btree_map_refs(oslots, |_, slot| head_sub[slot]);
-            let tsub = tslots.map_refs(|_, slot| head_sub[slot]);
-
-            let spec = TypeSpec::new_head(*id, osub, tsub);
-            rc::Type::Custom(insts.resolve(spec))
+        ShapeInner::Variants(shapes) => {
+            let mut start = 0;
+            let mut tys = Vec::with_capacity(shapes.len());
+            for shape in shapes.values() {
+                let end = start + shape.num_slots;
+                tys.push(lower_type_impl(insts, shape, &res[start..end]));
+                start = end;
+            }
+            rc::Type::Variants(IdVec::from_vec(tys))
         }
-        ModeData::Array(mode, _, item_ty) => rc::Type::Array(
-            head_sub[mode],
-            Box::new(lower_custom_type(insts, head_sub, tail_sub, item_ty)),
-        ),
-        ModeData::HoleArray(mode, _, item_ty) => rc::Type::HoleArray(
-            head_sub[mode],
-            Box::new(lower_custom_type(insts, head_sub, tail_sub, item_ty)),
-        ),
-        ModeData::Boxed(mode, _, item_ty) => rc::Type::Boxed(
-            head_sub[mode],
-            Box::new(lower_custom_type(insts, head_sub, tail_sub, item_ty)),
-        ),
-    }
-}
-
-fn lower_type(
-    insts: &mut TypeInstances,
-    customs: &annot::CustomTypes,
-    ty: &annot::Type,
-) -> rc::Type {
-    // println!("\nlowering type {ty:?}\n");
-    match ty {
-        annot::Type::Bool => rc::Type::Bool,
-        annot::Type::Num(n) => rc::Type::Num(*n),
-        annot::Type::Tuple(tys) => rc::Type::Tuple(
-            tys.iter()
-                .map(|ty| lower_type(insts, customs, ty))
-                .collect(),
-        ),
-        annot::Type::Variants(tys) => {
-            rc::Type::Variants(tys.map_refs(|_, ty| lower_type(insts, customs, ty)))
+        ShapeInner::Custom(id) | ShapeInner::SelfCustom(id) => {
+            rc::Type::Custom(insts.resolve(TypeSpec {
+                old_id: *id,
+                res: res.iter().cloned().collect(),
+            }))
         }
-        annot::Type::SelfCustom(_) => unreachable!(),
-        annot::Type::Custom(id, osub, tsub) => rc::Type::Custom(
-            insts.resolve(customs, TypeSpec::new_head(*id, osub.clone(), tsub.clone())),
-        ),
-        annot::Type::Array(mode, _, item_ty) => {
-            rc::Type::Array(*mode, Box::new(lower_type(insts, customs, &*item_ty)))
+        ShapeInner::Array(shape) => {
+            rc::Type::Array(res[0], Box::new(lower_type_impl(insts, shape, &res[1..])))
         }
-        annot::Type::HoleArray(mode, _, item_ty) => {
-            rc::Type::HoleArray(*mode, Box::new(lower_type(insts, customs, &*item_ty)))
+        ShapeInner::HoleArray(shape) => {
+            rc::Type::HoleArray(res[0], Box::new(lower_type_impl(insts, shape, &res[1..])))
         }
-        annot::Type::Boxed(mode, _, item_ty) => {
-            rc::Type::Boxed(*mode, Box::new(lower_type(insts, customs, &*item_ty)))
+        ShapeInner::Boxed(shape) => {
+            rc::Type::Boxed(res[0], Box::new(lower_type_impl(insts, shape, &res[1..])))
         }
     }
 }
@@ -203,17 +166,27 @@ enum RcOpPlan {
 }
 
 impl RcOpPlan {
-    fn from_sel(customs: &annot::CustomTypes, sel: &Selector) -> Self {
-        match sel {
-            Overlay::Bool => Self::NoOp,
-            Overlay::Num(_) => Self::NoOp,
-            Overlay::Tuple(fields) => {
+    fn from_sel_impl(
+        customs: &annot::CustomTypes,
+        true_: &BTreeSet<SlotId>,
+        slots: (usize, usize),
+        shape: &Shape,
+    ) -> Self {
+        match &*shape.inner {
+            ShapeInner::Bool => Self::NoOp,
+            ShapeInner::Num(_) => Self::NoOp,
+            ShapeInner::Tuple(fields) => {
+                let mut start = 0;
                 let mut plans = BTreeMap::new();
-                for (idx, field) in fields.iter().enumerate() {
-                    let plan = RcOpPlan::from_sel(customs, field);
+
+                // TODO: we have similar code in earlier inference phases
+                for (i, field) in fields.iter().enumerate() {
+                    let end = start + field.num_slots;
+                    let plan = RcOpPlan::from_sel_impl(customs, true_, (start, end), field);
                     if !matches!(plan, RcOpPlan::NoOp) {
-                        plans.insert(idx, plan);
+                        plans.insert(i, plan);
                     }
+                    start = end;
                 }
 
                 if plans.is_empty() {
@@ -222,13 +195,17 @@ impl RcOpPlan {
                     Self::TupleFields(plans)
                 }
             }
-            Overlay::Variants(variants) => {
+            ShapeInner::Variants(variants) => {
+                let mut start = 0;
                 let mut plans = BTreeMap::new();
-                for (variant_id, variant) in variants {
-                    let plan = RcOpPlan::from_sel(customs, variant);
+
+                for (i, variant) in variants {
+                    let end = start + variant.num_slots;
+                    let plan = RcOpPlan::from_sel_impl(customs, true_, (start, end), variant);
                     if !matches!(plan, RcOpPlan::NoOp) {
-                        plans.insert(variant_id, plan);
+                        plans.insert(i, plan);
                     }
+                    start = end;
                 }
 
                 if plans.is_empty() {
@@ -238,33 +215,30 @@ impl RcOpPlan {
                 }
             }
             // The only time we hit this case is when there is a recursive type whose recursive
-            // occurrence is not guarded by a box. Currently, such a type is necessarily zero-sized,
-            // but we would need to update this logic if we did not "cut" every edge of type SCCs
-            // with boxes (e.g. if we inserted the minimal number of boxes to do cycle breaking).
-            Overlay::SelfCustom(id) => {
-                debug_assert!({
-                    let get = FnWrap::wrap(|id| customs.types.get(id).map(|def| &def.ov));
-                    customs.types[*id].ov.is_zero_sized(get)
-                });
-                Self::NoOp
-            }
-            Overlay::Custom(id, sub) => {
-                let inner = customs.types[*id].ov.hydrate(sub);
-                let plan = RcOpPlan::from_sel(customs, &inner);
+            // occurrence is not guarded by a box. The type guarding pass ensures this only occurs
+            // for zero-sized types, which require no non-trivial retain/release operations.
+            ShapeInner::SelfCustom(_) => Self::NoOp,
+            ShapeInner::Custom(id) => {
+                let plan =
+                    RcOpPlan::from_sel_impl(customs, true_, slots, &customs.types[*id].content);
                 if matches!(plan, RcOpPlan::NoOp) {
                     Self::NoOp
                 } else {
                     Self::Custom(Box::new(plan))
                 }
             }
-            Overlay::Array(drop) | Overlay::HoleArray(drop) | Overlay::Boxed(drop) => {
-                if *drop {
+            ShapeInner::Array(_) | ShapeInner::HoleArray(_) | ShapeInner::Boxed(_) => {
+                if true_.contains(&SlotId(slots.0)) {
                     Self::LeafOp
                 } else {
                     Self::NoOp
                 }
             }
         }
+    }
+
+    fn from_sel(customs: &annot::CustomTypes, sel: &Selector) -> Self {
+        Self::from_sel_impl(customs, &sel.true_, (0, sel.shape.num_slots), &sel.shape)
     }
 }
 
@@ -373,7 +347,7 @@ struct LocalInfo {
 }
 
 fn lower_expr(
-    funcs: &IdVec<annot::CustomFuncId, annot::FuncDef>,
+    funcs: &IdVec<ob::CustomFuncId, annot::FuncDef>,
     customs: &annot::CustomTypes,
     insts: &mut TypeInstances,
     ctx: &mut LocalContext<annot::LocalId, LocalInfo>,
@@ -396,7 +370,7 @@ fn lower_expr(
             rc::Expr::Call(*purity, *func, ctx.local_binding(*arg).new_id)
         }
         annot::Expr::Branch(discrim, arms, ret_ty) => {
-            let ret_ty = lower_type(insts, customs, ret_ty);
+            let ret_ty = insts.lower_type(customs, ret_ty);
             let mut new_arms = Vec::new();
             for (cond, expr) in arms {
                 let mut case_builder = builder.child();
@@ -417,11 +391,7 @@ fn lower_expr(
         annot::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
                 for (binding_ty, expr) in bindings {
-                    // print!("%{} : ", ctx.len());
-                    // write_type(&mut std::io::stdout(), None, &write_mode, binding_ty).unwrap();
-                    // println!(" = {expr:?}");
-
-                    let low_ty = lower_type(insts, customs, binding_ty);
+                    let low_ty = insts.lower_type(customs, binding_ty);
 
                     let final_local =
                         lower_expr(funcs, customs, insts, ctx, path, expr, &low_ty, builder);
@@ -448,7 +418,7 @@ fn lower_expr(
             rc::Expr::TupleField(ctx.local_binding(*tup).new_id, *idx)
         }
         annot::Expr::WrapVariant(variants, variant_id, content) => rc::Expr::WrapVariant(
-            variants.map_refs(|_, ty| lower_type(insts, customs, ty)),
+            variants.map_refs(|_, ty| insts.lower_type(customs, ty)),
             *variant_id,
             ctx.local_binding(*content).new_id,
         ),
@@ -457,11 +427,11 @@ fn lower_expr(
         }
         annot::Expr::WrapBoxed(content, item_ty) => rc::Expr::WrapBoxed(
             ctx.local_binding(*content).new_id,
-            lower_type(insts, customs, item_ty),
+            insts.lower_type(customs, item_ty),
         ),
         annot::Expr::UnwrapBoxed(wrapped, item_ty) => rc::Expr::UnwrapBoxed(
             ctx.local_binding(*wrapped).new_id,
-            lower_type(insts, customs, item_ty),
+            insts.lower_type(customs, item_ty),
         ),
         annot::Expr::WrapCustom(_custom_id, content) => {
             let rc::Type::Custom(custom_id) = ret_ty else {
@@ -481,47 +451,47 @@ fn lower_expr(
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Get(item_ty, arr, idx)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Get(
-                lower_type(insts, customs, item_ty),
+                insts.lower_type(customs, item_ty),
                 ctx.local_binding(*arr).new_id,
                 ctx.local_binding(*idx).new_id,
             ))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Extract(item_ty, arr, idx)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Extract(
-                lower_type(insts, customs, item_ty),
+                insts.lower_type(customs, item_ty),
                 ctx.local_binding(*arr).new_id,
                 ctx.local_binding(*idx).new_id,
             ))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Len(item_ty, arr)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Len(
-                lower_type(insts, customs, item_ty),
+                insts.lower_type(customs, item_ty),
                 ctx.local_binding(*arr).new_id,
             ))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Push(item_ty, arr, item)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Push(
-                lower_type(insts, customs, item_ty),
+                insts.lower_type(customs, item_ty),
                 ctx.local_binding(*arr).new_id,
                 ctx.local_binding(*item).new_id,
             ))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Pop(item_ty, arr)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Pop(
-                lower_type(insts, customs, item_ty),
+                insts.lower_type(customs, item_ty),
                 ctx.local_binding(*arr).new_id,
             ))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Replace(item_ty, arr, idx)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Replace(
-                lower_type(insts, customs, item_ty),
+                insts.lower_type(customs, item_ty),
                 ctx.local_binding(*arr).new_id,
                 ctx.local_binding(*idx).new_id,
             ))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Reserve(item_ty, arr, cap)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Reserve(
-                lower_type(insts, customs, item_ty),
+                insts.lower_type(customs, item_ty),
                 ctx.local_binding(*arr).new_id,
                 ctx.local_binding(*cap).new_id,
             ))
@@ -531,11 +501,11 @@ fn lower_expr(
             rc::Expr::IoOp(rc::IoOp::Output(ctx.local_binding(*local).new_id))
         }
         annot::Expr::Panic(ret_ty, msg) => rc::Expr::Panic(
-            lower_type(insts, customs, ret_ty),
+            insts.lower_type(customs, ret_ty),
             ctx.local_binding(*msg).new_id,
         ),
         annot::Expr::ArrayLit(item_ty, items) => rc::Expr::ArrayLit(
-            lower_type(insts, customs, item_ty),
+            insts.lower_type(customs, item_ty),
             items
                 .iter()
                 .map(|local| ctx.local_binding(*local).new_id)
@@ -552,12 +522,12 @@ fn lower_expr(
 
 fn lower_func(
     customs: &annot::CustomTypes,
-    funcs: &IdVec<annot::CustomFuncId, annot::FuncDef>,
+    funcs: &IdVec<ob::CustomFuncId, annot::FuncDef>,
     insts: &mut TypeInstances,
     func: &annot::FuncDef,
 ) -> rc::FuncDef {
-    let arg_type = lower_type(insts, customs, &func.arg_ty);
-    let ret_type = lower_type(insts, customs, &func.ret_ty);
+    let arg_type = insts.lower_type(customs, &func.arg_ty);
+    let ret_type = insts.lower_type(customs, &func.ret_ty);
 
     let mut ctx = LocalContext::new();
     ctx.add_local(LocalInfo {
@@ -599,15 +569,9 @@ pub fn rc_specialize(
 ) -> rc::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
-    // for (id, ty) in &program.custom_types.types {
-    //     println!("{id:?}: {:?} = {ty:?}", &program.custom_type_symbols[id]);
-    // }
-
     let mut insts = TypeInstances::new();
     let mut funcs = IdVec::new();
     for (id, func) in &program.funcs {
-        // println!("\n\nSpecializing function: {}\n", func_renderer.render(id));
-
         let new_func = lower_func(&program.custom_types, &program.funcs, &mut insts, &func);
         let pushed_id = funcs.push(new_func);
         debug_assert_eq!(pushed_id, id);
@@ -628,77 +592,5 @@ pub fn rc_specialize(
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::data::first_order_ast::NumType;
-
-    #[test]
-    fn test_spec_list() {
-        use crate::data::mode_annot_ast2::SlotId;
-        use crate::data::obligation_annot_ast as ob;
-        use crate::util::map_ext::{map, set};
-        use first_ord::CustomTypeId;
-
-        // type List { Nil, Cons(Box((Array Int, List))) }
-        let ty = ModeData::Variants(IdVec::from_vec(vec![
-            ModeData::Tuple(vec![]),
-            ModeData::Boxed(
-                SlotId(0),
-                Overlay::Tuple(vec![
-                    Overlay::Array(SlotId(2)),
-                    Overlay::SelfCustom(CustomTypeId(0)),
-                ]),
-                Box::new(ModeData::Tuple(vec![
-                    ModeData::Array(
-                        SlotId(1),
-                        Overlay::Num(NumType::Int),
-                        Box::new(ModeData::Num(NumType::Int)),
-                    ),
-                    ModeData::SelfCustom(CustomTypeId(0)),
-                ])),
-            ),
-        ]));
-        let ov = ty.unapply_overlay();
-        let types = IdVec::from_vec(vec![ob::TypeDef {
-            ty,
-            ov,
-            slot_count: Count::from_value(3),
-            ov_slots: set![SlotId(0)],
-        }]);
-        let customs = annot::CustomTypes { types };
-
-        let osub = map! [ SlotId(0) => Mode::Borrowed ];
-        let tsub = IdVec::from_vec(vec![Mode::Owned, Mode::Owned, Mode::Owned]);
-        let mut insts = TypeInstances::new();
-        insts.resolve(&customs, TypeSpec::new_head(CustomTypeId(0), osub, tsub));
-
-        let expected_head = rc::Type::Variants(IdVec::from_vec(vec![
-            rc::Type::Tuple(vec![]),
-            rc::Type::Boxed(
-                Mode::Borrowed,
-                Box::new(rc::Type::Tuple(vec![
-                    rc::Type::Array(Mode::Owned, Box::new(rc::Type::Num(NumType::Int))),
-                    rc::Type::Custom(rc::CustomTypeId(1)),
-                ])),
-            ),
-        ]));
-        let expected_tail = rc::Type::Variants(IdVec::from_vec(vec![
-            rc::Type::Tuple(vec![]),
-            rc::Type::Boxed(
-                Mode::Owned,
-                Box::new(rc::Type::Tuple(vec![
-                    rc::Type::Array(Mode::Owned, Box::new(rc::Type::Num(NumType::Int))),
-                    rc::Type::Custom(rc::CustomTypeId(1)),
-                ])),
-            ),
-        ]));
-
-        assert_eq!(insts.resolved.len(), 2);
-        assert_eq!(&insts.resolved[rc::CustomTypeId(0)], &expected_head);
-        assert_eq!(&insts.resolved[rc::CustomTypeId(1)], &expected_tail);
     }
 }
