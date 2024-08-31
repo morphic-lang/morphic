@@ -49,10 +49,22 @@ struct RawPropExpr {
     prop: String,
 }
 
+impl fmt::Display for RawPropExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.type_var, self.prop)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct RawConstr {
     lhs: RawPropExpr,
     rhs: RawPropExpr,
+}
+
+impl fmt::Display for RawConstr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} = {}", self.lhs, self.rhs)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +190,8 @@ enum Error {
     UnknownLifetime(RawTerm),
     #[error("unknown property: `{0}`")]
     UnknownProp(String),
+    #[error("unknown type variable `{0}` in expression: `{1}`")]
+    UnknownVar(String, RawPropExpr),
     #[error("stack types do not have access or storage modes")]
     InvalidStackProp,
     #[error("heap types do not have stack modes")]
@@ -242,7 +256,7 @@ fn resolve_content(
     match pos {
         Position::Stack => {
             assert_args(name, 3, &args)?;
-            let (lt, stack, type_) = (
+            let (type_, stack, lt) = (
                 args.pop().unwrap(),
                 args.pop().unwrap(),
                 args.pop().unwrap(),
@@ -250,12 +264,12 @@ fn resolve_content(
             let lt = resolve_lifetime(lt, ctx)?;
             let stack = resolve_mode(stack, ctx)?;
             let modes = ResModes::Stack(stack);
-            let type_ = resolve_type(pos, ctx, type_)?;
+            let type_ = resolve_type(Position::Heap, ctx, type_)?;
             Ok((Res { modes, lt }, type_))
         }
         Position::Heap => {
             assert_args(name, 4, &args)?;
-            let (lt, access, storage, type_) = (
+            let (type_, storage, access, lt) = (
                 args.pop().unwrap(),
                 args.pop().unwrap(),
                 args.pop().unwrap(),
@@ -265,7 +279,7 @@ fn resolve_content(
             let access = resolve_mode(access, ctx)?;
             let storage = resolve_mode(storage, ctx)?;
             let modes = ResModes::Heap(HeapModes { access, storage });
-            let type_ = resolve_type(pos, ctx, type_)?;
+            let type_ = resolve_type(Position::Heap, ctx, type_)?;
             Ok((Res { modes, lt }, type_))
         }
     }
@@ -281,7 +295,8 @@ fn resolve_type(pos: Position, ctx: &mut Context, type_: RawTerm) -> Result<Type
             if *old_pos != pos {
                 return Err(Error::InconsistentPosition);
             }
-            Type::Var(*fresh)
+            let fresh = *fresh;
+            Type::Var(fresh)
         }
         RawTerm::App(name, args) => match name.as_str() {
             "Bool" => {
@@ -301,15 +316,15 @@ fn resolve_type(pos: Position, ctx: &mut Context, type_: RawTerm) -> Result<Type
                 Type::Num(NumType::Float)
             }
             "Array" => {
-                let (res, type_) = resolve_content("Array", Position::Heap, ctx, args)?;
+                let (res, type_) = resolve_content("Array", pos, ctx, args)?;
                 Type::Array(res, Box::new(type_))
             }
             "HoleArray" => {
-                let (res, type_) = resolve_content("HoleArray", Position::Heap, ctx, args)?;
+                let (res, type_) = resolve_content("HoleArray", pos, ctx, args)?;
                 Type::HoleArray(res, Box::new(type_))
             }
             "Boxed" => {
-                let (res, type_) = resolve_content("Boxed", Position::Heap, ctx, args)?;
+                let (res, type_) = resolve_content("Boxed", pos, ctx, args)?;
                 Type::Boxed(res, Box::new(type_))
             }
             _ => return Err(Error::UnknownType(RawTerm::App(name, args))),
@@ -327,7 +342,7 @@ fn resolve_prop_expr(ctx: &mut Context, expr: RawPropExpr) -> Result<PropExpr, E
     let &(type_var, pos) = ctx
         .type_var_table
         .get(&expr.type_var)
-        .ok_or_else(|| Error::UnknownType(RawTerm::App(expr.type_var, vec![])))?;
+        .ok_or_else(|| Error::UnknownVar(expr.type_var.clone(), expr.clone()))?;
     let prop = match expr.prop.as_str() {
         "stack" => Prop::Stack,
         "access" => Prop::Access,
@@ -393,13 +408,13 @@ fn resolve_signature(sig: RawSignature) -> Result<Signature, Error> {
 }
 
 declare_signatures! {
-    pub box_new: (u) -> Boxed Own t
+    pub box_new: (u) -> Boxed a Own t
         where u.stack = t.storage, u.stack = t.access;
 
     pub box_get: (Boxed a m t) -> u
         where u.stack = t.access;
 
-    pub array_new: (u..) -> Array Own t
+    pub array_new: (u..) -> Array a Own t
         where u.stack = t.storage, u.stack = t.access;
 
     pub array_get: (Array a m t, Int) -> u

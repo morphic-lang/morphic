@@ -111,18 +111,17 @@ impl<FuncId: Id + Ord> FuncRenderer<FuncId> {
     }
 }
 
-pub fn write_delimited<'a, T, I, J>(
+pub fn write_delimited<T, I, J>(
     w: &mut dyn Write,
     elems: J,
     ldelim: &str,
     rdelim: &str,
     sep: &str,
-    write_elem: impl Fn(&mut dyn Write, &T) -> io::Result<()>,
+    write_elem: impl Fn(&mut dyn Write, T) -> io::Result<()>,
 ) -> io::Result<()>
 where
-    T: 'a,
-    I: ExactSizeIterator<Item = &'a T>,
-    J: IntoIterator<Item = &'a T, IntoIter = I>,
+    I: ExactSizeIterator<Item = T>,
+    J: IntoIterator<Item = T, IntoIter = I>,
 {
     let mut elems = elems.into_iter();
     let len = elems.len();

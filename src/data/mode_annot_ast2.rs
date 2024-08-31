@@ -449,7 +449,7 @@ impl Shape {
                 } else {
                     Shape {
                         inner: interner.shape.new(ShapeInner::Custom(*id)),
-                        num_slots: customs.get(id).content.shape.num_slots,
+                        num_slots: customs.get(id).content.num_slots,
                     }
                 }
             }
@@ -510,6 +510,73 @@ impl Shape {
         let mut slots = BTreeSet::new();
         self.top_level_slots_impl(customs, 0, &mut slots);
         slots
+    }
+
+    fn positions_impl<'a>(
+        &self,
+        customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
+        pos: Position,
+        result: &mut Vec<Position>,
+    ) {
+        match &*self.inner {
+            ShapeInner::Bool | ShapeInner::Num(_) => {}
+            ShapeInner::Tuple(shapes) => {
+                for shape in shapes {
+                    shape.positions_impl(customs, pos, result);
+                }
+            }
+            ShapeInner::Variants(shapes) => {
+                for (_, shape) in shapes {
+                    shape.positions_impl(customs, pos, result);
+                }
+            }
+            ShapeInner::Custom(id) => match pos {
+                Position::Stack => {
+                    result.extend(&customs.get(id).pos);
+                }
+                Position::Heap => {
+                    result.extend(customs.get(id).pos.iter().map(|_| Position::Heap));
+                }
+            },
+            ShapeInner::SelfCustom(_) => {}
+            ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
+                result.push(pos);
+                shape.positions_impl(customs, Position::Heap, result);
+            }
+        }
+    }
+
+    pub fn positions<'a>(
+        &self,
+        customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
+    ) -> Vec<Position> {
+        let mut result = Vec::new();
+        self.positions_impl(customs, Position::Stack, &mut result);
+        assert!(result.len() == self.num_slots);
+        result
+    }
+
+    pub fn gen_resources<'a, M, L>(
+        &self,
+        customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
+        mut next_mode: impl FnMut() -> M,
+        mut next_lt: impl FnMut() -> L,
+    ) -> IdVec<SlotId, Res<M, L>> {
+        IdVec::from_vec(
+            self.positions(customs)
+                .into_iter()
+                .map(|pos| Res {
+                    modes: match pos {
+                        Position::Stack => ResModes::Stack(next_mode()),
+                        Position::Heap => ResModes::Heap(HeapModes {
+                            access: next_mode(),
+                            storage: next_mode(),
+                        }),
+                    },
+                    lt: next_lt(),
+                })
+                .collect(),
+        )
     }
 }
 
@@ -574,6 +641,41 @@ impl<M, L> Type<M, L> {
             state: FlatIterState::YieldInner,
             inner_iter: self.res.values(),
         }
+    }
+}
+
+pub struct ShapeIter<'a, M, L> {
+    shapes: std::slice::Iter<'a, Shape>,
+    res: &'a [Res<M, L>],
+    start: usize,
+}
+
+impl<'a, M, L> Iterator for ShapeIter<'a, M, L> {
+    type Item = (&'a Shape, &'a [Res<M, L>]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let shape = self.shapes.next()?;
+        let end = self.start + shape.num_slots;
+        let res = &self.res[self.start..end];
+        self.start = end;
+        Some((shape, res))
+    }
+}
+
+impl<'a, M, L> ExactSizeIterator for ShapeIter<'a, M, L> {
+    fn len(&self) -> usize {
+        self.shapes.len()
+    }
+}
+
+pub fn iter_shapes<'a, M, L>(
+    shapes: &'a [Shape],
+    res: &'a [Res<M, L>],
+) -> impl ExactSizeIterator<Item = (&'a Shape, &'a [Res<M, L>])> {
+    ShapeIter {
+        shapes: shapes.iter(),
+        res,
+        start: 0,
     }
 }
 
@@ -705,7 +807,7 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct CustomTypeDef {
-    pub content: Type<ModeParam, LtParam>,
+    pub content: Shape,
     pub pos: Vec<Position>,
     pub scc: flat::CustomTypeSccId,
     pub can_guard: guarded::CanGuard,
@@ -719,7 +821,7 @@ pub struct CustomTypes {
 
 impl CustomTypes {
     pub fn view_shapes(&self) -> impl MapRef<'_, first_ord::CustomTypeId, Shape> {
-        FnWrap::wrap(|id| &self.types[id].content.shape)
+        FnWrap::wrap(|id| &self.types[id].content)
     }
 }
 

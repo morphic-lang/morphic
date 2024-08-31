@@ -1,4 +1,4 @@
-use crate::data::mode_annot_ast2::{LocalLt, Lt, LtParam, Mode, Path};
+use crate::data::mode_annot_ast2::{Interner, LocalLt, Lt, LtParam, Mode, Path};
 use std::io::{self, Write};
 
 pub fn write_mode(w: &mut dyn Write, m: &Mode) -> io::Result<()> {
@@ -61,5 +61,5 @@ pub fn write_lifetime(w: &mut dyn Write, lt: &Lt) -> io::Result<()> {
 }
 
 pub fn write_path(w: &mut dyn Write, path: &Path) -> io::Result<()> {
-    write_lifetime(w, &path.as_lt())
+    write_lifetime(w, &path.as_lt(&Interner::empty()))
 }

@@ -1,11 +1,13 @@
-use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
+use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
 use crate::data::mode_annot_ast2::{
-    self as annot, ArrayOp, Condition, Constrs, CustomTypeDef, FuncDef, IoOp, Lt, LtParam, Mode,
-    ModeParam, ModeSolution, Overlay, Program, SlotId,
+    self as annot, ArrayOp, Condition, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt, Mode,
+    ModeParam, ModeSolution, Program, Res, ResModes, Shape, ShapeInner,
 };
+use crate::data::num_type::NumType;
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common::*;
 use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
+use crate::util::collection_ext::MapRef;
 use std::io::{self, Write};
 
 const TAB_SIZE: usize = 2;
@@ -35,14 +37,6 @@ impl<'a> Context<'a> {
         writeln!(w)?;
         write!(w, "{}", " ".repeat(self.indentation))
     }
-}
-
-fn cast_to_mode(slot: &SlotId) -> ModeParam {
-    ModeParam(slot.0)
-}
-
-fn cast_to_lifetime(slot: &SlotId) -> LtParam {
-    LtParam(slot.0)
 }
 
 fn write_condition(
@@ -102,16 +96,24 @@ fn write_mode(w: &mut dyn Write, m: &ModeSolution) -> io::Result<()> {
     Ok(())
 }
 
-fn write_mode_and_lifetime<M, L>(
+fn write_resource<M, L>(
     w: &mut dyn Write,
     write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
     write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
-    m: &M,
-    lt: &L,
+    res: &Res<M, L>,
 ) -> io::Result<()> {
-    write_mode(w, m)?;
+    match &res.modes {
+        ResModes::Stack(stack) => {
+            write_mode(w, stack)?;
+        }
+        ResModes::Heap(HeapModes { access, storage }) => {
+            write_mode(w, access)?;
+            write!(w, "@")?;
+            write_mode(w, storage)?
+        }
+    }
     write!(w, "<")?;
-    write_lifetime(w, lt)?;
+    write_lifetime(w, &res.lt)?;
     write!(w, ">")?;
     Ok(())
 }
@@ -128,52 +130,71 @@ fn write_custom(
     }
 }
 
-fn write_overlay<M>(
+pub fn write_type_impl<M, L>(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
     write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
-    overlay: &Overlay<M>,
+    write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
+    shape: &Shape,
+    res: &[Res<M, L>],
 ) -> io::Result<()> {
-    match overlay {
-        Overlay::Bool => write!(w, "Bool"),
-        Overlay::Num(NumType::Byte) => write!(w, "Byte"),
-        Overlay::Num(NumType::Int) => write!(w, "Int"),
-        Overlay::Num(NumType::Float) => write!(w, "Float"),
-        Overlay::Tuple(overlays) => write_delimited(w, overlays, "(", ")", ",", |w, overlay| {
-            write_overlay(w, type_renderer, write_mode, overlay)
-        }),
-        Overlay::Variants(overlays) => {
-            write_delimited(w, overlays.values(), "{", "}", ",", |w, overlay| {
-                write_overlay(w, type_renderer, write_mode, overlay)
+    match &*shape.inner {
+        ShapeInner::Bool => write!(w, "Bool"),
+        ShapeInner::Num(NumType::Byte) => write!(w, "Byte"),
+        ShapeInner::Num(NumType::Int) => write!(w, "Int"),
+        ShapeInner::Num(NumType::Float) => write!(w, "Float"),
+        ShapeInner::Tuple(shapes) => {
+            let items = annot::iter_shapes(shapes, res);
+            write_delimited(w, items, "(", ")", ", ", |w, (shape, res)| {
+                write_type_impl(w, type_renderer, write_mode, write_lifetime, shape, res)
             })
         }
-        Overlay::SelfCustom(type_id) => {
-            write_custom(w, type_renderer, *type_id)?;
-            write!(w, "#self")
+        ShapeInner::Variants(shapes) => {
+            let items = annot::iter_shapes(shapes.as_slice(), res);
+            write_delimited(w, items, "{", "}", ", ", |w, (shape, res)| {
+                write_type_impl(w, type_renderer, write_mode, write_lifetime, shape, res)
+            })
         }
-        Overlay::Custom(type_id, subst) => {
-            write_custom(w, type_renderer, *type_id)?;
-            write!(w, "<")?;
-            for (i, (_param, m)) in subst.iter().enumerate() {
-                write_mode(w, m)?;
-                if i + 1 < subst.len() {
-                    write!(w, ", ")?;
-                }
-            }
-            write!(w, ">")?;
-            Ok(())
+        ShapeInner::Custom(type_id) => write_custom(w, type_renderer, *type_id),
+        ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.0),
+        ShapeInner::Array(shape) => {
+            write_resource(w, write_mode, write_lifetime, &res[0])?;
+            write!(w, " Array (")?;
+            write_type_impl(
+                w,
+                type_renderer,
+                write_mode,
+                write_lifetime,
+                shape,
+                &res[1..],
+            )?;
+            write!(w, ")")
         }
-        Overlay::Array(m) => {
-            write_mode(w, m)?;
-            write!(w, " Array")
+        ShapeInner::HoleArray(shape) => {
+            write_resource(w, write_mode, write_lifetime, &res[0])?;
+            write!(w, " HoleArray (")?;
+            write_type_impl(
+                w,
+                type_renderer,
+                write_mode,
+                write_lifetime,
+                shape,
+                &res[1..],
+            )?;
+            write!(w, ")")
         }
-        Overlay::HoleArray(m) => {
-            write_mode(w, m)?;
-            write!(w, " HoleArray")
-        }
-        Overlay::Boxed(m) => {
-            write_mode(w, m)?;
-            write!(w, " Box")
+        ShapeInner::Boxed(shape) => {
+            write_resource(w, write_mode, write_lifetime, &res[0])?;
+            write!(w, " Boxed (")?;
+            write_type_impl(
+                w,
+                type_renderer,
+                write_mode,
+                write_lifetime,
+                shape,
+                &res[1..],
+            )?;
+            write!(w, ")")
         }
     }
 }
@@ -181,112 +202,34 @@ fn write_overlay<M>(
 pub fn write_type<M, L>(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
-    write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
-    modes: &annot::ModeData<M>,
-    lts: &annot::LtData<L>,
+    write_mode: impl Fn(&mut dyn Write, &M) -> io::Result<()>,
+    write_lifetime: impl Fn(&mut dyn Write, &L) -> io::Result<()>,
+    type_: &annot::Type<M, L>,
 ) -> io::Result<()> {
-    use annot::LtData as L;
-    use annot::ModeData as M;
-    match (modes, lts) {
-        (M::Bool, L::Bool) => write!(w, "Bool"),
-        (M::Num(NumType::Byte), L::Num(NumType::Byte)) => write!(w, "Byte"),
-        (M::Num(NumType::Int), L::Num(NumType::Int)) => write!(w, "Int"),
-        (M::Num(NumType::Float), L::Num(NumType::Float)) => write!(w, "Float"),
-        (M::Tuple(modes), L::Tuple(lts)) => {
-            let types = modes.iter().zip(lts.iter()).collect::<Vec<_>>();
-            write_delimited(w, &types, "(", ")", ",", |w, (modes, lts)| {
-                write_type(w, type_renderer, write_mode, write_lifetime, modes, lts)
-            })
-        }
-        (M::Variants(modes), L::Variants(lts)) => {
-            let types = modes.iter().zip(lts.iter()).collect::<Vec<_>>();
-            write_delimited(w, &types, "{", "}", ",", |w, ((_, modes), (_, lts))| {
-                write_type(w, type_renderer, write_mode, write_lifetime, modes, lts)
-            })
-        }
-        (M::SelfCustom(type_id), L::SelfCustom(_)) => {
-            write_custom(w, type_renderer, *type_id)?;
-            write!(w, "#self")
-        }
-        (M::Custom(type_id, osub, tsub), L::Custom(_, lsub)) => {
-            write_custom(w, type_renderer, *type_id)?;
+    write_type_impl(
+        w,
+        type_renderer,
+        &write_mode,
+        &write_lifetime,
+        &type_.shape,
+        type_.res.as_slice(),
+    )
+}
 
-            if lsub.len() > 0 || tsub.len() > 0 {
-                write!(w, "<")?;
-                for (i, (_, lt)) in lsub.iter().enumerate() {
-                    write_lifetime(w, lt)?;
-                    if i + 1 < lsub.len() {
-                        write!(w, ", ")?;
-                    }
-                }
-
-                write!(w, " | ")?;
-
-                for (i, (p, m)) in tsub.iter().enumerate() {
-                    if let Some(m) = osub.get(&p) {
-                        write!(w, "[")?;
-                        write_mode(w, m)?;
-                        write!(w, "]")?;
-                    }
-                    write_mode(w, m)?;
-                    if i + 1 < tsub.len() {
-                        write!(w, ", ")?;
-                    }
-                }
-
-                write!(w, ">")?;
-            }
-
-            Ok(())
-        }
-        (M::Array(m, overlay, item_modes), L::Array(lt, item_lts)) => {
-            write_mode_and_lifetime(w, write_mode, write_lifetime, m, lt)?;
-            write!(w, " Array (")?;
-            write_type(
-                w,
-                type_renderer,
-                write_mode,
-                write_lifetime,
-                item_modes,
-                item_lts,
-            )?;
-            write!(w, " as ")?;
-            write_overlay(w, type_renderer, write_mode, overlay)?;
-            write!(w, ")")
-        }
-        (M::HoleArray(m, overlay, item_modes), L::HoleArray(lt, item_lts)) => {
-            write_mode_and_lifetime(w, write_mode, write_lifetime, m, lt)?;
-            write!(w, " HoleArray (")?;
-            write_type(
-                w,
-                type_renderer,
-                write_mode,
-                write_lifetime,
-                item_modes,
-                item_lts,
-            )?;
-            write!(w, " as ")?;
-            write_overlay(w, type_renderer, write_mode, overlay)?;
-            write!(w, ")")
-        }
-        (M::Boxed(m, overlay, item_modes), L::Boxed(lt, item_lts)) => {
-            write_mode_and_lifetime(w, write_mode, write_lifetime, m, lt)?;
-            write!(w, " Box (")?;
-            write_type(
-                w,
-                type_renderer,
-                write_mode,
-                write_lifetime,
-                item_modes,
-                item_lts,
-            )?;
-            write!(w, " as ")?;
-            write_overlay(w, type_renderer, write_mode, overlay)?;
-            write!(w, ")")
-        }
-        _ => unreachable!(),
-    }
+pub fn write_shape<'a>(
+    w: &mut dyn Write,
+    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
+    customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
+    shape: &Shape,
+) -> io::Result<()> {
+    write_type_impl(
+        w,
+        type_renderer,
+        &|w, _| write!(w, "_"),
+        &|w, _| write!(w, "_"),
+        shape,
+        shape.gen_resources(customs, || (), || ()).as_slice(),
+    )
 }
 
 fn write_type_concrete(
@@ -294,30 +237,7 @@ fn write_type_concrete(
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     type_: &Type,
 ) -> io::Result<()> {
-    write_type(
-        w,
-        Some(type_renderer),
-        &write_mode,
-        &write_lifetime,
-        type_.modes(),
-        type_.lts(),
-    )
-}
-
-pub fn write_type_template(
-    w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    modes: &annot::ModeData<SlotId>,
-    lts: &annot::LtData<SlotId>,
-) -> io::Result<()> {
-    write_type(
-        w,
-        type_renderer,
-        &|w, slot| write_mode_param(w, &cast_to_mode(slot)),
-        &|w, slot| write_lifetime_param(w, &cast_to_lifetime(slot)),
-        modes,
-        lts,
-    )
+    write_type(w, Some(type_renderer), write_mode, write_lifetime, type_)
 }
 
 fn write_occur(
@@ -569,8 +489,7 @@ pub fn write_func(
         Some(type_renderer),
         &write_mode_param,
         &write_lifetime,
-        func.arg_ty.modes(),
-        func.arg_ty.lts(),
+        &func.arg_ty,
     )?;
     write!(w, "): ")?;
     write_type(
@@ -578,8 +497,7 @@ pub fn write_func(
         Some(type_renderer),
         &write_mode_param,
         &write_lifetime_param,
-        func.ret_ty.modes(),
-        func.ret_ty.lts(),
+        &func.ret_ty,
     )?;
 
     write!(w, "\n{}where ", " ".repeat(TAB_SIZE))?;
@@ -601,24 +519,14 @@ pub fn write_func(
 pub fn write_typedef(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
+    customs: &annot::CustomTypes,
     typedef: &CustomTypeDef,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
     write!(w, "custom type ")?;
     write_custom(w, type_renderer, type_id)?;
-    write!(
-        w,
-        "<{} | [{}]{}> = ",
-        typedef.lt_slots.len(),
-        typedef.ov_slots.len(),
-        typedef.slot_count.to_value(),
-    )?;
-    write_type_template(
-        w,
-        type_renderer,
-        typedef.content.modes(),
-        typedef.content.lts(),
-    )?;
+    write!(w, " = ")?;
+    write_shape(w, type_renderer, &customs.types, &typedef.content)?;
     Ok(())
 }
 
@@ -627,7 +535,7 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
     for (i, typedef) in &program.custom_types.types {
-        write_typedef(w, Some(&type_renderer), typedef, i)?;
+        write_typedef(w, Some(&type_renderer), &program.custom_types, typedef, i)?;
         writeln!(w)?;
     }
     for (i, func) in &program.funcs {
