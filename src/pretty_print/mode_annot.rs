@@ -1,13 +1,14 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
 use crate::data::mode_annot_ast2::{
     self as annot, ArrayOp, Condition, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt, Mode,
-    ModeParam, ModeSolution, Program, Res, ResModes, Shape, ShapeInner,
+    ModeParam, ModeSolution, ModeVar, Position, Program, Res, ResModes, Shape, ShapeInner,
 };
 use crate::data::num_type::NumType;
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common::*;
 use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
-use crate::util::collection_ext::MapRef;
+use core::str;
+use std::fmt;
 use std::io::{self, Write};
 
 const TAB_SIZE: usize = 2;
@@ -18,11 +19,11 @@ type Occur = annot::Occur<ModeSolution, Lt>;
 type Expr = annot::Expr<ModeSolution, Lt>;
 
 #[derive(Clone, Debug, Copy)]
-struct Context<'a> {
-    type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
-    func_renderer: &'a FuncRenderer<CustomFuncId>,
-    indentation: usize,
-    num_locals: usize,
+pub struct Context<'a> {
+    pub type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    pub func_renderer: &'a FuncRenderer<CustomFuncId>,
+    pub indentation: usize,
+    pub num_locals: usize,
 }
 
 impl<'a> Context<'a> {
@@ -39,7 +40,7 @@ impl<'a> Context<'a> {
     }
 }
 
-fn write_condition(
+pub fn write_condition(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     condition: &Condition,
@@ -78,7 +79,11 @@ pub fn write_mode_param(w: &mut dyn Write, m: &ModeParam) -> io::Result<()> {
     write!(w, "${}", m.0)
 }
 
-fn write_mode(w: &mut dyn Write, m: &ModeSolution) -> io::Result<()> {
+pub fn write_mode_var(w: &mut dyn Write, m: &ModeVar) -> io::Result<()> {
+    write!(w, "?{}", m.0)
+}
+
+pub fn write_mode_solution(w: &mut dyn Write, m: &ModeSolution) -> io::Result<()> {
     if m.lb.lb_const == Mode::Owned {
         write!(w, "●")?;
     } else if !m.lb.lb_vars.is_empty() {
@@ -96,29 +101,35 @@ fn write_mode(w: &mut dyn Write, m: &ModeSolution) -> io::Result<()> {
     Ok(())
 }
 
-fn write_resource<M, L>(
+pub fn write_resource_modes<M>(
+    w: &mut dyn Write,
+    write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
+    modes: &ResModes<M>,
+) -> io::Result<()> {
+    match modes {
+        ResModes::Stack(stack) => write_mode(w, stack),
+        ResModes::Heap(HeapModes { access, storage }) => {
+            write_mode(w, access)?;
+            write!(w, "@")?;
+            write_mode(w, storage)
+        }
+    }
+}
+
+pub fn write_resource<M, L>(
     w: &mut dyn Write,
     write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
     write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
     res: &Res<M, L>,
 ) -> io::Result<()> {
-    match &res.modes {
-        ResModes::Stack(stack) => {
-            write_mode(w, stack)?;
-        }
-        ResModes::Heap(HeapModes { access, storage }) => {
-            write_mode(w, access)?;
-            write!(w, "@")?;
-            write_mode(w, storage)?
-        }
-    }
+    write_resource_modes(w, write_mode, &res.modes)?;
     write!(w, "<")?;
     write_lifetime(w, &res.lt)?;
     write!(w, ">")?;
     Ok(())
 }
 
-fn write_custom(
+pub fn write_custom(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
     type_id: CustomTypeId,
@@ -130,7 +141,7 @@ fn write_custom(
     }
 }
 
-pub fn write_type_impl<M, L>(
+fn write_type_impl<M, L>(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
     write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
@@ -155,7 +166,12 @@ pub fn write_type_impl<M, L>(
                 write_type_impl(w, type_renderer, write_mode, write_lifetime, shape, res)
             })
         }
-        ShapeInner::Custom(type_id) => write_custom(w, type_renderer, *type_id),
+        ShapeInner::Custom(type_id) => {
+            write_custom(w, type_renderer, *type_id)?;
+            write_delimited(w, res, "<", ">", ",", |w, res| {
+                write_resource(w, write_mode, write_lifetime, res)
+            })
+        }
         ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.0),
         ShapeInner::Array(shape) => {
             write_resource(w, write_mode, write_lifetime, &res[0])?;
@@ -216,37 +232,93 @@ pub fn write_type<M, L>(
     )
 }
 
-pub fn write_shape<'a>(
+fn write_shape_impl(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
+    pos: Position,
     shape: &Shape,
 ) -> io::Result<()> {
-    write_type_impl(
-        w,
-        type_renderer,
-        &|w, _| write!(w, "_"),
-        &|w, _| write!(w, "_"),
-        shape,
-        shape.gen_resources(customs, || (), || ()).as_slice(),
-    )
+    let write_res = |w: &mut dyn Write| {
+        let dummy = Res {
+            modes: match pos {
+                Position::Stack => ResModes::Stack(()),
+                Position::Heap => ResModes::Heap(HeapModes {
+                    access: (),
+                    storage: (),
+                }),
+            },
+            lt: (),
+        };
+        write_resource(w, &|w, _| write!(w, "_"), &|w, _| write!(w, "_"), &dummy)
+    };
+    match &*shape.inner {
+        ShapeInner::Bool => write!(w, "Bool"),
+        ShapeInner::Num(NumType::Byte) => write!(w, "Byte"),
+        ShapeInner::Num(NumType::Int) => write!(w, "Int"),
+        ShapeInner::Num(NumType::Float) => write!(w, "Float"),
+        ShapeInner::Tuple(shapes) => write_delimited(w, shapes, "(", ")", ", ", |w, shape| {
+            write_shape_impl(w, type_renderer, pos, shape)
+        }),
+        ShapeInner::Variants(shapes) => {
+            write_delimited(w, shapes.values(), "{", "}", ", ", |w, shape| {
+                write_shape_impl(w, type_renderer, pos, shape)
+            })
+        }
+        ShapeInner::Custom(type_id) => {
+            write_custom(w, type_renderer, *type_id)?;
+            write!(w, "<...>")
+        }
+        ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.0),
+        ShapeInner::Array(shape) => {
+            write_res(w)?;
+            write!(w, " Array (")?;
+            write_shape_impl(w, type_renderer, Position::Heap, shape)?;
+            write!(w, ")")
+        }
+        ShapeInner::HoleArray(shape) => {
+            write_res(w)?;
+            write!(w, " HoleArray (")?;
+            write_shape_impl(w, type_renderer, Position::Heap, shape)?;
+            write!(w, ")")
+        }
+        ShapeInner::Boxed(shape) => {
+            write_res(w)?;
+            write!(w, " Boxed (")?;
+            write_shape_impl(w, type_renderer, Position::Heap, shape)?;
+            write!(w, ")")
+        }
+    }
 }
 
-fn write_type_concrete(
+pub fn write_shape(
+    w: &mut dyn Write,
+    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
+    shape: &Shape,
+) -> io::Result<()> {
+    write_shape_impl(w, type_renderer, Position::Stack, shape)
+}
+
+pub fn write_solved_type(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     type_: &Type,
 ) -> io::Result<()> {
-    write_type(w, Some(type_renderer), write_mode, write_lifetime, type_)
+    write_type(
+        w,
+        Some(type_renderer),
+        write_mode_solution,
+        write_lifetime,
+        type_,
+    )
 }
 
-fn write_occur(
+pub fn write_occur(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     occur: &Occur,
 ) -> io::Result<()> {
     write!(w, "%{} as ", occur.id.0)?;
-    write_type_concrete(w, type_renderer, &occur.ty)
+    write_solved_type(w, type_renderer, &occur.ty)
 }
 
 fn write_single(
@@ -289,7 +361,7 @@ fn match_string_bytes(bindings: &[(Type, Expr)]) -> Option<String> {
     String::from_utf8(result_bytes).ok()
 }
 
-fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
+pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
     match expr {
         Expr::Local(occur) => write_occur(w, context.type_renderer, occur),
         Expr::Call(_purity, func_id, occur) => {
@@ -336,7 +408,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                     let (binding_type, binding_expr) = &bindings[index];
                     new_context.writeln(w)?;
                     write!(w, "{}: %{}: ", index, context.num_locals + index)?;
-                    write_type_concrete(w, context.type_renderer, binding_type)?;
+                    write_solved_type(w, context.type_renderer, binding_type)?;
                     write!(w, " = ")?;
                     write_expr(
                         w,
@@ -397,7 +469,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             ArrayOp::Get(occur1, occur2, output_type) => {
                 write_double(w, context.type_renderer, "get", occur1, occur2)?;
                 write!(w, " as ")?;
-                write_type_concrete(w, context.type_renderer, output_type)
+                write_solved_type(w, context.type_renderer, output_type)
             }
             ArrayOp::Extract(occur1, occur2) => {
                 write_double(w, context.type_renderer, "extract", occur1, occur2)
@@ -450,7 +522,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
     }
 }
 
-fn write_constrs(w: &mut dyn Write, constrs: &Constrs) -> io::Result<()> {
+pub fn write_constrs(w: &mut dyn Write, constrs: &Constrs) -> io::Result<()> {
     let mut num_written = 0;
     write!(w, "{{ ")?;
     for (p, bound) in &constrs.sig {
@@ -487,16 +559,16 @@ pub fn write_func(
     write_type(
         w,
         Some(type_renderer),
-        &write_mode_param,
-        &write_lifetime,
+        write_mode_param,
+        write_lifetime,
         &func.arg_ty,
     )?;
     write!(w, "): ")?;
     write_type(
         w,
         Some(type_renderer),
-        &write_mode_param,
-        &write_lifetime_param,
+        write_mode_param,
+        write_lifetime_param,
         &func.ret_ty,
     )?;
 
@@ -519,14 +591,13 @@ pub fn write_func(
 pub fn write_typedef(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    customs: &annot::CustomTypes,
     typedef: &CustomTypeDef,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
     write!(w, "custom type ")?;
     write_custom(w, type_renderer, type_id)?;
     write!(w, " = ")?;
-    write_shape(w, type_renderer, &customs.types, &typedef.content)?;
+    write_shape(w, type_renderer, &typedef.content)?;
     Ok(())
 }
 
@@ -535,7 +606,7 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
     for (i, typedef) in &program.custom_types.types {
-        write_typedef(w, Some(&type_renderer), &program.custom_types, typedef, i)?;
+        write_typedef(w, Some(&type_renderer), typedef, i)?;
         writeln!(w)?;
     }
     for (i, func) in &program.funcs {
@@ -543,4 +614,45 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
         writeln!(w)?;
     }
     Ok(())
+}
+
+// Convenience wrappers for debugging which implement `Display`
+
+pub struct DisplaySolverType<'a> {
+    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
+    type_: &'a annot::Type<ModeVar, Lt>,
+}
+
+impl fmt::Display for DisplaySolverType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut raw = Vec::<u8>::new();
+        write_type(
+            &mut raw,
+            self.type_renderer,
+            write_mode_var,
+            write_lifetime,
+            self.type_,
+        )
+        .unwrap();
+        f.write_str(str::from_utf8(&raw).unwrap())
+    }
+}
+
+impl annot::Type<ModeVar, Lt> {
+    pub fn display<'a>(&'a self) -> DisplaySolverType<'a> {
+        DisplaySolverType {
+            type_renderer: None,
+            type_: self,
+        }
+    }
+
+    pub fn display_with<'a>(
+        &'a self,
+        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    ) -> DisplaySolverType<'a> {
+        DisplaySolverType {
+            type_renderer: Some(type_renderer),
+            type_: self,
+        }
+    }
 }

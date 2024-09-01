@@ -4,18 +4,17 @@ use crate::data::flat_ast::{
     ArrayOp, Condition, CustomTypeDef, Expr, FuncDef, IoOp, LocalId, Program,
 };
 use crate::intrinsic_config::intrinsic_to_name;
-use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
-use std::io;
-use std::io::Write;
+use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
+use std::io::{self, Write};
 
 const TAB_SIZE: usize = 2;
 
 #[derive(Clone, Debug, Copy)]
-struct Context<'a> {
-    type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
-    func_renderer: &'a FuncRenderer<CustomFuncId>,
-    indentation: usize,
-    num_locals: usize,
+pub struct Context<'a> {
+    pub type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    pub func_renderer: &'a FuncRenderer<CustomFuncId>,
+    pub indentation: usize,
+    pub num_locals: usize,
 }
 
 impl<'a> Context<'a> {
@@ -39,38 +38,14 @@ impl<'a> Context<'a> {
     }
 }
 
-fn write_tuple_like<T>(
-    w: &mut dyn Write,
-    ldelim: &str,
-    rdelim: &str,
-    elems: &[T],
-    write_elem: impl Fn(&mut dyn Write, &T) -> io::Result<()>,
-) -> io::Result<()> {
-    if elems.len() == 0 {
-        write!(w, "{ldelim}{rdelim}")
-    } else if elems.len() == 1 {
-        write!(w, "{ldelim}")?;
-        write_elem(w, &elems[0])?;
-        write!(w, ",{rdelim}")
-    } else {
-        write!(w, "{ldelim}")?;
-        for elem in &elems[..elems.len() - 1] {
-            write_elem(w, elem)?;
-            write!(w, ", ")?;
-        }
-        write_elem(w, &elems[elems.len() - 1])?;
-        write!(w, "{rdelim}")
-    }
-}
-
-fn write_condition(
+pub fn write_condition(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     condition: &Condition,
 ) -> io::Result<()> {
     match condition {
         Condition::Any => write!(w, "_",),
-        Condition::Tuple(conditions) => write_tuple_like(w, "(", ")", conditions, |w, cond| {
+        Condition::Tuple(conditions) => write_delimited(w, conditions, "(", ")", ",", |w, cond| {
             write_condition(w, type_renderer, cond)
         }),
         Condition::Variant(variant_id, subcondition) => {
@@ -98,7 +73,7 @@ fn write_condition(
     }
 }
 
-fn write_type(
+pub fn write_type(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     type_: &Type,
@@ -108,12 +83,14 @@ fn write_type(
         Type::Num(NumType::Byte) => write!(w, "Byte"),
         Type::Num(NumType::Int) => write!(w, "Int"),
         Type::Num(NumType::Float) => write!(w, "Float"),
-        Type::Tuple(types) => write_tuple_like(w, "(", ")", types, |w, type_| {
+        Type::Tuple(types) => write_delimited(w, types, "(", ")", ",", |w, type_| {
             write_type(w, type_renderer, type_)
         }),
-        Type::Variants(types) => write_tuple_like(w, "{{", "}}", types.as_slice(), |w, type_| {
-            write_type(w, type_renderer, type_)
-        }),
+        Type::Variants(types) => {
+            write_delimited(w, types.as_slice(), "{{", "}}", ",", |w, type_| {
+                write_type(w, type_renderer, type_)
+            })
+        }
         Type::Custom(type_id) => write!(w, "{}", type_renderer.render(type_id)),
         Type::Array(item_type) => {
             write!(w, "Array (")?;
@@ -166,7 +143,7 @@ fn match_string_bytes(bindings: &[(Type, Expr)]) -> Option<String> {
     String::from_utf8(result_bytes).ok()
 }
 
-fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
+pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
     match expr {
         Expr::Local(local) => write_local(w, *local),
         Expr::Call(_purity, func_id, local) => {
@@ -229,7 +206,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             Ok(())
         }
         Expr::Tuple(elems) => {
-            write_tuple_like(w, "(", ")", elems, |w, local| write_local(w, *local))
+            write_delimited(w, elems, "(", ")", ",", |w, local| write_local(w, *local))
         }
         Expr::TupleField(local, index) => {
             write!(w, "tuple field {} ", index)?;
@@ -316,7 +293,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
     }
 }
 
-fn write_func(
+pub fn write_func(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     func_renderer: &FuncRenderer<CustomFuncId>,
@@ -341,7 +318,7 @@ fn write_func(
     Ok(())
 }
 
-fn write_typedef(
+pub fn write_typedef(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     typedef: &CustomTypeDef,

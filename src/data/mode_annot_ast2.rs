@@ -21,7 +21,6 @@ use crate::util::non_empty_set::NonEmptySet;
 use id_collections::{id_type, IdVec};
 use id_graph_sccs::Sccs;
 use std::collections::BTreeSet;
-use std::fmt;
 use std::hash::Hash;
 
 pub struct Interner {
@@ -284,15 +283,6 @@ pub enum Mode {
     // Do not reorder these variants. That will change the derived `Ord`
     Borrowed,
     Owned,
-}
-
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Mode::Borrowed => write!(f, "&"),
-            Mode::Owned => write!(f, "●"),
-        }
-    }
 }
 
 impl in_eq::BoundedSemilattice for Mode {
@@ -644,39 +634,47 @@ impl<M, L> Type<M, L> {
     }
 }
 
-pub struct ShapeIter<'a, M, L> {
+pub struct ShapeIter<'a, T> {
     shapes: std::slice::Iter<'a, Shape>,
-    res: &'a [Res<M, L>],
+    res: &'a [T],
     start: usize,
 }
 
-impl<'a, M, L> Iterator for ShapeIter<'a, M, L> {
-    type Item = (&'a Shape, &'a [Res<M, L>]);
+impl<'a, T> Iterator for ShapeIter<'a, T> {
+    type Item = (&'a Shape, (usize, usize), &'a [T]);
 
     fn next(&mut self) -> Option<Self::Item> {
         let shape = self.shapes.next()?;
-        let end = self.start + shape.num_slots;
-        let res = &self.res[self.start..end];
+        let start = self.start;
+        let end = start + shape.num_slots;
+        let res = &self.res[start..end];
         self.start = end;
-        Some((shape, res))
+        Some((shape, (start, end), res))
     }
 }
 
-impl<'a, M, L> ExactSizeIterator for ShapeIter<'a, M, L> {
+impl<'a, T> ExactSizeIterator for ShapeIter<'a, T> {
     fn len(&self) -> usize {
         self.shapes.len()
     }
 }
 
-pub fn iter_shapes<'a, M, L>(
+pub fn enumerate_shapes<'a, T>(
     shapes: &'a [Shape],
-    res: &'a [Res<M, L>],
-) -> impl ExactSizeIterator<Item = (&'a Shape, &'a [Res<M, L>])> {
+    res: &'a [T],
+) -> impl ExactSizeIterator<Item = (&'a Shape, (usize, usize), &'a [T])> {
     ShapeIter {
         shapes: shapes.iter(),
         res,
         start: 0,
     }
+}
+
+pub fn iter_shapes<'a, T>(
+    shapes: &'a [Shape],
+    res: &'a [T],
+) -> impl ExactSizeIterator<Item = (&'a Shape, &'a [T])> {
+    enumerate_shapes(shapes, res).map(|(shape, _, res)| (shape, res))
 }
 
 #[derive(Clone, Debug)]
