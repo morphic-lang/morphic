@@ -1,7 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
-use crate::data::rc_specialized_ast2 as rc;
+use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId, RcOp};
 use crate::data::resolved_ast as res;
 use crate::data::tail_rec_ast as tail;
 use id_collections::{id_type, IdVec};
@@ -13,61 +13,54 @@ use id_collections::{id_type, IdVec};
 pub struct LocalId(pub usize);
 #[id_type]
 pub struct CustomFuncId(pub usize);
-pub type CustomTypeId = rc::CustomTypeId;
+pub type CustomTypeId = first_ord::CustomTypeId;
 
 pub type Type = rc::Type;
 
 // Mutable operations on arrays with refcount 1 should mutate
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
-    New(),
+    New(ModeScheme),
 
-    // Returns tuple of (item, hole array)
-    // Argument is borrowed
-    // Return value is borrowed
     Get(
-        LocalId, // Array
-        LocalId, // Index
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
+        LocalId,    // Index
     ),
 
-    // Returns tuple of (item, hole array)
-    // Argument is owned
-    // Returned item is owned
-    // Returned hole array is owned
     Extract(
-        LocalId, // Array
-        LocalId, // Index
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
+        LocalId,    // Index
     ),
 
     // Returns int
-    // Argument is borrowed
     Len(
-        LocalId, // Array
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
     ),
 
-    // Arguments are owned; Return is owned
     Push(
-        LocalId, // Array
-        LocalId, // Item
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
+        LocalId,    // Item
     ),
 
-    // Returns type (array, item)
-    // Argument is owned; Return values are owned
     Pop(
-        LocalId, // Array
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
     ),
 
-    // Returns new array
-    // Arguments are owned; Return is owned
     Replace(
-        LocalId, // Hole array
-        LocalId, // Item
+        ModeScheme, // Scheme of input
+        LocalId,    // Hole array
+        LocalId,    // Item
     ),
 
-    // Arguments are owned; Return is owned
     Reserve(
-        LocalId, // Array
-        LocalId, // Capacity
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
+        LocalId,    // Capacity
     ),
 }
 
@@ -112,14 +105,12 @@ pub enum Expr {
         Type, // Inner type
     ), // Does not touch refcount
 
-    // TODO: Consider using the same representation as the RC-specialized AST and subsequent passes
-    Retain(LocalId, Type),  // Takes any type, returns unit
-    Release(LocalId, Type), // Takes any type, returns unit
+    RcOp(RcOp, Type, LocalId), // Takes any type, returns unit
 
     CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
 
     Intrinsic(Intrinsic, LocalId),
-    ArrayOp(Type, ArrayOp), // Type is the item type
+    ArrayOp(ArrayOp),
     IoOp(IoOp),
     // Takes message by borrow (not that it matters when the program is about to end anyway...)
     Panic(
@@ -159,6 +150,7 @@ pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: rc::CustomTypes,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub schemes: IdVec<ModeSchemeId, ModeScheme>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

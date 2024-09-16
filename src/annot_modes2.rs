@@ -6,7 +6,7 @@ use crate::data::anon_sum_ast as anon;
 use crate::data::borrow_model as model;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
-use crate::data::guarded_ast::{self as guarded, CanGuard};
+use crate::data::guarded_ast::{self as guarded};
 use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
     self as annot, HeapModes, Interner, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur,
@@ -15,8 +15,6 @@ use crate::data::mode_annot_ast2::{
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::intrinsic_config::intrinsic_sig;
-use crate::pretty_print::borrow_common::{write_lifetime, write_mode};
-use crate::pretty_print::mode_annot::{write_shape, write_type};
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
 use crate::util::collection_ext::FnWrap;
 use crate::util::inequality_graph2 as in_eq;
@@ -944,7 +942,7 @@ fn prepare_arg_type(
     }
 }
 
-fn guard_type_impl<L: Clone>(
+fn unfold_type_impl<L: Clone>(
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     all_res: &[Res<ModeVar, L>],
@@ -964,7 +962,7 @@ fn guard_type_impl<L: Clone>(
         ShapeInner::Tuple(shapes) => {
             let shapes = annot::iter_shapes(shapes, res)
                 .map(|(shape, res)| {
-                    guard_type_impl(interner, customs, all_res, shape, res, out_res)
+                    unfold_type_impl(interner, customs, all_res, shape, res, out_res)
                 })
                 .collect::<Vec<_>>();
 
@@ -975,7 +973,7 @@ fn guard_type_impl<L: Clone>(
         ShapeInner::Variants(shapes) => {
             let shapes = annot::iter_shapes(shapes.as_slice(), res)
                 .map(|(shape, res)| {
-                    guard_type_impl(interner, customs, all_res, shape, res, out_res)
+                    unfold_type_impl(interner, customs, all_res, shape, res, out_res)
                 })
                 .collect::<Vec<_>>();
 
@@ -997,7 +995,7 @@ fn guard_type_impl<L: Clone>(
         }
         ShapeInner::Array(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = guard_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
+            let shape = unfold_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::Array(shape));
@@ -1005,7 +1003,7 @@ fn guard_type_impl<L: Clone>(
         }
         ShapeInner::HoleArray(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = guard_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
+            let shape = unfold_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::HoleArray(shape));
@@ -1013,7 +1011,7 @@ fn guard_type_impl<L: Clone>(
         }
         ShapeInner::Boxed(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = guard_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
+            let shape = unfold_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::Boxed(shape));
@@ -1029,7 +1027,7 @@ fn unfold_type<L: Clone>(
 ) -> Type<ModeVar, L> {
     let mut res = IdVec::new();
     let all_res = ty.res.as_slice();
-    let shape = guard_type_impl(interner, customs, all_res, &ty.shape, all_res, &mut res);
+    let shape = unfold_type_impl(interner, customs, all_res, &ty.shape, all_res, &mut res);
 
     debug_assert!(res.len() == shape.num_slots);
     Type { shape, res }
@@ -1266,36 +1264,6 @@ fn instantiate_expr(
 
         TailExpr::WrapCustom(custom_id, unfolded) => {
             let fut_unfolded = unfold_type(interner, customs, fut_ty);
-            print!("unfolded: ");
-            write_type(
-                &mut std::io::stdout(),
-                Some(type_renderer),
-                |w, m: &ModeVar| write!(w, "{}", m.0),
-                write_lifetime,
-                &ctx.local_binding(*unfolded).ty,
-            )
-            .unwrap();
-            println!();
-            print!("fut_ty: ");
-            write_type(
-                &mut std::io::stdout(),
-                Some(type_renderer),
-                |w, m: &ModeVar| write!(w, "{}", m.0),
-                write_lifetime,
-                fut_ty,
-            )
-            .unwrap();
-            println!();
-            print!("fut_unfolded: ");
-            write_type(
-                &mut std::io::stdout(),
-                Some(type_renderer),
-                |w, m: &ModeVar| write!(w, "{}", m.0),
-                write_lifetime,
-                &fut_unfolded,
-            )
-            .unwrap();
-            println!();
             let occur =
                 instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
             annot::Expr::WrapCustom(*custom_id, occur)

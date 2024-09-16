@@ -1,7 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
-use crate::data::rc_annot_ast::RcOp;
 use crate::data::rc_specialized_ast2 as rc;
 use crate::data::tail_rec_ast as tail;
 use crate::util::local_context::LocalContext;
@@ -68,7 +67,7 @@ fn lower_condition(
     condition: &rc::Condition,
     builder: &mut LowAstBuilder,
     match_type: &low::Type,
-    typedefs: &IdVec<rc::CustomTypeId, low::Type>,
+    typedefs: &IdVec<first_ord::CustomTypeId, low::Type>,
 ) -> low::LocalId {
     match condition {
         rc::Condition::Any => builder.add_expr(low::Type::Bool, low::Expr::BoolLit(true)),
@@ -138,7 +137,7 @@ fn lower_condition(
             )
         }
         rc::Condition::Boxed(subcondition) => {
-            let low::Type::Boxed(_, content_type) = match_type else {
+            let low::Type::Boxed(content_type) = match_type else {
                 unreachable!();
             };
 
@@ -228,7 +227,7 @@ fn lower_branch(
     result_type: &low::Type,
     context: &mut LocalContext<rc::LocalId, (rc::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
-    typedefs: &IdVec<rc::CustomTypeId, rc::Type>,
+    typedefs: &IdVec<first_ord::CustomTypeId, rc::Type>,
 ) -> low::LocalId {
     match cases.first() {
         None => builder.add_expr(
@@ -285,7 +284,7 @@ fn lower_expr(
     result_type: &low::Type,
     context: &mut LocalContext<rc::LocalId, (rc::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
-    typedefs: &IdVec<rc::CustomTypeId, rc::Type>,
+    typedefs: &IdVec<first_ord::CustomTypeId, rc::Type>,
 ) -> low::LocalId {
     match expr {
         tail::Expr::LetMany(bindings, final_local_id) => context.with_scope(|subcontext| {
@@ -364,56 +363,52 @@ fn lower_expr(
             typedefs[type_id].clone(),
             low::Expr::UnwrapCustom(*type_id, wrapped_id.lookup_in(context)),
         ),
-        tail::Expr::RcOp(op, ty, local_id) => match op {
-            RcOp::Retain => builder.add_expr(
+        tail::Expr::RcOp(op, local_id) => {
+            let type_ = context.local_binding(*local_id).0.clone();
+            builder.add_expr(
                 low::Type::Tuple(vec![]),
-                low::Expr::Retain(local_id.lookup_in(context), ty.clone()),
-            ),
-            RcOp::Release => builder.add_expr(
-                low::Type::Tuple(vec![]),
-                low::Expr::Release(local_id.lookup_in(context), ty.clone()),
-            ),
-        },
+                low::Expr::RcOp(op.clone(), type_, local_id.lookup_in(context)),
+            )
+        }
         tail::Expr::Intrinsic(intr, local_id) => builder.add_expr(
             result_type.clone(),
             low::Expr::Intrinsic(*intr, local_id.lookup_in(context)),
         ),
         tail::Expr::ArrayOp(array_op) => {
-            let (item_type, array_expr) = match array_op {
-                rc::ArrayOp::Get(item_type, array_id, index_id) => (
-                    item_type,
-                    low::ArrayOp::Get(array_id.lookup_in(context), index_id.lookup_in(context)),
+            let array_expr = match array_op {
+                rc::ArrayOp::Get(scheme, array_id, index_id) => low::ArrayOp::Get(
+                    scheme.clone(),
+                    array_id.lookup_in(context),
+                    index_id.lookup_in(context),
                 ),
-                rc::ArrayOp::Extract(item_type, array_id, index_id) => (
-                    item_type,
-                    low::ArrayOp::Extract(array_id.lookup_in(context), index_id.lookup_in(context)),
+                rc::ArrayOp::Extract(scheme, array_id, index_id) => low::ArrayOp::Extract(
+                    scheme.clone(),
+                    array_id.lookup_in(context),
+                    index_id.lookup_in(context),
                 ),
-                rc::ArrayOp::Len(item_type, array_id) => {
-                    (item_type, low::ArrayOp::Len(array_id.lookup_in(context)))
+                rc::ArrayOp::Len(scheme, array_id) => {
+                    low::ArrayOp::Len(scheme.clone(), array_id.lookup_in(context))
                 }
-                rc::ArrayOp::Push(item_type, array_id, item_id) => (
-                    item_type,
-                    low::ArrayOp::Push(array_id.lookup_in(context), item_id.lookup_in(context)),
+                rc::ArrayOp::Push(scheme, array_id, item_id) => low::ArrayOp::Push(
+                    scheme.clone(),
+                    array_id.lookup_in(context),
+                    item_id.lookup_in(context),
                 ),
-                rc::ArrayOp::Pop(item_type, array_id) => {
-                    (item_type, low::ArrayOp::Pop(array_id.lookup_in(context)))
+                rc::ArrayOp::Pop(scheme, array_id) => {
+                    low::ArrayOp::Pop(scheme.clone(), array_id.lookup_in(context))
                 }
-                rc::ArrayOp::Replace(item_type, array_id, item_id) => (
-                    item_type,
-                    low::ArrayOp::Replace(array_id.lookup_in(context), item_id.lookup_in(context)),
+                rc::ArrayOp::Replace(scheme, array_id, item_id) => low::ArrayOp::Replace(
+                    scheme.clone(),
+                    array_id.lookup_in(context),
+                    item_id.lookup_in(context),
                 ),
-                rc::ArrayOp::Reserve(item_type, array_id, capacity_id) => (
-                    item_type,
-                    low::ArrayOp::Reserve(
-                        array_id.lookup_in(context),
-                        capacity_id.lookup_in(context),
-                    ),
+                rc::ArrayOp::Reserve(scheme, array_id, capacity_id) => low::ArrayOp::Reserve(
+                    scheme.clone(),
+                    array_id.lookup_in(context),
+                    capacity_id.lookup_in(context),
                 ),
             };
-            builder.add_expr(
-                result_type.clone(),
-                low::Expr::ArrayOp(item_type.clone(), array_expr),
-            )
+            builder.add_expr(result_type.clone(), low::Expr::ArrayOp(array_expr))
         }
         tail::Expr::IoOp(io_type) => builder.add_expr(
             result_type.clone(),
@@ -426,10 +421,14 @@ fn lower_expr(
             result_type.clone(),
             low::Expr::Panic(ret_type.clone(), message.lookup_in(context)),
         ),
-        tail::Expr::ArrayLit(elem_type, elems) => {
+        tail::Expr::ArrayLit(scheme, elems) => {
+            // TODO: we are inlining some knowledge here about the signatures of `Array.new`,
+            // `Array.reserve`, and `Array.push`. Item types should be determined instead by the
+            // signatures used for borrow inference.
+
             let mut result_id = builder.add_expr(
                 result_type.clone(),
-                low::Expr::ArrayOp(elem_type.clone(), low::ArrayOp::New()),
+                low::Expr::ArrayOp(low::ArrayOp::New(scheme.clone())),
             );
 
             let capacity_id = builder.add_expr(
@@ -439,19 +438,21 @@ fn lower_expr(
 
             result_id = builder.add_expr(
                 result_type.clone(),
-                low::Expr::ArrayOp(
-                    elem_type.clone(),
-                    low::ArrayOp::Reserve(result_id, capacity_id),
-                ),
+                low::Expr::ArrayOp(low::ArrayOp::Reserve(
+                    scheme.clone(),
+                    result_id,
+                    capacity_id,
+                )),
             );
 
             for elem_id in elems {
                 result_id = builder.add_expr(
                     result_type.clone(),
-                    low::Expr::ArrayOp(
-                        elem_type.clone(),
-                        low::ArrayOp::Push(result_id, elem_id.lookup_in(context)),
-                    ),
+                    low::Expr::ArrayOp(low::ArrayOp::Push(
+                        scheme.clone(),
+                        result_id,
+                        elem_id.lookup_in(context),
+                    )),
                 );
             }
 
@@ -467,7 +468,7 @@ fn lower_expr(
 }
 
 fn lower_function_body(
-    typedefs: &IdVec<rc::CustomTypeId, rc::Type>,
+    typedefs: &IdVec<first_ord::CustomTypeId, rc::Type>,
     arg_type: &rc::Type,
     ret_type: &rc::Type,
     body: tail::Expr,
@@ -485,7 +486,7 @@ fn lower_function_body(
 
 fn lower_function(
     func: tail::FuncDef,
-    typedefs: &IdVec<rc::CustomTypeId, rc::Type>,
+    typedefs: &IdVec<first_ord::CustomTypeId, rc::Type>,
 ) -> low::FuncDef {
     // Appease the borrow checker
     let ret_type = &func.ret_type;
@@ -526,6 +527,7 @@ pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -
         mod_symbols: program.mod_symbols,
         custom_types: program.custom_types,
         funcs: IdVec::from_vec(lowered_funcs),
+        schemes: program.schemes,
         profile_points: program.profile_points,
         main: low::CustomFuncId(program.main.0),
     }

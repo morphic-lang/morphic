@@ -59,13 +59,33 @@ pub struct Occur {
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
-    Get(Occur, Occur, Type),
-    Extract(Occur, Occur),
-    Len(Occur),
-    Push(Occur, Occur),
-    Pop(Occur),
-    Replace(Occur, Occur),
-    Reserve(Occur, Occur),
+    Get(
+        Occur, // Array
+        Occur, // Index
+        Type,  // Return type
+    ),
+    Extract(
+        Occur, // Array
+        Occur, // Index
+    ),
+    Len(
+        Occur, // Array
+    ),
+    Push(
+        Occur, // Array
+        Occur, // Item
+    ),
+    Pop(
+        Occur, // Array
+    ),
+    Replace(
+        Occur, // Hole array
+        Occur, // Item
+    ),
+    Reserve(
+        Occur, // Array
+        Occur, // Capacity
+    ),
 }
 
 #[derive(Clone, Debug)]

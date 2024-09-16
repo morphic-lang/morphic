@@ -1,6 +1,7 @@
-use crate::builtins::array::{ArrayImpl, ArrayInterface};
+use crate::builtins::array::ArrayImpl;
 use crate::builtins::fountain_pen::{scope, Scope};
 use crate::builtins::tal::Tal;
+use crate::data::rc_specialized_ast2::ModeScheme;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -19,10 +20,27 @@ const F_HOLE_ARR: u32 = 1; // has type CowArray<T>
 
 #[derive(Clone, Copy, Debug)]
 pub struct CowArrayImpl<'a> {
-    interface: ArrayInterface<'a>,
+    // implementation details
     ensure_cap: FunctionValue<'a>,
     obtain_unique: FunctionValue<'a>,
     bounds_check: FunctionValue<'a>,
+
+    // public interface
+    item_type: BasicTypeEnum<'a>,
+    array_type: BasicTypeEnum<'a>,
+    hole_array_type: BasicTypeEnum<'a>,
+    new: FunctionValue<'a>,
+    get: FunctionValue<'a>,
+    extract: FunctionValue<'a>,
+    len: FunctionValue<'a>,
+    push: FunctionValue<'a>,
+    pop: FunctionValue<'a>,
+    replace: FunctionValue<'a>,
+    reserve: FunctionValue<'a>,
+    retain_array: FunctionValue<'a>,
+    release_array: FunctionValue<'a>,
+    retain_hole: FunctionValue<'a>,
+    release_hole: FunctionValue<'a>,
 }
 
 impl<'a> CowArrayImpl<'a> {
@@ -137,7 +155,11 @@ impl<'a> CowArrayImpl<'a> {
             Some(Linkage::Internal),
         );
 
-        let interface = ArrayInterface {
+        Self {
+            obtain_unique,
+            ensure_cap,
+            bounds_check,
+
             item_type,
             array_type: array_type.into(),
             hole_array_type: hole_array_type.into(),
@@ -153,13 +175,6 @@ impl<'a> CowArrayImpl<'a> {
             release_array,
             retain_hole,
             release_hole,
-        };
-
-        Self {
-            interface,
-            obtain_unique,
-            ensure_cap,
-            bounds_check,
         }
     }
 }
@@ -173,15 +188,12 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
         item_retain: Option<FunctionValue<'a>>,
         item_release: Option<FunctionValue<'a>>,
     ) {
-        let array_type = self.interface.array_type;
+        let array_type = self.array_type;
 
         // Offset a reference (an *i64) into the underlying heap buffer by sizeof(i64) to skip the leading
         // refcount, obtaining a reference to the data array.
         let buf_to_data = |s: &Scope<'a, 'b>, buf_ptr: BasicValueEnum<'a>| {
-            s.ptr_cast(
-                self.interface.item_type,
-                s.buf_addr_oob(s.i64_t(), buf_ptr, s.i32(1)),
-            )
+            s.ptr_cast(self.item_type, s.buf_addr_oob(s.i64_t(), buf_ptr, s.i32(1)))
         };
 
         // Offset a reference to the beginning of the data array by -sizeof(i64) to obtain a
@@ -196,7 +208,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
         // define 'new'
         {
-            let s = scope(self.interface.new, context, target);
+            let s = scope(self.new, context, target);
 
             let me = s.make_struct(
                 array_type, //;
@@ -212,19 +224,19 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
         // define 'get'
         {
-            let s = scope(self.interface.get, context, target);
+            let s = scope(self.get, context, target);
             let me = s.arg(0);
             let idx = s.arg(1);
 
             s.call_void(self.bounds_check, &[me, idx]);
             let data = s.field(me, F_ARR_DATA);
 
-            s.ret(s.buf_get(self.interface.item_type, data, idx));
+            s.ret(s.buf_get(self.item_type, data, idx));
         }
 
         // define 'extract'
         {
-            let s = scope(self.interface.extract, context, target);
+            let s = scope(self.extract, context, target);
             let me = s.call(self.obtain_unique, &[s.arg(0)]);
             let idx = s.arg(1);
 
@@ -232,24 +244,21 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let data = s.field(me, F_ARR_DATA);
 
             s.ret(s.make_tup(&[
-                s.buf_get(self.interface.item_type, data, idx),
-                s.make_struct(
-                    self.interface.hole_array_type,
-                    &[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)],
-                ),
+                s.buf_get(self.item_type, data, idx),
+                s.make_struct(self.hole_array_type, &[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)]),
             ]));
         }
 
         // define 'len'
         {
-            let s = scope(self.interface.len, context, target);
+            let s = scope(self.len, context, target);
             let me = s.arg(0);
             s.ret(s.field(me, F_ARR_LEN));
         }
 
         // define 'push'
         {
-            let s = scope(self.interface.push, context, target);
+            let s = scope(self.push, context, target);
 
             let me = s.call(self.obtain_unique, &[s.arg(0)]);
             let old_len = s.field(me, F_ARR_LEN);
@@ -258,7 +267,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let new_me = s.call(self.ensure_cap, &[me, new_len]);
 
             s.buf_set(
-                self.interface.item_type,
+                self.item_type,
                 s.field(new_me, F_ARR_DATA),
                 old_len,
                 s.arg(1),
@@ -276,7 +285,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
         // define 'pop'
         {
-            let s = scope(self.interface.pop, context, target);
+            let s = scope(self.pop, context, target);
             let me = s.call(self.obtain_unique, &[s.arg(0)]);
 
             s.if_(s.eq(s.field(me, F_ARR_LEN), s.i64(0)), |s| {
@@ -294,14 +303,14 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                 ],
             );
 
-            let item = s.buf_get(self.interface.item_type, s.field(me, F_ARR_DATA), new_len);
+            let item = s.buf_get(self.item_type, s.field(me, F_ARR_DATA), new_len);
 
             s.ret(s.make_tup(&[new_me, item]))
         }
 
         // define 'replace'
         {
-            let s = scope(self.interface.replace, context, target);
+            let s = scope(self.replace, context, target);
 
             let hole = s.arg(0);
             let item = s.arg(1);
@@ -309,19 +318,14 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let me = s.field(hole, F_HOLE_ARR);
             let new_me = s.call(self.obtain_unique, &[me]);
 
-            s.buf_set(
-                self.interface.item_type,
-                s.field(new_me, F_ARR_DATA),
-                idx,
-                item,
-            );
+            s.buf_set(self.item_type, s.field(new_me, F_ARR_DATA), idx, item);
 
             s.ret(new_me);
         }
 
         // define 'reserve'
         {
-            let s = scope(self.interface.reserve, context, target);
+            let s = scope(self.reserve, context, target);
 
             let me = s.arg(0);
             let me = s.call(self.obtain_unique, &[me]);
@@ -338,7 +342,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             s.if_(should_resize, |s| {
                 let alloc_size_umul_result = s.call(
                     tal.umul_with_overflow_i64,
-                    &[s.size(self.interface.item_type), min_cap],
+                    &[s.size(self.item_type), min_cap],
                 );
 
                 let is_overflow = s.field(alloc_size_umul_result, 1);
@@ -394,7 +398,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
         // define 'retain_array'
         {
-            let s = scope(self.interface.retain_array, context, target);
+            let s = scope(self.retain_array, context, target);
             let me = s.arg(0);
 
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
@@ -411,7 +415,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
         // define 'release_array'
         {
-            let s = scope(self.interface.release_array, context, target);
+            let s = scope(self.release_array, context, target);
             let me = s.arg(0);
 
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
@@ -425,10 +429,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                 s.if_(s.eq(new_refcount, s.i64(0)), |s| {
                     if let Some(item_release) = item_release {
                         s.for_(s.field(me, F_ARR_LEN), |s, i| {
-                            s.call_void(
-                                item_release,
-                                &[s.buf_addr(self.interface.item_type, data, i)],
-                            );
+                            s.call_void(item_release, &[s.buf_addr(self.item_type, data, i)]);
                         });
                     }
                     s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
@@ -440,16 +441,16 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
         // define 'retain_hole'
         {
-            let s = scope(self.interface.retain_hole, context, target);
+            let s = scope(self.retain_hole, context, target);
             let me = s.arg(0);
 
-            s.call_void(self.interface.retain_array, &[s.field(me, F_HOLE_ARR)]);
+            s.call_void(self.retain_array, &[s.field(me, F_HOLE_ARR)]);
             s.ret_void();
         }
 
         // define 'release_hole'
         {
-            let s = scope(self.interface.release_hole, context, target);
+            let s = scope(self.release_hole, context, target);
             let me = s.arg(0);
 
             let hole_idx = s.field(me, F_HOLE_IDX);
@@ -469,10 +470,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                     // than using a single 'for' loop with an internal branch.
                     s.for_(s.field(arr, F_ARR_LEN), |s, i| {
                         s.if_(s.ne(i, hole_idx), |s| {
-                            s.call_void(
-                                item_release,
-                                &[s.buf_addr(self.interface.item_type, data, i)],
-                            );
+                            s.call_void(item_release, &[s.buf_addr(self.item_type, data, i)]);
                         });
                     });
                 }
@@ -500,7 +498,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                 // TODO: Should we check for arithmetic overflow here?
                 let alloc_size = s.add(
                     s.size(s.i64_t()), // Refcount
-                    s.mul(s.size(self.interface.item_type), new_cap),
+                    s.mul(s.size(self.item_type), new_cap),
                 );
 
                 let old_buf = data_to_buf(&s, s.field(me, F_ARR_DATA));
@@ -597,7 +595,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
             let alloc_size = s.add(
                 s.size(s.i64_t()), // Refcount
-                s.mul(s.size(self.interface.item_type), cap),
+                s.mul(s.size(self.item_type), cap),
             );
 
             let new_buf = s.ptr_cast(
@@ -618,8 +616,8 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                     s.call_void(
                         item_retain,
                         &[s.buf_addr(
-                            self.interface.item_type,
-                            s.ptr_cast(self.interface.item_type.into(), s.field(me, F_ARR_DATA)),
+                            self.item_type,
+                            s.ptr_cast(self.item_type.into(), s.field(me, F_ARR_DATA)),
                             i,
                         )],
                     );
@@ -631,7 +629,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                 &[
                     s.ptr_cast(s.i8_t(), buf_to_data(&s, new_buf)),
                     s.ptr_cast(s.i8_t(), s.field(me, F_ARR_DATA)),
-                    s.mul(s.size(self.interface.item_type), cap),
+                    s.mul(s.size(self.item_type), cap),
                 ],
             );
 
@@ -650,8 +648,64 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
         }
     }
 
-    fn interface(&self) -> &ArrayInterface<'a> {
-        &self.interface
+    fn item_type(&self) -> BasicTypeEnum<'a> {
+        self.item_type
+    }
+
+    fn array_type(&self) -> BasicTypeEnum<'a> {
+        self.array_type
+    }
+
+    fn hole_array_type(&self) -> BasicTypeEnum<'a> {
+        self.hole_array_type
+    }
+
+    fn new(&self) -> FunctionValue<'a> {
+        self.new
+    }
+
+    fn get(&self) -> FunctionValue<'a> {
+        self.get
+    }
+
+    fn extract(&self) -> FunctionValue<'a> {
+        self.extract
+    }
+
+    fn len(&self) -> FunctionValue<'a> {
+        self.len
+    }
+
+    fn push(&self) -> FunctionValue<'a> {
+        self.push
+    }
+
+    fn pop(&self) -> FunctionValue<'a> {
+        self.pop
+    }
+
+    fn replace(&self) -> FunctionValue<'a> {
+        self.replace
+    }
+
+    fn reserve(&self) -> FunctionValue<'a> {
+        self.reserve
+    }
+
+    fn retain_array(&self) -> FunctionValue<'a> {
+        self.retain_array
+    }
+
+    fn release_array(&self, _item_scheme: &ModeScheme) -> FunctionValue<'a> {
+        self.release_array
+    }
+
+    fn retain_hole(&self) -> FunctionValue<'a> {
+        self.retain_hole
+    }
+
+    fn release_hole(&self, _item_scheme: &ModeScheme) -> FunctionValue<'a> {
+        self.release_hole
     }
 }
 
@@ -673,19 +727,19 @@ impl<'a> CowArrayIoImpl<'a> {
 
         let input = module.add_function(
             "builtin_cow_array_input",
-            byte_array_type.interface.array_type.fn_type(&[], false),
+            byte_array_type.array_type.fn_type(&[], false),
             Some(Linkage::Internal),
         );
 
         let output = module.add_function(
             "builtin_cow_array_output",
-            void_type.fn_type(&[byte_array_type.interface.array_type.into()], false),
+            void_type.fn_type(&[byte_array_type.array_type.into()], false),
             Some(Linkage::Internal),
         );
 
         let output_error = module.add_function(
             "builtin_cow_array_output_error",
-            void_type.fn_type(&[byte_array_type.interface.array_type.into()], false),
+            void_type.fn_type(&[byte_array_type.array_type.into()], false),
             Some(Linkage::Internal),
         );
 
@@ -703,8 +757,8 @@ impl<'a> CowArrayIoImpl<'a> {
             let s = scope(self.input, context, target);
 
             s.call(tal.flush, &[]);
-            let array = s.alloca(self.byte_array_type.interface().array_type);
-            s.ptr_set(array, s.call(self.byte_array_type.interface().new, &[]));
+            let array = s.alloca(self.byte_array_type.array_type);
+            s.ptr_set(array, s.call(self.byte_array_type.new, &[]));
 
             let getchar_result = s.alloca(s.i32_t());
             s.while_(
@@ -721,9 +775,9 @@ impl<'a> CowArrayIoImpl<'a> {
                     s.ptr_set(
                         array,
                         s.call(
-                            self.byte_array_type.interface().push,
+                            self.byte_array_type.push,
                             &[
-                                s.ptr_get(self.byte_array_type.interface.array_type, array),
+                                s.ptr_get(self.byte_array_type.array_type, array),
                                 input_byte,
                             ],
                         ),
@@ -731,7 +785,7 @@ impl<'a> CowArrayIoImpl<'a> {
                 },
             );
 
-            s.ret(s.ptr_get(self.byte_array_type.interface.array_type, array));
+            s.ret(s.ptr_get(self.byte_array_type.array_type, array));
         }
 
         // define 'output'

@@ -5,7 +5,7 @@ use crate::data::flat_ast::{
 };
 use crate::data::guarded_ast::{self as guarded, CanGuard};
 use crate::util::collection_ext::VecExt;
-use id_collections::{id_type, IdMap, IdVec};
+use id_collections::{IdMap, IdVec};
 use id_graph_sccs::{SccKind, Sccs};
 use std::collections::BTreeSet;
 
@@ -29,10 +29,7 @@ fn add_size_deps(ty: &Type, deps: &mut BTreeSet<CustomTypeId>) {
 }
 
 fn can_guard_customs(customs: &flat::CustomTypes) -> IdVec<CustomTypeId, CanGuard> {
-    #[id_type]
-    struct SccId(usize);
-
-    let sccs: Sccs<SccId, _> = id_graph_sccs::find_components(customs.types.count(), |id| {
+    let sccs: Sccs<usize, _> = id_graph_sccs::find_components(customs.types.count(), |id| {
         let mut deps = BTreeSet::new();
         add_size_deps(&customs.types[id].content, &mut deps);
         deps

@@ -1,6 +1,7 @@
-use crate::builtins::array::{ArrayImpl, ArrayInterface};
+use crate::builtins::array::ArrayImpl;
 use crate::builtins::fountain_pen::scope;
 use crate::builtins::tal::{ProfileRc, Tal};
+use crate::data::rc_specialized_ast2::ModeScheme;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -8,7 +9,21 @@ use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 
 pub struct ZeroSizedArrayImpl<'a> {
-    interface: ArrayInterface<'a>,
+    item_type: BasicTypeEnum<'a>,
+    array_type: BasicTypeEnum<'a>,
+    hole_array_type: BasicTypeEnum<'a>,
+    new: FunctionValue<'a>,
+    get: FunctionValue<'a>,
+    extract: FunctionValue<'a>,
+    len: FunctionValue<'a>,
+    push: FunctionValue<'a>,
+    pop: FunctionValue<'a>,
+    replace: FunctionValue<'a>,
+    reserve: FunctionValue<'a>,
+    retain_array: FunctionValue<'a>,
+    release_array: FunctionValue<'a>,
+    retain_hole: FunctionValue<'a>,
+    release_hole: FunctionValue<'a>,
 }
 
 impl<'a> ZeroSizedArrayImpl<'a> {
@@ -16,7 +31,7 @@ impl<'a> ZeroSizedArrayImpl<'a> {
         context: &'a Context,
         _target: &TargetData,
         module: &Module<'a>,
-        item_type: BasicTypeEnum<'a>,
+        item_type: &low::Type,
     ) -> Self {
         let i64_type = context.i64_type();
         let void_type = context.void_type();
@@ -93,11 +108,10 @@ impl<'a> ZeroSizedArrayImpl<'a> {
 
         let release_hole = void_fun("release_hole", &[hole_array_type.into()]);
 
-        let interface = ArrayInterface {
+        Self {
             item_type,
             array_type,
             hole_array_type,
-
             new,
             get,
             extract,
@@ -110,33 +124,21 @@ impl<'a> ZeroSizedArrayImpl<'a> {
             release_array,
             retain_hole,
             release_hole,
-        };
-
-        Self { interface }
+        }
     }
 }
 
 impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
-    fn define(
-        &self,
-        context: &'a Context,
-        target: &TargetData,
-        tal: &Tal<'a>,
-        item_retain: Option<FunctionValue<'a>>,
-        item_release: Option<FunctionValue<'a>>,
-    ) {
-        assert!(item_retain.is_none());
-        assert!(item_release.is_none());
-
+    fn define(&self, context: &'a Context, target: &TargetData, tal: &Tal<'a>) {
         // define 'new'
         {
-            let s = scope(self.interface.new, context, target);
+            let s = scope(self.new, context, target);
             s.ret(s.i64(0));
         }
 
         // define 'get'
         {
-            let s = scope(self.interface.get, context, target);
+            let s = scope(self.get, context, target);
             let array = s.arg(0);
             let idx = s.arg(1);
 
@@ -148,12 +150,12 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
                 )
             });
 
-            s.ret(s.undef(self.interface.item_type));
+            s.ret(s.undef(self.item_type));
         }
 
         // define 'extract'
         {
-            let s = scope(self.interface.extract, context, target);
+            let s = scope(self.extract, context, target);
             let array = s.arg(0);
             let idx = s.arg(1);
 
@@ -165,38 +167,38 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
                 )
             });
 
-            s.ret(s.make_tup(&[s.undef(self.interface.item_type), array]));
+            s.ret(s.make_tup(&[s.undef(self.item_type), array]));
         }
 
         // define 'len'
         {
-            let s = scope(self.interface.len, context, target);
+            let s = scope(self.len, context, target);
             let array = s.arg(0);
             s.ret(array);
         }
 
         // define 'push'
         {
-            let s = scope(self.interface.push, context, target);
+            let s = scope(self.push, context, target);
             let array = s.arg(0);
             s.ret(s.add(array, s.i64(1)));
         }
 
         // define 'pop'
         {
-            let s = scope(self.interface.pop, context, target);
+            let s = scope(self.pop, context, target);
             let array = s.arg(0);
 
             s.if_(s.eq(array, s.i64(0)), |s| {
                 s.panic("cannot pop array of length 0", &[], tal);
             });
 
-            s.ret(s.make_tup(&[s.sub(array, s.i64(1)), s.undef(self.interface.item_type)]));
+            s.ret(s.make_tup(&[s.sub(array, s.i64(1)), s.undef(self.item_type)]));
         }
 
         // define 'replace'
         {
-            let s = scope(self.interface.replace, context, target);
+            let s = scope(self.replace, context, target);
             let hole = s.arg(0);
             // let item = s.arg(1); UNUSED ARGUMENT
             s.ret(hole);
@@ -204,7 +206,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'reserve'
         {
-            let s = scope(self.interface.reserve, context, target);
+            let s = scope(self.reserve, context, target);
             let me = s.arg(0);
             // let capacity = s.arg(1); UNUSED ARGUMENT
             s.ret(me);
@@ -212,7 +214,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'retain_array'
         {
-            let s = scope(self.interface.retain_array, context, target);
+            let s = scope(self.retain_array, context, target);
             // let array = s.arg(0); UNUSED ARGUMENT
 
             if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
@@ -224,7 +226,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'release_array'
         {
-            let s = scope(self.interface.release_array, context, target);
+            let s = scope(self.release_array, context, target);
             // let array = s.arg(0); UNUSED ARGUMENT
 
             if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
@@ -236,7 +238,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'retain_hole'
         {
-            let s = scope(self.interface.retain_hole, context, target);
+            let s = scope(self.retain_hole, context, target);
             // let hole = s.arg(0); UNUSED ARGUMENT
 
             if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
@@ -248,7 +250,7 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
         // define 'release_hole'
         {
-            let s = scope(self.interface.release_hole, context, target);
+            let s = scope(self.release_hole, context, target);
             // let hole = s.arg(0); UNUSED ARGUMENT
 
             if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
@@ -259,7 +261,63 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         }
     }
 
-    fn interface(&self) -> &ArrayInterface<'a> {
-        &self.interface
+    fn item_type(&self) -> BasicTypeEnum<'a> {
+        self.item_type
+    }
+
+    fn array_type(&self) -> BasicTypeEnum<'a> {
+        self.array_type
+    }
+
+    fn hole_array_type(&self) -> BasicTypeEnum<'a> {
+        self.hole_array_type
+    }
+
+    fn new(&self) -> FunctionValue<'a> {
+        self.new
+    }
+
+    fn get(&self) -> FunctionValue<'a> {
+        self.get
+    }
+
+    fn extract(&self) -> FunctionValue<'a> {
+        self.extract
+    }
+
+    fn len(&self) -> FunctionValue<'a> {
+        self.len
+    }
+
+    fn push(&self) -> FunctionValue<'a> {
+        self.push
+    }
+
+    fn pop(&self) -> FunctionValue<'a> {
+        self.pop
+    }
+
+    fn replace(&self) -> FunctionValue<'a> {
+        self.replace
+    }
+
+    fn reserve(&self) -> FunctionValue<'a> {
+        self.reserve
+    }
+
+    fn retain_array(&self) -> FunctionValue<'a> {
+        self.retain_array
+    }
+
+    fn release_array(&self, _item_scheme: &ModeScheme) -> FunctionValue<'a> {
+        self.release_array
+    }
+
+    fn retain_hole(&self) -> FunctionValue<'a> {
+        self.retain_hole
+    }
+
+    fn release_hole(&self, _item_scheme: &ModeScheme) -> FunctionValue<'a> {
+        self.release_hole
     }
 }

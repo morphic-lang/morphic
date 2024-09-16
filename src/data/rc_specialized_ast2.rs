@@ -1,22 +1,17 @@
-use crate::data::first_order_ast as first_ord;
+use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::intrinsics::Intrinsic;
-use crate::data::mode_annot_ast2 as annot;
-use crate::data::obligation_annot_ast as ob;
+use crate::data::mode_annot_ast2::{self as annot, Mode};
+use crate::data::obligation_annot_ast::CustomFuncId;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::rc_annot_ast::RcOp;
 use crate::data::resolved_ast as res;
+use crate::util::collection_ext::VecExt;
 use id_collections::{id_type, IdVec};
 
 #[id_type]
 pub struct LocalId(pub usize);
 
 pub const ARG_LOCAL: LocalId = LocalId(0);
-
-pub type CustomFuncId = ob::CustomFuncId;
-
-#[id_type]
-pub struct CustomTypeId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
@@ -25,74 +20,75 @@ pub enum Type {
     Tuple(Vec<Type>),
     Variants(IdVec<first_ord::VariantId, Type>),
     Custom(CustomTypeId),
-    Array(annot::Mode, Box<Type>),
-    HoleArray(annot::Mode, Box<Type>),
-    Boxed(annot::Mode, Box<Type>),
+    Array(Box<Type>),
+    HoleArray(Box<Type>),
+    Boxed(Box<Type>),
 }
 
-/// Checks if `ty1` and `ty2` are equivalent modulo mode annotations.
-pub fn interconvertible(customs: &IdVec<CustomTypeId, Type>, ty1: &Type, ty2: &Type) -> bool {
-    match (ty1, ty2) {
-        (Type::Bool, Type::Bool) => true,
-        (Type::Num(ty1), Type::Num(ty2)) => ty1 == ty2,
-        (Type::Tuple(ty1), Type::Tuple(ty2)) => {
-            ty1.len() == ty2.len()
-                && ty1
-                    .iter()
-                    .zip(ty2.iter())
-                    .all(|(ty1, ty2)| interconvertible(customs, ty1, ty2))
+#[id_type]
+pub struct ModeSchemeId(pub usize);
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ModeScheme {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<ModeScheme>),
+    Variants(IdVec<first_ord::VariantId, ModeScheme>),
+    Custom(ModeSchemeId, CustomTypeId),
+    Array(Mode, Box<ModeScheme>),
+    HoleArray(Mode, Box<ModeScheme>),
+    Boxed(Mode, Box<ModeScheme>),
+}
+
+impl ModeScheme {
+    pub fn as_type(&self) -> Type {
+        match self {
+            ModeScheme::Bool => Type::Bool,
+            ModeScheme::Num(num_type) => Type::Num(*num_type),
+            ModeScheme::Tuple(schemes) => Type::Tuple(schemes.map_refs(|s| s.as_type())),
+            ModeScheme::Variants(schemes) => Type::Variants(schemes.map_refs(|_, s| s.as_type())),
+            ModeScheme::Custom(_, id) => Type::Custom(*id),
+            ModeScheme::Array(_, scheme) => Type::Array(Box::new(scheme.as_type())),
+            ModeScheme::HoleArray(_, scheme) => Type::HoleArray(Box::new(scheme.as_type())),
+            ModeScheme::Boxed(_, scheme) => Type::Boxed(Box::new(scheme.as_type())),
         }
-        (Type::Variants(ty1), Type::Variants(ty2)) => {
-            ty1.len() == ty2.len()
-                && ty1
-                    .values()
-                    .zip(ty2.values())
-                    .all(|(ty1, ty2)| interconvertible(customs, ty1, ty2))
-        }
-        (Type::Custom(ty1), Type::Custom(ty2)) => {
-            interconvertible(customs, &customs[*ty1], &customs[*ty2])
-        }
-        (Type::Array(_, ty1), Type::Array(_, ty2)) => ty1 == ty2,
-        (Type::HoleArray(_, ty1), Type::HoleArray(_, ty2)) => ty1 == ty2,
-        (Type::Boxed(_, ty1), Type::Boxed(_, ty2)) => ty1 == ty2,
-        _ => false,
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Get(
-        Type,    // Item type
-        LocalId, // Array
-        LocalId, // Index
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
+        LocalId,    // Index
     ), // Returns item
     Extract(
-        Type,    // Item type
-        LocalId, // Array
-        LocalId, // Index
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
+        LocalId,    // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        Type,    // Item type
-        LocalId, // Array
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
     ),
     Push(
-        Type,    // Item type
-        LocalId, // Array
-        LocalId, // Item
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
+        LocalId,    // Item
     ),
     Pop(
-        Type,    // Item type
-        LocalId, // Array
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
     ), // Returns tuple (array, item)
     Replace(
-        Type,    // Item type
-        LocalId, // Hole array
-        LocalId, // Item
+        ModeScheme, // Scheme of input
+        LocalId,    // Hole array
+        LocalId,    // Item
     ), // Returns new array
     Reserve(
-        Type,    // Item type
-        LocalId, // Array
-        LocalId, // Capacity
+        ModeScheme, // Scheme of input
+        LocalId,    // Array
+        LocalId,    // Capacity
     ), // Returns new array
 }
 
@@ -103,6 +99,12 @@ pub enum IoOp {
 }
 
 pub type Condition = annot::Condition;
+
+#[derive(Clone, Debug)]
+pub enum RcOp {
+    Retain,
+    Release(ModeScheme),
+}
 
 #[derive(Clone, Debug)]
 pub enum Expr {
@@ -129,10 +131,7 @@ pub enum Expr {
     ),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
-
-    // This `Type` is not redundant with the binding type of `LocalId`. If the op is a retain, some
-    // additional fields of the argument may be treated as borrowed, as indicated by `Type`.
-    RcOp(RcOp, Type, LocalId),
+    RcOp(RcOp, LocalId),
 
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),
@@ -142,7 +141,7 @@ pub enum Expr {
         LocalId, // Message
     ),
 
-    ArrayLit(Type, Vec<LocalId>),
+    ArrayLit(ModeScheme, Vec<LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -161,7 +160,6 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
     pub types: IdVec<CustomTypeId, Type>,
-    pub provenance: IdVec<CustomTypeId, first_ord::CustomTypeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -171,6 +169,7 @@ pub struct Program {
     pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
+    pub schemes: IdVec<ModeSchemeId, ModeScheme>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

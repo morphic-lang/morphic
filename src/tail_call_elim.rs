@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::first_order_ast as first_ord;
+use crate::data::obligation_annot_ast as ob;
 use crate::data::purity::Purity;
 use crate::data::rc_specialized_ast2 as rc;
 use crate::data::tail_rec_ast as tail;
@@ -18,7 +19,7 @@ fn last_index<T>(slice: &[T]) -> Option<usize> {
 
 // This function should only be called on 'expr' when the expression occurs in tail position.
 fn add_tail_call_deps(
-    deps: &mut BTreeSet<rc::CustomFuncId>,
+    deps: &mut BTreeSet<ob::CustomFuncId>,
     vars_in_scope: usize,
     expr: &rc::Expr,
 ) {
@@ -60,8 +61,8 @@ enum Position {
 }
 
 fn mark_call_modes(
-    modes: &mut IdVec<rc::CustomFuncId, CallMode>,
-    curr_scc: &BTreeSet<rc::CustomFuncId>,
+    modes: &mut IdVec<ob::CustomFuncId, CallMode>,
+    curr_scc: &BTreeSet<ob::CustomFuncId>,
     pos: Position,
     vars_in_scope: usize,
     expr: &rc::Expr,
@@ -114,9 +115,9 @@ enum EntryPoint {
 }
 
 fn trans_expr(
-    funcs: &IdVec<rc::CustomFuncId, rc::FuncDef>,
-    mappings: &IdVec<rc::CustomFuncId, Option<FuncMapping>>,
-    local_tail_mappings: &BTreeMap<rc::CustomFuncId, tail::TailFuncId>,
+    funcs: &IdVec<ob::CustomFuncId, rc::FuncDef>,
+    mappings: &IdVec<ob::CustomFuncId, Option<FuncMapping>>,
+    local_tail_mappings: &BTreeMap<ob::CustomFuncId, tail::TailFuncId>,
     pos: Position,
     vars_in_scope: usize,
     expr: &rc::Expr,
@@ -229,7 +230,7 @@ fn trans_expr(
 
         rc::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
 
-        rc::Expr::RcOp(op, ty, local) => tail::Expr::RcOp(*op, ty.clone(), *local),
+        rc::Expr::RcOp(op, local) => tail::Expr::RcOp(op.clone(), *local),
 
         rc::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
 
@@ -239,9 +240,7 @@ fn trans_expr(
 
         rc::Expr::Panic(ret_type, message) => tail::Expr::Panic(ret_type.clone(), *message),
 
-        rc::Expr::ArrayLit(item_type, items) => {
-            tail::Expr::ArrayLit(item_type.clone(), items.clone())
-        }
+        rc::Expr::ArrayLit(scheme, items) => tail::Expr::ArrayLit(scheme.clone(), items.clone()),
 
         &rc::Expr::BoolLit(val) => tail::Expr::BoolLit(val),
         &rc::Expr::ByteLit(val) => tail::Expr::ByteLit(val),
@@ -317,7 +316,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
     // controlled via a sum type argument.  'entry_points' provides information about a function
     // "from the inside", i.e. for use in generating its internal implementation.
     let (mappings, entry_points) = {
-        let mut mappings: IdVec<rc::CustomFuncId, Option<FuncMapping>> =
+        let mut mappings: IdVec<ob::CustomFuncId, Option<FuncMapping>> =
             IdVec::from_vec(vec![None; program.funcs.len()]);
 
         let entry_points = sccs.map_refs(|new_func_id, scc| match scc {
@@ -348,7 +347,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
                     _ => {
                         let entry_variants: IdVec<
                             first_ord::VariantId,
-                            (tail::TailFuncId, rc::CustomFuncId),
+                            (tail::TailFuncId, ob::CustomFuncId),
                         > = IdVec::from_vec(not_always_tail_funcs);
 
                         let variant_types = entry_variants
@@ -536,6 +535,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
         mod_symbols: program.mod_symbols.clone(),
         custom_types: program.custom_types,
         funcs: new_funcs,
+        schemes: program.schemes,
         profile_points: program.profile_points,
         main,
     }

@@ -2,8 +2,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::rc_annot_ast::RcOp;
-use crate::data::rc_specialized_ast2 as rc;
+use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId, RcOp};
 use crate::data::resolved_ast as res;
 use id_collections::{id_type, IdVec};
 
@@ -37,17 +36,17 @@ pub enum Expr {
         rc::LocalId,
         rc::Type, // Inner type
     ),
-    WrapCustom(rc::CustomTypeId, rc::LocalId),
-    UnwrapCustom(rc::CustomTypeId, rc::LocalId),
+    WrapCustom(first_ord::CustomTypeId, rc::LocalId),
+    UnwrapCustom(first_ord::CustomTypeId, rc::LocalId),
 
-    RcOp(RcOp, rc::Type, rc::LocalId),
+    RcOp(RcOp, rc::LocalId),
 
     Intrinsic(Intrinsic, rc::LocalId),
     ArrayOp(rc::ArrayOp),
     IoOp(rc::IoOp),
     Panic(rc::Type, rc::LocalId),
 
-    ArrayLit(rc::Type, Vec<rc::LocalId>),
+    ArrayLit(ModeScheme, Vec<rc::LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -85,6 +84,7 @@ pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: rc::CustomTypes,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub schemes: IdVec<ModeSchemeId, ModeScheme>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

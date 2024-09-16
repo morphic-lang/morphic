@@ -6,8 +6,8 @@ use crate::data::low_ast::IoOp;
 use crate::data::low_ast::LocalId;
 use crate::data::low_ast::Program;
 use crate::data::low_ast::Type;
+use crate::data::rc_specialized_ast2::RcOp;
 use crate::intrinsic_config::intrinsic_to_name;
-use crate::pretty_print::borrow_common::write_mode;
 use std::io;
 use std::io::Write;
 
@@ -39,14 +39,12 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
         Type::Num(NumType::Byte) => write![w, "Byte"],
         Type::Num(NumType::Int) => write![w, "Int"],
         Type::Num(NumType::Float) => write![w, "Float"],
-        Type::Array(mode, item_type) => {
-            write_mode(w, mode)?;
+        Type::Array(item_type) => {
             write![w, " Array ("]?;
             write_type(w, item_type)?;
             write![w, ")"]
         }
-        Type::HoleArray(mode, item_type) => {
-            write_mode(w, mode)?;
+        Type::HoleArray(item_type) => {
             write![w, " HoleArray ("]?;
             write_type(w, item_type)?;
             write![w, ")"]
@@ -88,8 +86,7 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
             }
             Ok(())
         }
-        Type::Boxed(mode, box_type) => {
-            write_mode(w, mode)?;
+        Type::Boxed(box_type) => {
             write![w, " Box ("]?;
             write_type(w, box_type)?;
             write![w, ")"]
@@ -182,8 +179,10 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         }
         Expr::WrapBoxed(local_id, _type) => write![w, "wrap boxed %{}", local_id.0],
         Expr::UnwrapBoxed(local_id, _type) => write![w, "unwrap boxed %{}", local_id.0],
-        Expr::Retain(local_id, _type) => write_single(w, "retain", local_id),
-        Expr::Release(local_id, _type) => write_single(w, "release", local_id),
+        Expr::RcOp(op, _type, local_id) => match op {
+            RcOp::Retain => write_single(w, "retain", local_id),
+            RcOp::Release(_) => write_single(w, "release", local_id),
+        },
         Expr::CheckVariant(variant_id, local_id) => {
             write![w, "check variant {} %{}", variant_id.0, local_id.0]
         }
@@ -195,23 +194,25 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             local_id.0
         ],
 
-        Expr::ArrayOp(_item_type, array_op) => {
+        Expr::ArrayOp(array_op) => {
             write![w, " "]?;
             match array_op {
-                ArrayOp::New() => write![w, "new"],
-                ArrayOp::Get(local_id1, local_id2) => write_double(w, "get", local_id1, local_id2),
-                ArrayOp::Extract(local_id1, local_id2) => {
+                ArrayOp::New(_) => write![w, "new"],
+                ArrayOp::Get(_, local_id1, local_id2) => {
+                    write_double(w, "get", local_id1, local_id2)
+                }
+                ArrayOp::Extract(_, local_id1, local_id2) => {
                     write_double(w, "extract", local_id1, local_id2)
                 }
-                ArrayOp::Len(local_id) => write_single(w, "len", local_id),
-                ArrayOp::Push(local_id1, local_id2) => {
+                ArrayOp::Len(_, local_id) => write_single(w, "len", local_id),
+                ArrayOp::Push(_, local_id1, local_id2) => {
                     write_double(w, "push", local_id1, local_id2)
                 }
-                ArrayOp::Pop(local_id) => write_single(w, "pop", local_id),
-                ArrayOp::Replace(local_id1, local_id2) => {
+                ArrayOp::Pop(_, local_id) => write_single(w, "pop", local_id),
+                ArrayOp::Replace(_, local_id1, local_id2) => {
                     write_double(w, "replace", local_id1, local_id2)
                 }
-                ArrayOp::Reserve(local_id1, local_id2) => {
+                ArrayOp::Reserve(_, local_id1, local_id2) => {
                     write_double(w, "reserve", local_id1, local_id2)
                 }
             }

@@ -11,13 +11,14 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
 use crate::data::mode_annot_ast2::Mode;
 use crate::data::profile as prof;
+use crate::data::rc_specialized_ast2::ModeScheme;
 use crate::data::tail_rec_ast as tail;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
-use crate::util::graph::{self, Graph};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use crate::{cli, progress_ui};
 use find_clang::find_default_clang;
-use id_collections::{IdMap, IdVec};
+use id_collections::IdVec;
+use id_graph_sccs::{SccKind, Sccs};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -27,9 +28,10 @@ use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
     TargetTriple,
 };
-use inkwell::types::{BasicType, BasicTypeEnum, StructType};
+use inkwell::types::{BasicType, BasicTypeEnum, IntType, StructType};
 use inkwell::values::{
-    BasicValueEnum, CallSiteValue, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue,
+    BasicValue, BasicValueEnum, CallSiteValue, FloatValue, FunctionValue, GlobalValue, IntValue,
+    PointerValue, StructValue,
 };
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
@@ -76,10 +78,332 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-const VARIANT_DISCRIM_IDX: u32 = 0;
-// we use a zero sized array to enforce proper alignment on `bytes`
-const VARIANT_ALIGN_IDX: u32 = 1;
-const VARIANT_BYTES_IDX: u32 = 2;
+#[derive(Clone, Debug)]
+struct VariantsType<'a, 'b> {
+    type_: StructType<'a>,
+    variants: &'b IdVec<first_ord::VariantId, low::Type>,
+}
+
+impl<'a, 'b> VariantsType<'a, 'b> {
+    const DISCRIM_IDX: u32 = 0;
+    // we use a zero sized array to enforce proper alignment on `bytes`
+    const ALIGN_IDX: u32 = 1;
+    const BYTES_IDX: u32 = 2;
+
+    fn is_zero_sized_with(
+        _variants: &IdVec<first_ord::VariantId, low::Type>,
+        _custom_is_zero_sized: &impl Fn(low::CustomTypeId) -> IsZeroSized,
+    ) -> bool {
+        // All variants have a non-zero-sized discriminant
+        false
+    }
+
+    fn into_raw(self) -> BasicTypeEnum<'a> {
+        self.type_.into()
+    }
+
+    fn new(
+        globals: &Globals<'a, '_>,
+        instances: &Instances<'a>,
+        variants: &'b IdVec<first_ord::VariantId, low::Type>,
+    ) -> VariantsType<'a, 'b> {
+        let discrim_type = if variants.len() <= 1 << 8 {
+            globals.context.i8_type()
+        } else if variants.len() <= 1 << 16 {
+            globals.context.i16_type()
+        } else if variants.len() <= 1 << 32 {
+            globals.context.i32_type()
+        } else {
+            globals.context.i64_type()
+        };
+
+        let (max_alignment, max_size) = {
+            let mut max_alignment = 1;
+            let mut max_size = 0;
+            for variant_type in variants.values() {
+                let variant_type = get_llvm_type(globals, instances, &variant_type);
+                debug_assert!(variant_type.is_sized());
+                let alignment = globals.target.get_abi_alignment(&variant_type);
+                let size = globals.target.get_abi_size(&variant_type);
+                max_alignment = max_alignment.max(alignment);
+                max_size = max_size.max(size);
+            }
+            (max_alignment, max_size)
+        };
+
+        let alignment_type = match max_alignment {
+            1 => globals.context.i8_type(),
+            2 => globals.context.i16_type(),
+            4 => globals.context.i32_type(),
+            8 => globals.context.i64_type(),
+            _ => panic!["Unsupported alignment {}", max_alignment],
+        };
+
+        let alignment_array = alignment_type.array_type(0);
+
+        // The payload is represented by an array of "chunks", each an integer.
+        //
+        // Originally we always used an array of 'i8's here (i.e. the chunk size was always 1 byte), but
+        // it turns out that when trying to bitcast byte arrays stored in SSA registers into other
+        // types, LLVM generates huge sequences of bit operations to assemble the resulting structure
+        // byte-by-byte.  Constructing our payload array out of larger chunks mitigates this problem
+        // somewhat.
+        //
+        // Currently, we use the maximum alignment to determine the chunk size (which, incidentally,
+        // makes the zero-size alignment array redundant). This is only a heuristic, and we may want to
+        // change it later, or even use a heterogenous struct of chunks.  Other code in this module
+        // should *not* rely on assumptions about the particular chunking strategy used here.
+        let num_chunks: u32 = ceil_div(max_size as i64, max_alignment as i64)
+            .try_into()
+            .unwrap();
+        let bytes = alignment_type.array_type(num_chunks);
+
+        let field_types = &[discrim_type.into(), alignment_array.into(), bytes.into()];
+        let type_ = globals.context.struct_type(field_types, false);
+
+        Self { type_, variants }
+    }
+
+    fn discrim_type(&self) -> IntType<'a> {
+        self.type_
+            .get_field_type_at_index(Self::DISCRIM_IDX)
+            .unwrap()
+            .into_int_type()
+    }
+
+    fn bytes_type(&self) -> BasicTypeEnum<'a> {
+        self.type_.get_field_type_at_index(Self::BYTES_IDX).unwrap()
+    }
+
+    fn content_type<'c>(
+        &self,
+        globals: &Globals<'a, 'c>,
+        instances: &Instances<'a>,
+        variant_id: first_ord::VariantId,
+    ) -> BasicTypeEnum<'a> {
+        get_llvm_type(globals, instances, &self.variants[variant_id])
+    }
+
+    fn discrim_const(&self, id: first_ord::VariantId) -> IntValue<'a> {
+        self.discrim_type()
+            .const_int(id.0.try_into().unwrap(), false)
+            .into()
+    }
+
+    fn build_bytes(
+        &self,
+        builder: &Builder<'a>,
+        globals: &Globals<'a, '_>,
+        content: BasicValueEnum<'a>,
+    ) -> BasicValueEnum<'a> {
+        let byte_array_type = self.bytes_type();
+        let byte_array_ptr =
+            gen_entry_alloca(globals.context, builder, byte_array_type, "byte_array_ptr");
+
+        let content_ptr_type = content.get_type().ptr_type(AddressSpace::default());
+        let content_ptr = builder
+            .build_bitcast(byte_array_ptr, content_ptr_type, "cast_byte_array_ptr")
+            .unwrap();
+
+        builder
+            .build_store(content_ptr.into_pointer_value(), content)
+            .unwrap();
+
+        builder
+            .build_load(byte_array_type, byte_array_ptr, "byte_array")
+            .unwrap()
+    }
+
+    fn build_value(
+        &self,
+        builder: &Builder<'a>,
+        discrim: impl BasicValue<'a>,
+        byte_array: impl BasicValue<'a>,
+    ) -> VariantsValue<'a> {
+        let mut value = self.type_.get_undef();
+        value = builder
+            .build_insert_value(value, discrim, Self::DISCRIM_IDX, "insert")
+            .unwrap()
+            .into_struct_value();
+        value = builder
+            .build_insert_value(value, byte_array, Self::BYTES_IDX, "insert")
+            .unwrap()
+            .into_struct_value();
+        VariantsValue { inner: value }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct VariantsValue<'a> {
+    inner: StructValue<'a>,
+}
+
+impl<'a> VariantsValue<'a> {
+    fn from_raw(value: BasicValueEnum<'a>) -> Self {
+        Self {
+            inner: value.into_struct_value(),
+        }
+    }
+
+    fn into_raw(self) -> BasicValueEnum<'a> {
+        self.inner.into()
+    }
+
+    fn build_get_discrim(&self, builder: &Builder<'a>) -> IntValue<'a> {
+        builder
+            .build_extract_value(self.inner, VariantsType::DISCRIM_IDX, "discrim")
+            .unwrap()
+            .into_int_value()
+    }
+
+    fn build_get_content(
+        &self,
+        builder: &Builder<'a>,
+        globals: &Globals<'a, '_>,
+        instances: &Instances<'a>,
+        type_: &VariantsType<'a, '_>,
+        id: first_ord::VariantId,
+    ) -> BasicValueEnum<'a> {
+        let byte_array_ptr = gen_entry_alloca(
+            globals.context,
+            builder,
+            type_.bytes_type(),
+            "byte_array_ptr",
+        );
+        let byte_array = builder
+            .build_extract_value(self.inner, VariantsType::BYTES_IDX, "byte_array")
+            .unwrap();
+        builder.build_store(byte_array_ptr, byte_array).unwrap();
+
+        let content_type = type_.content_type(globals, instances, id);
+        let content_ptr = builder
+            .build_bitcast(
+                byte_array_ptr,
+                content_type.ptr_type(AddressSpace::default()),
+                "content_ptr",
+            )
+            .unwrap();
+        let content = builder
+            .build_load(content_type, content_ptr.into_pointer_value(), "content")
+            .unwrap();
+
+        content
+    }
+
+    /// This function handles the bookkeeping needed to build a switch statement over variants. It
+    /// will position the builder correctly each time before calling `build_case` and after the
+    /// switch is done.
+    fn build_switch(
+        &self,
+        builder: &Builder<'a>,
+        globals: &Globals<'a, '_>,
+        func: FunctionValue<'a>,
+        type_: &VariantsType<'a, '_>,
+        mut build_case: impl FnMut(first_ord::VariantId),
+    ) {
+        let discrim = self.build_get_discrim(builder);
+        let undefined_block = globals.context.append_basic_block(func, "undefined");
+        let mut variant_blocks = IdVec::new();
+        for _ in 0..type_.variants.len() {
+            let _ = variant_blocks.push(globals.context.append_basic_block(func, "variant"));
+        }
+        let switch_blocks = variant_blocks
+            .iter()
+            .map(|(i, variant_block)| (type_.discrim_const(i), *variant_block))
+            .collect::<Vec<_>>();
+        builder
+            .build_switch(discrim, undefined_block, &switch_blocks[..])
+            .unwrap();
+
+        let next_block = globals.context.append_basic_block(func, "next");
+
+        builder.position_at_end(undefined_block);
+        builder.build_unreachable().unwrap();
+
+        for (i, variant_block) in variant_blocks.iter() {
+            builder.position_at_end(*variant_block);
+            build_case(i);
+            builder.build_unconditional_branch(next_block).unwrap();
+        }
+
+        builder.position_at_end(next_block);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TupleType<'a> {
+    inner: StructType<'a>,
+}
+
+impl<'a> TupleType<'a> {
+    fn is_zero_sized_with(
+        fields: &Vec<low::Type>,
+        custom_is_zero_sized: &impl Fn(low::CustomTypeId) -> IsZeroSized,
+    ) -> bool {
+        fields
+            .iter()
+            .all(|field| is_zero_sized_with(field, custom_is_zero_sized))
+    }
+
+    fn from_raw(
+        globals: &Globals<'a, '_>,
+        fields: impl Iterator<Item = BasicTypeEnum<'a>>,
+    ) -> Self {
+        let fields = fields.collect::<Vec<_>>();
+        let type_ = globals.context.struct_type(&fields[..], false);
+        Self { inner: type_ }
+    }
+
+    fn into_raw(self) -> BasicTypeEnum<'a> {
+        self.inner.into()
+    }
+
+    fn new(globals: &Globals<'a, '_>, instances: &Instances<'a>, fields: &Vec<low::Type>) -> Self {
+        let fields = fields
+            .iter()
+            .map(|field| get_llvm_type(globals, instances, field))
+            .collect::<Vec<_>>();
+        let type_ = globals.context.struct_type(&fields[..], false);
+        Self { inner: type_ }
+    }
+
+    fn build_value(
+        &self,
+        builder: &Builder<'a>,
+        fields: impl Iterator<Item = BasicValueEnum<'a>>,
+    ) -> TupleValue<'a> {
+        let mut value = self.inner.get_undef();
+        for (i, field) in fields.enumerate() {
+            value = builder
+                .build_insert_value(value, field, i.try_into().unwrap(), "insert")
+                .unwrap()
+                .into_struct_value();
+        }
+        TupleValue { inner: value }
+    }
+}
+
+struct TupleValue<'a> {
+    inner: StructValue<'a>,
+}
+
+impl<'a> TupleValue<'a> {
+    fn from_raw(value: BasicValueEnum<'a>) -> Self {
+        Self {
+            inner: value.into_struct_value(),
+        }
+    }
+
+    fn into_raw(self) -> BasicValueEnum<'a> {
+        self.inner.into()
+    }
+
+    fn build_get_field(&self, builder: &Builder<'a>, i: usize) -> BasicValueEnum<'a> {
+        builder
+            .build_extract_value(self.inner, i.try_into().unwrap(), "field")
+            .unwrap()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum IsZeroSized {
@@ -98,30 +422,26 @@ struct Globals<'a, 'b> {
     profile_points: IdVec<prof::ProfilePointId, ProfilePointDecls<'a>>,
 }
 
-/// One annoying consequence of the current design of borrow inference is that the `low_ast` is only
-/// well-typed modulo modes. To ensure the LLVM we generate is well-formed, we need to take care to
-/// generate a single, unique LLVM type for each set of `low_ast` types with the same "provenance",
-/// i.e., which are derived from the same `first_ord` type.
-///
-/// To achieve this, first call `CustomTypeDecls::declare_type` for each `first_ord::CustomTypeId`,
-/// then call `CustomTypeDecls::declare` for each associated `low::CustomTypeId` with the result.
 #[derive(Clone, Copy, Debug)]
 struct CustomTypeDecls<'a> {
-    ty: StructType<'a>,
-    release: FunctionValue<'a>,
+    type_: StructType<'a>,
+    release: BTreeMap<ModeScheme, FunctionValue<'a>>,
     retain: FunctionValue<'a>,
 }
 
 impl<'a> CustomTypeDecls<'a> {
-    fn declare_type(context: &'a Context, id: first_ord::CustomTypeId) -> StructType<'a> {
-        context.opaque_struct_type(&format!("type_{}", id.0))
+    fn declare_type(context: &'a Context, id: first_ord::CustomTypeId) -> Self {
+        Self {
+            type_: context.opaque_struct_type(&format!("type_{}", id.0)),
+            release: BTreeMap::new(),
+            retain: BTreeMap::new(),
+        }
     }
 
     fn declare(
         context: &'a Context,
         module: &Module<'a>,
         first_ord_id: first_ord::CustomTypeId,
-        low_id: low::CustomTypeId,
         ty: StructType<'a>,
     ) -> Self {
         let void_type = context.void_type();
@@ -136,7 +456,7 @@ impl<'a> CustomTypeDecls<'a> {
             Some(Linkage::Internal),
         );
         CustomTypeDecls {
-            ty,
+            type_: ty,
             release: release_func,
             retain: retain_func,
         }
@@ -149,7 +469,7 @@ impl<'a> CustomTypeDecls<'a> {
         ty: &low::Type,
     ) {
         let ty = get_llvm_type(globals, instances, ty);
-        self.ty.set_body(&[ty], false);
+        self.type_.set_body(&[ty], false);
     }
 
     fn define<'b>(&self, globals: &Globals<'a, 'b>, instances: &Instances<'a>, ty: &low::Type) {
@@ -507,66 +827,6 @@ fn ceil_div_test() {
     assert_eq!(ceil_div(9, 3), 3);
 }
 
-fn get_llvm_variant_type<'a, 'b>(
-    globals: &Globals<'a, 'b>,
-    instances: &Instances<'a>,
-    variants: &IdVec<first_ord::VariantId, low::Type>,
-) -> StructType<'a> {
-    let discrim_type = if variants.len() <= 1 << 8 {
-        globals.context.i8_type()
-    } else if variants.len() <= 1 << 16 {
-        globals.context.i16_type()
-    } else if variants.len() <= 1 << 32 {
-        globals.context.i32_type()
-    } else {
-        globals.context.i64_type()
-    };
-
-    let (max_alignment, max_size) = {
-        let mut max_alignment = 1;
-        let mut max_size = 0;
-        for variant_type in variants.values() {
-            let variant_type = get_llvm_type(globals, instances, &variant_type);
-            debug_assert!(variant_type.is_sized());
-            let alignment = globals.target.get_abi_alignment(&variant_type);
-            let size = globals.target.get_abi_size(&variant_type);
-            max_alignment = max_alignment.max(alignment);
-            max_size = max_size.max(size);
-        }
-        (max_alignment, max_size)
-    };
-
-    let alignment_type = match max_alignment {
-        1 => globals.context.i8_type(),
-        2 => globals.context.i16_type(),
-        4 => globals.context.i32_type(),
-        8 => globals.context.i64_type(),
-        _ => panic!["Unsupported alignment {}", max_alignment],
-    };
-
-    let alignment_array = alignment_type.array_type(0);
-
-    // The payload is represented by an array of "chunks", each an integer.
-    //
-    // Originally we always used an array of 'i8's here (i.e. the chunk size was always 1 byte), but
-    // it turns out that when trying to bitcast byte arrays stored in SSA registers into other
-    // types, LLVM generates huge sequences of bit operations to assemble the resulting structure
-    // byte-by-byte.  Constructing our payload array out of larger chunks mitigates this problem
-    // somewhat.
-    //
-    // Currently, we use the maximum alignment to determine the chunk size (which, incidentally,
-    // makes the zero-size alignment array redundant). This is only a heuristic, and we may want to
-    // change it later, or even use a heterogenous struct of chunks.  Other code in this module
-    // should *not* rely on assumptions about the particular chunking strategy used here.
-    let num_chunks: u32 = ceil_div(max_size as i64, max_alignment as i64)
-        .try_into()
-        .unwrap();
-    let bytes = alignment_type.array_type(num_chunks);
-
-    let field_types = &[discrim_type.into(), alignment_array.into(), bytes.into()];
-    globals.context.struct_type(field_types, false)
-}
-
 // This function MUST NOT depend on any mode annotations.
 fn get_llvm_type<'a, 'b>(
     globals: &Globals<'a, 'b>,
@@ -578,28 +838,18 @@ fn get_llvm_type<'a, 'b>(
         low::Type::Num(first_ord::NumType::Byte) => globals.context.i8_type().into(),
         low::Type::Num(first_ord::NumType::Int) => globals.context.i64_type().into(),
         low::Type::Num(first_ord::NumType::Float) => globals.context.f64_type().into(),
-        low::Type::Tuple(item_types) => {
-            let mut field_types = vec![];
-            for item_type in item_types.iter() {
-                field_types.push(get_llvm_type(globals, instances, item_type));
-            }
-            globals.context.struct_type(&field_types[..], false).into()
-        }
-        low::Type::Variants(variants) => {
-            get_llvm_variant_type(globals, instances, &variants).into()
-        }
-        low::Type::Custom(type_id) => globals.custom_types[type_id].ty.into(),
-        low::Type::Array(_, item_type) => instances
+        low::Type::Tuple(item_types) => TupleType::new(globals, instances, item_types).into_raw(),
+        low::Type::Variants(variants) => VariantsType::new(globals, instances, variants).into_raw(),
+        low::Type::Custom(type_id) => globals.custom_types[type_id].type_.into(),
+        low::Type::Array(item_type) => instances
             .get_cow_array(globals, item_type)
-            .interface()
-            .array_type
+            .array_type()
             .into(),
-        low::Type::HoleArray(_, item_type) => instances
+        low::Type::HoleArray(item_type) => instances
             .get_cow_array(globals, item_type)
-            .interface()
-            .hole_array_type
+            .hole_array_type()
             .into(),
-        low::Type::Boxed(_, type_) => instances
+        low::Type::Boxed(type_) => instances
             .get_rc(globals, type_)
             .rc_type
             .ptr_type(AddressSpace::default())
@@ -619,18 +869,17 @@ fn gen_rc_op<'a, 'b>(
     instances: &Instances<'a>,
     globals: &Globals<'a, 'b>,
     func: FunctionValue<'a>,
-    ty: &low::Type,
+    scheme: &ModeScheme,
     arg: BasicValueEnum<'a>,
 ) {
-    match ty {
-        low::Type::Bool => {}
-        low::Type::Num(_) => {}
-        low::Type::Array(mode, item_type) => match op {
+    match scheme {
+        ModeScheme::Bool => {}
+        ModeScheme::Num(_) => {}
+        ModeScheme::Array(mode, item_scheme) => match op {
             RcOp::Retain => {
                 let retain_func = instances
-                    .get_cow_array(globals, item_type)
-                    .interface()
-                    .retain_array;
+                    .get_cow_array(globals, &item_scheme.as_type())
+                    .retain_array();
                 builder
                     .build_call(retain_func, &[arg.into()], "retain_cow_array")
                     .unwrap();
@@ -638,46 +887,34 @@ fn gen_rc_op<'a, 'b>(
             RcOp::Release => {
                 if *mode == Mode::Owned {
                     let release_func = instances
-                        .get_cow_array(globals, item_type)
-                        .interface()
-                        .release_array;
+                        .get_cow_array(globals, &item_scheme.as_type())
+                        .release_array();
                     builder
                         .build_call(release_func, &[arg.into()], "release_cow_array")
                         .unwrap();
                 }
             }
         },
-        low::Type::HoleArray(mode, item_type) => match op {
+        ModeScheme::HoleArray(mode, item_type) => match op {
             RcOp::Retain => {
-                let retain_func = instances
-                    .get_cow_array(globals, item_type)
-                    .interface()
-                    .retain_hole;
+                let retain_func = instances.get_cow_array(globals, item_type).retain_hole();
                 builder
                     .build_call(retain_func, &[arg.into()], "retain_cow_hole_array")
                     .unwrap();
             }
             RcOp::Release => {
                 if *mode == Mode::Owned {
-                    let release_func = instances
-                        .get_cow_array(globals, item_type)
-                        .interface()
-                        .release_hole;
+                    let release_func = instances.get_cow_array(globals, item_type).release_hole();
                     builder
                         .build_call(release_func, &[arg.into()], "release_cow_hole_array")
                         .unwrap();
                 }
             }
         },
-        low::Type::Tuple(item_types) => {
+        ModeScheme::Tuple(item_types) => {
+            let arg = TupleValue::from_raw(arg);
             for i in 0..item_types.len() {
-                let current_item = builder
-                    .build_extract_value(
-                        arg.into_struct_value(),
-                        i.try_into().unwrap(),
-                        "current_item",
-                    )
-                    .unwrap();
+                let current_item = arg.build_get_field(builder, i);
                 gen_rc_op(
                     op,
                     builder,
@@ -689,58 +926,23 @@ fn gen_rc_op<'a, 'b>(
                 );
             }
         }
-        low::Type::Variants(variant_types) => {
-            let discrim = builder
-                .build_extract_value(arg.into_struct_value(), VARIANT_DISCRIM_IDX, "discrim")
-                .unwrap()
-                .into_int_value();
-            let undefined_block = globals.context.append_basic_block(func, "undefined");
-            let mut variant_blocks = vec![];
-            for _ in 0..variant_types.len() {
-                variant_blocks.push(globals.context.append_basic_block(func, "variant"));
-            }
-            let switch_blocks = variant_blocks
-                .iter()
-                .enumerate()
-                .map(|(i, variant_block)| {
-                    (
-                        discrim.get_type().const_int(i.try_into().unwrap(), false),
-                        *variant_block,
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            builder
-                .build_switch(discrim, undefined_block, &switch_blocks[..])
-                .unwrap();
-
-            let next_block = globals.context.append_basic_block(func, "next");
-
-            builder.position_at_end(undefined_block);
-            builder.build_unreachable().unwrap();
-            for (i, variant_block) in variant_blocks.iter().enumerate() {
-                builder.position_at_end(*variant_block);
-                let variant_id = first_ord::VariantId(i);
-
-                let unwrapped_variant =
-                    gen_unwrap_variant(builder, instances, globals, arg, variant_types, variant_id);
-
+        ModeScheme::Variants(variant_types) => {
+            let type_ = VariantsType::new(globals, instances, &variant_types);
+            let arg = VariantsValue::from_raw(arg);
+            arg.build_switch(builder, globals, func, &type_, |id| {
+                let content = arg.build_get_content(builder, globals, instances, &type_, id);
                 gen_rc_op(
                     op,
                     builder,
                     instances,
                     globals,
                     func,
-                    &variant_types[variant_id],
-                    unwrapped_variant,
+                    &variant_types[id],
+                    content,
                 );
-
-                builder.build_unconditional_branch(next_block).unwrap();
-            }
-
-            builder.position_at_end(next_block);
+            });
         }
-        low::Type::Boxed(mode, inner_type) => match op {
+        ModeScheme::Boxed(mode, inner_type) => match op {
             RcOp::Retain => {
                 let retain_func = instances.get_rc(globals, inner_type).retain;
                 builder
@@ -756,7 +958,7 @@ fn gen_rc_op<'a, 'b>(
                 }
             }
         },
-        low::Type::Custom(type_id) => match op {
+        ModeScheme::Custom(type_id) => match op {
             RcOp::Retain => {
                 let retain_func = globals.custom_types[type_id].retain;
                 builder
@@ -792,47 +994,6 @@ fn gen_entry_alloca<'a>(
     }
 
     entry_builder.build_alloca(ty, name).unwrap()
-}
-
-fn gen_unwrap_variant<'a, 'b>(
-    builder: &Builder<'a>,
-    instances: &Instances<'a>,
-    globals: &Globals<'a, 'b>,
-    variant_value: BasicValueEnum<'a>,
-    variants: &IdVec<first_ord::VariantId, low::Type>,
-    variant_id: first_ord::VariantId,
-) -> BasicValueEnum<'a> {
-    let variant_type = get_llvm_variant_type(globals, instances, &variants);
-
-    let byte_array_type = variant_type
-        .get_field_type_at_index(VARIANT_BYTES_IDX)
-        .unwrap();
-    let byte_array_ptr =
-        gen_entry_alloca(globals.context, builder, byte_array_type, "byte_array_ptr");
-
-    let byte_array = builder
-        .build_extract_value(
-            variant_value.into_struct_value(),
-            VARIANT_BYTES_IDX,
-            "byte_array",
-        )
-        .unwrap();
-
-    builder.build_store(byte_array_ptr, byte_array).unwrap();
-    let content_ty = get_llvm_type(globals, instances, &variants[variant_id]);
-    let content_ptr = builder
-        .build_bitcast(
-            byte_array_ptr,
-            content_ty.ptr_type(AddressSpace::default()),
-            "content_ptr",
-        )
-        .unwrap();
-
-    let content = builder
-        .build_load(content_ty, content_ptr.into_pointer_value(), "content")
-        .unwrap();
-
-    content
 }
 
 #[derive(Clone, Debug)]
@@ -1063,78 +1224,29 @@ fn gen_expr<'a, 'b>(
             get_undef(&get_llvm_type(globals, instances, type_))
         }
         E::Tuple(fields) => {
-            let field_types: Vec<_> = fields.iter().map(|id| locals[id].get_type()).collect();
-            let tup_type = context.struct_type(&field_types[..], false);
-
-            let mut tup = tup_type.get_undef();
-            for (elem, id) in fields.iter().enumerate() {
-                tup = builder
-                    .build_insert_value(tup, locals[id], elem.try_into().unwrap(), "insert")
-                    .unwrap()
-                    .into_struct_value();
-            }
-
-            tup.into()
+            let type_ = TupleType::from_raw(globals, fields.iter().map(|id| locals[id].get_type()));
+            type_
+                .build_value(builder, fields.iter().map(|id| locals[id]))
+                .into_raw()
         }
-        E::TupleField(local_id, elem) => builder
-            .build_extract_value(
-                locals[local_id].into_struct_value(),
-                (*elem).try_into().unwrap(),
-                "extract",
-            )
-            .unwrap(),
+        E::TupleField(local_id, elem) => {
+            TupleValue::from_raw(locals[local_id]).build_get_field(builder, *elem)
+        }
         E::WrapVariant(variants, variant_id, local_id) => {
-            let variant_type = get_llvm_variant_type(globals, instances, &variants);
-            let byte_array_type = variant_type
-                .get_field_type_at_index(VARIANT_BYTES_IDX)
-                .unwrap();
-            let byte_array_ptr =
-                gen_entry_alloca(globals.context, builder, byte_array_type, "byte_array_ptr");
-            let cast_byte_array_ptr = builder
-                .build_bitcast(
-                    byte_array_ptr,
-                    locals[local_id]
-                        .get_type()
-                        .ptr_type(AddressSpace::default()),
-                    "cast_byte_array_ptr",
-                )
-                .unwrap();
-
-            builder
-                .build_store(cast_byte_array_ptr.into_pointer_value(), locals[local_id])
-                .unwrap();
-
-            let byte_array = builder
-                .build_load(byte_array_type, byte_array_ptr, "byte_array")
-                .unwrap();
-
-            let discrim = variant_type
-                .get_field_type_at_index(VARIANT_DISCRIM_IDX)
-                .unwrap()
-                .into_int_type()
-                .const_int(variant_id.0.try_into().unwrap(), false);
-
-            let mut variant_value = variant_type.get_undef();
-            variant_value = builder
-                .build_insert_value(variant_value, discrim, VARIANT_DISCRIM_IDX, "insert")
-                .unwrap()
-                .into_struct_value();
-            variant_value = builder
-                .build_insert_value(variant_value, byte_array, VARIANT_BYTES_IDX, "insert")
-                .unwrap()
-                .into_struct_value();
-            variant_value.into()
+            let variant_type = VariantsType::new(globals, instances, &variants);
+            let discrim = variant_type.discrim_const(*variant_id);
+            let byte_array = variant_type.build_bytes(builder, globals, locals[local_id]);
+            variant_type
+                .build_value(builder, discrim, byte_array)
+                .into_raw()
         }
-        E::UnwrapVariant(variants, variant_id, local_id) => gen_unwrap_variant(
-            builder,
-            instances,
-            globals,
-            locals[local_id],
-            variants,
-            *variant_id,
-        ),
+        E::UnwrapVariant(variants, variant_id, local_id) => {
+            let variant_type = VariantsType::new(globals, instances, variants);
+            let variant_value = VariantsValue::from_raw(locals[local_id]);
+            variant_value.build_get_content(builder, globals, instances, &variant_type, *variant_id)
+        }
         E::WrapCustom(type_id, local_id) => {
-            let mut custom_type_val = globals.custom_types[type_id].ty.get_undef();
+            let mut custom_type_val = globals.custom_types[type_id].type_.get_undef();
             custom_type_val = builder
                 .build_insert_value(custom_type_val, locals[local_id], 0, "insert")
                 .unwrap()
@@ -1150,26 +1262,14 @@ fn gen_expr<'a, 'b>(
             custom_type_content
         }
         E::CheckVariant(variant_id, local_id) => {
-            let discrim = builder
-                .build_extract_value(
-                    locals[local_id].into_struct_value(),
-                    VARIANT_DISCRIM_IDX,
-                    "discrim",
-                )
-                .unwrap()
-                .into_int_value();
+            let discrim = VariantsValue::from_raw(locals[local_id]).build_get_discrim(builder);
 
-            let casted_variant_id = discrim
+            let expected_value = discrim
                 .get_type()
                 .const_int(variant_id.0.try_into().unwrap(), false);
 
             builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    casted_variant_id,
-                    discrim,
-                    "check_variant",
-                )
+                .build_int_compare(IntPredicate::EQ, expected_value, discrim, "check_variant")
                 .unwrap()
                 .into()
         }
@@ -1531,15 +1631,15 @@ fn gen_expr<'a, 'b>(
         E::ArrayOp(item_type, array_op) => {
             let builtin = instances.get_cow_array(globals, item_type);
             match array_op {
-                low::ArrayOp::New() => builder
-                    .build_call(builtin.interface().new, &[], "cow_array_new")
+                low::ArrayOp::New(_) => builder
+                    .build_call(builtin.new(), &[], "cow_array_new")
                     .unwrap()
                     .try_as_basic_value()
                     .left()
                     .unwrap(),
                 low::ArrayOp::Get(array_id, index_id) => builder
                     .build_call(
-                        builtin.interface().get,
+                        builtin.get(),
                         &[locals[array_id].into(), locals[index_id].into()],
                         "cow_array_get",
                     )
@@ -1549,7 +1649,7 @@ fn gen_expr<'a, 'b>(
                     .unwrap(),
                 low::ArrayOp::Extract(array_id, index_id) => builder
                     .build_call(
-                        builtin.interface().extract,
+                        builtin.extract(),
                         &[locals[array_id].into(), locals[index_id].into()],
                         "cow_array_extract",
                     )
@@ -1558,18 +1658,14 @@ fn gen_expr<'a, 'b>(
                     .left()
                     .unwrap(),
                 low::ArrayOp::Len(array_id) => builder
-                    .build_call(
-                        builtin.interface().len,
-                        &[locals[array_id].into()],
-                        "cow_array_len",
-                    )
+                    .build_call(builtin.len(), &[locals[array_id].into()], "cow_array_len")
                     .unwrap()
                     .try_as_basic_value()
                     .left()
                     .unwrap(),
                 low::ArrayOp::Push(array_id, item_id) => builder
                     .build_call(
-                        builtin.interface().push,
+                        builtin.push(),
                         &[locals[array_id].into(), locals[item_id].into()],
                         "cow_array_push",
                     )
@@ -1578,18 +1674,14 @@ fn gen_expr<'a, 'b>(
                     .left()
                     .unwrap(),
                 low::ArrayOp::Pop(array_id) => builder
-                    .build_call(
-                        builtin.interface().pop,
-                        &[locals[array_id].into()],
-                        "cow_array_pop",
-                    )
+                    .build_call(builtin.pop(), &[locals[array_id].into()], "cow_array_pop")
                     .unwrap()
                     .try_as_basic_value()
                     .left()
                     .unwrap(),
                 low::ArrayOp::Replace(array_id, item_id) => builder
                     .build_call(
-                        builtin.interface().replace,
+                        builtin.replace(),
                         &[locals[array_id].into(), locals[item_id].into()],
                         "cow_array_replace",
                     )
@@ -1599,7 +1691,7 @@ fn gen_expr<'a, 'b>(
                     .unwrap(),
                 low::ArrayOp::Reserve(array_id, capacity_id) => builder
                     .build_call(
-                        builtin.interface().reserve,
+                        builtin.reserve(),
                         &[locals[array_id].into(), locals[capacity_id].into()],
                         "cow_array_reserve",
                     )
@@ -1939,7 +2031,7 @@ fn add_size_deps(type_: &low::Type, deps: &mut BTreeSet<low::CustomTypeId>) {
     match type_ {
         low::Type::Bool | low::Type::Num(_) => {}
 
-        low::Type::Array(_, _) | low::Type::HoleArray(_, _) | low::Type::Boxed(_, _) => {}
+        low::Type::Array(_) | low::Type::HoleArray(_) | low::Type::Boxed(_) => {}
 
         low::Type::Tuple(items) => {
             for item in items {
@@ -1960,20 +2052,16 @@ fn add_size_deps(type_: &low::Type, deps: &mut BTreeSet<low::CustomTypeId>) {
 }
 
 fn custom_type_dep_order(typedefs: &IdVec<low::CustomTypeId, low::Type>) -> Vec<low::CustomTypeId> {
-    let size_deps = Graph {
-        edges_out: typedefs.map_refs(|_, def| {
-            let mut deps = BTreeSet::new();
-            add_size_deps(&def, &mut deps);
-            deps.into_iter().collect()
-        }),
-    };
-
-    let sccs = graph::strongly_connected(&size_deps);
+    let sccs: Sccs<usize, _> = id_graph_sccs::find_components(typedefs.count(), |id| {
+        let mut deps = BTreeSet::new();
+        add_size_deps(&typedefs[id], &mut deps);
+        deps
+    });
 
     sccs.into_iter()
-        .map(|scc| {
-            debug_assert_eq!(scc.len(), 1);
-            scc[0]
+        .map(|(_, scc)| {
+            debug_assert_eq!(scc.kind, SccKind::Acyclic);
+            scc.nodes[0]
         })
         .collect()
 }
@@ -1990,17 +2078,13 @@ fn is_zero_sized_with(
     match type_ {
         low::Type::Bool
         | low::Type::Num(_)
-        | low::Type::Array(_, _)
-        | low::Type::HoleArray(_, _)
-        | low::Type::Boxed(_, _) => false,
-
-        low::Type::Tuple(items) => items
-            .iter()
-            .all(|item| is_zero_sized_with(item, custom_is_zero_sized)),
-
-        // All variants have a non-zero-sized discriminant
-        low::Type::Variants(_) => false,
-
+        | low::Type::Array(_)
+        | low::Type::HoleArray(_)
+        | low::Type::Boxed(_) => false,
+        low::Type::Tuple(items) => TupleType::is_zero_sized_with(items, custom_is_zero_sized),
+        low::Type::Variants(variants) => {
+            VariantsType::is_zero_sized_with(variants, custom_is_zero_sized)
+        }
         &low::Type::Custom(custom) => custom_is_zero_sized(custom) == IsZeroSized::ZeroSized,
     }
 }
@@ -2042,14 +2126,11 @@ fn find_zero_sized(
 fn declare_customs<'a>(
     context: &'a Context,
     module: &Module<'a>,
-    provenance: &IdVec<low::CustomTypeId, first_ord::CustomTypeId>,
+    types: &IdVec<low::CustomTypeId, low::Type>,
 ) -> IdVec<low::CustomTypeId, CustomTypeDecls<'a>> {
-    let mut llvm_types = IdMap::new();
-    provenance.map_refs(|low_id, &first_ord_id| {
-        let type_ = llvm_types
-            .entry(first_ord_id)
-            .or_insert_with(|| CustomTypeDecls::declare_type(context, first_ord_id));
-        CustomTypeDecls::declare(context, module, first_ord_id, low_id, *type_)
+    types.map_refs(|type_id, type_def| {
+        let type_ = CustomTypeDecls::declare_type(context, type_id);
+        CustomTypeDecls::declare(context, module, type_id, type_id, type_)
     })
 }
 
@@ -2078,7 +2159,7 @@ fn gen_program<'a>(
         profile_record_rc,
     );
 
-    let custom_types = declare_customs(context, &module, &program.custom_types.provenance);
+    let custom_types = declare_customs(context, &module, &program.custom_types.types);
 
     let profile_points = declare_profile_points(&context, &module, &program);
 
@@ -2104,13 +2185,13 @@ fn gen_program<'a>(
         let type_decls = &globals.custom_types[type_id];
         type_decls.define_type(&globals, &instances, &program.custom_types.types[type_id]);
 
-        debug_assert!(type_decls.ty.is_sized());
+        debug_assert!(type_decls.type_.is_sized());
 
         // Note: the following assertion is checking an *equality of booleans* to check that types
         // have zero size iff they are marked as having zero size.  We're not asserting that all
         // types have zero size!
         debug_assert_eq!(
-            globals.target.get_abi_size(&type_decls.ty) == 0,
+            globals.target.get_abi_size(&type_decls.type_) == 0,
             globals.custom_types_zero_sized[type_id] == IsZeroSized::ZeroSized
         );
     }
