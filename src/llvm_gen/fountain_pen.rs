@@ -1,6 +1,6 @@
 use std::convert::TryInto;
 
-use crate::builtins::tal::Tal;
+use crate::llvm_gen::tal::Tal;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;

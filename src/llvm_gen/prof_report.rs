@@ -1,5 +1,5 @@
-use crate::builtins::fountain_pen::{scope, Scope};
-use crate::builtins::tal::Tal;
+use crate::llvm_gen::fountain_pen::{scope, Scope};
+use crate::llvm_gen::tal::Tal;
 use crate::data::low_ast as low;
 use crate::data::profile as prof;
 use crate::data::tail_rec_ast as tail;

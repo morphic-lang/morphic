@@ -1,7 +1,7 @@
-use crate::builtins::array::ArrayImpl;
-use crate::builtins::fountain_pen::scope;
-use crate::builtins::tal::{ProfileRc, Tal};
 use crate::data::rc_specialized_ast2::ModeScheme;
+use crate::llvm_gen::array::ArrayImpl;
+use crate::llvm_gen::fountain_pen::scope;
+use crate::llvm_gen::tal::{ProfileRc, Tal};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;

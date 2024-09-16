@@ -1,11 +1,13 @@
-use crate::builtins::array::ArrayImpl;
-use crate::builtins::cow_array::{CowArrayImpl, CowArrayIoImpl};
-use crate::builtins::prof_report::{
-    define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
-};
-use crate::builtins::rc::RcBoxBuiltin;
-use crate::builtins::tal::{self, ProfileRc, Tal};
-use crate::builtins::zero_sized_array::ZeroSizedArrayImpl;
+#![allow(dead_code)]
+
+mod array;
+mod cow_array;
+mod fountain_pen;
+mod prof_report;
+mod rc;
+mod tal;
+mod zero_sized_array;
+
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
@@ -13,6 +15,14 @@ use crate::data::mode_annot_ast2::Mode;
 use crate::data::profile as prof;
 use crate::data::rc_specialized_ast2::ModeScheme;
 use crate::data::tail_rec_ast as tail;
+use crate::llvm_gen::array::ArrayImpl;
+use crate::llvm_gen::cow_array::{CowArrayImpl, CowArrayIoImpl};
+use crate::llvm_gen::prof_report::{
+    define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
+};
+use crate::llvm_gen::rc::RcBoxBuiltin;
+use crate::llvm_gen::tal::{ProfileRc, Tal};
+use crate::llvm_gen::zero_sized_array::ZeroSizedArrayImpl;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use crate::{cli, progress_ui};

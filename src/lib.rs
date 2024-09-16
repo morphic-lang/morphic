@@ -8,8 +8,6 @@ pub mod pseudoprocess;
 #[macro_use]
 mod util;
 
-mod builtins;
-
 mod data;
 mod intrinsic_config;
 mod pretty_print;

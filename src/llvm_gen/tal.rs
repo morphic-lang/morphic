@@ -1,4 +1,4 @@
-use crate::builtins::fountain_pen;
+use crate::llvm_gen::fountain_pen;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;

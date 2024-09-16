@@ -1,5 +1,5 @@
-use crate::builtins::tal::Tal;
 use crate::data::rc_specialized_ast2::ModeScheme;
+use crate::llvm_gen::tal::Tal;
 use inkwell::context::Context;
 use inkwell::targets::TargetData;
 use inkwell::types::BasicTypeEnum;

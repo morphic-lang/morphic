@@ -1,6 +1,6 @@
-use crate::builtins::array::ArrayImpl;
-use crate::builtins::fountain_pen::{scope, Scope};
-use crate::builtins::tal::Tal;
+use crate::llvm_gen::array::ArrayImpl;
+use crate::llvm_gen::fountain_pen::{scope, Scope};
+use crate::llvm_gen::tal::Tal;
 use crate::data::rc_specialized_ast2::ModeScheme;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};

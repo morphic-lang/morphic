@@ -1,5 +1,5 @@
-use crate::builtins::fountain_pen::scope;
-use crate::builtins::tal::{ProfileRc, Tal};
+use crate::llvm_gen::fountain_pen::scope;
+use crate::llvm_gen::tal::{ProfileRc, Tal};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
