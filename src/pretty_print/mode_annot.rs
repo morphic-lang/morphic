@@ -1,7 +1,8 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
 use crate::data::mode_annot_ast2::{
-    self as annot, ArrayOp, Condition, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt, Mode,
-    ModeParam, ModeSolution, ModeVar, Position, Program, Res, ResModes, Shape, ShapeInner,
+    self as annot, ArrayOp, Condition, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt,
+    LtParam, Mode, ModeParam, ModeSolution, ModeVar, Position, Program, Res, ResModes, Shape,
+    ShapeInner,
 };
 use crate::data::num_type::NumType;
 use crate::intrinsic_config::intrinsic_to_name;
@@ -618,12 +619,12 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
 
 // Convenience wrappers for debugging which implement `Display`
 
-pub struct DisplaySolverType<'a> {
+pub struct DisplaySolverType<'a, L> {
     type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
-    type_: &'a annot::Type<ModeVar, Lt>,
+    type_: &'a annot::Type<ModeVar, L>,
 }
 
-impl fmt::Display for DisplaySolverType<'_> {
+impl fmt::Display for DisplaySolverType<'_, Lt> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut raw = Vec::<u8>::new();
         write_type(
@@ -638,8 +639,23 @@ impl fmt::Display for DisplaySolverType<'_> {
     }
 }
 
-impl annot::Type<ModeVar, Lt> {
-    pub fn display<'a>(&'a self) -> DisplaySolverType<'a> {
+impl fmt::Display for DisplaySolverType<'_, LtParam> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut raw = Vec::<u8>::new();
+        write_type(
+            &mut raw,
+            self.type_renderer,
+            write_mode_var,
+            write_lifetime_param,
+            self.type_,
+        )
+        .unwrap();
+        f.write_str(str::from_utf8(&raw).unwrap())
+    }
+}
+
+impl<L> annot::Type<ModeVar, L> {
+    pub fn display<'a>(&'a self) -> DisplaySolverType<'a, L> {
         DisplaySolverType {
             type_renderer: None,
             type_: self,
@@ -649,7 +665,7 @@ impl annot::Type<ModeVar, Lt> {
     pub fn display_with<'a>(
         &'a self,
         type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
-    ) -> DisplaySolverType<'a> {
+    ) -> DisplaySolverType<'a, L> {
         DisplaySolverType {
             type_renderer: Some(type_renderer),
             type_: self,

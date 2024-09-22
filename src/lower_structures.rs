@@ -149,6 +149,8 @@ fn lower_condition(
             lower_condition(content, subcondition, builder, content_type, typedefs)
         }
         rc::Condition::Custom(subcondition) => {
+            println!("match_type: {:?}", match_type);
+
             let low::Type::Custom(custom_type_id) = match_type else {
                 unreachable!();
             };

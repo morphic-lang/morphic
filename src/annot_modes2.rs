@@ -797,7 +797,7 @@ fn instantiate_model(
         if sig.unused_lts.contains(&model_res.lt) {
             panic!("unused model lifetimes cannot be supplied in return position");
         }
-        assert!(matches!(res.lt, Lt::Join(_)));
+
         match &mut lt_mapping[model_res.lt] {
             entry @ None => *entry = Some(res.lt.clone()),
             Some(_) => {
@@ -942,10 +942,12 @@ fn prepare_arg_type(
     }
 }
 
-fn unfold_type_impl<L: Clone>(
+/// Unfolds the content of a custom type by replacing all occurrences of `SelfCustom` with an
+/// occurrence of the custom type itself.
+fn unfold_impl<L: Clone>(
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    all_res: &[Res<ModeVar, L>],
+    custom_shape: &Shape,
+    custom_res: &[Res<ModeVar, L>],
     shape: &Shape,
     res: &[Res<ModeVar, L>],
     out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
@@ -962,7 +964,7 @@ fn unfold_type_impl<L: Clone>(
         ShapeInner::Tuple(shapes) => {
             let shapes = annot::iter_shapes(shapes, res)
                 .map(|(shape, res)| {
-                    unfold_type_impl(interner, customs, all_res, shape, res, out_res)
+                    unfold_impl(interner, custom_shape, custom_res, shape, res, out_res)
                 })
                 .collect::<Vec<_>>();
 
@@ -973,7 +975,7 @@ fn unfold_type_impl<L: Clone>(
         ShapeInner::Variants(shapes) => {
             let shapes = annot::iter_shapes(shapes.as_slice(), res)
                 .map(|(shape, res)| {
-                    unfold_type_impl(interner, customs, all_res, shape, res, out_res)
+                    unfold_impl(interner, custom_shape, custom_res, shape, res, out_res)
                 })
                 .collect::<Vec<_>>();
 
@@ -984,10 +986,9 @@ fn unfold_type_impl<L: Clone>(
             Shape { inner, num_slots }
         }
         // The non-trival base case.
-        ShapeInner::SelfCustom(id) => {
-            debug_assert!(res.is_empty());
-            let _ = out_res.extend(all_res.iter().cloned());
-            customs[*id].content.clone()
+        ShapeInner::SelfCustom(_) => {
+            let _ = out_res.extend(custom_res.iter().cloned());
+            custom_shape.clone()
         }
         ShapeInner::Custom(_) => {
             let _ = out_res.extend(res.iter().cloned());
@@ -995,7 +996,14 @@ fn unfold_type_impl<L: Clone>(
         }
         ShapeInner::Array(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = unfold_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
+            let shape = unfold_impl(
+                interner,
+                custom_shape,
+                custom_res,
+                shape,
+                &res[1..],
+                out_res,
+            );
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::Array(shape));
@@ -1003,7 +1011,14 @@ fn unfold_type_impl<L: Clone>(
         }
         ShapeInner::HoleArray(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = unfold_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
+            let shape = unfold_impl(
+                interner,
+                custom_shape,
+                custom_res,
+                shape,
+                &res[1..],
+                out_res,
+            );
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::HoleArray(shape));
@@ -1011,7 +1026,14 @@ fn unfold_type_impl<L: Clone>(
         }
         ShapeInner::Boxed(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = unfold_type_impl(interner, customs, all_res, shape, &res[1..], out_res);
+            let shape = unfold_impl(
+                interner,
+                custom_shape,
+                custom_res,
+                shape,
+                &res[1..],
+                out_res,
+            );
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::Boxed(shape));
@@ -1020,15 +1042,101 @@ fn unfold_type_impl<L: Clone>(
     }
 }
 
-fn unfold_type<L: Clone>(
+fn unfold_all_impl<L: Clone>(
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    scc: CustomTypeSccId,
+    shape: &Shape,
+    res: &[Res<ModeVar, L>],
+    out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
+) -> Shape {
+    match &*shape.inner {
+        ShapeInner::Bool => {
+            debug_assert!(res.is_empty());
+            shape.clone()
+        }
+        ShapeInner::Num(_) => {
+            debug_assert!(res.is_empty());
+            shape.clone()
+        }
+        ShapeInner::Tuple(shapes) => {
+            let shapes = annot::iter_shapes(shapes, res)
+                .map(|(shape, res)| unfold_all_impl(interner, customs, scc, shape, res, out_res))
+                .collect::<Vec<_>>();
+
+            let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
+            let inner = interner.shape.new(ShapeInner::Tuple(shapes));
+            Shape { inner, num_slots }
+        }
+        ShapeInner::Variants(shapes) => {
+            let shapes = annot::iter_shapes(shapes.as_slice(), res)
+                .map(|(shape, res)| unfold_all_impl(interner, customs, scc, shape, res, out_res))
+                .collect::<Vec<_>>();
+
+            let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
+            let inner = interner
+                .shape
+                .new(ShapeInner::Variants(IdVec::from_vec(shapes)));
+            Shape { inner, num_slots }
+        }
+        ShapeInner::SelfCustom(_) => {
+            panic!("`unfold_all` was called on the *content* of a custom type")
+        }
+        // The non-trival base case.
+        ShapeInner::Custom(id) => unfold_impl(
+            interner,
+            &Shape {
+                inner: interner.shape.new(ShapeInner::Custom(*id)),
+                num_slots: res.len(),
+            },
+            res,
+            &customs[id].content,
+            res,
+            out_res,
+        ),
+        ShapeInner::Array(shape) => {
+            let _ = out_res.push(res[0].clone());
+            let shape = unfold_all_impl(interner, customs, scc, shape, &res[1..], out_res);
+
+            let num_slots = 1 + shape.num_slots;
+            let inner = interner.shape.new(ShapeInner::Array(shape));
+            Shape { inner, num_slots }
+        }
+        ShapeInner::HoleArray(shape) => {
+            let _ = out_res.push(res[0].clone());
+            let shape = unfold_all_impl(interner, customs, scc, shape, &res[1..], out_res);
+
+            let num_slots = 1 + shape.num_slots;
+            let inner = interner.shape.new(ShapeInner::HoleArray(shape));
+            Shape { inner, num_slots }
+        }
+        ShapeInner::Boxed(shape) => {
+            let _ = out_res.push(res[0].clone());
+            let shape = unfold_all_impl(interner, customs, scc, shape, &res[1..], out_res);
+
+            let num_slots = 1 + shape.num_slots;
+            let inner = interner.shape.new(ShapeInner::Boxed(shape));
+            Shape { inner, num_slots }
+        }
+    }
+}
+
+/// Unfolds all occurrences of custom types in `ty` that belong to `scc`.
+fn unfold_all<L: Clone>(
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    scc: CustomTypeSccId,
     ty: &Type<ModeVar, L>,
 ) -> Type<ModeVar, L> {
     let mut res = IdVec::new();
-    let all_res = ty.res.as_slice();
-    let shape = unfold_type_impl(interner, customs, all_res, &ty.shape, all_res, &mut res);
-
+    let shape = unfold_all_impl(
+        interner,
+        customs,
+        scc,
+        &ty.shape,
+        ty.res.as_slice(),
+        &mut res,
+    );
     debug_assert!(res.len() == shape.num_slots);
     Type { shape, res }
 }
@@ -1263,7 +1371,7 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapCustom(custom_id, unfolded) => {
-            let fut_unfolded = unfold_type(interner, customs, fut_ty);
+            let fut_unfolded = unfold_all(interner, customs, customs[custom_id].scc, fut_ty);
             let occur =
                 instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
             annot::Expr::WrapCustom(*custom_id, occur)
@@ -1280,7 +1388,8 @@ fn instantiate_expr(
                 // lifetimes which would be identified under folding into the proper positions.
                 // Imposing constraints between this unfolded type and `fut_ty` yields the same
                 // constraint system as folding `fut_ty`.
-                let fresh_unfolded = unfold_type(interner, customs, &fresh_folded);
+                let fresh_unfolded =
+                    unfold_all(interner, customs, customs[custom_id].scc, &fresh_folded);
 
                 // Equate the modes in `fut_ty` which are identified under folding.
                 bind_modes(constrs, &fresh_unfolded, fut_ty);

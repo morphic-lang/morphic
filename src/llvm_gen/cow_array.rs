@@ -1,7 +1,9 @@
+use crate::data::low_ast as low;
+use crate::data::rc_specialized_ast2::ModeScheme;
 use crate::llvm_gen::array::ArrayImpl;
 use crate::llvm_gen::fountain_pen::{scope, Scope};
 use crate::llvm_gen::tal::Tal;
-use crate::data::rc_specialized_ast2::ModeScheme;
+use crate::llvm_gen::{get_llvm_type, Globals, Instances};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -18,8 +20,10 @@ const F_ARR_LEN: u32 = 2; // has type u64
 const F_HOLE_IDX: u32 = 0; // has type u64
 const F_HOLE_ARR: u32 = 1; // has type CowArray<T>
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CowArrayImpl<'a> {
+    low_item_type: low::Type,
+
     // implementation details
     ensure_cap: FunctionValue<'a>,
     obtain_unique: FunctionValue<'a>,
@@ -45,11 +49,14 @@ pub struct CowArrayImpl<'a> {
 
 impl<'a> CowArrayImpl<'a> {
     pub fn declare(
-        context: &'a Context,
-        _target: &TargetData,
-        module: &Module<'a>,
-        item_type: BasicTypeEnum<'a>,
+        globals: &Globals<'a, '_>,
+        instances: &Instances<'a>,
+        low_item_type: &low::Type,
     ) -> Self {
+        let context = globals.context;
+        let module = globals.module;
+
+        let item_type = get_llvm_type(globals, instances, low_item_type);
         let void_type = context.void_type();
         let i64_type = context.i64_type();
         let item_ptr_type = item_type.ptr_type(AddressSpace::default());
@@ -156,6 +163,8 @@ impl<'a> CowArrayImpl<'a> {
         );
 
         Self {
+            low_item_type: low_item_type.clone(),
+
             obtain_unique,
             ensure_cap,
             bounds_check,
@@ -180,14 +189,7 @@ impl<'a> CowArrayImpl<'a> {
 }
 
 impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
-    fn define<'b>(
-        &self,
-        context: &'a Context,
-        target: &'b TargetData,
-        tal: &Tal<'a>,
-        item_retain: Option<FunctionValue<'a>>,
-        item_release: Option<FunctionValue<'a>>,
-    ) {
+    fn define<'b>(&self, context: &'a Context, target: &'b TargetData, tal: &Tal<'a>) {
         let array_type = self.array_type;
 
         // Offset a reference (an *i64) into the underlying heap buffer by sizeof(i64) to skip the leading
@@ -709,7 +711,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CowArrayIoImpl<'a> {
     pub byte_array_type: CowArrayImpl<'a>,
     pub input: FunctionValue<'a>,

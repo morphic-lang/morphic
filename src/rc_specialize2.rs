@@ -421,21 +421,14 @@ fn lower_expr(
             ctx.local_binding(*wrapped).new_id,
             lower_type(&item_ty.shape),
         ),
-        annot::Expr::WrapCustom(_custom_id, content) => {
-            let rc::Type::Custom(custom_id) = ret_ty else {
-                unreachable!();
-            };
-            rc::Expr::WrapCustom(*custom_id, ctx.local_binding(*content).new_id)
+        &annot::Expr::WrapCustom(custom_id, content) => {
+            rc::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)
         }
-        annot::Expr::UnwrapCustom(_custom_id, wrapped) => {
-            let info = ctx.local_binding(*wrapped);
-            let rc::Type::Custom(custom_id) = &info.new_ty else {
-                unreachable!();
-            };
-            rc::Expr::UnwrapCustom(*custom_id, info.new_id)
+        &annot::Expr::UnwrapCustom(custom_id, wrapped) => {
+            rc::Expr::UnwrapCustom(custom_id, ctx.local_binding(wrapped).new_id)
         }
-        annot::Expr::Intrinsic(intr, arg) => {
-            rc::Expr::Intrinsic(*intr, ctx.local_binding(*arg).new_id)
+        &annot::Expr::Intrinsic(intr, arg) => {
+            rc::Expr::Intrinsic(intr, ctx.local_binding(arg).new_id)
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Get(item_ty, arr, idx)) => {
             let scheme = make_scheme(

@@ -637,19 +637,9 @@ impl<'a> Instances<'a> {
         }
         let ty = get_llvm_type(globals, self, item_type);
         let new_builtin = if is_zero_sized(globals, item_type) {
-            Rc::new(ZeroSizedArrayImpl::declare(
-                globals.context,
-                globals.target,
-                globals.module,
-                ty,
-            )) as Rc<dyn ArrayImpl<'a>>
+            Rc::new(ZeroSizedArrayImpl::declare(globals, self, ty)) as Rc<dyn ArrayImpl<'a>>
         } else {
-            Rc::new(CowArrayImpl::declare(
-                globals.context,
-                globals.target,
-                globals.module,
-                ty,
-            )) as Rc<dyn ArrayImpl<'a>>
+            Rc::new(CowArrayImpl::declare(globals, self, ty)) as Rc<dyn ArrayImpl<'a>>
         };
         self.cow_arrays
             .borrow_mut()

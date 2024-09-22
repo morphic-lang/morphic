@@ -94,7 +94,7 @@ mod lower_structures;
 
 mod interpreter;
 
-mod llvm_gen;
+// mod llvm_gen;
 
 #[cfg(test)]
 mod test;
@@ -115,7 +115,7 @@ enum ErrorKind {
     CheckMainFailed(check_main::Error),
     CreateArtifactsFailed(io::Error),
     WriteIrFailed(io::Error),
-    LlvmGenFailed(llvm_gen::Error),
+    // LlvmGenFailed(llvm_gen::Error),
     WaitChildFailed(io::Error),
     ChildFailed { exit_status: Option<i32> },
 }
@@ -157,7 +157,7 @@ impl Error {
                 "Could not write intermediate representation artifacts: {}",
                 err
             ),
-            LlvmGenFailed(err) => writeln!(dest, "{}", err),
+            // LlvmGenFailed(err) => writeln!(dest, "{}", err),
             WaitChildFailed(err) => writeln!(dest, "Could not execute compiled program: {}", err),
             ChildFailed {
                 exit_status: Some(_),
@@ -223,7 +223,8 @@ pub fn run(
 
     match config.mode {
         cli::RunMode::Compile { valgrind } => {
-            Ok(llvm_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::LlvmGenFailed)?)
+            // Ok(llvm_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::LlvmGenFailed)?)
+            todo!()
         }
         cli::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
     }
@@ -242,7 +243,8 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
                 config.progress,
                 &config.pass_options,
             )?;
-            Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
+            // Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
+            todo!()
         }
         cli::TargetConfig::Ml(_) => match config.artifact_dir {
             None => Err(Error {
@@ -417,13 +419,13 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "annot_modes"),
     );
 
-    // if let Some(artifact_dir) = artifact_dir {
-    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("mode_annot"))
-    //         .map_err(ErrorKind::WriteIrFailed)?;
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("mode_annot"))
+            .map_err(ErrorKind::WriteIrFailed)?;
 
-    //     pretty_print::mode_annot::write_program(&mut out_file, &mode_annot)
-    //         .map_err(ErrorKind::WriteIrFailed)?;
-    // }
+        pretty_print::mode_annot::write_program(&mut out_file, &mode_annot)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
 
     let obligation_annot = annot_obligations::annot_obligations(
         &interner,
@@ -431,13 +433,13 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "annot_obligations"),
     );
 
-    // if let Some(artifact_dir) = artifact_dir {
-    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("ob_annot"))
-    //         .map_err(ErrorKind::WriteIrFailed)?;
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("ob_annot"))
+            .map_err(ErrorKind::WriteIrFailed)?;
 
-    //     pretty_print::obligation_annot::write_program(&mut out_file, &obligation_annot)
-    //         .map_err(ErrorKind::WriteIrFailed)?;
-    // }
+        pretty_print::obligation_annot::write_program(&mut out_file, &obligation_annot)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
 
     let rc_annot = annot_rcs::annot_rcs(
         &interner,
@@ -461,13 +463,13 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "lower_structures"),
     );
 
-    // if let Some(artifact_dir) = artifact_dir {
-    //     let mut out_file = fs::File::create(artifact_dir.artifact_path("low-ir"))
-    //         .map_err(ErrorKind::WriteIrFailed)?;
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("low-ir"))
+            .map_err(ErrorKind::WriteIrFailed)?;
 
-    //     pretty_print::low::write_program(&mut out_file, &lowered)
-    //         .map_err(ErrorKind::WriteIrFailed)?;
-    // }
+        pretty_print::low::write_program(&mut out_file, &lowered)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
 
     Ok(lowered)
 }

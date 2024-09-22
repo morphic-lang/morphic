@@ -32,6 +32,8 @@ pub mod collection_ext;
 
 pub mod intern;
 
+pub mod memoize;
+
 pub mod non_empty_set;
 
 pub mod let_builder;

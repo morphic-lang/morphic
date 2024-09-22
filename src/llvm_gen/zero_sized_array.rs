@@ -1,14 +1,19 @@
+use crate::data::low_ast as low;
 use crate::data::rc_specialized_ast2::ModeScheme;
 use crate::llvm_gen::array::ArrayImpl;
 use crate::llvm_gen::fountain_pen::scope;
 use crate::llvm_gen::tal::{ProfileRc, Tal};
+use crate::llvm_gen::{get_llvm_type, is_zero_sized, Globals, Instances};
 use inkwell::context::Context;
-use inkwell::module::{Linkage, Module};
+use inkwell::module::Linkage;
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 
+#[derive(Clone, Debug)]
 pub struct ZeroSizedArrayImpl<'a> {
+    low_item_type: low::Type,
+
     item_type: BasicTypeEnum<'a>,
     array_type: BasicTypeEnum<'a>,
     hole_array_type: BasicTypeEnum<'a>,
@@ -28,11 +33,16 @@ pub struct ZeroSizedArrayImpl<'a> {
 
 impl<'a> ZeroSizedArrayImpl<'a> {
     pub fn declare(
-        context: &'a Context,
-        _target: &TargetData,
-        module: &Module<'a>,
-        item_type: &low::Type,
+        globals: &Globals<'a, '_>,
+        instances: &Instances<'a>,
+        low_item_type: &low::Type,
     ) -> Self {
+        debug_assert!(is_zero_sized(globals, low_item_type));
+
+        let context = globals.context;
+        let module = globals.module;
+
+        let item_type = get_llvm_type(globals, instances, low_item_type);
         let i64_type = context.i64_type();
         let void_type = context.void_type();
 
@@ -109,6 +119,7 @@ impl<'a> ZeroSizedArrayImpl<'a> {
         let release_hole = void_fun("release_hole", &[hole_array_type.into()]);
 
         Self {
+            low_item_type: low_item_type.clone(),
             item_type,
             array_type,
             hole_array_type,
@@ -309,7 +320,8 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         self.retain_array
     }
 
-    fn release_array(&self, _item_scheme: &ModeScheme) -> FunctionValue<'a> {
+    fn release_array(&self, item_scheme: &ModeScheme) -> FunctionValue<'a> {
+        debug_assert!(item_scheme.as_type() == self.low_item_type);
         self.release_array
     }
 
@@ -317,7 +329,8 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         self.retain_hole
     }
 
-    fn release_hole(&self, _item_scheme: &ModeScheme) -> FunctionValue<'a> {
+    fn release_hole(&self, item_scheme: &ModeScheme) -> FunctionValue<'a> {
+        debug_assert!(item_scheme.as_type() == self.low_item_type);
         self.release_hole
     }
 }
