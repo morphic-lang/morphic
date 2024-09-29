@@ -7,8 +7,9 @@
 
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
+use crate::data::guarded_ast as guard;
 use crate::data::intrinsics::Intrinsic;
-use crate::data::mode_annot_ast2::{self as annot, Interner, Lt, Mode, ResModes, Shape, SlotId};
+use crate::data::mode_annot_ast2::{Interner, Lt, Mode, ResModes, Shape, SlotId};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -51,9 +52,18 @@ pub struct Type {
     pub res: IdVec<SlotId, ResModes<Mode>>,
 }
 
+impl Type {
+    pub fn unit(interner: &Interner) -> Type {
+        Type {
+            shape: Shape::unit(interner),
+            res: IdVec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Occur {
-    pub id: flat::LocalId,
+    pub id: guard::LocalId,
     pub ty: Type,
 }
 
@@ -98,8 +108,11 @@ pub enum IoOp {
 pub enum Expr {
     Local(Occur),
     Call(Purity, CustomFuncId, Occur),
-    Branch(Occur, Vec<(annot::Condition, Expr)>, Type),
     LetMany(Vec<(Type, StackLt, Expr)>, Occur),
+
+    If(Occur, Box<Expr>, Box<Expr>),
+    CheckVariant(first_ord::VariantId, Occur), // Returns a bool
+    Unreachable(Type),
 
     Tuple(Vec<Occur>),
     TupleField(Occur, usize),

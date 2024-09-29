@@ -6,8 +6,51 @@ use crate::data::purity::Purity;
 use crate::data::rc_specialized_ast2 as rc;
 use crate::data::tail_rec_ast as tail;
 use crate::util::graph::{self, Graph};
+use crate::util::let_builder::{BuildMatch, FromBindings, LetManyBuilder};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
-use id_collections::IdVec;
+use id_collections::{Count, IdVec};
+
+impl FromBindings for tail::Expr {
+    type LocalId = rc::LocalId;
+    type Binding = (rc::Type, tail::Expr);
+
+    fn from_bindings(bindings: Vec<Self::Binding>, ret: Self::LocalId) -> Self {
+        tail::Expr::LetMany(bindings, ret)
+    }
+}
+
+impl BuildMatch for tail::Expr {
+    type VariantId = first_ord::VariantId;
+    type Type = rc::Type;
+
+    fn bool_type() -> Self::Type {
+        rc::Type::Bool
+    }
+
+    fn build_binding(
+        builder: &mut crate::util::let_builder::LetManyBuilder<Self>,
+        ty: Self::Type,
+        expr: Self,
+    ) -> Self::LocalId {
+        builder.add_binding((ty, expr))
+    }
+
+    fn build_if(cond: Self::LocalId, then_expr: Self, else_expr: Self) -> Self {
+        tail::Expr::If(cond, Box::new(then_expr), Box::new(else_expr))
+    }
+
+    fn build_check_variant(variant: Self::VariantId, local: Self::LocalId) -> Self {
+        tail::Expr::CheckVariant(variant, local)
+    }
+
+    fn build_unwrap_variant(variant: Self::VariantId, local: Self::LocalId) -> Self {
+        tail::Expr::UnwrapVariant(variant, local)
+    }
+
+    fn build_unreachable(ty: Self::Type) -> Self {
+        tail::Expr::Unreachable(ty)
+    }
+}
 
 fn last_index<T>(slice: &[T]) -> Option<usize> {
     if slice.is_empty() {
@@ -28,18 +71,17 @@ fn add_tail_call_deps(
             deps.insert(*id);
         }
 
-        rc::Expr::Branch(_discrim, cases, _result_type) => {
-            for (_cond, body) in cases {
-                add_tail_call_deps(deps, vars_in_scope, body);
-            }
-        }
-
         rc::Expr::LetMany(bindings, final_local) => {
             if let Some(last_i) = last_index(bindings) {
                 if final_local == &rc::LocalId(vars_in_scope + last_i) {
                     add_tail_call_deps(deps, vars_in_scope + last_i, &bindings[last_i].1);
                 }
             }
+        }
+
+        rc::Expr::If(_discrim, then_case, else_case) => {
+            add_tail_call_deps(deps, vars_in_scope, then_case);
+            add_tail_call_deps(deps, vars_in_scope, else_case);
         }
 
         _ => {}
@@ -74,12 +116,6 @@ fn mark_call_modes(
             }
         }
 
-        rc::Expr::Branch(_discrim, cases, _result_type) => {
-            for (_cond, body) in cases {
-                mark_call_modes(modes, curr_scc, pos, vars_in_scope, body);
-            }
-        }
-
         rc::Expr::LetMany(bindings, final_local) => {
             for (i, (_type, binding)) in bindings.iter().enumerate() {
                 let sub_pos =
@@ -91,6 +127,11 @@ fn mark_call_modes(
 
                 mark_call_modes(modes, curr_scc, sub_pos, vars_in_scope + i, binding);
             }
+        }
+
+        rc::Expr::If(_discrim, then_case, else_case) => {
+            mark_call_modes(modes, curr_scc, pos, vars_in_scope, then_case);
+            mark_call_modes(modes, curr_scc, pos, vars_in_scope, else_case);
         }
 
         _ => {}
@@ -157,27 +198,6 @@ fn trans_expr(
             }
         }
 
-        rc::Expr::Branch(discrim, cases, result_type) => tail::Expr::Branch(
-            *discrim,
-            cases
-                .iter()
-                .map(|(cond, body)| {
-                    (
-                        cond.clone(),
-                        trans_expr(
-                            funcs,
-                            mappings,
-                            local_tail_mappings,
-                            pos,
-                            vars_in_scope,
-                            body,
-                        ),
-                    )
-                })
-                .collect(),
-            result_type.clone(),
-        ),
-
         rc::Expr::LetMany(bindings, final_local) => tail::Expr::LetMany(
             bindings
                 .iter()
@@ -207,6 +227,32 @@ fn trans_expr(
                 .collect(),
             *final_local,
         ),
+
+        rc::Expr::If(discrim, then_case, else_case) => tail::Expr::If(
+            *discrim,
+            Box::new(trans_expr(
+                funcs,
+                mappings,
+                local_tail_mappings,
+                pos,
+                vars_in_scope,
+                then_case,
+            )),
+            Box::new(trans_expr(
+                funcs,
+                mappings,
+                local_tail_mappings,
+                pos,
+                vars_in_scope,
+                else_case,
+            )),
+        ),
+
+        rc::Expr::CheckVariant(variant_id, variant) => {
+            tail::Expr::CheckVariant(*variant_id, *variant)
+        }
+
+        rc::Expr::Unreachable(ret_type) => tail::Expr::Unreachable(ret_type.clone()),
 
         rc::Expr::Tuple(items) => tail::Expr::Tuple(items.clone()),
 
@@ -452,39 +498,19 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
                         program.funcs[orig_ids[entry_func_id.0]].arg_type.clone()
                     });
 
-                    let body = tail::Expr::Branch(
-                        rc::ARG_LOCAL,
-                        entry_func_ids
-                            .iter()
-                            .map(|(variant_id, tail_func_id)| {
-                                let unwrapped_var = rc::LocalId(1);
-                                let call_result_var = rc::LocalId(2);
+                    let mut builder = LetManyBuilder::new(Count::from_value(1));
 
-                                (
-                                    rc::Condition::Variant(
-                                        variant_id,
-                                        Box::new(rc::Condition::Any),
-                                    ),
-                                    tail::Expr::LetMany(
-                                        vec![
-                                            (
-                                                arg_variant_types[variant_id].clone(),
-                                                tail::Expr::UnwrapVariant(
-                                                    variant_id,
-                                                    rc::ARG_LOCAL,
-                                                ),
-                                            ),
-                                            (
-                                                ret_type.clone(),
-                                                tail::Expr::TailCall(*tail_func_id, unwrapped_var),
-                                            ),
-                                        ],
-                                        call_result_var,
-                                    ),
-                                )
-                            })
-                            .collect(),
-                        ret_type.clone(),
+                    let body = tail::Expr::build_match(
+                        &mut builder,
+                        rc::ARG_LOCAL,
+                        arg_variant_types.iter().map(|(id, ty)| (id, ty.clone())),
+                        &ret_type,
+                        |builder, variant_id, unwrapped| {
+                            builder.add_binding((
+                                arg_variant_types[variant_id].clone(),
+                                tail::Expr::TailCall(entry_func_ids[variant_id], unwrapped),
+                            ))
+                        },
                     );
 
                     (rc::Type::Variants(arg_variant_types), body)

@@ -1,28 +1,55 @@
-use crate::data::anon_sum_ast::Type;
-use crate::data::first_order_ast::CustomTypeId;
-use crate::data::flat_ast::{
-    self as flat, ArrayOp, Condition, CustomTypeSccId, Expr, FuncDef, IoOp,
-};
-use crate::data::guarded_ast::{self as guarded, CanGuard};
+//! In this pass we:
+//! - Guard custom types to improve the precision of borrow inference.
+//! - Lower `Condition`s to `If`s to reduce the complexity of borrow inference.
+
+use crate::data::anon_sum_ast as anon;
+use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
+use crate::data::flat_ast::{self as flat, CustomTypeSccId};
+use crate::data::guarded_ast::{self as guard, CanGuard};
+use crate::data::intrinsics::Intrinsic;
 use crate::util::collection_ext::VecExt;
-use id_collections::{IdMap, IdVec};
+use crate::util::let_builder::{FromBindings, LetManyBuilder};
+use crate::util::local_context::LocalContext;
+use id_collections::{Count, IdMap, IdVec};
 use id_graph_sccs::{SccKind, Sccs};
 use std::collections::BTreeSet;
 
-fn add_size_deps(ty: &Type, deps: &mut BTreeSet<CustomTypeId>) {
+impl FromBindings for guard::Expr {
+    type LocalId = guard::LocalId;
+    type Binding = (guard::Type, guard::Expr);
+
+    fn from_bindings(bindings: Vec<Self::Binding>, ret: Self::LocalId) -> Self {
+        guard::Expr::LetMany(bindings, ret)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LocalInfo {
+    new_id: guard::LocalId,
+    orig_type: anon::Type, // pre-guarded type
+}
+
+type Builder = LetManyBuilder<guard::Expr>;
+type Context = LocalContext<flat::LocalId, LocalInfo>;
+
+fn add_size_deps(ty: &anon::Type, deps: &mut BTreeSet<CustomTypeId>) {
     match ty {
-        Type::Bool | Type::Num(_) | Type::Array(_) | Type::HoleArray(_) | Type::Boxed(_) => {}
-        Type::Tuple(tys) => {
+        anon::Type::Bool
+        | anon::Type::Num(_)
+        | anon::Type::Array(_)
+        | anon::Type::HoleArray(_)
+        | anon::Type::Boxed(_) => {}
+        anon::Type::Tuple(tys) => {
             for ty in tys {
                 add_size_deps(ty, deps);
             }
         }
-        Type::Variants(tys) => {
+        anon::Type::Variants(tys) => {
             for (_, ty) in tys {
                 add_size_deps(ty, deps);
             }
         }
-        Type::Custom(id) => {
+        anon::Type::Custom(id) => {
             deps.insert(*id);
         }
     }
@@ -53,16 +80,18 @@ fn guard(
     customs: &flat::CustomTypes,
     can_guard: &IdVec<CustomTypeId, CanGuard>,
     scc: Option<CustomTypeSccId>,
-    ty: &Type,
-) -> Type {
+    ty: &anon::Type,
+) -> guard::Type {
     match ty {
-        Type::Bool => Type::Bool,
-        Type::Num(num_ty) => Type::Num(*num_ty),
-        Type::Tuple(tys) => Type::Tuple(tys.map_refs(|ty| guard(customs, can_guard, scc, ty))),
-        Type::Variants(tys) => {
-            Type::Variants(tys.map_refs(|_, ty| guard(customs, can_guard, scc, ty)))
+        anon::Type::Bool => guard::Type::Bool,
+        anon::Type::Num(num_ty) => guard::Type::Num(*num_ty),
+        anon::Type::Tuple(tys) => {
+            guard::Type::Tuple(tys.map_refs(|ty| guard(customs, can_guard, scc, ty)))
         }
-        Type::Custom(id) => {
+        anon::Type::Variants(tys) => {
+            guard::Type::Variants(tys.map_refs(|_, ty| guard(customs, can_guard, scc, ty)))
+        }
+        anon::Type::Custom(id) => {
             let custom = &customs.types[*id];
             if can_guard[*id] == CanGuard::Yes
                 && customs.sccs.component(custom.scc).kind == SccKind::Cyclic
@@ -70,147 +99,454 @@ fn guard(
             {
                 guard(customs, can_guard, Some(custom.scc), &custom.content)
             } else {
-                Type::Custom(*id)
+                guard::Type::Custom(*id)
             }
         }
-        Type::Array(ty) => Type::Array(Box::new(guard(customs, can_guard, scc, ty))),
-        Type::HoleArray(ty) => Type::HoleArray(Box::new(guard(customs, can_guard, scc, ty))),
-        Type::Boxed(ty) => Type::Boxed(Box::new(guard(customs, can_guard, scc, ty))),
+        anon::Type::Array(ty) => guard::Type::Array(Box::new(guard(customs, can_guard, scc, ty))),
+        anon::Type::HoleArray(ty) => {
+            guard::Type::HoleArray(Box::new(guard(customs, can_guard, scc, ty)))
+        }
+        anon::Type::Boxed(ty) => guard::Type::Boxed(Box::new(guard(customs, can_guard, scc, ty))),
     }
 }
 
-struct Context<'a> {
+struct Trans<'a> {
     customs: &'a flat::CustomTypes,
     can_guard: &'a IdVec<CustomTypeId, CanGuard>,
 }
 
-impl Context<'_> {
-    fn guard(&self, ty: &Type, scc: Option<CustomTypeSccId>) -> Type {
-        guard(self.customs, self.can_guard, scc, ty)
+impl Trans<'_> {
+    fn guard(&self, ty: &anon::Type) -> guard::Type {
+        guard(self.customs, self.can_guard, None, ty)
+    }
+
+    fn guard_custom(&self, def: &flat::CustomTypeDef) -> guard::Type {
+        guard(self.customs, self.can_guard, Some(def.scc), &def.content)
     }
 }
 
-fn guard_cond(ctx: &Context, cond: Condition) -> Condition {
-    match cond {
-        Condition::Any => Condition::Any,
-        Condition::Tuple(conds) => Condition::Tuple(
-            conds
-                .into_iter()
-                .map(|cond| guard_cond(ctx, cond))
-                .collect(),
-        ),
-        Condition::Variant(variant_id, cond) => {
-            Condition::Variant(variant_id, Box::new(guard_cond(ctx, *cond)))
+fn build_comp(
+    lhs: guard::LocalId,
+    rhs: guard::LocalId,
+    ty: first_ord::NumType,
+    op: Intrinsic,
+    builder: &mut Builder,
+) -> guard::LocalId {
+    let args = builder.add_binding((
+        guard::Type::Tuple(vec![guard::Type::Num(ty), guard::Type::Num(ty)]),
+        guard::Expr::Tuple(vec![lhs, rhs]),
+    ));
+
+    builder.add_binding((guard::Type::Bool, guard::Expr::Intrinsic(op, args)))
+}
+
+fn lower_condition(
+    trans: &Trans,
+    customs: &flat::CustomTypes,
+    discrim: guard::LocalId,
+    condition: &flat::Condition,
+    builder: &mut Builder,
+    match_type: &anon::Type,
+) -> guard::LocalId {
+    match condition {
+        flat::Condition::Any => {
+            builder.add_binding((guard::Type::Bool, guard::Expr::BoolLit(true)))
         }
-        Condition::Boxed(cond, item_ty) => {
-            Condition::Boxed(Box::new(guard_cond(ctx, *cond)), ctx.guard(&item_ty, None))
+        flat::Condition::Tuple(subconditions) => {
+            let anon::Type::Tuple(item_types) = match_type else {
+                unreachable!();
+            };
+
+            let subcondition_ids = item_types
+                .iter()
+                .zip(subconditions.iter())
+                .enumerate()
+                .map(|(index, (item_type, subcondition))| {
+                    let item_id = builder.add_binding((
+                        trans.guard(item_type),
+                        guard::Expr::TupleField(discrim, index),
+                    ));
+                    lower_condition(trans, customs, item_id, subcondition, builder, item_type)
+                })
+                .collect::<Vec<_>>();
+            let if_expr =
+                subcondition_ids
+                    .into_iter()
+                    .rfold(guard::Expr::BoolLit(true), |accum, item| {
+                        guard::Expr::If(
+                            item,
+                            Box::new(accum),
+                            Box::new(guard::Expr::BoolLit(false)),
+                        )
+                    });
+
+            builder.add_binding((guard::Type::Bool, if_expr))
         }
-        Condition::Custom(custom_id, cond) => {
-            Condition::Custom(custom_id, Box::new(guard_cond(ctx, *cond)))
+        flat::Condition::Variant(variant_id, subcondition) => {
+            let variant_id = first_ord::VariantId(variant_id.0);
+
+            let variant_check = builder.add_binding((
+                guard::Type::Bool,
+                guard::Expr::CheckVariant(variant_id, discrim),
+            ));
+
+            let mut new_builder = builder.child();
+            let anon::Type::Variants(variant_types) = match_type else {
+                unreachable!();
+            };
+
+            let variant_type = &variant_types[variant_id];
+
+            let sub_discrim = new_builder.add_binding((
+                trans.guard(variant_type),
+                guard::Expr::UnwrapVariant(
+                    variant_types.map_refs(|_, ty| trans.guard(ty)),
+                    first_ord::VariantId(variant_id.0),
+                    discrim,
+                ),
+            ));
+
+            let sub_cond_id = lower_condition(
+                trans,
+                customs,
+                sub_discrim,
+                subcondition,
+                &mut new_builder,
+                variant_type,
+            );
+
+            builder.add_binding((
+                guard::Type::Bool,
+                guard::Expr::If(
+                    variant_check,
+                    Box::new(new_builder.to_expr(sub_cond_id)),
+                    Box::new(guard::Expr::BoolLit(false)),
+                ),
+            ))
         }
-        Condition::BoolConst(lit) => Condition::BoolConst(lit),
-        Condition::ByteConst(lit) => Condition::ByteConst(lit),
-        Condition::IntConst(lit) => Condition::IntConst(lit),
-        Condition::FloatConst(lit) => Condition::FloatConst(lit),
+        flat::Condition::Boxed(subcondition, _) => {
+            let anon::Type::Boxed(content_type) = match_type else {
+                unreachable!();
+            };
+
+            let guarded_type = trans.guard(content_type);
+            let content = builder.add_binding((
+                guarded_type.clone(),
+                guard::Expr::UnwrapBoxed(discrim, guarded_type),
+            ));
+
+            lower_condition(trans, customs, content, subcondition, builder, content_type)
+        }
+        flat::Condition::Custom(_, subcondition) => {
+            let anon::Type::Custom(custom_type_id) = match_type else {
+                unreachable!();
+            };
+
+            let content_type = &customs.types[custom_type_id].content;
+            let content = builder.add_binding((
+                trans.guard(content_type),
+                guard::Expr::UnwrapCustom(*custom_type_id, discrim),
+            ));
+
+            lower_condition(trans, customs, content, subcondition, builder, content_type)
+        }
+        flat::Condition::BoolConst(val) => {
+            if *val {
+                discrim
+            } else {
+                builder.add_binding((
+                    guard::Type::Bool,
+                    guard::Expr::If(
+                        discrim,
+                        Box::new(guard::Expr::BoolLit(false)),
+                        Box::new(guard::Expr::BoolLit(true)),
+                    ),
+                ))
+            }
+        }
+        flat::Condition::ByteConst(val) => {
+            let val_id = builder.add_binding((
+                guard::Type::Num(first_ord::NumType::Byte),
+                guard::Expr::ByteLit(*val),
+            ));
+
+            build_comp(
+                val_id,
+                discrim,
+                first_ord::NumType::Byte,
+                Intrinsic::EqByte,
+                builder,
+            )
+        }
+        flat::Condition::IntConst(val) => {
+            let val_id = builder.add_binding((
+                guard::Type::Num(first_ord::NumType::Int),
+                guard::Expr::IntLit(*val),
+            ));
+
+            build_comp(
+                val_id,
+                discrim,
+                first_ord::NumType::Int,
+                Intrinsic::EqInt,
+                builder,
+            )
+        }
+
+        flat::Condition::FloatConst(val) => {
+            let val_id = builder.add_binding((
+                guard::Type::Num(first_ord::NumType::Float),
+                guard::Expr::FloatLit(*val),
+            ));
+
+            build_comp(
+                val_id,
+                discrim,
+                first_ord::NumType::Float,
+                Intrinsic::EqFloat,
+                builder,
+            )
+        }
     }
 }
 
-fn guard_expr(ctx: &Context, expr: Expr) -> Expr {
-    match expr {
-        Expr::Local(local) => Expr::Local(local),
-        Expr::Call(purity, func, arg) => Expr::Call(purity, func, arg),
-        Expr::Branch(discrim, arms, ret_ty) => Expr::Branch(
-            discrim,
-            arms.into_iter()
-                .map(|(cond, expr)| (guard_cond(ctx, cond), guard_expr(ctx, expr)))
-                .collect(),
-            ctx.guard(&ret_ty, None),
-        ),
-        Expr::LetMany(bindings, ret) => Expr::LetMany(
-            bindings
-                .into_iter()
-                .map(|(ty, expr)| (ctx.guard(&ty, None), guard_expr(ctx, expr)))
-                .collect(),
-            ret,
-        ),
-        Expr::Tuple(items) => Expr::Tuple(items),
-        Expr::TupleField(tup, idx) => Expr::TupleField(tup, idx),
-        Expr::WrapVariant(variants, variant_id, content) => {
-            Expr::WrapVariant(variants, variant_id, content)
+fn guard_branch(
+    trans: &Trans,
+    customs: &flat::CustomTypes,
+    discrim: flat::LocalId,
+    cases: &[(flat::Condition, flat::Expr)],
+    result_type: &anon::Type,
+    ctx: &mut Context,
+    builder: &mut Builder,
+) -> guard::LocalId {
+    match cases.first() {
+        None => {
+            let guarded_type = trans.guard(result_type);
+            builder.add_binding((guarded_type.clone(), guard::Expr::Unreachable(guarded_type)))
         }
-        Expr::UnwrapVariant(variant_id, wrapped) => Expr::UnwrapVariant(variant_id, wrapped),
-        Expr::WrapBoxed(content, item_ty) => Expr::WrapBoxed(content, ctx.guard(&item_ty, None)),
-        Expr::UnwrapBoxed(wrapped, item_ty) => {
-            Expr::UnwrapBoxed(wrapped, ctx.guard(&item_ty, None))
-        }
-        Expr::WrapCustom(custom_id, content) => Expr::WrapCustom(custom_id, content),
-        Expr::UnwrapCustom(custom_id, wrapped) => Expr::UnwrapCustom(custom_id, wrapped),
-        Expr::Intrinsic(intr, arg) => Expr::Intrinsic(intr, arg),
+        Some((cond, body)) => {
+            let binding = ctx.local_binding(discrim);
+            let condition_id = lower_condition(
+                trans,
+                customs,
+                binding.new_id,
+                cond,
+                builder,
+                &binding.orig_type,
+            );
 
-        Expr::ArrayOp(ArrayOp::Get(item_ty, arr, idx)) => {
-            Expr::ArrayOp(ArrayOp::Get(ctx.guard(&item_ty, None), arr, idx))
-        }
-        Expr::ArrayOp(ArrayOp::Extract(item_ty, arr, idx)) => {
-            Expr::ArrayOp(ArrayOp::Extract(ctx.guard(&item_ty, None), arr, idx))
-        }
-        Expr::ArrayOp(ArrayOp::Len(item_ty, arr)) => {
-            Expr::ArrayOp(ArrayOp::Len(ctx.guard(&item_ty, None), arr))
-        }
-        Expr::ArrayOp(ArrayOp::Push(item_ty, arr, item)) => {
-            Expr::ArrayOp(ArrayOp::Push(ctx.guard(&item_ty, None), arr, item))
-        }
-        Expr::ArrayOp(ArrayOp::Pop(item_ty, arr)) => {
-            Expr::ArrayOp(ArrayOp::Pop(ctx.guard(&item_ty, None), arr))
-        }
-        Expr::ArrayOp(ArrayOp::Replace(item_ty, hole_arr, item)) => {
-            Expr::ArrayOp(ArrayOp::Replace(ctx.guard(&item_ty, None), hole_arr, item))
-        }
-        Expr::ArrayOp(ArrayOp::Reserve(item_ty, arr, cap)) => {
-            Expr::ArrayOp(ArrayOp::Reserve(ctx.guard(&item_ty, None), arr, cap))
-        }
+            let mut then_builder = builder.child();
 
-        Expr::IoOp(IoOp::Input) => Expr::IoOp(IoOp::Input),
-        Expr::IoOp(IoOp::Output(msg)) => Expr::IoOp(IoOp::Output(msg)),
+            let then_final_id =
+                guard_expr(trans, customs, result_type, body, ctx, &mut then_builder);
 
-        Expr::Panic(ret_ty, msg) => Expr::Panic(ctx.guard(&ret_ty, None), msg),
-        Expr::ArrayLit(item_ty, items) => Expr::ArrayLit(ctx.guard(&item_ty, None), items),
-        Expr::BoolLit(lit) => Expr::BoolLit(lit),
-        Expr::ByteLit(lit) => Expr::ByteLit(lit),
-        Expr::IntLit(lit) => Expr::IntLit(lit),
-        Expr::FloatLit(lit) => Expr::FloatLit(lit),
+            let then_branch = then_builder.to_expr(then_final_id);
+
+            let mut else_builder = builder.child();
+            let else_local_id = guard_branch(
+                trans,
+                customs,
+                discrim,
+                &cases[1..],
+                result_type,
+                ctx,
+                &mut else_builder,
+            );
+
+            let else_branch = else_builder.to_expr(else_local_id);
+
+            builder.add_binding((
+                trans.guard(result_type),
+                guard::Expr::If(condition_id, Box::new(then_branch), Box::new(else_branch)),
+            ))
+        }
     }
 }
 
-pub fn guard_types(prog: flat::Program) -> guarded::Program {
+fn guard_expr(
+    trans: &Trans,
+    customs: &flat::CustomTypes,
+    ret_ty: &anon::Type,
+    expr: &flat::Expr,
+    ctx: &mut Context,
+    builder: &mut Builder,
+) -> guard::LocalId {
+    let new_expr = match expr {
+        &flat::Expr::Local(local) => guard::Expr::Local(ctx.local_binding(local).new_id),
+        &flat::Expr::Call(purity, func, arg) => {
+            guard::Expr::Call(purity, func, ctx.local_binding(arg).new_id)
+        }
+        flat::Expr::Branch(discrim, cases, ret_ty) => {
+            return guard_branch(trans, customs, *discrim, cases, ret_ty, ctx, builder);
+        }
+        flat::Expr::LetMany(bindings, ret) => {
+            let final_local = ctx.with_scope(|ctx| {
+                for (binding_ty, expr) in bindings {
+                    let new_id = guard_expr(trans, customs, binding_ty, expr, ctx, builder);
+                    ctx.add_local(LocalInfo {
+                        new_id,
+                        orig_type: binding_ty.clone(),
+                    });
+                }
+                ctx.local_binding(*ret).new_id
+            });
+
+            // Note: Early return! We circumvent the usual return flow because we don't actually
+            // want to create an expression directly corresponding to this 'let' block. The 'let'
+            // block's bindings just get absorbed into the ambient `builder`.
+            return final_local;
+        }
+        flat::Expr::Tuple(items) => {
+            guard::Expr::Tuple(items.map_refs(|item| ctx.local_binding(*item).new_id))
+        }
+        &flat::Expr::TupleField(tup, idx) => {
+            guard::Expr::TupleField(ctx.local_binding(tup).new_id, idx)
+        }
+        flat::Expr::WrapVariant(variants, variant_id, content) => guard::Expr::WrapVariant(
+            variants.map_refs(|_, ty| trans.guard(ty)),
+            *variant_id,
+            ctx.local_binding(*content).new_id,
+        ),
+        &flat::Expr::UnwrapVariant(variant_id, wrapped) => {
+            let wrapped = ctx.local_binding(wrapped);
+            let anon::Type::Variants(variants) = &wrapped.orig_type else {
+                unreachable!();
+            };
+
+            guard::Expr::UnwrapVariant(
+                variants.map_refs(|_, ty| trans.guard(ty)),
+                variant_id,
+                wrapped.new_id,
+            )
+        }
+        flat::Expr::WrapBoxed(content, item_ty) => {
+            guard::Expr::WrapBoxed(ctx.local_binding(*content).new_id, trans.guard(item_ty))
+        }
+        flat::Expr::UnwrapBoxed(wrapped, item_ty) => {
+            guard::Expr::UnwrapBoxed(ctx.local_binding(*wrapped).new_id, trans.guard(item_ty))
+        }
+        &flat::Expr::WrapCustom(custom_id, content) => {
+            guard::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)
+        }
+        &flat::Expr::UnwrapCustom(custom_id, wrapped) => {
+            guard::Expr::UnwrapCustom(custom_id, ctx.local_binding(wrapped).new_id)
+        }
+        &flat::Expr::Intrinsic(intr, arg) => {
+            guard::Expr::Intrinsic(intr, ctx.local_binding(arg).new_id)
+        }
+
+        flat::Expr::ArrayOp(flat::ArrayOp::Get(item_ty, arr, idx)) => {
+            guard::Expr::ArrayOp(guard::ArrayOp::Get(
+                trans.guard(item_ty),
+                ctx.local_binding(*arr).new_id,
+                ctx.local_binding(*idx).new_id,
+            ))
+        }
+        flat::Expr::ArrayOp(flat::ArrayOp::Extract(item_ty, arr, idx)) => {
+            guard::Expr::ArrayOp(guard::ArrayOp::Extract(
+                trans.guard(item_ty),
+                ctx.local_binding(*arr).new_id,
+                ctx.local_binding(*idx).new_id,
+            ))
+        }
+        flat::Expr::ArrayOp(flat::ArrayOp::Len(item_ty, arr)) => guard::Expr::ArrayOp(
+            guard::ArrayOp::Len(trans.guard(item_ty), ctx.local_binding(*arr).new_id),
+        ),
+        flat::Expr::ArrayOp(flat::ArrayOp::Push(item_ty, arr, item)) => {
+            guard::Expr::ArrayOp(guard::ArrayOp::Push(
+                trans.guard(item_ty),
+                ctx.local_binding(*arr).new_id,
+                ctx.local_binding(*item).new_id,
+            ))
+        }
+        flat::Expr::ArrayOp(flat::ArrayOp::Pop(item_ty, arr)) => guard::Expr::ArrayOp(
+            guard::ArrayOp::Pop(trans.guard(item_ty), ctx.local_binding(*arr).new_id),
+        ),
+        flat::Expr::ArrayOp(flat::ArrayOp::Replace(item_ty, hole_arr, item)) => {
+            guard::Expr::ArrayOp(guard::ArrayOp::Replace(
+                trans.guard(item_ty),
+                ctx.local_binding(*hole_arr).new_id,
+                ctx.local_binding(*item).new_id,
+            ))
+        }
+        flat::Expr::ArrayOp(flat::ArrayOp::Reserve(item_ty, arr, cap)) => {
+            guard::Expr::ArrayOp(guard::ArrayOp::Reserve(
+                trans.guard(item_ty),
+                ctx.local_binding(*arr).new_id,
+                ctx.local_binding(*cap).new_id,
+            ))
+        }
+
+        flat::Expr::IoOp(flat::IoOp::Input) => guard::Expr::IoOp(guard::IoOp::Input),
+        &flat::Expr::IoOp(flat::IoOp::Output(msg)) => {
+            guard::Expr::IoOp(guard::IoOp::Output(ctx.local_binding(msg).new_id))
+        }
+
+        flat::Expr::Panic(ret_ty, msg) => {
+            guard::Expr::Panic(trans.guard(ret_ty), ctx.local_binding(*msg).new_id)
+        }
+        flat::Expr::ArrayLit(item_ty, items) => guard::Expr::ArrayLit(
+            trans.guard(item_ty),
+            items.map_refs(|item| ctx.local_binding(*item).new_id),
+        ),
+        &flat::Expr::BoolLit(lit) => guard::Expr::BoolLit(lit),
+        &flat::Expr::ByteLit(lit) => guard::Expr::ByteLit(lit),
+        &flat::Expr::IntLit(lit) => guard::Expr::IntLit(lit),
+        &flat::Expr::FloatLit(lit) => guard::Expr::FloatLit(lit),
+    };
+
+    builder.add_binding((trans.guard(ret_ty), new_expr))
+}
+
+pub fn guard_types(prog: flat::Program) -> guard::Program {
     let can_guard = can_guard_customs(&prog.custom_types);
 
-    let ctx = Context {
+    let trans = Trans {
         customs: &prog.custom_types,
         can_guard: &can_guard,
     };
-    let funcs = prog.funcs.map(|_, func| FuncDef {
-        purity: func.purity,
-        arg_type: ctx.guard(&func.arg_type, None),
-        ret_type: ctx.guard(&func.ret_type, None),
-        body: guard_expr(&ctx, func.body),
-        profile_point: func.profile_point,
+
+    let funcs = prog.funcs.map(|_, func| {
+        let mut builder = Builder::new(Count::from_value(1));
+        let mut ctx = Context::new();
+        ctx.add_local(LocalInfo {
+            new_id: guard::ARG_LOCAL,
+            orig_type: func.arg_type.clone(),
+        });
+
+        let final_local = guard_expr(
+            &trans,
+            &prog.custom_types,
+            &func.ret_type,
+            &func.body,
+            &mut ctx,
+            &mut builder,
+        );
+
+        guard::FuncDef {
+            purity: func.purity,
+            arg_type: trans.guard(&func.arg_type),
+            ret_type: trans.guard(&func.ret_type),
+            body: builder.to_expr(final_local),
+            profile_point: func.profile_point,
+        }
     });
 
     let types = prog
         .custom_types
         .types
-        .map_refs(|id, def| guarded::CustomTypeDef {
-            content: ctx.guard(&def.content, Some(def.scc)),
+        .map_refs(|id, def| guard::CustomTypeDef {
+            content: trans.guard_custom(def),
             scc: def.scc,
             can_guard: can_guard[id],
         });
 
-    let custom_types = guarded::CustomTypes {
+    let custom_types = guard::CustomTypes {
         types,
         sccs: prog.custom_types.sccs,
     };
 
-    guarded::Program {
+    guard::Program {
         mod_symbols: prog.mod_symbols,
         custom_types,
         custom_type_symbols: prog.custom_type_symbols,
@@ -227,19 +563,32 @@ mod tests {
 
     #[test]
     fn test_guard() {
-        let list = |tail, item| {
-            Type::Variants(IdVec::from_vec(vec![
-                Type::Tuple(vec![]),
-                Type::Tuple(vec![item, Type::Boxed(Box::new(Type::Custom(tail)))]),
+        let a_list = |tail, item| {
+            anon::Type::Variants(IdVec::from_vec(vec![
+                anon::Type::Tuple(vec![]),
+                anon::Type::Tuple(vec![
+                    item,
+                    anon::Type::Boxed(Box::new(anon::Type::Custom(tail))),
+                ]),
+            ]))
+        };
+        let g_list = |tail, item| {
+            guard::Type::Variants(IdVec::from_vec(vec![
+                guard::Type::Tuple(vec![]),
+                guard::Type::Tuple(vec![
+                    item,
+                    guard::Type::Boxed(Box::new(guard::Type::Custom(tail))),
+                ]),
             ]))
         };
 
         //  list0 = () + bool * rc list0
-        let list0 = list(CustomTypeId(0), Type::Bool);
+        let list0 = a_list(CustomTypeId(0), anon::Type::Bool);
+
         //  list1 = () + rc list0 * rc list1
-        let list1 = list(
+        let list1 = a_list(
             CustomTypeId(1),
-            Type::Boxed(Box::new(Type::Custom(CustomTypeId(0)))),
+            anon::Type::Boxed(Box::new(anon::Type::Custom(CustomTypeId(0)))),
         );
 
         let customs = flat::CustomTypes {
@@ -263,14 +612,13 @@ mod tests {
         let kinds = IdVec::from_vec(vec![CanGuard::Yes, CanGuard::Yes]);
 
         //  guarded_list0 = () + bool * rc list0
-        let guarded_list0 = guard(&customs, &kinds, None, &Type::Custom(CustomTypeId(0)));
-        assert_eq!(guarded_list0, list0);
+        let guarded_list0 = guard(&customs, &kinds, None, &anon::Type::Custom(CustomTypeId(0)));
+        let expected0 = g_list(CustomTypeId(0), guard::Type::Bool);
+        assert_eq!(guarded_list0, expected0);
 
         //  guarded_list1 = () + rc (() + bool * rc list0) * rc list1
-        let guarded_list1 = guard(&customs, &kinds, None, &Type::Custom(CustomTypeId(1)));
-        assert_eq!(
-            guarded_list1,
-            list(CustomTypeId(1), Type::Boxed(Box::new(list0)))
-        );
+        let guarded_list1 = guard(&customs, &kinds, None, &anon::Type::Custom(CustomTypeId(1)));
+        let expected1 = g_list(CustomTypeId(1), guard::Type::Boxed(Box::new(expected0)));
+        assert_eq!(guarded_list1, expected1);
     }
 }

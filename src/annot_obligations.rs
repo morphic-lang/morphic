@@ -1,5 +1,5 @@
 use crate::data::first_order_ast as first_ord;
-use crate::data::flat_ast as flat;
+use crate::data::guarded_ast as guard;
 use crate::data::mode_annot_ast2::{
     self as annot, Interner, Lt, Mode, ModeParam, ModeSolution, Path, Res, ResModes, SlotId,
 };
@@ -88,13 +88,13 @@ fn instantiate_occur(
     }
 }
 
-type LocalContext = local_context::LocalContext<flat::LocalId, (Type, StackLt)>;
+type LocalContext = local_context::LocalContext<guard::LocalId, (Type, StackLt)>;
 
 fn add_unused_local(
     customs: &annot::CustomTypes,
     ctx: &mut LocalContext,
     ty: &Type,
-) -> flat::LocalId {
+) -> guard::LocalId {
     let lt = StackLt {
         shape: ty.shape.clone(),
         data: ty
@@ -192,34 +192,6 @@ fn annot_expr(
             Expr::Call(*purity, new_func_id, arg)
         }
 
-        annot::Expr::Branch(cond, arms, ty) => {
-            let num_arms = arms.len();
-            let new_arms = arms
-                .into_iter()
-                .enumerate()
-                .map(|(i, (cond, expr))| {
-                    (
-                        cond.clone(),
-                        annot_expr(
-                            interner,
-                            customs,
-                            funcs,
-                            func_renderer,
-                            insts,
-                            inst_params,
-                            &path.seq(1).alt(i, num_arms),
-                            ctx,
-                            expr,
-                            ret_ty,
-                        ),
-                    )
-                })
-                .collect();
-
-            let new_cond = handle_occur(ctx, &path.seq(0), cond);
-            Expr::Branch(new_cond, new_arms, instantiate_type(inst_params, &ty))
-        }
-
         // We use `with_scope` to express our intent. In fact, all the bindings we add are popped
         // from the context before we return.
         annot::Expr::LetMany(bindings, ret) => ctx.with_scope(|ctx| {
@@ -258,6 +230,41 @@ fn annot_expr(
 
             Expr::LetMany(new_bindings, ret_occur)
         }),
+
+        annot::Expr::If(discrim, then_case, else_case) => {
+            let discrim = handle_occur(ctx, &path.seq(0), discrim);
+            let then_case = annot_expr(
+                interner,
+                customs,
+                funcs,
+                func_renderer,
+                insts,
+                inst_params,
+                &path.seq(1).alt(0, 2),
+                ctx,
+                then_case,
+                ret_ty,
+            );
+            let else_case = annot_expr(
+                interner,
+                customs,
+                funcs,
+                func_renderer,
+                insts,
+                inst_params,
+                &path.seq(1).alt(1, 2),
+                ctx,
+                else_case,
+                ret_ty,
+            );
+            Expr::If(discrim, Box::new(then_case), Box::new(else_case))
+        }
+
+        annot::Expr::CheckVariant(variant_id, variant) => {
+            Expr::CheckVariant(*variant_id, handle_occur(ctx, path, variant))
+        }
+
+        annot::Expr::Unreachable(ty) => Expr::Unreachable(instantiate_type(inst_params, ty)),
 
         annot::Expr::Tuple(fields) => {
             let fields = fields
@@ -373,7 +380,7 @@ fn annot_func(
     let mut ctx = LocalContext::new();
     let arg_ty = instantiate_type_with(&func.arg_ty, |param| inst_params[*param]);
     let arg_id = add_unused_local(customs, &mut ctx, &arg_ty);
-    debug_assert_eq!(arg_id, flat::ARG_LOCAL);
+    debug_assert_eq!(arg_id, guard::ARG_LOCAL);
 
     let ret_ty = instantiate_type_with(&func.ret_ty, |param| inst_params[*param]);
 

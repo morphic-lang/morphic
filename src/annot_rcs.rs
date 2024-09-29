@@ -1,4 +1,4 @@
-use crate::data::flat_ast as flat;
+use crate::data::guarded_ast as guard;
 use crate::data::mode_annot_ast2::{
     self as annot, Interner, LocalLt, Lt, Mode, Path, Shape, ShapeInner, SlotId,
 };
@@ -10,6 +10,18 @@ use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
 use once_cell::sync::Lazy;
 use std::collections::BTreeMap;
+
+impl FromBindings for Expr {
+    type LocalId = LocalId;
+    type Binding = (Type, Expr);
+
+    fn from_bindings(bindings: Vec<Self::Binding>, ret: LocalId) -> Self {
+        Expr::LetMany(bindings, ret)
+    }
+}
+
+type Builder = LetManyBuilder<Expr>;
+type Context = LocalContext<guard::LocalId, LocalInfo>;
 
 fn assert_transition_ok(src_mode: Mode, dst_mode: Mode) {
     debug_assert!(
@@ -70,42 +82,31 @@ fn select_owned(customs: &ob::CustomTypes, ty: &Type) -> Selector {
     result
 }
 
-impl FromBindings for Expr {
-    type LocalId = LocalId;
-    type Binding = (Type, Expr);
-
-    fn from_bindings(bindings: Vec<Self::Binding>, ret: LocalId) -> Self {
-        Expr::LetMany(bindings, ret)
-    }
-}
-
 fn build_rc_op(
     interner: &Interner,
     op: RcOp,
     slots: Selector,
     target: LocalId,
-    builder: &mut LetManyBuilder<Expr>,
+    builder: &mut Builder,
 ) {
     if slots.nonempty() {
-        let unit = Type {
-            shape: Shape::unit(interner),
-            res: IdVec::new(),
-        };
-        builder.add_binding((unit, rc::Expr::RcOp(op, slots, target)));
+        builder.add_binding((Type::unit(interner), rc::Expr::RcOp(op, slots, target)));
     }
 }
 
-type LocalDrops = BTreeMap<flat::LocalId, Selector>;
+type LocalDrops = BTreeMap<guard::LocalId, Selector>;
 
 #[derive(Clone, Debug)]
 enum BodyDrops {
-    Branch {
-        prologues: Vec<LocalDrops>,
-        sub_drops: Vec<Option<BodyDrops>>,
-    },
     LetMany {
         epilogues: Vec<LocalDrops>,
         sub_drops: Vec<Option<BodyDrops>>,
+    },
+    If {
+        then_prologue: LocalDrops,
+        then_drops: Option<Box<BodyDrops>>,
+        else_prologue: LocalDrops,
+        else_drops: Option<Box<BodyDrops>>,
     },
 }
 
@@ -120,15 +121,6 @@ struct FuncDrops {
 
 fn empty_drops(expr: &ob::Expr) -> Option<BodyDrops> {
     match expr {
-        ob::Expr::Branch(_, arms, _) => {
-            let prologues = arms.iter().map(|_| LocalDrops::new()).collect();
-            let sub_drops = arms.iter().map(|(_, expr)| empty_drops(expr)).collect();
-            Some(BodyDrops::Branch {
-                prologues,
-                sub_drops,
-            })
-        }
-
         ob::Expr::LetMany(bindings, _) => {
             let epilogues = bindings.iter().map(|_| LocalDrops::new()).collect();
             let sub_drops = bindings
@@ -141,15 +133,22 @@ fn empty_drops(expr: &ob::Expr) -> Option<BodyDrops> {
             })
         }
 
+        ob::Expr::If(_, then_case, else_case) => Some(BodyDrops::If {
+            then_prologue: LocalDrops::new(),
+            then_drops: empty_drops(then_case).map(Box::new),
+            else_prologue: LocalDrops::new(),
+            else_drops: empty_drops(else_case).map(Box::new),
+        }),
+
         _ => None,
     }
 }
 
 fn register_drops_for_slot_rec(
     drops: &mut BodyDrops,
-    num_locals: Count<flat::LocalId>,
+    num_locals: Count<guard::LocalId>,
     binding_shape: &Shape,
-    binding: flat::LocalId,
+    binding: guard::LocalId,
     slot: SlotId,
     obligation: &LocalLt,
 ) {
@@ -170,15 +169,15 @@ fn register_drops_for_slot_rec(
             };
 
             if *idx == sub_drops.len() {
-                // This slot's obligation ends in the return position of a `LetMany`. We don't need
-                // to register any drops. Usually, we defer the final decision about whether to drop
-                // until we've compute the move status in `annot_expr`, but it is convenient to
+                // This slot's obligation ends in the return position of the `LetMany`. We don't
+                // need to register any drops. Usually, we defer the final decision about whether to
+                // drop until we compute the move status in `annot_expr`, but it is convenient to
                 // "short circuit" here.
                 return;
             }
 
             if let Some(drops) = sub_drops[*idx].as_mut() {
-                // Since `sub_drops` is `Some`, the obligation points into a `Branch` or `LetMany`.
+                // Since `sub_drops` is `Some`, `obligation` points into an `If` or `LetMany`.
                 let num_locals = Count::from_value(num_locals.to_value() + idx);
                 register_drops_for_slot_rec(
                     drops,
@@ -191,51 +190,61 @@ fn register_drops_for_slot_rec(
             } else {
                 // If there are no sub-drops, then the expression that matches up with this path is
                 // a "leaf" and either `obligation` is `LtLocal::Final` or obligation consists
-                // "ghost" nodes used to track argument order e.g. in a tuple expression
+                // "ghost" nodes used to track argument order e.g. in a tuple expression.
                 register_to(&mut epilogues[*idx]);
             }
         }
-        BodyDrops::Branch {
-            prologues,
-            sub_drops,
+        BodyDrops::If {
+            then_prologue,
+            then_drops,
+            else_prologue,
+            else_drops,
         } => {
             let LocalLt::Seq(obligation, idx) = obligation else {
                 unreachable!();
             };
 
-            if *idx == 0 {
-                // The obligation points to the discriminant of a `Branch`.
-                assert_eq!(**obligation, LocalLt::Final);
-                for prologue in prologues.iter_mut() {
-                    register_to(prologue);
+            match idx {
+                0 => {
+                    // The obligation points to the discriminant
+                    // TODO: does this ever actually happen? The discriminant is just a `Bool`
+                    assert_eq!(**obligation, LocalLt::Final);
+                    register_to(then_prologue);
+                    register_to(else_prologue);
                 }
-            } else {
-                // The obligation points inside a `Branch` arm.
-                assert_eq!(*idx, 1);
-                let LocalLt::Alt(obligations) = &**obligation else {
-                    unreachable!();
-                };
 
-                for (idx, obligation) in obligations.iter().enumerate() {
-                    if let Some(obligation) = obligation {
-                        let drops = sub_drops[idx].as_mut().unwrap();
-                        register_drops_for_slot_rec(
-                            drops,
-                            num_locals,
-                            binding_shape,
-                            binding,
-                            slot,
-                            obligation,
-                        );
-                    } else {
-                        if num_locals.contains(binding) {
-                            // This binding is declared in an enclosing scope and this slot unused
-                            // in this branch (but moved along some other branch), so we drop the
-                            // slot immediately.
-                            register_to(&mut prologues[idx]);
+                1 => {
+                    // The obligation points inside the 'then' or 'else' branch
+                    let LocalLt::Alt(obligations) = &**obligation else {
+                        unreachable!();
+                    };
+
+                    let handle_case = |drops: &mut Option<Box<_>>, prologue, obligation| {
+                        if let Some(obligation) = obligation {
+                            register_drops_for_slot_rec(
+                                drops.as_mut().unwrap(),
+                                num_locals,
+                                binding_shape,
+                                binding,
+                                slot,
+                                obligation,
+                            )
+                        } else {
+                            if num_locals.contains(binding) {
+                                // This binding is declared in an enclosing scope and this slot
+                                // unused in this branch (but moved along the other branch), so we
+                                // drop the slot immediately.
+                                register_to(prologue);
+                            }
                         }
-                    }
+                    };
+
+                    assert_eq!(obligations.len(), 2);
+                    handle_case(then_drops, then_prologue, obligations[0].as_deref());
+                    handle_case(else_drops, else_prologue, obligations[1].as_deref());
                 }
+
+                _ => unreachable!(),
             }
         }
     }
@@ -244,7 +253,7 @@ fn register_drops_for_slot_rec(
 fn register_drops_for_slot(
     drops: &mut BodyDrops,
     binding_shape: &Shape,
-    binding: flat::LocalId,
+    binding: guard::LocalId,
     slot: SlotId,
     obligation: &LocalLt,
 ) {
@@ -269,7 +278,7 @@ fn register_drops_for_binding(
     interner: &Interner,
     drops: &mut BodyDrops,
     binding_shape: &Shape,
-    binding_id: flat::LocalId,
+    binding_id: guard::LocalId,
     binding_path: &Path,
     obligation: &StackLt,
 ) {
@@ -277,8 +286,8 @@ fn register_drops_for_binding(
     for (&slot, lt) in obligation.iter() {
         match lt {
             Lt::Join(_) => panic!("`Join` should not appear in a binding's obligation"),
-            // The binding is unused, so we can drop it immediately.
             Lt::Empty => {
+                // The binding is unused, so we can drop it immediately.
                 register_drops_for_slot(drops, binding_shape, binding_id, slot, &*binding_path);
             }
             Lt::Local(lt) => {
@@ -291,18 +300,11 @@ fn register_drops_for_binding(
 fn register_drops_for_expr(
     interner: &Interner,
     drops: &mut BodyDrops,
-    mut num_locals: Count<flat::LocalId>,
+    mut num_locals: Count<guard::LocalId>,
     path: &Path,
     expr: &ob::Expr,
 ) {
     match expr {
-        ob::Expr::Branch(_, arms, _) => {
-            for (i, (_, expr)) in arms.iter().enumerate() {
-                let path = path.seq(1).alt(i, arms.len());
-                register_drops_for_expr(interner, drops, num_locals, &path, expr);
-            }
-        }
-
         ob::Expr::LetMany(bindings, _) => {
             for (i, (ty, obligation, sub_expr)) in bindings.iter().enumerate() {
                 let path = path.seq(i);
@@ -315,6 +317,23 @@ fn register_drops_for_expr(
                     interner, drops, &ty.shape, binding_id, &path, obligation,
                 );
             }
+        }
+
+        ob::Expr::If(_, then_case, else_case) => {
+            register_drops_for_expr(
+                interner,
+                drops,
+                num_locals,
+                &path.seq(1).alt(0, 2),
+                then_case,
+            );
+            register_drops_for_expr(
+                interner,
+                drops,
+                num_locals,
+                &path.seq(1).alt(1, 2),
+                else_case,
+            );
         }
 
         _ => {}
@@ -333,7 +352,7 @@ fn drops_for_func(interner: &Interner, func: &ob::FuncDef) -> FuncDrops {
             }
             Lt::Local(lt) => {
                 let body_drops = body_drops.as_mut().unwrap();
-                register_drops_for_slot(body_drops, &func.arg_ty.shape, flat::ARG_LOCAL, slot, lt);
+                register_drops_for_slot(body_drops, &func.arg_ty.shape, guard::ARG_LOCAL, slot, lt);
             }
         }
     }
@@ -364,10 +383,10 @@ struct LocalInfo {
 fn annot_occur(
     interner: &Interner,
     _customs: &ob::CustomTypes,
-    ctx: &mut LocalContext<flat::LocalId, LocalInfo>,
+    ctx: &mut Context,
     path: &Path,
     occur: ob::Occur,
-    builder: &mut LetManyBuilder<Expr>,
+    builder: &mut Builder,
 ) -> LocalId {
     let binding = ctx.local_binding_mut(occur.id);
 
@@ -396,12 +415,12 @@ fn unwrap_item(ty: &Type) -> Type {
 fn annot_expr(
     interner: &Interner,
     customs: &ob::CustomTypes,
-    ctx: &mut LocalContext<flat::LocalId, LocalInfo>,
+    ctx: &mut Context,
     path: &Path,
     expr: ob::Expr,
     ret_ty: &Type,
-    drops: &Option<BodyDrops>,
-    builder: &mut LetManyBuilder<Expr>,
+    drops: Option<&BodyDrops>,
+    builder: &mut Builder,
 ) -> rc::LocalId {
     let new_expr = match expr {
         ob::Expr::Local(local) => {
@@ -413,51 +432,6 @@ fn annot_expr(
             func_id,
             annot_occur(interner, customs, ctx, path, arg, builder),
         ),
-
-        ob::Expr::Branch(discrim, arms, ret_ty) => {
-            let BodyDrops::Branch {
-                prologues,
-                sub_drops,
-            } = drops.as_ref().unwrap()
-            else {
-                unreachable!();
-            };
-
-            let n = arms.len();
-            let mut new_arms = Vec::new();
-
-            for (i, (cond, expr)) in arms.into_iter().enumerate() {
-                let mut case_builder = builder.child();
-
-                for (old_id, candidate_drops) in &prologues[i] {
-                    let binding = ctx.local_binding(*old_id);
-                    let drops = candidate_drops - &binding.moves;
-                    build_rc_op(
-                        interner,
-                        RcOp::Release,
-                        drops,
-                        binding.new_id,
-                        &mut case_builder,
-                    );
-                }
-
-                let final_local = annot_expr(
-                    interner,
-                    customs,
-                    ctx,
-                    &path.seq(1).alt(i, n),
-                    expr,
-                    &ret_ty,
-                    &sub_drops[i],
-                    &mut case_builder,
-                );
-
-                new_arms.push((cond, case_builder.to_expr(final_local)));
-            }
-
-            let discrim = annot_occur(interner, customs, ctx, path, discrim, builder);
-            rc::Expr::Branch(discrim, new_arms, ret_ty)
-        }
 
         ob::Expr::LetMany(bindings, ret) => {
             let BodyDrops::LetMany {
@@ -477,7 +451,7 @@ fn annot_expr(
                         &path.seq(i),
                         body,
                         &ty,
-                        &sub_drops[i],
+                        sub_drops[i].as_ref(),
                         builder,
                     );
 
@@ -503,6 +477,69 @@ fn annot_expr(
             // block's bindings just get absorbed into the ambient `builder`.
             return final_local;
         }
+
+        ob::Expr::If(discrim, then_case, else_case) => {
+            let BodyDrops::If {
+                then_prologue,
+                then_drops,
+                else_prologue,
+                else_drops,
+            } = drops.as_ref().unwrap()
+            else {
+                unreachable!();
+            };
+
+            let mut handle_case = |prologue: &LocalDrops, sub_drops, case, path| {
+                let mut case_builder = builder.child();
+
+                for (binding_id, candidate_drops) in prologue {
+                    let binding = ctx.local_binding(*binding_id);
+                    let drops = candidate_drops - &binding.moves;
+                    build_rc_op(
+                        interner,
+                        RcOp::Release,
+                        drops,
+                        binding.new_id,
+                        &mut case_builder,
+                    );
+                }
+
+                let final_local = annot_expr(
+                    interner,
+                    customs,
+                    ctx,
+                    &path,
+                    case,
+                    ret_ty,
+                    sub_drops,
+                    &mut case_builder,
+                );
+
+                case_builder.to_expr(final_local)
+            };
+
+            let then_case = handle_case(
+                then_prologue,
+                then_drops.as_deref(),
+                *then_case,
+                path.seq(1).alt(0, 2),
+            );
+            let else_case = handle_case(
+                else_prologue,
+                else_drops.as_deref(),
+                *else_case,
+                path.seq(1).alt(1, 2),
+            );
+            let discrim = annot_occur(interner, customs, ctx, path, discrim, builder);
+            rc::Expr::If(discrim, Box::new(then_case), Box::new(else_case))
+        }
+
+        ob::Expr::CheckVariant(variant_id, variant) => rc::Expr::CheckVariant(
+            variant_id,
+            annot_occur(interner, customs, ctx, path, variant, builder),
+        ),
+
+        ob::Expr::Unreachable(ret_ty) => rc::Expr::Unreachable(ret_ty),
 
         ob::Expr::Tuple(fields) => rc::Expr::Tuple(
             fields
@@ -642,7 +679,7 @@ fn annot_expr(
 fn annot_func(interner: &Interner, customs: &ob::CustomTypes, func: ob::FuncDef) -> rc::FuncDef {
     let drops = drops_for_func(interner, &func);
 
-    let mut ctx = LocalContext::new();
+    let mut ctx = Context::new();
     let moves = Selector::none(&func.arg_ty.shape);
     ctx.add_local(LocalInfo {
         new_id: rc::ARG_LOCAL,
@@ -651,7 +688,7 @@ fn annot_func(interner: &Interner, customs: &ob::CustomTypes, func: ob::FuncDef)
         moves,
     });
 
-    let mut builder = LetManyBuilder::new(Count::from_value(1));
+    let mut builder = Builder::new(Count::from_value(1));
     build_rc_op(
         interner,
         RcOp::Release,
@@ -667,7 +704,7 @@ fn annot_func(interner: &Interner, customs: &ob::CustomTypes, func: ob::FuncDef)
         &annot::FUNC_BODY_PATH(),
         func.body,
         &func.ret_ty,
-        &drops.body_drops,
+        drops.body_drops.as_ref(),
         &mut builder,
     );
 

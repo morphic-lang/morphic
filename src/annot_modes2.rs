@@ -2,11 +2,10 @@
 //! inference paper. A signficant proportion of the machinery is dedicated to specialization. The
 //! core logic for the pass is contained in `instantiate_expr`.
 
-use crate::data::anon_sum_ast as anon;
 use crate::data::borrow_model as model;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
-use crate::data::flat_ast::{self as flat, CustomTypeSccId, LocalId};
-use crate::data::guarded_ast::{self as guarded};
+use crate::data::flat_ast::CustomTypeSccId;
+use crate::data::guarded_ast::{self as guard, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::mode_annot_ast2::{
     self as annot, HeapModes, Interner, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur,
@@ -41,21 +40,20 @@ fn last_index<T>(slice: &[T]) -> Option<usize> {
 }
 
 // This function should only be called on 'expr' when the expression occurs in tail position.
-fn add_tail_call_deps(deps: &mut BTreeSet<CustomFuncId>, vars_in_scope: usize, expr: &flat::Expr) {
+fn add_tail_call_deps(deps: &mut BTreeSet<CustomFuncId>, vars_in_scope: usize, expr: &guard::Expr) {
     match expr {
-        flat::Expr::Call(_purity, id, _arg) => {
+        guard::Expr::Call(_purity, id, _arg) => {
             deps.insert(*id);
         }
 
-        flat::Expr::Branch(_discrim, cases, _result_type) => {
-            for (_cond, body) in cases {
-                add_tail_call_deps(deps, vars_in_scope, body);
-            }
+        guard::Expr::If(_discrim, then_case, else_case) => {
+            add_tail_call_deps(deps, vars_in_scope, then_case);
+            add_tail_call_deps(deps, vars_in_scope, else_case);
         }
 
-        flat::Expr::LetMany(bindings, final_local) => {
+        guard::Expr::LetMany(bindings, final_local) => {
             if let Some(last_i) = last_index(bindings) {
-                if *final_local == flat::LocalId(vars_in_scope + last_i) {
+                if *final_local == guard::LocalId(vars_in_scope + last_i) {
                     add_tail_call_deps(deps, vars_in_scope + last_i, &bindings[last_i].1);
                 }
             }
@@ -74,8 +72,8 @@ enum IsTail {
 #[derive(Clone, Debug)]
 struct TailFuncDef {
     purity: Purity,
-    arg_ty: anon::Type,
-    ret_ty: anon::Type,
+    arg_ty: guard::Type,
+    ret_ty: guard::Type,
     body: TailExpr,
     profile_point: Option<prof::ProfilePointId>,
 }
@@ -85,24 +83,27 @@ struct TailFuncDef {
 enum TailExpr {
     Local(LocalId),
     Call(Purity, IsTail, CustomFuncId, LocalId),
-    Branch(LocalId, Vec<(flat::Condition, TailExpr)>, anon::Type),
-    LetMany(Vec<(anon::Type, TailExpr)>, LocalId),
+    LetMany(Vec<(guard::Type, TailExpr)>, LocalId),
+
+    If(LocalId, Box<TailExpr>, Box<TailExpr>),
+    CheckVariant(VariantId, LocalId), // Returns a bool
+    Unreachable(guard::Type),
 
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),
-    WrapVariant(IdVec<VariantId, anon::Type>, VariantId, LocalId),
-    UnwrapVariant(VariantId, LocalId),
-    WrapBoxed(LocalId, anon::Type),
-    UnwrapBoxed(LocalId, anon::Type),
+    WrapVariant(IdVec<VariantId, guard::Type>, VariantId, LocalId),
+    UnwrapVariant(IdVec<VariantId, guard::Type>, VariantId, LocalId),
+    WrapBoxed(LocalId, guard::Type),
+    UnwrapBoxed(LocalId, guard::Type),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
 
     Intrinsic(intr::Intrinsic, LocalId),
-    ArrayOp(flat::ArrayOp),
-    IoOp(flat::IoOp),
-    Panic(anon::Type, LocalId),
+    ArrayOp(guard::ArrayOp),
+    IoOp(guard::IoOp),
+    Panic(guard::Type, LocalId),
 
-    ArrayLit(anon::Type, Vec<LocalId>),
+    ArrayLit(guard::Type, Vec<LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -113,12 +114,12 @@ fn mark_tail_calls(
     tail_candidates: &BTreeSet<CustomFuncId>,
     pos: IsTail,
     vars_in_scope: usize,
-    expr: &flat::Expr,
+    expr: &guard::Expr,
 ) -> TailExpr {
     match expr {
-        flat::Expr::Local(id) => TailExpr::Local(*id),
+        guard::Expr::Local(id) => TailExpr::Local(*id),
 
-        flat::Expr::Call(purity, func, arg) => {
+        guard::Expr::Call(purity, func, arg) => {
             let actual_pos = if pos == IsTail::Tail && tail_candidates.contains(func) {
                 IsTail::Tail
             } else {
@@ -127,27 +128,13 @@ fn mark_tail_calls(
             TailExpr::Call(*purity, actual_pos, *func, *arg)
         }
 
-        flat::Expr::Branch(discrim, cases, result_type) => TailExpr::Branch(
-            *discrim,
-            cases
-                .iter()
-                .map(|(cond, body)| {
-                    (
-                        cond.clone(),
-                        mark_tail_calls(tail_candidates, pos, vars_in_scope, body),
-                    )
-                })
-                .collect(),
-            result_type.clone(),
-        ),
-
-        flat::Expr::LetMany(bindings, final_local) => TailExpr::LetMany(
+        guard::Expr::LetMany(bindings, final_local) => TailExpr::LetMany(
             bindings
                 .iter()
                 .enumerate()
                 .map(|(i, (ty, binding))| {
-                    let is_final_binding =
-                        i + 1 == bindings.len() && *final_local == flat::LocalId(vars_in_scope + i);
+                    let is_final_binding = i + 1 == bindings.len()
+                        && *final_local == guard::LocalId(vars_in_scope + i);
 
                     let sub_pos = if is_final_binding {
                         pos
@@ -164,36 +151,58 @@ fn mark_tail_calls(
             *final_local,
         ),
 
-        flat::Expr::Tuple(items) => TailExpr::Tuple(items.clone()),
-        flat::Expr::TupleField(tuple, idx) => TailExpr::TupleField(*tuple, *idx),
-        flat::Expr::WrapVariant(variant_types, variant, content) => {
+        guard::Expr::If(discrim, then_case, else_case) => TailExpr::If(
+            *discrim,
+            Box::new(mark_tail_calls(
+                tail_candidates,
+                pos,
+                vars_in_scope,
+                then_case,
+            )),
+            Box::new(mark_tail_calls(
+                tail_candidates,
+                pos,
+                vars_in_scope,
+                else_case,
+            )),
+        ),
+        guard::Expr::CheckVariant(variant_id, variant) => {
+            TailExpr::CheckVariant(*variant_id, *variant)
+        }
+        guard::Expr::Unreachable(ret_ty) => TailExpr::Unreachable(ret_ty.clone()),
+
+        guard::Expr::Tuple(items) => TailExpr::Tuple(items.clone()),
+        guard::Expr::TupleField(tuple, idx) => TailExpr::TupleField(*tuple, *idx),
+        guard::Expr::WrapVariant(variant_types, variant, content) => {
             TailExpr::WrapVariant(variant_types.clone(), *variant, *content)
         }
-        flat::Expr::UnwrapVariant(variant, wrapped) => TailExpr::UnwrapVariant(*variant, *wrapped),
-        flat::Expr::WrapBoxed(content, content_type) => {
+        guard::Expr::UnwrapVariant(variant_types, variant, wrapped) => {
+            TailExpr::UnwrapVariant(variant_types.clone(), *variant, *wrapped)
+        }
+        guard::Expr::WrapBoxed(content, content_type) => {
             TailExpr::WrapBoxed(*content, content_type.clone())
         }
-        flat::Expr::UnwrapBoxed(content, content_type) => {
+        guard::Expr::UnwrapBoxed(content, content_type) => {
             TailExpr::UnwrapBoxed(*content, content_type.clone())
         }
-        flat::Expr::WrapCustom(custom, content) => TailExpr::WrapCustom(*custom, *content),
-        flat::Expr::UnwrapCustom(custom, wrapped) => TailExpr::UnwrapCustom(*custom, *wrapped),
-        flat::Expr::Intrinsic(intr, arg) => TailExpr::Intrinsic(*intr, *arg),
-        flat::Expr::ArrayOp(op) => TailExpr::ArrayOp(op.clone()),
-        flat::Expr::IoOp(op) => TailExpr::IoOp(*op),
-        flat::Expr::Panic(ret_type, message) => TailExpr::Panic(ret_type.clone(), *message),
-        flat::Expr::ArrayLit(item_type, items) => {
+        guard::Expr::WrapCustom(custom, content) => TailExpr::WrapCustom(*custom, *content),
+        guard::Expr::UnwrapCustom(custom, wrapped) => TailExpr::UnwrapCustom(*custom, *wrapped),
+        guard::Expr::Intrinsic(intr, arg) => TailExpr::Intrinsic(*intr, *arg),
+        guard::Expr::ArrayOp(op) => TailExpr::ArrayOp(op.clone()),
+        guard::Expr::IoOp(op) => TailExpr::IoOp(*op),
+        guard::Expr::Panic(ret_type, message) => TailExpr::Panic(ret_type.clone(), *message),
+        guard::Expr::ArrayLit(item_type, items) => {
             TailExpr::ArrayLit(item_type.clone(), items.clone())
         }
-        flat::Expr::BoolLit(val) => TailExpr::BoolLit(*val),
-        flat::Expr::ByteLit(val) => TailExpr::ByteLit(*val),
-        flat::Expr::IntLit(val) => TailExpr::IntLit(*val),
-        flat::Expr::FloatLit(val) => TailExpr::FloatLit(*val),
+        guard::Expr::BoolLit(val) => TailExpr::BoolLit(*val),
+        guard::Expr::ByteLit(val) => TailExpr::ByteLit(*val),
+        guard::Expr::IntLit(val) => TailExpr::IntLit(*val),
+        guard::Expr::FloatLit(val) => TailExpr::FloatLit(*val),
     }
 }
 
 fn compute_tail_calls(
-    funcs: &IdVec<CustomFuncId, flat::FuncDef>,
+    funcs: &IdVec<CustomFuncId, guard::FuncDef>,
 ) -> IdVec<CustomFuncId, TailFuncDef> {
     #[id_type]
     struct TailSccId(usize);
@@ -237,9 +246,9 @@ fn compute_tail_calls(
 fn parameterize_type<'a>(
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    ty: &anon::Type,
+    ty: &guard::Type,
 ) -> Type<ModeParam, LtParam> {
-    let shape = Shape::from_anon(
+    let shape = Shape::from_guarded(
         interner,
         customs,
         FnWrap::wrap(|id| &customs[*id].scc),
@@ -254,7 +263,7 @@ fn parameterize_type<'a>(
 
 fn parameterize_custom_scc(
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, guarded::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, guard::CustomTypeDef>,
     parameterized: &IdMap<CustomTypeId, annot::CustomTypeDef>,
     scc_id: CustomTypeSccId,
     scc: Scc<'_, CustomTypeId>,
@@ -263,7 +272,7 @@ fn parameterize_custom_scc(
         .iter()
         .map(|&id| {
             let custom = &customs[id];
-            let content = Shape::from_anon(
+            let content = Shape::from_guarded(
                 interner,
                 parameterized,
                 FnWrap::wrap(|id| &customs[*id].scc),
@@ -286,7 +295,7 @@ fn parameterize_custom_scc(
 
 fn parameterize_customs(
     interner: &Interner,
-    customs: &guarded::CustomTypes,
+    customs: &guard::CustomTypes,
 ) -> IdVec<CustomTypeId, annot::CustomTypeDef> {
     let mut parameterized = IdMap::new();
 
@@ -584,35 +593,6 @@ fn freshen_type<M, L1, L2>(
 
 fn freshen_type_unused<M, L>(constrs: &mut ConstrGraph, ty: &Type<M, L>) -> Type<ModeVar, Lt> {
     freshen_type(constrs, || Lt::Empty, ty)
-}
-
-fn instantiate_condition(
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    constrs: &mut ConstrGraph,
-    cond: &flat::Condition,
-) -> annot::Condition {
-    match cond {
-        flat::Condition::Any => annot::Condition::Any,
-        flat::Condition::Tuple(conds) => annot::Condition::Tuple(
-            conds
-                .iter()
-                .map(|cond| instantiate_condition(customs, constrs, cond))
-                .collect(),
-        ),
-        flat::Condition::Variant(id, cond) => {
-            annot::Condition::Variant(*id, Box::new(instantiate_condition(customs, constrs, cond)))
-        }
-        flat::Condition::Boxed(cond, _ty) => {
-            annot::Condition::Boxed(Box::new(instantiate_condition(customs, constrs, cond)))
-        }
-        flat::Condition::Custom(_id, cond) => {
-            annot::Condition::Custom(Box::new(instantiate_condition(customs, constrs, cond)))
-        }
-        flat::Condition::BoolConst(v) => annot::Condition::BoolConst(*v),
-        flat::Condition::ByteConst(v) => annot::Condition::ByteConst(*v),
-        flat::Condition::IntConst(v) => annot::Condition::IntConst(*v),
-        flat::Condition::FloatConst(v) => annot::Condition::FloatConst(*v),
-    }
 }
 
 fn instantiate_occur_in_position(
@@ -1182,50 +1162,6 @@ fn instantiate_expr(
             annot::Expr::Call(*purity, *func, arg)
         }
 
-        TailExpr::Branch(discrim_id, cases, _ret_ty) => {
-            // This loop updates `ctx` in place on each iteration despite the fact that the branch
-            // arms happen "in parallel". This is fine: only the lifetimes of bindings are updated,
-            // these lifetimes are only used for the purpose of generating occurrence constraints,
-            // and the relevant lifetime comparisons are unaffected by joining the bindings'
-            // lifetimes with data from parallel arms.
-            let mut cases_annot_rev = Vec::new();
-            for (i, (cond, body)) in cases.iter().enumerate().rev() {
-                let cond_annot = instantiate_condition(customs, constrs, cond);
-                let body_annot = instantiate_expr(
-                    strategy,
-                    interner,
-                    customs,
-                    sigs,
-                    constrs,
-                    ctx,
-                    // The discriminate happens at `path.seq(0)`
-                    path.seq(1).alt(i, cases.len()),
-                    fut_ty,
-                    body,
-                    type_renderer,
-                );
-
-                cases_annot_rev.push((cond_annot, body_annot));
-            }
-
-            let cases_annot = {
-                cases_annot_rev.reverse();
-                cases_annot_rev
-            };
-
-            let discrim_fut_ty = freshen_type_unused(constrs, &ctx.local_binding(*discrim_id).ty);
-            let discrim_occur = instantiate_occur(
-                strategy,
-                interner,
-                ctx,
-                constrs,
-                *discrim_id,
-                &discrim_fut_ty,
-            );
-
-            annot::Expr::Branch(discrim_occur, cases_annot, fut_ty.clone())
-        }
-
         // We're only using `with_scope` here for its debug assertion, and to signal intent; by the
         // time the passed closure returns, we've manually truncated away all the variables which it
         // would usually be `with_scope`'s responsibility to remove.
@@ -1281,6 +1217,57 @@ fn instantiate_expr(
             annot::Expr::LetMany(bindings_annot, result_occur)
         }),
 
+        TailExpr::If(discrim, then_expr, else_expr) => {
+            // We update `ctx` in place on each iteration despite the fact that the branch arms
+            // happen "in parallel". This is fine: only the lifetimes of bindings are updated, these
+            // lifetimes are only used for the purpose of generating occurrence constraints, and the
+            // relevant lifetime comparisons are unaffected by joining the bindings' lifetimes with
+            // parallel arms.
+            let else_case = instantiate_expr(
+                strategy,
+                interner,
+                customs,
+                sigs,
+                constrs,
+                ctx,
+                path.seq(1).alt(0, 2),
+                fut_ty,
+                else_expr,
+                type_renderer,
+            );
+            let then_case = instantiate_expr(
+                strategy,
+                interner,
+                customs,
+                sigs,
+                constrs,
+                ctx,
+                path.seq(1).alt(1, 2),
+                fut_ty,
+                then_expr,
+                type_renderer,
+            );
+            let discrim = instantiate_occur(
+                strategy,
+                interner,
+                ctx,
+                constrs,
+                *discrim,
+                &Type::bool_(interner),
+            );
+            annot::Expr::If(discrim, Box::new(then_case), Box::new(else_case))
+        }
+
+        TailExpr::CheckVariant(variant_id, variant) => {
+            assert!(fut_ty.shape == Shape::bool_(interner));
+            annot::Expr::CheckVariant(
+                *variant_id,
+                instantiate_occur(strategy, interner, ctx, constrs, *variant, fut_ty),
+            )
+        }
+
+        TailExpr::Unreachable(_) => annot::Expr::Unreachable(fut_ty.clone()),
+
         TailExpr::Tuple(item_ids) => {
             let fut_item_tys = elim_tuple(fut_ty);
             // We must process the items in reverse order to ensure `instantiate_occur` (which
@@ -1326,7 +1313,7 @@ fn instantiate_expr(
             annot::Expr::WrapVariant(fut_variant_tys, *variant_id, occur)
         }
 
-        TailExpr::UnwrapVariant(variant_id, wrapped) => {
+        TailExpr::UnwrapVariant(_variant_tys, variant_id, wrapped) => {
             let mut variants_ty = freshen_type_unused(constrs, &ctx.local_binding(*wrapped).ty);
             let ShapeInner::Variants(shapes) = &*variants_ty.shape.inner else {
                 panic!("expected `Variants` type");
@@ -1408,19 +1395,19 @@ fn instantiate_expr(
         TailExpr::Intrinsic(intr, arg) => {
             let sig = intrinsic_sig(*intr);
             let ty = Type {
-                shape: Shape::from_anon(
+                shape: Shape::from_guarded(
                     interner,
                     customs,
                     FnWrap::wrap(|id| &customs[*id].scc),
                     SelfInfo::Structural,
-                    &anon::Type::from_intr(&sig.arg),
+                    &guard::Type::from_intr(&sig.arg),
                 ),
                 res: IdVec::new(),
             };
             annot::Expr::Intrinsic(*intr, Occur { id: *arg, ty })
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Get(_, arr_id, idx_id)) => {
+        TailExpr::ArrayOp(guard::ArrayOp::Get(_, arr_id, idx_id)) => {
             let occurs = instantiate_model(
                 &*model::array_get,
                 strategy,
@@ -1440,7 +1427,7 @@ fn instantiate_expr(
             ))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Extract(_item_ty, arr_id, idx_id)) => {
+        TailExpr::ArrayOp(guard::ArrayOp::Extract(_item_ty, arr_id, idx_id)) => {
             let occurs = instantiate_model(
                 &*model::array_extract,
                 strategy,
@@ -1459,7 +1446,7 @@ fn instantiate_expr(
             ))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Len(_item_ty, arr_id)) => {
+        TailExpr::ArrayOp(guard::ArrayOp::Len(_item_ty, arr_id)) => {
             let occurs = instantiate_model(
                 &*model::array_len,
                 strategy,
@@ -1475,7 +1462,7 @@ fn instantiate_expr(
             annot::Expr::ArrayOp(annot::ArrayOp::Len(occurs.next().unwrap()))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Push(_item_ty, arr_id, item_id)) => {
+        TailExpr::ArrayOp(guard::ArrayOp::Push(_item_ty, arr_id, item_id)) => {
             let occurs = instantiate_model(
                 &*model::array_push,
                 strategy,
@@ -1494,7 +1481,7 @@ fn instantiate_expr(
             ))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Pop(_item_ty, arr_id)) => {
+        TailExpr::ArrayOp(guard::ArrayOp::Pop(_item_ty, arr_id)) => {
             let occurs = instantiate_model(
                 &*model::array_pop,
                 strategy,
@@ -1510,7 +1497,7 @@ fn instantiate_expr(
             annot::Expr::ArrayOp(annot::ArrayOp::Pop(occurs.next().unwrap()))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Replace(_item_ty, hole_id, item_id)) => {
+        TailExpr::ArrayOp(guard::ArrayOp::Replace(_item_ty, hole_id, item_id)) => {
             let occurs = instantiate_model(
                 &*model::array_replace,
                 strategy,
@@ -1529,7 +1516,7 @@ fn instantiate_expr(
             ))
         }
 
-        TailExpr::ArrayOp(flat::ArrayOp::Reserve(_item_ty, arr_id, cap_id)) => {
+        TailExpr::ArrayOp(guard::ArrayOp::Reserve(_item_ty, arr_id, cap_id)) => {
             let occurs = instantiate_model(
                 &*model::array_reserve,
                 strategy,
@@ -1548,7 +1535,7 @@ fn instantiate_expr(
             ))
         }
 
-        TailExpr::IoOp(flat::IoOp::Input) => {
+        TailExpr::IoOp(guard::IoOp::Input) => {
             let _ = instantiate_model(
                 &*model::io_input,
                 strategy,
@@ -1563,7 +1550,7 @@ fn instantiate_expr(
             annot::Expr::IoOp(annot::IoOp::Input)
         }
 
-        TailExpr::IoOp(flat::IoOp::Output(arr_id)) => {
+        TailExpr::IoOp(guard::IoOp::Output(arr_id)) => {
             let occurs = instantiate_model(
                 &*model::io_output,
                 strategy,
@@ -1589,10 +1576,7 @@ fn instantiate_expr(
                 ctx,
                 &path,
                 &[*msg_id],
-                &Type {
-                    shape: Shape::unit(interner),
-                    res: IdVec::new(),
-                },
+                &Type::unit(interner),
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::Panic(fut_ty.clone(), occurs.next().unwrap())
@@ -1708,7 +1692,7 @@ fn instantiate_scc(
                         scope: annot::ARG_SCOPE(),
                         ty: arg_ty,
                     });
-                    debug_assert_eq!(arg_id, flat::ARG_LOCAL);
+                    debug_assert_eq!(arg_id, guard::ARG_LOCAL);
 
                     let ret_ty = wrap_lts(&ret_tys[id]);
                     let expr = instantiate_expr(
@@ -1725,7 +1709,7 @@ fn instantiate_scc(
                     );
                     bodies.insert(*id, expr);
 
-                    new_arg_tys.insert(*id, (ctx.local_binding(flat::ARG_LOCAL).ty).clone());
+                    new_arg_tys.insert(*id, (ctx.local_binding(guard::ARG_LOCAL).ty).clone());
                 }
 
                 debug_assert!(
@@ -1815,14 +1799,6 @@ fn extract_expr(
     match expr {
         E::Local(occur) => E::Local(extract_occur(solution, occur)),
         E::Call(purity, func, arg) => E::Call(*purity, *func, extract_occur(solution, arg)),
-        E::Branch(discrim, branches, ret_ty) => E::Branch(
-            extract_occur(solution, discrim),
-            branches
-                .iter()
-                .map(|(cond, body)| (cond.clone(), extract_expr(solution, body)))
-                .collect(),
-            extract_type(solution, ret_ty),
-        ),
         E::LetMany(bindings, result) => E::LetMany(
             bindings
                 .iter()
@@ -1830,6 +1806,15 @@ fn extract_expr(
                 .collect(),
             extract_occur(solution, result),
         ),
+        E::If(discrim, then_case, else_case) => E::If(
+            extract_occur(solution, discrim),
+            Box::new(extract_expr(solution, then_case)),
+            Box::new(extract_expr(solution, else_case)),
+        ),
+        E::CheckVariant(variant_id, variant) => {
+            E::CheckVariant(*variant_id, extract_occur(solution, variant))
+        }
+        E::Unreachable(ret_ty) => E::Unreachable(extract_type(solution, ret_ty)),
         E::Tuple(items) => E::Tuple(
             items
                 .iter()
@@ -1982,10 +1967,9 @@ fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &TailExpr) {
         TailExpr::Call(_, _, other, _) => {
             deps.insert(*other);
         }
-        TailExpr::Branch(_, cases, _) => {
-            for (_, body) in cases {
-                add_func_deps(deps, body);
-            }
+        TailExpr::If(_, then_case, else_case) => {
+            add_func_deps(deps, then_case);
+            add_func_deps(deps, else_case);
         }
         TailExpr::LetMany(bindings, _) => {
             for (_, rhs) in bindings {
@@ -2006,7 +1990,7 @@ pub enum Strategy {
 pub fn annot_modes(
     strategy: Strategy,
     interner: &Interner,
-    program: guarded::Program,
+    program: guard::Program,
     progress: impl ProgressLogger,
 ) -> annot::Program {
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
@@ -2066,21 +2050,21 @@ mod tests {
 
     #[test]
     fn test_parameterize() {
-        let list = anon::Type::Variants(IdVec::from_vec(vec![
-            anon::Type::Tuple(vec![]),
-            anon::Type::Boxed(Box::new(anon::Type::Custom(CustomTypeId(0)))),
+        let list = guard::Type::Variants(IdVec::from_vec(vec![
+            guard::Type::Tuple(vec![]),
+            guard::Type::Boxed(Box::new(guard::Type::Custom(CustomTypeId(0)))),
         ]));
-        let list_def = guarded::CustomTypeDef {
+        let list_def = guard::CustomTypeDef {
             content: list,
             scc: CustomTypeSccId(0),
-            can_guard: guarded::CanGuard::Yes,
+            can_guard: guard::CanGuard::Yes,
         };
         let sccs = {
             let mut sccs = Sccs::new();
             sccs.push_acyclic_component(CustomTypeId(0));
             sccs
         };
-        let customs = guarded::CustomTypes {
+        let customs = guard::CustomTypes {
             types: IdVec::from_vec(vec![list_def]),
             sccs,
         };

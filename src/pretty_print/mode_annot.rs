@@ -1,8 +1,7 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
 use crate::data::mode_annot_ast2::{
-    self as annot, ArrayOp, Condition, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt,
-    LtParam, Mode, ModeParam, ModeSolution, ModeVar, Position, Program, Res, ResModes, Shape,
-    ShapeInner,
+    self as annot, ArrayOp, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt, LtParam, Mode,
+    ModeParam, ModeSolution, ModeVar, Position, Program, Res, ResModes, Shape, ShapeInner,
 };
 use crate::data::num_type::NumType;
 use crate::intrinsic_config::intrinsic_to_name;
@@ -38,41 +37,6 @@ impl<'a> Context<'a> {
     fn writeln(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(w)?;
         write!(w, "{}", " ".repeat(self.indentation))
-    }
-}
-
-pub fn write_condition(
-    w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
-    condition: &Condition,
-) -> io::Result<()> {
-    match condition {
-        Condition::Any => write!(w, "_",),
-        Condition::Tuple(conditions) => write_delimited(w, conditions, "(", ")", ",", |w, cond| {
-            write_condition(w, type_renderer, cond)
-        }),
-        Condition::Variant(variant_id, subcondition) => {
-            write!(w, "variant {} (", variant_id.0)?;
-            write_condition(w, type_renderer, subcondition)?;
-            write!(w, ")")?;
-            Ok(())
-        }
-        Condition::Boxed(subcondition) => {
-            write!(w, "boxed (")?;
-            write_condition(w, type_renderer, subcondition)?;
-            write!(w, ")")?;
-            Ok(())
-        }
-        Condition::Custom(subcondition) => {
-            write!(w, "custom (")?;
-            write_condition(w, type_renderer, subcondition)?;
-            write!(w, ")")?;
-            Ok(())
-        }
-        Condition::BoolConst(val) => write!(w, "{}", if *val { "True" } else { "False" }),
-        Condition::ByteConst(val) => write!(w, "{:?}", *val as char),
-        Condition::IntConst(val) => write!(w, "{}", val),
-        Condition::FloatConst(val) => write!(w, "{}", val),
     }
 }
 
@@ -370,23 +334,6 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             write_occur(w, context.type_renderer, occur)?;
             write!(w, ")")
         }
-        Expr::Branch(occur, conditions, _return_type) => {
-            write!(w, "branch ")?;
-            write_occur(w, context.type_renderer, occur)?;
-            write!(w, " {{")?;
-            let new_context = context.add_indent();
-            for (condition, sub_expr) in conditions {
-                let newer_context = new_context.add_indent();
-                new_context.writeln(w)?;
-                write_condition(w, context.type_renderer, condition)?;
-                write!(w, " ->")?;
-                newer_context.writeln(w)?;
-                write_expr(w, sub_expr, newer_context)?;
-            }
-            context.writeln(w)?;
-            write!(w, "}}")?;
-            Ok(())
-        }
         Expr::LetMany(bindings, final_local) => {
             write!(w, "let")?;
             let new_context = context.add_indent();
@@ -427,6 +374,29 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             write_occur(w, context.type_renderer, final_local)?;
             Ok(())
         }
+        Expr::If(occur, then_branch, else_branch) => {
+            write!(w, "if ")?;
+            write_occur(w, context.type_renderer, occur)?;
+            write!(w, " {{")?;
+
+            let new_context = context.add_indent();
+            new_context.writeln(w)?;
+            write_expr(w, then_branch, new_context)?;
+            context.writeln(w)?;
+
+            write!(w, "}} else {{")?;
+            new_context.writeln(w)?;
+            write_expr(w, else_branch, new_context)?;
+            context.writeln(w)?;
+
+            write!(w, "}}")?;
+            Ok(())
+        }
+        Expr::CheckVariant(variant_id, occur) => {
+            write!(w, "check variant {}", variant_id.0)?;
+            write_occur(w, context.type_renderer, occur)
+        }
+        Expr::Unreachable(_type) => write!(w, "unreachable"),
         Expr::Tuple(elems) => write_delimited(w, elems, "(", ")", ",", |w, occur| {
             write_occur(w, context.type_renderer, occur)
         }),

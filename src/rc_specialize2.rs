@@ -1,13 +1,11 @@
 use crate::data::first_order_ast as first_ord;
-use crate::data::mode_annot_ast2::{
-    iter_shapes, Mode, Path, ResModes, Shape, ShapeInner, SlotId, FUNC_BODY_PATH,
-};
+use crate::data::mode_annot_ast2::{iter_shapes, Mode, ResModes, Shape, ShapeInner, SlotId};
 use crate::data::obligation_annot_ast as ob;
 use crate::data::rc_annot_ast::{self as annot, Selector};
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId};
 use crate::util::collection_ext::VecExt;
 use crate::util::instance_queue::InstanceQueue;
-use crate::util::let_builder::{self, FromBindings};
+use crate::util::let_builder::{self, BuildMatch, FromBindings};
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
@@ -22,8 +20,40 @@ impl FromBindings for rc::Expr {
     }
 }
 
-type LetManyBuilder = let_builder::LetManyBuilder<rc::Expr>;
+impl BuildMatch for rc::Expr {
+    type VariantId = first_ord::VariantId;
+    type Type = rc::Type;
 
+    fn bool_type() -> Self::Type {
+        rc::Type::Bool
+    }
+
+    fn build_binding(
+        builder: &mut let_builder::LetManyBuilder<Self>,
+        ty: Self::Type,
+        expr: Self,
+    ) -> Self::LocalId {
+        builder.add_binding((ty, expr))
+    }
+
+    fn build_if(cond: Self::LocalId, then_expr: Self, else_expr: Self) -> Self {
+        rc::Expr::If(cond, Box::new(then_expr), Box::new(else_expr))
+    }
+
+    fn build_check_variant(variant: Self::VariantId, local: Self::LocalId) -> Self {
+        rc::Expr::CheckVariant(variant, local)
+    }
+
+    fn build_unwrap_variant(variant: Self::VariantId, local: Self::LocalId) -> Self {
+        rc::Expr::UnwrapVariant(variant, local)
+    }
+
+    fn build_unreachable(ty: Self::Type) -> Self {
+        rc::Expr::Unreachable(ty)
+    }
+}
+
+type LetManyBuilder = let_builder::LetManyBuilder<rc::Expr>;
 type ReleaseInstances = InstanceQueue<ReleaseSpec, ModeSchemeId>;
 
 // We only care about storage modes when creating release plans. We throw out any other modes to
@@ -265,39 +295,23 @@ fn build_plan(
                 unreachable!()
             };
 
-            let mut cases = Vec::new();
-            let iter = plans.iter().zip(iter_shapes(shapes.as_slice(), root_res));
-            for ((variant_id, plan), (shape, res)) in iter {
-                let cond = rc::Condition::Variant(*variant_id, Box::new(rc::Condition::Any));
-                let variant_ty = lower_type(shape);
+            let cases = plans
+                .iter()
+                .zip(iter_shapes(shapes.as_slice(), root_res))
+                .collect::<Vec<_>>();
 
-                let mut case_builder = builder.child();
-                let content_id = case_builder.add_binding((
-                    variant_ty.clone(),
-                    rc::Expr::UnwrapVariant(*variant_id, root_id),
-                ));
+            let match_ = rc::Expr::build_match(
+                builder,
+                root_id,
+                shapes.iter().map(|(id, shape)| (id, lower_type(shape))),
+                &rc::Type::Tuple(vec![]),
+                |builder, variant_id, unwrapped| {
+                    let ((_, plan), (shape, res)) = cases[variant_id.0];
+                    build_plan(customs, insts, rc_op, unwrapped, shape, res, plan, builder)
+                },
+            );
 
-                let unit = build_plan(
-                    customs,
-                    insts,
-                    rc_op,
-                    content_id,
-                    shape,
-                    res,
-                    plan,
-                    &mut case_builder,
-                );
-
-                cases.push((cond, case_builder.to_expr(unit)))
-            }
-
-            // For exhaustivity
-            cases.push((rc::Condition::Any, rc::Expr::Tuple(vec![])));
-
-            builder.add_binding((
-                rc::Type::Tuple(vec![]),
-                rc::Expr::Branch(root_id, cases, rc::Type::Tuple(vec![])),
-            ))
+            builder.add_binding((rc::Type::Tuple(vec![]), match_))
         }
 
         RcOpPlan::Custom(plan) => {
@@ -329,7 +343,6 @@ fn lower_expr(
     customs: &annot::CustomTypes,
     insts: &mut ReleaseInstances,
     ctx: &mut LocalContext<annot::LocalId, LocalInfo>,
-    path: &Path,
     expr: &annot::Expr,
     ret_ty: &rc::Type,
     builder: &mut LetManyBuilder,
@@ -356,32 +369,13 @@ fn lower_expr(
         annot::Expr::Call(purity, func, arg) => {
             rc::Expr::Call(*purity, *func, ctx.local_binding(*arg).new_id)
         }
-        annot::Expr::Branch(discrim, arms, ret_ty) => {
-            let ret_ty = lower_type(&ret_ty.shape);
-            let mut new_arms = Vec::new();
-            for (cond, expr) in arms {
-                let mut case_builder = builder.child();
-                let final_local = lower_expr(
-                    funcs,
-                    customs,
-                    insts,
-                    ctx,
-                    path,
-                    expr,
-                    &ret_ty,
-                    &mut case_builder,
-                );
-                new_arms.push((cond.clone(), case_builder.to_expr(final_local)));
-            }
-            rc::Expr::Branch(ctx.local_binding(*discrim).new_id, new_arms, ret_ty)
-        }
         annot::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
                 for (binding_ty, expr) in bindings {
                     let low_ty = lower_type(&binding_ty.shape);
 
                     let final_local =
-                        lower_expr(funcs, customs, insts, ctx, path, expr, &low_ty, builder);
+                        lower_expr(funcs, customs, insts, ctx, expr, &low_ty, builder);
                     ctx.add_local(LocalInfo {
                         old_ty: binding_ty.clone(),
                         new_ty: low_ty,
@@ -396,6 +390,43 @@ fn lower_expr(
             // block's bindings just get absorbed into the ambient `builder`.
             return final_local;
         }
+        annot::Expr::If(discrim, then_case, else_case) => {
+            let then_case = {
+                let mut case_builder = builder.child();
+                let final_local = lower_expr(
+                    funcs,
+                    customs,
+                    insts,
+                    ctx,
+                    then_case,
+                    ret_ty,
+                    &mut case_builder,
+                );
+                case_builder.to_expr(final_local)
+            };
+            let else_case = {
+                let mut case_builder = builder.child();
+                let final_local = lower_expr(
+                    funcs,
+                    customs,
+                    insts,
+                    ctx,
+                    else_case,
+                    ret_ty,
+                    &mut case_builder,
+                );
+                case_builder.to_expr(final_local)
+            };
+            rc::Expr::If(
+                ctx.local_binding(*discrim).new_id,
+                Box::new(then_case),
+                Box::new(else_case),
+            )
+        }
+        annot::Expr::CheckVariant(variant_id, variant) => {
+            rc::Expr::CheckVariant(*variant_id, ctx.local_binding(*variant).new_id)
+        }
+        annot::Expr::Unreachable(ty) => rc::Expr::Unreachable(lower_type(&ty.shape)),
         annot::Expr::Tuple(fields) => rc::Expr::Tuple(
             fields
                 .iter()
@@ -558,7 +589,6 @@ fn lower_func(
         customs,
         insts,
         &mut ctx,
-        &FUNC_BODY_PATH(),
         &func.body,
         &ret_type,
         &mut builder,

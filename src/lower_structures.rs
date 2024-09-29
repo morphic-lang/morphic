@@ -1,5 +1,4 @@
 use crate::data::first_order_ast as first_ord;
-use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
 use crate::data::rc_specialized_ast2 as rc;
 use crate::data::tail_rec_ast as tail;
@@ -8,8 +7,8 @@ use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
 use id_collections::IdVec;
 
-// we need to change branches to ifs
-// we need to unwrap array literals
+// In this pass we:
+// - Convert array literals into a series of pushes
 
 struct LowAstBuilder {
     offset: low::LocalId,
@@ -46,232 +45,6 @@ impl LowAstBuilder {
     }
 }
 
-// Used to lower constant conditions
-fn build_comp(
-    lhs: low::LocalId,
-    rhs: low::LocalId,
-    type_: first_ord::NumType,
-    op: Intrinsic,
-    builder: &mut LowAstBuilder,
-) -> low::LocalId {
-    let args = builder.add_expr(
-        low::Type::Tuple(vec![low::Type::Num(type_), low::Type::Num(type_)]),
-        low::Expr::Tuple(vec![lhs, rhs]),
-    );
-
-    builder.add_expr(low::Type::Bool, low::Expr::Intrinsic(op, args))
-}
-
-fn lower_condition(
-    discrim: low::LocalId,
-    condition: &rc::Condition,
-    builder: &mut LowAstBuilder,
-    match_type: &low::Type,
-    typedefs: &IdVec<first_ord::CustomTypeId, low::Type>,
-) -> low::LocalId {
-    match condition {
-        rc::Condition::Any => builder.add_expr(low::Type::Bool, low::Expr::BoolLit(true)),
-        rc::Condition::Tuple(subconditions) => {
-            let low::Type::Tuple(item_types) = match_type else {
-                unreachable!();
-            };
-
-            let subcondition_ids = item_types
-                .iter()
-                .zip(subconditions.iter())
-                .enumerate()
-                .map(|(index, (item_type, subcondition))| {
-                    let item_id =
-                        builder.add_expr(item_type.clone(), low::Expr::TupleField(discrim, index));
-                    lower_condition(item_id, subcondition, builder, item_type, typedefs)
-                })
-                .collect::<Vec<low::LocalId>>();
-            let if_expr =
-                subcondition_ids
-                    .into_iter()
-                    .rfold(low::Expr::BoolLit(true), |accum, item| {
-                        low::Expr::If(item, Box::new(accum), Box::new(low::Expr::BoolLit(false)))
-                    });
-
-            builder.add_expr(low::Type::Bool, if_expr)
-        }
-        rc::Condition::Variant(variant_id, subcondition) => {
-            let variant_id = first_ord::VariantId(variant_id.0);
-
-            let variant_check = builder.add_expr(
-                low::Type::Bool,
-                low::Expr::CheckVariant(variant_id, discrim),
-            );
-
-            let mut new_builder = builder.child();
-            let low::Type::Variants(variant_types) = match_type else {
-                unreachable!();
-            };
-
-            let variant_type = &variant_types[variant_id];
-
-            let sub_discrim = new_builder.add_expr(
-                variant_type.clone(),
-                low::Expr::UnwrapVariant(
-                    variant_types.clone(),
-                    first_ord::VariantId(variant_id.0),
-                    discrim,
-                ),
-            );
-
-            let sub_cond_id = lower_condition(
-                sub_discrim,
-                subcondition,
-                &mut new_builder,
-                variant_type,
-                typedefs,
-            );
-
-            builder.add_expr(
-                low::Type::Bool,
-                low::Expr::If(
-                    variant_check,
-                    Box::new(new_builder.build(sub_cond_id)),
-                    Box::new(low::Expr::BoolLit(false)),
-                ),
-            )
-        }
-        rc::Condition::Boxed(subcondition) => {
-            let low::Type::Boxed(content_type) = match_type else {
-                unreachable!();
-            };
-
-            let content = builder.add_expr(
-                (**content_type).clone(),
-                low::Expr::UnwrapBoxed(discrim, (**content_type).clone()),
-            );
-
-            lower_condition(content, subcondition, builder, content_type, typedefs)
-        }
-        rc::Condition::Custom(subcondition) => {
-            println!("match_type: {:?}", match_type);
-
-            let low::Type::Custom(custom_type_id) = match_type else {
-                unreachable!();
-            };
-
-            let content_type = &typedefs[custom_type_id];
-            let content = builder.add_expr(
-                content_type.clone(),
-                low::Expr::UnwrapCustom(*custom_type_id, discrim),
-            );
-
-            lower_condition(content, subcondition, builder, content_type, typedefs)
-        }
-        rc::Condition::BoolConst(val) => {
-            if *val {
-                discrim
-            } else {
-                builder.add_expr(
-                    low::Type::Bool,
-                    low::Expr::If(
-                        discrim,
-                        Box::new(low::Expr::BoolLit(false)),
-                        Box::new(low::Expr::BoolLit(true)),
-                    ),
-                )
-            }
-        }
-        rc::Condition::ByteConst(val) => {
-            let val_id = builder.add_expr(
-                low::Type::Num(first_ord::NumType::Byte),
-                low::Expr::ByteLit(*val),
-            );
-
-            build_comp(
-                val_id,
-                discrim,
-                first_ord::NumType::Byte,
-                Intrinsic::EqByte,
-                builder,
-            )
-        }
-        rc::Condition::IntConst(val) => {
-            let val_id = builder.add_expr(
-                low::Type::Num(first_ord::NumType::Int),
-                low::Expr::IntLit(*val),
-            );
-
-            build_comp(
-                val_id,
-                discrim,
-                first_ord::NumType::Int,
-                Intrinsic::EqInt,
-                builder,
-            )
-        }
-
-        rc::Condition::FloatConst(val) => {
-            let val_id = builder.add_expr(
-                low::Type::Num(first_ord::NumType::Float),
-                low::Expr::FloatLit(*val),
-            );
-
-            build_comp(
-                val_id,
-                discrim,
-                first_ord::NumType::Float,
-                Intrinsic::EqFloat,
-                builder,
-            )
-        }
-    }
-}
-
-fn lower_branch(
-    discrim: rc::LocalId,
-    cases: &[(rc::Condition, tail::Expr)],
-    result_type: &low::Type,
-    context: &mut LocalContext<rc::LocalId, (rc::Type, low::LocalId)>,
-    builder: &mut LowAstBuilder,
-    typedefs: &IdVec<first_ord::CustomTypeId, rc::Type>,
-) -> low::LocalId {
-    match cases.first() {
-        None => builder.add_expr(
-            result_type.clone(),
-            low::Expr::Unreachable(result_type.clone()),
-        ),
-        Some((cond, body)) => {
-            let condition_id = lower_condition(
-                context.local_binding(discrim).1,
-                cond,
-                builder,
-                &context.local_binding(discrim).0,
-                typedefs,
-            );
-
-            let mut then_builder = builder.child();
-
-            let then_final_id = lower_expr(body, result_type, context, &mut then_builder, typedefs);
-
-            let then_branch = then_builder.build(then_final_id);
-
-            let mut else_builder = builder.child();
-            let else_local_id = lower_branch(
-                discrim,
-                &cases[1..],
-                result_type,
-                // move_info,
-                context,
-                &mut else_builder,
-                typedefs,
-            );
-
-            let else_branch = else_builder.build(else_local_id);
-
-            builder.add_expr(
-                result_type.clone(),
-                low::Expr::If(condition_id, Box::new(then_branch), Box::new(else_branch)),
-            )
-        }
-    }
-}
-
 impl rc::LocalId {
     fn lookup_in(
         &self,
@@ -296,8 +69,31 @@ fn lower_expr(
             }
             subcontext.local_binding(*final_local_id).1
         }),
-        tail::Expr::Branch(discrim, cases, result_type) => {
-            lower_branch(*discrim, cases, result_type, context, builder, typedefs)
+        tail::Expr::If(discrim, then_case, else_case) => {
+            let discrim_id = discrim.lookup_in(context);
+            let then_case = {
+                let mut then_builder = builder.child();
+                let then_id =
+                    lower_expr(then_case, result_type, context, &mut then_builder, typedefs);
+                then_builder.build(then_id)
+            };
+            let else_case = {
+                let mut else_builder = builder.child();
+                let else_id =
+                    lower_expr(else_case, result_type, context, &mut else_builder, typedefs);
+                else_builder.build(else_id)
+            };
+            builder.add_expr(
+                result_type.clone(),
+                low::Expr::If(discrim_id, Box::new(then_case), Box::new(else_case)),
+            )
+        }
+        tail::Expr::CheckVariant(variant_id, content_id) => builder.add_expr(
+            low::Type::Bool,
+            low::Expr::CheckVariant(*variant_id, content_id.lookup_in(context)),
+        ),
+        tail::Expr::Unreachable(type_) => {
+            builder.add_expr(result_type.clone(), low::Expr::Unreachable(type_.clone()))
         }
         tail::Expr::Local(local_id) => local_id.lookup_in(context),
         tail::Expr::Call(_purity, func_id, arg_id) => builder.add_expr(

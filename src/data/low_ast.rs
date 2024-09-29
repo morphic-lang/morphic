@@ -75,11 +75,13 @@ pub enum Expr {
     Local(LocalId),
     Call(CustomFuncId, LocalId),
     TailCall(tail::TailFuncId, LocalId),
-    If(LocalId, Box<Expr>, Box<Expr>),
     LetMany(
         Vec<(Type, Expr)>, // bound values. Each is assigned a new sequential LocalId
         LocalId,           // body
     ),
+
+    If(LocalId, Box<Expr>, Box<Expr>),
+    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
     Unreachable(Type),
 
     Tuple(Vec<LocalId>),
@@ -106,8 +108,6 @@ pub enum Expr {
     ), // Does not touch refcount
 
     RcOp(RcOp, Type, LocalId), // Takes any type, returns unit
-
-    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
 
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),

@@ -5,9 +5,9 @@
 //!   `Array` and `HoleArray` types, which require similar treatment during borrow inference because
 //!   they have embedded reference counts.
 
-use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::flat_ast as flat;
+use crate::data::guarded_ast as guard;
 use crate::data::guarded_ast as guarded;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
@@ -392,45 +392,52 @@ impl Shape {
         }
     }
 
+    pub fn bool_(interner: &Interner) -> Shape {
+        Shape {
+            inner: interner.shape.new(ShapeInner::Bool),
+            num_slots: 0,
+        }
+    }
+
     // We don't read SCCs directly from `customs` because this function is called before we have
     // fully computed all `CustomTypeDef`s in the same SCC as `ty`.
-    pub fn from_anon<'a>(
+    pub fn from_guarded<'a>(
         interner: &Interner,
         customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
         sccs: impl MapRef<'a, CustomTypeId, flat::CustomTypeSccId>,
         self_info: SelfInfo,
-        ty: &anon::Type,
+        ty: &guard::Type,
     ) -> Shape {
         match ty {
-            anon::Type::Bool => Shape {
+            guard::Type::Bool => Shape {
                 inner: interner.shape.new(ShapeInner::Bool),
                 num_slots: 0,
             },
-            anon::Type::Num(num_ty) => Shape {
+            guard::Type::Num(num_ty) => Shape {
                 inner: interner.shape.new(ShapeInner::Num(*num_ty)),
                 num_slots: 0,
             },
-            anon::Type::Tuple(tys) => {
+            guard::Type::Tuple(tys) => {
                 let mut num_slots = 0;
                 let inner = interner.shape.new(ShapeInner::Tuple(tys.map_refs(|ty| {
-                    let shape = Shape::from_anon(interner, customs, sccs, self_info, ty);
+                    let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
                     num_slots += shape.num_slots;
                     shape
                 })));
                 Shape { inner, num_slots }
             }
-            anon::Type::Variants(tys) => {
+            guard::Type::Variants(tys) => {
                 let mut num_slots = 0;
                 let inner = interner
                     .shape
                     .new(ShapeInner::Variants(tys.map_refs(|_, ty| {
-                        let shape = Shape::from_anon(interner, customs, sccs, self_info, ty);
+                        let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
                         num_slots += shape.num_slots;
                         shape
                     })));
                 Shape { inner, num_slots }
             }
-            anon::Type::Custom(id) => {
+            guard::Type::Custom(id) => {
                 if self_info.is_my_scc(*sccs.get(id)) {
                     Shape {
                         inner: interner.shape.new(ShapeInner::SelfCustom(*id)),
@@ -443,22 +450,22 @@ impl Shape {
                     }
                 }
             }
-            anon::Type::Array(ty) => {
-                let shape = Shape::from_anon(interner, customs, sccs, self_info, ty);
+            guard::Type::Array(ty) => {
+                let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
                 Shape {
                     num_slots: shape.num_slots + 1,
                     inner: interner.shape.new(ShapeInner::Array(shape)),
                 }
             }
-            anon::Type::HoleArray(ty) => {
-                let shape = Shape::from_anon(interner, customs, sccs, self_info, ty);
+            guard::Type::HoleArray(ty) => {
+                let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
                 Shape {
                     num_slots: shape.num_slots + 1,
                     inner: interner.shape.new(ShapeInner::HoleArray(shape)),
                 }
             }
-            anon::Type::Boxed(ty) => {
-                let shape = Shape::from_anon(interner, customs, sccs, self_info, ty);
+            guard::Type::Boxed(ty) => {
+                let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
                 Shape {
                     num_slots: shape.num_slots + 1,
                     inner: interner.shape.new(ShapeInner::Boxed(shape)),
@@ -618,6 +625,20 @@ pub struct Type<M, L> {
 }
 
 impl<M, L> Type<M, L> {
+    pub fn unit(interner: &Interner) -> Self {
+        Type {
+            shape: Shape::unit(interner),
+            res: IdVec::new(),
+        }
+    }
+
+    pub fn bool_(interner: &Interner) -> Self {
+        Type {
+            shape: Shape::bool_(interner),
+            res: IdVec::new(),
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Res<M, L>> {
         self.res.values()
     }
@@ -679,7 +700,7 @@ pub fn iter_shapes<'a, T>(
 
 #[derive(Clone, Debug)]
 pub struct Occur<M, L> {
-    pub id: flat::LocalId,
+    pub id: guard::LocalId,
     pub ty: Type<M, L>,
 }
 
@@ -724,11 +745,14 @@ pub enum IoOp<M, L> {
 pub enum Expr<M, L> {
     Local(Occur<M, L>),
     Call(Purity, first_ord::CustomFuncId, Occur<M, L>),
-    Branch(Occur<M, L>, Vec<(Condition, Expr<M, L>)>, Type<M, L>),
     LetMany(
         Vec<(Type<M, L>, Expr<M, L>)>, // Bound values; each is assigned a new sequential `LocalId`
         Occur<M, L>,                   // Result
     ),
+
+    If(Occur<M, L>, Box<Expr<M, L>>, Box<Expr<M, L>>),
+    CheckVariant(first_ord::VariantId, Occur<M, L>), // Returns a bool
+    Unreachable(Type<M, L>),
 
     Tuple(Vec<Occur<M, L>>),
     TupleField(Occur<M, L>, usize),
@@ -762,24 +786,6 @@ pub enum Expr<M, L> {
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
-}
-
-/// Previous passes have an item type annotation on `Boxed` and an ID annotation on `Custom`. These
-/// annotations are used during `lower_structures`, which unrolls `Condition`s into a series of
-/// eliminators and boolean checks. However, to produce the correct annotations during mode
-/// inference, we would have to know what operations each `Condition` will become, which is a mess.
-/// Instead, we infer these annotations during `lower_structures`.
-#[derive(Clone, Debug)]
-pub enum Condition {
-    Any,
-    Tuple(Vec<Condition>),
-    Variant(first_ord::VariantId, Box<Condition>),
-    Boxed(Box<Condition>),
-    Custom(Box<Condition>),
-    BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
 }
 
 /// `sig` stores all the constraints on the mode parameters of the function signature. We also keep

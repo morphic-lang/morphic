@@ -106,8 +106,11 @@ pub enum IoOp {
 pub enum Expr {
     Local(LocalId),
     Call(Purity, ob::CustomFuncId, LocalId),
-    Branch(LocalId, Vec<(annot::Condition, Expr)>, ob::Type),
     LetMany(Vec<(ob::Type, Expr)>, LocalId),
+
+    If(LocalId, Box<Expr>, Box<Expr>),
+    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
+    Unreachable(ob::Type),
 
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),

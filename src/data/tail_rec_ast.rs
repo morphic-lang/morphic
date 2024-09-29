@@ -17,8 +17,11 @@ pub enum Expr {
     Local(rc::LocalId),
     Call(Purity, CustomFuncId, rc::LocalId),
     TailCall(TailFuncId, rc::LocalId),
-    Branch(rc::LocalId, Vec<(rc::Condition, Expr)>, rc::Type),
     LetMany(Vec<(rc::Type, Expr)>, rc::LocalId),
+
+    If(rc::LocalId, Box<Expr>, Box<Expr>),
+    CheckVariant(first_ord::VariantId, rc::LocalId), // Returns a bool
+    Unreachable(rc::Type),
 
     Tuple(Vec<rc::LocalId>),
     TupleField(rc::LocalId, usize),

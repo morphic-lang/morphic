@@ -8,7 +8,7 @@ use crate::data::obligation_annot_ast::{
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common::*;
-use crate::pretty_print::mode_annot::{write_condition, write_custom, write_resource_modes};
+use crate::pretty_print::mode_annot::{write_custom, write_resource_modes};
 use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -239,23 +239,6 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write_occur(w, context.type_renderer, occur)?;
             write!(w, ")")
         }
-        Expr::Branch(occur, conditions, _return_type) => {
-            write!(w, "branch ")?;
-            write_occur(w, context.type_renderer, occur)?;
-            write!(w, " {{")?;
-            let new_context = context.add_indent();
-            for (condition, sub_expr) in conditions {
-                let newer_context = new_context.add_indent();
-                new_context.writeln(w)?;
-                write_condition(w, context.type_renderer, condition)?;
-                write!(w, " ->")?;
-                newer_context.writeln(w)?;
-                write_expr(w, sub_expr, newer_context)?;
-            }
-            context.writeln(w)?;
-            write!(w, "}}")?;
-            Ok(())
-        }
         Expr::LetMany(bindings, final_local) => {
             write!(w, "let")?;
             let new_context = context.add_indent();
@@ -301,6 +284,29 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write_occur(w, context.type_renderer, final_local)?;
             Ok(())
         }
+        Expr::If(occur, then_branch, else_branch) => {
+            write!(w, "if ")?;
+            write_occur(w, context.type_renderer, occur)?;
+            write!(w, " {{")?;
+
+            let new_context = context.add_indent();
+            new_context.writeln(w)?;
+            write_expr(w, then_branch, new_context)?;
+            context.writeln(w)?;
+
+            write!(w, "}} else {{")?;
+            new_context.writeln(w)?;
+            write_expr(w, else_branch, new_context)?;
+            context.writeln(w)?;
+
+            write!(w, "}}")?;
+            Ok(())
+        }
+        Expr::CheckVariant(variant_id, occur) => {
+            write!(w, "check variant {}", variant_id.0)?;
+            write_occur(w, context.type_renderer, occur)
+        }
+        Expr::Unreachable(_type) => write!(w, "unreachable"),
         Expr::Tuple(elems) => write_delimited(w, elems, "(", ")", ",", |w, occur| {
             write_occur(w, context.type_renderer, occur)
         }),

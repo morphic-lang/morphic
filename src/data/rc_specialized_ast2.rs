@@ -1,6 +1,6 @@
 use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::intrinsics::Intrinsic;
-use crate::data::mode_annot_ast2::{self as annot, Mode};
+use crate::data::mode_annot_ast2::Mode;
 use crate::data::obligation_annot_ast::CustomFuncId;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -98,8 +98,6 @@ pub enum IoOp {
     Output(LocalId),
 }
 
-pub type Condition = annot::Condition;
-
 #[derive(Clone, Debug)]
 pub enum RcOp {
     Retain,
@@ -110,8 +108,11 @@ pub enum RcOp {
 pub enum Expr {
     Local(LocalId),
     Call(Purity, CustomFuncId, LocalId),
-    Branch(LocalId, Vec<(Condition, Expr)>, Type),
     LetMany(Vec<(Type, Expr)>, LocalId),
+
+    If(LocalId, Box<Expr>, Box<Expr>),
+    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
+    Unreachable(Type),
 
     Tuple(Vec<LocalId>),
     TupleField(LocalId, usize),
