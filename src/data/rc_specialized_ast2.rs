@@ -142,7 +142,10 @@ pub enum Expr {
         LocalId, // Message
     ),
 
-    ArrayLit(ModeScheme, Vec<LocalId>),
+    ArrayLit(
+        ModeScheme,   // Scheme of *item*
+        Vec<LocalId>, // Elements
+    ),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),

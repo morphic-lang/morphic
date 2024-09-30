@@ -1260,9 +1260,10 @@ fn instantiate_expr(
 
         TailExpr::CheckVariant(variant_id, variant) => {
             assert!(fut_ty.shape == Shape::bool_(interner));
+            let variants_ty = ctx.local_binding(*variant).ty.clone(); // appease the borrow checker
             annot::Expr::CheckVariant(
                 *variant_id,
-                instantiate_occur(strategy, interner, ctx, constrs, *variant, fut_ty),
+                instantiate_occur(strategy, interner, ctx, constrs, *variant, &variants_ty),
             )
         }
 

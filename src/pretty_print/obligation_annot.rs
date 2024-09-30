@@ -303,7 +303,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             Ok(())
         }
         Expr::CheckVariant(variant_id, occur) => {
-            write!(w, "check variant {}", variant_id.0)?;
+            write!(w, "check variant {} ", variant_id.0)?;
             write_occur(w, context.type_renderer, occur)
         }
         Expr::Unreachable(_type) => write!(w, "unreachable"),

@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
-use crate::data::rc_specialized_ast2 as rc;
+use crate::data::mode_annot_ast2::Mode;
+use crate::data::rc_specialized_ast2::{self as rc, ModeScheme};
 use crate::data::tail_rec_ast as tail;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::ProgressLogger;
@@ -219,10 +220,11 @@ fn lower_expr(
             result_type.clone(),
             low::Expr::Panic(ret_type.clone(), message.lookup_in(context)),
         ),
-        tail::Expr::ArrayLit(scheme, elems) => {
+        tail::Expr::ArrayLit(item_scheme, elems) => {
             // TODO: we are inlining some knowledge here about the signatures of `Array.new`,
-            // `Array.reserve`, and `Array.push`. Item types should be determined instead by the
+            // `Array.reserve`, and `Array.push`. Types should be determined instead by the same
             // signatures used for borrow inference.
+            let scheme = ModeScheme::Array(Mode::Owned, Box::new(item_scheme.clone()));
 
             let mut result_id = builder.add_expr(
                 result_type.clone(),
@@ -311,8 +313,8 @@ pub fn lower_structures(program: tail::Program, progress: impl ProgressLogger) -
 
     let lowered_funcs = program
         .funcs
-        .into_values()
-        .map(|func| {
+        .into_iter()
+        .map(|(_func_id, func)| {
             let lowered = lower_function(func, &program.custom_types.types);
             progress.update(1);
             lowered

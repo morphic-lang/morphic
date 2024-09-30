@@ -594,7 +594,7 @@ fn annot_expr(
             let item_retains = select_owned(customs, &ret_ty);
 
             let get_op = rc::Expr::ArrayOp(rc::ArrayOp::Get(
-                unwrap_item(&arr.ty),
+                arr.ty.clone(),
                 annot_occur(interner, customs, ctx, path, arr, builder),
                 annot_occur(interner, customs, ctx, path, idx, builder),
             ));
@@ -606,31 +606,31 @@ fn annot_expr(
 
         ob::Expr::ArrayOp(ob::ArrayOp::Extract(arr, idx)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Extract(
-                unwrap_item(&arr.ty),
+                arr.ty.clone(),
                 annot_occur(interner, customs, ctx, path, arr, builder),
                 annot_occur(interner, customs, ctx, path, idx, builder),
             ))
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Len(arr)) => rc::Expr::ArrayOp(rc::ArrayOp::Len(
-            unwrap_item(&arr.ty),
+            arr.ty.clone(),
             annot_occur(interner, customs, ctx, path, arr, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Push(arr, item)) => rc::Expr::ArrayOp(rc::ArrayOp::Push(
-            unwrap_item(&arr.ty),
+            arr.ty.clone(),
             annot_occur(interner, customs, ctx, path, arr, builder),
             annot_occur(interner, customs, ctx, path, item, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Pop(arr)) => rc::Expr::ArrayOp(rc::ArrayOp::Pop(
-            unwrap_item(&arr.ty),
+            arr.ty.clone(),
             annot_occur(interner, customs, ctx, path, arr, builder),
         )),
 
         ob::Expr::ArrayOp(ob::ArrayOp::Replace(arr, item)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Replace(
-                unwrap_item(&arr.ty),
+                arr.ty.clone(),
                 annot_occur(interner, customs, ctx, path, arr, builder),
                 annot_occur(interner, customs, ctx, path, item, builder),
             ))
@@ -638,7 +638,7 @@ fn annot_expr(
 
         ob::Expr::ArrayOp(ob::ArrayOp::Reserve(arr, cap)) => {
             rc::Expr::ArrayOp(rc::ArrayOp::Reserve(
-                unwrap_item(&arr.ty),
+                arr.ty.clone(),
                 annot_occur(interner, customs, ctx, path, arr, builder),
                 annot_occur(interner, customs, ctx, path, cap, builder),
             ))

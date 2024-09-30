@@ -50,11 +50,9 @@ pub fn write_type(
         Type::Tuple(types) => write_delimited(w, types, "(", ")", ",", |w, type_| {
             write_type(w, type_renderer, type_)
         }),
-        Type::Variants(types) => {
-            write_delimited(w, types.as_slice(), "{{", "}}", ",", |w, type_| {
-                write_type(w, type_renderer, type_)
-            })
-        }
+        Type::Variants(types) => write_delimited(w, types.as_slice(), "{", "}", ",", |w, type_| {
+            write_type(w, type_renderer, type_)
+        }),
         Type::Custom(type_id) => write!(w, "{}", type_renderer.render(type_id)),
         Type::Array(item_type) => {
             write!(w, "Array (")?;
@@ -171,7 +169,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             Ok(())
         }
         Expr::CheckVariant(variant_id, local) => {
-            write!(w, "check variant {}", variant_id.0)?;
+            write!(w, "check variant {} ", variant_id.0)?;
             write_local(w, *local)
         }
         Expr::Unreachable(_type) => write!(w, "unreachable"),

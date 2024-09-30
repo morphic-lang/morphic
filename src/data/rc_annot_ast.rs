@@ -87,6 +87,7 @@ pub enum RcOp {
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
+    // The type is the the type of the input array (not merely its item)
     Get(ob::Type, LocalId, LocalId),
     Extract(ob::Type, LocalId, LocalId),
     Len(ob::Type, LocalId),
@@ -132,7 +133,10 @@ pub enum Expr {
     IoOp(IoOp),
     Panic(ob::Type, LocalId),
 
-    ArrayLit(ob::Type, Vec<LocalId>),
+    ArrayLit(
+        ob::Type,     // Item type
+        Vec<LocalId>, // Elements
+    ),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),

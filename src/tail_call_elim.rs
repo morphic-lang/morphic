@@ -500,7 +500,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
 
                     let mut builder = LetManyBuilder::new(Count::from_value(1));
 
-                    let body = tail::Expr::build_match(
+                    let match_ = tail::Expr::build_match(
                         &mut builder,
                         rc::ARG_LOCAL,
                         arg_variant_types.iter().map(|(id, ty)| (id, ty.clone())),
@@ -513,6 +513,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
                         },
                     );
 
+                    let body = builder.to_expr(match_);
                     (rc::Type::Variants(arg_variant_types), body)
                 }
             };

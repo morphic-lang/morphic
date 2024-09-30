@@ -9,7 +9,7 @@ use crate::util::let_builder::{self, BuildMatch, FromBindings};
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 impl FromBindings for rc::Expr {
     type LocalId = rc::LocalId;
@@ -152,8 +152,8 @@ fn lower_type(shape: &Shape) -> rc::Type {
 #[derive(Clone, Debug)]
 enum RcOpPlan {
     Custom(Box<RcOpPlan>),
-    Tuple(BTreeMap<usize, RcOpPlan>),
-    Variants(BTreeMap<first_ord::VariantId, RcOpPlan>),
+    Tuple(Vec<RcOpPlan>),
+    Variants(IdVec<first_ord::VariantId, RcOpPlan>),
     LeafOp,
     NoOp,
 }
@@ -169,36 +169,34 @@ impl RcOpPlan {
             ShapeInner::Bool => Self::NoOp,
             ShapeInner::Num(_) => Self::NoOp,
             ShapeInner::Tuple(shapes) => {
-                let mut plans = BTreeMap::new();
+                let mut plans = Vec::new();
                 let mut start = 0;
-                for (i, shape) in shapes.iter().enumerate() {
+                for shape in shapes {
                     let end = start + shape.num_slots;
                     let plan = RcOpPlan::from_selector_impl(customs, true_, (start, end), shape);
-                    if !matches!(plan, RcOpPlan::NoOp) {
-                        plans.insert(i, plan);
-                    }
+                    plans.push(plan);
                     start = end;
                 }
+
                 debug_assert_eq!(start, shape.num_slots);
-                if plans.is_empty() {
+                if plans.iter().all(|plan| matches!(plan, RcOpPlan::NoOp)) {
                     Self::NoOp
                 } else {
                     Self::Tuple(plans)
                 }
             }
             ShapeInner::Variants(shapes) => {
-                let mut plans = BTreeMap::new();
+                let mut plans = IdVec::new();
                 let mut start = 0;
-                for (i, shape) in shapes {
+                for shape in shapes.values() {
                     let end = start + shape.num_slots;
                     let plan = RcOpPlan::from_selector_impl(customs, true_, (start, end), shape);
-                    if !matches!(plan, RcOpPlan::NoOp) {
-                        plans.insert(i, plan);
-                    }
+                    let _ = plans.push(plan);
                     start = end;
                 }
+
                 debug_assert_eq!(start, shape.num_slots);
-                if plans.is_empty() {
+                if plans.values().all(|plan| matches!(plan, RcOpPlan::NoOp)) {
                     Self::NoOp
                 } else {
                     Self::Variants(plans)
@@ -255,11 +253,10 @@ fn build_plan(
         RcOpPlan::LeafOp => {
             let rc_op = match rc_op {
                 annot::RcOp::Retain => rc::RcOp::Retain,
-                annot::RcOp::Release => rc::RcOp::Release(make_scheme(
-                    insts,
-                    &root_shape,
-                    &prepare_resources(root_res),
-                )),
+                annot::RcOp::Release => {
+                    let scheme = make_scheme(insts, &root_shape, &prepare_resources(root_res));
+                    rc::RcOp::Release(scheme)
+                }
             };
             builder.add_binding((rc::Type::Tuple(vec![]), rc::Expr::RcOp(rc_op, root_id)))
         }
@@ -271,10 +268,11 @@ fn build_plan(
 
             plans
                 .iter()
+                .enumerate()
                 .zip(iter_shapes(shapes, root_res))
                 .map(|((idx, plan), (shape, res))| {
                     let field_local = builder
-                        .add_binding((lower_type(shape), rc::Expr::TupleField(root_id, *idx)));
+                        .add_binding((lower_type(shape), rc::Expr::TupleField(root_id, idx)));
                     build_plan(
                         customs,
                         insts,
@@ -299,19 +297,18 @@ fn build_plan(
                 .iter()
                 .zip(iter_shapes(shapes.as_slice(), root_res))
                 .collect::<Vec<_>>();
+            let cases = IdVec::from_vec(cases);
 
-            let match_ = rc::Expr::build_match(
+            rc::Expr::build_match(
                 builder,
                 root_id,
                 shapes.iter().map(|(id, shape)| (id, lower_type(shape))),
                 &rc::Type::Tuple(vec![]),
                 |builder, variant_id, unwrapped| {
-                    let ((_, plan), (shape, res)) = cases[variant_id.0];
+                    let ((_, plan), (shape, res)) = cases[variant_id];
                     build_plan(customs, insts, rc_op, unwrapped, shape, res, plan, builder)
                 },
-            );
-
-            builder.add_binding((rc::Type::Tuple(vec![]), match_))
+            )
         }
 
         RcOpPlan::Custom(plan) => {
@@ -461,11 +458,11 @@ fn lower_expr(
         &annot::Expr::Intrinsic(intr, arg) => {
             rc::Expr::Intrinsic(intr, ctx.local_binding(arg).new_id)
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Get(item_ty, arr, idx)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Get(arr_ty, arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &item_ty.shape,
-                &prepare_resources(item_ty.res.as_slice()),
+                &arr_ty.shape,
+                &prepare_resources(arr_ty.res.as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Get(
                 scheme,
@@ -473,11 +470,11 @@ fn lower_expr(
                 ctx.local_binding(*idx).new_id,
             ))
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Extract(item_ty, arr, idx)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Extract(arr_ty, arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &item_ty.shape,
-                &prepare_resources(item_ty.res.as_slice()),
+                &arr_ty.shape,
+                &prepare_resources(arr_ty.res.as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Extract(
                 scheme,
@@ -485,19 +482,19 @@ fn lower_expr(
                 ctx.local_binding(*idx).new_id,
             ))
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Len(item_ty, arr)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Len(arr_ty, arr)) => {
             let scheme = make_scheme(
                 insts,
-                &item_ty.shape,
-                &prepare_resources(item_ty.res.as_slice()),
+                &arr_ty.shape,
+                &prepare_resources(arr_ty.res.as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Len(scheme, ctx.local_binding(*arr).new_id))
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Push(item_ty, arr, item)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Push(arr_ty, arr, item)) => {
             let scheme = make_scheme(
                 insts,
-                &item_ty.shape,
-                &prepare_resources(item_ty.res.as_slice()),
+                &arr_ty.shape,
+                &prepare_resources(arr_ty.res.as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Push(
                 scheme,
@@ -505,19 +502,19 @@ fn lower_expr(
                 ctx.local_binding(*item).new_id,
             ))
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Pop(item_ty, arr)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Pop(arr_ty, arr)) => {
             let scheme = make_scheme(
                 insts,
-                &item_ty.shape,
-                &prepare_resources(item_ty.res.as_slice()),
+                &arr_ty.shape,
+                &prepare_resources(arr_ty.res.as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Pop(scheme, ctx.local_binding(*arr).new_id))
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Replace(item_ty, arr, idx)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Replace(arr_ty, arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &item_ty.shape,
-                &prepare_resources(item_ty.res.as_slice()),
+                &arr_ty.shape,
+                &prepare_resources(arr_ty.res.as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Replace(
                 scheme,
@@ -525,11 +522,11 @@ fn lower_expr(
                 ctx.local_binding(*idx).new_id,
             ))
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Reserve(item_ty, arr, cap)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Reserve(arr_ty, arr, cap)) => {
             let scheme = make_scheme(
                 insts,
-                &item_ty.shape,
-                &prepare_resources(item_ty.res.as_slice()),
+                &arr_ty.shape,
+                &prepare_resources(arr_ty.res.as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Reserve(
                 scheme,
@@ -630,11 +627,8 @@ pub fn rc_specialize(
 
     let mut schemes = IdVec::new();
     while let Some((release_id, spec)) = queue.pop_pending() {
-        let scheme = make_scheme(
-            &mut queue,
-            &program.custom_types.types[spec.custom_id].content,
-            &spec.res,
-        );
+        let content = &program.custom_types.types[spec.custom_id].content;
+        let scheme = make_scheme(&mut queue, content, &spec.res);
         let pushed_id = schemes.push(scheme);
         debug_assert_eq!(pushed_id, release_id);
     }

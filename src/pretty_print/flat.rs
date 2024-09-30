@@ -86,11 +86,9 @@ pub fn write_type(
         Type::Tuple(types) => write_delimited(w, types, "(", ")", ",", |w, type_| {
             write_type(w, type_renderer, type_)
         }),
-        Type::Variants(types) => {
-            write_delimited(w, types.as_slice(), "{{", "}}", ",", |w, type_| {
-                write_type(w, type_renderer, type_)
-            })
-        }
+        Type::Variants(types) => write_delimited(w, types.as_slice(), "{", "}", ",", |w, type_| {
+            write_type(w, type_renderer, type_)
+        }),
         Type::Custom(type_id) => write!(w, "{}", type_renderer.render(type_id)),
         Type::Array(item_type) => {
             write!(w, "Array (")?;

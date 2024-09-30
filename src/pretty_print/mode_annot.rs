@@ -393,7 +393,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             Ok(())
         }
         Expr::CheckVariant(variant_id, occur) => {
-            write!(w, "check variant {}", variant_id.0)?;
+            write!(w, "check variant {} ", variant_id.0)?;
             write_occur(w, context.type_renderer, occur)
         }
         Expr::Unreachable(_type) => write!(w, "unreachable"),
@@ -589,6 +589,38 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
 
 // Convenience wrappers for debugging which implement `Display`
 
+pub struct DisplayShape<'a> {
+    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
+    shape: &'a Shape,
+}
+
+impl fmt::Display for DisplayShape<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut buffer = Vec::<u8>::new();
+        write_shape(&mut buffer, self.type_renderer, self.shape).unwrap();
+        f.write_str(str::from_utf8(&buffer).unwrap())
+    }
+}
+
+impl Shape {
+    pub fn display<'a>(&'a self) -> DisplayShape<'a> {
+        DisplayShape {
+            type_renderer: None,
+            shape: self,
+        }
+    }
+
+    pub fn display_with<'a>(
+        &'a self,
+        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    ) -> DisplayShape<'a> {
+        DisplayShape {
+            type_renderer: Some(type_renderer),
+            shape: self,
+        }
+    }
+}
+
 pub struct DisplaySolverType<'a, L> {
     type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
     type_: &'a annot::Type<ModeVar, L>,
@@ -596,31 +628,31 @@ pub struct DisplaySolverType<'a, L> {
 
 impl fmt::Display for DisplaySolverType<'_, Lt> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut raw = Vec::<u8>::new();
+        let mut buffer = Vec::<u8>::new();
         write_type(
-            &mut raw,
+            &mut buffer,
             self.type_renderer,
             write_mode_var,
             write_lifetime,
             self.type_,
         )
         .unwrap();
-        f.write_str(str::from_utf8(&raw).unwrap())
+        f.write_str(str::from_utf8(&buffer).unwrap())
     }
 }
 
 impl fmt::Display for DisplaySolverType<'_, LtParam> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut raw = Vec::<u8>::new();
+        let mut buffer = Vec::<u8>::new();
         write_type(
-            &mut raw,
+            &mut buffer,
             self.type_renderer,
             write_mode_var,
             write_lifetime_param,
             self.type_,
         )
         .unwrap();
-        f.write_str(str::from_utf8(&raw).unwrap())
+        f.write_str(str::from_utf8(&buffer).unwrap())
     }
 }
 

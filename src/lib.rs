@@ -411,6 +411,14 @@ fn compile_to_low_ast(
 
     let guarded = guard_types::guard_types(flat);
 
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("guarded"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::guarded::write_program(&mut out_file, &guarded)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
     let interner = crate::data::mode_annot_ast2::Interner::empty();
     let mode_annot = annot_modes2::annot_modes(
         annot_modes2::Strategy::Default,
@@ -457,6 +465,14 @@ fn compile_to_low_ast(
         rc_specialized.clone(),
         progress_ui::bar(progress, "tail_call_elim"),
     );
+
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("tail_rec"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::tail::write_program(&mut out_file, &tail_rec)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
 
     let lowered = lower_structures::lower_structures(
         tail_rec,

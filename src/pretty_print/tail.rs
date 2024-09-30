@@ -1,6 +1,7 @@
 use crate::data::first_order_ast::NumType;
-use crate::data::low_ast::{ArrayOp, Expr, FuncDef, IoOp, LocalId, Program, Type};
 use crate::data::rc_specialized_ast2::RcOp;
+use crate::data::rc_specialized_ast2::{ArrayOp, IoOp, LocalId, Type};
+use crate::data::tail_rec_ast::{Expr, FuncDef, Program};
 use crate::intrinsic_config::intrinsic_to_name;
 use std::io;
 use std::io::Write;
@@ -105,7 +106,7 @@ fn write_double(
 fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
     match expr {
         Expr::Local(local_id) => write![w, "%{}", local_id.0],
-        Expr::Call(func_id, local_id) => write![w, "call #{} (%{})", func_id.0, local_id.0],
+        Expr::Call(_, func_id, local_id) => write![w, "call #{} (%{})", func_id.0, local_id.0],
         Expr::TailCall(tail_func_id, local_id) => {
             write![w, "tail call @{} (%{})", tail_func_id.0, local_id.0]
         }
@@ -162,7 +163,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::WrapVariant(_variants, variant_id, local_id) => {
             write![w, "wrap variant {} %{}", variant_id.0, local_id.0]
         }
-        Expr::UnwrapVariant(_variants, variant_id, local_id) => {
+        Expr::UnwrapVariant(variant_id, local_id) => {
             write![w, "unwrap variant {} %{}", variant_id.0, local_id.0]
         }
         Expr::WrapCustom(type_id, local_id) => {
@@ -173,7 +174,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         }
         Expr::WrapBoxed(local_id, _type) => write![w, "wrap boxed %{}", local_id.0],
         Expr::UnwrapBoxed(local_id, _type) => write![w, "unwrap boxed %{}", local_id.0],
-        Expr::RcOp(op, _type, local_id) => match op {
+        Expr::RcOp(op, local_id) => match op {
             RcOp::Retain => write_single(w, "retain", local_id),
             RcOp::Release(_) => write_single(w, "release", local_id),
         },
@@ -189,7 +190,6 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         ],
 
         Expr::ArrayOp(array_op) => match array_op {
-            ArrayOp::New(_) => write![w, "new"],
             ArrayOp::Get(_, local_id1, local_id2) => write_double(w, "get", local_id1, local_id2),
             ArrayOp::Extract(_, local_id1, local_id2) => {
                 write_double(w, "extract", local_id1, local_id2)
@@ -211,6 +211,29 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         },
 
         Expr::Panic(_ret_type, local_id) => write_single(w, "panic", local_id),
+
+        Expr::ArrayLit(_, elem_ids) => {
+            let elems_are_contiguous = elem_ids.len() > 1
+                && (0..elem_ids.len() - 1).all(|i| elem_ids[i].0 + 1 == elem_ids[i + 1].0);
+
+            if elem_ids.len() == 0 {
+                write!(w, "[]")?
+            } else if elems_are_contiguous {
+                write!(
+                    w,
+                    "[%{}...%{}]",
+                    elem_ids.first().unwrap().0,
+                    elem_ids.last().unwrap().0
+                )?;
+            } else {
+                write!(w, "[")?;
+                for elem_id in &elem_ids[..elem_ids.len() - 1] {
+                    write!(w, "%{}, ", elem_id.0)?;
+                }
+                write!(w, "%{}]", elem_ids[elem_ids.len() - 1].0)?;
+            }
+            Ok(())
+        }
 
         Expr::BoolLit(val) => write![w, "{}", if *val { "True" } else { "False" }],
         Expr::ByteLit(val) => write![w, "{:?}", (*val as char)],

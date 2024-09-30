@@ -10,4 +10,5 @@ pub mod mode_annot;
 pub mod mono;
 pub mod obligation_annot;
 pub mod repr_specialized;
+pub mod tail;
 pub mod typed;

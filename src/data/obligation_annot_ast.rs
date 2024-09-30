@@ -132,7 +132,10 @@ pub enum Expr {
     IoOp(IoOp),
     Panic(Type, Occur),
 
-    ArrayLit(Type, Vec<Occur>),
+    ArrayLit(
+        Type,       // Item type
+        Vec<Occur>, // Elements
+    ),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),

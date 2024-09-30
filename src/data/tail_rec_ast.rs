@@ -49,7 +49,10 @@ pub enum Expr {
     IoOp(rc::IoOp),
     Panic(rc::Type, rc::LocalId),
 
-    ArrayLit(ModeScheme, Vec<rc::LocalId>),
+    ArrayLit(
+        ModeScheme,       // Scheme of *item*
+        Vec<rc::LocalId>, // Elements
+    ),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
