@@ -2,7 +2,7 @@
 //! operation.
 
 use crate::data::first_order_ast::NumType;
-use crate::data::mode_annot_ast2::{HeapModes, LtParam, ModeParam, Position, Res, ResModes};
+use crate::data::mode_annot_ast2::{HeapModes, Position, Res, ResModes};
 use id_collections::{id_type, Count, Id};
 use morphic_macros::declare_signatures;
 use std::collections::{BTreeMap, BTreeSet};
@@ -56,15 +56,33 @@ impl fmt::Display for RawPropExpr {
 }
 
 #[derive(Clone, Debug)]
-struct RawConstr {
+struct RawModeConstr {
     lhs: RawPropExpr,
     rhs: RawPropExpr,
 }
 
-impl fmt::Display for RawConstr {
+impl fmt::Display for RawModeConstr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} = {}", self.lhs, self.rhs)
     }
+}
+
+#[derive(Clone, Debug)]
+struct RawLtConstr {
+    lhs: RawPropExpr,
+    rhs: RawPropExpr,
+}
+
+impl fmt::Display for RawLtConstr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} <- {}", self.lhs, self.rhs)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum RawConstr {
+    Mode(RawModeConstr),
+    Lt(RawLtConstr),
 }
 
 #[derive(Clone, Debug)]
@@ -83,15 +101,28 @@ struct RawSignature {
 #[id_type]
 pub struct TypeVar(pub usize);
 
+#[id_type]
+pub struct ModelMode(pub usize);
+
+#[id_type]
+pub struct ModelLt(pub usize);
+
 #[derive(Clone, Debug)]
 pub enum Type {
     Var(TypeVar),
     Bool,
     Num(NumType),
     Tuple(Vec<Type>),
-    Array(Res<ModeParam, LtParam>, Box<Type>),
-    HoleArray(Res<ModeParam, LtParam>, Box<Type>),
-    Boxed(Res<ModeParam, LtParam>, Box<Type>),
+    Array(Res<ModelMode, ModelLt>, Box<Type>),
+    HoleArray(Res<ModelMode, ModelLt>, Box<Type>),
+    Boxed(Res<ModelMode, ModelLt>, Box<Type>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeProp {
+    Stack,
+    Access,
+    Storage,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,18 +130,41 @@ pub enum Prop {
     Stack,
     Access,
     Storage,
+    Lt,
+}
+
+impl fmt::Display for Prop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Prop::Stack => write!(f, "stack"),
+            Prop::Access => write!(f, "access"),
+            Prop::Storage => write!(f, "storage"),
+            Prop::Lt => write!(f, "lt"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct PropExpr {
+pub struct ModePropExpr {
     pub type_var: TypeVar,
-    pub prop: Prop,
+    pub prop: ModeProp,
 }
 
 #[derive(Clone, Debug)]
-pub struct Constr {
-    pub lhs: PropExpr,
-    pub rhs: PropExpr,
+pub struct LtPropExpr {
+    pub type_var: TypeVar,
+}
+
+#[derive(Clone, Debug)]
+pub enum Constr {
+    Mode {
+        lhs: ModePropExpr,
+        rhs: ModePropExpr,
+    },
+    Lt {
+        lhs: LtPropExpr,
+        rhs: LtPropExpr,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -131,12 +185,12 @@ pub struct Signature {
     pub ret: Type,
     pub constrs: Vec<Constr>,
 
-    pub unused_lts: BTreeSet<LtParam>,
-    pub owned_modes: BTreeSet<ModeParam>,
+    pub unused_lts: BTreeSet<ModelLt>,
+    pub owned_modes: BTreeSet<ModelMode>,
 
     pub var_count: Count<TypeVar>,
-    pub lt_count: Count<LtParam>,
-    pub mode_count: Count<ModeParam>,
+    pub lt_count: Count<ModelLt>,
+    pub mode_count: Count<ModelMode>,
 }
 
 #[derive(Clone, Debug)]
@@ -167,11 +221,11 @@ struct Context {
     type_var_count: Count<TypeVar>,
     type_var_table: BTreeMap<String, (TypeVar, Position)>,
 
-    lt_gen: IdGen<LtParam>,
-    mode_gen: IdGen<ModeParam>,
+    lt_gen: IdGen<ModelLt>,
+    mode_gen: IdGen<ModelMode>,
 
-    unused_lts: BTreeSet<LtParam>,
-    owned_modes: BTreeSet<ModeParam>,
+    unused_lts: BTreeSet<ModelLt>,
+    owned_modes: BTreeSet<ModelMode>,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -193,9 +247,13 @@ enum Error {
     #[error("unknown type variable `{0}` in expression: `{1}`")]
     UnknownVar(String, RawPropExpr),
     #[error("stack types do not have access or storage modes")]
-    InvalidStackProp,
+    HasNoHeapProp,
     #[error("heap types do not have stack modes")]
-    InvalidHeapProp,
+    HasNoStackProp,
+    #[error("expected mode property, but found lifetime property")]
+    ExpectedModeProp,
+    #[error("expected lifetime property, but found mode property")]
+    ExpectedLtProp,
     #[error("type variable used in inconsistent positions")]
     InconsistentPosition,
 }
@@ -213,7 +271,7 @@ fn assert_args(type_: &str, expected: usize, args: &[RawTerm]) -> Result<(), Err
     }
 }
 
-fn resolve_lifetime(lt: RawTerm, ctx: &mut Context) -> Result<LtParam, Error> {
+fn resolve_lifetime(lt: RawTerm, ctx: &mut Context) -> Result<ModelLt, Error> {
     match lt {
         RawTerm::Var(var) => Ok(ctx.lt_gen.get(var)),
         RawTerm::App(name, args) => {
@@ -230,7 +288,7 @@ fn resolve_lifetime(lt: RawTerm, ctx: &mut Context) -> Result<LtParam, Error> {
     }
 }
 
-fn resolve_mode(mode: RawTerm, ctx: &mut Context) -> Result<ModeParam, Error> {
+fn resolve_mode(mode: RawTerm, ctx: &mut Context) -> Result<ModelMode, Error> {
     match mode {
         RawTerm::Var(var) => Ok(ctx.mode_gen.get(var)),
         RawTerm::App(name, args) => {
@@ -252,7 +310,7 @@ fn resolve_content(
     pos: Position,
     ctx: &mut Context,
     mut args: Vec<RawTerm>,
-) -> Result<(Res<ModeParam, LtParam>, Type), Error> {
+) -> Result<(Res<ModelMode, ModelLt>, Type), Error> {
     match pos {
         Position::Stack => {
             assert_args(name, 3, &args)?;
@@ -338,27 +396,48 @@ fn resolve_type(pos: Position, ctx: &mut Context, type_: RawTerm) -> Result<Type
     })
 }
 
-fn resolve_prop_expr(ctx: &mut Context, expr: RawPropExpr) -> Result<PropExpr, Error> {
+fn resolve_mode_prop_expr(ctx: &mut Context, expr: RawPropExpr) -> Result<ModePropExpr, Error> {
     let &(type_var, pos) = ctx
         .type_var_table
         .get(&expr.type_var)
         .ok_or_else(|| Error::UnknownVar(expr.type_var.clone(), expr.clone()))?;
-    let prop = match expr.prop.as_str() {
-        "stack" => Prop::Stack,
-        "access" => Prop::Access,
-        "storage" => Prop::Storage,
-        _ => return Err(Error::UnknownProp(expr.prop)),
-    };
-    match (pos, prop) {
-        (Position::Stack, Prop::Access) | (Position::Stack, Prop::Storage) => {
-            return Err(Error::InvalidStackProp);
-        }
-        (Position::Heap, Prop::Stack) => {
-            return Err(Error::InvalidHeapProp);
-        }
-        _ => {}
+    match expr.prop.as_str() {
+        "stack" => match pos {
+            Position::Stack => Ok(ModePropExpr {
+                type_var,
+                prop: ModeProp::Stack,
+            }),
+            Position::Heap => Err(Error::HasNoHeapProp),
+        },
+        "access" => match pos {
+            Position::Stack => Err(Error::HasNoStackProp),
+            Position::Heap => Ok(ModePropExpr {
+                type_var,
+                prop: ModeProp::Access,
+            }),
+        },
+        "storage" => match pos {
+            Position::Stack => Err(Error::HasNoStackProp),
+            Position::Heap => Ok(ModePropExpr {
+                type_var,
+                prop: ModeProp::Storage,
+            }),
+        },
+        "lt" => Err(Error::ExpectedModeProp),
+        _ => Err(Error::UnknownProp(expr.prop)),
     }
-    Ok(PropExpr { type_var, prop })
+}
+
+fn resolve_lt_prop_expr(ctx: &mut Context, expr: RawPropExpr) -> Result<LtPropExpr, Error> {
+    let &(type_var, _pos) = ctx
+        .type_var_table
+        .get(&expr.type_var)
+        .ok_or_else(|| Error::UnknownVar(expr.type_var.clone(), expr.clone()))?;
+    match expr.prop.as_str() {
+        "stack" | "access" | "storage" => Err(Error::ExpectedLtProp),
+        "lt" => Ok(LtPropExpr { type_var }),
+        _ => Err(Error::UnknownProp(expr.prop)),
+    }
 }
 
 fn resolve_signature(sig: RawSignature) -> Result<Signature, Error> {
@@ -387,10 +466,17 @@ fn resolve_signature(sig: RawSignature) -> Result<Signature, Error> {
     let constrs = sig
         .constrs
         .into_iter()
-        .map(|constr| {
-            let lhs = resolve_prop_expr(&mut ctx, constr.lhs)?;
-            let rhs = resolve_prop_expr(&mut ctx, constr.rhs)?;
-            Ok(Constr { lhs, rhs })
+        .map(|constr| match constr {
+            RawConstr::Mode(constr) => {
+                let lhs = resolve_mode_prop_expr(&mut ctx, constr.lhs)?;
+                let rhs = resolve_mode_prop_expr(&mut ctx, constr.rhs)?;
+                Ok(Constr::Mode { lhs, rhs })
+            }
+            RawConstr::Lt(constr) => {
+                let lhs = resolve_lt_prop_expr(&mut ctx, constr.lhs)?;
+                let rhs = resolve_lt_prop_expr(&mut ctx, constr.rhs)?;
+                Ok(Constr::Lt { lhs, rhs })
+            }
         })
         .collect::<Result<_, _>>()?;
     Ok(Signature {
@@ -409,19 +495,19 @@ fn resolve_signature(sig: RawSignature) -> Result<Signature, Error> {
 
 declare_signatures! {
     pub box_new: (u) -> Boxed a Own t
-        where u.stack = t.storage, u.stack = t.access;
+        where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
     pub box_get: (Boxed a m t) -> u
-        where u.stack = t.access;
+        where t.lt <- u.lt, u.stack = t.access;
 
     pub array_new: (u..) -> Array a Own t
-        where u.stack = t.storage, u.stack = t.access;
+        where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
     pub array_get: (Array a m t, Int) -> u
-        where u.stack = t.access;
+        where t.lt <- u.lt, u.stack = t.access;
 
     pub array_extract: (Array a Own t, Int) -> (HoleArray a Own t, u)
-        where u.stack = t.storage;
+        where t.lt <- u.lt, u.stack = t.storage;
 
     /// Since the `len` field of an array lives on the stack, it's technically OK to read it after
     /// the array has been released (i.e. it's backing buffer has been deallocated). Therefore, we
@@ -429,13 +515,13 @@ declare_signatures! {
     pub array_len: (Array Emp m t) -> Int;
 
     pub array_push: (Array a Own t, u) -> Array a Own t
-        where u.stack = t.storage;
+        where u.lt <- t.lt, u.stack = t.storage;
 
     pub array_pop: (Array a Own t) -> (Array a Own t, u)
-        where u.stack = t.storage;
+        where t.lt <- u.lt, u.stack = t.storage;
 
     pub array_replace: (HoleArray a Own t, u) -> Array a Own t
-        where u.stack = t.storage;
+        where u.lt <- t.lt, u.stack = t.storage;
 
     pub array_reserve: (Array a Own t, Int) -> Array a Own t;
 

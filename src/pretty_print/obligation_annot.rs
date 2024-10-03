@@ -449,6 +449,7 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
         write_typedef(w, Some(&type_renderer), typedef, i)?;
         writeln!(w)?;
     }
+    writeln!(w)?;
     for (i, func) in &program.funcs {
         write_func(w, &type_renderer, &func_renderer, func, i)?;
         writeln!(w)?;

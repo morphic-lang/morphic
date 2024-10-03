@@ -655,6 +655,7 @@ impl<M, L> Type<M, L> {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct ShapeIter<'a, T> {
     shapes: std::slice::Iter<'a, Shape>,
     res: &'a [T],
@@ -696,6 +697,55 @@ pub fn iter_shapes<'a, T>(
     res: &'a [T],
 ) -> impl ExactSizeIterator<Item = (&'a Shape, &'a [T])> {
     enumerate_shapes(shapes, res).map(|(shape, _, res)| (shape, res))
+}
+
+#[derive(Debug)]
+pub struct ShapeIterMut<'a, T> {
+    shapes: std::slice::Iter<'a, Shape>,
+    rest: &'a mut [T],
+    start: usize,
+}
+
+impl<'a, T> Iterator for ShapeIterMut<'a, T> {
+    type Item = (&'a Shape, (usize, usize), &'a mut [T]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let shape = self.shapes.next()?;
+
+        let slice = std::mem::take(&mut self.rest);
+        let (result, rest) = slice.split_at_mut(shape.num_slots);
+        self.rest = rest;
+
+        let start = self.start;
+        let end = start + shape.num_slots;
+        self.start = end;
+
+        Some((shape, (start, end), result))
+    }
+}
+
+impl<'a, T> ExactSizeIterator for ShapeIterMut<'a, T> {
+    fn len(&self) -> usize {
+        self.shapes.len()
+    }
+}
+
+pub fn enumerate_shapes_mut<'a, T>(
+    shapes: &'a [Shape],
+    res: &'a mut [T],
+) -> impl ExactSizeIterator<Item = (&'a Shape, (usize, usize), &'a mut [T])> {
+    ShapeIterMut {
+        shapes: shapes.iter(),
+        rest: res,
+        start: 0,
+    }
+}
+
+pub fn iter_shapes_mut<'a, T>(
+    shapes: &'a [Shape],
+    res: &'a mut [T],
+) -> impl ExactSizeIterator<Item = (&'a Shape, &'a mut [T])> {
+    enumerate_shapes_mut(shapes, res).map(|(shape, _, res)| (shape, res))
 }
 
 #[derive(Clone, Debug)]

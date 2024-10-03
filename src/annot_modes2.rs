@@ -2,7 +2,7 @@
 //! inference paper. A signficant proportion of the machinery is dedicated to specialization. The
 //! core logic for the pass is contained in `instantiate_expr`.
 
-use crate::data::borrow_model as model;
+use crate::data::borrow_model::{self as model, ModelLt, ModelMode};
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::CustomTypeSccId;
 use crate::data::guarded_ast::{self as guard, LocalId};
@@ -641,11 +641,11 @@ fn instantiate_occur(
     )
 }
 
-fn extract_res_impl(
+fn extract_model_res_impl(
     model: &model::Type,
     shape: &Shape,
     next_slot: usize,
-    out_res: &mut BTreeMap<SlotId, Res<ModeParam, LtParam>>,
+    out_res: &mut BTreeMap<SlotId, Res<ModelMode, ModelLt>>,
 ) -> usize {
     match (model, &*shape.inner) {
         (model::Type::Var(_), _) => next_slot + shape.num_slots,
@@ -654,84 +654,161 @@ fn extract_res_impl(
         (model::Type::Tuple(models), ShapeInner::Tuple(shapes)) => {
             let iter = models.iter().zip_eq(shapes);
             iter.fold(next_slot, |start, (model, shape)| {
-                extract_res_impl(model, shape, start, out_res)
+                extract_model_res_impl(model, shape, start, out_res)
             })
         }
         (model::Type::Array(res, model), ShapeInner::Array(shape)) => {
             out_res.insert(SlotId::from_index(next_slot), res.clone());
-            extract_res_impl(model, shape, next_slot + 1, out_res)
+            extract_model_res_impl(model, shape, next_slot + 1, out_res)
         }
         (model::Type::HoleArray(res, model), ShapeInner::HoleArray(shape)) => {
             out_res.insert(SlotId::from_index(next_slot), res.clone());
-            extract_res_impl(model, shape, next_slot + 1, out_res)
+            extract_model_res_impl(model, shape, next_slot + 1, out_res)
         }
         (model::Type::Boxed(res, model), ShapeInner::Boxed(shape)) => {
             out_res.insert(SlotId::from_index(next_slot), res.clone());
-            extract_res_impl(model, shape, next_slot + 1, out_res)
+            extract_model_res_impl(model, shape, next_slot + 1, out_res)
         }
         _ => panic!("type does not match model"),
     }
 }
 
-fn extract_res(model: &model::Type, shape: &Shape) -> BTreeMap<SlotId, Res<ModeParam, LtParam>> {
+fn extract_model_res(
+    model: &model::Type,
+    shape: &Shape,
+) -> BTreeMap<SlotId, Res<ModelMode, ModelLt>> {
     let mut out_res = BTreeMap::new();
-    extract_res_impl(model, shape, 0, &mut out_res);
+    extract_model_res_impl(model, shape, 0, &mut out_res);
     out_res
 }
 
-fn extract_vars(
+#[derive(Debug, Clone, Copy)]
+struct ArgLoc {
+    start: usize,
+    end: usize,
+    occur_idx: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ArgOccur {
+    ty: Type<ModeVar, Lt>,
+    loc: ArgLoc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VarOccurKind {
+    Arg(usize),
+    Ret,
+}
+
+#[derive(Debug, Clone)]
+struct VarOccurs {
+    args: Vec<ArgOccur>,
+    rets: Vec<Type<ModeVar, Lt>>,
+}
+
+impl VarOccurs {
+    fn new() -> VarOccurs {
+        VarOccurs {
+            args: Vec::new(),
+            rets: Vec::new(),
+        }
+    }
+
+    fn rep(&self) -> Option<&Type<ModeVar, Lt>> {
+        self.args
+            .first()
+            .map(|occ| &occ.ty)
+            .or_else(|| self.rets.first())
+    }
+
+    fn all(&self) -> impl Iterator<Item = &Type<ModeVar, Lt>> {
+        self.args.iter().map(|occ| &occ.ty).chain(self.rets.iter())
+    }
+}
+
+fn extract_model_vars_impl(
+    kind: VarOccurKind,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     model: &model::Type,
     shape: &Shape,
+    start: usize,
     res: &[Res<ModeVar, Lt>],
-    out_vars: &mut IdMap<model::TypeVar, Vec<Type<ModeVar, Lt>>>,
+    out: &mut IdMap<model::TypeVar, VarOccurs>,
 ) {
     match (model, &*shape.inner) {
         (model::Type::Var(var), _) => {
-            let entry = out_vars.entry(*var).or_insert_with(Vec::new);
-            entry.push(Type {
+            debug_assert!(shape.num_slots == res.len());
+            let entry = out.entry(*var).or_insert_with(VarOccurs::new);
+            let ty = Type {
                 shape: shape.clone(),
                 res: IdVec::from_vec(res.iter().cloned().collect()),
-            });
+            };
+            match kind {
+                VarOccurKind::Arg(occur_idx) => {
+                    let loc = ArgLoc {
+                        start,
+                        end: start + shape.num_slots,
+                        occur_idx,
+                    };
+                    entry.args.push(ArgOccur { ty, loc });
+                }
+                VarOccurKind::Ret => {
+                    entry.rets.push(ty);
+                }
+            }
         }
         (model::Type::Bool, ShapeInner::Bool) => {}
         (model::Type::Num(model), ShapeInner::Num(shape)) if model == shape => {}
         (model::Type::Tuple(models), ShapeInner::Tuple(shapes)) => {
+            let mut start = start;
             for (model, (shape, res)) in models.iter().zip_eq(annot::iter_shapes(shapes, res)) {
-                extract_vars(customs, model, shape, res, out_vars);
+                extract_model_vars_impl(kind, customs, model, shape, start, res, out);
+                start += shape.num_slots;
             }
         }
         (model::Type::Array(_res, model), ShapeInner::Array(shape)) => {
-            extract_vars(customs, model, shape, &res[1..], out_vars);
+            extract_model_vars_impl(kind, customs, model, shape, start + 1, &res[1..], out);
         }
         (model::Type::HoleArray(_res, model), ShapeInner::HoleArray(shape)) => {
-            extract_vars(customs, model, shape, &res[1..], out_vars);
+            extract_model_vars_impl(kind, customs, model, shape, start + 1, &res[1..], out);
         }
         (model::Type::Boxed(_res, model), ShapeInner::Boxed(shape)) => {
-            extract_vars(customs, model, shape, &res[1..], out_vars);
+            extract_model_vars_impl(kind, customs, model, shape, start + 1, &res[1..], out);
         }
         _ => panic!("type does not match model"),
     }
 }
 
-fn extract_prop(prop: model::Prop, res: &ResModes<ModeVar>) -> ModeVar {
+fn extract_model_vars(
+    kind: VarOccurKind,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    model: &model::Type,
+    shape: &Shape,
+    res: &[Res<ModeVar, Lt>],
+    out: &mut IdMap<model::TypeVar, VarOccurs>,
+) {
+    extract_model_vars_impl(kind, customs, model, shape, 0, res, out);
+}
+
+fn extract_model_prop(prop: model::ModeProp, res: &ResModes<ModeVar>) -> ModeVar {
     match prop {
-        model::Prop::Stack => match res {
+        model::ModeProp::Stack => match res {
             ResModes::Stack(stack) => *stack,
             _ => panic!("expected stack resource"),
         },
-        model::Prop::Access => match res {
+        model::ModeProp::Access => match res {
             ResModes::Heap(heap) => heap.access,
             _ => panic!("expected heap resource"),
         },
-        model::Prop::Storage => match res {
+        model::ModeProp::Storage => match res {
             ResModes::Heap(heap) => heap.storage,
             _ => panic!("expected heap resource"),
         },
     }
 }
 
-fn instantiate_model(
+fn create_occurs_from_model(
     sig: &model::Signature,
     _strategy: Strategy,
     interner: &Interner,
@@ -744,7 +821,7 @@ fn instantiate_model(
 ) -> Vec<annot::Occur<ModeVar, Lt>> {
     assert!(args.len() >= sig.args.fixed.len());
 
-    // Create fresh occurrences for each function argument.
+    // Create a fresh occurrence for each function argument.
     let mut occurs = args
         .iter()
         .map(|&id| {
@@ -753,32 +830,34 @@ fn instantiate_model(
         })
         .collect::<Vec<_>>();
 
-    // Set up the mapping from model modes to concrete modes.
-    let mode_mapping = IdVec::from_count_with(sig.mode_count, |_| constrs.fresh_var());
-    for param in &sig.owned_modes {
-        constrs.require_le_const(&Mode::Owned, mode_mapping[param]);
-    }
-
-    let subst_modes = |modes| match modes {
-        ResModes::Stack(stack) => ResModes::Stack(mode_mapping[stack]),
+    // Set up a mapping from model modes to mode variables.
+    let get_mode = IdVec::from_count_with(sig.mode_count, |_| constrs.fresh_var());
+    let get_modes = |modes| match modes {
+        ResModes::Stack(stack) => ResModes::Stack(get_mode[stack]),
         ResModes::Heap(heap) => ResModes::Heap(HeapModes {
-            access: mode_mapping[heap.access],
-            storage: mode_mapping[heap.storage],
+            access: get_mode[heap.access],
+            storage: get_mode[heap.storage],
         }),
     };
 
-    // - Impose top-level mode constraints on the return type.
-    // - Record the mapping from model lifetimes to concrete lifetimes.
-    let mut lt_mapping = IdVec::from_count_with(sig.lt_count, |_| None);
-    for (slot, model_res) in extract_res(&sig.ret, &ret.shape) {
+    // Impose ownership constraints on the signature.
+    for param in &sig.owned_modes {
+        constrs.require_le_const(&Mode::Owned, get_mode[param]);
+    }
+
+    let mut get_lt = IdVec::from_count_with(sig.lt_count, |_| None);
+
+    for (slot, model_res) in extract_model_res(&sig.ret, &ret.shape) {
+        // Impose top-level mode constraints on the return type.
         let res = &ret.res[slot];
-        require_eq(constrs, &subst_modes(model_res.modes), &res.modes);
+        require_eq(constrs, &get_modes(model_res.modes), &res.modes);
 
         if sig.unused_lts.contains(&model_res.lt) {
             panic!("unused model lifetimes cannot be supplied in return position");
         }
 
-        match &mut lt_mapping[model_res.lt] {
+        // Record the mapping from model lifetimes to concrete lifetimes.
+        match &mut get_lt[model_res.lt] {
             entry @ None => *entry = Some(res.lt.clone()),
             Some(_) => {
                 panic!("a lifetime variable cannot appear more than once in a model return type");
@@ -786,17 +865,16 @@ fn instantiate_model(
         }
     }
 
-    let lt_mapping = lt_mapping;
+    let get_lt = get_lt;
 
-    // For each argument type:
-    // - Impose top-level mode constraints.
-    // - Substitute for model lifetimes using the mapping constructed from the return type.
     for (arg, occur) in sig.args.iter().zip(&mut occurs) {
-        for (slot, model_res) in extract_res(arg, &occur.ty.shape) {
+        for (slot, model_res) in extract_model_res(arg, &occur.ty.shape) {
+            // Impose top-level mode constraints on the argument type.
             let res = &mut occur.ty.res[slot];
-            require_eq(constrs, &subst_modes(model_res.modes), &res.modes);
+            require_eq(constrs, &get_modes(model_res.modes), &res.modes);
 
-            res.lt = if let Some(lt) = &lt_mapping[model_res.lt] {
+            // Substitute for model lifetimes using the mapping constructed from the return type.
+            res.lt = if let Some(lt) = &get_lt[model_res.lt] {
                 lt.clone()
             } else if sig.unused_lts.contains(&model_res.lt) {
                 Lt::Empty
@@ -808,8 +886,9 @@ fn instantiate_model(
 
     // Accumulate the resources for each occurrence of each type variable.
     let mut vars = IdMap::new();
-    for (model, occur) in sig.args.iter().zip(&occurs) {
-        extract_vars(
+    for ((i, model), occur) in sig.args.iter().enumerate().zip(&occurs) {
+        extract_model_vars(
+            VarOccurKind::Arg(i),
             customs,
             model,
             &occur.ty.shape,
@@ -817,42 +896,87 @@ fn instantiate_model(
             &mut vars,
         );
     }
-    extract_vars(customs, &sig.ret, &ret.shape, ret.res.as_slice(), &mut vars);
-    let vars = vars.to_id_vec(sig.var_count);
+    extract_model_vars(
+        VarOccurKind::Ret,
+        customs,
+        &sig.ret,
+        &ret.shape,
+        ret.res.as_slice(),
+        &mut vars,
+    );
+    let mut vars = vars.to_id_vec(sig.var_count);
 
     // Impose equality constraints between all occurrences of the same type variable.
     for occurs in vars.values() {
-        if occurs.len() > 1 {
-            let rep = &occurs[0];
-            for occur in &occurs[1..] {
-                bind_modes(constrs, &rep, occur);
+        if let Some(rep) = occurs.rep() {
+            // TODO: Avoid unnecessarily generating reflexive constraints.
+            for occur in occurs.all() {
+                bind_modes(constrs, rep, occur);
             }
         }
     }
 
-    // Handle any constraints on type variables.
+    // Handle any explicit constraints.
     for constr in &sig.constrs {
-        let rep1 = &vars[constr.lhs.type_var][0];
-        let rep2 = &vars[constr.rhs.type_var][0];
-        debug_assert_eq!(rep1.shape, rep2.shape);
+        match constr {
+            model::Constr::Mode { lhs, rhs } => {
+                let rep1 = &vars[lhs.type_var].rep().unwrap();
+                let rep2 = &vars[rhs.type_var].rep().unwrap();
+                debug_assert_eq!(rep1.shape, rep2.shape);
 
-        let prop1 = constr.lhs.prop;
-        let prop2 = constr.rhs.prop;
+                let prop1 = lhs.prop;
+                let prop2 = rhs.prop;
+                let pos = rep1.shape.positions(customs);
 
-        let pos = rep1.shape.positions(customs);
-
-        for (pos, (res1, res2)) in pos.iter().zip_eq(rep1.iter().zip_eq(rep2.iter())) {
-            match pos {
-                Position::Stack => {
-                    let mode1 = extract_prop(prop1, &res1.modes);
-                    let mode2 = extract_prop(prop2, &res2.modes);
-                    constrs.require_eq(mode1, mode2);
+                for (pos, (res1, res2)) in pos.iter().zip_eq(rep1.iter().zip_eq(rep2.iter())) {
+                    match pos {
+                        Position::Stack => {
+                            let mode1 = extract_model_prop(prop1, &res1.modes);
+                            let mode2 = extract_model_prop(prop2, &res2.modes);
+                            constrs.require_eq(mode1, mode2);
+                        }
+                        Position::Heap => {
+                            require_eq(constrs, &res1.modes, &res2.modes);
+                        }
+                    }
                 }
-                Position::Heap => {
-                    require_eq(constrs, &res1.modes, &res2.modes);
+            }
+            model::Constr::Lt { lhs, rhs } => {
+                let (lhs_vars, rhs_vars) = vars.get_pair_mut(lhs.type_var, rhs.type_var).unwrap();
+                for ret in rhs_vars.rets.iter() {
+                    for arg in lhs_vars.args.iter_mut() {
+                        let l = arg.loc;
+                        let arg_ret =
+                            &mut occurs[l.occur_idx].ty.res.as_mut_slice()[l.start..l.end];
+                        for (arg_res, ret_res) in arg_ret.iter_mut().zip_eq(ret.res.values()) {
+                            arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
+                        }
+                    }
                 }
             }
         }
+    }
+
+    occurs
+}
+
+fn instantiate_model(
+    sig: &model::Signature,
+    strategy: Strategy,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    constrs: &mut ConstrGraph,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
+    path: &annot::Path,
+    args: &[LocalId],
+    ret: &Type<ModeVar, Lt>,
+) -> Vec<annot::Occur<ModeVar, Lt>> {
+    let occurs = create_occurs_from_model(
+        sig, strategy, interner, customs, constrs, ctx, path, args, ret,
+    );
+
+    for occur in &occurs {
+        instantiate_occur(strategy, interner, ctx, constrs, occur.id, &occur.ty);
     }
 
     occurs
@@ -2096,5 +2220,64 @@ mod tests {
         let expected_pos = vec![Position::Stack];
         assert_eq!(annot_list.content, expected_shape);
         assert_eq!(annot_list.pos, expected_pos);
+    }
+
+    #[test]
+    fn test_instantiate_model() {
+        let interner = Interner::empty();
+        let customs = IdVec::new();
+        let mut constrs = ConstrGraph::new();
+        let mut ctx = LocalContext::new();
+        let path = annot::Path::root().seq(1);
+
+        let arg_ty = freshen_type_unused(
+            &mut constrs,
+            &parameterize_type(
+                &interner,
+                &customs,
+                &guard::Type::Array(Box::new(guard::Type::Bool)),
+            ),
+        );
+        println!("arg_ty: {}", arg_ty.display());
+        let arg = ctx.add_local(LocalInfo {
+            scope: annot::Path::root().seq(0),
+            ty: arg_ty,
+        });
+
+        let use_lt = annot::Path::root().seq(2).as_lt(&interner);
+        let ret_ty = freshen_type(
+            &mut constrs,
+            || use_lt.clone(),
+            &parameterize_type(
+                &interner,
+                &customs,
+                &guard::Type::Boxed(Box::new(guard::Type::Array(Box::new(guard::Type::Bool)))),
+            ),
+        );
+
+        println!("ret_ty: {}", ret_ty.display());
+
+        let _ = instantiate_model(
+            &model::box_new,
+            Strategy::Default,
+            &interner,
+            &customs,
+            &mut constrs,
+            &mut ctx,
+            &path,
+            &[arg],
+            &ret_ty,
+        );
+
+        let arg_mode = ModeVar(0);
+        let ret_mode_box = ModeVar(1);
+        let ret_mode_arr_access = ModeVar(2);
+        let ret_mode_arr_storage = ModeVar(3);
+        for (x, y) in constrs.inner() {
+            println!("{}: {:?}", x.0, y);
+        }
+        assert!(constrs.inner()[ret_mode_box].lb_const == Mode::Owned);
+        assert!(constrs.inner()[ret_mode_arr_access].lb_vars == vec![arg_mode]);
+        assert!(constrs.inner()[arg_mode].lb_vars == vec![ret_mode_arr_access]);
     }
 }

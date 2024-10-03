@@ -101,19 +101,44 @@ impl Parse for PropExpr {
 }
 
 #[derive(Clone, Debug)]
-pub struct Constr {
+pub struct ModeConstr {
     pub lhs: PropExpr,
     pub eq_token: Token![=],
     pub rhs: PropExpr,
 }
 
+#[derive(Clone, Debug)]
+pub struct LtConstr {
+    pub lhs: PropExpr,
+    pub lt_token: Token![<-],
+    pub rhs: PropExpr,
+}
+
+#[derive(Clone, Debug)]
+pub enum Constr {
+    Mode(ModeConstr),
+    Lt(LtConstr),
+}
+
 impl Parse for Constr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(Constr {
-            lhs: input.parse()?,
-            eq_token: input.parse()?,
-            rhs: input.parse()?,
-        })
+        let lhs = input.parse()?;
+        let lookahead = input.lookahead1();
+        if lookahead.peek(Token![=]) {
+            Ok(Constr::Mode(ModeConstr {
+                lhs,
+                eq_token: input.parse()?,
+                rhs: input.parse()?,
+            }))
+        } else if lookahead.peek(Token![<-]) {
+            Ok(Constr::Lt(LtConstr {
+                lhs,
+                lt_token: input.parse()?,
+                rhs: input.parse()?,
+            }))
+        } else {
+            Err(lookahead.error())
+        }
     }
 }
 

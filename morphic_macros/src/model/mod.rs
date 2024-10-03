@@ -52,12 +52,26 @@ fn declare_prop_expr(prop_expr: &parse::PropExpr) -> proc_macro2::TokenStream {
 
 fn declare_constr(constr: &parse::Constr) -> proc_macro2::TokenStream {
     let data_module = DATA_MODULE();
-    let lhs = declare_prop_expr(&constr.lhs);
-    let rhs = declare_prop_expr(&constr.rhs);
-    quote! {
-        #data_module::RawConstr {
-            lhs: #lhs,
-            rhs: #rhs,
+    match constr {
+        parse::Constr::Mode(constr) => {
+            let lhs = declare_prop_expr(&constr.lhs);
+            let rhs = declare_prop_expr(&constr.rhs);
+            quote! {
+                #data_module::RawConstr::Mode(#data_module::RawModeConstr {
+                    lhs: #lhs,
+                    rhs: #rhs,
+                })
+            }
+        }
+        parse::Constr::Lt(constr) => {
+            let lhs = declare_prop_expr(&constr.lhs);
+            let rhs = declare_prop_expr(&constr.rhs);
+            quote! {
+                #data_module::RawConstr::Lt(#data_module::RawLtConstr {
+                    lhs: #lhs,
+                    rhs: #rhs,
+                })
+            }
         }
     }
 }
