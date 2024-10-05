@@ -1,4 +1,5 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
     self as annot, ArrayOp, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt, LtParam, Mode,
     ModeParam, ModeSolution, ModeVar, Position, Program, Res, ResModes, Shape, ShapeInner,
@@ -6,7 +7,9 @@ use crate::data::mode_annot_ast2::{
 use crate::data::num_type::NumType;
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common::*;
-use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
+use crate::pretty_print::utils::{
+    write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
+};
 use core::str;
 use std::fmt;
 use std::io::{self, Write};
@@ -133,7 +136,7 @@ fn write_type_impl<M, L>(
         }
         ShapeInner::Custom(type_id) => {
             write_custom(w, type_renderer, *type_id)?;
-            write_delimited(w, res, "<", ">", ",", |w, res| {
+            write_delimited(w, res, "<", ">", ", ", |w, res| {
                 write_resource(w, write_mode, write_lifetime, res)
             })
         }
@@ -311,10 +314,10 @@ fn write_double(
     write!(w, ")")
 }
 
-fn match_string_bytes(bindings: &[(Type, Expr)]) -> Option<String> {
+fn match_string_bytes(bindings: &[(Type, Expr, Metadata)]) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
-        if let (_, Expr::ByteLit(byte)) = binding {
+        if let (_, Expr::ByteLit(byte), _) = binding {
             result_bytes.push(*byte);
         } else {
             break;
@@ -353,8 +356,9 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
                     )?;
                     index += string.len();
                 } else {
-                    let (binding_type, binding_expr) = &bindings[index];
+                    let (binding_type, binding_expr, metadata) = &bindings[index];
                     new_context.writeln(w)?;
+                    write_metadata(w, context.indentation, metadata)?;
                     write!(w, "{}: %{}: ", index, context.num_locals + index)?;
                     write_solved_type(w, context.type_renderer, binding_type)?;
                     write!(w, " = ")?;
@@ -397,7 +401,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             write_occur(w, context.type_renderer, occur)
         }
         Expr::Unreachable(_type) => write!(w, "unreachable"),
-        Expr::Tuple(elems) => write_delimited(w, elems, "(", ")", ",", |w, occur| {
+        Expr::Tuple(elems) => write_delimited(w, elems, "(", ")", ", ", |w, occur| {
             write_occur(w, context.type_renderer, occur)
         }),
         Expr::TupleField(occur, index) => {
@@ -597,9 +601,9 @@ pub struct DisplayShape<'a> {
 
 impl fmt::Display for DisplayShape<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buffer = Vec::<u8>::new();
-        write_shape(&mut buffer, self.type_renderer, self.shape).unwrap();
-        f.write_str(str::from_utf8(&buffer).unwrap())
+        let mut w = Vec::<u8>::new();
+        write_shape(&mut w, self.type_renderer, self.shape).unwrap();
+        f.write_str(str::from_utf8(&w).unwrap())
     }
 }
 
@@ -629,31 +633,31 @@ pub struct DisplaySolverType<'a, L> {
 
 impl fmt::Display for DisplaySolverType<'_, Lt> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buffer = Vec::<u8>::new();
+        let mut w = Vec::new();
         write_type(
-            &mut buffer,
+            &mut w,
             self.type_renderer,
             write_mode_var,
             write_lifetime,
             self.type_,
         )
         .unwrap();
-        f.write_str(str::from_utf8(&buffer).unwrap())
+        f.write_str(str::from_utf8(&w).unwrap())
     }
 }
 
 impl fmt::Display for DisplaySolverType<'_, LtParam> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buffer = Vec::<u8>::new();
+        let mut w = Vec::new();
         write_type(
-            &mut buffer,
+            &mut w,
             self.type_renderer,
             write_mode_var,
             write_lifetime_param,
             self.type_,
         )
         .unwrap();
-        f.write_str(str::from_utf8(&buffer).unwrap())
+        f.write_str(str::from_utf8(&w).unwrap())
     }
 }
 

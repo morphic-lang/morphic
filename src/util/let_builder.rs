@@ -1,16 +1,17 @@
+use crate::data::metadata::Metadata;
 use id_collections::{Count, Id};
 
 pub trait FromBindings: Sized {
     type LocalId: Id;
-    type Binding;
+    type Type: Clone;
 
-    fn from_bindings(bindings: Vec<Self::Binding>, ret: Self::LocalId) -> Self;
+    fn from_bindings(bindings: Vec<(Self::Type, Self, Metadata)>, ret: Self::LocalId) -> Self;
 }
 
 #[derive(Clone, Debug)]
 pub struct LetManyBuilder<E: FromBindings> {
     num_locals: Count<E::LocalId>,
-    bindings: Vec<E::Binding>,
+    bindings: Vec<(E::Type, E, Metadata)>,
 }
 
 impl<E: FromBindings> LetManyBuilder<E> {
@@ -21,9 +22,18 @@ impl<E: FromBindings> LetManyBuilder<E> {
         }
     }
 
-    pub fn add_binding(&mut self, binding: E::Binding) -> E::LocalId {
+    pub fn add_binding(&mut self, ty: E::Type, expr: E) -> E::LocalId {
+        self.add_binding_with_metadata(ty, expr, Metadata::default())
+    }
+
+    pub fn add_binding_with_metadata(
+        &mut self,
+        ty: E::Type,
+        expr: E,
+        metadata: Metadata,
+    ) -> E::LocalId {
         let id = self.num_locals.inc();
-        self.bindings.push(binding);
+        self.bindings.push((ty, expr, metadata));
         id
     }
 
@@ -103,16 +113,13 @@ where
 
 pub trait BuildMatch: FromBindings {
     type VariantId: Id;
-    type Type: Clone;
 
     fn bool_type() -> Self::Type;
-
     fn build_binding(
         builder: &mut LetManyBuilder<Self>,
         ty: Self::Type,
         expr: Self,
     ) -> Self::LocalId;
-
     fn build_if(cond: Self::LocalId, then_expr: Self, else_expr: Self) -> Self;
     fn build_unwrap_variant(variant: Self::VariantId, local: Self::LocalId) -> Self;
     fn build_check_variant(variant: Self::VariantId, local: Self::LocalId) -> Self;

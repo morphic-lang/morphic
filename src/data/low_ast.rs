@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
 use crate::data::profile as prof;
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId, RcOp};
 use crate::data::resolved_ast as res;
@@ -11,8 +12,11 @@ use id_collections::{id_type, IdVec};
 
 #[id_type]
 pub struct LocalId(pub usize);
+
+// TODO: We can just use `tail::CustomFuncId` here
 #[id_type]
 pub struct CustomFuncId(pub usize);
+
 pub type CustomTypeId = first_ord::CustomTypeId;
 
 pub type Type = rc::Type;
@@ -76,8 +80,8 @@ pub enum Expr {
     Call(CustomFuncId, LocalId),
     TailCall(tail::TailFuncId, LocalId),
     LetMany(
-        Vec<(Type, Expr)>, // bound values. Each is assigned a new sequential LocalId
-        LocalId,           // body
+        Vec<(Type, Expr, Metadata)>, // bound values. Each is assigned a new sequential LocalId
+        LocalId,                     // body
     ),
 
     If(LocalId, Box<Expr>, Box<Expr>),
@@ -136,6 +140,7 @@ pub struct TailFunc {
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub tail_funcs: IdVec<tail::TailFuncId, TailFunc>,
+    pub tail_func_symbols: IdVec<tail::TailFuncId, first_ord::FuncSymbols>,
 
     pub arg_type: Type,
     pub ret_type: Type,
@@ -149,7 +154,9 @@ pub struct FuncDef {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: rc::CustomTypes,
+    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<CustomFuncId, tail::TailFuncSymbols>,
     pub schemes: IdVec<ModeSchemeId, ModeScheme>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,

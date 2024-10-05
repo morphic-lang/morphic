@@ -1,4 +1,5 @@
 use crate::data::guarded_ast as guard;
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
     self as annot, Interner, LocalLt, Lt, Mode, Path, Shape, ShapeInner, SlotId,
 };
@@ -13,9 +14,9 @@ use std::collections::BTreeMap;
 
 impl FromBindings for Expr {
     type LocalId = LocalId;
-    type Binding = (Type, Expr);
+    type Type = Type;
 
-    fn from_bindings(bindings: Vec<Self::Binding>, ret: LocalId) -> Self {
+    fn from_bindings(bindings: Vec<(Type, Expr, Metadata)>, ret: LocalId) -> Self {
         Expr::LetMany(bindings, ret)
     }
 }
@@ -90,7 +91,7 @@ fn build_rc_op(
     builder: &mut Builder,
 ) {
     if slots.nonempty() {
-        builder.add_binding((Type::unit(interner), rc::Expr::RcOp(op, slots, target)));
+        builder.add_binding(Type::unit(interner), rc::Expr::RcOp(op, slots, target));
     }
 }
 
@@ -125,7 +126,7 @@ fn empty_drops(expr: &ob::Expr) -> Option<BodyDrops> {
             let epilogues = bindings.iter().map(|_| LocalDrops::new()).collect();
             let sub_drops = bindings
                 .iter()
-                .map(|(_, _, expr)| empty_drops(expr))
+                .map(|(_, _, expr, _)| empty_drops(expr))
                 .collect();
             Some(BodyDrops::LetMany {
                 epilogues,
@@ -306,7 +307,7 @@ fn register_drops_for_expr(
 ) {
     match expr {
         ob::Expr::LetMany(bindings, _) => {
-            for (i, (ty, obligation, sub_expr)) in bindings.iter().enumerate() {
+            for (i, (ty, obligation, sub_expr, _)) in bindings.iter().enumerate() {
                 let path = path.seq(i);
                 register_drops_for_expr(interner, drops, num_locals, &path, sub_expr);
 
@@ -419,6 +420,7 @@ fn annot_expr(
     path: &Path,
     expr: ob::Expr,
     ret_ty: &Type,
+    metadata: Metadata,
     drops: Option<&BodyDrops>,
     builder: &mut Builder,
 ) -> rc::LocalId {
@@ -443,7 +445,7 @@ fn annot_expr(
             };
 
             let final_local = ctx.with_scope(|ctx| {
-                for (i, (ty, obligation, body)) in bindings.into_iter().enumerate() {
+                for (i, (ty, obligation, body, metadata)) in bindings.into_iter().enumerate() {
                     let final_local = annot_expr(
                         interner,
                         customs,
@@ -451,6 +453,7 @@ fn annot_expr(
                         &path.seq(i),
                         body,
                         &ty,
+                        metadata,
                         sub_drops[i].as_ref(),
                         builder,
                     );
@@ -511,6 +514,7 @@ fn annot_expr(
                     &path,
                     case,
                     ret_ty,
+                    Metadata::default(),
                     sub_drops,
                     &mut case_builder,
                 );
@@ -598,7 +602,7 @@ fn annot_expr(
                 annot_occur(interner, customs, ctx, path, arr, builder),
                 annot_occur(interner, customs, ctx, path, idx, builder),
             ));
-            let get_id = builder.add_binding((ret_ty, get_op));
+            let get_id = builder.add_binding(ret_ty, get_op);
 
             build_rc_op(interner, RcOp::Retain, item_retains, get_id, builder);
             return get_id;
@@ -673,7 +677,7 @@ fn annot_expr(
         ob::Expr::FloatLit(lit) => rc::Expr::FloatLit(lit),
     };
 
-    builder.add_binding((ret_ty.clone(), new_expr))
+    builder.add_binding_with_metadata(ret_ty.clone(), new_expr, metadata)
 }
 
 fn annot_func(interner: &Interner, customs: &ob::CustomTypes, func: ob::FuncDef) -> rc::FuncDef {
@@ -704,6 +708,7 @@ fn annot_func(interner: &Interner, customs: &ob::CustomTypes, func: ob::FuncDef)
         &annot::FUNC_BODY_PATH(),
         func.body,
         &func.ret_ty,
+        Metadata::default(),
         drops.body_drops.as_ref(),
         &mut builder,
     );

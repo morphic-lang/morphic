@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId, RcOp};
@@ -17,7 +18,7 @@ pub enum Expr {
     Local(rc::LocalId),
     Call(Purity, CustomFuncId, rc::LocalId),
     TailCall(TailFuncId, rc::LocalId),
-    LetMany(Vec<(rc::Type, Expr)>, rc::LocalId),
+    LetMany(Vec<(rc::Type, Expr, Metadata)>, rc::LocalId),
 
     If(rc::LocalId, Box<Expr>, Box<Expr>),
     CheckVariant(first_ord::VariantId, rc::LocalId), // Returns a bool
@@ -67,6 +68,12 @@ pub struct TailFunc {
 }
 
 #[derive(Clone, Debug)]
+pub enum TailFuncSymbols {
+    Acyclic(first_ord::FuncSymbols),
+    Cyclic,
+}
+
+#[derive(Clone, Debug)]
 pub struct FuncDef {
     // "Tail functions" are functions which may only be called from within this 'FuncDef' (from
     // either the 'body' or from other tail functions), and which may be only called via tail calls.
@@ -77,6 +84,7 @@ pub struct FuncDef {
     //
     // For functions which are not tail-recursive, the 'tail_funcs' vector should be empty.
     pub tail_funcs: IdVec<TailFuncId, TailFunc>,
+    pub tail_func_symbols: IdVec<TailFuncId, first_ord::FuncSymbols>,
 
     pub purity: Purity,
     pub arg_type: rc::Type,
@@ -89,7 +97,9 @@ pub struct FuncDef {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: rc::CustomTypes,
+    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<CustomFuncId, TailFuncSymbols>,
     pub schemes: IdVec<ModeSchemeId, ModeScheme>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,

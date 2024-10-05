@@ -2,8 +2,11 @@ use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
 use crate::data::guarded_ast::{
     ArrayOp, CustomTypeDef, Expr, FuncDef, IoOp, LocalId, Program, Type,
 };
+use crate::data::metadata::Metadata;
 use crate::intrinsic_config::intrinsic_to_name;
-use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
+use crate::pretty_print::utils::{
+    write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
+};
 use std::io::{self, Write};
 
 const TAB_SIZE: usize = 2;
@@ -47,12 +50,14 @@ pub fn write_type(
         Type::Num(NumType::Byte) => write!(w, "Byte"),
         Type::Num(NumType::Int) => write!(w, "Int"),
         Type::Num(NumType::Float) => write!(w, "Float"),
-        Type::Tuple(types) => write_delimited(w, types, "(", ")", ",", |w, type_| {
+        Type::Tuple(types) => write_delimited(w, types, "(", ")", ", ", |w, type_| {
             write_type(w, type_renderer, type_)
         }),
-        Type::Variants(types) => write_delimited(w, types.as_slice(), "{", "}", ",", |w, type_| {
-            write_type(w, type_renderer, type_)
-        }),
+        Type::Variants(types) => {
+            write_delimited(w, types.as_slice(), "{", "}", ", ", |w, type_| {
+                write_type(w, type_renderer, type_)
+            })
+        }
         Type::Custom(type_id) => write!(w, "{}", type_renderer.render(type_id)),
         Type::Array(item_type) => {
             write!(w, "Array (")?;
@@ -90,10 +95,10 @@ fn write_double(w: &mut dyn Write, name: &str, local1: LocalId, local2: LocalId)
     write!(w, ")")
 }
 
-fn match_string_bytes(bindings: &[(Type, Expr)]) -> Option<String> {
+fn match_string_bytes(bindings: &[(Type, Expr, Metadata)]) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
-        if let (_, Expr::ByteLit(byte)) = binding {
+        if let (_, Expr::ByteLit(byte), _) = binding {
             result_bytes.push(*byte);
         } else {
             break;
@@ -129,8 +134,9 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
                     )?;
                     index += string.len();
                 } else {
-                    let (binding_type, binding_expr) = &bindings[index];
+                    let (binding_type, binding_expr, metadata) = &bindings[index];
                     new_context.writeln(w)?;
+                    write_metadata(w, new_context.indentation, metadata)?;
                     write!(w, "%{}: ", context.num_locals + index)?;
                     write_type(w, context.type_renderer, binding_type)?;
                     write!(w, " = ")?;
@@ -174,7 +180,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
         }
         Expr::Unreachable(_type) => write!(w, "unreachable"),
         Expr::Tuple(elems) => {
-            write_delimited(w, elems, "(", ")", ",", |w, local| write_local(w, *local))
+            write_delimited(w, elems, "(", ")", ", ", |w, local| write_local(w, *local))
         }
         Expr::TupleField(local, index) => {
             write!(w, "tuple field {} ", index)?;

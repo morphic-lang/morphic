@@ -1,8 +1,10 @@
-use crate::data::first_order_ast::NumType;
-use crate::data::rc_specialized_ast2::RcOp;
-use crate::data::rc_specialized_ast2::{ArrayOp, IoOp, LocalId, Type};
-use crate::data::tail_rec_ast::{Expr, FuncDef, Program};
+use crate::data::first_order_ast::{CustomTypeId, NumType};
+use crate::data::rc_specialized_ast2::{ArrayOp, IoOp, LocalId, RcOp, Type};
+use crate::data::tail_rec_ast::{CustomFuncId, Expr, FuncDef, Program};
 use crate::intrinsic_config::intrinsic_to_name;
+use crate::pretty_print::utils::{
+    write_metadata, CustomTypeRenderer, FuncRenderer, TailFuncRenderer,
+};
 use std::io;
 use std::io::Write;
 
@@ -126,8 +128,9 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::LetMany(bindings, final_local) => {
             write![w, "let"]?;
             let new_context = context.add_indent();
-            for (index, (binding_type, binding_expr)) in bindings.iter().enumerate() {
+            for (index, (binding_type, binding_expr, metadata)) in bindings.iter().enumerate() {
                 new_context.writeln(w)?;
+                write_metadata(w, context.indentation, metadata)?;
                 write![w, "%{}: ", context.num_locals + index]?;
                 write_type(w, binding_type)?;
                 write![w, " = "]?;
@@ -242,8 +245,13 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
     }
 }
 
-fn write_func(w: &mut dyn Write, func: &FuncDef, func_id: usize) -> io::Result<()> {
-    write![w, "func #{} (%0: ", func_id]?;
+fn write_func(
+    w: &mut dyn Write,
+    func_renderer: &TailFuncRenderer<CustomFuncId>,
+    func: &FuncDef,
+    func_id: CustomFuncId,
+) -> io::Result<()> {
+    write![w, "func #{} (%0: ", func_renderer.render(func_id)]?;
     write_type(w, &func.arg_type)?;
     write![w, "): "]?;
     write_type(w, &func.ret_type)?;
@@ -259,11 +267,12 @@ fn write_func(w: &mut dyn Write, func: &FuncDef, func_id: usize) -> io::Result<(
     write_expr(w, &func.body, context)?;
     writeln![w]?;
 
+    let func_renderer = FuncRenderer::from_symbols(&func.tail_func_symbols);
     if func.tail_funcs.len() > 0 {
         write![w, "where"]?;
         for (tail_func_id, tail_func) in &func.tail_funcs {
             context.writeln(w)?;
-            write![w, "tail func @{} (%0: ", tail_func_id.0]?;
+            write![w, "tail func @{} (%0: ", func_renderer.render(tail_func_id)]?;
             write_type(w, &tail_func.arg_type)?;
             write![w, ") ="]?;
             let sub_context = context.add_indent();
@@ -277,20 +286,28 @@ fn write_func(w: &mut dyn Write, func: &FuncDef, func_id: usize) -> io::Result<(
     Ok(())
 }
 
-fn write_custom_type(w: &mut dyn Write, type_: &Type, type_id: usize) -> io::Result<()> {
-    write![w, "custom type ~{} = ", type_id]?;
-    write_type(w, type_)?;
+fn write_typedef(
+    w: &mut dyn Write,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    typedef: &Type,
+    type_id: CustomTypeId,
+) -> io::Result<()> {
+    write![w, "custom type {} = ", type_renderer.render(type_id)]?;
+    write_type(w, typedef)?;
     writeln![w]?;
     Ok(())
 }
 
 pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
-    for (i, type_) in program.custom_types.types.values().enumerate() {
-        write_custom_type(w, type_, i)?;
+    let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
+    let func_renderer = TailFuncRenderer::from_symbols(&program.func_symbols);
+
+    for (i, typedef) in &program.custom_types.types {
+        write_typedef(w, &type_renderer, typedef, i)?;
     }
     writeln![w]?;
-    for (i, func) in program.funcs.values().enumerate() {
-        write_func(w, func, i)?;
+    for (i, func) in &program.funcs {
+        write_func(w, &func_renderer, func, i)?;
     }
     Ok(())
 }

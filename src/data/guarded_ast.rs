@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::intrinsics::{self as intrs, Intrinsic};
+use crate::data::metadata::Metadata;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -83,8 +84,8 @@ pub enum Expr {
     Local(LocalId),
     Call(Purity, first_ord::CustomFuncId, LocalId),
     LetMany(
-        Vec<(Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
-        LocalId,           // body
+        Vec<(Type, Expr, Metadata)>, // bound values. Each is assigned a new sequential LocalId
+        LocalId,                     // body
     ),
 
     If(LocalId, Box<Expr>, Box<Expr>),

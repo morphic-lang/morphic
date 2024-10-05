@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::guarded_ast as guard;
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
     self as annot, Interner, Lt, Mode, ModeParam, ModeSolution, Path, Res, ResModes, SlotId,
 };
@@ -88,12 +89,13 @@ fn instantiate_occur(
     }
 }
 
-type LocalContext = local_context::LocalContext<guard::LocalId, (Type, StackLt)>;
+type LocalContext = local_context::LocalContext<guard::LocalId, (Type, StackLt, Metadata)>;
 
 fn add_unused_local(
     customs: &annot::CustomTypes,
     ctx: &mut LocalContext,
     ty: &Type,
+    metadata: &Metadata,
 ) -> guard::LocalId {
     let lt = StackLt {
         shape: ty.shape.clone(),
@@ -104,7 +106,7 @@ fn add_unused_local(
             .map(|slot| (slot, Lt::Empty))
             .collect(),
     };
-    ctx.add_local((ty.clone(), lt))
+    ctx.add_local((ty.clone(), lt, metadata.clone()))
 }
 
 fn annot_expr(
@@ -122,7 +124,7 @@ fn annot_expr(
     let handle_occur =
         |ctx: &mut LocalContext, path: &Path, old_occur: &annot::Occur<ModeSolution, _>| {
             let occur = instantiate_occur(inst_params, old_occur);
-            let (src_ty, src_lt) = ctx.local_binding_mut(occur.id);
+            let (src_ty, src_lt, _) = ctx.local_binding_mut(occur.id);
 
             let obligation = get_occur_obligation(
                 interner,
@@ -196,7 +198,7 @@ fn annot_expr(
         // from the context before we return.
         annot::Expr::LetMany(bindings, ret) => ctx.with_scope(|ctx| {
             let mut new_exprs = Vec::new();
-            for (i, (ty, expr)) in bindings.into_iter().enumerate() {
+            for (i, (ty, expr, metadata)) in bindings.into_iter().enumerate() {
                 let ret_ty = instantiate_type(inst_params, &ty);
                 let new_expr = annot_expr(
                     interner,
@@ -210,7 +212,7 @@ fn annot_expr(
                     expr,
                     &ret_ty,
                 );
-                let _ = add_unused_local(customs, ctx, &ret_ty);
+                let _ = add_unused_local(customs, ctx, &ret_ty, metadata);
                 new_exprs.push(new_expr);
             }
 
@@ -219,8 +221,8 @@ fn annot_expr(
             let mut new_bindings_rev = Vec::new();
 
             for expr in new_exprs.into_iter().rev() {
-                let (_, (ty, obligation)) = ctx.pop_local();
-                new_bindings_rev.push((ty, obligation, expr));
+                let (_, (ty, obligation, metadata)) = ctx.pop_local();
+                new_bindings_rev.push((ty, obligation, expr, metadata));
             }
 
             let new_bindings = {
@@ -379,7 +381,7 @@ fn annot_func(
 
     let mut ctx = LocalContext::new();
     let arg_ty = instantiate_type_with(&func.arg_ty, |param| inst_params[*param]);
-    let arg_id = add_unused_local(customs, &mut ctx, &arg_ty);
+    let arg_id = add_unused_local(customs, &mut ctx, &arg_ty, &Metadata::default());
     debug_assert_eq!(arg_id, guard::ARG_LOCAL);
 
     let ret_ty = instantiate_type_with(&func.ret_ty, |param| inst_params[*param]);
@@ -397,7 +399,7 @@ fn annot_func(
         &ret_ty,
     );
 
-    let (_, (_, arg_obligation)) = ctx.pop_local();
+    let (_, (_, arg_obligation, _)) = ctx.pop_local();
     FuncDef {
         purity: func.purity,
         arg_ty,

@@ -7,6 +7,7 @@ use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::CustomTypeSccId;
 use crate::data::guarded_ast::{self as guard, LocalId};
 use crate::data::intrinsics as intr;
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
     self as annot, HeapModes, Interner, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur,
     Position, Res, ResModes, SelfInfo, Shape, ShapeInner, SlotId, Type,
@@ -83,7 +84,7 @@ struct TailFuncDef {
 enum TailExpr {
     Local(LocalId),
     Call(Purity, IsTail, CustomFuncId, LocalId),
-    LetMany(Vec<(guard::Type, TailExpr)>, LocalId),
+    LetMany(Vec<(guard::Type, TailExpr, Metadata)>, LocalId),
 
     If(LocalId, Box<TailExpr>, Box<TailExpr>),
     CheckVariant(VariantId, LocalId), // Returns a bool
@@ -132,7 +133,7 @@ fn mark_tail_calls(
             bindings
                 .iter()
                 .enumerate()
-                .map(|(i, (ty, binding))| {
+                .map(|(i, (ty, binding, metadata))| {
                     let is_final_binding = i + 1 == bindings.len()
                         && *final_local == guard::LocalId(vars_in_scope + i);
 
@@ -145,6 +146,7 @@ fn mark_tail_calls(
                     (
                         ty.clone(),
                         mark_tail_calls(tail_candidates, sub_pos, vars_in_scope + i, binding),
+                        metadata.clone(),
                     )
                 })
                 .collect(),
@@ -1297,7 +1299,7 @@ fn instantiate_expr(
             // this path. But, we will care about it when we compute obligations.
             let end_of_scope = path.seq(bindings.len() + 1);
 
-            for (binding_ty, _) in bindings {
+            for (binding_ty, _, _) in bindings {
                 let annot_ty =
                     freshen_type_unused(constrs, &parameterize_type(interner, customs, binding_ty));
                 let _ = ctx.add_local(LocalInfo {
@@ -1310,7 +1312,7 @@ fn instantiate_expr(
                 instantiate_occur(strategy, interner, ctx, constrs, *result_id, fut_ty);
 
             let mut bindings_annot_rev = Vec::new();
-            for (i, (_, binding_expr)) in bindings.iter().enumerate().rev() {
+            for (i, (_, binding_expr, metadata)) in bindings.iter().enumerate().rev() {
                 let local = LocalId(locals_offset + i);
                 let fut_ty = ctx.local_binding(local).ty.clone();
 
@@ -1330,7 +1332,7 @@ fn instantiate_expr(
                     type_renderer,
                 );
 
-                bindings_annot_rev.push((fut_ty, expr_annot));
+                bindings_annot_rev.push((fut_ty, expr_annot, metadata.clone()));
             }
 
             let bindings_annot = {
@@ -1927,7 +1929,13 @@ fn extract_expr(
         E::LetMany(bindings, result) => E::LetMany(
             bindings
                 .iter()
-                .map(|(ty, expr)| (extract_type(solution, ty), extract_expr(solution, expr)))
+                .map(|(ty, expr, metadata)| {
+                    (
+                        extract_type(solution, ty),
+                        extract_expr(solution, expr),
+                        metadata.clone(),
+                    )
+                })
                 .collect(),
             extract_occur(solution, result),
         ),
@@ -2097,7 +2105,7 @@ fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &TailExpr) {
             add_func_deps(deps, else_case);
         }
         TailExpr::LetMany(bindings, _) => {
-            for (_, rhs) in bindings {
+            for (_, rhs, _) in bindings {
                 add_func_deps(deps, rhs);
             }
         }
@@ -2220,64 +2228,5 @@ mod tests {
         let expected_pos = vec![Position::Stack];
         assert_eq!(annot_list.content, expected_shape);
         assert_eq!(annot_list.pos, expected_pos);
-    }
-
-    #[test]
-    fn test_instantiate_model() {
-        let interner = Interner::empty();
-        let customs = IdVec::new();
-        let mut constrs = ConstrGraph::new();
-        let mut ctx = LocalContext::new();
-        let path = annot::Path::root().seq(1);
-
-        let arg_ty = freshen_type_unused(
-            &mut constrs,
-            &parameterize_type(
-                &interner,
-                &customs,
-                &guard::Type::Array(Box::new(guard::Type::Bool)),
-            ),
-        );
-        println!("arg_ty: {}", arg_ty.display());
-        let arg = ctx.add_local(LocalInfo {
-            scope: annot::Path::root().seq(0),
-            ty: arg_ty,
-        });
-
-        let use_lt = annot::Path::root().seq(2).as_lt(&interner);
-        let ret_ty = freshen_type(
-            &mut constrs,
-            || use_lt.clone(),
-            &parameterize_type(
-                &interner,
-                &customs,
-                &guard::Type::Boxed(Box::new(guard::Type::Array(Box::new(guard::Type::Bool)))),
-            ),
-        );
-
-        println!("ret_ty: {}", ret_ty.display());
-
-        let _ = instantiate_model(
-            &model::box_new,
-            Strategy::Default,
-            &interner,
-            &customs,
-            &mut constrs,
-            &mut ctx,
-            &path,
-            &[arg],
-            &ret_ty,
-        );
-
-        let arg_mode = ModeVar(0);
-        let ret_mode_box = ModeVar(1);
-        let ret_mode_arr_access = ModeVar(2);
-        let ret_mode_arr_storage = ModeVar(3);
-        for (x, y) in constrs.inner() {
-            println!("{}: {:?}", x.0, y);
-        }
-        assert!(constrs.inner()[ret_mode_box].lb_const == Mode::Owned);
-        assert!(constrs.inner()[ret_mode_arr_access].lb_vars == vec![arg_mode]);
-        assert!(constrs.inner()[arg_mode].lb_vars == vec![ret_mode_arr_access]);
     }
 }

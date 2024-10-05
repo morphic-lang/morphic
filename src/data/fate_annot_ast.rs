@@ -123,7 +123,7 @@ pub enum ExprKind {
     ),
     LetMany(
         LetBlockId,
-        Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        Vec<(anon::Type, Expr)>, // bound values. Each is assigned a new sequential LocalId
         mutation::ContextSnapshot, // Snapshot of the context after all bindings have been evaluated
         Local,                   // body
     ),

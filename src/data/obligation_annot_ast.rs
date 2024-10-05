@@ -9,6 +9,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
 use crate::data::guarded_ast as guard;
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{Interner, Lt, Mode, ResModes, Shape, SlotId};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -108,7 +109,7 @@ pub enum IoOp {
 pub enum Expr {
     Local(Occur),
     Call(Purity, CustomFuncId, Occur),
-    LetMany(Vec<(Type, StackLt, Expr)>, Occur),
+    LetMany(Vec<(Type, StackLt, Expr, Metadata)>, Occur),
 
     If(Occur, Box<Expr>, Box<Expr>),
     CheckVariant(first_ord::VariantId, Occur), // Returns a bool

@@ -5,6 +5,7 @@ use crate::data::flat_ast::{
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
+use core::str;
 use std::io::{self, Write};
 
 const TAB_SIZE: usize = 2;
@@ -40,14 +41,16 @@ impl<'a> Context<'a> {
 
 pub fn write_condition(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
     condition: &Condition,
 ) -> io::Result<()> {
     match condition {
         Condition::Any => write!(w, "_",),
-        Condition::Tuple(conditions) => write_delimited(w, conditions, "(", ")", ",", |w, cond| {
-            write_condition(w, type_renderer, cond)
-        }),
+        Condition::Tuple(conditions) => {
+            write_delimited(w, conditions, "(", ")", ", ", |w, cond| {
+                write_condition(w, type_renderer, cond)
+            })
+        }
         Condition::Variant(variant_id, subcondition) => {
             write!(w, "variant {} (", variant_id.0)?;
             write_condition(w, type_renderer, subcondition)?;
@@ -61,7 +64,11 @@ pub fn write_condition(
             Ok(())
         }
         Condition::Custom(type_id, subcondition) => {
-            write!(w, "custom {} (", type_renderer.render(type_id))?;
+            if let Some(type_renderer) = type_renderer {
+                write!(w, "custom {} (", type_renderer.render(type_id))?;
+            } else {
+                write!(w, "custom #{} (", type_id.0)?;
+            }
             write_condition(w, type_renderer, subcondition)?;
             write!(w, ")")?;
             Ok(())
@@ -83,12 +90,14 @@ pub fn write_type(
         Type::Num(NumType::Byte) => write!(w, "Byte"),
         Type::Num(NumType::Int) => write!(w, "Int"),
         Type::Num(NumType::Float) => write!(w, "Float"),
-        Type::Tuple(types) => write_delimited(w, types, "(", ")", ",", |w, type_| {
+        Type::Tuple(types) => write_delimited(w, types, "(", ")", ", ", |w, type_| {
             write_type(w, type_renderer, type_)
         }),
-        Type::Variants(types) => write_delimited(w, types.as_slice(), "{", "}", ",", |w, type_| {
-            write_type(w, type_renderer, type_)
-        }),
+        Type::Variants(types) => {
+            write_delimited(w, types.as_slice(), "{", "}", ", ", |w, type_| {
+                write_type(w, type_renderer, type_)
+            })
+        }
         Type::Custom(type_id) => write!(w, "{}", type_renderer.render(type_id)),
         Type::Array(item_type) => {
             write!(w, "Array (")?;
@@ -157,7 +166,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             for (condition, sub_expr) in conditions {
                 let newer_context = new_context.add_indent();
                 new_context.writeln(w)?;
-                write_condition(w, context.type_renderer, condition)?;
+                write_condition(w, Some(context.type_renderer), condition)?;
                 write!(w, " ->")?;
                 newer_context.writeln(w)?;
                 write_expr(w, sub_expr, newer_context)?;
@@ -204,7 +213,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             Ok(())
         }
         Expr::Tuple(elems) => {
-            write_delimited(w, elems, "(", ")", ",", |w, local| write_local(w, *local))
+            write_delimited(w, elems, "(", ")", ", ", |w, local| write_local(w, *local))
         }
         Expr::TupleField(local, index) => {
             write!(w, "tuple field {} ", index)?;
@@ -341,4 +350,36 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
         writeln!(w)?;
     }
     Ok(())
+}
+
+pub struct DisplayCondition<'a> {
+    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
+    cond: &'a Condition,
+}
+
+impl<'a> std::fmt::Display for DisplayCondition<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut w = Vec::new();
+        write_condition(&mut w, self.type_renderer, self.cond).unwrap();
+        f.write_str(str::from_utf8(&w).unwrap())
+    }
+}
+
+impl Condition {
+    pub fn display(&self) -> DisplayCondition {
+        DisplayCondition {
+            type_renderer: None,
+            cond: self,
+        }
+    }
+
+    pub fn display_with<'a>(
+        &'a self,
+        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    ) -> DisplayCondition<'a> {
+        DisplayCondition {
+            type_renderer: Some(type_renderer),
+            cond: self,
+        }
+    }
 }

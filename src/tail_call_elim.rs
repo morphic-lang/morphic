@@ -1,27 +1,26 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use crate::data::first_order_ast as first_ord;
+use crate::data::metadata::Metadata;
 use crate::data::obligation_annot_ast as ob;
 use crate::data::purity::Purity;
 use crate::data::rc_specialized_ast2 as rc;
-use crate::data::tail_rec_ast as tail;
+use crate::data::tail_rec_ast::{self as tail, TailFuncSymbols};
 use crate::util::graph::{self, Graph};
 use crate::util::let_builder::{BuildMatch, FromBindings, LetManyBuilder};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
+use std::collections::{BTreeMap, BTreeSet};
 
 impl FromBindings for tail::Expr {
     type LocalId = rc::LocalId;
-    type Binding = (rc::Type, tail::Expr);
+    type Type = rc::Type;
 
-    fn from_bindings(bindings: Vec<Self::Binding>, ret: Self::LocalId) -> Self {
+    fn from_bindings(bindings: Vec<(Self::Type, Self, Metadata)>, ret: Self::LocalId) -> Self {
         tail::Expr::LetMany(bindings, ret)
     }
 }
 
 impl BuildMatch for tail::Expr {
     type VariantId = first_ord::VariantId;
-    type Type = rc::Type;
 
     fn bool_type() -> Self::Type {
         rc::Type::Bool
@@ -32,7 +31,7 @@ impl BuildMatch for tail::Expr {
         ty: Self::Type,
         expr: Self,
     ) -> Self::LocalId {
-        builder.add_binding((ty, expr))
+        builder.add_binding(ty, expr)
     }
 
     fn build_if(cond: Self::LocalId, then_expr: Self, else_expr: Self) -> Self {
@@ -117,7 +116,7 @@ fn mark_call_modes(
         }
 
         rc::Expr::LetMany(bindings, final_local) => {
-            for (i, (_type, binding)) in bindings.iter().enumerate() {
+            for (i, (_type, binding, _)) in bindings.iter().enumerate() {
                 let sub_pos =
                     if i + 1 == bindings.len() && final_local == &rc::LocalId(vars_in_scope + i) {
                         pos
@@ -185,10 +184,12 @@ fn trans_expr(
                                 (
                                     rc::Type::Variants(variant_types.clone()),
                                     tail::Expr::WrapVariant(variant_types.clone(), *variant, *arg),
+                                    Metadata::default(),
                                 ),
                                 (
                                     funcs[func].ret_type.clone(),
                                     tail::Expr::Call(*purity, *new_func, local_wrapped_id),
+                                    Metadata::default(),
                                 ),
                             ],
                             local_return_id,
@@ -202,7 +203,7 @@ fn trans_expr(
             bindings
                 .iter()
                 .enumerate()
-                .map(|(i, (type_, binding))| {
+                .map(|(i, (type_, binding, metadata))| {
                     let is_final_binding =
                         i + 1 == bindings.len() && final_local == &rc::LocalId(vars_in_scope + i);
 
@@ -212,17 +213,16 @@ fn trans_expr(
                         Position::NotTail
                     };
 
-                    (
-                        type_.clone(),
-                        trans_expr(
-                            funcs,
-                            mappings,
-                            local_tail_mappings,
-                            sub_pos,
-                            vars_in_scope + i,
-                            binding,
-                        ),
-                    )
+                    let new_binding = trans_expr(
+                        funcs,
+                        mappings,
+                        local_tail_mappings,
+                        sub_pos,
+                        vars_in_scope + i,
+                        binding,
+                    );
+
+                    (type_.clone(), new_binding, metadata.clone())
                 })
                 .collect(),
             *final_local,
@@ -426,6 +426,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
 
             tail::FuncDef {
                 tail_funcs: IdVec::new(),
+                tail_func_symbols: IdVec::new(),
 
                 purity: orig_def.purity,
                 arg_type: orig_def.arg_type.clone(),
@@ -459,7 +460,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
                 .iter()
                 .all(|orig_id| &program.funcs[orig_id].purity == &purity));
 
-            let tail_funcs: IdVec<tail::TailFuncId, tail::TailFunc> = IdVec::from_vec(
+            let tail_funcs = IdVec::from_vec(
                 orig_ids
                     .iter()
                     .map(|orig_id| {
@@ -478,6 +479,13 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
                             profile_point: orig_def.profile_point,
                         }
                     })
+                    .collect(),
+            );
+
+            let tail_func_symbols = IdVec::from_vec(
+                orig_ids
+                    .iter()
+                    .map(|orig_id| program.func_symbols[orig_id].clone())
                     .collect(),
             );
 
@@ -506,10 +514,10 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
                         arg_variant_types.iter().map(|(id, ty)| (id, ty.clone())),
                         &ret_type,
                         |builder, variant_id, unwrapped| {
-                            builder.add_binding((
+                            builder.add_binding(
                                 arg_variant_types[variant_id].clone(),
                                 tail::Expr::TailCall(entry_func_ids[variant_id], unwrapped),
-                            ))
+                            )
                         },
                     );
 
@@ -520,6 +528,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
 
             tail::FuncDef {
                 tail_funcs,
+                tail_func_symbols,
                 purity,
                 arg_type: entry_arg_type,
                 ret_type,
@@ -527,6 +536,13 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
                 profile_point: None,
             }
         }
+    });
+
+    let new_func_symbols = sccs.map_refs(|_, scc| match scc {
+        graph::Scc::Acyclic(orig_id) => {
+            TailFuncSymbols::Acyclic(program.func_symbols[orig_id].clone())
+        }
+        graph::Scc::Cyclic(_) => TailFuncSymbols::Cyclic,
     });
 
     let main = match &mappings[program.main] {
@@ -537,6 +553,7 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
         Some(FuncMapping::Variant(_, _, _)) => {
             let main_wrapper = tail::FuncDef {
                 tail_funcs: IdVec::new(),
+                tail_func_symbols: IdVec::new(),
 
                 purity: Purity::Impure,
                 arg_type: rc::Type::Tuple(Vec::new()),
@@ -561,7 +578,9 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
     tail::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: program.custom_types,
+        custom_type_symbols: program.custom_type_symbols,
         funcs: new_funcs,
+        func_symbols: new_func_symbols,
         schemes: program.schemes,
         profile_points: program.profile_points,
         main,

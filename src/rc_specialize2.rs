@@ -1,4 +1,5 @@
 use crate::data::first_order_ast as first_ord;
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{iter_shapes, Mode, ResModes, Shape, ShapeInner, SlotId};
 use crate::data::obligation_annot_ast as ob;
 use crate::data::rc_annot_ast::{self as annot, Selector};
@@ -13,16 +14,15 @@ use std::collections::BTreeSet;
 
 impl FromBindings for rc::Expr {
     type LocalId = rc::LocalId;
-    type Binding = (rc::Type, rc::Expr);
+    type Type = rc::Type;
 
-    fn from_bindings(bindings: Vec<Self::Binding>, ret: Self::LocalId) -> Self {
+    fn from_bindings(bindings: Vec<(Self::Type, Self, Metadata)>, ret: Self::LocalId) -> Self {
         rc::Expr::LetMany(bindings, ret)
     }
 }
 
 impl BuildMatch for rc::Expr {
     type VariantId = first_ord::VariantId;
-    type Type = rc::Type;
 
     fn bool_type() -> Self::Type {
         rc::Type::Bool
@@ -33,7 +33,7 @@ impl BuildMatch for rc::Expr {
         ty: Self::Type,
         expr: Self,
     ) -> Self::LocalId {
-        builder.add_binding((ty, expr))
+        builder.add_binding(ty, expr)
     }
 
     fn build_if(cond: Self::LocalId, then_expr: Self, else_expr: Self) -> Self {
@@ -248,7 +248,7 @@ fn build_plan(
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
     match plan {
-        RcOpPlan::NoOp => builder.add_binding((rc::Type::Tuple(vec![]), rc::Expr::Tuple(vec![]))),
+        RcOpPlan::NoOp => builder.add_binding(rc::Type::Tuple(vec![]), rc::Expr::Tuple(vec![])),
 
         RcOpPlan::LeafOp => {
             let rc_op = match rc_op {
@@ -258,7 +258,7 @@ fn build_plan(
                     rc::RcOp::Release(scheme)
                 }
             };
-            builder.add_binding((rc::Type::Tuple(vec![]), rc::Expr::RcOp(rc_op, root_id)))
+            builder.add_binding(rc::Type::Tuple(vec![]), rc::Expr::RcOp(rc_op, root_id))
         }
 
         RcOpPlan::Tuple(plans) => {
@@ -271,8 +271,8 @@ fn build_plan(
                 .enumerate()
                 .zip(iter_shapes(shapes, root_res))
                 .map(|((idx, plan), (shape, res))| {
-                    let field_local = builder
-                        .add_binding((lower_type(shape), rc::Expr::TupleField(root_id, idx)));
+                    let field_local =
+                        builder.add_binding(lower_type(shape), rc::Expr::TupleField(root_id, idx));
                     build_plan(
                         customs,
                         insts,
@@ -317,10 +317,10 @@ fn build_plan(
             };
 
             let content = &customs.types[*custom_id].content;
-            let content_id = builder.add_binding((
+            let content_id = builder.add_binding(
                 lower_type(content),
                 rc::Expr::UnwrapCustom(*custom_id, root_id),
-            ));
+            );
             build_plan(
                 customs, insts, rc_op, content_id, content, root_res, plan, builder,
             )
@@ -342,6 +342,7 @@ fn lower_expr(
     ctx: &mut LocalContext<annot::LocalId, LocalInfo>,
     expr: &annot::Expr,
     ret_ty: &rc::Type,
+    metadata: &Metadata,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
     let new_expr = match expr {
@@ -368,11 +369,11 @@ fn lower_expr(
         }
         annot::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
-                for (binding_ty, expr) in bindings {
+                for (binding_ty, expr, metadata) in bindings {
                     let low_ty = lower_type(&binding_ty.shape);
 
                     let final_local =
-                        lower_expr(funcs, customs, insts, ctx, expr, &low_ty, builder);
+                        lower_expr(funcs, customs, insts, ctx, expr, &low_ty, metadata, builder);
                     ctx.add_local(LocalInfo {
                         old_ty: binding_ty.clone(),
                         new_ty: low_ty,
@@ -397,6 +398,7 @@ fn lower_expr(
                     ctx,
                     then_case,
                     ret_ty,
+                    &Metadata::default(),
                     &mut case_builder,
                 );
                 case_builder.to_expr(final_local)
@@ -410,6 +412,7 @@ fn lower_expr(
                     ctx,
                     else_case,
                     ret_ty,
+                    &Metadata::default(),
                     &mut case_builder,
                 );
                 case_builder.to_expr(final_local)
@@ -561,7 +564,7 @@ fn lower_expr(
         annot::Expr::FloatLit(lit) => rc::Expr::FloatLit(*lit),
     };
 
-    builder.add_binding((ret_ty.clone(), new_expr))
+    builder.add_binding_with_metadata(ret_ty.clone(), new_expr, metadata.clone())
 }
 
 fn lower_func(
@@ -588,6 +591,7 @@ fn lower_func(
         &mut ctx,
         &func.body,
         &ret_type,
+        &Metadata::default(),
         &mut builder,
     );
 

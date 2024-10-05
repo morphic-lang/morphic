@@ -306,10 +306,10 @@ fn release(
         }
         (Value::Array(rc, content), ModeScheme::Array(mode, scheme))
         | (Value::HoleArray(rc, _, content), ModeScheme::HoleArray(mode, scheme)) => {
-            if *rc == 0 {
-                stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
-            }
             if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
+                }
                 *rc -= 1;
                 if *rc == 0 {
                     for sub_heap_id in content.clone() {
@@ -325,10 +325,10 @@ fn release(
             }
         }
         (Value::Box(rc, content), ModeScheme::Boxed(mode, scheme)) => {
-            if *rc == 0 {
-                stacktrace.panic(format!["releasing with rc 0, box {:?}", content]);
-            }
             if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, box {:?}", content]);
+                }
                 *rc -= 1;
                 let content = *content;
                 if *rc == 0 {
@@ -823,7 +823,7 @@ fn interpret_expr(
             Expr::LetMany(bindings, final_local_id) => {
                 let mut new_locals = locals.clone();
 
-                for (expected_type, let_expr) in bindings {
+                for (expected_type, let_expr, _) in bindings {
                     let local_heap_id = interpret_expr(
                         let_expr,
                         stdin,

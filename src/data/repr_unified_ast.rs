@@ -79,7 +79,7 @@ pub enum Expr<Call, Rep> {
         Type<Rep>,
     ),
     LetMany(
-        Vec<(Type<Rep>, Expr<Call, Rep>)>, // bound values.  Each is assigned a new sequential LocalId
+        Vec<(Type<Rep>, Expr<Call, Rep>)>, // bound values. Each is assigned a new sequential LocalId
         rc::LocalId,                       // body
     ),
 

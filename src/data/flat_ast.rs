@@ -62,7 +62,7 @@ pub enum Expr {
     Call(Purity, first_ord::CustomFuncId, LocalId),
     Branch(LocalId, Vec<(Condition, Expr)>, anon::Type),
     LetMany(
-        Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        Vec<(anon::Type, Expr)>, // bound values. Each is assigned a new sequential LocalId
         LocalId,                 // body
     ),
 

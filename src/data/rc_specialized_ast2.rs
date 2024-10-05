@@ -1,5 +1,6 @@
 use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::Mode;
 use crate::data::obligation_annot_ast::CustomFuncId;
 use crate::data::profile as prof;
@@ -108,7 +109,7 @@ pub enum RcOp {
 pub enum Expr {
     Local(LocalId),
     Call(Purity, CustomFuncId, LocalId),
-    LetMany(Vec<(Type, Expr)>, LocalId),
+    LetMany(Vec<(Type, Expr, Metadata)>, LocalId),
 
     If(LocalId, Box<Expr>, Box<Expr>),
     CheckVariant(first_ord::VariantId, LocalId), // Returns a bool

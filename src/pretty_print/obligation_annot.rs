@@ -1,4 +1,5 @@
 use crate::data::first_order_ast::CustomTypeId;
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
     self as annot, HeapModes, Lt, Mode, Position, ResModes, Shape, ShapeInner, SlotId,
 };
@@ -9,7 +10,9 @@ use crate::data::obligation_annot_ast::{
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common::*;
 use crate::pretty_print::mode_annot::{write_custom, write_resource_modes};
-use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
+use crate::pretty_print::utils::{
+    write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
+};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
@@ -72,9 +75,9 @@ fn write_type_impl(
         }
         ShapeInner::Custom(type_id) => {
             write_custom(w, type_renderer, *type_id)?;
-            write_delimited(w, res.iter().enumerate(), "<", ">", ",", |w, (i, res)| {
-                write_opt_ob(w, slot + i)?;
-                write_resource_modes(w, &write_mode, res)
+            write_delimited(w, res.iter().enumerate(), "<", ">", ", ", |w, (i, res)| {
+                write_resource_modes(w, &write_mode, res)?;
+                write_opt_ob(w, slot + i)
             })
         }
         ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.0),
@@ -216,10 +219,10 @@ fn write_double(
     write!(w, ")")
 }
 
-fn match_string_bytes(bindings: &[(Type, StackLt, Expr)]) -> Option<String> {
+fn match_string_bytes(bindings: &[(Type, StackLt, Expr, Metadata)]) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
-        if let (_, _, Expr::ByteLit(byte)) = binding {
+        if let (_, _, Expr::ByteLit(byte), _) = binding {
             result_bytes.push(*byte);
         } else {
             break;
@@ -258,8 +261,9 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                     )?;
                     index += string.len();
                 } else {
-                    let (binding_type, obligation, binding_expr) = &bindings[index];
+                    let (binding_type, obligation, binding_expr, metadata) = &bindings[index];
                     new_context.writeln(w)?;
+                    write_metadata(w, context.indentation, metadata)?;
                     write!(w, "{}: %{}: ", index, context.num_locals + index)?;
                     write_type(
                         w,
@@ -307,7 +311,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write_occur(w, context.type_renderer, occur)
         }
         Expr::Unreachable(_type) => write!(w, "unreachable"),
-        Expr::Tuple(elems) => write_delimited(w, elems, "(", ")", ",", |w, occur| {
+        Expr::Tuple(elems) => write_delimited(w, elems, "(", ")", ", ", |w, occur| {
             write_occur(w, context.type_renderer, occur)
         }),
         Expr::TupleField(occur, index) => {

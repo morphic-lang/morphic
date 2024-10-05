@@ -1,5 +1,6 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{self as annot, Shape, SlotId};
 use crate::data::obligation_annot_ast::{self as ob, CustomTypeDef};
 use crate::data::profile as prof;
@@ -107,7 +108,7 @@ pub enum IoOp {
 pub enum Expr {
     Local(LocalId),
     Call(Purity, ob::CustomFuncId, LocalId),
-    LetMany(Vec<(ob::Type, Expr)>, LocalId),
+    LetMany(Vec<(ob::Type, Expr, Metadata)>, LocalId),
 
     If(LocalId, Box<Expr>, Box<Expr>),
     CheckVariant(first_ord::VariantId, LocalId), // Returns a bool

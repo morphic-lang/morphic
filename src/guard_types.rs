@@ -7,6 +7,7 @@ use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::flat_ast::{self as flat, CustomTypeSccId};
 use crate::data::guarded_ast::{self as guard, CanGuard};
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
 use crate::util::collection_ext::VecExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
@@ -16,9 +17,9 @@ use std::collections::BTreeSet;
 
 impl FromBindings for guard::Expr {
     type LocalId = guard::LocalId;
-    type Binding = (guard::Type, guard::Expr);
+    type Type = guard::Type;
 
-    fn from_bindings(bindings: Vec<Self::Binding>, ret: Self::LocalId) -> Self {
+    fn from_bindings(bindings: Vec<(Self::Type, Self, Metadata)>, ret: Self::LocalId) -> Self {
         guard::Expr::LetMany(bindings, ret)
     }
 }
@@ -132,12 +133,12 @@ fn build_comp(
     op: Intrinsic,
     builder: &mut Builder,
 ) -> guard::LocalId {
-    let args = builder.add_binding((
+    let args = builder.add_binding(
         guard::Type::Tuple(vec![guard::Type::Num(ty), guard::Type::Num(ty)]),
         guard::Expr::Tuple(vec![lhs, rhs]),
-    ));
+    );
 
-    builder.add_binding((guard::Type::Bool, guard::Expr::Intrinsic(op, args)))
+    builder.add_binding(guard::Type::Bool, guard::Expr::Intrinsic(op, args))
 }
 
 fn lower_condition(
@@ -149,9 +150,7 @@ fn lower_condition(
     match_type: &anon::Type,
 ) -> guard::LocalId {
     match condition {
-        flat::Condition::Any => {
-            builder.add_binding((guard::Type::Bool, guard::Expr::BoolLit(true)))
-        }
+        flat::Condition::Any => builder.add_binding(guard::Type::Bool, guard::Expr::BoolLit(true)),
         flat::Condition::Tuple(subconditions) => {
             let anon::Type::Tuple(item_types) = match_type else {
                 unreachable!();
@@ -162,10 +161,10 @@ fn lower_condition(
                 .zip(subconditions.iter())
                 .enumerate()
                 .map(|(index, (item_type, subcondition))| {
-                    let item_id = builder.add_binding((
+                    let item_id = builder.add_binding(
                         trans.guard(item_type),
                         guard::Expr::TupleField(discrim, index),
-                    ));
+                    );
                     lower_condition(trans, customs, item_id, subcondition, builder, item_type)
                 })
                 .collect::<Vec<_>>();
@@ -180,15 +179,15 @@ fn lower_condition(
                         )
                     });
 
-            builder.add_binding((guard::Type::Bool, if_expr))
+            builder.add_binding(guard::Type::Bool, if_expr)
         }
         flat::Condition::Variant(variant_id, subcondition) => {
             let variant_id = first_ord::VariantId(variant_id.0);
 
-            let variant_check = builder.add_binding((
+            let variant_check = builder.add_binding(
                 guard::Type::Bool,
                 guard::Expr::CheckVariant(variant_id, discrim),
-            ));
+            );
 
             let mut new_builder = builder.child();
             let anon::Type::Variants(variant_types) = match_type else {
@@ -197,14 +196,14 @@ fn lower_condition(
 
             let variant_type = &variant_types[variant_id];
 
-            let sub_discrim = new_builder.add_binding((
+            let sub_discrim = new_builder.add_binding(
                 trans.guard(variant_type),
                 guard::Expr::UnwrapVariant(
                     variant_types.map_refs(|_, ty| trans.guard(ty)),
                     first_ord::VariantId(variant_id.0),
                     discrim,
                 ),
-            ));
+            );
 
             let sub_cond_id = lower_condition(
                 trans,
@@ -215,14 +214,14 @@ fn lower_condition(
                 variant_type,
             );
 
-            builder.add_binding((
+            builder.add_binding(
                 guard::Type::Bool,
                 guard::Expr::If(
                     variant_check,
                     Box::new(new_builder.to_expr(sub_cond_id)),
                     Box::new(guard::Expr::BoolLit(false)),
                 ),
-            ))
+            )
         }
         flat::Condition::Boxed(subcondition, _) => {
             let anon::Type::Boxed(content_type) = match_type else {
@@ -230,10 +229,10 @@ fn lower_condition(
             };
 
             let guarded_type = trans.guard(content_type);
-            let content = builder.add_binding((
+            let content = builder.add_binding(
                 guarded_type.clone(),
                 guard::Expr::UnwrapBoxed(discrim, guarded_type),
-            ));
+            );
 
             lower_condition(trans, customs, content, subcondition, builder, content_type)
         }
@@ -243,10 +242,10 @@ fn lower_condition(
             };
 
             let content_type = &customs.types[custom_type_id].content;
-            let content = builder.add_binding((
+            let content = builder.add_binding(
                 trans.guard(content_type),
                 guard::Expr::UnwrapCustom(*custom_type_id, discrim),
-            ));
+            );
 
             lower_condition(trans, customs, content, subcondition, builder, content_type)
         }
@@ -254,21 +253,21 @@ fn lower_condition(
             if *val {
                 discrim
             } else {
-                builder.add_binding((
+                builder.add_binding(
                     guard::Type::Bool,
                     guard::Expr::If(
                         discrim,
                         Box::new(guard::Expr::BoolLit(false)),
                         Box::new(guard::Expr::BoolLit(true)),
                     ),
-                ))
+                )
             }
         }
         flat::Condition::ByteConst(val) => {
-            let val_id = builder.add_binding((
+            let val_id = builder.add_binding(
                 guard::Type::Num(first_ord::NumType::Byte),
                 guard::Expr::ByteLit(*val),
-            ));
+            );
 
             build_comp(
                 val_id,
@@ -279,10 +278,10 @@ fn lower_condition(
             )
         }
         flat::Condition::IntConst(val) => {
-            let val_id = builder.add_binding((
+            let val_id = builder.add_binding(
                 guard::Type::Num(first_ord::NumType::Int),
                 guard::Expr::IntLit(*val),
-            ));
+            );
 
             build_comp(
                 val_id,
@@ -294,10 +293,10 @@ fn lower_condition(
         }
 
         flat::Condition::FloatConst(val) => {
-            let val_id = builder.add_binding((
+            let val_id = builder.add_binding(
                 guard::Type::Num(first_ord::NumType::Float),
                 guard::Expr::FloatLit(*val),
-            ));
+            );
 
             build_comp(
                 val_id,
@@ -322,7 +321,7 @@ fn guard_branch(
     match cases.first() {
         None => {
             let guarded_type = trans.guard(result_type);
-            builder.add_binding((guarded_type.clone(), guard::Expr::Unreachable(guarded_type)))
+            builder.add_binding(guarded_type.clone(), guard::Expr::Unreachable(guarded_type))
         }
         Some((cond, body)) => {
             let binding = ctx.local_binding(discrim);
@@ -355,10 +354,16 @@ fn guard_branch(
 
             let else_branch = else_builder.to_expr(else_local_id);
 
-            builder.add_binding((
+            let mut metadata = Metadata::default();
+            metadata.add_comment(format!(
+                "guard_types: lowered from condition '{}'",
+                cond.display()
+            ));
+            builder.add_binding_with_metadata(
                 trans.guard(result_type),
                 guard::Expr::If(condition_id, Box::new(then_branch), Box::new(else_branch)),
-            ))
+                metadata,
+            )
         }
     }
 }
@@ -495,7 +500,7 @@ fn guard_expr(
         &flat::Expr::FloatLit(lit) => guard::Expr::FloatLit(lit),
     };
 
-    builder.add_binding((trans.guard(ret_ty), new_expr))
+    builder.add_binding(trans.guard(ret_ty), new_expr)
 }
 
 pub fn guard_types(prog: flat::Program) -> guard::Program {

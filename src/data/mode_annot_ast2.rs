@@ -10,6 +10,7 @@ use crate::data::flat_ast as flat;
 use crate::data::guarded_ast as guard;
 use crate::data::guarded_ast as guarded;
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -796,8 +797,8 @@ pub enum Expr<M, L> {
     Local(Occur<M, L>),
     Call(Purity, first_ord::CustomFuncId, Occur<M, L>),
     LetMany(
-        Vec<(Type<M, L>, Expr<M, L>)>, // Bound values; each is assigned a new sequential `LocalId`
-        Occur<M, L>,                   // Result
+        Vec<(Type<M, L>, Expr<M, L>, Metadata)>, // Bound values. Each is assigned a new sequential `LocalId`
+        Occur<M, L>,                             // Result
     ),
 
     If(Occur<M, L>, Box<Expr<M, L>>, Box<Expr<M, L>>),

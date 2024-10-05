@@ -139,7 +139,7 @@ pub enum Expr {
     ),
     Branch(flat::LocalId, Vec<(flat::Condition, Expr)>, anon::Type),
     LetMany(
-        Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        Vec<(anon::Type, Expr)>, // bound values. Each is assigned a new sequential LocalId
         flat::LocalId,           // body
     ),
 
