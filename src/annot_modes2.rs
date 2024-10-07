@@ -906,7 +906,10 @@ fn create_occurs_from_model(
         ret.res.as_slice(),
         &mut vars,
     );
-    let mut vars = vars.to_id_vec(sig.var_count);
+
+    // At this point, it would seem natural to convert `vars` from an `IdMap` to an `IdVec`.
+    // However, if the model signature has an empty variadic argument, then the `IdMap` will not
+    // contain an entries for any type variables which appear only in the type of that argument.
 
     // Impose equality constraints between all occurrences of the same type variable.
     for occurs in vars.values() {
@@ -922,6 +925,13 @@ fn create_occurs_from_model(
     for constr in &sig.constrs {
         match constr {
             model::Constr::Mode { lhs, rhs } => {
+                // We check when we construct a signature that any type variables that appear in
+                // constraints also appear in the signature. This can only happen if there is an
+                // empty variadic argument.
+                if !vars.contains_key(lhs.type_var) || !vars.contains_key(rhs.type_var) {
+                    continue;
+                }
+
                 let rep1 = &vars[lhs.type_var].rep().unwrap();
                 let rep2 = &vars[rhs.type_var].rep().unwrap();
                 debug_assert_eq!(rep1.shape, rep2.shape);
@@ -944,6 +954,11 @@ fn create_occurs_from_model(
                 }
             }
             model::Constr::Lt { lhs, rhs } => {
+                // See the comment in the `Constr::Mode` case above.
+                if !vars.contains_key(lhs.type_var) || !vars.contains_key(rhs.type_var) {
+                    continue;
+                }
+
                 let (lhs_vars, rhs_vars) = vars.get_pair_mut(lhs.type_var, rhs.type_var).unwrap();
                 for ret in rhs_vars.rets.iter() {
                     for arg in lhs_vars.args.iter_mut() {

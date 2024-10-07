@@ -47,67 +47,79 @@ impl<E: FromBindings> LetManyBuilder<E> {
     }
 }
 
-fn build_match_helper<E: BuildMatch, I, F>(
+fn build_match_helper<E: BuildMatch, I, D, C>(
     builder: &mut LetManyBuilder<E>,
-    local: E::LocalId,
+    discrim: E::LocalId,
     variant_id: E::VariantId,
     variant_ty: E::Type,
     variants: I,
     ret_ty: &E::Type,
-    mut build_case: F,
+    build_default: D,
+    mut build_case: C,
 ) -> E::LocalId
 where
     I: Iterator<Item = (E::VariantId, E::Type)>,
-    F: FnMut(&mut LetManyBuilder<E>, E::VariantId, E::LocalId) -> E::LocalId,
+    D: Fn() -> E,
+    C: FnMut(&mut LetManyBuilder<E>, E::VariantId, E::LocalId) -> E::LocalId,
 {
     let cond = E::build_binding(
         builder,
         E::bool_type(),
-        E::build_check_variant(variant_id, local),
+        E::build_check_variant(variant_id, discrim),
     );
 
     let mut then_builder = builder.child();
     let unwrapped = E::build_binding(
         &mut then_builder,
         variant_ty,
-        E::build_unwrap_variant(variant_id, local),
+        E::build_unwrap_variant(variant_id, discrim),
     );
     let then_result = build_case(&mut then_builder, variant_id, unwrapped);
     let then_case = then_builder.to_expr(then_result);
 
     let else_builder = builder.child();
-    let else_case = build_nested_match(else_builder, local, variants, ret_ty, build_case);
+    let else_case = build_nested_match(
+        else_builder,
+        discrim,
+        variants,
+        ret_ty,
+        build_default,
+        build_case,
+    );
 
     let if_ = E::build_if(cond, then_case, else_case);
     E::build_binding(builder, ret_ty.clone(), if_)
 }
 
-fn build_nested_match<E: BuildMatch, I, F>(
+fn build_nested_match<E: BuildMatch, I, D, C>(
     mut builder: LetManyBuilder<E>,
-    local: E::LocalId,
+    discrim: E::LocalId,
     mut variants: I,
     ret_ty: &E::Type,
-    build_case: F,
+    build_default: D,
+    build_case: C,
 ) -> E
 where
     I: Iterator<Item = (E::VariantId, E::Type)>,
-    F: FnMut(&mut LetManyBuilder<E>, E::VariantId, E::LocalId) -> E::LocalId,
+    D: Fn() -> E,
+    C: FnMut(&mut LetManyBuilder<E>, E::VariantId, E::LocalId) -> E::LocalId,
 {
     if let Some((variant_id, variant_ty)) = variants.next() {
         let result = build_match_helper(
             &mut builder,
-            local,
+            discrim,
             variant_id,
             variant_ty,
             variants,
             ret_ty,
+            build_default,
             build_case,
         );
 
         // Unlike at the top level, the 'if' we built is the return value of the scope
         builder.to_expr(result)
     } else {
-        E::build_unreachable(ret_ty.clone())
+        build_default()
     }
 }
 
@@ -123,30 +135,34 @@ pub trait BuildMatch: FromBindings {
     fn build_if(cond: Self::LocalId, then_expr: Self, else_expr: Self) -> Self;
     fn build_unwrap_variant(variant: Self::VariantId, local: Self::LocalId) -> Self;
     fn build_check_variant(variant: Self::VariantId, local: Self::LocalId) -> Self;
-    fn build_unreachable(ty: Self::Type) -> Self;
 
     /// Builds a series of nested 'if' expressions to simulate matching on a sum.
-    fn build_match<I, F>(
+    fn build_match<I, D, C>(
         builder: &mut LetManyBuilder<Self>,
-        local: Self::LocalId,
+        discrim: Self::LocalId,
         mut variants: I,
         ret_ty: &Self::Type,
-        build_case: F,
+        build_default: D,
+        build_case: C,
     ) -> Self::LocalId
     where
         I: Iterator<Item = (Self::VariantId, Self::Type)>,
-        F: FnMut(&mut LetManyBuilder<Self>, Self::VariantId, Self::LocalId) -> Self::LocalId,
+        D: Fn() -> Self,
+        C: FnMut(&mut LetManyBuilder<Self>, Self::VariantId, Self::LocalId) -> Self::LocalId,
     {
         if let Some((variant_id, variant_ty)) = variants.next() {
             build_match_helper(
-                builder, local, variant_id, variant_ty, variants, ret_ty, build_case,
+                builder,
+                discrim,
+                variant_id,
+                variant_ty,
+                variants,
+                ret_ty,
+                build_default,
+                build_case,
             )
         } else {
-            Self::build_binding(
-                builder,
-                ret_ty.clone(),
-                Self::build_unreachable(ret_ty.clone()),
-            )
+            Self::build_binding(builder, ret_ty.clone(), build_default())
         }
     }
 }

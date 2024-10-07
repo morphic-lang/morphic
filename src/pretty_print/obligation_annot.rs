@@ -262,8 +262,8 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                     index += string.len();
                 } else {
                     let (binding_type, obligation, binding_expr, metadata) = &bindings[index];
+                    write_metadata(w, new_context.indentation, metadata)?;
                     new_context.writeln(w)?;
-                    write_metadata(w, context.indentation, metadata)?;
                     write!(w, "{}: %{}: ", index, context.num_locals + index)?;
                     write_type(
                         w,
@@ -271,6 +271,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                         Some(obligation),
                         binding_type,
                     )?;
+                    new_context.writeln(w)?;
                     write!(w, " = ")?;
                     write_expr(
                         w,

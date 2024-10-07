@@ -525,7 +525,7 @@ declare_signatures! {
 
     pub array_reserve: (Array a Own t, Int) -> Array a Own t;
 
-    pub io_input: () -> Array Own Emp Byte;
+    pub io_input: () -> Array a Own Byte;
 
     pub io_output: (Array a m Byte) -> ();
 

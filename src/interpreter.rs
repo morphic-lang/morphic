@@ -4,6 +4,7 @@ use crate::data::low_ast::{ArrayOp, CustomFuncId, Expr, IoOp, LocalId, Program, 
 use crate::data::mode_annot_ast2::Mode;
 use crate::data::rc_specialized_ast2::{ModeScheme, ModeSchemeId, RcOp};
 use crate::data::tail_rec_ast as tail;
+use crate::pretty_print::utils::{FuncRenderer, TailFuncRenderer};
 use crate::pseudoprocess::{spawn_thread, Child, ExitStatus, Stdio};
 use crate::util::iter::IterExt;
 use id_collections::IdVec;
@@ -686,6 +687,7 @@ impl From<ExitStatus> for Interruption {
 }
 
 fn interpret_call(
+    tail_renderer: &TailFuncRenderer<CustomFuncId>,
     func_id: CustomFuncId,
     arg_id: HeapId,
     stdin: &mut dyn BufRead,
@@ -696,15 +698,20 @@ fn interpret_call(
     stacktrace: StackTrace,
 ) -> Result<HeapId, ExitStatus> {
     let func = &program.funcs[func_id];
+    let func_renderer = FuncRenderer::from_symbols(&func.tail_func_symbols);
 
     typecheck(
         heap,
         arg_id,
         &func.arg_type,
-        stacktrace.add_frame(format!["typecheck function argument {:?}", func_id]),
+        stacktrace.add_frame(format![
+            "typecheck function argument {}",
+            tail_renderer.render(func_id)
+        ]),
     );
 
     let mut result = interpret_expr(
+        tail_renderer,
         &func.body,
         stdin,
         stdout,
@@ -712,7 +719,11 @@ fn interpret_call(
         program,
         &Locals::new(arg_id),
         heap,
-        stacktrace.add_frame(format!["func: {:?} arg: {:?}", func_id, arg_id]),
+        stacktrace.add_frame(format![
+            "func: {} arg: {:?}",
+            tail_renderer.render(func_id),
+            arg_id
+        ]),
     );
 
     while let Err(Interruption::TailCall(tail_id, tail_arg)) = result {
@@ -723,12 +734,14 @@ fn interpret_call(
             tail_arg,
             &tail_func.arg_type,
             stacktrace.add_frame(format![
-                "typecheck tail function argument {:?} {:?}",
-                func_id, tail_id
+                "typecheck tail function argument {} {}",
+                tail_renderer.render(func_id),
+                func_renderer.render(tail_id)
             ]),
         );
 
         result = interpret_expr(
+            tail_renderer,
             &tail_func.body,
             stdin,
             stdout,
@@ -737,8 +750,10 @@ fn interpret_call(
             &Locals::new(tail_arg),
             heap,
             stacktrace.add_frame(format![
-                "tail func: {:?} {:?} arg: {:?}",
-                func_id, tail_id, arg_id
+                "tail func: {} {} arg: {:?}",
+                tail_renderer.render(func_id),
+                func_renderer.render(tail_id),
+                arg_id
             ]),
         );
     }
@@ -749,7 +764,10 @@ fn interpret_call(
                 heap,
                 ret_id,
                 &func.ret_type,
-                stacktrace.add_frame(format!["typecheck function return: {:?}", func_id]),
+                stacktrace.add_frame(format![
+                    "typecheck function return: {}",
+                    tail_renderer.render(func_id)
+                ]),
             );
 
             Ok(ret_id)
@@ -760,6 +778,7 @@ fn interpret_call(
 }
 
 fn interpret_expr(
+    func_renderer: &TailFuncRenderer<CustomFuncId>,
     expr: &Expr,
     stdin: &mut dyn BufRead,
     stdout: &mut dyn Write,
@@ -774,6 +793,7 @@ fn interpret_expr(
             Expr::Local(local_id) => locals[local_id],
 
             Expr::Call(func_id, arg_id) => interpret_call(
+                func_renderer,
                 *func_id,
                 locals[arg_id],
                 stdin,
@@ -797,6 +817,7 @@ fn interpret_expr(
 
                 if discrim_value {
                     interpret_expr(
+                        func_renderer,
                         then_branch,
                         stdin,
                         stdout,
@@ -808,6 +829,7 @@ fn interpret_expr(
                     )?
                 } else {
                     interpret_expr(
+                        func_renderer,
                         else_branch,
                         stdin,
                         stdout,
@@ -825,6 +847,7 @@ fn interpret_expr(
 
                 for (expected_type, let_expr, _) in bindings {
                     let local_heap_id = interpret_expr(
+                        func_renderer,
                         let_expr,
                         stdin,
                         stdout,
@@ -1515,8 +1538,10 @@ fn interpret_expr(
 
 pub fn interpret(stdio: Stdio, program: Program) -> Child {
     spawn_thread(stdio, move |stdin, stdout, stderr| {
+        let func_renderer = TailFuncRenderer::from_symbols(&program.func_symbols);
         let mut heap = Heap::new(&program);
         match interpret_call(
+            &func_renderer,
             program.main,
             HeapId(0),
             stdin,

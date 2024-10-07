@@ -334,6 +334,13 @@ impl<M> ResModes<M> {
         }
     }
 
+    pub fn stack_or_storage(&self) -> &M {
+        match self {
+            ResModes::Stack(stack) => stack,
+            ResModes::Heap(HeapModes { storage, .. }) => storage,
+        }
+    }
+
     pub fn unwrap_stack(&self) -> &M {
         match self {
             ResModes::Stack(stack) => stack,

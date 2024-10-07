@@ -222,7 +222,7 @@ pub fn run(
     )?;
 
     match config.mode {
-        cli::RunMode::Compile { valgrind } => {
+        cli::RunMode::Compile { .. } => {
             // Ok(llvm_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::LlvmGenFailed)?)
             todo!()
         }
@@ -233,7 +233,7 @@ pub fn run(
 pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Result<(), Error> {
     match config.target {
         cli::TargetConfig::Llvm(_) => {
-            let lowered = compile_to_low_ast(
+            let _lowered = compile_to_low_ast(
                 &config.src_path,
                 config.purity_mode,
                 &config.profile_syms,

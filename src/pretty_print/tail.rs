@@ -129,8 +129,8 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write![w, "let"]?;
             let new_context = context.add_indent();
             for (index, (binding_type, binding_expr, metadata)) in bindings.iter().enumerate() {
+                write_metadata(w, new_context.indentation, metadata)?;
                 new_context.writeln(w)?;
-                write_metadata(w, context.indentation, metadata)?;
                 write![w, "%{}: ", context.num_locals + index]?;
                 write_type(w, binding_type)?;
                 write![w, " = "]?;
@@ -251,7 +251,7 @@ fn write_func(
     func: &FuncDef,
     func_id: CustomFuncId,
 ) -> io::Result<()> {
-    write![w, "func #{} (%0: ", func_renderer.render(func_id)]?;
+    write![w, "func {} (%0: ", func_renderer.render(func_id)]?;
     write_type(w, &func.arg_type)?;
     write![w, "): "]?;
     write_type(w, &func.ret_type)?;

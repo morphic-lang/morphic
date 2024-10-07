@@ -6,11 +6,13 @@ use crate::data::rc_annot_ast::{self as annot, Selector};
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId};
 use crate::util::collection_ext::VecExt;
 use crate::util::instance_queue::InstanceQueue;
+use crate::util::iter::IterExt;
 use crate::util::let_builder::{self, BuildMatch, FromBindings};
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
 use std::collections::BTreeSet;
+use std::fmt;
 
 impl FromBindings for rc::Expr {
     type LocalId = rc::LocalId;
@@ -46,10 +48,6 @@ impl BuildMatch for rc::Expr {
 
     fn build_unwrap_variant(variant: Self::VariantId, local: Self::LocalId) -> Self {
         rc::Expr::UnwrapVariant(variant, local)
-    }
-
-    fn build_unreachable(ty: Self::Type) -> Self {
-        rc::Expr::Unreachable(ty)
     }
 }
 
@@ -159,10 +157,41 @@ enum RcOpPlan {
 }
 
 impl RcOpPlan {
+    fn is_noop(&self) -> bool {
+        matches!(self, RcOpPlan::NoOp)
+    }
+}
+
+impl fmt::Display for RcOpPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RcOpPlan::Custom(plan) => write!(f, "Custom({})", plan),
+            RcOpPlan::Tuple(plans) => {
+                let elems = plans
+                    .iter()
+                    .map(|plan| plan.to_string())
+                    .collect::<Vec<_>>();
+                write!(f, "({})", elems.join(", "))
+            }
+            RcOpPlan::Variants(plans) => {
+                let variants = plans
+                    .values()
+                    .map(|plan| plan.to_string())
+                    .collect::<Vec<_>>();
+                write!(f, "{{{}}}", variants.join(", "))
+            }
+            RcOpPlan::LeafOp => write!(f, "*"),
+            RcOpPlan::NoOp => write!(f, "_"),
+        }
+    }
+}
+
+impl RcOpPlan {
     fn from_selector_impl(
         customs: &annot::CustomTypes,
         true_: &BTreeSet<SlotId>,
-        slots: (usize, usize),
+        res: &[ResModes<Mode>],
+        mut start: usize,
         shape: &Shape,
     ) -> Self {
         match &*shape.inner {
@@ -170,16 +199,13 @@ impl RcOpPlan {
             ShapeInner::Num(_) => Self::NoOp,
             ShapeInner::Tuple(shapes) => {
                 let mut plans = Vec::new();
-                let mut start = 0;
                 for shape in shapes {
-                    let end = start + shape.num_slots;
-                    let plan = RcOpPlan::from_selector_impl(customs, true_, (start, end), shape);
+                    let plan = RcOpPlan::from_selector_impl(customs, true_, res, start, shape);
                     plans.push(plan);
-                    start = end;
+                    start += shape.num_slots;
                 }
 
-                debug_assert_eq!(start, shape.num_slots);
-                if plans.iter().all(|plan| matches!(plan, RcOpPlan::NoOp)) {
+                if plans.iter().all(RcOpPlan::is_noop) {
                     Self::NoOp
                 } else {
                     Self::Tuple(plans)
@@ -187,16 +213,13 @@ impl RcOpPlan {
             }
             ShapeInner::Variants(shapes) => {
                 let mut plans = IdVec::new();
-                let mut start = 0;
                 for shape in shapes.values() {
-                    let end = start + shape.num_slots;
-                    let plan = RcOpPlan::from_selector_impl(customs, true_, (start, end), shape);
+                    let plan = RcOpPlan::from_selector_impl(customs, true_, res, start, shape);
                     let _ = plans.push(plan);
-                    start = end;
+                    start += shape.num_slots;
                 }
 
-                debug_assert_eq!(start, shape.num_slots);
-                if plans.values().all(|plan| matches!(plan, RcOpPlan::NoOp)) {
+                if plans.values().all(RcOpPlan::is_noop) {
                     Self::NoOp
                 } else {
                     Self::Variants(plans)
@@ -210,17 +233,18 @@ impl RcOpPlan {
                 let plan = RcOpPlan::from_selector_impl(
                     customs,
                     true_,
-                    slots,
+                    res,
+                    start,
                     &customs.types[*id].content,
                 );
-                if matches!(plan, RcOpPlan::NoOp) {
+                if plan.is_noop() {
                     Self::NoOp
                 } else {
                     Self::Custom(Box::new(plan))
                 }
             }
             ShapeInner::Array(_) | ShapeInner::HoleArray(_) | ShapeInner::Boxed(_) => {
-                if true_.contains(&SlotId(slots.0)) {
+                if true_.contains(&SlotId(start)) && *res[start].stack_or_storage() == Mode::Owned {
                     Self::LeafOp
                 } else {
                     Self::NoOp
@@ -229,8 +253,9 @@ impl RcOpPlan {
         }
     }
 
-    fn from_selector(customs: &annot::CustomTypes, sel: &Selector) -> Self {
-        Self::from_selector_impl(customs, &sel.true_, (0, sel.shape.num_slots), &sel.shape)
+    fn from_selector(customs: &annot::CustomTypes, ty: &ob::Type, sel: &Selector) -> Self {
+        debug_assert_eq!(ty.shape, sel.shape);
+        Self::from_selector_impl(customs, &sel.true_, ty.res.as_slice(), 0, &sel.shape)
     }
 }
 
@@ -270,6 +295,7 @@ fn build_plan(
                 .iter()
                 .enumerate()
                 .zip(iter_shapes(shapes, root_res))
+                .filter(|((_, plan), (_, _))| !plan.is_noop())
                 .map(|((idx, plan), (shape, res))| {
                     let field_local =
                         builder.add_binding(lower_type(shape), rc::Expr::TupleField(root_id, idx));
@@ -285,6 +311,8 @@ fn build_plan(
                     )
                 })
                 .last()
+                // When we construct plans, we propagate `NoOp`s such that we only generate a
+                // `Tuple` plan if there is a non-trivial field plan.
                 .unwrap()
         }
 
@@ -293,19 +321,26 @@ fn build_plan(
                 unreachable!()
             };
 
-            let cases = plans
+            let variant_data = plans
                 .iter()
                 .zip(iter_shapes(shapes.as_slice(), root_res))
                 .collect::<Vec<_>>();
-            let cases = IdVec::from_vec(cases);
+            let variant_data = IdVec::from_vec(variant_data);
+
+            let cases = plans
+                .iter()
+                .zip_eq(shapes.values())
+                .filter(|((_, plan), _)| !plan.is_noop())
+                .map(|((variant_id, _), shape)| (variant_id, lower_type(shape)));
 
             rc::Expr::build_match(
                 builder,
                 root_id,
-                shapes.iter().map(|(id, shape)| (id, lower_type(shape))),
+                cases,
                 &rc::Type::Tuple(vec![]),
+                || rc::Expr::Tuple(vec![]),
                 |builder, variant_id, unwrapped| {
-                    let ((_, plan), (shape, res)) = cases[variant_id];
+                    let ((_, plan), (shape, res)) = variant_data[variant_id];
                     build_plan(customs, insts, rc_op, unwrapped, shape, res, plan, builder)
                 },
             )
@@ -342,13 +377,22 @@ fn lower_expr(
     ctx: &mut LocalContext<annot::LocalId, LocalInfo>,
     expr: &annot::Expr,
     ret_ty: &rc::Type,
-    metadata: &Metadata,
+    mut metadata: Metadata,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
     let new_expr = match expr {
         // The only interesting case...
         annot::Expr::RcOp(op, sel, arg) => {
-            let plan = RcOpPlan::from_selector(customs, sel);
+            let plan = RcOpPlan::from_selector(customs, &ctx.local_binding(*arg).old_ty, sel);
+
+            metadata.add_comment(format!(
+                "rc_specialize: {}: {plan}",
+                match op {
+                    annot::RcOp::Retain => "retain",
+                    annot::RcOp::Release => "release",
+                },
+            ));
+
             let arg = ctx.local_binding(*arg);
             let unit = build_plan(
                 customs,
@@ -372,8 +416,16 @@ fn lower_expr(
                 for (binding_ty, expr, metadata) in bindings {
                     let low_ty = lower_type(&binding_ty.shape);
 
-                    let final_local =
-                        lower_expr(funcs, customs, insts, ctx, expr, &low_ty, metadata, builder);
+                    let final_local = lower_expr(
+                        funcs,
+                        customs,
+                        insts,
+                        ctx,
+                        expr,
+                        &low_ty,
+                        metadata.clone(),
+                        builder,
+                    );
                     ctx.add_local(LocalInfo {
                         old_ty: binding_ty.clone(),
                         new_ty: low_ty,
@@ -398,7 +450,7 @@ fn lower_expr(
                     ctx,
                     then_case,
                     ret_ty,
-                    &Metadata::default(),
+                    Metadata::default(),
                     &mut case_builder,
                 );
                 case_builder.to_expr(final_local)
@@ -412,7 +464,7 @@ fn lower_expr(
                     ctx,
                     else_case,
                     ret_ty,
-                    &Metadata::default(),
+                    Metadata::default(),
                     &mut case_builder,
                 );
                 case_builder.to_expr(final_local)
@@ -591,7 +643,7 @@ fn lower_func(
         &mut ctx,
         &func.body,
         &ret_type,
-        &Metadata::default(),
+        Metadata::default(),
         &mut builder,
     );
 

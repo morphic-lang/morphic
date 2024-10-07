@@ -45,10 +45,6 @@ impl BuildMatch for tail::Expr {
     fn build_unwrap_variant(variant: Self::VariantId, local: Self::LocalId) -> Self {
         tail::Expr::UnwrapVariant(variant, local)
     }
-
-    fn build_unreachable(ty: Self::Type) -> Self {
-        tail::Expr::Unreachable(ty)
-    }
 }
 
 fn last_index<T>(slice: &[T]) -> Option<usize> {
@@ -513,9 +509,10 @@ pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> ta
                         rc::ARG_LOCAL,
                         arg_variant_types.iter().map(|(id, ty)| (id, ty.clone())),
                         &ret_type,
+                        || tail::Expr::Unreachable(ret_type.clone()),
                         |builder, variant_id, unwrapped| {
                             builder.add_binding(
-                                arg_variant_types[variant_id].clone(),
+                                ret_type.clone(),
                                 tail::Expr::TailCall(entry_func_ids[variant_id], unwrapped),
                             )
                         },

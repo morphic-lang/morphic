@@ -142,9 +142,11 @@ impl<FuncId: Id + Ord> TailFuncRenderer<FuncId> {
     }
 }
 
+/// Pretty print a metadata block. This function inserts a newline before, but not after, the
+/// metadata because it may print nothing at all.
 pub fn write_metadata(w: &mut dyn Write, indent: usize, metadata: &Metadata) -> io::Result<()> {
     for comment in &metadata.comments {
-        write!(w, "{:indent$}// {}\n", "", comment, indent = indent)?;
+        write!(w, "\n{:indent$}// {}", "", comment, indent = indent)?;
     }
     Ok(())
 }

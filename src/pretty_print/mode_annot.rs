@@ -357,10 +357,11 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
                     index += string.len();
                 } else {
                     let (binding_type, binding_expr, metadata) = &bindings[index];
+                    write_metadata(w, new_context.indentation, metadata)?;
                     new_context.writeln(w)?;
-                    write_metadata(w, context.indentation, metadata)?;
                     write!(w, "{}: %{}: ", index, context.num_locals + index)?;
                     write_solved_type(w, context.type_renderer, binding_type)?;
+                    new_context.writeln(w)?;
                     write!(w, " = ")?;
                     write_expr(
                         w,

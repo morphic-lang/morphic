@@ -135,8 +135,8 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
                     index += string.len();
                 } else {
                     let (binding_type, binding_expr, metadata) = &bindings[index];
-                    new_context.writeln(w)?;
                     write_metadata(w, new_context.indentation, metadata)?;
+                    new_context.writeln(w)?;
                     write!(w, "%{}: ", context.num_locals + index)?;
                     write_type(w, context.type_renderer, binding_type)?;
                     write!(w, " = ")?;

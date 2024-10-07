@@ -1,6 +1,7 @@
 use crate::data::first_order_ast::{CustomTypeId, NumType};
 use crate::data::low_ast::{ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, LocalId, Program, Type};
 use crate::data::rc_specialized_ast2::RcOp;
+use crate::data::tail_rec_ast::TailFuncId;
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{
     write_metadata, CustomTypeRenderer, FuncRenderer, TailFuncRenderer,
@@ -105,22 +106,38 @@ fn write_double(
     write![w, "{}(%{}, %{})", name, local_id1.0, local_id2.0]
 }
 
-fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
+fn write_expr(
+    w: &mut dyn Write,
+    tail_renderer: &TailFuncRenderer<CustomFuncId>,
+    func_renderer: &FuncRenderer<TailFuncId>,
+    expr: &Expr,
+    context: Context,
+) -> io::Result<()> {
     match expr {
         Expr::Local(local_id) => write![w, "%{}", local_id.0],
-        Expr::Call(func_id, local_id) => write![w, "call #{} (%{})", func_id.0, local_id.0],
+        Expr::Call(func_id, local_id) => write![
+            w,
+            "call #{} (%{})",
+            tail_renderer.render(func_id),
+            local_id.0
+        ],
         Expr::TailCall(tail_func_id, local_id) => {
-            write![w, "tail call @{} (%{})", tail_func_id.0, local_id.0]
+            write![
+                w,
+                "tail call @{} (%{})",
+                func_renderer.render(tail_func_id),
+                local_id.0
+            ]
         }
         Expr::If(local_id, then_branch, else_branch) => {
             write![w, "if %{} {{", local_id.0]?;
             let new_context = context.add_indent();
             new_context.writeln(w)?;
-            write_expr(w, then_branch, new_context)?;
+            write_expr(w, tail_renderer, func_renderer, then_branch, new_context)?;
             context.writeln(w)?;
             write![w, "}} else {{"]?;
             new_context.writeln(w)?;
-            write_expr(w, else_branch, new_context)?;
+            write_expr(w, tail_renderer, func_renderer, else_branch, new_context)?;
             context.writeln(w)?;
             write![w, "}}"]?;
             Ok(())
@@ -129,13 +146,15 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write![w, "let"]?;
             let new_context = context.add_indent();
             for (index, (binding_type, binding_expr, metadata)) in bindings.iter().enumerate() {
+                write_metadata(w, new_context.indentation, metadata)?;
                 new_context.writeln(w)?;
-                write_metadata(w, context.indentation, metadata)?;
                 write![w, "%{}: ", context.num_locals + index]?;
                 write_type(w, binding_type)?;
                 write![w, " = "]?;
                 write_expr(
                     w,
+                    tail_renderer,
+                    func_renderer,
                     binding_expr,
                     Context {
                         num_locals: context.num_locals + index,
@@ -225,11 +244,13 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
 
 fn write_func(
     w: &mut dyn Write,
-    func_renderer: &TailFuncRenderer<CustomFuncId>,
+    tail_renderer: &TailFuncRenderer<CustomFuncId>,
     func: &FuncDef,
     func_id: CustomFuncId,
 ) -> io::Result<()> {
-    write![w, "func #{} (%0: ", func_renderer.render(func_id)]?;
+    let func_renderer = FuncRenderer::from_symbols(&func.tail_func_symbols);
+
+    write![w, "func {} (%0: ", tail_renderer.render(func_id)]?;
     write_type(w, &func.arg_type)?;
     write![w, "): "]?;
     write_type(w, &func.ret_type)?;
@@ -242,10 +263,9 @@ fn write_func(
     let context = context.add_indent();
 
     context.writeln(w)?;
-    write_expr(w, &func.body, context)?;
+    write_expr(w, tail_renderer, &func_renderer, &func.body, context)?;
     writeln![w]?;
 
-    let func_renderer = FuncRenderer::from_symbols(&func.tail_func_symbols);
     if func.tail_funcs.len() > 0 {
         write![w, "where"]?;
         for (tail_func_id, tail_func) in &func.tail_funcs {
@@ -255,7 +275,13 @@ fn write_func(
             write![w, ") ="]?;
             let sub_context = context.add_indent();
             sub_context.writeln(w)?;
-            write_expr(w, &tail_func.body, sub_context)?;
+            write_expr(
+                w,
+                tail_renderer,
+                &func_renderer,
+                &tail_func.body,
+                sub_context,
+            )?;
         }
         writeln![w]?;
     }
