@@ -5,6 +5,7 @@ use crate::data::mode_annot_ast2::{
 };
 use crate::data::obligation_annot_ast::{self as ob, StackLt, Type};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
+use crate::pretty_print::utils::FuncRenderer;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
@@ -207,11 +208,10 @@ fn register_drops_for_slot_rec(
 
             match idx {
                 0 => {
-                    // The obligation points to the discriminant
-                    // TODO: does this ever actually happen? The discriminant is just a `Bool`
-                    assert_eq!(**obligation, LocalLt::Final);
-                    register_to(then_prologue);
-                    register_to(else_prologue);
+                    panic!(
+                        "An obligation points to the discriminant of an 'if' expression, but that \
+                         has type `Bool` and therefore no slots!"
+                    )
                 }
 
                 1 => {
@@ -680,7 +680,13 @@ fn annot_expr(
     builder.add_binding_with_metadata(ret_ty.clone(), new_expr, metadata)
 }
 
-fn annot_func(interner: &Interner, customs: &ob::CustomTypes, func: ob::FuncDef) -> rc::FuncDef {
+fn annot_func(
+    interner: &Interner,
+    _func_renderer: &FuncRenderer<ob::CustomFuncId>,
+    customs: &ob::CustomTypes,
+    _func_id: ob::CustomFuncId,
+    func: ob::FuncDef,
+) -> rc::FuncDef {
     let drops = drops_for_func(interner, &func);
 
     let mut ctx = Context::new();
@@ -730,12 +736,19 @@ pub fn annot_rcs(
 ) -> rc::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
+    let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
     let funcs = IdVec::from_vec(
         program
             .funcs
             .into_iter()
-            .map(|(_func_id, func)| {
-                let annot = annot_func(interner, &program.custom_types, func);
+            .map(|(func_id, func)| {
+                let annot = annot_func(
+                    interner,
+                    &func_renderer,
+                    &program.custom_types,
+                    func_id,
+                    func,
+                );
                 progress.update(1);
                 annot
             })

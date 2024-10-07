@@ -416,7 +416,12 @@ pub fn write_func(
     func_id: CustomFuncId,
 ) -> io::Result<()> {
     write!(w, "func {} (%0: ", func_renderer.render(func_id))?;
-    write_type(w, Some(type_renderer), None, &func.arg_ty)?;
+    write_type(
+        w,
+        Some(type_renderer),
+        Some(&func.arg_obligation),
+        &func.arg_ty,
+    )?;
     write!(w, "): ")?;
     write_type(w, Some(type_renderer), None, &func.ret_ty)?;
     write!(w, " =\n")?;
