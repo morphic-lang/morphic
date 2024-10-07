@@ -345,7 +345,7 @@ fn release(
         }
         (kind, scheme) => {
             stacktrace.panic(format![
-                "scheme is not compatible with value: {:?} {:?}",
+                "value is not compatible with scheme:\n  - value: {:?}\n  - scheme: {:?}",
                 kind, scheme
             ]);
         }
@@ -1402,6 +1402,10 @@ fn interpret_expr(
                 let array_heap_id = locals[array_id];
                 let item_heap_id = locals[item_id];
 
+                let ModeScheme::HoleArray(_, item_scheme) = scheme else {
+                    unreachable!();
+                };
+
                 let (index, mut array) = unwrap_hole_array_unrelease(
                     heap,
                     array_heap_id,
@@ -1424,7 +1428,7 @@ fn interpret_expr(
                     &heap.program.schemes,
                     heap,
                     old_item_id,
-                    scheme,
+                    item_scheme,
                     stacktrace.add_frame("replace release item"),
                 );
                 array[index as usize] = item_heap_id;

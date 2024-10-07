@@ -506,7 +506,7 @@ declare_signatures! {
     pub array_get: (Array a m t, Int) -> u
         where t.lt <- u.lt, u.stack = t.access;
 
-    pub array_extract: (Array a Own t, Int) -> (HoleArray a Own t, u)
+    pub array_extract: (Array a Own t, Int) -> (u, HoleArray a Own t)
         where t.lt <- u.lt, u.stack = t.storage;
 
     /// Since the `len` field of an array lives on the stack, it's technically OK to read it after
