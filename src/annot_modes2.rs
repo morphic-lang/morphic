@@ -1691,22 +1691,13 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapCustom(custom_id, unfolded) => {
-            //println!("-------------------");
-            //println!("fut_ty:     {}", fut_ty.display());
-            //println!("positions:  {:?}", fut_ty.shape.positions(customs, sccs));
             let fut_unfolded = unfold_all(interner, customs, customs[custom_id].scc, fut_ty);
-            //println!(
-            //    "positions':  {:?}",
-            //    fut_unfolded.shape.positions(customs, sccs)
-            //);
             let occur =
                 instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
-            //println!("+++++++++++++++++++");
             annot::Expr::WrapCustom(*custom_id, occur)
         }
 
         TailExpr::UnwrapCustom(custom_id, folded) => {
-            // println!("-------------------");
             let fresh_folded = {
                 let mut lt_count = Count::new();
                 freshen_type(constrs, || lt_count.inc(), &ctx.local_binding(*folded).ty)
@@ -1717,15 +1708,8 @@ fn instantiate_expr(
                 // lifetimes which would be identified under folding into the proper positions.
                 // Imposing constraints between this unfolded type and `fut_ty` yields the same
                 // constraint system as folding `fut_ty`.
-                // println!(
-                //     "{} ---> {}",
-                //     ctx.local_binding(*folded).ty.shape.display(),
-                //     fut_ty.shape.display(),
-                // );
-                // println!("folded:     {}", fresh_folded.shape.display());
                 let fresh_unfolded =
                     unfold_all(interner, customs, customs[custom_id].scc, &fresh_folded);
-                // println!("unfolded:   {}", fresh_unfolded.shape.display());
 
                 // Equate the modes in `fut_ty` which are identified under folding.
                 bind_modes(constrs, &fresh_unfolded, fut_ty);
@@ -1736,7 +1720,6 @@ fn instantiate_expr(
             };
 
             let occur = instantiate_occur(strategy, interner, ctx, constrs, *folded, &fresh_folded);
-            // println!("+++++++++++++++++++");
             annot::Expr::UnwrapCustom(*custom_id, occur)
         }
 
@@ -2037,11 +2020,6 @@ fn instantiate_scc(
                 };
 
                 for id in scc.nodes {
-                    // println!(
-                    //     "FUNC                {}                FUNC",
-                    //     func_renderer.render(*id)
-                    // );
-
                     let func = &funcs[id];
                     let mut ctx = LocalContext::new();
 
@@ -2365,10 +2343,6 @@ pub fn annot_modes(
 ) -> annot::Program {
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
-
-    // for scc in &program.custom_types.sccs {
-    //     println!("SCC: {:?}", scc);
-    // }
 
     let customs = parameterize_customs(interner, &program.custom_types);
 

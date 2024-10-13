@@ -546,7 +546,6 @@ impl Shape {
         sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
     ) -> Vec<Position> {
         let mut result = Vec::new();
-        println!("positions: {}", self.display());
         self.positions_impl(customs, sccs, Position::Stack, &mut result);
         debug_assert_eq!(result.len(), self.num_slots);
         result

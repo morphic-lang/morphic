@@ -435,11 +435,6 @@ fn guard_expr(
             guard::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)
         }
         &flat::Expr::UnwrapCustom(custom_id, wrapped) => {
-            // println!(
-            //     "{} ---> {}",
-            //     ctx.local_binding(wrapped).orig_type.display(),
-            //     ret_ty.display()
-            // );
             guard::Expr::UnwrapCustom(custom_id, ctx.local_binding(wrapped).new_id)
         }
         &flat::Expr::Intrinsic(intr, arg) => {
@@ -519,8 +514,6 @@ pub fn guard_types(prog: flat::Program) -> guard::Program {
     };
 
     let funcs = prog.funcs.map(|_func_id, func| {
-        // println!("guarding function: {}", func_renderer.render(func_id));
-
         let mut builder = Builder::new(Count::from_value(1));
         let mut ctx = Context::new();
         ctx.add_local(LocalInfo {
