@@ -8,6 +8,7 @@ use crate::data::flat_ast::{self as flat, CustomTypeSccId};
 use crate::data::guarded_ast::{self as guard, CanGuard};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
+use crate::pretty_print::utils::FuncRenderer;
 use crate::util::collection_ext::VecExt;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
@@ -434,6 +435,11 @@ fn guard_expr(
             guard::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)
         }
         &flat::Expr::UnwrapCustom(custom_id, wrapped) => {
+            // println!(
+            //     "{} ---> {}",
+            //     ctx.local_binding(wrapped).orig_type.display(),
+            //     ret_ty.display()
+            // );
             guard::Expr::UnwrapCustom(custom_id, ctx.local_binding(wrapped).new_id)
         }
         &flat::Expr::Intrinsic(intr, arg) => {
@@ -504,6 +510,7 @@ fn guard_expr(
 }
 
 pub fn guard_types(prog: flat::Program) -> guard::Program {
+    let _func_renderer = FuncRenderer::from_symbols(&prog.func_symbols);
     let can_guard = can_guard_customs(&prog.custom_types);
 
     let trans = Trans {
@@ -511,7 +518,9 @@ pub fn guard_types(prog: flat::Program) -> guard::Program {
         can_guard: &can_guard,
     };
 
-    let funcs = prog.funcs.map(|_, func| {
+    let funcs = prog.funcs.map(|_func_id, func| {
+        // println!("guarding function: {}", func_renderer.render(func_id));
+
         let mut builder = Builder::new(Count::from_value(1));
         let mut ctx = Context::new();
         ctx.add_local(LocalInfo {

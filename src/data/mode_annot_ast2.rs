@@ -7,8 +7,8 @@
 
 use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::flat_ast as flat;
-use crate::data::guarded_ast as guard;
 use crate::data::guarded_ast as guarded;
+use crate::data::guarded_ast::{self as guard, CanGuard};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
 use crate::data::profile as prof;
@@ -20,9 +20,10 @@ use crate::util::intern::{self, Interned};
 use crate::util::iter::IterExt;
 use crate::util::non_empty_set::NonEmptySet;
 use id_collections::{id_type, IdVec};
-use id_graph_sccs::Sccs;
+use id_graph_sccs::{SccKind, Sccs};
 use std::collections::BTreeSet;
 use std::hash::Hash;
+use std::iter;
 
 pub struct Interner {
     pub shape: intern::Interner<ShapeInner>,
@@ -355,21 +356,6 @@ pub struct Res<M, L> {
     pub lt: L,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelfInfo {
-    Structural,
-    Custom(flat::CustomTypeSccId),
-}
-
-impl SelfInfo {
-    pub fn is_my_scc(&self, scc_id: flat::CustomTypeSccId) -> bool {
-        match self {
-            SelfInfo::Structural => false,
-            SelfInfo::Custom(my_scc_id) => *my_scc_id == scc_id,
-        }
-    }
-}
-
 #[id_type]
 pub struct SlotId(pub usize);
 
@@ -407,13 +393,9 @@ impl Shape {
         }
     }
 
-    // We don't read SCCs directly from `customs` because this function is called before we have
-    // fully computed all `CustomTypeDef`s in the same SCC as `ty`.
     pub fn from_guarded<'a>(
         interner: &Interner,
-        customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
-        sccs: impl MapRef<'a, CustomTypeId, flat::CustomTypeSccId>,
-        self_info: SelfInfo,
+        customs: &IdVec<CustomTypeId, CustomTypeDef>,
         ty: &guard::Type,
     ) -> Shape {
         match ty {
@@ -426,56 +408,43 @@ impl Shape {
                 num_slots: 0,
             },
             guard::Type::Tuple(tys) => {
-                let mut num_slots = 0;
-                let inner = interner.shape.new(ShapeInner::Tuple(tys.map_refs(|ty| {
-                    let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
-                    num_slots += shape.num_slots;
-                    shape
-                })));
-                Shape { inner, num_slots }
-            }
-            guard::Type::Variants(tys) => {
-                let mut num_slots = 0;
-                let inner = interner
-                    .shape
-                    .new(ShapeInner::Variants(tys.map_refs(|_, ty| {
-                        let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
-                        num_slots += shape.num_slots;
-                        shape
-                    })));
-                Shape { inner, num_slots }
-            }
-            guard::Type::Custom(id) => {
-                if self_info.is_my_scc(*sccs.get(id)) {
-                    Shape {
-                        inner: interner.shape.new(ShapeInner::SelfCustom(*id)),
-                        num_slots: 0,
-                    }
-                } else {
-                    Shape {
-                        inner: interner.shape.new(ShapeInner::Custom(*id)),
-                        num_slots: customs.get(id).content.num_slots,
-                    }
+                let tys = tys.map_refs(|ty| Shape::from_guarded(interner, customs, ty));
+                let num_slots = tys.iter().map(|ty| ty.num_slots).sum();
+                Shape {
+                    inner: interner.shape.new(ShapeInner::Tuple(tys)),
+                    num_slots,
                 }
             }
-            guard::Type::Array(ty) => {
-                let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
+            guard::Type::Variants(tys) => {
+                let tys = tys.map_refs(|_, ty| Shape::from_guarded(interner, customs, ty));
+                let num_slots = tys.values().map(|ty| ty.num_slots).sum();
                 Shape {
-                    num_slots: shape.num_slots + 1,
+                    inner: interner.shape.new(ShapeInner::Variants(tys)),
+                    num_slots,
+                }
+            }
+            guard::Type::Custom(id) => Shape {
+                inner: interner.shape.new(ShapeInner::Custom(*id)),
+                num_slots: customs[id].num_slots,
+            },
+            guard::Type::Array(ty) => {
+                let shape = Shape::from_guarded(interner, customs, ty);
+                Shape {
+                    num_slots: 1 + shape.num_slots,
                     inner: interner.shape.new(ShapeInner::Array(shape)),
                 }
             }
             guard::Type::HoleArray(ty) => {
-                let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
+                let shape = Shape::from_guarded(interner, customs, ty);
                 Shape {
-                    num_slots: shape.num_slots + 1,
+                    num_slots: 1 + shape.num_slots,
                     inner: interner.shape.new(ShapeInner::HoleArray(shape)),
                 }
             }
             guard::Type::Boxed(ty) => {
-                let shape = Shape::from_guarded(interner, customs, sccs, self_info, ty);
+                let shape = Shape::from_guarded(interner, customs, ty);
                 Shape {
-                    num_slots: shape.num_slots + 1,
+                    num_slots: 1 + shape.num_slots,
                     inner: interner.shape.new(ShapeInner::Boxed(shape)),
                 }
             }
@@ -520,6 +489,7 @@ impl Shape {
     fn positions_impl<'a>(
         &self,
         customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
+        sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
         pos: Position,
         result: &mut Vec<Position>,
     ) {
@@ -527,48 +497,70 @@ impl Shape {
             ShapeInner::Bool | ShapeInner::Num(_) => {}
             ShapeInner::Tuple(shapes) => {
                 for shape in shapes {
-                    shape.positions_impl(customs, pos, result);
+                    shape.positions_impl(customs, sccs, pos, result);
                 }
             }
             ShapeInner::Variants(shapes) => {
                 for (_, shape) in shapes {
-                    shape.positions_impl(customs, pos, result);
+                    shape.positions_impl(customs, sccs, pos, result);
                 }
             }
-            ShapeInner::Custom(id) => match pos {
-                Position::Stack => {
-                    result.extend(&customs.get(id).pos);
+            ShapeInner::SelfCustom(_) => {
+                panic!(
+                    "`Shape::positions` was called directly on the (folded) content of a \
+                      non-trivial cyclic custom, which is almost certainly a bug."
+                )
+            }
+            ShapeInner::Custom(id) => {
+                let custom = customs.get(id);
+                if sccs.component(custom.scc).kind == SccKind::Cyclic {
+                    if custom.can_guard == CanGuard::Yes {
+                        assert!(
+                            pos == Position::Heap,
+                            "`Shape::positions` was called on a type with non-trival cyclic custom \
+                             '{}' in stack position",
+                             self.display(),
+                        );
+                        result.extend(iter::repeat(Position::Heap).take(custom.num_slots));
+                    } else {
+                        // If a custom is cyclic but can't be guarded it is necessarily trivial and
+                        // we needn't do anything.
+                    }
+                } else {
+                    custom
+                        .content
+                        .shape
+                        .positions_impl(customs, sccs, pos, result);
                 }
-                Position::Heap => {
-                    result.extend(customs.get(id).pos.iter().map(|_| Position::Heap));
-                }
-            },
-            ShapeInner::SelfCustom(_) => {}
+            }
             ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
                 result.push(pos);
-                shape.positions_impl(customs, Position::Heap, result);
+                shape.positions_impl(customs, sccs, Position::Heap, result);
             }
         }
     }
 
     pub fn positions<'a>(
         &self,
-        customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
+        customs: &IdVec<CustomTypeId, CustomTypeDef>,
+        sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
     ) -> Vec<Position> {
         let mut result = Vec::new();
-        self.positions_impl(customs, Position::Stack, &mut result);
-        assert!(result.len() == self.num_slots);
+        println!("positions: {}", self.display());
+        self.positions_impl(customs, sccs, Position::Stack, &mut result);
+        debug_assert_eq!(result.len(), self.num_slots);
         result
     }
 
     pub fn gen_resources<'a, M, L>(
         &self,
-        customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
+        customs: &IdVec<CustomTypeId, CustomTypeDef>,
+        sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
         mut next_mode: impl FnMut() -> M,
         mut next_lt: impl FnMut() -> L,
     ) -> IdVec<SlotId, Res<M, L>> {
         IdVec::from_vec(
-            self.positions(customs)
+            self.positions(customs, sccs)
                 .into_iter()
                 .map(|pos| Res {
                     modes: match pos {
@@ -869,8 +861,8 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct CustomTypeDef {
-    pub content: Shape,
-    pub pos: Vec<Position>,
+    pub content: Type<ModeParam, LtParam>,
+    pub num_slots: usize,
     pub scc: flat::CustomTypeSccId,
     pub can_guard: guarded::CanGuard,
 }
@@ -883,7 +875,7 @@ pub struct CustomTypes {
 
 impl CustomTypes {
     pub fn view_shapes(&self) -> impl MapRef<'_, first_ord::CustomTypeId, Shape> {
-        FnWrap::wrap(|id| &self.types[id].content)
+        FnWrap::wrap(|id| &self.types[id].content.shape)
     }
 }
 

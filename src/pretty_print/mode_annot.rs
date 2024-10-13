@@ -573,7 +573,7 @@ pub fn write_typedef(
     write!(w, "custom type ")?;
     write_custom(w, type_renderer, type_id)?;
     write!(w, " = ")?;
-    write_shape(w, type_renderer, &typedef.content)?;
+    write_shape(w, type_renderer, &typedef.content.shape)?;
     Ok(())
 }
 

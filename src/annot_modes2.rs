@@ -10,13 +10,13 @@ use crate::data::intrinsics as intr;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
     self as annot, HeapModes, Interner, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur,
-    Position, Res, ResModes, SelfInfo, Shape, ShapeInner, SlotId, Type,
+    Position, Res, ResModes, Shape, ShapeInner, SlotId, Type,
 };
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::intrinsic_config::intrinsic_sig;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
-use crate::util::collection_ext::FnWrap;
+use crate::util::collection_ext::{BTreeMapExt, VecExt};
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
@@ -25,6 +25,7 @@ use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
+use std::iter;
 
 // It is crucial that RC specialization (the next pass) does not inhibit tail calls by inserting
 // retains/releases after them. Hence, this pass must detect tail calls during constraint
@@ -245,54 +246,199 @@ fn compute_tail_calls(
 // We start by lifting the set of custom type definitions from the previous pass into the current
 // pass by annotating them with fresh mode and lifetime parameters.
 
-fn parameterize_type<'a>(
-    interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    ty: &guard::Type,
-) -> Type<ModeParam, LtParam> {
-    let shape = Shape::from_guarded(
-        interner,
-        customs,
-        FnWrap::wrap(|id| &customs[*id].scc),
-        SelfInfo::Structural,
-        ty,
-    );
-    let mut mode_count = Count::new();
-    let mut lt_count = Count::new();
-    let res = shape.gen_resources(customs, || mode_count.inc(), || lt_count.inc());
-    Type { shape, res }
+fn count_num_slots(customs: &IdMap<CustomTypeId, annot::CustomTypeDef>, ty: &guard::Type) -> usize {
+    match ty {
+        guard::Type::Bool => 0,
+        guard::Type::Num(_) => 0,
+        guard::Type::Tuple(items) => items
+            .iter()
+            .map(|item| count_num_slots(customs, item))
+            .sum(),
+        guard::Type::Variants(variants) => variants
+            .values()
+            .map(|item| count_num_slots(customs, item))
+            .sum(),
+        guard::Type::Custom(id) => match customs.get(*id) {
+            Some(custom) => custom.num_slots,
+            // This is a typedef in the same SCC; the reference to it here contributes no additional
+            // parameters to the entire SCC.
+            None => 0,
+        },
+        guard::Type::Array(content) => 1 + count_num_slots(customs, content),
+        guard::Type::HoleArray(content) => 1 + count_num_slots(customs, content),
+        guard::Type::Boxed(content) => 1 + count_num_slots(customs, content),
+    }
+}
+
+// We separate this out because there is code depends on `access` and `storage` creating in a
+// consistent order (see where this is called).
+fn next_heap<M: Id>(next_mode: &mut Count<M>) -> HeapModes<M> {
+    HeapModes {
+        access: next_mode.inc(),
+        storage: next_mode.inc(),
+    }
+}
+
+struct SccParameterizer<'a> {
+    interner: &'a Interner,
+    customs: &'a guard::CustomTypes,
+    parameterized: &'a IdMap<CustomTypeId, annot::CustomTypeDef>,
+    scc_id: CustomTypeSccId,
+    scc_num_slots: usize,
+    next_mode: Count<ModeParam>,
+    next_lt: Count<LtParam>,
+}
+
+impl<'a> SccParameterizer<'a> {
+    fn next_res(&mut self) -> Res<ModeParam, LtParam> {
+        Res {
+            modes: ResModes::Heap(next_heap(&mut self.next_mode)),
+            lt: self.next_lt.inc(),
+        }
+    }
+
+    fn parameterize_impl(
+        &mut self,
+        ty: &guard::Type,
+        out_res: &mut Vec<Res<ModeParam, LtParam>>,
+    ) -> Shape {
+        match ty {
+            guard::Type::Bool => Shape {
+                inner: self.interner.shape.new(ShapeInner::Bool),
+                num_slots: 0,
+            },
+            guard::Type::Num(num_ty) => Shape {
+                inner: self.interner.shape.new(ShapeInner::Num(*num_ty)),
+                num_slots: 0,
+            },
+            guard::Type::Tuple(tys) => {
+                let tys = tys.map_refs(|ty| self.parameterize_impl(ty, out_res));
+                let num_slots = tys.iter().map(|ty| ty.num_slots).sum();
+                Shape {
+                    inner: self.interner.shape.new(ShapeInner::Tuple(tys)),
+                    num_slots,
+                }
+            }
+            guard::Type::Variants(tys) => {
+                let tys = tys.map_refs(|_, ty| self.parameterize_impl(ty, out_res));
+                let num_slots = tys.values().map(|ty| ty.num_slots).sum();
+                Shape {
+                    inner: self.interner.shape.new(ShapeInner::Variants(tys)),
+                    num_slots,
+                }
+            }
+            guard::Type::Custom(id) => {
+                if self.customs.types[*id].scc == self.scc_id {
+                    // This is a typedef in the same SCC, so we need to parameterize it by all the
+                    // SCC parameters.
+                    let resources = {
+                        let mut next_mode = Count::new();
+                        let mut next_lt = Count::new();
+                        iter::repeat_with(move || Res {
+                            modes: ResModes::Heap(next_heap(&mut next_mode)),
+                            lt: next_lt.inc(),
+                        })
+                    };
+
+                    let num_slots = self.scc_num_slots;
+                    out_res.extend(resources.take(num_slots));
+
+                    Shape {
+                        inner: self.interner.shape.new(ShapeInner::SelfCustom(*id)),
+                        num_slots,
+                    }
+                } else {
+                    let num_slots = self.parameterized[*id].num_slots;
+                    out_res.extend(iter::repeat_with(|| self.next_res()).take(num_slots));
+                    Shape {
+                        inner: self.interner.shape.new(ShapeInner::Custom(*id)),
+                        num_slots,
+                    }
+                }
+            }
+            guard::Type::Array(ty) => {
+                out_res.push(self.next_res());
+                let shape = self.parameterize_impl(ty, out_res);
+                Shape {
+                    num_slots: 1 + shape.num_slots,
+                    inner: self.interner.shape.new(ShapeInner::Array(shape)),
+                }
+            }
+            guard::Type::HoleArray(ty) => {
+                out_res.push(self.next_res());
+                let shape = self.parameterize_impl(ty, out_res);
+                Shape {
+                    num_slots: 1 + shape.num_slots,
+                    inner: self.interner.shape.new(ShapeInner::HoleArray(shape)),
+                }
+            }
+            guard::Type::Boxed(ty) => {
+                out_res.push(self.next_res());
+                let shape = self.parameterize_impl(ty, out_res);
+                Shape {
+                    num_slots: 1 + shape.num_slots,
+                    inner: self.interner.shape.new(ShapeInner::Boxed(shape)),
+                }
+            }
+        }
+    }
+
+    fn parameterize(&mut self, ty: &guard::Type) -> Type<ModeParam, LtParam> {
+        let mut res = Vec::new();
+        let shape = self.parameterize_impl(ty, &mut res);
+        debug_assert_eq!(res.len(), shape.num_slots);
+        Type {
+            shape,
+            res: IdVec::from_vec(res),
+        }
+    }
 }
 
 fn parameterize_custom_scc(
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, guard::CustomTypeDef>,
+    customs: &guard::CustomTypes,
     parameterized: &IdMap<CustomTypeId, annot::CustomTypeDef>,
-    scc_id: CustomTypeSccId,
-    scc: Scc<'_, CustomTypeId>,
+    scc: (CustomTypeSccId, Scc<'_, CustomTypeId>),
 ) -> BTreeMap<CustomTypeId, annot::CustomTypeDef> {
-    scc.nodes
+    let (scc_id, scc) = scc;
+
+    let scc_num_slots = scc
+        .nodes
+        .iter()
+        .map(|&id| count_num_slots(parameterized, &customs.types[id].content))
+        .sum();
+
+    let mut parameterizer = SccParameterizer {
+        interner,
+        customs,
+        parameterized,
+        scc_id,
+        scc_num_slots,
+        // Because each custom in the SCC is parameterized by the total set of modes and lifetimes
+        // for the SCC, we use a single mode and lifetime counter as we traverse.
+        next_mode: Count::new(),
+        next_lt: Count::new(),
+    };
+
+    let result = scc
+        .nodes
         .iter()
         .map(|&id| {
-            let custom = &customs[id];
-            let content = Shape::from_guarded(
-                interner,
-                parameterized,
-                FnWrap::wrap(|id| &customs[*id].scc),
-                SelfInfo::Custom(scc_id),
-                &custom.content,
-            );
-            let pos = content.positions(parameterized);
+            let custom = &customs.types[id];
             (
                 id,
                 annot::CustomTypeDef {
-                    content,
-                    pos,
+                    content: parameterizer.parameterize(&custom.content),
+                    num_slots: scc_num_slots,
                     scc: custom.scc,
                     can_guard: custom.can_guard,
                 },
             )
         })
-        .collect()
+        .collect();
+
+    debug_assert_eq!(parameterizer.next_lt.to_value(), scc_num_slots);
+    result
 }
 
 fn parameterize_customs(
@@ -300,16 +446,28 @@ fn parameterize_customs(
     customs: &guard::CustomTypes,
 ) -> IdVec<CustomTypeId, annot::CustomTypeDef> {
     let mut parameterized = IdMap::new();
-
-    for (scc_id, scc) in &customs.sccs {
-        let to_populate =
-            parameterize_custom_scc(interner, &customs.types, &parameterized, scc_id, scc);
+    for scc in &customs.sccs {
+        let to_populate = parameterize_custom_scc(interner, &customs, &parameterized, scc);
         for (id, typedef) in to_populate {
             parameterized.insert_vacant(id, typedef);
         }
     }
-
     parameterized.to_id_vec(customs.types.count())
+}
+
+fn parameterize_type<'a>(
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    ty: &guard::Type,
+) -> Type<ModeParam, LtParam> {
+    // All the machinery we use here is *very* similar to the machinery above for parameterizing
+    // customs, but just different enough that it's hard to merge them.
+    let shape = Shape::from_guarded(interner, customs, ty);
+    let mut mode_count = Count::new();
+    let mut lt_count = Count::new();
+    let res = shape.gen_resources(customs, sccs, || mode_count.inc(), || lt_count.inc());
+    Type { shape, res }
 }
 
 // ---------------------
@@ -815,6 +973,7 @@ fn create_occurs_from_model(
     _strategy: Strategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: &annot::Path,
@@ -938,7 +1097,7 @@ fn create_occurs_from_model(
 
                 let prop1 = lhs.prop;
                 let prop2 = rhs.prop;
-                let pos = rep1.shape.positions(customs);
+                let pos = rep1.shape.positions(customs, sccs);
 
                 for (pos, (res1, res2)) in pos.iter().zip_eq(rep1.iter().zip_eq(rep2.iter())) {
                     match pos {
@@ -982,6 +1141,7 @@ fn instantiate_model(
     strategy: Strategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: &annot::Path,
@@ -989,7 +1149,7 @@ fn instantiate_model(
     ret: &Type<ModeVar, Lt>,
 ) -> Vec<annot::Occur<ModeVar, Lt>> {
     let occurs = create_occurs_from_model(
-        sig, strategy, interner, customs, constrs, ctx, path, args, ret,
+        sig, strategy, interner, customs, sccs, constrs, ctx, path, args, ret,
     );
 
     for occur in &occurs {
@@ -1063,12 +1223,53 @@ fn prepare_arg_type(
     }
 }
 
-/// Unfolds the content of a custom type by replacing all occurrences of `SelfCustom` with an
-/// occurrence of the custom type itself.
+struct Subst<L> {
+    mode_subst: BTreeMap<ModeParam, ModeVar>,
+    lt_subst: BTreeMap<LtParam, L>,
+}
+
+impl<L: Clone> Subst<L> {
+    fn new(res: &[Res<ModeVar, L>]) -> Self {
+        let mut next_mode = Count::new();
+        let mut next_lt = Count::new();
+        let mut mode_subst = BTreeMap::new();
+        let mut lt_subst = BTreeMap::new();
+
+        for res in res {
+            match &res.modes {
+                ResModes::Stack(value) => {
+                    mode_subst.insert_vacant(next_mode.inc(), *value);
+                }
+                ResModes::Heap(value) => {
+                    let HeapModes { access, storage } = next_heap(&mut next_mode);
+                    mode_subst.insert_vacant(access, value.access);
+                    mode_subst.insert_vacant(storage, value.storage);
+                }
+            }
+            lt_subst.insert_vacant(next_lt.inc(), res.lt.clone());
+        }
+
+        Self {
+            mode_subst,
+            lt_subst,
+        }
+    }
+
+    fn apply(&self, res: &[Res<ModeParam, LtParam>]) -> Vec<Res<ModeVar, L>> {
+        res.iter()
+            .map(|res| Res {
+                modes: res.modes.map(|mode| self.mode_subst[&mode]),
+                lt: self.lt_subst[&res.lt].clone(),
+            })
+            .collect()
+    }
+}
+
+/// Unfolds the content of a custom type by replacing each occurrence of `SelfCustom` with an
+/// occurrence of `Custom`.
 fn unfold_impl<L: Clone>(
     interner: &Interner,
-    custom_shape: &Shape,
-    custom_res: &[Res<ModeVar, L>],
+    self_res: &[Res<ModeVar, L>],
     shape: &Shape,
     res: &[Res<ModeVar, L>],
     out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
@@ -1084,9 +1285,7 @@ fn unfold_impl<L: Clone>(
         }
         ShapeInner::Tuple(shapes) => {
             let shapes = annot::iter_shapes(shapes, res)
-                .map(|(shape, res)| {
-                    unfold_impl(interner, custom_shape, custom_res, shape, res, out_res)
-                })
+                .map(|(shape, res)| unfold_impl(interner, self_res, shape, res, out_res))
                 .collect::<Vec<_>>();
 
             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
@@ -1095,9 +1294,7 @@ fn unfold_impl<L: Clone>(
         }
         ShapeInner::Variants(shapes) => {
             let shapes = annot::iter_shapes(shapes.as_slice(), res)
-                .map(|(shape, res)| {
-                    unfold_impl(interner, custom_shape, custom_res, shape, res, out_res)
-                })
+                .map(|(shape, res)| unfold_impl(interner, self_res, shape, res, out_res))
                 .collect::<Vec<_>>();
 
             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
@@ -1107,9 +1304,13 @@ fn unfold_impl<L: Clone>(
             Shape { inner, num_slots }
         }
         // The non-trival base case.
-        ShapeInner::SelfCustom(_) => {
-            let _ = out_res.extend(custom_res.iter().cloned());
-            custom_shape.clone()
+        ShapeInner::SelfCustom(id) => {
+            debug_assert_eq!(res.len(), 0);
+            let _ = out_res.extend(self_res.iter().cloned());
+            Shape {
+                inner: interner.shape.new(ShapeInner::Custom(*id)),
+                num_slots: self_res.len(),
+            }
         }
         ShapeInner::Custom(_) => {
             let _ = out_res.extend(res.iter().cloned());
@@ -1117,14 +1318,7 @@ fn unfold_impl<L: Clone>(
         }
         ShapeInner::Array(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = unfold_impl(
-                interner,
-                custom_shape,
-                custom_res,
-                shape,
-                &res[1..],
-                out_res,
-            );
+            let shape = unfold_impl(interner, self_res, shape, &res[1..], out_res);
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::Array(shape));
@@ -1132,14 +1326,7 @@ fn unfold_impl<L: Clone>(
         }
         ShapeInner::HoleArray(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = unfold_impl(
-                interner,
-                custom_shape,
-                custom_res,
-                shape,
-                &res[1..],
-                out_res,
-            );
+            let shape = unfold_impl(interner, self_res, shape, &res[1..], out_res);
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::HoleArray(shape));
@@ -1147,14 +1334,7 @@ fn unfold_impl<L: Clone>(
         }
         ShapeInner::Boxed(shape) => {
             let _ = out_res.push(res[0].clone());
-            let shape = unfold_impl(
-                interner,
-                custom_shape,
-                custom_res,
-                shape,
-                &res[1..],
-                out_res,
-            );
+            let shape = unfold_impl(interner, self_res, shape, &res[1..], out_res);
 
             let num_slots = 1 + shape.num_slots;
             let inner = interner.shape.new(ShapeInner::Boxed(shape));
@@ -1204,17 +1384,20 @@ fn unfold_all_impl<L: Clone>(
             panic!("`unfold_all` was called on the *content* of a custom type")
         }
         // The non-trival base case.
-        ShapeInner::Custom(id) => unfold_impl(
-            interner,
-            &Shape {
-                inner: interner.shape.new(ShapeInner::Custom(*id)),
-                num_slots: res.len(),
-            },
-            res,
-            &customs[id].content,
-            res,
-            out_res,
-        ),
+        ShapeInner::Custom(id) => {
+            let custom = &customs[*id];
+            if custom.scc == scc {
+                debug_assert_eq!(res.len(), custom.num_slots);
+                let content_res = Subst::new(res).apply(custom.content.res.as_slice());
+                unfold_impl(interner, &content_res, &custom.content.shape, res, out_res)
+            } else {
+                let _ = out_res.extend(res.iter().cloned());
+                Shape {
+                    inner: interner.shape.new(ShapeInner::Custom(*id)),
+                    num_slots: res.len(),
+                }
+            }
+        }
         ShapeInner::Array(shape) => {
             let _ = out_res.push(res[0].clone());
             let shape = unfold_all_impl(interner, customs, scc, shape, &res[1..], out_res);
@@ -1271,6 +1454,7 @@ fn instantiate_expr(
     strategy: Strategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     sigs: SignatureAssumptions,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
@@ -1315,8 +1499,10 @@ fn instantiate_expr(
             let end_of_scope = path.seq(bindings.len() + 1);
 
             for (binding_ty, _, _) in bindings {
-                let annot_ty =
-                    freshen_type_unused(constrs, &parameterize_type(interner, customs, binding_ty));
+                let annot_ty = freshen_type_unused(
+                    constrs,
+                    &parameterize_type(interner, customs, sccs, binding_ty),
+                );
                 let _ = ctx.add_local(LocalInfo {
                     scope: end_of_scope.clone(),
                     ty: annot_ty,
@@ -1338,6 +1524,7 @@ fn instantiate_expr(
                     strategy,
                     interner,
                     customs,
+                    sccs,
                     sigs,
                     constrs,
                     ctx,
@@ -1368,6 +1555,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 sigs,
                 constrs,
                 ctx,
@@ -1380,6 +1568,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 sigs,
                 constrs,
                 ctx,
@@ -1474,6 +1663,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1490,6 +1680,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1500,13 +1691,22 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapCustom(custom_id, unfolded) => {
+            //println!("-------------------");
+            //println!("fut_ty:     {}", fut_ty.display());
+            //println!("positions:  {:?}", fut_ty.shape.positions(customs, sccs));
             let fut_unfolded = unfold_all(interner, customs, customs[custom_id].scc, fut_ty);
+            //println!(
+            //    "positions':  {:?}",
+            //    fut_unfolded.shape.positions(customs, sccs)
+            //);
             let occur =
                 instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
+            //println!("+++++++++++++++++++");
             annot::Expr::WrapCustom(*custom_id, occur)
         }
 
         TailExpr::UnwrapCustom(custom_id, folded) => {
+            // println!("-------------------");
             let fresh_folded = {
                 let mut lt_count = Count::new();
                 freshen_type(constrs, || lt_count.inc(), &ctx.local_binding(*folded).ty)
@@ -1517,8 +1717,15 @@ fn instantiate_expr(
                 // lifetimes which would be identified under folding into the proper positions.
                 // Imposing constraints between this unfolded type and `fut_ty` yields the same
                 // constraint system as folding `fut_ty`.
+                // println!(
+                //     "{} ---> {}",
+                //     ctx.local_binding(*folded).ty.shape.display(),
+                //     fut_ty.shape.display(),
+                // );
+                // println!("folded:     {}", fresh_folded.shape.display());
                 let fresh_unfolded =
                     unfold_all(interner, customs, customs[custom_id].scc, &fresh_folded);
+                // println!("unfolded:   {}", fresh_unfolded.shape.display());
 
                 // Equate the modes in `fut_ty` which are identified under folding.
                 bind_modes(constrs, &fresh_unfolded, fut_ty);
@@ -1529,6 +1736,7 @@ fn instantiate_expr(
             };
 
             let occur = instantiate_occur(strategy, interner, ctx, constrs, *folded, &fresh_folded);
+            // println!("+++++++++++++++++++");
             annot::Expr::UnwrapCustom(*custom_id, occur)
         }
 
@@ -1537,13 +1745,7 @@ fn instantiate_expr(
         TailExpr::Intrinsic(intr, arg) => {
             let sig = intrinsic_sig(*intr);
             let ty = Type {
-                shape: Shape::from_guarded(
-                    interner,
-                    customs,
-                    FnWrap::wrap(|id| &customs[*id].scc),
-                    SelfInfo::Structural,
-                    &guard::Type::from_intr(&sig.arg),
-                ),
+                shape: Shape::from_guarded(interner, customs, &guard::Type::from_intr(&sig.arg)),
                 res: IdVec::new(),
             };
             annot::Expr::Intrinsic(*intr, Occur { id: *arg, ty })
@@ -1555,6 +1757,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1575,6 +1778,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1594,6 +1798,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1610,6 +1815,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1629,6 +1835,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1645,6 +1852,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1664,6 +1872,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1683,6 +1892,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1698,6 +1908,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1714,6 +1925,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1730,6 +1942,7 @@ fn instantiate_expr(
                 strategy,
                 interner,
                 customs,
+                sccs,
                 constrs,
                 ctx,
                 &path,
@@ -1762,6 +1975,7 @@ fn instantiate_scc(
     strategy: Strategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
@@ -1783,7 +1997,7 @@ fn instantiate_scc(
                         *id,
                         freshen_type_unused(
                             &mut constrs,
-                            &parameterize_type(interner, customs, &funcs[id].arg_ty),
+                            &parameterize_type(interner, customs, sccs, &funcs[id].arg_ty),
                         ),
                     )
                 })
@@ -1799,7 +2013,7 @@ fn instantiate_scc(
                         freshen_type(
                             &mut constrs,
                             &mut || next_lt.inc(),
-                            &parameterize_type(interner, customs, &funcs[id].ret_ty),
+                            &parameterize_type(interner, customs, sccs, &funcs[id].ret_ty),
                         ),
                     )
                 })
@@ -1823,12 +2037,17 @@ fn instantiate_scc(
                 };
 
                 for id in scc.nodes {
+                    // println!(
+                    //     "FUNC                {}                FUNC",
+                    //     func_renderer.render(*id)
+                    // );
+
                     let func = &funcs[id];
                     let mut ctx = LocalContext::new();
 
                     let arg_ty = freshen_type_unused(
                         &mut constrs,
-                        &parameterize_type(interner, customs, &func.arg_ty),
+                        &parameterize_type(interner, customs, sccs, &func.arg_ty),
                     );
                     let arg_id = ctx.add_local(LocalInfo {
                         scope: annot::ARG_SCOPE(),
@@ -1841,6 +2060,7 @@ fn instantiate_scc(
                         strategy,
                         interner,
                         customs,
+                        sccs,
                         assumptions,
                         &mut constrs,
                         &mut ctx,
@@ -2045,6 +2265,7 @@ fn solve_scc(
     strategy: Strategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &mut IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
@@ -2055,6 +2276,7 @@ fn solve_scc(
         strategy,
         interner,
         customs,
+        sccs,
         funcs,
         funcs_annot,
         scc,
@@ -2144,6 +2366,10 @@ pub fn annot_modes(
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
+    // for scc in &program.custom_types.sccs {
+    //     println!("SCC: {:?}", scc);
+    // }
+
     let customs = parameterize_customs(interner, &program.custom_types);
 
     let funcs = compute_tail_calls(&program.funcs);
@@ -2165,6 +2391,7 @@ pub fn annot_modes(
             strategy,
             interner,
             &customs,
+            &program.custom_types.sccs,
             &funcs,
             &mut funcs_annot,
             scc,
@@ -2223,7 +2450,7 @@ mod tests {
         let annot_list = &parameterized[CustomTypeId(0)];
 
         let expected_shape = Shape {
-            num_slots: 1,
+            num_slots: 2,
             inner: interner
                 .shape
                 .new(ShapeInner::Variants(IdVec::from_vec(vec![
@@ -2232,16 +2459,14 @@ mod tests {
                         inner: interner.shape.new(ShapeInner::Tuple(vec![])),
                     },
                     Shape {
-                        num_slots: 1,
+                        num_slots: 2,
                         inner: interner.shape.new(ShapeInner::Boxed(Shape {
-                            num_slots: 0,
+                            num_slots: 1,
                             inner: interner.shape.new(ShapeInner::SelfCustom(CustomTypeId(0))),
                         })),
                     },
                 ]))),
         };
-        let expected_pos = vec![Position::Stack];
-        assert_eq!(annot_list.content, expected_shape);
-        assert_eq!(annot_list.pos, expected_pos);
+        assert_eq!(annot_list.content.shape, expected_shape);
     }
 }

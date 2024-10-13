@@ -5,8 +5,8 @@ use crate::data::flat_ast::{
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
-use core::str;
 use std::io::{self, Write};
+use std::{fmt, str};
 
 const TAB_SIZE: usize = 2;
 
@@ -82,7 +82,7 @@ pub fn write_condition(
 
 pub fn write_type(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
     type_: &Type,
 ) -> io::Result<()> {
     match type_ {
@@ -98,7 +98,13 @@ pub fn write_type(
                 write_type(w, type_renderer, type_)
             })
         }
-        Type::Custom(type_id) => write!(w, "{}", type_renderer.render(type_id)),
+        Type::Custom(type_id) => {
+            if let Some(type_renderer) = type_renderer {
+                write!(w, "{}", type_renderer.render(type_id))
+            } else {
+                write!(w, "Custom#{}", type_id.0)
+            }
+        }
         Type::Array(item_type) => {
             write!(w, "Array (")?;
             write_type(w, type_renderer, item_type)?;
@@ -194,7 +200,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
                     let (binding_type, binding_expr) = &bindings[index];
                     new_context.writeln(w)?;
                     write!(w, "%{}: ", context.num_locals + index)?;
-                    write_type(w, context.type_renderer, binding_type)?;
+                    write_type(w, Some(context.type_renderer), binding_type)?;
                     write!(w, " = ")?;
                     write_expr(
                         w,
@@ -308,9 +314,9 @@ pub fn write_func(
     func_id: CustomFuncId,
 ) -> io::Result<()> {
     write!(w, "func {} (%0: ", func_renderer.render(func_id))?;
-    write_type(w, type_renderer, &func.arg_type)?;
+    write_type(w, Some(type_renderer), &func.arg_type)?;
     write!(w, "): ")?;
-    write_type(w, type_renderer, &func.ret_type)?;
+    write_type(w, Some(type_renderer), &func.ret_type)?;
     write!(w, " =\n")?;
 
     let context = Context {
@@ -332,7 +338,7 @@ pub fn write_typedef(
     type_id: CustomTypeId,
 ) -> io::Result<()> {
     write!(w, "custom type {} = ", type_renderer.render(type_id))?;
-    write_type(w, type_renderer, &typedef.content)?;
+    write_type(w, Some(type_renderer), &typedef.content)?;
     writeln!(w)?;
     Ok(())
 }
@@ -380,6 +386,38 @@ impl Condition {
         DisplayCondition {
             type_renderer: Some(type_renderer),
             cond: self,
+        }
+    }
+}
+
+pub struct DisplayType<'a> {
+    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
+    type_: &'a Type,
+}
+
+impl fmt::Display for DisplayType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut w = Vec::new();
+        write_type(&mut w, self.type_renderer, self.type_).unwrap();
+        f.write_str(str::from_utf8(&w).unwrap())
+    }
+}
+
+impl Type {
+    pub fn display<'a>(&'a self) -> DisplayType<'a> {
+        DisplayType {
+            type_renderer: None,
+            type_: self,
+        }
+    }
+
+    pub fn display_with<'a>(
+        &'a self,
+        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    ) -> DisplayType<'a> {
+        DisplayType {
+            type_renderer: Some(type_renderer),
+            type_: self,
         }
     }
 }

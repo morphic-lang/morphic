@@ -458,7 +458,7 @@ pub fn annot_obligations(
                 .types
                 .into_values()
                 .map(|typedef| ob::CustomTypeDef {
-                    content: typedef.content,
+                    content: typedef.content.shape,
                     scc: typedef.scc,
                 })
                 .collect(),

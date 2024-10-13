@@ -42,7 +42,7 @@ impl<'a> Context<'a> {
 
 pub fn write_type(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
     type_: &Type,
 ) -> io::Result<()> {
     match type_ {
@@ -58,7 +58,13 @@ pub fn write_type(
                 write_type(w, type_renderer, type_)
             })
         }
-        Type::Custom(type_id) => write!(w, "{}", type_renderer.render(type_id)),
+        Type::Custom(type_id) => {
+            if let Some(type_renderer) = type_renderer {
+                write!(w, "{}", type_renderer.render(type_id))
+            } else {
+                write!(w, "Custom#{}", type_id.0)
+            }
+        }
         Type::Array(item_type) => {
             write!(w, "Array (")?;
             write_type(w, type_renderer, item_type)?;
@@ -138,7 +144,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
                     write_metadata(w, new_context.indentation, metadata)?;
                     new_context.writeln(w)?;
                     write!(w, "%{}: ", context.num_locals + index)?;
-                    write_type(w, context.type_renderer, binding_type)?;
+                    write_type(w, Some(context.type_renderer), binding_type)?;
                     write!(w, " = ")?;
                     write_expr(
                         w,
@@ -275,9 +281,9 @@ pub fn write_func(
     func_id: CustomFuncId,
 ) -> io::Result<()> {
     write!(w, "func {} (%0: ", func_renderer.render(func_id))?;
-    write_type(w, type_renderer, &func.arg_type)?;
+    write_type(w, Some(type_renderer), &func.arg_type)?;
     write!(w, "): ")?;
-    write_type(w, type_renderer, &func.ret_type)?;
+    write_type(w, Some(type_renderer), &func.ret_type)?;
     write!(w, " =\n")?;
 
     let context = Context {
@@ -299,7 +305,7 @@ pub fn write_typedef(
     type_id: CustomTypeId,
 ) -> io::Result<()> {
     write!(w, "custom type {} = ", type_renderer.render(type_id))?;
-    write_type(w, type_renderer, &typedef.content)?;
+    write_type(w, Some(type_renderer), &typedef.content)?;
     writeln!(w)?;
     Ok(())
 }
