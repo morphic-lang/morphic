@@ -6,7 +6,38 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use id_collections::{id_type, IdVec};
-use id_graph_sccs::Sccs;
+use id_graph_sccs::{SccKind, Sccs};
+
+#[derive(Debug, Clone, Copy)]
+pub enum GuardPhase {
+    Structural,
+    Custom(flat::CustomTypeSccId),
+    IndirectCustom(flat::CustomTypeSccId),
+}
+
+impl GuardPhase {
+    pub fn should_guard(
+        self,
+        can_guard: CanGuard,
+        kind: SccKind,
+        scc: flat::CustomTypeSccId,
+    ) -> bool {
+        let is_candidate = match self {
+            GuardPhase::Structural => true,
+            GuardPhase::Custom(_) => true,
+            GuardPhase::IndirectCustom(curr_scc) => scc != curr_scc,
+        };
+        can_guard == CanGuard::Yes && kind == SccKind::Cyclic && is_candidate
+    }
+
+    pub fn indirect(self) -> Self {
+        match self {
+            GuardPhase::Structural => GuardPhase::Structural,
+            GuardPhase::Custom(scc) => GuardPhase::IndirectCustom(scc),
+            GuardPhase::IndirectCustom(scc) => GuardPhase::IndirectCustom(scc),
+        }
+    }
+}
 
 #[id_type]
 pub struct LocalId(pub usize);

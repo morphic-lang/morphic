@@ -304,7 +304,8 @@ pub fn write_typedef(
     typedef: &CustomTypeDef,
     type_id: CustomTypeId,
 ) -> io::Result<()> {
-    write!(w, "custom type {} = ", type_renderer.render(type_id))?;
+    // write!(w, "custom type {} = ", type_renderer.render(type_id))?;
+    write!(w, "custom type Custom#{} = ", type_id.0)?;
     write_type(w, Some(type_renderer), &typedef.content)?;
     writeln!(w)?;
     Ok(())

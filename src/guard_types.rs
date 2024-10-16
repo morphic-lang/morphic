@@ -4,8 +4,8 @@
 
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
-use crate::data::flat_ast::{self as flat, CustomTypeSccId};
-use crate::data::guarded_ast::{self as guard, CanGuard};
+use crate::data::flat_ast::{self as flat};
+use crate::data::guarded_ast::{self as guard, CanGuard, GuardPhase};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
 use crate::pretty_print::utils::FuncRenderer;
@@ -81,34 +81,45 @@ fn can_guard_customs(customs: &flat::CustomTypes) -> IdVec<CustomTypeId, CanGuar
 fn guard(
     customs: &flat::CustomTypes,
     can_guard: &IdVec<CustomTypeId, CanGuard>,
-    scc: Option<CustomTypeSccId>,
+    phase: GuardPhase,
     ty: &anon::Type,
 ) -> guard::Type {
     match ty {
         anon::Type::Bool => guard::Type::Bool,
         anon::Type::Num(num_ty) => guard::Type::Num(*num_ty),
         anon::Type::Tuple(tys) => {
-            guard::Type::Tuple(tys.map_refs(|ty| guard(customs, can_guard, scc, ty)))
+            guard::Type::Tuple(tys.map_refs(|ty| guard(customs, can_guard, phase, ty)))
         }
         anon::Type::Variants(tys) => {
-            guard::Type::Variants(tys.map_refs(|_, ty| guard(customs, can_guard, scc, ty)))
+            guard::Type::Variants(tys.map_refs(|_, ty| guard(customs, can_guard, phase, ty)))
         }
         anon::Type::Custom(id) => {
             let custom = &customs.types[*id];
-            if can_guard[*id] == CanGuard::Yes
-                && customs.sccs.component(custom.scc).kind == SccKind::Cyclic
-                && scc.map_or(true, |scc| scc != custom.scc)
-            {
-                guard(customs, can_guard, Some(custom.scc), &custom.content)
+            let should_guard = phase.should_guard(
+                can_guard[*id],
+                customs.sccs.component(custom.scc).kind,
+                custom.scc,
+            );
+            if should_guard {
+                guard(
+                    customs,
+                    can_guard,
+                    GuardPhase::Custom(custom.scc),
+                    &custom.content,
+                )
             } else {
                 guard::Type::Custom(*id)
             }
         }
-        anon::Type::Array(ty) => guard::Type::Array(Box::new(guard(customs, can_guard, scc, ty))),
-        anon::Type::HoleArray(ty) => {
-            guard::Type::HoleArray(Box::new(guard(customs, can_guard, scc, ty)))
+        anon::Type::Array(ty) => {
+            guard::Type::Array(Box::new(guard(customs, can_guard, phase.indirect(), ty)))
         }
-        anon::Type::Boxed(ty) => guard::Type::Boxed(Box::new(guard(customs, can_guard, scc, ty))),
+        anon::Type::HoleArray(ty) => {
+            guard::Type::HoleArray(Box::new(guard(customs, can_guard, phase.indirect(), ty)))
+        }
+        anon::Type::Boxed(ty) => {
+            guard::Type::Boxed(Box::new(guard(customs, can_guard, phase.indirect(), ty)))
+        }
     }
 }
 
@@ -119,11 +130,16 @@ struct Trans<'a> {
 
 impl Trans<'_> {
     fn guard(&self, ty: &anon::Type) -> guard::Type {
-        guard(self.customs, self.can_guard, None, ty)
+        guard(self.customs, self.can_guard, GuardPhase::Structural, ty)
     }
 
     fn guard_custom(&self, def: &flat::CustomTypeDef) -> guard::Type {
-        guard(self.customs, self.can_guard, Some(def.scc), &def.content)
+        guard(
+            self.customs,
+            self.can_guard,
+            GuardPhase::Custom(def.scc),
+            &def.content,
+        )
     }
 }
 
@@ -602,11 +618,11 @@ mod tests {
             types: IdVec::from_vec(vec![
                 flat::CustomTypeDef {
                     content: list0.clone(),
-                    scc: CustomTypeSccId(0),
+                    scc: flat::CustomTypeSccId(0),
                 },
                 flat::CustomTypeDef {
                     content: list1,
-                    scc: CustomTypeSccId(1),
+                    scc: flat::CustomTypeSccId(1),
                 },
             ]),
             sccs: {
@@ -619,12 +635,22 @@ mod tests {
         let kinds = IdVec::from_vec(vec![CanGuard::Yes, CanGuard::Yes]);
 
         //  guarded_list0 = () + bool * rc list0
-        let guarded_list0 = guard(&customs, &kinds, None, &anon::Type::Custom(CustomTypeId(0)));
+        let guarded_list0 = guard(
+            &customs,
+            &kinds,
+            GuardPhase::Structural,
+            &anon::Type::Custom(CustomTypeId(0)),
+        );
         let expected0 = g_list(CustomTypeId(0), guard::Type::Bool);
         assert_eq!(guarded_list0, expected0);
 
         //  guarded_list1 = () + rc (() + bool * rc list0) * rc list1
-        let guarded_list1 = guard(&customs, &kinds, None, &anon::Type::Custom(CustomTypeId(1)));
+        let guarded_list1 = guard(
+            &customs,
+            &kinds,
+            GuardPhase::Structural,
+            &anon::Type::Custom(CustomTypeId(1)),
+        );
         let expected1 = g_list(CustomTypeId(1), guard::Type::Boxed(Box::new(expected0)));
         assert_eq!(guarded_list1, expected1);
     }
