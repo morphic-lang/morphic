@@ -1441,19 +1441,23 @@ fn unfold_impl<L: Clone>(
                     out_res,
                 )
             } else {
+                debug_assert_eq!(res.len(), shape.num_slots);
                 let _ = out_res.extend(res.iter().cloned());
                 shape.clone()
             }
         }
-        ShapeInner::Array(shape) => {
+        ShapeInner::Array(_) => {
+            debug_assert_eq!(res.len(), shape.num_slots);
             let _ = out_res.extend(res.iter().cloned());
             shape.clone()
         }
-        ShapeInner::HoleArray(shape) => {
+        ShapeInner::HoleArray(_) => {
+            debug_assert_eq!(res.len(), shape.num_slots);
             let _ = out_res.extend(res.iter().cloned());
             shape.clone()
         }
-        ShapeInner::Boxed(shape) => {
+        ShapeInner::Boxed(_) => {
+            debug_assert_eq!(res.len(), shape.num_slots);
             let _ = out_res.extend(res.iter().cloned());
             shape.clone()
         }
@@ -1513,12 +1517,6 @@ fn unfold<L: Clone>(
             &mut res,
         )
     };
-    println!(
-        "shape {}, shape.num_slots {}, res.len() {}",
-        shape.display(),
-        shape.num_slots,
-        res.len()
-    );
     debug_assert!(res.len() == shape.num_slots);
     Type { shape, res }
 }
@@ -1802,6 +1800,12 @@ fn instantiate_expr(
                 let lt_subst = bind_lts(interner, &fresh_unfolded, fut_ty);
                 subst_lts(interner, &wrap_lts(&fresh_folded), &lt_subst)
             };
+
+            println!("fresh folded: {}", fresh_folded.shape.display());
+            println!(
+                "binding_ty: {}",
+                ctx.local_binding(*folded).ty.shape.display()
+            );
 
             let occur = instantiate_occur(strategy, interner, ctx, constrs, *folded, &fresh_folded);
             annot::Expr::UnwrapCustom(*custom_id, occur)

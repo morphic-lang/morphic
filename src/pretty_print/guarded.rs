@@ -59,11 +59,11 @@ pub fn write_type(
             })
         }
         Type::Custom(type_id) => {
-            if let Some(type_renderer) = type_renderer {
-                write!(w, "{}", type_renderer.render(type_id))
-            } else {
-                write!(w, "Custom#{}", type_id.0)
-            }
+            // if let Some(type_renderer) = type_renderer {
+            //     write!(w, "{}", type_renderer.render(type_id))
+            // } else {
+            write!(w, "Custom#{}", type_id.0)
+            // }
         }
         Type::Array(item_type) => {
             write!(w, "Array (")?;
