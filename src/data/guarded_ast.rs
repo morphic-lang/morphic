@@ -11,8 +11,8 @@ use id_graph_sccs::{SccKind, Sccs};
 #[derive(Debug, Clone, Copy)]
 pub enum GuardPhase {
     Structural,
-    Custom(flat::CustomTypeSccId),
-    IndirectCustom(flat::CustomTypeSccId),
+    Direct(flat::CustomTypeSccId),
+    Indirect(flat::CustomTypeSccId),
 }
 
 impl GuardPhase {
@@ -24,8 +24,8 @@ impl GuardPhase {
     ) -> bool {
         let is_candidate = match self {
             GuardPhase::Structural => true,
-            GuardPhase::Custom(_) => true,
-            GuardPhase::IndirectCustom(curr_scc) => scc != curr_scc,
+            GuardPhase::Direct(_) => true,
+            GuardPhase::Indirect(curr_scc) => scc != curr_scc,
         };
         can_guard == CanGuard::Yes && kind == SccKind::Cyclic && is_candidate
     }
@@ -33,10 +33,23 @@ impl GuardPhase {
     pub fn indirect(self) -> Self {
         match self {
             GuardPhase::Structural => GuardPhase::Structural,
-            GuardPhase::Custom(scc) => GuardPhase::IndirectCustom(scc),
-            GuardPhase::IndirectCustom(scc) => GuardPhase::IndirectCustom(scc),
+            GuardPhase::Direct(scc) => GuardPhase::Indirect(scc),
+            GuardPhase::Indirect(scc) => GuardPhase::Indirect(scc),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum UnfoldRecipe {
+    Bool,
+    Num(first_ord::NumType),
+    Tuple(Vec<UnfoldRecipe>),
+    Variants(IdVec<first_ord::VariantId, UnfoldRecipe>),
+    LeaveCustom(first_ord::CustomTypeId),
+    ProcessCustom(first_ord::CustomTypeId, GuardPhase),
+    Array(Box<UnfoldRecipe>),
+    HoleArray(Box<UnfoldRecipe>),
+    Boxed(Box<UnfoldRecipe>),
 }
 
 #[id_type]
@@ -143,8 +156,8 @@ pub enum Expr {
         LocalId,
         Type, // Inner type
     ),
-    WrapCustom(first_ord::CustomTypeId, LocalId),
-    UnwrapCustom(first_ord::CustomTypeId, LocalId),
+    WrapCustom(first_ord::CustomTypeId, UnfoldRecipe, LocalId),
+    UnwrapCustom(first_ord::CustomTypeId, UnfoldRecipe, LocalId),
 
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),

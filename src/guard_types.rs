@@ -5,7 +5,7 @@
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::flat_ast::{self as flat};
-use crate::data::guarded_ast::{self as guard, CanGuard, GuardPhase};
+use crate::data::guarded_ast::{self as guard, CanGuard, GuardPhase, UnfoldRecipe};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
 use crate::pretty_print::utils::FuncRenderer;
@@ -83,60 +83,134 @@ fn guard(
     can_guard: &IdVec<CustomTypeId, CanGuard>,
     phase: GuardPhase,
     ty: &anon::Type,
-    print: bool,
 ) -> guard::Type {
     match ty {
         anon::Type::Bool => guard::Type::Bool,
         anon::Type::Num(num_ty) => guard::Type::Num(*num_ty),
         anon::Type::Tuple(tys) => {
-            guard::Type::Tuple(tys.map_refs(|ty| guard(customs, can_guard, phase, ty, print)))
+            let tys: Vec<_> = tys
+                .iter()
+                .map(|ty| guard(customs, can_guard, phase, ty))
+                .collect();
+            guard::Type::Tuple(tys)
         }
         anon::Type::Variants(tys) => {
-            guard::Type::Variants(tys.map_refs(|_, ty| guard(customs, can_guard, phase, ty, print)))
+            let tys: Vec<_> = tys
+                .values()
+                .map(|ty| guard(customs, can_guard, phase, ty))
+                .collect();
+            guard::Type::Variants(IdVec::from_vec(tys))
         }
         anon::Type::Custom(id) => {
             let custom = &customs.types[*id];
             let kind = customs.sccs.component(custom.scc).kind;
             let should_guard = phase.should_guard(can_guard[*id], kind, custom.scc);
-            if print {
-                println!(
-                    "{:?}, {}, {:?}, {:?}, {:?}, {:?}",
-                    *id, should_guard, can_guard[*id], kind, custom.scc, phase
-                );
-            }
+
             if should_guard {
                 guard(
                     customs,
                     can_guard,
-                    GuardPhase::Custom(custom.scc),
+                    GuardPhase::Direct(custom.scc),
                     &custom.content,
-                    print,
                 )
             } else {
                 guard::Type::Custom(*id)
             }
         }
-        anon::Type::Array(ty) => guard::Type::Array(Box::new(guard(
-            customs,
-            can_guard,
-            phase.indirect(),
-            ty,
-            print,
-        ))),
-        anon::Type::HoleArray(ty) => guard::Type::HoleArray(Box::new(guard(
-            customs,
-            can_guard,
-            phase.indirect(),
-            ty,
-            print,
-        ))),
-        anon::Type::Boxed(ty) => guard::Type::Boxed(Box::new(guard(
-            customs,
-            can_guard,
-            phase.indirect(),
-            ty,
-            print,
-        ))),
+        anon::Type::Array(ty) => {
+            let ty = guard(customs, can_guard, phase.indirect(), ty);
+            guard::Type::Array(Box::new(ty))
+        }
+        anon::Type::HoleArray(ty) => {
+            let ty = guard(customs, can_guard, phase.indirect(), ty);
+            guard::Type::HoleArray(Box::new(ty))
+        }
+        anon::Type::Boxed(ty) => {
+            let ty = guard(customs, can_guard, phase.indirect(), ty);
+            guard::Type::Boxed(Box::new(ty))
+        }
+    }
+}
+
+// The result tells us how to unfold a guarded type such that that unfolding is the same as if we
+// first unfolded the type and then guarded. The trick is to track where the result of guarding a
+// custom (`shadow_phase`) and guarding its content directly (`phase`) would differ.
+fn unfold_recipe(
+    customs: &flat::CustomTypes,
+    can_guard: &IdVec<CustomTypeId, CanGuard>,
+    phase: GuardPhase,
+    shadow_phase: GuardPhase,
+    ty: &anon::Type,
+) -> UnfoldRecipe {
+    match ty {
+        anon::Type::Bool => UnfoldRecipe::Bool,
+        anon::Type::Num(num_ty) => UnfoldRecipe::Num(*num_ty),
+        anon::Type::Tuple(tys) => {
+            let recipes: Vec<_> = tys
+                .iter()
+                .map(|ty| unfold_recipe(customs, can_guard, phase, shadow_phase, ty))
+                .collect();
+            UnfoldRecipe::Tuple(recipes)
+        }
+        anon::Type::Variants(tys) => {
+            let recipes: Vec<_> = tys
+                .values()
+                .map(|ty| unfold_recipe(customs, can_guard, phase, shadow_phase, ty))
+                .collect();
+            UnfoldRecipe::Variants(IdVec::from_vec(recipes))
+        }
+        anon::Type::Custom(id) => {
+            let custom = &customs.types[*id];
+            let kind = customs.sccs.component(custom.scc).kind;
+
+            let should_guard = phase.should_guard(can_guard[*id], kind, custom.scc);
+            let shadow_should_guard = shadow_phase.should_guard(can_guard[*id], kind, custom.scc);
+
+            if should_guard {
+                let new_phase = GuardPhase::Direct(custom.scc);
+                if shadow_should_guard {
+                    // TODO: as an optimization, we could just stop recursing here since `phase ==
+                    // shadow_phase` in the recursive call. But, that makes consuming our result a
+                    // bit more annoying.
+                    unfold_recipe(customs, can_guard, new_phase, new_phase, &custom.content)
+                } else {
+                    UnfoldRecipe::ProcessCustom(*id, new_phase)
+                }
+            } else {
+                debug_assert!(!shadow_should_guard);
+                UnfoldRecipe::LeaveCustom(*id)
+            }
+        }
+        anon::Type::Array(ty) => {
+            let recipe = unfold_recipe(
+                customs,
+                can_guard,
+                phase.indirect(),
+                shadow_phase.indirect(),
+                ty,
+            );
+            UnfoldRecipe::Array(Box::new(recipe))
+        }
+        anon::Type::HoleArray(ty) => {
+            let recipe = unfold_recipe(
+                customs,
+                can_guard,
+                phase.indirect(),
+                shadow_phase.indirect(),
+                ty,
+            );
+            UnfoldRecipe::HoleArray(Box::new(recipe))
+        }
+        anon::Type::Boxed(ty) => {
+            let recipe = unfold_recipe(
+                customs,
+                can_guard,
+                phase.indirect(),
+                shadow_phase.indirect(),
+                ty,
+            );
+            UnfoldRecipe::Boxed(Box::new(recipe))
+        }
     }
 }
 
@@ -147,32 +221,39 @@ struct Trans<'a> {
 
 impl Trans<'_> {
     fn guard(&self, ty: &anon::Type) -> guard::Type {
-        guard(
-            self.customs,
-            self.can_guard,
-            GuardPhase::Structural,
-            ty,
-            false,
-        )
+        guard(self.customs, self.can_guard, GuardPhase::Structural, ty)
     }
 
-    fn guard_debug(&self, ty: &anon::Type, print: bool) -> guard::Type {
-        guard(
-            self.customs,
-            self.can_guard,
+    fn unfold_recipe(&self, id: CustomTypeId) -> UnfoldRecipe {
+        let custom = &self.customs.types[id];
+        let should_guard = GuardPhase::should_guard(
             GuardPhase::Structural,
-            ty,
-            print,
-        )
+            self.can_guard[id],
+            self.customs.sccs.component(custom.scc).kind,
+            custom.scc,
+        );
+        if should_guard {
+            // Guarding unfolds the type, but processes the body using `GuardPhase::Direct` instead
+            // of `GuardPhase::Structural`, as it would if the type were first unfolded
+            unfold_recipe(
+                self.customs,
+                self.can_guard,
+                GuardPhase::Structural,
+                GuardPhase::Direct(custom.scc),
+                &custom.content,
+            )
+        } else {
+            // Guarding does not unfold the type at all
+            UnfoldRecipe::ProcessCustom(id, GuardPhase::Structural)
+        }
     }
 
     fn guard_custom(&self, def: &flat::CustomTypeDef) -> guard::Type {
         guard(
             self.customs,
             self.can_guard,
-            GuardPhase::Custom(def.scc),
+            GuardPhase::Direct(def.scc),
             &def.content,
-            false,
         )
     }
 }
@@ -295,7 +376,11 @@ fn lower_condition(
             let content_type = &customs.types[custom_type_id].content;
             let content = builder.add_binding(
                 trans.guard(content_type),
-                guard::Expr::UnwrapCustom(*custom_type_id, discrim),
+                guard::Expr::UnwrapCustom(
+                    *custom_type_id,
+                    trans.unfold_recipe(*custom_type_id),
+                    discrim,
+                ),
             );
 
             lower_condition(trans, customs, content, subcondition, builder, content_type)
@@ -438,18 +523,6 @@ fn guard_expr(
         flat::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
                 for (binding_ty, expr) in bindings {
-                    if let flat::Expr::WrapCustom(custom_id, local_id) = expr {
-                        let arg = ctx.local_binding(*local_id);
-                        if custom_id.0 == 14 {
-                            println!(
-                                "GUARD: {} -> {} (orig: {} -> {})",
-                                trans.guard(&arg.orig_type).display(),
-                                trans.guard_debug(binding_ty, true).display(),
-                                arg.orig_type.display(),
-                                binding_ty.display()
-                            );
-                        }
-                    }
                     let new_id = guard_expr(trans, customs, binding_ty, expr, ctx, builder);
                     ctx.add_local(LocalInfo {
                         new_id,
@@ -493,12 +566,16 @@ fn guard_expr(
         flat::Expr::UnwrapBoxed(wrapped, item_ty) => {
             guard::Expr::UnwrapBoxed(ctx.local_binding(*wrapped).new_id, trans.guard(item_ty))
         }
-        &flat::Expr::WrapCustom(custom_id, content) => {
-            guard::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)
-        }
-        &flat::Expr::UnwrapCustom(custom_id, wrapped) => {
-            guard::Expr::UnwrapCustom(custom_id, ctx.local_binding(wrapped).new_id)
-        }
+        &flat::Expr::WrapCustom(custom_id, content) => guard::Expr::WrapCustom(
+            custom_id,
+            trans.unfold_recipe(custom_id),
+            ctx.local_binding(content).new_id,
+        ),
+        &flat::Expr::UnwrapCustom(custom_id, wrapped) => guard::Expr::UnwrapCustom(
+            custom_id,
+            trans.unfold_recipe(custom_id),
+            ctx.local_binding(wrapped).new_id,
+        ),
         &flat::Expr::Intrinsic(intr, arg) => {
             guard::Expr::Intrinsic(intr, ctx.local_binding(arg).new_id)
         }
@@ -569,15 +646,6 @@ fn guard_expr(
 pub fn guard_types(prog: flat::Program) -> guard::Program {
     let _func_renderer = FuncRenderer::from_symbols(&prog.func_symbols);
     let can_guard = can_guard_customs(&prog.custom_types);
-
-    for (_, scc) in &prog.custom_types.sccs {
-        if scc.nodes.contains(&CustomTypeId(13)) {
-            for id in scc.nodes {
-                print!("{}, ", id.0);
-            }
-            println!();
-        }
-    }
 
     let trans = Trans {
         customs: &prog.custom_types,
@@ -695,7 +763,6 @@ mod tests {
             &kinds,
             GuardPhase::Structural,
             &anon::Type::Custom(CustomTypeId(0)),
-            false,
         );
         let expected0 = g_list(CustomTypeId(0), guard::Type::Bool);
         assert_eq!(guarded_list0, expected0);
@@ -706,7 +773,6 @@ mod tests {
             &kinds,
             GuardPhase::Structural,
             &anon::Type::Custom(CustomTypeId(1)),
-            false,
         );
         let expected1 = g_list(CustomTypeId(1), guard::Type::Boxed(Box::new(expected0)));
         assert_eq!(guarded_list1, expected1);
