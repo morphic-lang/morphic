@@ -868,7 +868,9 @@ pub struct CustomTypeDef {
 
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
+    // Guarded customs.
     pub types: IdVec<CustomTypeId, CustomTypeDef>,
+    // The SCCs of the *pre-guarded* customs.
     pub sccs: Sccs<flat::CustomTypeSccId, CustomTypeId>,
 }
 

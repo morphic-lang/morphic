@@ -83,43 +83,60 @@ fn guard(
     can_guard: &IdVec<CustomTypeId, CanGuard>,
     phase: GuardPhase,
     ty: &anon::Type,
+    print: bool,
 ) -> guard::Type {
     match ty {
         anon::Type::Bool => guard::Type::Bool,
         anon::Type::Num(num_ty) => guard::Type::Num(*num_ty),
         anon::Type::Tuple(tys) => {
-            guard::Type::Tuple(tys.map_refs(|ty| guard(customs, can_guard, phase, ty)))
+            guard::Type::Tuple(tys.map_refs(|ty| guard(customs, can_guard, phase, ty, print)))
         }
         anon::Type::Variants(tys) => {
-            guard::Type::Variants(tys.map_refs(|_, ty| guard(customs, can_guard, phase, ty)))
+            guard::Type::Variants(tys.map_refs(|_, ty| guard(customs, can_guard, phase, ty, print)))
         }
         anon::Type::Custom(id) => {
             let custom = &customs.types[*id];
-            let should_guard = phase.should_guard(
-                can_guard[*id],
-                customs.sccs.component(custom.scc).kind,
-                custom.scc,
-            );
+            let kind = customs.sccs.component(custom.scc).kind;
+            let should_guard = phase.should_guard(can_guard[*id], kind, custom.scc);
+            if print {
+                println!(
+                    "{:?}, {}, {:?}, {:?}, {:?}, {:?}",
+                    *id, should_guard, can_guard[*id], kind, custom.scc, phase
+                );
+            }
             if should_guard {
                 guard(
                     customs,
                     can_guard,
                     GuardPhase::Custom(custom.scc),
                     &custom.content,
+                    print,
                 )
             } else {
                 guard::Type::Custom(*id)
             }
         }
-        anon::Type::Array(ty) => {
-            guard::Type::Array(Box::new(guard(customs, can_guard, phase.indirect(), ty)))
-        }
-        anon::Type::HoleArray(ty) => {
-            guard::Type::HoleArray(Box::new(guard(customs, can_guard, phase.indirect(), ty)))
-        }
-        anon::Type::Boxed(ty) => {
-            guard::Type::Boxed(Box::new(guard(customs, can_guard, phase.indirect(), ty)))
-        }
+        anon::Type::Array(ty) => guard::Type::Array(Box::new(guard(
+            customs,
+            can_guard,
+            phase.indirect(),
+            ty,
+            print,
+        ))),
+        anon::Type::HoleArray(ty) => guard::Type::HoleArray(Box::new(guard(
+            customs,
+            can_guard,
+            phase.indirect(),
+            ty,
+            print,
+        ))),
+        anon::Type::Boxed(ty) => guard::Type::Boxed(Box::new(guard(
+            customs,
+            can_guard,
+            phase.indirect(),
+            ty,
+            print,
+        ))),
     }
 }
 
@@ -130,7 +147,23 @@ struct Trans<'a> {
 
 impl Trans<'_> {
     fn guard(&self, ty: &anon::Type) -> guard::Type {
-        guard(self.customs, self.can_guard, GuardPhase::Structural, ty)
+        guard(
+            self.customs,
+            self.can_guard,
+            GuardPhase::Structural,
+            ty,
+            false,
+        )
+    }
+
+    fn guard_debug(&self, ty: &anon::Type, print: bool) -> guard::Type {
+        guard(
+            self.customs,
+            self.can_guard,
+            GuardPhase::Structural,
+            ty,
+            print,
+        )
     }
 
     fn guard_custom(&self, def: &flat::CustomTypeDef) -> guard::Type {
@@ -139,6 +172,7 @@ impl Trans<'_> {
             self.can_guard,
             GuardPhase::Custom(def.scc),
             &def.content,
+            false,
         )
     }
 }
@@ -404,6 +438,18 @@ fn guard_expr(
         flat::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
                 for (binding_ty, expr) in bindings {
+                    if let flat::Expr::WrapCustom(custom_id, local_id) = expr {
+                        let arg = ctx.local_binding(*local_id);
+                        if custom_id.0 == 14 {
+                            println!(
+                                "GUARD: {} -> {} (orig: {} -> {})",
+                                trans.guard(&arg.orig_type).display(),
+                                trans.guard_debug(binding_ty, true).display(),
+                                arg.orig_type.display(),
+                                binding_ty.display()
+                            );
+                        }
+                    }
                     let new_id = guard_expr(trans, customs, binding_ty, expr, ctx, builder);
                     ctx.add_local(LocalInfo {
                         new_id,
@@ -524,6 +570,15 @@ pub fn guard_types(prog: flat::Program) -> guard::Program {
     let _func_renderer = FuncRenderer::from_symbols(&prog.func_symbols);
     let can_guard = can_guard_customs(&prog.custom_types);
 
+    for (_, scc) in &prog.custom_types.sccs {
+        if scc.nodes.contains(&CustomTypeId(13)) {
+            for id in scc.nodes {
+                print!("{}, ", id.0);
+            }
+            println!();
+        }
+    }
+
     let trans = Trans {
         customs: &prog.custom_types,
         can_guard: &can_guard,
@@ -640,6 +695,7 @@ mod tests {
             &kinds,
             GuardPhase::Structural,
             &anon::Type::Custom(CustomTypeId(0)),
+            false,
         );
         let expected0 = g_list(CustomTypeId(0), guard::Type::Bool);
         assert_eq!(guarded_list0, expected0);
@@ -650,6 +706,7 @@ mod tests {
             &kinds,
             GuardPhase::Structural,
             &anon::Type::Custom(CustomTypeId(1)),
+            false,
         );
         let expected1 = g_list(CustomTypeId(1), guard::Type::Boxed(Box::new(expected0)));
         assert_eq!(guarded_list1, expected1);

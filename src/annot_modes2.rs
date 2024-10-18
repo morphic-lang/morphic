@@ -1384,11 +1384,34 @@ fn guard_impl<L: Clone>(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum UnfoldPhase {
+    Custom(CustomTypeSccId),
+    IndirectCustom(CustomTypeSccId),
+}
+
+impl UnfoldPhase {
+    fn should_unfold(self, scc: CustomTypeSccId) -> bool {
+        match self {
+            UnfoldPhase::Custom(_) => false,
+            // UnfoldPhase::IndirectCustom(curr_scc) => scc == curr_scc,
+            UnfoldPhase::IndirectCustom(_) => false,
+        }
+    }
+
+    fn indirect(&self) -> Self {
+        match self {
+            UnfoldPhase::Custom(scc) => UnfoldPhase::IndirectCustom(*scc),
+            UnfoldPhase::IndirectCustom(scc) => UnfoldPhase::IndirectCustom(*scc),
+        }
+    }
+}
+
 fn unfold_impl<L: Clone>(
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
-    scc: CustomTypeSccId,
+    phase: UnfoldPhase,
     shape: &Shape,
     res: &[Res<ModeVar, L>],
     out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
@@ -1404,7 +1427,9 @@ fn unfold_impl<L: Clone>(
         }
         ShapeInner::Tuple(shapes) => {
             let shapes = annot::iter_shapes(shapes, res)
-                .map(|(shape, res)| unfold_impl(interner, customs, sccs, scc, shape, res, out_res))
+                .map(|(shape, res)| {
+                    unfold_impl(interner, customs, sccs, phase, shape, res, out_res)
+                })
                 .collect::<Vec<_>>();
 
             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
@@ -1413,7 +1438,9 @@ fn unfold_impl<L: Clone>(
         }
         ShapeInner::Variants(shapes) => {
             let shapes = annot::iter_shapes(shapes.as_slice(), res)
-                .map(|(shape, res)| unfold_impl(interner, customs, sccs, scc, shape, res, out_res))
+                .map(|(shape, res)| {
+                    unfold_impl(interner, customs, sccs, phase, shape, res, out_res)
+                })
                 .collect::<Vec<_>>();
 
             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
@@ -1428,7 +1455,7 @@ fn unfold_impl<L: Clone>(
         // The non-trival base case.
         ShapeInner::Custom(id) => {
             let custom = &customs[*id];
-            if custom.scc == scc {
+            if phase.should_unfold(custom.scc) {
                 guard_impl(
                     interner,
                     customs,
@@ -1446,20 +1473,56 @@ fn unfold_impl<L: Clone>(
                 shape.clone()
             }
         }
-        ShapeInner::Array(_) => {
-            debug_assert_eq!(res.len(), shape.num_slots);
-            let _ = out_res.extend(res.iter().cloned());
-            shape.clone()
+        ShapeInner::Array(item_shape) => {
+            let _ = out_res.push(res[0].clone());
+            let item_shape = unfold_impl(
+                interner,
+                customs,
+                sccs,
+                phase.indirect(),
+                item_shape,
+                &res[1..],
+                out_res,
+            );
+            let num_slots = 1 + item_shape.num_slots;
+            Shape {
+                inner: interner.shape.new(ShapeInner::Array(item_shape)),
+                num_slots,
+            }
         }
-        ShapeInner::HoleArray(_) => {
-            debug_assert_eq!(res.len(), shape.num_slots);
-            let _ = out_res.extend(res.iter().cloned());
-            shape.clone()
+        ShapeInner::HoleArray(item_shape) => {
+            let _ = out_res.push(res[0].clone());
+            let item_shape = unfold_impl(
+                interner,
+                customs,
+                sccs,
+                phase.indirect(),
+                item_shape,
+                &res[1..],
+                out_res,
+            );
+            let num_slots = 1 + item_shape.num_slots;
+            Shape {
+                inner: interner.shape.new(ShapeInner::Array(item_shape)),
+                num_slots,
+            }
         }
-        ShapeInner::Boxed(_) => {
-            debug_assert_eq!(res.len(), shape.num_slots);
-            let _ = out_res.extend(res.iter().cloned());
-            shape.clone()
+        ShapeInner::Boxed(item_shape) => {
+            let _ = out_res.push(res[0].clone());
+            let item_shape = unfold_impl(
+                interner,
+                customs,
+                sccs,
+                phase.indirect(),
+                item_shape,
+                &res[1..],
+                out_res,
+            );
+            let num_slots = 1 + item_shape.num_slots;
+            Shape {
+                inner: interner.shape.new(ShapeInner::Array(item_shape)),
+                num_slots,
+            }
         }
     }
 }
@@ -1482,11 +1545,10 @@ fn unfold<L: Clone>(
     //
     // Case 2: `T` is a non-trival, cyclic custom. In this case, `unfold` performs the same
     // operation as the first iteration of `guard` (it substitutes the custom for its body).
-    // However, this means, if we run `guard . unfold` rather than just `guard`, that `guard`
-    // processes the body of the custom as "structural" rather than "custom". In the latter case,
-    // `guard` will not recurse into self occurrences, even if they are on the stack---note that it
-    // never recurses into self occurrences on the heap. Hence, `unfold'` must guard each self
-    // occurrence on the stack.
+    // However, this means, if we run `guard . unfold` rather than just `guard`, then `guard`
+    // processes the body of the custom as "structural" rather than "custom". This means it will
+    // recurse into self occurrences on the heap. Hence, `unfold'` must guard each self occurrence
+    // on the heap.
 
     let custom = &customs[custom_id];
 
@@ -1511,7 +1573,7 @@ fn unfold<L: Clone>(
             interner,
             customs,
             sccs,
-            custom.scc,
+            UnfoldPhase::Custom(custom.scc),
             &ty.shape,
             ty.res.as_slice(),
             &mut res,
@@ -1767,14 +1829,19 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapCustom(custom_id, unfolded) => {
+            if custom_id.0 == 14 {
+                println!("----------------------------------");
+                println!("unfolding custom {}", custom_id.0);
+            }
             let fut_unfolded = unfold(interner, customs, sccs, *custom_id, fut_ty);
-            println!("unfolding custom {}", custom_id.0);
-            println!("fut_ty: {}", fut_ty.shape.display());
-            println!("fut_unfolded: {}", fut_unfolded.shape.display());
-            println!(
-                "binding_ty: {}",
-                ctx.local_binding(*unfolded).ty.shape.display()
-            );
+            if custom_id.0 == 14 {
+                println!("fut_ty: {}", fut_ty.shape.display());
+                println!("fut_unfolded: {}", fut_unfolded.shape.display());
+                println!(
+                    "binding_ty: {}",
+                    ctx.local_binding(*unfolded).ty.shape.display()
+                );
+            }
             let occur =
                 instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
             annot::Expr::WrapCustom(*custom_id, occur)

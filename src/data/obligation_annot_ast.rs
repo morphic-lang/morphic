@@ -6,7 +6,6 @@
 //! convenient to let custom types remain mode polymorphic until the next pass).
 
 use crate::data::first_order_ast as first_ord;
-use crate::data::flat_ast as flat;
 use crate::data::guarded_ast as guard;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
@@ -158,7 +157,6 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypeDef {
     pub content: Shape,
-    pub scc: flat::CustomTypeSccId,
 }
 
 #[derive(Clone, Debug)]

@@ -185,6 +185,12 @@ pub struct CustomTypeDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
     pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
+    // Guarding can (surprisingly) change SCCs, e.g.,
+    //
+    // type A = Array B -guard-> type A = Array B
+    // type B = A       -guard-> type B = Array B
+    //
+    // This field stores the SCCs of the pre-guarded customs.
     pub sccs: Sccs<flat::CustomTypeSccId, first_ord::CustomTypeId>,
 }
 
