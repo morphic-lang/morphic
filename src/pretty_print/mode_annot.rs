@@ -195,8 +195,8 @@ pub fn write_type<M, L>(
         type_renderer,
         &write_mode,
         &write_lifetime,
-        &type_.shape,
-        type_.res.as_slice(),
+        &type_.shape(),
+        type_.res().as_slice(),
     )
 }
 
@@ -573,7 +573,7 @@ pub fn write_typedef(
     write!(w, "custom type ")?;
     write_custom(w, type_renderer, type_id)?;
     write!(w, " = ")?;
-    write_shape(w, type_renderer, &typedef.content.shape)?;
+    write_shape(w, type_renderer, &typedef.content)?;
     Ok(())
 }
 

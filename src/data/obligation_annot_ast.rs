@@ -9,7 +9,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::guarded_ast as guard;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{Interner, Lt, Mode, ResModes, Shape, SlotId};
+use crate::data::mode_annot_ast2::{Interner, Lt, Mode, ResModes, Shape, SlotId, SubstHelper};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -48,16 +48,33 @@ impl StackLt {
 
 #[derive(Clone, Debug)]
 pub struct Type {
-    pub shape: Shape,
-    pub res: IdVec<SlotId, ResModes<Mode>>,
+    shape: Shape,
+    res: IdVec<SlotId, ResModes<Mode>>,
 }
 
 impl Type {
+    pub fn new(shape: Shape, res: IdVec<SlotId, ResModes<Mode>>) -> Type {
+        debug_assert_eq!(shape.num_slots, res.len());
+        Type { shape, res }
+    }
+
     pub fn unit(interner: &Interner) -> Type {
         Type {
             shape: Shape::unit(interner),
             res: IdVec::new(),
         }
+    }
+
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    pub fn res(&self) -> &IdVec<SlotId, ResModes<Mode>> {
+        &self.res
+    }
+
+    pub fn res_mut(&mut self) -> &mut IdVec<SlotId, ResModes<Mode>> {
+        &mut self.res
     }
 }
 
@@ -157,6 +174,7 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypeDef {
     pub content: Shape,
+    pub subst_helper: SubstHelper,
 }
 
 #[derive(Clone, Debug)]

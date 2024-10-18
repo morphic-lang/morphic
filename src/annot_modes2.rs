@@ -5,18 +5,18 @@
 use crate::data::borrow_model::{self as model, ModelLt, ModelMode};
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::CustomTypeSccId;
-use crate::data::guarded_ast::{self as guard, GuardPhase, LocalId, UnfoldRecipe};
+use crate::data::guarded_ast::{self as guard, LocalId, RecipeContent, UnfoldRecipe};
 use crate::data::intrinsics as intr;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
     self as annot, HeapModes, Interner, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur,
-    Position, Res, ResModes, Shape, ShapeInner, SlotId, Type,
+    Position, Res, ResModes, Shape, ShapeInner, SlotId, SubstHelper, Type,
 };
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::intrinsic_config::intrinsic_sig;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
-use crate::util::collection_ext::{BTreeMapExt, VecExt};
+use crate::util::collection_ext::VecExt;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
@@ -289,23 +289,11 @@ struct SccParameterizer<'a> {
     parameterized: &'a IdMap<CustomTypeId, annot::CustomTypeDef>,
     scc_id: CustomTypeSccId,
     scc_num_slots: usize,
-    next_mode: Count<ModeParam>,
-    next_lt: Count<LtParam>,
+    next_slot: Count<SlotId>,
 }
 
 impl<'a> SccParameterizer<'a> {
-    fn next_res(&mut self) -> Res<ModeParam, LtParam> {
-        Res {
-            modes: ResModes::Heap(next_heap(&mut self.next_mode)),
-            lt: self.next_lt.inc(),
-        }
-    }
-
-    fn parameterize_impl(
-        &mut self,
-        ty: &guard::Type,
-        out_res: &mut Vec<Res<ModeParam, LtParam>>,
-    ) -> Shape {
+    fn parameterize_impl(&mut self, ty: &guard::Type, out_res: &mut Vec<SlotId>) -> Shape {
         match ty {
             guard::Type::Bool => Shape {
                 inner: self.interner.shape.new(ShapeInner::Bool),
@@ -335,25 +323,18 @@ impl<'a> SccParameterizer<'a> {
                 if self.customs.types[*id].scc == self.scc_id {
                     // This is a typedef in the same SCC, so we need to parameterize it by all the
                     // SCC parameters.
-                    let resources = {
-                        let mut next_mode = Count::new();
-                        let mut next_lt = Count::new();
-                        iter::repeat_with(move || Res {
-                            modes: ResModes::Heap(next_heap(&mut next_mode)),
-                            lt: next_lt.inc(),
-                        })
-                    };
-
+                    let mut next_slot = Count::<SlotId>::new();
+                    let slots = iter::repeat_with(move || next_slot.inc());
                     let num_slots = self.scc_num_slots;
-                    out_res.extend(resources.take(num_slots));
-
+                    out_res.extend(slots.take(num_slots));
                     Shape {
                         inner: self.interner.shape.new(ShapeInner::SelfCustom(*id)),
                         num_slots,
                     }
                 } else {
                     let num_slots = self.parameterized[*id].num_slots;
-                    out_res.extend(iter::repeat_with(|| self.next_res()).take(num_slots));
+                    let slots = iter::repeat_with(|| self.next_slot.inc());
+                    out_res.extend(slots.take(num_slots));
                     Shape {
                         inner: self.interner.shape.new(ShapeInner::Custom(*id)),
                         num_slots,
@@ -361,7 +342,7 @@ impl<'a> SccParameterizer<'a> {
                 }
             }
             guard::Type::Array(ty) => {
-                out_res.push(self.next_res());
+                out_res.push(self.next_slot.inc());
                 let shape = self.parameterize_impl(ty, out_res);
                 Shape {
                     num_slots: 1 + shape.num_slots,
@@ -369,7 +350,7 @@ impl<'a> SccParameterizer<'a> {
                 }
             }
             guard::Type::HoleArray(ty) => {
-                out_res.push(self.next_res());
+                out_res.push(self.next_slot.inc());
                 let shape = self.parameterize_impl(ty, out_res);
                 Shape {
                     num_slots: 1 + shape.num_slots,
@@ -377,7 +358,7 @@ impl<'a> SccParameterizer<'a> {
                 }
             }
             guard::Type::Boxed(ty) => {
-                out_res.push(self.next_res());
+                out_res.push(self.next_slot.inc());
                 let shape = self.parameterize_impl(ty, out_res);
                 Shape {
                     num_slots: 1 + shape.num_slots,
@@ -387,14 +368,11 @@ impl<'a> SccParameterizer<'a> {
         }
     }
 
-    fn parameterize(&mut self, ty: &guard::Type) -> Type<ModeParam, LtParam> {
+    fn parameterize(&mut self, ty: &guard::Type) -> (Shape, SubstHelper) {
         let mut res = Vec::new();
         let shape = self.parameterize_impl(ty, &mut res);
         debug_assert_eq!(res.len(), shape.num_slots);
-        Type {
-            shape,
-            res: IdVec::from_vec(res),
-        }
+        (shape, SubstHelper::new(res))
     }
 }
 
@@ -419,9 +397,8 @@ fn parameterize_custom_scc(
         scc_id,
         scc_num_slots,
         // Because each custom in the SCC is parameterized by the total set of modes and lifetimes
-        // for the SCC, we use a single mode and lifetime counter as we traverse.
-        next_mode: Count::new(),
-        next_lt: Count::new(),
+        // for the SCC, we use a single counter as we traverse.
+        next_slot: Count::new(),
     };
 
     let result = scc
@@ -429,10 +406,12 @@ fn parameterize_custom_scc(
         .iter()
         .map(|&id| {
             let custom = &customs.types[id];
+            let (content, subst_helper) = parameterizer.parameterize(&custom.content);
             (
                 id,
                 annot::CustomTypeDef {
-                    content: parameterizer.parameterize(&custom.content),
+                    content,
+                    subst_helper,
                     num_slots: scc_num_slots,
                     scc: custom.scc,
                     can_guard: custom.can_guard,
@@ -441,7 +420,7 @@ fn parameterize_custom_scc(
         })
         .collect();
 
-    debug_assert_eq!(parameterizer.next_lt.to_value(), scc_num_slots);
+    debug_assert_eq!(parameterizer.next_slot.to_value(), scc_num_slots);
     result
 }
 
@@ -471,7 +450,7 @@ fn parameterize_type<'a>(
     let mut mode_count = Count::new();
     let mut lt_count = Count::new();
     let res = shape.gen_resources(customs, sccs, || mode_count.inc(), || lt_count.inc());
-    Type { shape, res }
+    Type::new(shape, res)
 }
 
 // ---------------------
@@ -522,7 +501,7 @@ fn require_eq(constrs: &mut ConstrGraph, modes1: &ResModes<ModeVar>, modes2: &Re
 }
 
 fn bind_modes<L1, L2>(constrs: &mut ConstrGraph, ty1: &Type<ModeVar, L1>, ty2: &Type<ModeVar, L2>) {
-    debug_assert_eq!(ty1.shape, ty2.shape);
+    debug_assert_eq!(ty1.shape(), ty2.shape());
     for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
         require_eq(constrs, &res1.modes, &res2.modes);
     }
@@ -542,10 +521,10 @@ fn subst_modes<M1: Clone, M2, L: Clone>(ty: &Type<M1, L>, subst: impl Fn(M1) -> 
         let lt = res.lt.clone();
         Res { modes, lt }
     };
-    Type {
-        shape: ty.shape.clone(),
-        res: IdVec::from_vec(ty.iter().map(f).collect()),
-    }
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
 }
 
 fn emit_occur_constr(
@@ -579,7 +558,7 @@ fn emit_occur_constrs(
     binding_ty: &Type<ModeVar, Lt>,
     use_ty: &Type<ModeVar, Lt>,
 ) {
-    debug_assert_eq!(binding_ty.shape, use_ty.shape);
+    debug_assert_eq!(binding_ty.shape(), use_ty.shape());
     for (binding_res, use_res) in binding_ty.iter().zip_eq(use_ty.iter()) {
         emit_occur_constr(
             constrs,
@@ -598,15 +577,15 @@ fn left_meet(
     ty1: &Type<ModeVar, Lt>,
     ty2: &Type<ModeVar, Lt>,
 ) -> Type<ModeVar, Lt> {
-    debug_assert_eq!(ty1.shape, ty2.shape);
+    debug_assert_eq!(ty1.shape(), ty2.shape());
     let f = |(res1, res2): (&Res<_, Lt>, &Res<_, Lt>)| Res {
         modes: res1.modes.clone(),
         lt: res1.lt.join(interner, &res2.lt),
     };
-    Type {
-        shape: ty1.shape.clone(),
-        res: IdVec::from_vec(ty1.iter().zip_eq(ty2.iter()).map(f).collect()),
-    }
+    Type::new(
+        ty1.shape().clone(),
+        IdVec::from_vec(ty1.iter().zip_eq(ty2.iter()).map(f).collect()),
+    )
 }
 
 fn wrap_lts<M: Clone>(ty: &Type<M, LtParam>) -> Type<M, Lt> {
@@ -614,10 +593,10 @@ fn wrap_lts<M: Clone>(ty: &Type<M, LtParam>) -> Type<M, Lt> {
         modes: res.modes.clone(),
         lt: Lt::Join(NonEmptySet::new(res.lt)),
     };
-    Type {
-        shape: ty.shape.clone(),
-        res: IdVec::from_vec(ty.iter().map(f).collect()),
-    }
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
 }
 
 fn bind_lts<M>(
@@ -625,7 +604,7 @@ fn bind_lts<M>(
     ty1: &Type<M, LtParam>,
     ty2: &Type<M, Lt>,
 ) -> BTreeMap<LtParam, Lt> {
-    debug_assert_eq!(ty1.shape, ty2.shape);
+    debug_assert_eq!(ty1.shape(), ty2.shape());
     let mut result = BTreeMap::new();
     for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
         result
@@ -653,10 +632,10 @@ fn subst_lts<M: Clone>(
         };
         Res { modes, lt }
     };
-    Type {
-        shape: ty.shape.clone(),
-        res: IdVec::from_vec(ty.iter().map(f).collect()),
-    }
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
 }
 
 fn join_everywhere<M: Clone>(interner: &Interner, ty: &Type<M, Lt>, new_lt: &Lt) -> Type<M, Lt> {
@@ -664,14 +643,14 @@ fn join_everywhere<M: Clone>(interner: &Interner, ty: &Type<M, Lt>, new_lt: &Lt)
         modes: res.modes.clone(),
         lt: res.lt.join(interner, new_lt),
     };
-    Type {
-        shape: ty.shape.clone(),
-        res: IdVec::from_vec(ty.iter().map(f).collect()),
-    }
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
 }
 
 fn lt_equiv<M>(ty1: &Type<M, Lt>, ty2: &Type<M, Lt>) -> bool {
-    debug_assert_eq!(ty1.shape, ty2.shape);
+    debug_assert_eq!(ty1.shape(), ty2.shape());
     ty1.iter()
         .zip_eq(ty2.iter())
         .all(|(res1, res2)| res1.lt == res2.lt)
@@ -685,25 +664,27 @@ fn nth_res_bounds(shapes: &[Shape], n: usize) -> (usize, usize) {
 
 fn split_shapes<M: Clone, L: Clone>(shapes: &[Shape], res: &[Res<M, L>]) -> Vec<Type<M, L>> {
     annot::iter_shapes(shapes, res)
-        .map(|(shape, res)| Type {
-            shape: shape.clone(),
-            res: IdVec::from_vec(res.iter().cloned().collect()),
+        .map(|(shape, res)| {
+            Type::new(
+                shape.clone(),
+                IdVec::from_vec(res.iter().cloned().collect()),
+            )
         })
         .collect()
 }
 
 fn elim_tuple<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> Vec<Type<M, L>> {
-    let ShapeInner::Tuple(shapes) = &*ty.shape.inner else {
+    let ShapeInner::Tuple(shapes) = &*ty.shape().inner else {
         panic!("expected `Tuple` type");
     };
-    split_shapes(shapes, ty.res.as_slice())
+    split_shapes(shapes, ty.res().as_slice())
 }
 
 fn elim_variants<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> IdVec<VariantId, Type<M, L>> {
-    let ShapeInner::Variants(shapes) = &*ty.shape.inner else {
+    let ShapeInner::Variants(shapes) = &*ty.shape().inner else {
         panic!("expected `Tuple` type");
     };
-    let result = split_shapes(shapes.as_slice(), ty.res.as_slice());
+    let result = split_shapes(shapes.as_slice(), ty.res().as_slice());
     assert_eq!(result.len(), shapes.len());
     IdVec::from_vec(result)
 }
@@ -711,25 +692,25 @@ fn elim_variants<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> IdVec<VariantId, Ty
 fn elim_box_like<M: Clone, L: Clone>(item: &Shape, res: &[Res<M, L>]) -> (Res<M, L>, Type<M, L>) {
     (
         res[0].clone(),
-        Type {
-            shape: item.clone(),
-            res: IdVec::from_vec(res[1..].iter().cloned().collect()),
-        },
+        Type::new(
+            item.clone(),
+            IdVec::from_vec(res[1..].iter().cloned().collect()),
+        ),
     )
 }
 
 fn elim_array<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
-    let ShapeInner::Array(shape) = &*ty.shape.inner else {
+    let ShapeInner::Array(shape) = &*ty.shape().inner else {
         panic!("expected `Array` type");
     };
-    elim_box_like(shape, ty.res.as_slice())
+    elim_box_like(shape, ty.res().as_slice())
 }
 
 fn elim_boxed<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
-    let ShapeInner::Boxed(shape) = &*ty.shape.inner else {
+    let ShapeInner::Boxed(shape) = &*ty.shape().inner else {
         panic!("expected `Boxed` type");
     };
-    elim_box_like(shape, ty.res.as_slice())
+    elim_box_like(shape, ty.res().as_slice())
 }
 
 /// Replaces parameters with fresh variables from the constraint graph.
@@ -749,10 +730,10 @@ fn freshen_type<M, L1, L2>(
         let lt = fresh_lt();
         Res { modes, lt }
     };
-    annot::Type {
-        shape: ty.shape.clone(),
-        res: IdVec::from_vec(ty.iter().map(f).collect()),
-    }
+    annot::Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
 }
 
 fn freshen_type_unused<M, L>(constrs: &mut ConstrGraph, ty: &Type<M, L>) -> Type<ModeVar, Lt> {
@@ -904,10 +885,10 @@ fn extract_model_vars_impl(
         (model::Type::Var(var), _) => {
             debug_assert!(shape.num_slots == res.len());
             let entry = out.entry(*var).or_insert_with(VarOccurs::new);
-            let ty = Type {
-                shape: shape.clone(),
-                res: IdVec::from_vec(res.iter().cloned().collect()),
-            };
+            let ty = Type::new(
+                shape.clone(),
+                IdVec::from_vec(res.iter().cloned().collect()),
+            );
             match kind {
                 VarOccurKind::Arg(occur_idx) => {
                     let loc = ArgLoc {
@@ -1012,9 +993,9 @@ fn create_occurs_from_model(
 
     let mut get_lt = IdVec::from_count_with(sig.lt_count, |_| None);
 
-    for (slot, model_res) in extract_model_res(&sig.ret, &ret.shape) {
+    for (slot, model_res) in extract_model_res(&sig.ret, &ret.shape()) {
         // Impose top-level mode constraints on the return type.
-        let res = &ret.res[slot];
+        let res = &ret.res()[slot];
         require_eq(constrs, &get_modes(model_res.modes), &res.modes);
 
         if sig.unused_lts.contains(&model_res.lt) {
@@ -1033,9 +1014,9 @@ fn create_occurs_from_model(
     let get_lt = get_lt;
 
     for (arg, occur) in sig.args.iter().zip(&mut occurs) {
-        for (slot, model_res) in extract_model_res(arg, &occur.ty.shape) {
+        for (slot, model_res) in extract_model_res(arg, &occur.ty.shape()) {
             // Impose top-level mode constraints on the argument type.
-            let res = &mut occur.ty.res[slot];
+            let res = &mut occur.ty.res_mut()[slot];
             require_eq(constrs, &get_modes(model_res.modes), &res.modes);
 
             // Substitute for model lifetimes using the mapping constructed from the return type.
@@ -1056,8 +1037,8 @@ fn create_occurs_from_model(
             VarOccurKind::Arg(i),
             customs,
             model,
-            &occur.ty.shape,
-            occur.ty.res.as_slice(),
+            &occur.ty.shape(),
+            occur.ty.res().as_slice(),
             &mut vars,
         );
     }
@@ -1065,8 +1046,8 @@ fn create_occurs_from_model(
         VarOccurKind::Ret,
         customs,
         &sig.ret,
-        &ret.shape,
-        ret.res.as_slice(),
+        &ret.shape(),
+        ret.res().as_slice(),
         &mut vars,
     );
 
@@ -1097,11 +1078,11 @@ fn create_occurs_from_model(
 
                 let rep1 = &vars[lhs.type_var].rep().unwrap();
                 let rep2 = &vars[rhs.type_var].rep().unwrap();
-                debug_assert_eq!(rep1.shape, rep2.shape);
+                debug_assert_eq!(rep1.shape(), rep2.shape());
 
                 let prop1 = lhs.prop;
                 let prop2 = rhs.prop;
-                let pos = rep1.shape.positions(customs, sccs);
+                let pos = rep1.shape().positions(customs, sccs);
 
                 for (pos, (res1, res2)) in pos.iter().zip_eq(rep1.iter().zip_eq(rep2.iter())) {
                     match pos {
@@ -1127,8 +1108,8 @@ fn create_occurs_from_model(
                     for arg in lhs_vars.args.iter_mut() {
                         let l = arg.loc;
                         let arg_ret =
-                            &mut occurs[l.occur_idx].ty.res.as_mut_slice()[l.start..l.end];
-                        for (arg_res, ret_res) in arg_ret.iter_mut().zip_eq(ret.res.values()) {
+                            &mut occurs[l.occur_idx].ty.res_mut().as_mut_slice()[l.start..l.end];
+                        for (arg_res, ret_res) in arg_ret.iter_mut().zip_eq(ret.res().values()) {
                             arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
                         }
                     }
@@ -1221,192 +1202,225 @@ fn prepare_arg_type(
         };
         Res { modes, lt }
     };
-    Type {
-        shape: ty.shape.clone(),
-        res: IdVec::from_vec(ty.res.values().map(f).collect()),
-    }
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.res().values().map(f).collect()),
+    )
 }
 
-struct Subst<L> {
-    mode_subst: BTreeMap<ModeParam, ModeVar>,
-    lt_subst: BTreeMap<LtParam, L>,
-}
+// /// Unfolds the content of a custom type by replacing each occurrence of `SelfCustom` with an
+// /// occurrence of `Custom`.
+// fn guard_impl<L: Clone>(
+//     interner: &Interner,
+//     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+//     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+//     phase: GuardPhase,
+//     shape: &Shape,
+//     res: &[Res<ModeVar, L>],
+//     out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
+//     print: bool,
+// ) -> Shape {
+//     match &*shape.inner {
+//         ShapeInner::Bool => {
+//             debug_assert!(res.is_empty());
+//             shape.clone()
+//         }
+//         ShapeInner::Num(_) => {
+//             debug_assert!(res.is_empty());
+//             shape.clone()
+//         }
+//         ShapeInner::Tuple(shapes) => {
+//             let shapes = annot::iter_shapes(shapes, res)
+//                 .map(|(shape, res)| {
+//                     guard_impl(interner, customs, sccs, phase, shape, res, out_res, print)
+//                 })
+//                 .collect::<Vec<_>>();
 
-impl<L: Clone> Subst<L> {
-    fn new(res: &[Res<ModeVar, L>]) -> Self {
-        let mut next_mode = Count::new();
-        let mut next_lt = Count::new();
-        let mut mode_subst = BTreeMap::new();
-        let mut lt_subst = BTreeMap::new();
+//             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
+//             let shape = ShapeInner::Tuple(shapes);
+//             let inner = interner.shape.new(shape);
+//             Shape { inner, num_slots }
+//         }
+//         ShapeInner::Variants(shapes) => {
+//             let shapes = annot::iter_shapes(shapes.as_slice(), res)
+//                 .map(|(shape, res)| {
+//                     guard_impl(interner, customs, sccs, phase, shape, res, out_res, print)
+//                 })
+//                 .collect::<Vec<_>>();
 
-        for res in res {
-            match &res.modes {
-                ResModes::Stack(value) => {
-                    mode_subst.insert_vacant(next_mode.inc(), *value);
-                }
-                ResModes::Heap(value) => {
-                    let HeapModes { access, storage } = next_heap(&mut next_mode);
-                    mode_subst.insert_vacant(access, value.access);
-                    mode_subst.insert_vacant(storage, value.storage);
-                }
-            }
-            lt_subst.insert_vacant(next_lt.inc(), res.lt.clone());
-        }
+//             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
+//             let shape = ShapeInner::Variants(IdVec::from_vec(shapes));
+//             let inner = interner.shape.new(shape);
+//             Shape { inner, num_slots }
+//         }
+//         // The non-trival base case.
+//         ShapeInner::SelfCustom(id) | ShapeInner::Custom(id) => {
+//             let custom = &customs[*id];
+//             let should_guard = phase.should_guard(
+//                 custom.can_guard,
+//                 sccs.component(custom.scc).kind,
+//                 custom.scc,
+//             );
+//             if print {
+//                 println!(
+//                     "guarding custom type {:?} (should_guard: {}, phase: {:?})",
+//                     custom.scc, should_guard, phase
+//                 );
+//             }
+//             if should_guard {
+//                 guard_impl(
+//                     interner,
+//                     customs,
+//                     sccs,
+//                     GuardPhase::Direct(custom.scc),
+//                     &custom.content,
+//                     &custom.subst_helper.do_subst(res),
+//                     out_res,
+//                     print,
+//                 )
+//             } else {
+//                 let _ = out_res.extend(res.iter().cloned());
+//                 Shape {
+//                     inner: interner.shape.new(ShapeInner::Custom(*id)),
+//                     num_slots: res.len(),
+//                 }
+//             }
+//         }
+//         ShapeInner::Array(shape) => {
+//             let _ = out_res.push(res[0].clone());
+//             let shape = guard_impl(
+//                 interner,
+//                 customs,
+//                 sccs,
+//                 phase.indirect(),
+//                 shape,
+//                 &res[1..],
+//                 out_res,
+//                 print,
+//             );
 
-        Self {
-            mode_subst,
-            lt_subst,
-        }
-    }
+//             let num_slots = 1 + shape.num_slots;
+//             let inner = interner.shape.new(ShapeInner::Array(shape));
+//             Shape { inner, num_slots }
+//         }
+//         ShapeInner::HoleArray(shape) => {
+//             let _ = out_res.push(res[0].clone());
+//             let shape = guard_impl(
+//                 interner,
+//                 customs,
+//                 sccs,
+//                 phase.indirect(),
+//                 shape,
+//                 &res[1..],
+//                 out_res,
+//                 print,
+//             );
 
-    fn apply(&self, res: &[Res<ModeParam, LtParam>]) -> Vec<Res<ModeVar, L>> {
-        res.iter()
-            .map(|res| Res {
-                modes: res.modes.map(|mode| self.mode_subst[&mode]),
-                lt: self.lt_subst[&res.lt].clone(),
-            })
-            .collect()
-    }
-}
+//             let num_slots = 1 + shape.num_slots;
+//             let inner = interner.shape.new(ShapeInner::HoleArray(shape));
+//             Shape { inner, num_slots }
+//         }
+//         ShapeInner::Boxed(shape) => {
+//             let _ = out_res.push(res[0].clone());
+//             let shape = guard_impl(
+//                 interner,
+//                 customs,
+//                 sccs,
+//                 phase.indirect(),
+//                 shape,
+//                 &res[1..],
+//                 out_res,
+//                 print,
+//             );
 
-/// Unfolds the content of a custom type by replacing each occurrence of `SelfCustom` with an
-/// occurrence of `Custom`.
-fn guard_impl<L: Clone>(
-    interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
-    phase: GuardPhase,
-    shape: &Shape,
-    res: &[Res<ModeVar, L>],
-    out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
-) -> Shape {
+//             let num_slots = 1 + shape.num_slots;
+//             let inner = interner.shape.new(ShapeInner::Boxed(shape));
+//             Shape { inner, num_slots }
+//         }
+//     }
+// }
+
+fn extract_custom_content(interner: &Interner, shape: &Shape) -> Shape {
     match &*shape.inner {
-        ShapeInner::Bool => {
-            debug_assert!(res.is_empty());
-            shape.clone()
-        }
-        ShapeInner::Num(_) => {
-            debug_assert!(res.is_empty());
-            shape.clone()
-        }
-        ShapeInner::Tuple(shapes) => {
-            let shapes = annot::iter_shapes(shapes, res)
-                .map(|(shape, res)| guard_impl(interner, customs, sccs, phase, shape, res, out_res))
+        ShapeInner::Bool => Shape {
+            inner: interner.shape.new(ShapeInner::Bool),
+            num_slots: 0,
+        },
+        ShapeInner::Num(num_type) => Shape {
+            inner: interner.shape.new(ShapeInner::Num(*num_type)),
+            num_slots: 0,
+        },
+        ShapeInner::Tuple(items) => {
+            let items = items
+                .iter()
+                .map(|shape| extract_custom_content(interner, shape))
                 .collect::<Vec<_>>();
-
-            let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
-            let inner = interner.shape.new(ShapeInner::Tuple(shapes));
+            let num_slots = items.iter().map(|shape| shape.num_slots).sum();
+            let shape = ShapeInner::Tuple(items);
+            let inner = interner.shape.new(shape);
             Shape { inner, num_slots }
         }
-        ShapeInner::Variants(shapes) => {
-            let shapes = annot::iter_shapes(shapes.as_slice(), res)
-                .map(|(shape, res)| guard_impl(interner, customs, sccs, phase, shape, res, out_res))
+        ShapeInner::Variants(variants) => {
+            let variants = variants
+                .values()
+                .map(|shape| extract_custom_content(interner, shape))
                 .collect::<Vec<_>>();
-
-            let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
-            let inner = interner
-                .shape
-                .new(ShapeInner::Variants(IdVec::from_vec(shapes)));
+            let num_slots = variants.iter().map(|shape| shape.num_slots).sum();
+            let shape = ShapeInner::Variants(IdVec::from_vec(variants));
+            let inner = interner.shape.new(shape);
             Shape { inner, num_slots }
         }
-        // The non-trival base case.
-        ShapeInner::SelfCustom(id) | ShapeInner::Custom(id) => {
-            let custom = &customs[*id];
-            let should_guard = phase.should_guard(
-                custom.can_guard,
-                sccs.component(custom.scc).kind,
-                custom.scc,
-            );
-            if should_guard {
-                guard_impl(
-                    interner,
-                    customs,
-                    sccs,
-                    GuardPhase::Direct(custom.scc),
-                    // unfold //
-                    &custom.content.shape,
-                    &Subst::new(res).apply(custom.content.res.as_slice()),
-                    ////////////
-                    out_res,
-                )
-            } else {
-                let _ = out_res.extend(res.iter().cloned());
-                Shape {
-                    inner: interner.shape.new(ShapeInner::Custom(*id)),
-                    num_slots: res.len(),
-                }
-            }
-        }
-        ShapeInner::Array(shape) => {
-            let _ = out_res.push(res[0].clone());
-            let shape = guard_impl(
-                interner,
-                customs,
-                sccs,
-                phase.indirect(),
-                shape,
-                &res[1..],
-                out_res,
-            );
-
-            let num_slots = 1 + shape.num_slots;
-            let inner = interner.shape.new(ShapeInner::Array(shape));
+        ShapeInner::Custom(id) => Shape {
+            inner: interner.shape.new(ShapeInner::Custom(*id)),
+            num_slots: shape.num_slots,
+        },
+        ShapeInner::SelfCustom(id) => Shape {
+            inner: interner.shape.new(ShapeInner::Custom(*id)),
+            num_slots: shape.num_slots,
+        },
+        ShapeInner::Array(item_shape) => {
+            let item_shape = extract_custom_content(interner, item_shape);
+            let num_slots = 1 + item_shape.num_slots;
+            let shape = ShapeInner::Array(item_shape);
+            let inner = interner.shape.new(shape);
             Shape { inner, num_slots }
         }
-        ShapeInner::HoleArray(shape) => {
-            let _ = out_res.push(res[0].clone());
-            let shape = guard_impl(
-                interner,
-                customs,
-                sccs,
-                phase.indirect(),
-                shape,
-                &res[1..],
-                out_res,
-            );
-
-            let num_slots = 1 + shape.num_slots;
-            let inner = interner.shape.new(ShapeInner::HoleArray(shape));
+        ShapeInner::HoleArray(item_shape) => {
+            let item_shape = extract_custom_content(interner, item_shape);
+            let num_slots = 1 + item_shape.num_slots;
+            let shape = ShapeInner::HoleArray(item_shape);
+            let inner = interner.shape.new(shape);
             Shape { inner, num_slots }
         }
-        ShapeInner::Boxed(shape) => {
-            let _ = out_res.push(res[0].clone());
-            let shape = guard_impl(
-                interner,
-                customs,
-                sccs,
-                phase.indirect(),
-                shape,
-                &res[1..],
-                out_res,
-            );
-
-            let num_slots = 1 + shape.num_slots;
-            let inner = interner.shape.new(ShapeInner::Boxed(shape));
+        ShapeInner::Boxed(item_shape) => {
+            let item_shape = extract_custom_content(interner, item_shape);
+            let num_slots = 1 + item_shape.num_slots;
+            let shape = ShapeInner::Boxed(item_shape);
+            let inner = interner.shape.new(shape);
             Shape { inner, num_slots }
         }
     }
 }
 
-fn unfold_impl<L: Clone + std::fmt::Debug>(
+fn unfold_impl<L: Clone>(
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
-    recipe: &UnfoldRecipe,
+    recipe: &RecipeContent,
     shape: &Shape,
     res: &[Res<ModeVar, L>],
     out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
 ) -> Shape {
     match (&*shape.inner, recipe) {
-        (ShapeInner::Bool, UnfoldRecipe::Bool) => {
+        (ShapeInner::Bool, RecipeContent::Bool) => {
             debug_assert!(res.is_empty());
             shape.clone()
         }
-        (ShapeInner::Num(_), UnfoldRecipe::Num(_)) => {
+        (ShapeInner::Num(_), RecipeContent::Num(_)) => {
             debug_assert!(res.is_empty());
             shape.clone()
         }
-        (ShapeInner::Tuple(shapes), UnfoldRecipe::Tuple(recipes)) => {
+        (ShapeInner::Tuple(shapes), RecipeContent::Tuple(recipes)) => {
             let shapes = annot::iter_shapes(shapes, res)
                 .zip_eq(recipes)
                 .map(|((shape, res), recipe)| {
@@ -1415,10 +1429,11 @@ fn unfold_impl<L: Clone + std::fmt::Debug>(
                 .collect::<Vec<_>>();
 
             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
-            let inner = interner.shape.new(ShapeInner::Tuple(shapes));
+            let shape = ShapeInner::Tuple(shapes);
+            let inner = interner.shape.new(shape);
             Shape { inner, num_slots }
         }
-        (ShapeInner::Variants(shapes), UnfoldRecipe::Variants(recipes)) => {
+        (ShapeInner::Variants(shapes), RecipeContent::Variants(recipes)) => {
             let shapes = annot::iter_shapes(shapes.as_slice(), res)
                 .zip_eq(recipes.values())
                 .map(|((shape, res), recipe)| {
@@ -1427,39 +1442,30 @@ fn unfold_impl<L: Clone + std::fmt::Debug>(
                 .collect::<Vec<_>>();
 
             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
-            let inner = interner
-                .shape
-                .new(ShapeInner::Variants(IdVec::from_vec(shapes)));
+            let shape = ShapeInner::Variants(IdVec::from_vec(shapes));
+            let inner = interner.shape.new(shape);
             Shape { inner, num_slots }
         }
         (ShapeInner::SelfCustom(_), _) => {
             panic!("`unfold` was called on the *content* of a custom type")
         }
-        (ShapeInner::Custom(id), UnfoldRecipe::LeaveCustom(id2)) => {
-            debug_assert_eq!(id, id2);
+        (ShapeInner::Custom(id1), RecipeContent::DoNothing(id2)) => {
+            debug_assert_eq!(id1, id2);
             debug_assert_eq!(res.len(), shape.num_slots);
+
             let _ = out_res.extend(res.iter().cloned());
             shape.clone()
         }
-        (ShapeInner::Custom(id), UnfoldRecipe::ProcessCustom(id2, phase)) => {
-            debug_assert_eq!(id, id2);
-            let custom = &customs[*id];
-            println!("shape: {}", shape.display());
-            println!("res: {:?}", res);
-            println!("content.res: {:?}", custom.content.res);
-            guard_impl(
-                interner,
-                customs,
-                sccs,
-                *phase,
-                // unfold //
-                &custom.content.shape,
-                &Subst::new(res).apply(custom.content.res.as_slice()),
-                ////////////
-                out_res,
-            )
+        (ShapeInner::Custom(id1), RecipeContent::Unfold(id2)) => {
+            debug_assert_eq!(id1, id2);
+            let custom = &customs[*id1];
+            let content_res = custom.subst_helper.do_subst(res);
+            debug_assert_eq!(content_res.len(), custom.content.num_slots);
+
+            let _ = out_res.extend(content_res);
+            extract_custom_content(interner, &custom.content)
         }
-        (ShapeInner::Array(item_shape), UnfoldRecipe::Array(item_recipe)) => {
+        (ShapeInner::Array(item_shape), RecipeContent::Array(item_recipe)) => {
             let _ = out_res.push(res[0].clone());
             let item_shape = unfold_impl(
                 interner,
@@ -1476,7 +1482,7 @@ fn unfold_impl<L: Clone + std::fmt::Debug>(
                 num_slots,
             }
         }
-        (ShapeInner::HoleArray(item_shape), UnfoldRecipe::HoleArray(item_recipe)) => {
+        (ShapeInner::HoleArray(item_shape), RecipeContent::HoleArray(item_recipe)) => {
             let _ = out_res.push(res[0].clone());
             let item_shape = unfold_impl(
                 interner,
@@ -1493,7 +1499,7 @@ fn unfold_impl<L: Clone + std::fmt::Debug>(
                 num_slots,
             }
         }
-        (ShapeInner::Boxed(item_shape), UnfoldRecipe::Boxed(item_recipe)) => {
+        (ShapeInner::Boxed(item_shape), RecipeContent::Boxed(item_recipe)) => {
             let _ = out_res.push(res[0].clone());
             let item_shape = unfold_impl(
                 interner,
@@ -1514,7 +1520,7 @@ fn unfold_impl<L: Clone + std::fmt::Debug>(
     }
 }
 
-fn unfold<L: Clone + std::fmt::Debug>(
+fn unfold<L: Clone>(
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
@@ -1522,17 +1528,40 @@ fn unfold<L: Clone + std::fmt::Debug>(
     ty: &Type<ModeVar, L>,
 ) -> Type<ModeVar, L> {
     let mut res = IdVec::new();
-    let shape = unfold_impl(
-        interner,
-        customs,
-        sccs,
-        recipe,
-        &ty.shape,
-        ty.res.as_slice(),
-        &mut res,
-    );
-    debug_assert!(res.len() == shape.num_slots);
-    Type { shape, res }
+    // println!("---------------------------------");
+    let shape = match recipe {
+        UnfoldRecipe::UnfoldThenRecurse(recipe) => {
+            let ShapeInner::Custom(id) = &*ty.shape().inner else {
+                unreachable!();
+            };
+            let custom = &customs[*id];
+            unfold_impl(
+                interner,
+                customs,
+                sccs,
+                recipe,
+                &extract_custom_content(interner, &custom.content),
+                &custom.subst_helper.do_subst(ty.res().as_slice()),
+                &mut res,
+            )
+        }
+        UnfoldRecipe::Recurse(recipe) => unfold_impl(
+            interner,
+            customs,
+            sccs,
+            recipe,
+            &ty.shape(),
+            ty.res().as_slice(),
+            &mut res,
+        ),
+    };
+    // if let ShapeInner::Custom(CustomTypeId(10)) = &*ty.shape().inner {
+    //     println!("unfold: ty: {}", ty.shape().display());
+    //     println!("unfold: recipe: {:?}", recipe);
+    //     println!("unfold: result: {}", shape.display());
+    // }
+    // println!("+++++++++++++++++++++++++++++++++");
+    Type::new(shape, res)
 }
 
 // This function is the core logic for this pass. It implements the judgment from the paper:
@@ -1679,7 +1708,7 @@ fn instantiate_expr(
         }
 
         TailExpr::CheckVariant(variant_id, variant) => {
-            assert!(fut_ty.shape == Shape::bool_(interner));
+            assert!(fut_ty.shape() == &Shape::bool_(interner));
             let variants_ty = ctx.local_binding(*variant).ty.clone(); // appease the borrow checker
             annot::Expr::CheckVariant(
                 *variant_id,
@@ -1710,12 +1739,12 @@ fn instantiate_expr(
 
         TailExpr::TupleField(tuple_id, idx) => {
             let mut tuple_ty = freshen_type_unused(constrs, &ctx.local_binding(*tuple_id).ty);
-            let ShapeInner::Tuple(shapes) = &*tuple_ty.shape.inner else {
+            let ShapeInner::Tuple(shapes) = &*tuple_ty.shape().inner else {
                 panic!("expected `Tuple` type");
             };
 
             let (start, end) = nth_res_bounds(shapes, *idx);
-            tuple_ty.res.as_mut_slice()[start..end].clone_from_slice(fut_ty.res.as_slice());
+            tuple_ty.res_mut().as_mut_slice()[start..end].clone_from_slice(fut_ty.res().as_slice());
 
             let occur = instantiate_occur(strategy, interner, ctx, constrs, *tuple_id, &tuple_ty);
             annot::Expr::TupleField(occur, *idx)
@@ -1736,12 +1765,13 @@ fn instantiate_expr(
 
         TailExpr::UnwrapVariant(_variant_tys, variant_id, wrapped) => {
             let mut variants_ty = freshen_type_unused(constrs, &ctx.local_binding(*wrapped).ty);
-            let ShapeInner::Variants(shapes) = &*variants_ty.shape.inner else {
+            let ShapeInner::Variants(shapes) = &*variants_ty.shape().inner else {
                 panic!("expected `Variants` type");
             };
 
             let (start, end) = nth_res_bounds(shapes.as_slice(), variant_id.to_index());
-            variants_ty.res.as_mut_slice()[start..end].clone_from_slice(fut_ty.res.as_slice());
+            variants_ty.res_mut().as_mut_slice()[start..end]
+                .clone_from_slice(fut_ty.res().as_slice());
 
             let occur = instantiate_occur(strategy, interner, ctx, constrs, *wrapped, &variants_ty);
             annot::Expr::UnwrapVariant(*variant_id, occur)
@@ -1781,15 +1811,19 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapCustom(custom_id, recipe, unfolded) => {
+            // if custom_id.0 == 10 {
             // println!("----------------------------------");
             // println!("unfolding custom {}", custom_id.0);
+            // }
             let fut_unfolded = unfold(interner, customs, sccs, recipe, fut_ty);
-            // println!("fut_ty: {}", fut_ty.shape.display());
-            // println!("fut_unfolded: {}", fut_unfolded.shape.display());
+            // if custom_id.0 == 10 {
+            // println!("fut_ty: {}", fut_ty.shape().display());
+            // println!("fut_unfolded: {}", fut_unfolded.shape().display());
             // println!(
             //     "binding_ty: {}",
-            //     ctx.local_binding(*unfolded).ty.shape.display()
+            //     ctx.local_binding(*unfolded).ty.shape().display()
             // );
+            // }
             let occur =
                 instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
             annot::Expr::WrapCustom(*custom_id, occur)
@@ -1816,10 +1850,10 @@ fn instantiate_expr(
                 subst_lts(interner, &wrap_lts(&fresh_folded), &lt_subst)
             };
 
-            // println!("fresh folded: {}", fresh_folded.shape.display());
+            // println!("fresh folded: {}", fresh_folded.shape().display());
             // println!(
             //     "binding_ty: {}",
-            //     ctx.local_binding(*folded).ty.shape.display()
+            //     ctx.local_binding(*folded).ty.shape().display()
             // );
 
             let occur = instantiate_occur(strategy, interner, ctx, constrs, *folded, &fresh_folded);
@@ -1830,10 +1864,10 @@ fn instantiate_expr(
         // operate on arithmetic types. If this changes, we will have to update this.
         TailExpr::Intrinsic(intr, arg) => {
             let sig = intrinsic_sig(*intr);
-            let ty = Type {
-                shape: Shape::from_guarded(interner, customs, &guard::Type::from_intr(&sig.arg)),
-                res: IdVec::new(),
-            };
+            let ty = Type::new(
+                Shape::from_guarded(interner, customs, &guard::Type::from_intr(&sig.arg)),
+                IdVec::new(),
+            );
             annot::Expr::Intrinsic(*intr, Occur { id: *arg, ty })
         }
 
@@ -2544,6 +2578,6 @@ mod tests {
                     },
                 ]))),
         };
-        assert_eq!(annot_list.content.shape, expected_shape);
+        assert_eq!(annot_list.content, expected_shape);
     }
 }

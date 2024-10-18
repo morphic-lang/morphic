@@ -47,29 +47,29 @@ fn get_occur_obligation(
     dst: &Type,
     dst_lts: &IdVec<SlotId, Res<ModeSolution, Lt>>,
 ) -> StackLt {
-    debug_assert!(src.shape == dst.shape);
-    let slots = src.shape.top_level_slots(customs.view_shapes());
+    debug_assert!(src.shape() == dst.shape());
+    let slots = src.shape().top_level_slots(customs.view_shapes());
     let data = slots.into_iter().map(|slot| {
         let obligation = get_slot_obligation(
             interner,
             occur_path,
-            *src.res[slot].unwrap_stack(),
-            *dst.res[slot].unwrap_stack(),
+            *src.res()[slot].unwrap_stack(),
+            *dst.res()[slot].unwrap_stack(),
             &dst_lts[slot].lt,
         );
         (slot, obligation)
     });
     StackLt {
-        shape: src.shape.clone(),
+        shape: src.shape().clone(),
         data: data.collect(),
     }
 }
 
 fn instantiate_type_with<M, L>(ty: &annot::Type<M, L>, f: impl Fn(&M) -> Mode) -> Type {
-    Type {
-        shape: ty.shape.clone(),
-        res: ty.res.map_refs(|_, res| res.modes.map(&f)),
-    }
+    Type::new(
+        ty.shape().clone(),
+        ty.res().map_refs(|_, res| res.modes.map(&f)),
+    )
 }
 
 fn instantiate_type(
@@ -98,9 +98,9 @@ fn add_unused_local(
     metadata: &Metadata,
 ) -> guard::LocalId {
     let lt = StackLt {
-        shape: ty.shape.clone(),
+        shape: ty.shape().clone(),
         data: ty
-            .shape
+            .shape()
             .top_level_slots(customs.view_shapes())
             .into_iter()
             .map(|slot| (slot, Lt::Empty))
@@ -132,7 +132,7 @@ fn annot_expr(
                 path,
                 src_ty,
                 &occur.ty,
-                &old_occur.ty.res,
+                &old_occur.ty.res(),
             );
 
             // We must update the lifetime obligation of the binding to reflect this occurrence.
@@ -156,7 +156,7 @@ fn annot_expr(
             let mut call_params =
                 IdVec::from_count_with(func.constrs.sig.count(), |_| Mode::Borrowed);
 
-            for (param, value) in func.arg_ty.iter_modes().zip_eq(arg.ty.res.values()) {
+            for (param, value) in func.arg_ty.iter_modes().zip_eq(arg.ty.res().values()) {
                 match (param, value) {
                     (ResModes::Stack(param), ResModes::Stack(value)) => {
                         call_params[*param] = *value;
@@ -168,7 +168,7 @@ fn annot_expr(
                     _ => unreachable!(),
                 }
             }
-            for (param, value) in func.ret_ty.iter_modes().zip_eq(ret_ty.res.values()) {
+            for (param, value) in func.ret_ty.iter_modes().zip_eq(ret_ty.res().values()) {
                 match (param, value) {
                     (ResModes::Stack(param), ResModes::Stack(value)) => {
                         call_params[*param] = *value;
@@ -458,7 +458,8 @@ pub fn annot_obligations(
                 .types
                 .into_values()
                 .map(|typedef| ob::CustomTypeDef {
-                    content: typedef.content.shape,
+                    content: typedef.content,
+                    subst_helper: typedef.subst_helper,
                 })
                 .collect(),
         ),

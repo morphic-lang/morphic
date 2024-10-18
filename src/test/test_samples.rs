@@ -318,7 +318,6 @@ sample! { bench_primes_sieve "samples/bench_primes_sieve.mor";
 
 sample! { bench_words_trie "samples/bench_words_trie.mor";
     mutation_mode = MutationMode::AlwaysImmut;
-    // TODO: This fails under the interpreter, but the error appears to be spurious (?).
     compile_only = true;
     stdin = concat!(
         "2\n", // first number is iteration count

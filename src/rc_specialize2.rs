@@ -72,64 +72,58 @@ struct ReleaseSpec {
 }
 
 impl ReleaseSpec {
-    fn new<'a>(custom_id: first_ord::CustomTypeId, res: IdVec<SlotId, ResModes<Mode>>) -> Self {
-        Self {
-            custom_id,
-            res: prepare_resources(res.as_slice()),
-        }
+    fn new(custom_id: first_ord::CustomTypeId, res: Vec<Mode>) -> Self {
+        Self { custom_id, res }
+    }
+
+    fn make_scheme(
+        &self,
+        customs: &annot::CustomTypes,
+        insts: &mut ReleaseInstances,
+    ) -> ModeScheme {
+        let custom = &customs.types[self.custom_id];
+        let res = custom.subst_helper.do_subst(&self.res);
+        make_scheme(insts, &custom.content, &res)
     }
 }
 
-fn make_scheme_impl(
-    insts: &mut ReleaseInstances,
-    all_res: &[Mode],
-    shape: &Shape,
-    res: &[Mode],
-) -> ModeScheme {
+fn make_scheme(insts: &mut ReleaseInstances, shape: &Shape, res: &[Mode]) -> ModeScheme {
     match &*shape.inner {
         ShapeInner::Bool => ModeScheme::Bool,
         ShapeInner::Num(num_ty) => ModeScheme::Num(*num_ty),
         ShapeInner::Tuple(shapes) => ModeScheme::Tuple(
             iter_shapes(shapes, res)
-                .map(|(shape, res)| make_scheme_impl(insts, all_res, shape, res))
+                .map(|(shape, res)| make_scheme(insts, shape, res))
                 .collect(),
         ),
         ShapeInner::Variants(shapes) => ModeScheme::Variants(IdVec::from_vec(
             iter_shapes(shapes.as_slice(), res)
-                .map(|(shape, res)| make_scheme_impl(insts, all_res, shape, res))
+                .map(|(shape, res)| make_scheme(insts, shape, res))
                 .collect(),
         )),
         &ShapeInner::SelfCustom(custom_id) => {
-            let scheme_id = insts.resolve(ReleaseSpec {
-                custom_id,
-                res: all_res.iter().cloned().collect(),
-            });
+            let scheme_id =
+                insts.resolve(ReleaseSpec::new(custom_id, res.iter().cloned().collect()));
             ModeScheme::Custom(scheme_id, custom_id)
         }
         &ShapeInner::Custom(custom_id) => {
-            let scheme_id = insts.resolve(ReleaseSpec {
-                custom_id,
-                res: res.iter().cloned().collect(),
-            });
+            let scheme_id =
+                insts.resolve(ReleaseSpec::new(custom_id, res.iter().cloned().collect()));
             ModeScheme::Custom(scheme_id, custom_id)
         }
         ShapeInner::Array(shape) => {
-            let inner = make_scheme_impl(insts, all_res, shape, &res[1..]);
+            let inner = make_scheme(insts, shape, &res[1..]);
             ModeScheme::Array(res[0], Box::new(inner))
         }
         ShapeInner::HoleArray(shape) => {
-            let inner = make_scheme_impl(insts, all_res, shape, &res[1..]);
+            let inner = make_scheme(insts, shape, &res[1..]);
             ModeScheme::HoleArray(res[0], Box::new(inner))
         }
         ShapeInner::Boxed(shape) => {
-            let inner = make_scheme_impl(insts, all_res, shape, &res[1..]);
+            let inner = make_scheme(insts, shape, &res[1..]);
             ModeScheme::Boxed(res[0], Box::new(inner))
         }
     }
-}
-
-fn make_scheme(insts: &mut ReleaseInstances, shape: &Shape, res: &[Mode]) -> ModeScheme {
-    make_scheme_impl(insts, res, shape, res)
 }
 
 fn lower_type(shape: &Shape) -> rc::Type {
@@ -226,8 +220,9 @@ impl RcOpPlan {
                 }
             }
             // The only time we hit this case is when there is a recursive type whose recursive
-            // occurrence is not guarded by a box. The type guarding pass ensures this only occurs
-            // for zero-sized types, which require no non-trivial retain/release operations.
+            // occurrence is not guarded by heap indirection. The type guarding pass ensures this
+            // only occurs for zero-sized types, which require no non-trivial retain/release
+            // operations.
             ShapeInner::SelfCustom(_) => Self::NoOp,
             ShapeInner::Custom(id) => {
                 let plan = RcOpPlan::from_selector_impl(
@@ -254,8 +249,8 @@ impl RcOpPlan {
     }
 
     fn from_selector(customs: &annot::CustomTypes, ty: &ob::Type, sel: &Selector) -> Self {
-        debug_assert_eq!(ty.shape, sel.shape);
-        Self::from_selector_impl(customs, &sel.true_, ty.res.as_slice(), 0, &sel.shape)
+        debug_assert_eq!(ty.shape(), &sel.shape);
+        Self::from_selector_impl(customs, &sel.true_, ty.res().as_slice(), 0, &sel.shape)
     }
 }
 
@@ -399,8 +394,8 @@ fn lower_expr(
                 insts,
                 *op,
                 arg.new_id,
-                &arg.old_ty.shape,
-                arg.old_ty.res.as_slice(),
+                &arg.old_ty.shape(),
+                arg.old_ty.res().as_slice(),
                 &plan,
                 builder,
             );
@@ -414,7 +409,7 @@ fn lower_expr(
         annot::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
                 for (binding_ty, expr, metadata) in bindings {
-                    let low_ty = lower_type(&binding_ty.shape);
+                    let low_ty = lower_type(&binding_ty.shape());
 
                     let final_local = lower_expr(
                         funcs,
@@ -478,7 +473,7 @@ fn lower_expr(
         annot::Expr::CheckVariant(variant_id, variant) => {
             rc::Expr::CheckVariant(*variant_id, ctx.local_binding(*variant).new_id)
         }
-        annot::Expr::Unreachable(ty) => rc::Expr::Unreachable(lower_type(&ty.shape)),
+        annot::Expr::Unreachable(ty) => rc::Expr::Unreachable(lower_type(&ty.shape())),
         annot::Expr::Tuple(fields) => rc::Expr::Tuple(
             fields
                 .iter()
@@ -489,7 +484,7 @@ fn lower_expr(
             rc::Expr::TupleField(ctx.local_binding(*tup).new_id, *idx)
         }
         annot::Expr::WrapVariant(variants, variant_id, content) => rc::Expr::WrapVariant(
-            variants.map_refs(|_, ty| lower_type(&ty.shape)),
+            variants.map_refs(|_, ty| lower_type(&ty.shape())),
             *variant_id,
             ctx.local_binding(*content).new_id,
         ),
@@ -498,11 +493,11 @@ fn lower_expr(
         }
         annot::Expr::WrapBoxed(content, item_ty) => rc::Expr::WrapBoxed(
             ctx.local_binding(*content).new_id,
-            lower_type(&item_ty.shape),
+            lower_type(&item_ty.shape()),
         ),
         annot::Expr::UnwrapBoxed(wrapped, item_ty) => rc::Expr::UnwrapBoxed(
             ctx.local_binding(*wrapped).new_id,
-            lower_type(&item_ty.shape),
+            lower_type(&item_ty.shape()),
         ),
         &annot::Expr::WrapCustom(custom_id, content) => {
             rc::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)
@@ -516,8 +511,8 @@ fn lower_expr(
         annot::Expr::ArrayOp(annot::ArrayOp::Get(arr_ty, arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape,
-                &prepare_resources(arr_ty.res.as_slice()),
+                &arr_ty.shape(),
+                &prepare_resources(arr_ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Get(
                 scheme,
@@ -528,8 +523,8 @@ fn lower_expr(
         annot::Expr::ArrayOp(annot::ArrayOp::Extract(arr_ty, arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape,
-                &prepare_resources(arr_ty.res.as_slice()),
+                &arr_ty.shape(),
+                &prepare_resources(arr_ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Extract(
                 scheme,
@@ -540,16 +535,16 @@ fn lower_expr(
         annot::Expr::ArrayOp(annot::ArrayOp::Len(arr_ty, arr)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape,
-                &prepare_resources(arr_ty.res.as_slice()),
+                &arr_ty.shape(),
+                &prepare_resources(arr_ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Len(scheme, ctx.local_binding(*arr).new_id))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Push(arr_ty, arr, item)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape,
-                &prepare_resources(arr_ty.res.as_slice()),
+                &arr_ty.shape(),
+                &prepare_resources(arr_ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Push(
                 scheme,
@@ -560,16 +555,16 @@ fn lower_expr(
         annot::Expr::ArrayOp(annot::ArrayOp::Pop(arr_ty, arr)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape,
-                &prepare_resources(arr_ty.res.as_slice()),
+                &arr_ty.shape(),
+                &prepare_resources(arr_ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Pop(scheme, ctx.local_binding(*arr).new_id))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Replace(arr_ty, arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape,
-                &prepare_resources(arr_ty.res.as_slice()),
+                &arr_ty.shape(),
+                &prepare_resources(arr_ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Replace(
                 scheme,
@@ -580,8 +575,8 @@ fn lower_expr(
         annot::Expr::ArrayOp(annot::ArrayOp::Reserve(arr_ty, arr, cap)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape,
-                &prepare_resources(arr_ty.res.as_slice()),
+                &arr_ty.shape(),
+                &prepare_resources(arr_ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(rc::ArrayOp::Reserve(
                 scheme,
@@ -594,13 +589,13 @@ fn lower_expr(
             rc::Expr::IoOp(rc::IoOp::Output(ctx.local_binding(*local).new_id))
         }
         annot::Expr::Panic(ret_ty, msg) => {
-            rc::Expr::Panic(lower_type(&ret_ty.shape), ctx.local_binding(*msg).new_id)
+            rc::Expr::Panic(lower_type(&ret_ty.shape()), ctx.local_binding(*msg).new_id)
         }
         annot::Expr::ArrayLit(item_ty, items) => {
             let scheme = make_scheme(
                 insts,
-                &item_ty.shape,
-                &prepare_resources(item_ty.res.as_slice()),
+                &item_ty.shape(),
+                &prepare_resources(item_ty.res().as_slice()),
             );
             rc::Expr::ArrayLit(
                 scheme,
@@ -625,8 +620,8 @@ fn lower_func(
     insts: &mut ReleaseInstances,
     func: &annot::FuncDef,
 ) -> rc::FuncDef {
-    let arg_type = lower_type(&func.arg_ty.shape);
-    let ret_type = lower_type(&func.ret_ty.shape);
+    let arg_type = lower_type(&func.arg_ty.shape());
+    let ret_type = lower_type(&func.ret_ty.shape());
 
     let mut ctx = LocalContext::new();
     ctx.add_local(LocalInfo {
@@ -672,8 +667,10 @@ pub fn rc_specialize(
     let mut queue = ReleaseInstances::new();
     let mut funcs = IdVec::new();
 
+    let customs = &program.custom_types;
+
     for (id, func) in &program.funcs {
-        let new_func = lower_func(&program.custom_types, &program.funcs, &mut queue, &func);
+        let new_func = lower_func(customs, &program.funcs, &mut queue, &func);
         let pushed_id = funcs.push(new_func);
         debug_assert_eq!(pushed_id, id);
         progress.update(1);
@@ -683,17 +680,13 @@ pub fn rc_specialize(
 
     let mut schemes = IdVec::new();
     while let Some((release_id, spec)) = queue.pop_pending() {
-        let content = &program.custom_types.types[spec.custom_id].content;
-        let scheme = make_scheme(&mut queue, content, &spec.res);
+        let scheme = spec.make_scheme(customs, &mut queue);
         let pushed_id = schemes.push(scheme);
         debug_assert_eq!(pushed_id, release_id);
     }
 
     let custom_types = rc::CustomTypes {
-        types: program
-            .custom_types
-            .types
-            .map_refs(|_, ty| lower_type(&ty.content)),
+        types: customs.types.map_refs(|_, ty| lower_type(&ty.content)),
     };
     rc::Program {
         mod_symbols: program.mod_symbols,

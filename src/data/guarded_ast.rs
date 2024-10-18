@@ -40,16 +40,25 @@ impl GuardPhase {
 }
 
 #[derive(Clone, Debug)]
-pub enum UnfoldRecipe {
+pub enum RecipeContent {
     Bool,
     Num(first_ord::NumType),
-    Tuple(Vec<UnfoldRecipe>),
-    Variants(IdVec<first_ord::VariantId, UnfoldRecipe>),
-    LeaveCustom(first_ord::CustomTypeId),
-    ProcessCustom(first_ord::CustomTypeId, GuardPhase),
-    Array(Box<UnfoldRecipe>),
-    HoleArray(Box<UnfoldRecipe>),
-    Boxed(Box<UnfoldRecipe>),
+    Tuple(Vec<RecipeContent>),
+    Variants(IdVec<first_ord::VariantId, RecipeContent>),
+
+    // Cases for `Type::Custom`
+    DoNothing(first_ord::CustomTypeId),
+    Unfold(first_ord::CustomTypeId),
+
+    Array(Box<RecipeContent>),
+    HoleArray(Box<RecipeContent>),
+    Boxed(Box<RecipeContent>),
+}
+
+#[derive(Clone, Debug)]
+pub enum UnfoldRecipe {
+    UnfoldThenRecurse(RecipeContent),
+    Recurse(RecipeContent),
 }
 
 #[id_type]

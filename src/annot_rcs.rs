@@ -38,13 +38,13 @@ fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
 }
 
 fn select_dups(path: &Path, src_ty: &Type, dst_ty: &Type, lt_obligation: &StackLt) -> Selector {
-    debug_assert_eq!(dst_ty.shape, lt_obligation.shape);
-    debug_assert_eq!(src_ty.shape, lt_obligation.shape);
+    debug_assert_eq!(dst_ty.shape(), &lt_obligation.shape);
+    debug_assert_eq!(src_ty.shape(), &lt_obligation.shape);
 
     let mut result = Selector::none(&lt_obligation.shape);
     for (&slot, lt) in lt_obligation.iter() {
-        let src_mode = *src_ty.res[slot].unwrap_stack();
-        let dst_mode = *dst_ty.res[slot].unwrap_stack();
+        let src_mode = *src_ty.res()[slot].unwrap_stack();
+        let dst_mode = *dst_ty.res()[slot].unwrap_stack();
 
         if should_dup(path, src_mode, dst_mode, lt) {
             result.insert(slot);
@@ -59,13 +59,13 @@ fn should_move(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
 }
 
 fn select_moves(path: &Path, src_ty: &Type, dst_ty: &Type, lt_obligation: &StackLt) -> Selector {
-    debug_assert_eq!(dst_ty.shape, lt_obligation.shape);
-    debug_assert_eq!(src_ty.shape, lt_obligation.shape);
+    debug_assert_eq!(dst_ty.shape(), &lt_obligation.shape);
+    debug_assert_eq!(src_ty.shape(), &lt_obligation.shape);
 
     let mut result = Selector::none(&lt_obligation.shape);
     for (&slot, lt) in lt_obligation.iter() {
-        let src_mode = *src_ty.res[slot].unwrap_stack();
-        let dst_mode = *dst_ty.res[slot].unwrap_stack();
+        let src_mode = *src_ty.res()[slot].unwrap_stack();
+        let dst_mode = *dst_ty.res()[slot].unwrap_stack();
 
         if should_move(path, src_mode, dst_mode, lt) {
             result.insert(slot);
@@ -75,9 +75,9 @@ fn select_moves(path: &Path, src_ty: &Type, dst_ty: &Type, lt_obligation: &Stack
 }
 
 fn select_owned(customs: &ob::CustomTypes, ty: &Type) -> Selector {
-    let mut result = Selector::none(&ty.shape);
-    for slot in ty.shape.top_level_slots(customs.view_shapes()) {
-        if *ty.res[slot].unwrap_stack() == Mode::Owned {
+    let mut result = Selector::none(&ty.shape());
+    for slot in ty.shape().top_level_slots(customs.view_shapes()) {
+        if *ty.res()[slot].unwrap_stack() == Mode::Owned {
             result.insert(slot);
         }
     }
@@ -315,7 +315,12 @@ fn register_drops_for_expr(
                 let binding_id = num_locals.inc();
 
                 register_drops_for_binding(
-                    interner, drops, &ty.shape, binding_id, &path, obligation,
+                    interner,
+                    drops,
+                    &ty.shape(),
+                    binding_id,
+                    &path,
+                    obligation,
                 );
             }
         }
@@ -342,7 +347,7 @@ fn register_drops_for_expr(
 }
 
 fn drops_for_func(interner: &Interner, func: &ob::FuncDef) -> FuncDrops {
-    let mut arg_drops = Selector::none(&func.arg_ty.shape);
+    let mut arg_drops = Selector::none(&func.arg_ty.shape());
     let mut body_drops = empty_drops(&func.body);
 
     for (&slot, lt) in func.arg_obligation.iter() {
@@ -353,7 +358,13 @@ fn drops_for_func(interner: &Interner, func: &ob::FuncDef) -> FuncDrops {
             }
             Lt::Local(lt) => {
                 let body_drops = body_drops.as_mut().unwrap();
-                register_drops_for_slot(body_drops, &func.arg_ty.shape, guard::ARG_LOCAL, slot, lt);
+                register_drops_for_slot(
+                    body_drops,
+                    &func.arg_ty.shape(),
+                    guard::ARG_LOCAL,
+                    slot,
+                    lt,
+                );
             }
         }
     }
@@ -401,16 +412,16 @@ fn annot_occur(
 }
 
 fn unwrap_item(ty: &Type) -> Type {
-    let item = match &*ty.shape.inner {
+    let item = match &*ty.shape().inner {
         ShapeInner::Array(item) => item,
         ShapeInner::HoleArray(item) => item,
         ShapeInner::Boxed(item) => item,
         _ => panic!("expected array, hole array, or boxed type"),
     };
-    Type {
-        shape: item.clone(),
-        res: IdVec::from_vec(ty.res.as_slice()[1..].iter().cloned().collect()),
-    }
+    Type::new(
+        item.clone(),
+        IdVec::from_vec(ty.res().as_slice()[1..].iter().cloned().collect()),
+    )
 }
 
 fn annot_expr(
@@ -458,7 +469,7 @@ fn annot_expr(
                         builder,
                     );
 
-                    let moves = Selector::none(&ty.shape);
+                    let moves = Selector::none(&ty.shape());
                     ctx.add_local(LocalInfo {
                         new_id: final_local,
                         ty,
@@ -690,7 +701,7 @@ fn annot_func(
     let drops = drops_for_func(interner, &func);
 
     let mut ctx = Context::new();
-    let moves = Selector::none(&func.arg_ty.shape);
+    let moves = Selector::none(&func.arg_ty.shape());
     ctx.add_local(LocalInfo {
         new_id: rc::ARG_LOCAL,
         ty: func.arg_ty.clone(),

@@ -527,10 +527,7 @@ impl Shape {
                         // we needn't do anything.
                     }
                 } else {
-                    custom
-                        .content
-                        .shape
-                        .positions_impl(customs, sccs, pos, result);
+                    custom.content.positions_impl(customs, sccs, pos, result);
                 }
             }
             ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
@@ -619,11 +616,16 @@ impl<'a, M, L> Iterator for FlatIter<'a, M, L> {
 
 #[derive(Clone, Debug)]
 pub struct Type<M, L> {
-    pub shape: Shape,
-    pub res: IdVec<SlotId, Res<M, L>>,
+    shape: Shape,
+    res: IdVec<SlotId, Res<M, L>>,
 }
 
 impl<M, L> Type<M, L> {
+    pub fn new(shape: Shape, res: IdVec<SlotId, Res<M, L>>) -> Self {
+        debug_assert_eq!(shape.num_slots, res.len());
+        Type { shape, res }
+    }
+
     pub fn unit(interner: &Interner) -> Self {
         Type {
             shape: Shape::unit(interner),
@@ -636,6 +638,18 @@ impl<M, L> Type<M, L> {
             shape: Shape::bool_(interner),
             res: IdVec::new(),
         }
+    }
+
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    pub fn res(&self) -> &IdVec<SlotId, Res<M, L>> {
+        &self.res
+    }
+
+    pub fn res_mut(&mut self) -> &mut IdVec<SlotId, Res<M, L>> {
+        &mut self.res
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Res<M, L>> {
@@ -859,8 +873,29 @@ pub struct FuncDef {
 }
 
 #[derive(Clone, Debug)]
+pub struct SubstHelper {
+    mapping: Vec<SlotId>,
+}
+
+impl SubstHelper {
+    pub fn new(mapping: Vec<SlotId>) -> Self {
+        SubstHelper { mapping }
+    }
+
+    /// Takes the resource list for a custom and transforms it into the resource list for that
+    /// custom's body.
+    pub fn do_subst<T: Clone>(&self, res: &[T]) -> Vec<T> {
+        self.mapping
+            .iter()
+            .map(|slot| res[slot.0].clone())
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct CustomTypeDef {
-    pub content: Type<ModeParam, LtParam>,
+    pub content: Shape,
+    pub subst_helper: SubstHelper,
     pub num_slots: usize,
     pub scc: flat::CustomTypeSccId,
     pub can_guard: guarded::CanGuard,
@@ -876,7 +911,7 @@ pub struct CustomTypes {
 
 impl CustomTypes {
     pub fn view_shapes(&self) -> impl MapRef<'_, first_ord::CustomTypeId, Shape> {
-        FnWrap::wrap(|id| &self.types[id].content.shape)
+        FnWrap::wrap(|id| &self.types[id].content)
     }
 }
 

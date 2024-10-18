@@ -15,6 +15,7 @@ use crate::pretty_print::utils::{
 };
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::{fmt, str};
 
 const TAB_SIZE: usize = 2;
 
@@ -111,13 +112,13 @@ pub fn write_type(
     ob: Option<&StackLt>,
     type_: &Type,
 ) -> io::Result<()> {
-    assert!(ob.map_or(true, |ob| ob.shape == type_.shape));
+    assert!(ob.map_or(true, |ob| &ob.shape == type_.shape()));
     write_type_impl(
         w,
         type_renderer,
         ob.map(|ob| &ob.data),
-        &type_.shape,
-        type_.res.as_slice(),
+        &type_.shape(),
+        type_.res().as_slice(),
         0,
     )
 }
@@ -465,4 +466,36 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
         writeln!(w)?;
     }
     Ok(())
+}
+
+pub struct DisplayType<'a> {
+    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
+    type_: &'a Type,
+}
+
+impl fmt::Display for DisplayType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut w = Vec::new();
+        write_type(&mut w, self.type_renderer, None, self.type_).unwrap();
+        f.write_str(str::from_utf8(&w).unwrap())
+    }
+}
+
+impl Type {
+    pub fn display<'a>(&'a self) -> DisplayType<'a> {
+        DisplayType {
+            type_renderer: None,
+            type_: self,
+        }
+    }
+
+    pub fn display_with<'a>(
+        &'a self,
+        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    ) -> DisplayType<'a> {
+        DisplayType {
+            type_renderer: Some(type_renderer),
+            type_: self,
+        }
+    }
 }
