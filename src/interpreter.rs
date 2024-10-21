@@ -215,6 +215,19 @@ impl Heap<'_> {
         }
     }
 
+    fn to_str(&self) -> String {
+        (0..self.values.len())
+            .filter(|i| {
+                matches!(
+                    self.values[*i],
+                    Value::Array(_, _) | Value::HoleArray(_, _, _) | Value::Box(_, _)
+                )
+            })
+            .map(|i| format!["{}", self.value_to_str(HeapId(i))])
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     fn assert_everything_else_deallocated(&self) {
         let mut not_freed_values = vec![];
         for (index, value) in self.values.iter().enumerate() {
@@ -245,11 +258,7 @@ fn retain(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
         Value::Tuple(content) => {
             let content = content.clone();
             for sub_heap_id in content {
-                retain(
-                    heap,
-                    sub_heap_id,
-                    stacktrace.add_frame("retaining subtuple"),
-                );
+                retain(heap, sub_heap_id, stacktrace.add_frame("retain subtuple"));
             }
         }
         Value::Variant(_idx, content) => {
@@ -259,6 +268,44 @@ fn retain(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
         Value::Array(rc, _) | Value::HoleArray(rc, _, _) | Value::Box(rc, _) => {
             *rc += 1;
         }
+    }
+}
+
+fn derived_retain(heap: &mut Heap, heap_id: HeapId, scheme: &ModeScheme, stacktrace: StackTrace) {
+    let kind = &mut heap[heap_id];
+
+    match (kind, scheme) {
+        (Value::Bool(_), ModeScheme::Bool) => {}
+        (Value::Num(_), ModeScheme::Num(_)) => {}
+        (Value::Tuple(content), ModeScheme::Tuple(schemes)) => {
+            let content = content.clone();
+            for (sub_heap_id, scheme) in content.iter().zip_eq(schemes) {
+                derived_retain(
+                    heap,
+                    *sub_heap_id,
+                    scheme,
+                    stacktrace.add_frame("derived retain subtuple"),
+                );
+            }
+        }
+        (Value::Variant(idx, content), ModeScheme::Variants(schemes)) => {
+            let idx = *idx;
+            let content = content.clone();
+            derived_retain(
+                heap,
+                content,
+                &schemes[idx],
+                stacktrace.add_frame("derived retain subthing"),
+            );
+        }
+        (Value::Array(rc, _), ModeScheme::Array(mode, _))
+        | (Value::HoleArray(rc, _, _), ModeScheme::HoleArray(mode, _))
+        | (Value::Box(rc, _), ModeScheme::Boxed(mode, _)) => {
+            if *mode == Mode::Owned {
+                *rc += 1;
+            }
+        }
+        _ => stacktrace.panic("mismatched value and scheme"),
     }
 }
 
@@ -576,20 +623,26 @@ fn unwrap_array(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<Hea
     }
 }
 
-fn unwrap_array_unrelease(
+fn unwrap_array_derived_retain(
     heap: &mut Heap,
     heap_id: HeapId,
     scheme: &ModeScheme,
     stacktrace: StackTrace,
 ) -> Vec<HeapId> {
     let result = unwrap_array(heap, heap_id, stacktrace.clone());
-    let ModeScheme::Array(mode, _) = scheme else {
+    let ModeScheme::Array(mode, item_scheme) = scheme else {
         stacktrace.panic(format!["expected an array scheme, got {:?}", scheme]);
     };
-    if *mode == Mode::Owned {
-        for &item_id in &result {
-            retain(heap, item_id, stacktrace.add_frame("unwrap array retain"));
-        }
+    if *mode != Mode::Owned {
+        stacktrace.panic(format!["expected an owned array"]);
+    }
+    for &item_id in &result {
+        derived_retain(
+            heap,
+            item_id,
+            item_scheme,
+            stacktrace.add_frame("unwrap array retain"),
+        );
     }
     result
 }
@@ -603,24 +656,26 @@ fn unwrap_hole_array(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (i
     }
 }
 
-fn unwrap_hole_array_unrelease(
+fn unwrap_hole_array_derived_retain(
     heap: &mut Heap,
     heap_id: HeapId,
     scheme: &ModeScheme,
     stacktrace: StackTrace,
 ) -> (i64, Vec<HeapId>) {
     let (idx, result) = unwrap_hole_array(heap, heap_id, stacktrace.clone());
-    let ModeScheme::HoleArray(mode, _) = scheme else {
+    let ModeScheme::HoleArray(mode, item_scheme) = scheme else {
         stacktrace.panic(format!["expected a hole array scheme, got {:?}", scheme]);
     };
-    if *mode == Mode::Owned {
-        for &item_id in &result {
-            retain(
-                heap,
-                item_id,
-                stacktrace.add_frame("unwrap hole array retain"),
-            );
-        }
+    if *mode != Mode::Owned {
+        stacktrace.panic(format!["expected an owned hole array"]);
+    }
+    for &item_id in &result {
+        derived_retain(
+            heap,
+            item_id,
+            item_scheme,
+            stacktrace.add_frame("unwrap hole array retain"),
+        );
     }
     (idx, result)
 }
@@ -971,14 +1026,14 @@ fn interpret_expr(
                 HeapId(0)
             }
 
-            Expr::RcOp(RcOp::Release(plan), type_, local_id) => {
+            Expr::RcOp(RcOp::Release(scheme), type_, local_id) => {
                 typecheck(
                     heap,
                     locals[local_id],
                     type_,
                     stacktrace.add_frame("retain typecheck"),
                 );
-                release(&program.schemes, heap, locals[local_id], plan, stacktrace);
+                release(&program.schemes, heap, locals[local_id], scheme, stacktrace);
 
                 HeapId(0)
             }
@@ -1306,7 +1361,7 @@ fn interpret_expr(
                 let array_heap_id = locals[array_id];
                 let item_heap_id = locals[item_id];
 
-                let mut array = unwrap_array_unrelease(
+                let mut array = unwrap_array_derived_retain(
                     heap,
                     array_heap_id,
                     scheme,
@@ -1329,7 +1384,7 @@ fn interpret_expr(
             Expr::ArrayOp(ArrayOp::Pop(scheme, array_id)) => {
                 let array_heap_id = locals[array_id];
 
-                let mut array = unwrap_array_unrelease(
+                let mut array = unwrap_array_derived_retain(
                     heap,
                     array_heap_id,
                     scheme,
@@ -1372,7 +1427,7 @@ fn interpret_expr(
                 let array_heap_id = locals[array_id];
                 let index_heap_id = locals[index_id];
 
-                let array = unwrap_array_unrelease(
+                let array = unwrap_array_derived_retain(
                     heap,
                     array_heap_id,
                     scheme,
@@ -1394,7 +1449,15 @@ fn interpret_expr(
                 bounds_check(stderr, array.len(), index.0)?;
 
                 let get_item = array[index.0 as usize];
-                retain(heap, get_item, stacktrace.add_frame("item retain"));
+                let ModeScheme::Array(_, item_scheme) = scheme else {
+                    unreachable!();
+                };
+                derived_retain(
+                    heap,
+                    get_item,
+                    item_scheme,
+                    stacktrace.add_frame("item derived retain"),
+                );
                 heap.add(Value::Tuple(vec![get_item, hole_array_id]))
             }
 
@@ -1402,11 +1465,7 @@ fn interpret_expr(
                 let array_heap_id = locals[array_id];
                 let item_heap_id = locals[item_id];
 
-                let ModeScheme::HoleArray(_, item_scheme) = scheme else {
-                    unreachable!();
-                };
-
-                let (index, mut array) = unwrap_hole_array_unrelease(
+                let (index, mut array) = unwrap_hole_array_derived_retain(
                     heap,
                     array_heap_id,
                     scheme,
@@ -1424,6 +1483,9 @@ fn interpret_expr(
                 bounds_check(stderr, array.len(), index)?;
 
                 let old_item_id = array[index as usize];
+                let ModeScheme::HoleArray(_, item_scheme) = scheme else {
+                    unreachable!();
+                };
                 release(
                     &heap.program.schemes,
                     heap,
@@ -1431,6 +1493,7 @@ fn interpret_expr(
                     item_scheme,
                     stacktrace.add_frame("replace release item"),
                 );
+
                 array[index as usize] = item_heap_id;
                 heap.add(Value::Array(1, array))
             }
@@ -1443,7 +1506,7 @@ fn interpret_expr(
                     stacktrace.add_frame("reserve capacity"),
                 );
 
-                let array = unwrap_array_unrelease(
+                let array = unwrap_array_derived_retain(
                     heap,
                     array_heap_id,
                     scheme,

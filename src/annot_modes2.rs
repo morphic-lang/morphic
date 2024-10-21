@@ -968,7 +968,7 @@ fn create_occurs_from_model(
     assert!(args.len() >= sig.args.fixed.len());
 
     // Create a fresh occurrence for each function argument.
-    let mut occurs = args
+    let mut arg_occurs = args
         .iter()
         .map(|&id| {
             let ty = freshen_type_unused(constrs, &ctx.local_binding(id).ty);
@@ -976,8 +976,13 @@ fn create_occurs_from_model(
         })
         .collect::<Vec<_>>();
 
+    ///////////////////////////////////////
+    // Step 1: Handle constraints which arise from model mode and lifetime variables.
+    ///////////////////////////////////////
+
     // Set up a mapping from model modes to mode variables.
     let get_mode = IdVec::from_count_with(sig.mode_count, |_| constrs.fresh_var());
+
     let get_modes = |modes| match modes {
         ResModes::Stack(stack) => ResModes::Stack(get_mode[stack]),
         ResModes::Heap(heap) => ResModes::Heap(HeapModes {
@@ -986,15 +991,16 @@ fn create_occurs_from_model(
         }),
     };
 
-    // Impose ownership constraints on the signature.
+    // Set up a mapping from model lifetimes to lifetimes.
+    let mut get_lt = IdVec::from_count_with(sig.lt_count, |_| None);
+
+    // Impose any explicit 'owned' constraints.
     for param in &sig.owned_modes {
         constrs.require_le_const(&Mode::Owned, get_mode[param]);
     }
 
-    let mut get_lt = IdVec::from_count_with(sig.lt_count, |_| None);
-
     for (slot, model_res) in extract_model_res(&sig.ret, &ret.shape()) {
-        // Impose top-level mode constraints on the return type.
+        // Impose mode constraints on the return.
         let res = &ret.res()[slot];
         require_eq(constrs, &get_modes(model_res.modes), &res.modes);
 
@@ -1002,7 +1008,7 @@ fn create_occurs_from_model(
             panic!("unused model lifetimes cannot be supplied in return position");
         }
 
-        // Record the mapping from model lifetimes to concrete lifetimes.
+        // Update the lifetime mapping based on the return.
         match &mut get_lt[model_res.lt] {
             entry @ None => *entry = Some(res.lt.clone()),
             Some(_) => {
@@ -1013,13 +1019,13 @@ fn create_occurs_from_model(
 
     let get_lt = get_lt;
 
-    for (arg, occur) in sig.args.iter().zip(&mut occurs) {
+    for (arg, occur) in sig.args.iter().zip(&mut arg_occurs) {
         for (slot, model_res) in extract_model_res(arg, &occur.ty.shape()) {
-            // Impose top-level mode constraints on the argument type.
+            // Impose mode constraints on the argument.
             let res = &mut occur.ty.res_mut()[slot];
             require_eq(constrs, &get_modes(model_res.modes), &res.modes);
 
-            // Substitute for model lifetimes using the mapping constructed from the return type.
+            // Substitute for model lifetimes using the mapping constructed from the return.
             res.lt = if let Some(lt) = &get_lt[model_res.lt] {
                 lt.clone()
             } else if sig.unused_lts.contains(&model_res.lt) {
@@ -1030,9 +1036,13 @@ fn create_occurs_from_model(
         }
     }
 
+    ///////////////////////////////////////
+    // Step 2: Handle constraints which arise from repeated uses of the same model type variable.
+    ///////////////////////////////////////
+
     // Accumulate the resources for each occurrence of each type variable.
     let mut vars = IdMap::new();
-    for ((i, model), occur) in sig.args.iter().enumerate().zip(&occurs) {
+    for ((i, model), occur) in sig.args.iter().enumerate().zip(&arg_occurs) {
         extract_model_vars(
             VarOccurKind::Arg(i),
             customs,
@@ -1053,19 +1063,36 @@ fn create_occurs_from_model(
 
     // At this point, it would seem natural to convert `vars` from an `IdMap` to an `IdVec`.
     // However, if the model signature has an empty variadic argument, then the `IdMap` will not
-    // contain an entries for any type variables which appear only in the type of that argument.
+    // contain entries for any type variables which appear only in the type of that argument.
 
-    // Impose equality constraints between all occurrences of the same type variable.
-    for occurs in vars.values() {
-        if let Some(rep) = occurs.rep() {
+    for var_occurs in vars.values_mut() {
+        if let Some(rep) = var_occurs.rep() {
+            // Impose equality constraints between all occurrences of the same type variable.
             // TODO: Avoid unnecessarily generating reflexive constraints.
-            for occur in occurs.all() {
+            for occur in var_occurs.all() {
                 bind_modes(constrs, rep, occur);
+            }
+
+            // Propagate lifetimes from return occurrences of variables to argument occurrences of
+            // variables.
+            for ret in var_occurs.rets.iter() {
+                for arg in var_occurs.args.iter_mut() {
+                    let loc = arg.loc;
+                    let arg_res = &mut arg_occurs[loc.occur_idx].ty.res_mut().as_mut_slice()
+                        [loc.start..loc.end];
+
+                    for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.res().values()) {
+                        arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
+                    }
+                }
             }
         }
     }
 
-    // Handle any explicit constraints.
+    ///////////////////////////////////////
+    // Step 3: Handle any explicit constraints (as given in the 'where' clause of the model).
+    ///////////////////////////////////////
+
     for constr in &sig.constrs {
         match constr {
             model::Constr::Mode { lhs, rhs } => {
@@ -1104,12 +1131,14 @@ fn create_occurs_from_model(
                 }
 
                 let (lhs_vars, rhs_vars) = vars.get_pair_mut(lhs.type_var, rhs.type_var).unwrap();
+
                 for ret in rhs_vars.rets.iter() {
                     for arg in lhs_vars.args.iter_mut() {
-                        let l = arg.loc;
-                        let arg_ret =
-                            &mut occurs[l.occur_idx].ty.res_mut().as_mut_slice()[l.start..l.end];
-                        for (arg_res, ret_res) in arg_ret.iter_mut().zip_eq(ret.res().values()) {
+                        let loc = arg.loc;
+                        let arg_res = &mut arg_occurs[loc.occur_idx].ty.res_mut().as_mut_slice()
+                            [loc.start..loc.end];
+
+                        for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.res().values()) {
                             arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
                         }
                     }
@@ -1118,7 +1147,7 @@ fn create_occurs_from_model(
         }
     }
 
-    occurs
+    arg_occurs
 }
 
 fn instantiate_model(
@@ -1207,138 +1236,6 @@ fn prepare_arg_type(
         IdVec::from_vec(ty.res().values().map(f).collect()),
     )
 }
-
-// /// Unfolds the content of a custom type by replacing each occurrence of `SelfCustom` with an
-// /// occurrence of `Custom`.
-// fn guard_impl<L: Clone>(
-//     interner: &Interner,
-//     customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-//     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
-//     phase: GuardPhase,
-//     shape: &Shape,
-//     res: &[Res<ModeVar, L>],
-//     out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
-//     print: bool,
-// ) -> Shape {
-//     match &*shape.inner {
-//         ShapeInner::Bool => {
-//             debug_assert!(res.is_empty());
-//             shape.clone()
-//         }
-//         ShapeInner::Num(_) => {
-//             debug_assert!(res.is_empty());
-//             shape.clone()
-//         }
-//         ShapeInner::Tuple(shapes) => {
-//             let shapes = annot::iter_shapes(shapes, res)
-//                 .map(|(shape, res)| {
-//                     guard_impl(interner, customs, sccs, phase, shape, res, out_res, print)
-//                 })
-//                 .collect::<Vec<_>>();
-
-//             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
-//             let shape = ShapeInner::Tuple(shapes);
-//             let inner = interner.shape.new(shape);
-//             Shape { inner, num_slots }
-//         }
-//         ShapeInner::Variants(shapes) => {
-//             let shapes = annot::iter_shapes(shapes.as_slice(), res)
-//                 .map(|(shape, res)| {
-//                     guard_impl(interner, customs, sccs, phase, shape, res, out_res, print)
-//                 })
-//                 .collect::<Vec<_>>();
-
-//             let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
-//             let shape = ShapeInner::Variants(IdVec::from_vec(shapes));
-//             let inner = interner.shape.new(shape);
-//             Shape { inner, num_slots }
-//         }
-//         // The non-trival base case.
-//         ShapeInner::SelfCustom(id) | ShapeInner::Custom(id) => {
-//             let custom = &customs[*id];
-//             let should_guard = phase.should_guard(
-//                 custom.can_guard,
-//                 sccs.component(custom.scc).kind,
-//                 custom.scc,
-//             );
-//             if print {
-//                 println!(
-//                     "guarding custom type {:?} (should_guard: {}, phase: {:?})",
-//                     custom.scc, should_guard, phase
-//                 );
-//             }
-//             if should_guard {
-//                 guard_impl(
-//                     interner,
-//                     customs,
-//                     sccs,
-//                     GuardPhase::Direct(custom.scc),
-//                     &custom.content,
-//                     &custom.subst_helper.do_subst(res),
-//                     out_res,
-//                     print,
-//                 )
-//             } else {
-//                 let _ = out_res.extend(res.iter().cloned());
-//                 Shape {
-//                     inner: interner.shape.new(ShapeInner::Custom(*id)),
-//                     num_slots: res.len(),
-//                 }
-//             }
-//         }
-//         ShapeInner::Array(shape) => {
-//             let _ = out_res.push(res[0].clone());
-//             let shape = guard_impl(
-//                 interner,
-//                 customs,
-//                 sccs,
-//                 phase.indirect(),
-//                 shape,
-//                 &res[1..],
-//                 out_res,
-//                 print,
-//             );
-
-//             let num_slots = 1 + shape.num_slots;
-//             let inner = interner.shape.new(ShapeInner::Array(shape));
-//             Shape { inner, num_slots }
-//         }
-//         ShapeInner::HoleArray(shape) => {
-//             let _ = out_res.push(res[0].clone());
-//             let shape = guard_impl(
-//                 interner,
-//                 customs,
-//                 sccs,
-//                 phase.indirect(),
-//                 shape,
-//                 &res[1..],
-//                 out_res,
-//                 print,
-//             );
-
-//             let num_slots = 1 + shape.num_slots;
-//             let inner = interner.shape.new(ShapeInner::HoleArray(shape));
-//             Shape { inner, num_slots }
-//         }
-//         ShapeInner::Boxed(shape) => {
-//             let _ = out_res.push(res[0].clone());
-//             let shape = guard_impl(
-//                 interner,
-//                 customs,
-//                 sccs,
-//                 phase.indirect(),
-//                 shape,
-//                 &res[1..],
-//                 out_res,
-//                 print,
-//             );
-
-//             let num_slots = 1 + shape.num_slots;
-//             let inner = interner.shape.new(ShapeInner::Boxed(shape));
-//             Shape { inner, num_slots }
-//         }
-//     }
-// }
 
 fn extract_custom_content(interner: &Interner, shape: &Shape) -> Shape {
     match &*shape.inner {
