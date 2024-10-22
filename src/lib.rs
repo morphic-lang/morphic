@@ -327,9 +327,9 @@ fn compile_to_first_order_ast(
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    let shielded = shield_functions::shield_functions(mono);
+    // let shielded = shield_functions::shield_functions(mono);
 
-    let lifted = lambda_lift::lambda_lift(shielded);
+    let lifted = lambda_lift::lambda_lift(mono);
 
     let annot = annot_closures::annot_closures(
         lifted,

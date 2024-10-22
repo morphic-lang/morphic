@@ -58,6 +58,18 @@ impl Value {
 #[derive(Debug, Clone)]
 struct StackTrace(Vector<Rc<String>>);
 
+impl Display for StackTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, line) in self.0.iter().enumerate() {
+            write![f, "{}", line.as_str()]?;
+            if i != self.0.len() - 1 {
+                write![f, "\n"]?
+            }
+        }
+        Ok(())
+    }
+}
+
 impl StackTrace {
     fn new() -> StackTrace {
         StackTrace({
@@ -76,14 +88,7 @@ impl StackTrace {
     }
 
     fn panic(&self, s: impl Display) -> ! {
-        println![
-            "{}",
-            self.0
-                .iter()
-                .map(|x| (**x).clone())
-                .collect::<Vec<String>>()
-                .join("\n")
-        ];
+        println!["{}", self];
         println!["{}", s];
         panic![];
     }
@@ -374,8 +379,20 @@ fn release(
         }
         (Value::Box(rc, content), ModeScheme::Boxed(mode, scheme)) => {
             if *mode == Mode::Owned {
+                // if heap_id.0 == 9 {
+                //     println!("-----------------------");
+                //     println!("-----------------------");
+                //     println!("-----------------------");
+                //     println!("{}", stacktrace);
+                //     println!("+++++++++++++++++++++++");
+                //     println!("+++++++++++++++++++++++");
+                //     println!("+++++++++++++++++++++++");
+                // }
                 if *rc == 0 {
-                    stacktrace.panic(format!["releasing with rc 0, box {:?}", content]);
+                    stacktrace.panic(format![
+                        "releasing with rc 0, box {:?} {}",
+                        content, heap_id.0
+                    ]);
                 }
                 *rc -= 1;
                 let content = *content;
