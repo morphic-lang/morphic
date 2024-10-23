@@ -99,17 +99,23 @@ fn build_rc_op(
 type LocalDrops = BTreeMap<guard::LocalId, Selector>;
 
 #[derive(Clone, Debug)]
+struct LetManyDrops {
+    epilogues: Vec<LocalDrops>,
+    sub_drops: Vec<Option<BodyDrops>>,
+}
+
+#[derive(Clone, Debug)]
+struct IfDrops {
+    then_prologue: LocalDrops,
+    then_drops: Option<Box<BodyDrops>>,
+    else_prologue: LocalDrops,
+    else_drops: Option<Box<BodyDrops>>,
+}
+
+#[derive(Clone, Debug)]
 enum BodyDrops {
-    LetMany {
-        epilogues: Vec<LocalDrops>,
-        sub_drops: Vec<Option<BodyDrops>>,
-    },
-    If {
-        then_prologue: LocalDrops,
-        then_drops: Option<Box<BodyDrops>>,
-        else_prologue: LocalDrops,
-        else_drops: Option<Box<BodyDrops>>,
-    },
+    LetMany(LetManyDrops),
+    If(IfDrops),
 }
 
 /// The points in a function where bindings' obligations end. This represent the set of candidate
@@ -129,25 +135,32 @@ fn empty_drops(expr: &ob::Expr) -> Option<BodyDrops> {
                 .iter()
                 .map(|(_, _, expr, _)| empty_drops(expr))
                 .collect();
-            Some(BodyDrops::LetMany {
+            Some(BodyDrops::LetMany(LetManyDrops {
                 epilogues,
                 sub_drops,
-            })
+            }))
         }
 
-        ob::Expr::If(_, then_case, else_case) => Some(BodyDrops::If {
+        ob::Expr::If(_, then_case, else_case) => Some(BodyDrops::If(IfDrops {
             then_prologue: LocalDrops::new(),
             then_drops: empty_drops(then_case).map(Box::new),
             else_prologue: LocalDrops::new(),
             else_drops: empty_drops(else_case).map(Box::new),
-        }),
+        })),
 
         _ => None,
     }
 }
 
-fn register_drops_for_slot_rec(
-    drops: &mut BodyDrops,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+enum Registration {
+    Handled,
+    Unhandled,
+}
+
+fn register_let_drops_for_slot(
+    drops: &mut LetManyDrops,
     num_locals: Count<guard::LocalId>,
     binding_shape: &Shape,
     binding: guard::LocalId,
@@ -161,93 +174,136 @@ fn register_drops_for_slot_rec(
             .or_insert_with(|| Selector::one(binding_shape, slot));
     };
 
-    match drops {
-        BodyDrops::LetMany {
-            epilogues,
-            sub_drops,
-        } => {
-            let LocalLt::Seq(obligation, idx) = obligation else {
-                unreachable!();
-            };
+    let LocalLt::Seq(obligation, idx) = obligation else {
+        unreachable!();
+    };
 
-            if *idx == sub_drops.len() {
-                // This slot's obligation ends in the return position of the `LetMany`. We don't
-                // need to register any drops. Usually, we defer the final decision about whether to
-                // drop until we compute the move status in `annot_expr`, but it is convenient to
-                // "short circuit" here.
-                return;
-            }
+    if *idx == drops.sub_drops.len() {
+        // This slot's obligation ends in the return position of the `LetMany`. We don't
+        // need to register any drops. Usually, we defer the final decision about whether to
+        // drop until we compute the move status in `annot_expr`, but it is convenient to
+        // "short circuit" here.
+        return;
+    }
 
-            if let Some(drops) = sub_drops[*idx].as_mut() {
-                // Since `sub_drops` is `Some`, `obligation` points into an `If` or `LetMany`.
-                let num_locals = Count::from_value(num_locals.to_value() + idx);
-                register_drops_for_slot_rec(
-                    drops,
+    if let Some(sub_drops) = drops.sub_drops[*idx].as_mut() {
+        // Since `sub_drops` is `Some`, `obligation` points into an `If` or `LetMany`.
+        let num_locals = Count::from_value(num_locals.to_value() + idx);
+        match sub_drops {
+            BodyDrops::LetMany(sub_drops) => {
+                register_let_drops_for_slot(
+                    sub_drops,
                     num_locals,
                     binding_shape,
                     binding,
                     slot,
                     obligation,
                 );
-            } else {
-                // If there are no sub-drops, then the expression that matches up with this path is
-                // a "leaf" and either `obligation` is `LtLocal::Final` or obligation consists
-                // "ghost" nodes used to track argument order e.g. in a tuple expression.
-                register_to(&mut epilogues[*idx]);
+            }
+
+            BodyDrops::If(sub_drops) => {
+                let registration = register_if_drops_for_slot(
+                    sub_drops,
+                    num_locals,
+                    binding_shape,
+                    binding,
+                    slot,
+                    obligation,
+                );
+                if registration == Registration::Unhandled {
+                    register_to(&mut drops.epilogues[*idx]);
+                }
             }
         }
-        BodyDrops::If {
-            then_prologue,
-            then_drops,
-            else_prologue,
-            else_drops,
-        } => {
-            let LocalLt::Seq(obligation, idx) = obligation else {
+    } else {
+        // If there are no sub-drops, then the expression that matches up with this path is
+        // a "leaf" and either `obligation` is `LtLocal::Final` or obligation consists
+        // "ghost" nodes used to track argument order e.g. in a tuple expression.
+        register_to(&mut drops.epilogues[*idx]);
+    }
+}
+
+fn register_if_drops_for_slot(
+    drops: &mut IfDrops,
+    num_locals: Count<guard::LocalId>,
+    binding_shape: &Shape,
+    binding: guard::LocalId,
+    slot: SlotId,
+    obligation: &LocalLt,
+) -> Registration {
+    let register_to = |drops: &mut LocalDrops| {
+        drops
+            .entry(binding)
+            .and_modify(|selected| selected.insert(slot))
+            .or_insert_with(|| Selector::one(binding_shape, slot));
+    };
+
+    let (obligation, idx) = match obligation {
+        LocalLt::Seq(obligation, idx) => (obligation, idx),
+        LocalLt::Alt(_) => unreachable!(),
+        LocalLt::Final => {
+            // The result of the 'if' expression is unused, so it's obligation (the obligation must
+            // be processing) ends immediately. We delegate this drop to the enclosing `LetMany`.
+            return Registration::Unhandled;
+        }
+    };
+
+    match idx {
+        0 => {
+            panic!(
+                "An obligation points to the discriminant of an 'if' expression, but that has type \
+                 `Bool` and therefore no slots!"
+            )
+        }
+
+        1 => {
+            // The obligation points inside the 'then' or 'else' branch
+            let LocalLt::Alt(obligations) = &**obligation else {
                 unreachable!();
             };
 
-            match idx {
-                0 => {
-                    panic!(
-                        "An obligation points to the discriminant of an 'if' expression, but that \
-                         has type `Bool` and therefore no slots!"
-                    )
-                }
-
-                1 => {
-                    // The obligation points inside the 'then' or 'else' branch
-                    let LocalLt::Alt(obligations) = &**obligation else {
+            let handle_case = |drops: &mut Option<Box<_>>, prologue, obligation| {
+                if let Some(obligation) = obligation {
+                    // It's an invariant of the flattening pass (which converts the AST to ANF) that
+                    // the child of an 'if' is always a 'let'.
+                    let Some(BodyDrops::LetMany(drops)) = drops.as_deref_mut() else {
                         unreachable!();
                     };
 
-                    let handle_case = |drops: &mut Option<Box<_>>, prologue, obligation| {
-                        if let Some(obligation) = obligation {
-                            register_drops_for_slot_rec(
-                                drops.as_mut().unwrap(),
-                                num_locals,
-                                binding_shape,
-                                binding,
-                                slot,
-                                obligation,
-                            )
-                        } else {
-                            if num_locals.contains(binding) {
-                                // This binding is declared in an enclosing scope and this slot
-                                // unused in this branch (but moved along the other branch), so we
-                                // drop the slot immediately.
-                                register_to(prologue);
-                            }
-                        }
-                    };
-
-                    assert_eq!(obligations.len(), 2);
-                    handle_case(then_drops, then_prologue, obligations[0].as_deref());
-                    handle_case(else_drops, else_prologue, obligations[1].as_deref());
+                    register_let_drops_for_slot(
+                        drops,
+                        num_locals,
+                        binding_shape,
+                        binding,
+                        slot,
+                        obligation,
+                    )
+                } else {
+                    if num_locals.contains(binding) {
+                        // This binding is declared in an enclosing scope and this slot
+                        // unused in this branch (but moved along the other branch), so we
+                        // drop the slot immediately.
+                        register_to(prologue);
+                    }
                 }
+            };
 
-                _ => unreachable!(),
-            }
+            assert_eq!(obligations.len(), 2);
+            handle_case(
+                &mut drops.then_drops,
+                &mut drops.then_prologue,
+                obligations[0].as_deref(),
+            );
+            handle_case(
+                &mut drops.else_drops,
+                &mut drops.else_prologue,
+                obligations[1].as_deref(),
+            );
+
+            Registration::Handled
         }
+
+        _ => unreachable!(),
     }
 }
 
@@ -264,8 +320,13 @@ fn register_drops_for_slot(
     };
     debug_assert_eq!(*idx, 0);
 
-    // We must start `num_locals` at 1 to account for the function argument.
-    register_drops_for_slot_rec(
+    // Every function starts with a 'let'
+    let BodyDrops::LetMany(drops) = drops else {
+        unreachable!();
+    };
+
+    // We must start `num_locals` at 1 to account for the function argument
+    register_let_drops_for_slot(
         drops,
         Count::from_value(1),
         binding_shape,
@@ -481,10 +542,10 @@ fn annot_expr(
         }
 
         ob::Expr::LetMany(bindings, ret) => {
-            let BodyDrops::LetMany {
+            let BodyDrops::LetMany(LetManyDrops {
                 epilogues,
                 sub_drops,
-            } = drops.as_ref().unwrap()
+            }) = drops.as_ref().unwrap()
             else {
                 unreachable!();
             };
@@ -543,12 +604,12 @@ fn annot_expr(
         }
 
         ob::Expr::If(discrim, then_case, else_case) => {
-            let BodyDrops::If {
+            let BodyDrops::If(IfDrops {
                 then_prologue,
                 then_drops,
                 else_prologue,
                 else_drops,
-            } = drops.as_ref().unwrap()
+            }) = drops.as_ref().unwrap()
             else {
                 unreachable!();
             };

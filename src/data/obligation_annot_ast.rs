@@ -17,6 +17,7 @@ use crate::util::collection_ext::{FnWrap, MapRef};
 use crate::util::iter::IterExt;
 use id_collections::{id_type, IdVec};
 use std::collections::BTreeMap;
+use std::fmt;
 
 #[id_type]
 pub struct CustomFuncId(usize);
@@ -43,6 +44,19 @@ impl StackLt {
 
     pub fn iter(&self) -> impl Iterator<Item = (&SlotId, &Lt)> {
         self.data.iter()
+    }
+}
+
+impl fmt::Display for StackLt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "StackLt {{ ")?;
+        for (i, (slot, lt)) in self.data.iter().enumerate() {
+            write!(f, "{}: {}", slot.0, lt.display())?;
+            if i < self.data.len() - 1 {
+                write!(f, ", ")?;
+            }
+        }
+        write!(f, " }}")
     }
 }
 
