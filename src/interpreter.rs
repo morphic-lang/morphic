@@ -276,7 +276,13 @@ fn retain(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
     }
 }
 
-fn derived_retain(heap: &mut Heap, heap_id: HeapId, scheme: &ModeScheme, stacktrace: StackTrace) {
+fn derived_retain(
+    custom_schemes: &IdVec<ModeSchemeId, ModeScheme>,
+    heap: &mut Heap,
+    heap_id: HeapId,
+    scheme: &ModeScheme,
+    stacktrace: StackTrace,
+) {
     let kind = &mut heap[heap_id];
 
     match (kind, scheme) {
@@ -286,6 +292,7 @@ fn derived_retain(heap: &mut Heap, heap_id: HeapId, scheme: &ModeScheme, stacktr
             let content = content.clone();
             for (sub_heap_id, scheme) in content.iter().zip_eq(schemes) {
                 derived_retain(
+                    custom_schemes,
                     heap,
                     *sub_heap_id,
                     scheme,
@@ -297,10 +304,20 @@ fn derived_retain(heap: &mut Heap, heap_id: HeapId, scheme: &ModeScheme, stacktr
             let idx = *idx;
             let content = content.clone();
             derived_retain(
+                custom_schemes,
                 heap,
                 content,
                 &schemes[idx],
                 stacktrace.add_frame("derived retain subthing"),
+            );
+        }
+        (_, ModeScheme::Custom(scheme_id, _)) => {
+            derived_retain(
+                custom_schemes,
+                heap,
+                heap_id,
+                &custom_schemes[*scheme_id],
+                stacktrace.add_frame("release subthing"),
             );
         }
         (Value::Array(rc, _), ModeScheme::Array(mode, _))
@@ -379,15 +396,6 @@ fn release(
         }
         (Value::Box(rc, content), ModeScheme::Boxed(mode, scheme)) => {
             if *mode == Mode::Owned {
-                // if heap_id.0 == 9 {
-                //     println!("-----------------------");
-                //     println!("-----------------------");
-                //     println!("-----------------------");
-                //     println!("{}", stacktrace);
-                //     println!("+++++++++++++++++++++++");
-                //     println!("+++++++++++++++++++++++");
-                //     println!("+++++++++++++++++++++++");
-                // }
                 if *rc == 0 {
                     stacktrace.panic(format![
                         "releasing with rc 0, box {:?} {}",
@@ -641,6 +649,7 @@ fn unwrap_array(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<Hea
 }
 
 fn unwrap_array_derived_retain(
+    schemes: &IdVec<ModeSchemeId, ModeScheme>,
     heap: &mut Heap,
     heap_id: HeapId,
     scheme: &ModeScheme,
@@ -655,6 +664,7 @@ fn unwrap_array_derived_retain(
     }
     for &item_id in &result {
         derived_retain(
+            schemes,
             heap,
             item_id,
             item_scheme,
@@ -674,6 +684,7 @@ fn unwrap_hole_array(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (i
 }
 
 fn unwrap_hole_array_derived_retain(
+    schemes: &IdVec<ModeSchemeId, ModeScheme>,
     heap: &mut Heap,
     heap_id: HeapId,
     scheme: &ModeScheme,
@@ -688,6 +699,7 @@ fn unwrap_hole_array_derived_retain(
     }
     for &item_id in &result {
         derived_retain(
+            schemes,
             heap,
             item_id,
             item_scheme,
@@ -1379,6 +1391,7 @@ fn interpret_expr(
                 let item_heap_id = locals[item_id];
 
                 let mut array = unwrap_array_derived_retain(
+                    &program.schemes,
                     heap,
                     array_heap_id,
                     scheme,
@@ -1402,6 +1415,7 @@ fn interpret_expr(
                 let array_heap_id = locals[array_id];
 
                 let mut array = unwrap_array_derived_retain(
+                    &program.schemes,
                     heap,
                     array_heap_id,
                     scheme,
@@ -1445,6 +1459,7 @@ fn interpret_expr(
                 let index_heap_id = locals[index_id];
 
                 let array = unwrap_array_derived_retain(
+                    &program.schemes,
                     heap,
                     array_heap_id,
                     scheme,
@@ -1470,6 +1485,7 @@ fn interpret_expr(
                     unreachable!();
                 };
                 derived_retain(
+                    &program.schemes,
                     heap,
                     get_item,
                     item_scheme,
@@ -1483,6 +1499,7 @@ fn interpret_expr(
                 let item_heap_id = locals[item_id];
 
                 let (index, mut array) = unwrap_hole_array_derived_retain(
+                    &program.schemes,
                     heap,
                     array_heap_id,
                     scheme,
@@ -1524,6 +1541,7 @@ fn interpret_expr(
                 );
 
                 let array = unwrap_array_derived_retain(
+                    &program.schemes,
                     heap,
                     array_heap_id,
                     scheme,
