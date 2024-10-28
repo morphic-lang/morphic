@@ -1,6 +1,8 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{iter_shapes, Mode, ResModes, Shape, ShapeInner, SlotId};
+use crate::data::mode_annot_ast2::{
+    enumerate_shapes, iter_shapes, Mode, ResModes, Shape, ShapeInner, SlotId,
+};
 use crate::data::obligation_annot_ast as ob;
 use crate::data::rc_annot_ast::{self as annot, Selector};
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId};
@@ -184,20 +186,19 @@ impl RcOpPlan {
     fn from_selector_impl(
         customs: &annot::CustomTypes,
         true_: &BTreeSet<SlotId>,
-        res: &[ResModes<Mode>],
-        mut start: usize,
+        start: usize,
         shape: &Shape,
+        res: &[ResModes<Mode>],
     ) -> Self {
         match &*shape.inner {
             ShapeInner::Bool => Self::NoOp,
             ShapeInner::Num(_) => Self::NoOp,
             ShapeInner::Tuple(shapes) => {
-                let mut plans = Vec::new();
-                for shape in shapes {
-                    let plan = RcOpPlan::from_selector_impl(customs, true_, res, start, shape);
-                    plans.push(plan);
-                    start += shape.num_slots;
-                }
+                let plans = enumerate_shapes(shapes, res, start)
+                    .map(|(shape, (start, _), res)| {
+                        RcOpPlan::from_selector_impl(customs, true_, start, shape, res)
+                    })
+                    .collect::<Vec<_>>();
 
                 if plans.iter().all(RcOpPlan::is_noop) {
                     Self::NoOp
@@ -206,17 +207,16 @@ impl RcOpPlan {
                 }
             }
             ShapeInner::Variants(shapes) => {
-                let mut plans = IdVec::new();
-                for shape in shapes.values() {
-                    let plan = RcOpPlan::from_selector_impl(customs, true_, res, start, shape);
-                    let _ = plans.push(plan);
-                    start += shape.num_slots;
-                }
+                let plans = enumerate_shapes(shapes.as_slice(), res, start)
+                    .map(|(shape, (start, _), res)| {
+                        RcOpPlan::from_selector_impl(customs, true_, start, shape, res)
+                    })
+                    .collect::<Vec<_>>();
 
-                if plans.values().all(RcOpPlan::is_noop) {
+                if plans.iter().all(RcOpPlan::is_noop) {
                     Self::NoOp
                 } else {
-                    Self::Variants(plans)
+                    Self::Variants(IdVec::from_vec(plans))
                 }
             }
             // The only time we hit this case is when there is a recursive type whose recursive
@@ -228,10 +228,12 @@ impl RcOpPlan {
                 let plan = RcOpPlan::from_selector_impl(
                     customs,
                     true_,
-                    res,
                     start,
                     &customs.types[*id].content,
+                    // We are on the stack. The custom is acyclic and the substitution is trivial.
+                    res,
                 );
+
                 if plan.is_noop() {
                     Self::NoOp
                 } else {
@@ -239,7 +241,7 @@ impl RcOpPlan {
                 }
             }
             ShapeInner::Array(_) | ShapeInner::HoleArray(_) | ShapeInner::Boxed(_) => {
-                if true_.contains(&SlotId(start)) && *res[start].stack_or_storage() == Mode::Owned {
+                if true_.contains(&SlotId(start)) && *res[0].stack_or_storage() == Mode::Owned {
                     Self::LeafOp
                 } else {
                     Self::NoOp
@@ -250,7 +252,7 @@ impl RcOpPlan {
 
     fn from_selector(customs: &annot::CustomTypes, ty: &ob::Type, sel: &Selector) -> Self {
         debug_assert_eq!(ty.shape(), &sel.shape);
-        Self::from_selector_impl(customs, &sel.true_, ty.res().as_slice(), 0, &sel.shape)
+        Self::from_selector_impl(customs, &sel.true_, 0, &sel.shape, ty.res().as_slice())
     }
 }
 
@@ -346,13 +348,21 @@ fn build_plan(
                 unreachable!()
             };
 
-            let content = &customs.types[*custom_id].content;
+            let custom = &customs.types[*custom_id];
             let content_id = builder.add_binding(
-                lower_type(content),
+                lower_type(&custom.content),
                 rc::Expr::UnwrapCustom(*custom_id, root_id),
             );
             build_plan(
-                customs, insts, rc_op, content_id, content, root_res, plan, builder,
+                customs,
+                insts,
+                rc_op,
+                content_id,
+                // We are on the stack. The custom is acyclic and the substitution is trivial.
+                &custom.content,
+                root_res,
+                plan,
+                builder,
             )
         }
     }

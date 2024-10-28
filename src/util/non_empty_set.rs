@@ -1,6 +1,6 @@
 use std::collections::{btree_set, BTreeSet};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NonEmptySet<T>(BTreeSet<T>);
 
 impl<T> NonEmptySet<T> {

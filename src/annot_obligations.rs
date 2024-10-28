@@ -2,18 +2,21 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
-    self as annot, Interner, Lt, Mode, ModeParam, ModeSolution, Path, Res, ResModes, SlotId,
+    self as annot, enumerate_shapes, iter_shapes, HeapModes, Interner, Lt, Mode, ModeParam,
+    ModeSolution, Path, Res, ResModes, Shape, ShapeInner, SlotId,
 };
 use crate::data::obligation_annot_ast::{
     self as ob, ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, Occur, StackLt, Type,
 };
 use crate::pretty_print::utils::FuncRenderer;
+use crate::util::collection_ext::BTreeMapExt;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
 use crate::util::local_context;
 use crate::util::progress_logger::ProgressLogger;
 use crate::util::progress_logger::ProgressSession;
 use id_collections::IdVec;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct FuncSpec {
@@ -31,37 +34,143 @@ fn get_slot_obligation(
     dst_lt: &Lt,
 ) -> Lt {
     match (src_mode, dst_mode) {
+        // There are never any borrowed to owned transitions. If there were, `dst_lt` might be
+        // needlessly long.
         (Mode::Owned, Mode::Borrowed) => dst_lt.clone(),
         _ => occur_path.as_lt(interner),
     }
 }
 
-/// We need the instantiated mode solutions and lifetimes of the destination type. We end up getting
-/// this data in a bit of an awkward format, where the (uninstantiated) mode solutions are stuck to
-/// the lifetimes in `dst_lts`.
+fn join_inner_obligations(
+    interner: &Interner,
+    customs: &annot::CustomTypes,
+    seen: &mut BTreeSet<(first_ord::CustomTypeId, Vec<Res<Mode, Lt>>)>,
+    shape: &Shape,
+    res: &[Res<Mode, Lt>],
+) -> Lt {
+    match &*shape.inner {
+        ShapeInner::Bool | ShapeInner::Num(_) => Lt::Empty,
+        ShapeInner::Tuple(shapes) => {
+            iter_shapes(shapes, res).fold(Lt::Empty, |acc, (shape, res)| {
+                let ob = join_inner_obligations(interner, customs, seen, shape, res);
+                acc.join(interner, &ob)
+            })
+        }
+        ShapeInner::Variants(shapes) => {
+            iter_shapes(shapes.as_slice(), res).fold(Lt::Empty, |acc, (shape, res)| {
+                let ob = join_inner_obligations(interner, customs, seen, shape, res);
+                acc.join(interner, &ob)
+            })
+        }
+        &ShapeInner::Custom(id) | &ShapeInner::SelfCustom(id) => {
+            if !seen.insert((id, res.to_vec())) {
+                let custom = &customs.types[id];
+                join_inner_obligations(
+                    interner,
+                    customs,
+                    seen,
+                    &custom.content,
+                    &custom.subst_helper.do_subst(res),
+                )
+            } else {
+                Lt::Empty
+            }
+        }
+        ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
+            let HeapModes { access, storage } = *res[0].modes.unwrap_heap();
+            if access == Mode::Borrowed && storage == Mode::Owned {
+                let ob = join_inner_obligations(interner, customs, seen, shape, &res[1..]);
+                res[0].lt.join(interner, &ob)
+            } else {
+                Lt::Empty
+            }
+        }
+    }
+}
+
+fn get_occur_obligation_impl(
+    interner: &Interner,
+    customs: &annot::CustomTypes,
+    occur_path: &Path,
+    shape: &Shape,
+    slot: usize,
+    src: &[Res<Mode, Lt>],
+    dst: &[Res<Mode, Lt>],
+    out: &mut BTreeMap<SlotId, Lt>,
+) {
+    match &*shape.inner {
+        ShapeInner::Bool | ShapeInner::Num(_) => {}
+        ShapeInner::Tuple(shapes) => {
+            let iter = enumerate_shapes(shapes, src, slot).zip_eq(iter_shapes(shapes, dst));
+            for ((shape, (slot, _), src), (_, dst)) in iter {
+                get_occur_obligation_impl(
+                    interner, customs, occur_path, shape, slot, src, dst, out,
+                );
+            }
+        }
+        ShapeInner::Variants(shapes) => {
+            let iter = enumerate_shapes(shapes.as_slice(), src, slot)
+                .zip_eq(iter_shapes(shapes.as_slice(), dst));
+            for ((shape, (slot, _), src), (_, dst)) in iter {
+                get_occur_obligation_impl(
+                    interner, customs, occur_path, shape, slot, src, dst, out,
+                );
+            }
+        }
+        // Since non-trivial cyclic customs are always guarded, this case only occurs if the custom
+        // is trivial, i.e. has no slots.
+        ShapeInner::SelfCustom(_) => {
+            debug_assert_eq!(src.len(), 0);
+            debug_assert_eq!(dst.len(), 0);
+        }
+        ShapeInner::Custom(id) => {
+            let custom = &customs.types[id];
+            get_occur_obligation_impl(
+                interner,
+                customs,
+                occur_path,
+                &custom.content,
+                slot,
+                // We are on the stack. The custom is acyclic and the substitution is trivial.
+                src,
+                dst,
+                out,
+            )
+        }
+        ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
+            let outer = get_slot_obligation(
+                interner,
+                occur_path,
+                *src[0].modes.unwrap_stack(),
+                *dst[0].modes.unwrap_stack(),
+                &dst[0].lt,
+            );
+            let inner =
+                join_inner_obligations(interner, customs, &mut BTreeSet::new(), shape, &dst[1..]);
+            out.insert_vacant(SlotId(slot), outer.join(interner, &inner));
+        }
+    }
+}
+
 fn get_occur_obligation(
     interner: &Interner,
     customs: &annot::CustomTypes,
     occur_path: &Path,
-    src: &Type,
-    dst: &Type,
-    dst_lts: &IdVec<SlotId, Res<ModeSolution, Lt>>,
+    shape: &Shape,
+    src: &[Res<Mode, Lt>],
+    dst: &[Res<Mode, Lt>],
 ) -> StackLt {
-    debug_assert!(src.shape() == dst.shape());
-    let slots = src.shape().top_level_slots(customs.view_shapes());
-    let data = slots.into_iter().map(|slot| {
-        let obligation = get_slot_obligation(
-            interner,
-            occur_path,
-            *src.res()[slot].unwrap_stack(),
-            *dst.res()[slot].unwrap_stack(),
-            &dst_lts[slot].lt,
-        );
-        (slot, obligation)
-    });
+    let mut data = BTreeMap::new();
+    get_occur_obligation_impl(interner, customs, occur_path, shape, 0, src, dst, &mut data);
+
+    debug_assert_eq!(
+        data.keys().copied().collect::<BTreeSet<_>>(),
+        shape.top_level_slots(customs.view_shapes())
+    );
+
     StackLt {
-        shape: src.shape().clone(),
-        data: data.collect(),
+        shape: shape.clone(),
+        data,
     }
 }
 
@@ -89,15 +198,23 @@ fn instantiate_occur(
     }
 }
 
-type LocalContext = local_context::LocalContext<guard::LocalId, (Type, StackLt, Metadata)>;
+struct LocalInfo {
+    shape: Shape,
+    ob: StackLt,
+    res: IdVec<SlotId, Res<Mode, Lt>>,
+    metadata: Metadata,
+}
 
-fn add_unused_local(
+type LocalContext = local_context::LocalContext<guard::LocalId, LocalInfo>;
+
+fn add_unused_local<M>(
     customs: &annot::CustomTypes,
     ctx: &mut LocalContext,
     ty: &Type,
+    orig_ty: &annot::Type<M, Lt>,
     metadata: &Metadata,
 ) -> guard::LocalId {
-    let lt = StackLt {
+    let ob = StackLt {
         shape: ty.shape().clone(),
         data: ty
             .shape()
@@ -106,7 +223,21 @@ fn add_unused_local(
             .map(|slot| (slot, Lt::Empty))
             .collect(),
     };
-    ctx.add_local((ty.clone(), lt, metadata.clone()))
+
+    let modes = ty.res().values().cloned();
+    let lts = orig_ty.res().values().map(|res| res.lt.clone());
+    let res = modes
+        .zip(lts)
+        .map(|(modes, lt)| Res { modes, lt })
+        .collect::<Vec<_>>();
+
+    let info = LocalInfo {
+        shape: ty.shape().clone(),
+        ob,
+        res: IdVec::from_vec(res),
+        metadata: metadata.clone(),
+    };
+    ctx.add_local(info)
 }
 
 fn annot_expr(
@@ -122,21 +253,29 @@ fn annot_expr(
     ret_ty: &Type,
 ) -> Expr {
     let handle_occur =
-        |ctx: &mut LocalContext, path: &Path, old_occur: &annot::Occur<ModeSolution, _>| {
-            let occur = instantiate_occur(inst_params, old_occur);
-            let (src_ty, src_lt, _) = ctx.local_binding_mut(occur.id);
+        |ctx: &mut LocalContext, path: &Path, orig_occur: &annot::Occur<ModeSolution, _>| {
+            let occur = instantiate_occur(inst_params, orig_occur);
+            let src = ctx.local_binding_mut(occur.id);
 
+            let dst_modes = occur.ty.res().values().cloned();
+            let dst_lts = orig_occur.ty.res().values().map(|res| res.lt.clone());
+            let dst = dst_modes
+                .zip(dst_lts)
+                .map(|(modes, lt)| Res { modes, lt })
+                .collect::<Vec<_>>();
+
+            debug_assert_eq!(&src.shape, occur.ty.shape());
             let obligation = get_occur_obligation(
                 interner,
                 customs,
                 path,
-                src_ty,
-                &occur.ty,
-                &old_occur.ty.res(),
+                &src.shape,
+                src.res.as_slice(),
+                &dst,
             );
 
             // We must update the lifetime obligation of the binding to reflect this occurrence.
-            *src_lt = src_lt.join(interner, &obligation);
+            src.ob = src.ob.join(interner, &obligation);
 
             occur
         };
@@ -212,7 +351,7 @@ fn annot_expr(
                     expr,
                     &ret_ty,
                 );
-                let _ = add_unused_local(customs, ctx, &ret_ty, metadata);
+                let _ = add_unused_local(customs, ctx, &ret_ty, &ty, metadata);
                 new_exprs.push(new_expr);
             }
 
@@ -221,8 +360,9 @@ fn annot_expr(
             let mut new_bindings_rev = Vec::new();
 
             for expr in new_exprs.into_iter().rev() {
-                let (_, (ty, obligation, metadata)) = ctx.pop_local();
-                new_bindings_rev.push((ty, obligation, expr, metadata));
+                let (_, info) = ctx.pop_local();
+                let ty = Type::new(info.shape, info.res.map_refs(|_, res| res.modes.clone()));
+                new_bindings_rev.push((ty, info.ob, expr, info.metadata));
             }
 
             let new_bindings = {
@@ -381,7 +521,13 @@ fn annot_func(
 
     let mut ctx = LocalContext::new();
     let arg_ty = instantiate_type_with(&func.arg_ty, |param| inst_params[*param]);
-    let arg_id = add_unused_local(customs, &mut ctx, &arg_ty, &Metadata::default());
+    let arg_id = add_unused_local(
+        customs,
+        &mut ctx,
+        &arg_ty,
+        &func.arg_ty,
+        &Metadata::default(),
+    );
     debug_assert_eq!(arg_id, guard::ARG_LOCAL);
 
     let ret_ty = instantiate_type_with(&func.ret_ty, |param| inst_params[*param]);
@@ -399,12 +545,12 @@ fn annot_func(
         &ret_ty,
     );
 
-    let (_, (_, arg_obligation, _)) = ctx.pop_local();
+    let (_, arg_info) = ctx.pop_local();
     FuncDef {
         purity: func.purity,
         arg_ty,
         ret_ty,
-        arg_obligation,
+        arg_obligation: arg_info.ob,
         body,
         profile_point: func.profile_point,
     }

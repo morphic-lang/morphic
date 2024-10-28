@@ -21,7 +21,7 @@ use crate::util::iter::IterExt;
 use crate::util::non_empty_set::NonEmptySet;
 use id_collections::{id_type, IdVec};
 use id_graph_sccs::{SccKind, Sccs};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 use std::iter;
 
@@ -101,14 +101,14 @@ pub fn FUNC_BODY_PATH() -> Path {
 #[id_type]
 pub struct LtParam(pub usize);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Lt {
     Empty,
     Local(Interned<LocalLt>),
     Join(NonEmptySet<LtParam>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LocalLt {
     Final,
     // Represents ordered "events", e.g. the binding and body of a let.
@@ -312,13 +312,13 @@ pub struct ModeSolution {
     pub solver_var: ModeVar, // For debugging
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct HeapModes<M> {
     pub access: M,
     pub storage: M,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ResModes<M> {
     Stack(M),
     Heap(HeapModes<M>),
@@ -348,9 +348,16 @@ impl<M> ResModes<M> {
             ResModes::Heap(_) => panic!("called `unwrap_stack` on `ResModes::Heap`"),
         }
     }
+
+    pub fn unwrap_heap(&self) -> &HeapModes<M> {
+        match self {
+            ResModes::Stack(_) => panic!("called `unwrap_heap` on `ResModes::Stack`"),
+            ResModes::Heap(heap) => heap,
+        }
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Res<M, L> {
     pub modes: ResModes<M>,
     pub lt: L,
@@ -465,6 +472,8 @@ impl Shape {
             ShapeInner::Variants(shapes) => shapes.values().fold(next_slot, |start, shape| {
                 shape.top_level_slots_impl(customs, start, slots)
             }),
+            // Since non-trivial cyclic customs are always guarded, this case only occurs if the
+            // custom is trivial, i.e. has no slots.
             ShapeInner::SelfCustom(_) => next_slot,
             ShapeInner::Custom(id) => customs
                 .get(id)
@@ -673,6 +682,7 @@ pub struct ShapeIter<'a, T> {
     shapes: std::slice::Iter<'a, Shape>,
     res: &'a [T],
     start: usize,
+    off: usize,
 }
 
 impl<'a, T> Iterator for ShapeIter<'a, T> {
@@ -680,11 +690,11 @@ impl<'a, T> Iterator for ShapeIter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let shape = self.shapes.next()?;
-        let start = self.start;
-        let end = start + shape.num_slots;
-        let res = &self.res[start..end];
-        self.start = end;
-        Some((shape, (start, end), res))
+        let off = self.off;
+        let end = off + shape.num_slots;
+        let res = &self.res[off..end];
+        self.off = end;
+        Some((shape, (off + self.start, end + self.start), res))
     }
 }
 
@@ -697,11 +707,13 @@ impl<'a, T> ExactSizeIterator for ShapeIter<'a, T> {
 pub fn enumerate_shapes<'a, T>(
     shapes: &'a [Shape],
     res: &'a [T],
+    start: usize,
 ) -> impl ExactSizeIterator<Item = (&'a Shape, (usize, usize), &'a [T])> {
     ShapeIter {
         shapes: shapes.iter(),
         res,
-        start: 0,
+        off: 0,
+        start,
     }
 }
 
@@ -709,7 +721,7 @@ pub fn iter_shapes<'a, T>(
     shapes: &'a [Shape],
     res: &'a [T],
 ) -> impl ExactSizeIterator<Item = (&'a Shape, &'a [T])> {
-    enumerate_shapes(shapes, res).map(|(shape, _, res)| (shape, res))
+    enumerate_shapes(shapes, res, 0).map(|(shape, _, res)| (shape, res))
 }
 
 #[derive(Debug)]
@@ -874,17 +886,44 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct SubstHelper {
+    // Maps from unfolded index to folded index
     mapping: Vec<SlotId>,
+    res_len: usize,
+}
+
+fn is_identity(mapping: &[SlotId]) -> bool {
+    mapping.iter().enumerate().all(|(i, slot)| slot.0 == i)
 }
 
 impl SubstHelper {
-    pub fn new(mapping: Vec<SlotId>) -> Self {
-        SubstHelper { mapping }
+    pub fn new(kind: SccKind, mapping: Vec<SlotId>) -> Self {
+        // Later passes assume that there is a one-to-one correspondence between the parameters of
+        // custom types which appear on the stack (all such customs are acyclic after guarding) and
+        // the slots that appear in the bodies of those custom types. In particular, this is
+        // relevant when generating stack lifetimes (obligations for top-level slots). We make the
+        // stronger assumption that the mapping is the identity because that simplifies those
+        // passes. You would have to carefully revise every procedure in this part of the compiler
+        // that unfolds a custom if you were to ever change this assumption.
+        debug_assert!(kind == SccKind::Cyclic || is_identity(&mapping));
+        let res_len = mapping.iter().map(|slot| slot.0).max().unwrap_or(0);
+        SubstHelper { mapping, res_len }
+    }
+
+    pub fn folded_to_unfolded_mapping(&self) -> BTreeMap<SlotId, Vec<SlotId>> {
+        let mut result = BTreeMap::new();
+        for (unfolded_idx, folded_idx) in self.mapping.iter().enumerate() {
+            result
+                .entry(*folded_idx)
+                .or_insert_with(Vec::new)
+                .push(SlotId(unfolded_idx));
+        }
+        result
     }
 
     /// Takes the resource list for a custom and transforms it into the resource list for that
     /// custom's body.
     pub fn do_subst<T: Clone>(&self, res: &[T]) -> Vec<T> {
+        debug_assert_eq!(res.len(), self.res_len);
         self.mapping
             .iter()
             .map(|slot| res[slot.0].clone())

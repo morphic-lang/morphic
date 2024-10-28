@@ -368,11 +368,11 @@ impl<'a> SccParameterizer<'a> {
         }
     }
 
-    fn parameterize(&mut self, ty: &guard::Type) -> (Shape, SubstHelper) {
+    fn parameterize(&mut self, kind: SccKind, ty: &guard::Type) -> (Shape, SubstHelper) {
         let mut res = Vec::new();
         let shape = self.parameterize_impl(ty, &mut res);
         debug_assert_eq!(res.len(), shape.num_slots);
-        (shape, SubstHelper::new(res))
+        (shape, SubstHelper::new(kind, res))
     }
 }
 
@@ -406,7 +406,7 @@ fn parameterize_custom_scc(
         .iter()
         .map(|&id| {
             let custom = &customs.types[id];
-            let (content, subst_helper) = parameterizer.parameterize(&custom.content);
+            let (content, subst_helper) = parameterizer.parameterize(scc.kind, &custom.content);
             (
                 id,
                 annot::CustomTypeDef {

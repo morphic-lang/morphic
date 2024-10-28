@@ -10,7 +10,7 @@ use std::rc::Rc;
 pub trait Internable: Hash + Eq {}
 impl<T: Hash + Eq> Internable for T {}
 
-#[derive(Clone)]
+#[derive(Clone, PartialOrd, Ord)]
 pub struct Interned<T> {
     data: Rc<T>,
     // Often, we build deep, recursive data structures out of interned objects, in which case it's

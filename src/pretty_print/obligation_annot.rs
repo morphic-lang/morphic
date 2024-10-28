@@ -63,15 +63,15 @@ fn write_type_impl(
         ShapeInner::Num(NumType::Int) => write!(w, "Int"),
         ShapeInner::Num(NumType::Float) => write!(w, "Float"),
         ShapeInner::Tuple(shapes) => {
-            let items = annot::enumerate_shapes(shapes, res);
+            let items = annot::enumerate_shapes(shapes, res, slot);
             write_delimited(w, items, "(", ")", ", ", |w, (shape, (start, _), res)| {
-                write_type_impl(w, type_renderer, ob, shape, res, slot + start)
+                write_type_impl(w, type_renderer, ob, shape, res, start)
             })
         }
         ShapeInner::Variants(shapes) => {
-            let items = annot::enumerate_shapes(shapes.as_slice(), res);
+            let items = annot::enumerate_shapes(shapes.as_slice(), res, slot);
             write_delimited(w, items, "{", "}", ", ", |w, (shape, (start, _), res)| {
-                write_type_impl(w, type_renderer, ob, shape, res, slot + start)
+                write_type_impl(w, type_renderer, ob, shape, res, start)
             })
         }
         ShapeInner::Custom(type_id) => {

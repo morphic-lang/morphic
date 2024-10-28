@@ -347,7 +347,9 @@ fn register_drops_for_binding(
     let binding_path = Lazy::new(|| binding_path.as_local_lt(interner));
     for (&slot, lt) in obligation.iter() {
         match lt {
-            Lt::Join(_) => panic!("`Join` should not appear in a binding's obligation"),
+            Lt::Join(_) => {
+                // The binding escapes. Don't drop it.
+            }
             Lt::Empty => {
                 // The binding is unused, so we can drop it immediately.
                 register_drops_for_slot(drops, binding_shape, binding_id, slot, &*binding_path);
