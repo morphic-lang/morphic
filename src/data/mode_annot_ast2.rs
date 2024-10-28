@@ -905,7 +905,7 @@ impl SubstHelper {
         // passes. You would have to carefully revise every procedure in this part of the compiler
         // that unfolds a custom if you were to ever change this assumption.
         debug_assert!(kind == SccKind::Cyclic || is_identity(&mapping));
-        let res_len = mapping.iter().map(|slot| slot.0).max().unwrap_or(0);
+        let res_len = mapping.iter().map(|slot| slot.0).max().map_or(0, |x| x + 1);
         SubstHelper { mapping, res_len }
     }
 

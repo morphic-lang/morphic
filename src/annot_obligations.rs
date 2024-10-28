@@ -63,7 +63,9 @@ fn join_inner_obligations(
             })
         }
         &ShapeInner::Custom(id) | &ShapeInner::SelfCustom(id) => {
-            if !seen.insert((id, res.to_vec())) {
+            let this = (id, res.to_vec());
+            if !seen.contains(&this) {
+                seen.insert(this);
                 let custom = &customs.types[id];
                 join_inner_obligations(
                     interner,

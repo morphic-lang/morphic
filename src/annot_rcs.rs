@@ -415,7 +415,9 @@ fn drops_for_func(interner: &Interner, func: &ob::FuncDef) -> FuncDrops {
 
     for (&slot, lt) in func.arg_obligation.iter() {
         match lt {
-            Lt::Join(_) => panic!("`Join` should not appear in a binding's obligation"),
+            Lt::Join(_) => {
+                // The function argument escapes. Don't drop it.
+            }
             Lt::Empty => {
                 arg_drops.insert(slot);
             }
