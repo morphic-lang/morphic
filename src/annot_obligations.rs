@@ -26,21 +26,6 @@ struct FuncSpec {
 
 type FuncInstances = InstanceQueue<FuncSpec, CustomFuncId>;
 
-fn get_slot_obligation(
-    interner: &Interner,
-    occur_path: &Path,
-    src_mode: Mode,
-    dst_mode: Mode,
-    dst_lt: &Lt,
-) -> Lt {
-    match (src_mode, dst_mode) {
-        // There are never any borrowed to owned transitions. If there were, `dst_lt` might be
-        // needlessly long.
-        (Mode::Owned, Mode::Borrowed) => dst_lt.clone(),
-        _ => occur_path.as_lt(interner),
-    }
-}
-
 fn join_inner_obligations(
     interner: &Interner,
     customs: &annot::CustomTypes,
@@ -140,16 +125,25 @@ fn get_occur_obligation_impl(
             )
         }
         ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
-            let outer = get_slot_obligation(
-                interner,
-                occur_path,
-                *src[0].modes.unwrap_stack(),
-                *dst[0].modes.unwrap_stack(),
-                &dst[0].lt,
-            );
-            let inner =
-                join_inner_obligations(interner, customs, &mut BTreeSet::new(), shape, &dst[1..]);
-            out.insert_vacant(SlotId(slot), outer.join(interner, &inner));
+            let src_mode = *src[0].modes.unwrap_stack();
+            let dst_mode = *dst[0].modes.unwrap_stack();
+            let dst_lt = &dst[0].lt;
+
+            let ob = match (src_mode, dst_mode) {
+                (Mode::Owned, Mode::Borrowed) => {
+                    let inner = join_inner_obligations(
+                        interner,
+                        customs,
+                        &mut BTreeSet::new(),
+                        shape,
+                        &dst[1..],
+                    );
+                    dst_lt.join(interner, &inner)
+                }
+                _ => occur_path.as_lt(interner),
+            };
+
+            out.insert_vacant(SlotId(slot), ob);
         }
     }
 }
