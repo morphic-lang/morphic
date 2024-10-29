@@ -2,8 +2,11 @@
 //! operation.
 
 use crate::data::first_order_ast::NumType;
-use crate::data::mode_annot_ast2::{HeapModes, Position, Res, ResModes};
-use id_collections::{id_type, Count, Id};
+use crate::data::mode_annot_ast2::{
+    self as annot, HeapModes, Position, Res, ResModes, Shape, ShapeInner, SlotId,
+};
+use crate::util::iter::IterExt;
+use id_collections::{id_type, Count, Id, IdMap};
 use morphic_macros::declare_signatures;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -491,6 +494,176 @@ fn resolve_signature(sig: RawSignature) -> Result<Signature, Error> {
         lt_count: ctx.lt_gen.count,
         mode_count: ctx.mode_gen.count,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ArgLoc {
+    pub start: usize,
+    pub end: usize,
+    pub occur_idx: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArgOccur<Repr> {
+    pub data: Repr,
+    pub loc: ArgLoc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarOccurKind {
+    Arg(usize),
+    Ret,
+}
+
+#[derive(Debug, Clone)]
+pub struct VarOccurs<Repr> {
+    pub args: Vec<ArgOccur<Repr>>,
+    pub rets: Vec<Repr>,
+}
+
+impl<Repr> VarOccurs<Repr> {
+    pub fn new() -> Self {
+        VarOccurs {
+            args: Vec::new(),
+            rets: Vec::new(),
+        }
+    }
+
+    pub fn rep(&self) -> Option<&Repr> {
+        self.args
+            .first()
+            .map(|occ| &occ.data)
+            .or_else(|| self.rets.first())
+    }
+
+    pub fn all(&self) -> impl Iterator<Item = &Repr> {
+        self.args
+            .iter()
+            .map(|occ| &occ.data)
+            .chain(self.rets.iter())
+    }
+}
+
+fn get_res_impl(
+    model: &Type,
+    shape: &Shape,
+    next_slot: usize,
+    out_res: &mut BTreeMap<SlotId, Res<ModelMode, ModelLt>>,
+) -> usize {
+    match (model, &*shape.inner) {
+        (Type::Var(_), _) => next_slot + shape.num_slots,
+        (Type::Bool, ShapeInner::Bool) => next_slot,
+        (Type::Num(model), ShapeInner::Num(shape)) if model == shape => next_slot,
+        (Type::Tuple(models), ShapeInner::Tuple(shapes)) => {
+            let iter = models.iter().zip_eq(shapes);
+            iter.fold(next_slot, |start, (model, shape)| {
+                get_res_impl(model, shape, start, out_res)
+            })
+        }
+        (Type::Array(res, model), ShapeInner::Array(shape)) => {
+            out_res.insert(SlotId::from_index(next_slot), res.clone());
+            get_res_impl(model, shape, next_slot + 1, out_res)
+        }
+        (Type::HoleArray(res, model), ShapeInner::HoleArray(shape)) => {
+            out_res.insert(SlotId::from_index(next_slot), res.clone());
+            get_res_impl(model, shape, next_slot + 1, out_res)
+        }
+        (Type::Boxed(res, model), ShapeInner::Boxed(shape)) => {
+            out_res.insert(SlotId::from_index(next_slot), res.clone());
+            get_res_impl(model, shape, next_slot + 1, out_res)
+        }
+        _ => panic!("type does not match model"),
+    }
+}
+
+fn extract_vars_impl<T, Repr>(
+    make: &impl Fn(&Shape, &[T]) -> Repr,
+    kind: VarOccurKind,
+    model: &Type,
+    shape: &Shape,
+    start: usize,
+    res: &[T],
+    out: &mut IdMap<TypeVar, VarOccurs<Repr>>,
+) {
+    match (model, &*shape.inner) {
+        (Type::Var(var), _) => {
+            debug_assert!(shape.num_slots == res.len());
+            let entry = out.entry(*var).or_insert_with(VarOccurs::new);
+            let data = make(shape, res);
+            match kind {
+                VarOccurKind::Arg(occur_idx) => {
+                    let end = start + shape.num_slots;
+                    let loc = ArgLoc {
+                        start,
+                        end,
+                        occur_idx,
+                    };
+                    entry.args.push(ArgOccur { data, loc });
+                }
+                VarOccurKind::Ret => {
+                    entry.rets.push(data);
+                }
+            }
+        }
+        (Type::Bool, ShapeInner::Bool) => {}
+        (Type::Num(model), ShapeInner::Num(shape)) if model == shape => {}
+        (Type::Tuple(models), ShapeInner::Tuple(shapes)) => {
+            let iter = models
+                .iter()
+                .zip_eq(annot::enumerate_shapes(shapes, res, start));
+            for (model, (shape, (start, _), res)) in iter {
+                extract_vars_impl(make, kind, model, shape, start, res, out);
+            }
+        }
+        (Type::Array(_res, model), ShapeInner::Array(shape)) => {
+            extract_vars_impl(make, kind, model, shape, start + 1, &res[1..], out);
+        }
+        (Type::HoleArray(_res, model), ShapeInner::HoleArray(shape)) => {
+            extract_vars_impl(make, kind, model, shape, start + 1, &res[1..], out);
+        }
+        (Type::Boxed(_res, model), ShapeInner::Boxed(shape)) => {
+            extract_vars_impl(make, kind, model, shape, start + 1, &res[1..], out);
+        }
+        _ => panic!("type does not match model"),
+    }
+}
+
+impl Type {
+    pub fn get_res(&self, shape: &Shape) -> BTreeMap<SlotId, Res<ModelMode, ModelLt>> {
+        let mut out_res = BTreeMap::new();
+        get_res_impl(self, shape, 0, &mut out_res);
+        out_res
+    }
+
+    pub fn extract_vars<T, Repr>(
+        &self,
+        make: impl Fn(&Shape, &[T]) -> Repr,
+        kind: VarOccurKind,
+        shape: &Shape,
+        res: &[T],
+        out: &mut IdMap<TypeVar, VarOccurs<Repr>>,
+    ) {
+        extract_vars_impl(&make, kind, self, shape, 0, res, out);
+    }
+}
+
+impl ModeProp {
+    pub fn extract<T: Clone>(self, res: &ResModes<T>) -> T {
+        match self {
+            ModeProp::Stack => match res {
+                ResModes::Stack(stack) => stack.clone(),
+                _ => panic!("expected stack resource"),
+            },
+            ModeProp::Access => match res {
+                ResModes::Heap(heap) => heap.access.clone(),
+                _ => panic!("expected heap resource"),
+            },
+            ModeProp::Storage => match res {
+                ResModes::Heap(heap) => heap.storage.clone(),
+                _ => panic!("expected heap resource"),
+            },
+        }
+    }
 }
 
 declare_signatures! {

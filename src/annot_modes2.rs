@@ -2,7 +2,7 @@
 //! inference paper. A signficant proportion of the machinery is dedicated to specialization. The
 //! core logic for the pass is contained in `instantiate_expr`.
 
-use crate::data::borrow_model::{self as model, ModelLt, ModelMode};
+use crate::data::borrow_model as model;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::CustomTypeSccId;
 use crate::data::guarded_ast::{self as guard, LocalId, RecipeContent, UnfoldRecipe};
@@ -790,173 +790,6 @@ fn instantiate_occur(
     )
 }
 
-fn extract_model_res_impl(
-    model: &model::Type,
-    shape: &Shape,
-    next_slot: usize,
-    out_res: &mut BTreeMap<SlotId, Res<ModelMode, ModelLt>>,
-) -> usize {
-    match (model, &*shape.inner) {
-        (model::Type::Var(_), _) => next_slot + shape.num_slots,
-        (model::Type::Bool, ShapeInner::Bool) => next_slot,
-        (model::Type::Num(model), ShapeInner::Num(shape)) if model == shape => next_slot,
-        (model::Type::Tuple(models), ShapeInner::Tuple(shapes)) => {
-            let iter = models.iter().zip_eq(shapes);
-            iter.fold(next_slot, |start, (model, shape)| {
-                extract_model_res_impl(model, shape, start, out_res)
-            })
-        }
-        (model::Type::Array(res, model), ShapeInner::Array(shape)) => {
-            out_res.insert(SlotId::from_index(next_slot), res.clone());
-            extract_model_res_impl(model, shape, next_slot + 1, out_res)
-        }
-        (model::Type::HoleArray(res, model), ShapeInner::HoleArray(shape)) => {
-            out_res.insert(SlotId::from_index(next_slot), res.clone());
-            extract_model_res_impl(model, shape, next_slot + 1, out_res)
-        }
-        (model::Type::Boxed(res, model), ShapeInner::Boxed(shape)) => {
-            out_res.insert(SlotId::from_index(next_slot), res.clone());
-            extract_model_res_impl(model, shape, next_slot + 1, out_res)
-        }
-        _ => panic!("type does not match model"),
-    }
-}
-
-fn extract_model_res(
-    model: &model::Type,
-    shape: &Shape,
-) -> BTreeMap<SlotId, Res<ModelMode, ModelLt>> {
-    let mut out_res = BTreeMap::new();
-    extract_model_res_impl(model, shape, 0, &mut out_res);
-    out_res
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ArgLoc {
-    start: usize,
-    end: usize,
-    occur_idx: usize,
-}
-
-#[derive(Debug, Clone)]
-struct ArgOccur {
-    ty: Type<ModeVar, Lt>,
-    loc: ArgLoc,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VarOccurKind {
-    Arg(usize),
-    Ret,
-}
-
-#[derive(Debug, Clone)]
-struct VarOccurs {
-    args: Vec<ArgOccur>,
-    rets: Vec<Type<ModeVar, Lt>>,
-}
-
-impl VarOccurs {
-    fn new() -> VarOccurs {
-        VarOccurs {
-            args: Vec::new(),
-            rets: Vec::new(),
-        }
-    }
-
-    fn rep(&self) -> Option<&Type<ModeVar, Lt>> {
-        self.args
-            .first()
-            .map(|occ| &occ.ty)
-            .or_else(|| self.rets.first())
-    }
-
-    fn all(&self) -> impl Iterator<Item = &Type<ModeVar, Lt>> {
-        self.args.iter().map(|occ| &occ.ty).chain(self.rets.iter())
-    }
-}
-
-fn extract_model_vars_impl(
-    kind: VarOccurKind,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    model: &model::Type,
-    shape: &Shape,
-    start: usize,
-    res: &[Res<ModeVar, Lt>],
-    out: &mut IdMap<model::TypeVar, VarOccurs>,
-) {
-    match (model, &*shape.inner) {
-        (model::Type::Var(var), _) => {
-            debug_assert!(shape.num_slots == res.len());
-            let entry = out.entry(*var).or_insert_with(VarOccurs::new);
-            let ty = Type::new(
-                shape.clone(),
-                IdVec::from_vec(res.iter().cloned().collect()),
-            );
-            match kind {
-                VarOccurKind::Arg(occur_idx) => {
-                    let loc = ArgLoc {
-                        start,
-                        end: start + shape.num_slots,
-                        occur_idx,
-                    };
-                    entry.args.push(ArgOccur { ty, loc });
-                }
-                VarOccurKind::Ret => {
-                    entry.rets.push(ty);
-                }
-            }
-        }
-        (model::Type::Bool, ShapeInner::Bool) => {}
-        (model::Type::Num(model), ShapeInner::Num(shape)) if model == shape => {}
-        (model::Type::Tuple(models), ShapeInner::Tuple(shapes)) => {
-            let mut start = start;
-            for (model, (shape, res)) in models.iter().zip_eq(annot::iter_shapes(shapes, res)) {
-                extract_model_vars_impl(kind, customs, model, shape, start, res, out);
-                start += shape.num_slots;
-            }
-        }
-        (model::Type::Array(_res, model), ShapeInner::Array(shape)) => {
-            extract_model_vars_impl(kind, customs, model, shape, start + 1, &res[1..], out);
-        }
-        (model::Type::HoleArray(_res, model), ShapeInner::HoleArray(shape)) => {
-            extract_model_vars_impl(kind, customs, model, shape, start + 1, &res[1..], out);
-        }
-        (model::Type::Boxed(_res, model), ShapeInner::Boxed(shape)) => {
-            extract_model_vars_impl(kind, customs, model, shape, start + 1, &res[1..], out);
-        }
-        _ => panic!("type does not match model"),
-    }
-}
-
-fn extract_model_vars(
-    kind: VarOccurKind,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    model: &model::Type,
-    shape: &Shape,
-    res: &[Res<ModeVar, Lt>],
-    out: &mut IdMap<model::TypeVar, VarOccurs>,
-) {
-    extract_model_vars_impl(kind, customs, model, shape, 0, res, out);
-}
-
-fn extract_model_prop(prop: model::ModeProp, res: &ResModes<ModeVar>) -> ModeVar {
-    match prop {
-        model::ModeProp::Stack => match res {
-            ResModes::Stack(stack) => *stack,
-            _ => panic!("expected stack resource"),
-        },
-        model::ModeProp::Access => match res {
-            ResModes::Heap(heap) => heap.access,
-            _ => panic!("expected heap resource"),
-        },
-        model::ModeProp::Storage => match res {
-            ResModes::Heap(heap) => heap.storage,
-            _ => panic!("expected heap resource"),
-        },
-    }
-}
-
 fn create_occurs_from_model(
     sig: &model::Signature,
     _strategy: Strategy,
@@ -1003,7 +836,7 @@ fn create_occurs_from_model(
         constrs.require_le_const(&Mode::Owned, get_mode[param]);
     }
 
-    for (slot, model_res) in extract_model_res(&sig.ret, &ret.shape()) {
+    for (slot, model_res) in sig.ret.get_res(&ret.shape()) {
         // Impose mode constraints on the return.
         let res = &ret.res()[slot];
         require_eq(constrs, &get_modes(model_res.modes), &res.modes);
@@ -1024,7 +857,7 @@ fn create_occurs_from_model(
     let get_lt = get_lt;
 
     for (arg, occur) in sig.args.iter().zip(&mut arg_occurs) {
-        for (slot, model_res) in extract_model_res(arg, &occur.ty.shape()) {
+        for (slot, model_res) in arg.get_res(&occur.ty.shape()) {
             // Impose mode constraints on the argument.
             let res = &mut occur.ty.res_mut()[slot];
             require_eq(constrs, &get_modes(model_res.modes), &res.modes);
@@ -1047,19 +880,17 @@ fn create_occurs_from_model(
     // Accumulate the resources for each occurrence of each type variable.
     let mut vars = IdMap::new();
     for ((i, model), occur) in sig.args.iter().enumerate().zip(&arg_occurs) {
-        extract_model_vars(
-            VarOccurKind::Arg(i),
-            customs,
-            model,
+        model.extract_vars(
+            |shape, res| Type::new(shape.clone(), IdVec::from_vec(res.to_vec())),
+            model::VarOccurKind::Arg(i),
             &occur.ty.shape(),
             occur.ty.res().as_slice(),
             &mut vars,
         );
     }
-    extract_model_vars(
-        VarOccurKind::Ret,
-        customs,
-        &sig.ret,
+    sig.ret.extract_vars(
+        |shape, res| Type::new(shape.clone(), IdVec::from_vec(res.to_vec())),
+        model::VarOccurKind::Ret,
         &ret.shape(),
         ret.res().as_slice(),
         &mut vars,
@@ -1118,8 +949,8 @@ fn create_occurs_from_model(
                 for (pos, (res1, res2)) in pos.iter().zip_eq(rep1.iter().zip_eq(rep2.iter())) {
                     match pos {
                         Position::Stack => {
-                            let mode1 = extract_model_prop(prop1, &res1.modes);
-                            let mode2 = extract_model_prop(prop2, &res2.modes);
+                            let mode1 = prop1.extract(&res1.modes);
+                            let mode2 = prop2.extract(&res2.modes);
                             constrs.require_eq(mode1, mode2);
                         }
                         Position::Heap => {
