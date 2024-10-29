@@ -124,21 +124,22 @@ fn get_occur_obligation_impl(
                 out,
             )
         }
-        ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
+        ShapeInner::Array(_shape) | ShapeInner::HoleArray(_shape) | ShapeInner::Boxed(_shape) => {
             let src_mode = *src[0].modes.unwrap_stack();
             let dst_mode = *dst[0].modes.unwrap_stack();
             let dst_lt = &dst[0].lt;
 
             let ob = match (src_mode, dst_mode) {
                 (Mode::Owned, Mode::Borrowed) => {
-                    let inner = join_inner_obligations(
-                        interner,
-                        customs,
-                        &mut BTreeSet::new(),
-                        shape,
-                        &dst[1..],
-                    );
-                    dst_lt.join(interner, &inner)
+                    // let inner = join_inner_obligations(
+                    //     interner,
+                    //     customs,
+                    //     &mut BTreeSet::new(),
+                    //     shape,
+                    //     &dst[1..],
+                    // );
+                    // dst_lt.join(interner, &inner)
+                    dst_lt.clone()
                 }
                 _ => occur_path.as_lt(interner),
             };

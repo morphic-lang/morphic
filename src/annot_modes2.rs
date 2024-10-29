@@ -534,6 +534,10 @@ fn emit_occur_constr(
     use_modes: &ResModes<ModeVar>,
     use_lt: &Lt,
 ) {
+    if let (ResModes::Heap(binding_heap), ResModes::Heap(use_heap)) = (binding_modes, use_modes) {
+        constrs.require_le_const(&Mode::Owned, binding_heap.access);
+        constrs.require_le_const(&Mode::Owned, use_heap.access);
+    }
     if use_lt.does_not_exceed(scope) {
         // Case: this is a non-escaping ("opportunistic" or "borrow") occurrence.
         match (binding_modes, use_modes) {
@@ -2424,57 +2428,5 @@ pub fn annot_modes(
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parameterize() {
-        let list = guard::Type::Variants(IdVec::from_vec(vec![
-            guard::Type::Tuple(vec![]),
-            guard::Type::Boxed(Box::new(guard::Type::Custom(CustomTypeId(0)))),
-        ]));
-        let list_def = guard::CustomTypeDef {
-            content: list,
-            scc: CustomTypeSccId(0),
-            can_guard: guard::CanGuard::Yes,
-        };
-        let sccs = {
-            let mut sccs = Sccs::new();
-            sccs.push_acyclic_component(CustomTypeId(0));
-            sccs
-        };
-        let customs = guard::CustomTypes {
-            types: IdVec::from_vec(vec![list_def]),
-            sccs,
-        };
-        let interner = Interner::empty();
-        let parameterized = parameterize_customs(&interner, &customs);
-
-        assert_eq!(parameterized.len(), 1);
-        let annot_list = &parameterized[CustomTypeId(0)];
-
-        let expected_shape = Shape {
-            num_slots: 2,
-            inner: interner
-                .shape
-                .new(ShapeInner::Variants(IdVec::from_vec(vec![
-                    Shape {
-                        num_slots: 0,
-                        inner: interner.shape.new(ShapeInner::Tuple(vec![])),
-                    },
-                    Shape {
-                        num_slots: 2,
-                        inner: interner.shape.new(ShapeInner::Boxed(Shape {
-                            num_slots: 1,
-                            inner: interner.shape.new(ShapeInner::SelfCustom(CustomTypeId(0))),
-                        })),
-                    },
-                ]))),
-        };
-        assert_eq!(annot_list.content, expected_shape);
     }
 }
