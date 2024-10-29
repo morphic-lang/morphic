@@ -432,18 +432,19 @@ struct Globals<'a, 'b> {
     profile_points: IdVec<prof::ProfilePointId, ProfilePointDecls<'a>>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct CustomTypeDecls<'a> {
-    type_: StructType<'a>,
-    release: BTreeMap<ModeScheme, FunctionValue<'a>>,
-    retain: FunctionValue<'a>,
+    type_: BasicTypeEnum<'a>,
+    retain: BTreeMap<ModeScheme, FunctionValue<'a>>,
+    derived_retain: BTreeMap<ModeScheme, FunctionValue<'a>>,
+    release: FunctionValue<'a>,
 }
 
 impl<'a> CustomTypeDecls<'a> {
     fn declare_type(context: &'a Context, id: first_ord::CustomTypeId) -> Self {
         Self {
             type_: context.opaque_struct_type(&format!("type_{}", id.0)),
-            release: BTreeMap::new(),
+            retain: BTreeMap::new(),
             retain: BTreeMap::new(),
         }
     }
@@ -827,7 +828,6 @@ fn ceil_div_test() {
     assert_eq!(ceil_div(9, 3), 3);
 }
 
-// This function MUST NOT depend on any mode annotations.
 fn get_llvm_type<'a, 'b>(
     globals: &Globals<'a, 'b>,
     instances: &Instances<'a>,

@@ -48,6 +48,8 @@ pub struct CowArrayImpl<'a> {
 }
 
 impl<'a> CowArrayImpl<'a> {
+    pub fn declare_type() {}
+
     pub fn declare(
         globals: &Globals<'a, '_>,
         instances: &Instances<'a>,
