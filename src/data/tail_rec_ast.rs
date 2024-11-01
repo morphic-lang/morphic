@@ -32,14 +32,8 @@ pub enum Expr {
         rc::LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, rc::LocalId),
-    WrapBoxed(
-        rc::LocalId,
-        rc::Type, // Inner type
-    ),
-    UnwrapBoxed(
-        rc::LocalId,
-        rc::Type, // Inner type
-    ),
+    WrapBoxed(rc::LocalId, rc::Type),
+    UnwrapBoxed(rc::LocalId, rc::Type),
     WrapCustom(first_ord::CustomTypeId, rc::LocalId),
     UnwrapCustom(first_ord::CustomTypeId, rc::LocalId),
 

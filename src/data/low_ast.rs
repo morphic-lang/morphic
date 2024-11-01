@@ -102,14 +102,8 @@ pub enum Expr {
     ),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
-    WrapBoxed(
-        LocalId,
-        Type, // Inner type
-    ),
-    UnwrapBoxed(
-        LocalId,
-        Type, // Inner type
-    ), // Does not touch refcount
+    WrapBoxed(LocalId, Type),
+    UnwrapBoxed(LocalId, Type), // Does not touch refcount
 
     RcOp(RcOp, Type, LocalId), // Takes any type, returns unit
 

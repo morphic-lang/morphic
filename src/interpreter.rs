@@ -1017,14 +1017,17 @@ fn interpret_expr(
             Expr::UnwrapCustom(_, local_id) => locals[local_id],
 
             Expr::WrapBoxed(local_id, type_) => {
+                let Type::Boxed(item_type) = type_ else {
+                    stacktrace.panic(format!["expected a boxed type, got {:?}", type_]);
+                };
                 typecheck(
                     heap,
                     locals[local_id],
-                    &type_,
+                    item_type,
                     stacktrace.add_frame("wrap boxed typecheck"),
                 );
-                let heap_id = locals[local_id];
 
+                let heap_id = locals[local_id];
                 heap.add(Value::Box(1, heap_id))
             }
 
@@ -1033,10 +1036,13 @@ fn interpret_expr(
                 let local_heap_id =
                     unwrap_boxed(heap, heap_id, stacktrace.add_frame("unwrap boxed"));
 
+                let Type::Boxed(item_type) = type_ else {
+                    stacktrace.panic(format!["expected a boxed type, got {:?}", type_]);
+                };
                 typecheck(
                     heap,
                     local_heap_id,
-                    &type_,
+                    item_type,
                     stacktrace.add_frame("unwrap boxed typecheck"),
                 );
 

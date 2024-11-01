@@ -137,11 +137,11 @@ fn lower_expr(
         tail::Expr::TupleField(tuple_id, index) => {
             low::Expr::TupleField(tuple_id.lookup_in(context), *index)
         }
-        tail::Expr::WrapBoxed(content_id, content_type) => {
-            low::Expr::WrapBoxed(content_id.lookup_in(context), content_type.clone())
+        tail::Expr::WrapBoxed(content_id, type_) => {
+            low::Expr::WrapBoxed(content_id.lookup_in(context), type_.clone())
         }
-        tail::Expr::UnwrapBoxed(boxed_id, content_type) => {
-            low::Expr::UnwrapBoxed(boxed_id.lookup_in(context), content_type.clone())
+        tail::Expr::UnwrapBoxed(boxed_id, type_) => {
+            low::Expr::UnwrapBoxed(boxed_id.lookup_in(context), type_.clone())
         }
         tail::Expr::WrapVariant(variants, variant_id, content_id) => low::Expr::WrapVariant(
             variants.clone(),

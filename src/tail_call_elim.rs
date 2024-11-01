@@ -260,13 +260,9 @@ fn trans_expr(
 
         rc::Expr::UnwrapVariant(variant, wrapped) => tail::Expr::UnwrapVariant(*variant, *wrapped),
 
-        rc::Expr::WrapBoxed(content, content_type) => {
-            tail::Expr::WrapBoxed(*content, content_type.clone())
-        }
+        rc::Expr::WrapBoxed(content, type_) => tail::Expr::WrapBoxed(*content, type_.clone()),
 
-        rc::Expr::UnwrapBoxed(content, content_type) => {
-            tail::Expr::UnwrapBoxed(*content, content_type.clone())
-        }
+        rc::Expr::UnwrapBoxed(content, type_) => tail::Expr::UnwrapBoxed(*content, type_.clone()),
 
         rc::Expr::WrapCustom(custom, content) => tail::Expr::WrapCustom(*custom, *content),
 

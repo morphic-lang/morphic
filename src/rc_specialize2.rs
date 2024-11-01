@@ -501,14 +501,12 @@ fn lower_expr(
         annot::Expr::UnwrapVariant(variant_id, wrapped) => {
             rc::Expr::UnwrapVariant(*variant_id, ctx.local_binding(*wrapped).new_id)
         }
-        annot::Expr::WrapBoxed(content, item_ty) => rc::Expr::WrapBoxed(
-            ctx.local_binding(*content).new_id,
-            lower_type(&item_ty.shape()),
-        ),
-        annot::Expr::UnwrapBoxed(wrapped, item_ty) => rc::Expr::UnwrapBoxed(
-            ctx.local_binding(*wrapped).new_id,
-            lower_type(&item_ty.shape()),
-        ),
+        annot::Expr::WrapBoxed(content, ty) => {
+            rc::Expr::WrapBoxed(ctx.local_binding(*content).new_id, lower_type(&ty.shape()))
+        }
+        annot::Expr::UnwrapBoxed(wrapped, ty) => {
+            rc::Expr::UnwrapBoxed(ctx.local_binding(*wrapped).new_id, lower_type(&ty.shape()))
+        }
         &annot::Expr::WrapCustom(custom_id, content) => {
             rc::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)
         }

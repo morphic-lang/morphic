@@ -712,17 +712,17 @@ fn annot_expr(
             (rc::Expr::UnwrapVariant(variant_id, new_wrapped), moves)
         }
 
-        ob::Expr::WrapBoxed(content, item_ty) => {
+        ob::Expr::WrapBoxed(content, ty) => {
             let (new_content, moves) = annot_occur(interner, customs, ctx, path, content, builder);
-            (rc::Expr::WrapBoxed(new_content, item_ty), moves)
+            (rc::Expr::WrapBoxed(new_content, ty), moves)
         }
 
-        ob::Expr::UnwrapBoxed(wrapped, item_ty) => {
-            let item_retains = select_owned(customs, &item_ty);
+        ob::Expr::UnwrapBoxed(wrapped, ty) => {
+            let item_retains = select_owned(customs, &ty);
 
             let (new_wrapped, moves) = annot_occur(interner, customs, ctx, path, wrapped, builder);
 
-            let unwrap_op = rc::Expr::UnwrapBoxed(new_wrapped, item_ty);
+            let unwrap_op = rc::Expr::UnwrapBoxed(new_wrapped, ty);
             let unwrap_id = builder.add_binding(ret_ty.clone(), unwrap_op);
 
             build_rc_op(interner, RcOp::Retain, item_retains, unwrap_id, builder);

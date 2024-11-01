@@ -1522,8 +1522,7 @@ fn instantiate_expr(
                 &[*content],
                 fut_ty,
             );
-            let (_, fut_item_ty) = elim_boxed(fut_ty);
-            annot::Expr::WrapBoxed(occurs.pop().unwrap(), fut_item_ty)
+            annot::Expr::WrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
         }
 
         TailExpr::UnwrapBoxed(wrapped, _item_ty) => {
@@ -1539,7 +1538,8 @@ fn instantiate_expr(
                 &[*wrapped],
                 fut_ty,
             );
-            annot::Expr::UnwrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
+            let wrapped_ty = ctx.local_binding(*wrapped).ty.clone();
+            annot::Expr::UnwrapBoxed(occurs.pop().unwrap(), wrapped_ty)
         }
 
         TailExpr::WrapCustom(custom_id, recipe, unfolded) => {
