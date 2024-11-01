@@ -839,11 +839,12 @@ pub enum Expr<M, L> {
     UnwrapVariant(first_ord::VariantId, Occur<M, L>),
     WrapBoxed(
         Occur<M, L>,
-        Type<M, L>, // Inner type
+        Type<M, L>, // Output type
     ),
     UnwrapBoxed(
         Occur<M, L>,
-        Type<M, L>, // Inner type
+        Type<M, L>, // Input type
+        Type<M, L>, // Output type
     ),
     WrapCustom(CustomTypeId, Occur<M, L>),
     UnwrapCustom(CustomTypeId, Occur<M, L>),

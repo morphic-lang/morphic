@@ -123,8 +123,15 @@ pub enum Expr {
         LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, LocalId),
-    WrapBoxed(LocalId, Type),
-    UnwrapBoxed(LocalId, Type),
+    WrapBoxed(
+        LocalId,
+        ModeScheme, // Output type
+    ),
+    UnwrapBoxed(
+        LocalId,
+        ModeScheme, // Input type
+        ModeScheme, // Output type
+    ),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
     RcOp(RcOp, LocalId),

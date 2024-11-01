@@ -328,11 +328,11 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write!(w, "unwrap variant {} ", variant_id.0)?;
             write_occur(w, context.type_renderer, occur)
         }
-        Expr::WrapBoxed(content, _content_type) => {
+        Expr::WrapBoxed(content, _) => {
             write!(w, "wrap boxed ")?;
             write_occur(w, context.type_renderer, content)
         }
-        Expr::UnwrapBoxed(content, _content_type) => {
+        Expr::UnwrapBoxed(content, _, _) => {
             write!(w, "unwrap boxed ")?;
             write_occur(w, context.type_renderer, content)
         }

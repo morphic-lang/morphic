@@ -153,8 +153,15 @@ pub enum Expr {
         Occur,
     ),
     UnwrapVariant(first_ord::VariantId, Occur),
-    WrapBoxed(Occur, Type),
-    UnwrapBoxed(Occur, Type),
+    WrapBoxed(
+        Occur,
+        Type, // Output type
+    ),
+    UnwrapBoxed(
+        Occur,
+        Type, // Input type
+        Type, // Output type
+    ),
     WrapCustom(first_ord::CustomTypeId, Occur),
     UnwrapCustom(first_ord::CustomTypeId, Occur),
 

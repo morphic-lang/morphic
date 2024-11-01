@@ -501,11 +501,30 @@ fn lower_expr(
         annot::Expr::UnwrapVariant(variant_id, wrapped) => {
             rc::Expr::UnwrapVariant(*variant_id, ctx.local_binding(*wrapped).new_id)
         }
-        annot::Expr::WrapBoxed(content, ty) => {
-            rc::Expr::WrapBoxed(ctx.local_binding(*content).new_id, lower_type(&ty.shape()))
+        annot::Expr::WrapBoxed(content, output_ty) => {
+            let output_scheme = make_scheme(
+                insts,
+                &output_ty.shape(),
+                &prepare_resources(output_ty.res().as_slice()),
+            );
+            rc::Expr::WrapBoxed(ctx.local_binding(*content).new_id, output_scheme)
         }
-        annot::Expr::UnwrapBoxed(wrapped, ty) => {
-            rc::Expr::UnwrapBoxed(ctx.local_binding(*wrapped).new_id, lower_type(&ty.shape()))
+        annot::Expr::UnwrapBoxed(wrapped, input_ty, output_ty) => {
+            let input_scheme = make_scheme(
+                insts,
+                &input_ty.shape(),
+                &prepare_resources(input_ty.res().as_slice()),
+            );
+            let output_scheme = make_scheme(
+                insts,
+                &output_ty.shape(),
+                &prepare_resources(output_ty.res().as_slice()),
+            );
+            rc::Expr::UnwrapBoxed(
+                ctx.local_binding(*wrapped).new_id,
+                input_scheme,
+                output_scheme,
+            )
         }
         &annot::Expr::WrapCustom(custom_id, content) => {
             rc::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)

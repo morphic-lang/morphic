@@ -1016,14 +1016,14 @@ fn interpret_expr(
             Expr::WrapCustom(_, local_id) => locals[local_id],
             Expr::UnwrapCustom(_, local_id) => locals[local_id],
 
-            Expr::WrapBoxed(local_id, type_) => {
-                let Type::Boxed(item_type) = type_ else {
-                    stacktrace.panic(format!["expected a boxed type, got {:?}", type_]);
+            Expr::WrapBoxed(local_id, output_scheme) => {
+                let Type::Boxed(item_type) = output_scheme.as_type() else {
+                    stacktrace.panic(format!["expected a boxed type, got {:?}", output_scheme]);
                 };
                 typecheck(
                     heap,
                     locals[local_id],
-                    item_type,
+                    &item_type,
                     stacktrace.add_frame("wrap boxed typecheck"),
                 );
 
@@ -1031,18 +1031,15 @@ fn interpret_expr(
                 heap.add(Value::Box(1, heap_id))
             }
 
-            Expr::UnwrapBoxed(local_id, type_) => {
+            Expr::UnwrapBoxed(local_id, _input_scheme, output_scheme) => {
                 let heap_id = locals[local_id];
                 let local_heap_id =
                     unwrap_boxed(heap, heap_id, stacktrace.add_frame("unwrap boxed"));
 
-                let Type::Boxed(item_type) = type_ else {
-                    stacktrace.panic(format!["expected a boxed type, got {:?}", type_]);
-                };
                 typecheck(
                     heap,
                     local_heap_id,
-                    item_type,
+                    &output_scheme.as_type(),
                     stacktrace.add_frame("unwrap boxed typecheck"),
                 );
 

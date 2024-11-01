@@ -194,8 +194,8 @@ fn write_expr(
         Expr::UnwrapCustom(type_id, local_id) => {
             write![w, "unwrap custom ~{} %{}", type_id.0, local_id.0]
         }
-        Expr::WrapBoxed(local_id, _type) => write![w, "wrap boxed %{}", local_id.0],
-        Expr::UnwrapBoxed(local_id, _type) => write![w, "unwrap boxed %{}", local_id.0],
+        Expr::WrapBoxed(local_id, _) => write![w, "wrap boxed %{}", local_id.0],
+        Expr::UnwrapBoxed(local_id, _, _) => write![w, "unwrap boxed %{}", local_id.0],
         Expr::RcOp(op, _type, local_id) => match op {
             RcOp::Retain => write_single(w, "retain", local_id),
             RcOp::Release(_) => write_single(w, "release", local_id),

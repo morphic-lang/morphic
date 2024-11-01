@@ -102,8 +102,15 @@ pub enum Expr {
     ),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
-    WrapBoxed(LocalId, Type),
-    UnwrapBoxed(LocalId, Type), // Does not touch refcount
+    WrapBoxed(
+        LocalId,
+        ModeScheme, // Output type
+    ),
+    UnwrapBoxed(
+        LocalId,
+        ModeScheme, // Input type
+        ModeScheme, // Output type
+    ),
 
     RcOp(RcOp, Type, LocalId), // Takes any type, returns unit
 

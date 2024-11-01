@@ -122,8 +122,15 @@ pub enum Expr {
         LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, LocalId),
-    WrapBoxed(LocalId, ob::Type),
-    UnwrapBoxed(LocalId, ob::Type),
+    WrapBoxed(
+        LocalId,
+        ob::Type, // Output type
+    ),
+    UnwrapBoxed(
+        LocalId,
+        ob::Type, // Input type
+        ob::Type, // Output type
+    ),
     WrapCustom(first_ord::CustomTypeId, LocalId),
     UnwrapCustom(first_ord::CustomTypeId, LocalId),
 

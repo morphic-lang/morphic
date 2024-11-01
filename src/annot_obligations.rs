@@ -426,14 +426,15 @@ fn annot_expr(
             Expr::UnwrapVariant(*variant, handle_occur(ctx, path, wrapped))
         }
 
-        annot::Expr::WrapBoxed(content, ty) => Expr::WrapBoxed(
+        annot::Expr::WrapBoxed(content, output_ty) => Expr::WrapBoxed(
             handle_occur(ctx, path, content),
-            instantiate_type(inst_params, &ty),
+            instantiate_type(inst_params, output_ty),
         ),
 
-        annot::Expr::UnwrapBoxed(wrapped, ty) => Expr::UnwrapBoxed(
+        annot::Expr::UnwrapBoxed(wrapped, input_ty, output_ty) => Expr::UnwrapBoxed(
             handle_occur(ctx, path, wrapped),
-            instantiate_type(inst_params, &ty),
+            instantiate_type(inst_params, input_ty),
+            instantiate_type(inst_params, output_ty),
         ),
 
         annot::Expr::WrapCustom(id, content) => {
