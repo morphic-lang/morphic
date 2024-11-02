@@ -1,7 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
-    enumerate_shapes, iter_shapes, Mode, ResModes, Shape, ShapeInner, SlotId,
+    enumerate_shapes, iter_shapes, Lt, Mode, Res, ResModes, Shape, ShapeInner, SlotId,
 };
 use crate::data::obligation_annot_ast as ob;
 use crate::data::rc_annot_ast::{self as annot, Selector};
@@ -58,9 +58,9 @@ type ReleaseInstances = InstanceQueue<ReleaseSpec, ModeSchemeId>;
 
 // We only care about storage modes when creating release plans. We throw out any other modes to
 // avoid duplicate specializations.
-fn prepare_resources(res: &[ResModes<Mode>]) -> Vec<Mode> {
+fn prepare_resources(res: &[Res<Mode, Lt>]) -> Vec<Mode> {
     res.iter()
-        .map(|modes| match modes {
+        .map(|res| match &res.modes {
             ResModes::Stack(mode) => *mode,
             ResModes::Heap(modes) => modes.storage,
         })
@@ -188,7 +188,7 @@ impl RcOpPlan {
         true_: &BTreeSet<SlotId>,
         start: usize,
         shape: &Shape,
-        res: &[ResModes<Mode>],
+        res: &[Res<Mode, Lt>],
     ) -> Self {
         match &*shape.inner {
             ShapeInner::Bool => Self::NoOp,
@@ -241,7 +241,8 @@ impl RcOpPlan {
                 }
             }
             ShapeInner::Array(_) | ShapeInner::HoleArray(_) | ShapeInner::Boxed(_) => {
-                if true_.contains(&SlotId(start)) && *res[0].stack_or_storage() == Mode::Owned {
+                let mode = *res[0].modes.stack_or_storage();
+                if true_.contains(&SlotId(start)) && mode == Mode::Owned {
                     Self::LeafOp
                 } else {
                     Self::NoOp
@@ -265,7 +266,7 @@ fn build_plan(
     rc_op: annot::RcOp,
     root_id: rc::LocalId,
     root_shape: &Shape,
-    root_res: &[ResModes<Mode>],
+    root_res: &[Res<Mode, Lt>],
     plan: &RcOpPlan,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {

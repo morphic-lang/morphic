@@ -5,7 +5,7 @@
 use crate::data::borrow_model as model;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::CustomTypeSccId;
-use crate::data::guarded_ast::{self as guard, LocalId, RecipeContent, UnfoldRecipe};
+use crate::data::guarded_ast::{self as guard, LocalId, UnfoldRecipe};
 use crate::data::intrinsics as intr;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
@@ -20,7 +20,6 @@ use crate::util::collection_ext::VecExt;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
-use crate::util::non_empty_set::NonEmptySet;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
@@ -592,131 +591,6 @@ fn left_meet(
     )
 }
 
-fn wrap_lts<M: Clone>(ty: &Type<M, LtParam>) -> Type<M, Lt> {
-    let f = |res: &Res<M, LtParam>| Res {
-        modes: res.modes.clone(),
-        lt: Lt::Join(NonEmptySet::new(res.lt)),
-    };
-    Type::new(
-        ty.shape().clone(),
-        IdVec::from_vec(ty.iter().map(f).collect()),
-    )
-}
-
-fn bind_lts<M>(
-    interner: &Interner,
-    ty1: &Type<M, LtParam>,
-    ty2: &Type<M, Lt>,
-) -> BTreeMap<LtParam, Lt> {
-    debug_assert_eq!(ty1.shape(), ty2.shape());
-    let mut result = BTreeMap::new();
-    for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
-        result
-            .entry(res1.lt)
-            .and_modify(|old: &mut Lt| *old = old.join(interner, &res2.lt))
-            .or_insert_with(|| res2.lt.clone());
-    }
-    result
-}
-
-fn subst_lts<M: Clone>(
-    interner: &Interner,
-    ty: &Type<M, Lt>,
-    subst: &BTreeMap<LtParam, Lt>,
-) -> Type<M, Lt> {
-    let f = |res: &Res<M, Lt>| {
-        let modes = res.modes.clone();
-        let lt = match &res.lt {
-            Lt::Empty => Lt::Empty,
-            Lt::Local(lt) => Lt::Local(lt.clone()),
-            Lt::Join(params) => params
-                .iter()
-                .map(|p| &subst[p])
-                .fold(Lt::Empty, |lt1, lt2| lt1.join(interner, lt2)),
-        };
-        Res { modes, lt }
-    };
-    Type::new(
-        ty.shape().clone(),
-        IdVec::from_vec(ty.iter().map(f).collect()),
-    )
-}
-
-fn join_everywhere<M: Clone>(interner: &Interner, ty: &Type<M, Lt>, new_lt: &Lt) -> Type<M, Lt> {
-    let f = |res: &Res<M, Lt>| Res {
-        modes: res.modes.clone(),
-        lt: res.lt.join(interner, new_lt),
-    };
-    Type::new(
-        ty.shape().clone(),
-        IdVec::from_vec(ty.iter().map(f).collect()),
-    )
-}
-
-fn lt_equiv<M>(ty1: &Type<M, Lt>, ty2: &Type<M, Lt>) -> bool {
-    debug_assert_eq!(ty1.shape(), ty2.shape());
-    ty1.iter()
-        .zip_eq(ty2.iter())
-        .all(|(res1, res2)| res1.lt == res2.lt)
-}
-
-fn nth_res_bounds(shapes: &[Shape], n: usize) -> (usize, usize) {
-    let start = shapes.iter().map(|shape| shape.num_slots).take(n).sum();
-    let end = start + shapes[n].num_slots;
-    (start, end)
-}
-
-fn split_shapes<M: Clone, L: Clone>(shapes: &[Shape], res: &[Res<M, L>]) -> Vec<Type<M, L>> {
-    annot::iter_shapes(shapes, res)
-        .map(|(shape, res)| {
-            Type::new(
-                shape.clone(),
-                IdVec::from_vec(res.iter().cloned().collect()),
-            )
-        })
-        .collect()
-}
-
-fn elim_tuple<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> Vec<Type<M, L>> {
-    let ShapeInner::Tuple(shapes) = &*ty.shape().inner else {
-        panic!("expected `Tuple` type");
-    };
-    split_shapes(shapes, ty.res().as_slice())
-}
-
-fn elim_variants<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> IdVec<VariantId, Type<M, L>> {
-    let ShapeInner::Variants(shapes) = &*ty.shape().inner else {
-        panic!("expected `Tuple` type");
-    };
-    let result = split_shapes(shapes.as_slice(), ty.res().as_slice());
-    assert_eq!(result.len(), shapes.len());
-    IdVec::from_vec(result)
-}
-
-fn elim_box_like<M: Clone, L: Clone>(item: &Shape, res: &[Res<M, L>]) -> (Res<M, L>, Type<M, L>) {
-    (
-        res[0].clone(),
-        Type::new(
-            item.clone(),
-            IdVec::from_vec(res[1..].iter().cloned().collect()),
-        ),
-    )
-}
-
-fn elim_array<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
-    let ShapeInner::Array(shape) = &*ty.shape().inner else {
-        panic!("expected `Array` type");
-    };
-    elim_box_like(shape, ty.res().as_slice())
-}
-
-fn elim_boxed<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
-    let ShapeInner::Boxed(shape) = &*ty.shape().inner else {
-        panic!("expected `Boxed` type");
-    };
-    elim_box_like(shape, ty.res().as_slice())
-}
-
 /// Replaces parameters with fresh variables from the constraint graph.
 fn freshen_type<M, L1, L2>(
     constrs: &mut ConstrGraph,
@@ -1047,255 +921,6 @@ struct LocalInfo {
     ty: Type<ModeVar, Lt>,
 }
 
-/// Our analysis makes the following approximation: from the perspective of a function's caller all
-/// accesses the callee makes to its arguments happen at the same time. To implement this behavior,
-/// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
-/// current path. Even if we didn't make this approximation, we would have to somehow relativize the
-/// local lifetimes in the argument since they are not meaningful in the caller's scope.
-fn prepare_arg_type(
-    interner: &Interner,
-    path: &annot::Path,
-    ty: &Type<ModeVar, Lt>,
-) -> Type<ModeVar, Lt> {
-    let f = |res: &Res<ModeVar, Lt>| {
-        let modes = res.modes.clone();
-        let lt = match &res.lt {
-            Lt::Empty => Lt::Empty,
-            Lt::Local(_) => path.as_lt(interner),
-            Lt::Join(vars) => Lt::Join(vars.clone()),
-        };
-        Res { modes, lt }
-    };
-    Type::new(
-        ty.shape().clone(),
-        IdVec::from_vec(ty.res().values().map(f).collect()),
-    )
-}
-
-fn extract_custom_content(interner: &Interner, shape: &Shape) -> Shape {
-    match &*shape.inner {
-        ShapeInner::Bool => Shape {
-            inner: interner.shape.new(ShapeInner::Bool),
-            num_slots: 0,
-        },
-        ShapeInner::Num(num_type) => Shape {
-            inner: interner.shape.new(ShapeInner::Num(*num_type)),
-            num_slots: 0,
-        },
-        ShapeInner::Tuple(items) => {
-            let items = items
-                .iter()
-                .map(|shape| extract_custom_content(interner, shape))
-                .collect::<Vec<_>>();
-            let num_slots = items.iter().map(|shape| shape.num_slots).sum();
-            let shape = ShapeInner::Tuple(items);
-            let inner = interner.shape.new(shape);
-            Shape { inner, num_slots }
-        }
-        ShapeInner::Variants(variants) => {
-            let variants = variants
-                .values()
-                .map(|shape| extract_custom_content(interner, shape))
-                .collect::<Vec<_>>();
-            let num_slots = variants.iter().map(|shape| shape.num_slots).sum();
-            let shape = ShapeInner::Variants(IdVec::from_vec(variants));
-            let inner = interner.shape.new(shape);
-            Shape { inner, num_slots }
-        }
-        ShapeInner::Custom(id) => Shape {
-            inner: interner.shape.new(ShapeInner::Custom(*id)),
-            num_slots: shape.num_slots,
-        },
-        ShapeInner::SelfCustom(id) => Shape {
-            inner: interner.shape.new(ShapeInner::Custom(*id)),
-            num_slots: shape.num_slots,
-        },
-        ShapeInner::Array(item_shape) => {
-            let item_shape = extract_custom_content(interner, item_shape);
-            let num_slots = 1 + item_shape.num_slots;
-            let shape = ShapeInner::Array(item_shape);
-            let inner = interner.shape.new(shape);
-            Shape { inner, num_slots }
-        }
-        ShapeInner::HoleArray(item_shape) => {
-            let item_shape = extract_custom_content(interner, item_shape);
-            let num_slots = 1 + item_shape.num_slots;
-            let shape = ShapeInner::HoleArray(item_shape);
-            let inner = interner.shape.new(shape);
-            Shape { inner, num_slots }
-        }
-        ShapeInner::Boxed(item_shape) => {
-            let item_shape = extract_custom_content(interner, item_shape);
-            let num_slots = 1 + item_shape.num_slots;
-            let shape = ShapeInner::Boxed(item_shape);
-            let inner = interner.shape.new(shape);
-            Shape { inner, num_slots }
-        }
-    }
-}
-
-fn unfold_impl<L: Clone>(
-    interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
-    recipe: &RecipeContent,
-    shape: &Shape,
-    res: &[Res<ModeVar, L>],
-    out_res: &mut IdVec<SlotId, Res<ModeVar, L>>,
-) -> Shape {
-    match (&*shape.inner, recipe) {
-        (ShapeInner::Bool, RecipeContent::Bool) => {
-            debug_assert!(res.is_empty());
-            shape.clone()
-        }
-        (ShapeInner::Num(_), RecipeContent::Num(_)) => {
-            debug_assert!(res.is_empty());
-            shape.clone()
-        }
-        (ShapeInner::Tuple(shapes), RecipeContent::Tuple(recipes)) => {
-            let shapes = annot::iter_shapes(shapes, res)
-                .zip_eq(recipes)
-                .map(|((shape, res), recipe)| {
-                    unfold_impl(interner, customs, sccs, recipe, shape, res, out_res)
-                })
-                .collect::<Vec<_>>();
-
-            let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
-            let shape = ShapeInner::Tuple(shapes);
-            let inner = interner.shape.new(shape);
-            Shape { inner, num_slots }
-        }
-        (ShapeInner::Variants(shapes), RecipeContent::Variants(recipes)) => {
-            let shapes = annot::iter_shapes(shapes.as_slice(), res)
-                .zip_eq(recipes.values())
-                .map(|((shape, res), recipe)| {
-                    unfold_impl(interner, customs, sccs, recipe, shape, res, out_res)
-                })
-                .collect::<Vec<_>>();
-
-            let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
-            let shape = ShapeInner::Variants(IdVec::from_vec(shapes));
-            let inner = interner.shape.new(shape);
-            Shape { inner, num_slots }
-        }
-        (ShapeInner::SelfCustom(_), _) => {
-            panic!("`unfold` was called on the *content* of a custom type")
-        }
-        (ShapeInner::Custom(id1), RecipeContent::DoNothing(id2)) => {
-            debug_assert_eq!(id1, id2);
-            debug_assert_eq!(res.len(), shape.num_slots);
-
-            let _ = out_res.extend(res.iter().cloned());
-            shape.clone()
-        }
-        (ShapeInner::Custom(id1), RecipeContent::Unfold(id2)) => {
-            debug_assert_eq!(id1, id2);
-            let custom = &customs[*id1];
-            let content_res = custom.subst_helper.do_subst(res);
-            debug_assert_eq!(content_res.len(), custom.content.num_slots);
-
-            let _ = out_res.extend(content_res);
-            extract_custom_content(interner, &custom.content)
-        }
-        (ShapeInner::Array(item_shape), RecipeContent::Array(item_recipe)) => {
-            let _ = out_res.push(res[0].clone());
-            let item_shape = unfold_impl(
-                interner,
-                customs,
-                sccs,
-                item_recipe,
-                item_shape,
-                &res[1..],
-                out_res,
-            );
-            let num_slots = 1 + item_shape.num_slots;
-            Shape {
-                inner: interner.shape.new(ShapeInner::Array(item_shape)),
-                num_slots,
-            }
-        }
-        (ShapeInner::HoleArray(item_shape), RecipeContent::HoleArray(item_recipe)) => {
-            let _ = out_res.push(res[0].clone());
-            let item_shape = unfold_impl(
-                interner,
-                customs,
-                sccs,
-                item_recipe,
-                item_shape,
-                &res[1..],
-                out_res,
-            );
-            let num_slots = 1 + item_shape.num_slots;
-            Shape {
-                inner: interner.shape.new(ShapeInner::HoleArray(item_shape)),
-                num_slots,
-            }
-        }
-        (ShapeInner::Boxed(item_shape), RecipeContent::Boxed(item_recipe)) => {
-            let _ = out_res.push(res[0].clone());
-            let item_shape = unfold_impl(
-                interner,
-                customs,
-                sccs,
-                item_recipe,
-                item_shape,
-                &res[1..],
-                out_res,
-            );
-            let num_slots = 1 + item_shape.num_slots;
-            Shape {
-                inner: interner.shape.new(ShapeInner::Boxed(item_shape)),
-                num_slots,
-            }
-        }
-        _ => panic!("shape and recipe do not match"),
-    }
-}
-
-fn unfold<L: Clone>(
-    interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
-    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
-    recipe: &UnfoldRecipe,
-    ty: &Type<ModeVar, L>,
-) -> Type<ModeVar, L> {
-    let mut res = IdVec::new();
-    // println!("---------------------------------");
-    let shape = match recipe {
-        UnfoldRecipe::UnfoldThenRecurse(recipe) => {
-            let ShapeInner::Custom(id) = &*ty.shape().inner else {
-                unreachable!();
-            };
-            let custom = &customs[*id];
-            unfold_impl(
-                interner,
-                customs,
-                sccs,
-                recipe,
-                &extract_custom_content(interner, &custom.content),
-                &custom.subst_helper.do_subst(ty.res().as_slice()),
-                &mut res,
-            )
-        }
-        UnfoldRecipe::Recurse(recipe) => unfold_impl(
-            interner,
-            customs,
-            sccs,
-            recipe,
-            &ty.shape(),
-            ty.res().as_slice(),
-            &mut res,
-        ),
-    };
-    // if let ShapeInner::Custom(CustomTypeId(10)) = &*ty.shape().inner {
-    //     println!("unfold: ty: {}", ty.shape().display());
-    //     println!("unfold: recipe: {:?}", recipe);
-    //     println!("unfold: result: {}", shape.display());
-    // }
-    // println!("+++++++++++++++++++++++++++++++++");
-    Type::new(shape, res)
-}
-
 // This function is the core logic for this pass. It implements the judgment from the paper:
 // Δ ; Γ ; S ; q ⊢ e : t ⇝ e ; Q ; Γ'
 //
@@ -1324,13 +949,17 @@ fn instantiate_expr(
             let (arg_ty, ret_ty) = sigs.sig_of(constrs, *func);
 
             bind_modes(constrs, &ret_ty, fut_ty);
-            let lt_subst = bind_lts(interner, &ret_ty, fut_ty);
-            let arg_ty = prepare_arg_type(interner, &path, &arg_ty);
+            let lt_subst = annot::bind_lts(interner, &ret_ty, fut_ty);
+            let arg_ty = annot::prepare_arg_type(interner, &path, &arg_ty);
             let path = path.as_lt(interner);
 
             // This `join_everywhere` reflects the fact that we assume that functions access all of
             // their arguments. We could be more precise here.
-            let arg_ty = join_everywhere(interner, &subst_lts(interner, &arg_ty, &lt_subst), &path);
+            let arg_ty = annot::join_everywhere(
+                interner,
+                &annot::subst_lts(interner, &arg_ty, &lt_subst),
+                &path,
+            );
             let arg = instantiate_occur_in_position(
                 strategy, interner, *pos, ctx, constrs, *arg, &arg_ty,
             );
@@ -1451,7 +1080,7 @@ fn instantiate_expr(
         TailExpr::Unreachable(_) => annot::Expr::Unreachable(fut_ty.clone()),
 
         TailExpr::Tuple(item_ids) => {
-            let fut_item_tys = elim_tuple(fut_ty);
+            let fut_item_tys = annot::elim_tuple(fut_ty);
             // We must process the items in reverse order to ensure `instantiate_occur` (which
             // updates the lifetimes in `ctx`) generates the correct constraints.
             let mut occurs_rev = item_ids
@@ -1475,7 +1104,7 @@ fn instantiate_expr(
                 panic!("expected `Tuple` type");
             };
 
-            let (start, end) = nth_res_bounds(shapes, *idx);
+            let (start, end) = annot::nth_res_bounds(shapes, *idx);
             tuple_ty.res_mut().as_mut_slice()[start..end].clone_from_slice(fut_ty.res().as_slice());
 
             let occur = instantiate_occur(strategy, interner, ctx, constrs, *tuple_id, &tuple_ty);
@@ -1483,7 +1112,7 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapVariant(_variant_tys, variant_id, content) => {
-            let fut_variant_tys = elim_variants(fut_ty);
+            let fut_variant_tys = annot::elim_variants(fut_ty);
             let occur = instantiate_occur(
                 strategy,
                 interner,
@@ -1501,7 +1130,7 @@ fn instantiate_expr(
                 panic!("expected `Variants` type");
             };
 
-            let (start, end) = nth_res_bounds(shapes.as_slice(), variant_id.to_index());
+            let (start, end) = annot::nth_res_bounds(shapes.as_slice(), variant_id.to_index());
             variants_ty.res_mut().as_mut_slice()[start..end]
                 .clone_from_slice(fut_ty.res().as_slice());
 
@@ -1543,22 +1172,10 @@ fn instantiate_expr(
         }
 
         TailExpr::WrapCustom(custom_id, recipe, unfolded) => {
-            // if custom_id.0 == 10 {
-            // println!("----------------------------------");
-            // println!("unfolding custom {}", custom_id.0);
-            // }
-            let fut_unfolded = unfold(interner, customs, sccs, recipe, fut_ty);
-            // if custom_id.0 == 10 {
-            // println!("fut_ty: {}", fut_ty.shape().display());
-            // println!("fut_unfolded: {}", fut_unfolded.shape().display());
-            // println!(
-            //     "binding_ty: {}",
-            //     ctx.local_binding(*unfolded).ty.shape().display()
-            // );
-            // }
+            let fut_unfolded = annot::unfold(interner, customs, sccs, recipe, fut_ty);
             let occur =
                 instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
-            annot::Expr::WrapCustom(*custom_id, occur)
+            annot::Expr::WrapCustom(*custom_id, recipe.clone(), occur)
         }
 
         TailExpr::UnwrapCustom(custom_id, recipe, folded) => {
@@ -1572,24 +1189,18 @@ fn instantiate_expr(
                 // lifetimes which would be identified under folding into the proper positions.
                 // Imposing constraints between this unfolded type and `fut_ty` yields the same
                 // constraint system as folding `fut_ty`.
-                let fresh_unfolded = unfold(interner, customs, sccs, recipe, &fresh_folded);
+                let fresh_unfolded = annot::unfold(interner, customs, sccs, recipe, &fresh_folded);
 
                 // Equate the modes in `fut_ty` which are identified under folding.
                 bind_modes(constrs, &fresh_unfolded, fut_ty);
 
                 // Join the lifetimes in `fut_ty` which are identified under folding.
-                let lt_subst = bind_lts(interner, &fresh_unfolded, fut_ty);
-                subst_lts(interner, &wrap_lts(&fresh_folded), &lt_subst)
+                let lt_subst = annot::bind_lts(interner, &fresh_unfolded, fut_ty);
+                annot::subst_lts(interner, &annot::wrap_lts(&fresh_folded), &lt_subst)
             };
 
-            // println!("fresh folded: {}", fresh_folded.shape().display());
-            // println!(
-            //     "binding_ty: {}",
-            //     ctx.local_binding(*folded).ty.shape().display()
-            // );
-
             let occur = instantiate_occur(strategy, interner, ctx, constrs, *folded, &fresh_folded);
-            annot::Expr::UnwrapCustom(*custom_id, occur)
+            annot::Expr::UnwrapCustom(*custom_id, recipe.clone(), occur)
         }
 
         // Right now, all intrinsics are trivial from a mode inference perspective because they
@@ -1801,7 +1412,7 @@ fn instantiate_expr(
                 item_ids,
                 fut_ty,
             );
-            let (_, fut_item_ty) = elim_array(fut_ty);
+            let (_, fut_item_ty) = annot::elim_array(fut_ty);
             annot::Expr::ArrayLit(fut_item_ty, occurs)
         }
 
@@ -1883,7 +1494,7 @@ fn instantiate_scc(
                 let mut new_arg_tys = BTreeMap::new();
                 let mut bodies = BTreeMap::new();
                 let assumptions = SignatureAssumptions {
-                    known_defs: &funcs_annot,
+                    known_defs: funcs_annot,
                     pending_args: &arg_tys,
                     pending_rets: &ret_tys,
                 };
@@ -1902,7 +1513,7 @@ fn instantiate_scc(
                     });
                     debug_assert_eq!(arg_id, guard::ARG_LOCAL);
 
-                    let ret_ty = wrap_lts(&ret_tys[id]);
+                    let ret_ty = annot::wrap_lts(&ret_tys[id]);
                     let expr = instantiate_expr(
                         strategy,
                         interner,
@@ -1941,7 +1552,7 @@ fn instantiate_scc(
                 if new_arg_tys
                     .values()
                     .zip_eq(arg_tys.values())
-                    .all(|(new, old)| lt_equiv(new, old))
+                    .all(|(new, old)| annot::lt_equiv(new, old))
                 {
                     break (new_arg_tys, bodies);
                 }
@@ -2052,8 +1663,12 @@ fn extract_expr(
             extract_type(solution, input_ty),
             extract_type(solution, output_ty),
         ),
-        E::WrapCustom(id, content) => E::WrapCustom(*id, extract_occur(solution, content)),
-        E::UnwrapCustom(id, wrapped) => E::UnwrapCustom(*id, extract_occur(solution, wrapped)),
+        E::WrapCustom(id, recipe, content) => {
+            E::WrapCustom(*id, recipe.clone(), extract_occur(solution, content))
+        }
+        E::UnwrapCustom(id, recipe, wrapped) => {
+            E::UnwrapCustom(*id, recipe.clone(), extract_occur(solution, wrapped))
+        }
         E::Intrinsic(intr, arg) => E::Intrinsic(*intr, extract_occur(solution, arg)),
         E::ArrayOp(annot::ArrayOp::Get(arr, idx, out_ty)) => E::ArrayOp(annot::ArrayOp::Get(
             extract_occur(solution, arr),
@@ -2218,10 +1833,7 @@ pub fn annot_modes(
 
     let funcs = compute_tail_calls(&program.funcs);
 
-    #[id_type]
-    struct FuncSccId(usize);
-
-    let func_sccs: Sccs<FuncSccId, _> = find_components(funcs.count(), |id| {
+    let func_sccs: Sccs<usize, _> = find_components(funcs.count(), |id| {
         let mut deps = BTreeSet::new();
         add_func_deps(&mut deps, &funcs[id].body);
         deps

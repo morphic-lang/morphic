@@ -17,7 +17,7 @@ mod(a: Int, b: Int): Int =
   a - a / b * b
 
 rc_bp(r: Int, c: Int): (Int, Int) =
-  (r / 3 * 3 + c / 3, mod(r, 3) * 3 + mod(c, 3))
+  (r / 2 * 2 + c / 2, mod(r, 2) * 2 + mod(c, 2))
 
 bp_rc(r: Int, c: Int): (Int, Int) =
   rc_bp(r, c)
@@ -41,10 +41,10 @@ type RuleType {
   BN,
 }
 
-is_set: Int = int_shift_left(1, 9)
+is_set: Int = int_shift_left(1, 4)
 
 new_rule(): Rule =
-  Rule(is_set - 1) // 0b111111111 (9 ones)
+  Rule(is_set - 1) // 0b1111 (4 ones)
 
 new_single(x: Int): Rule = 
   Rule(int_bit_or(int_shift_left(1, x), is_set))
@@ -57,7 +57,7 @@ count_options(rule: Rule): Int =
 
 iter_options(rule: Rule): Iter Int =
   let Rule(r) = rule in
-  Iter.range(0, 9)
+  Iter.range(0, 4)
     |> Iter.filter(\(x) -> !(int_bit_and(r, int_shift_left(1, x)) = 0))
 
 int_bit_not(x: Int): Int = int_bit_xor(x, -1)
@@ -72,7 +72,7 @@ type Sudoku {
 }
 
 id_to_type(id: Int): RuleType =
-  match id / 81 {
+  match id / 16 {
     0 -> RC,
     1 -> RN,
     2 -> CN,
@@ -83,15 +83,15 @@ id_to_type(id: Int): RuleType =
 rule_to_id(t: RuleType, a: Int, b: Int): Int =
   match t {
     RC -> 0,
-    RN -> 81,
-    CN -> 81 * 2,
-    BN -> 81 * 3,
-  } + 9 * a + b
+    RN -> 16,
+    CN -> 16 * 2,
+    BN -> 16 * 3,
+  } + 4 * a + b
 
 rule_to_rcn(idx: Int, x: Int): (Int, Int, Int) =
   let t = id_to_type(idx) in
-  let a = mod(idx, 81) / 9 in
-  let b = mod(idx, 9) in
+  let a = mod(idx, 16) / 4 in
+  let b = mod(idx, 4) in
   match t {
     RC -> (a, b, x),
     RN -> (a, x, b),
@@ -111,7 +111,7 @@ set_pencilmark(old: Array Rule, r: Int, c: Int, n: Int): Array Rule =
   let (b,p) = rc_bp(r, c) in
   old
   // RC
-  |> for(0, 9, \(rules, n2) ->
+  |> for(0, 4, \(rules, n2) ->
     if n = n2 {
       Array.set(rules, rule_to_id(RC, r, c), new_single(n))
     } else {
@@ -119,7 +119,7 @@ set_pencilmark(old: Array Rule, r: Int, c: Int, n: Int): Array Rule =
     }
   )
   // RN
-  |> for(0, 9, \(rules, c2) ->
+  |> for(0, 4, \(rules, c2) ->
     if c = c2 {
       Array.set(rules, rule_to_id(RN, r, n), new_single(c))
     } else {
@@ -127,7 +127,7 @@ set_pencilmark(old: Array Rule, r: Int, c: Int, n: Int): Array Rule =
     }
   )
   // CN
-  |> for(0, 9, \(rules, r2) ->
+  |> for(0, 4, \(rules, r2) ->
     if r = r2 {
       Array.set(rules, rule_to_id(CN, c, n), new_single(r))
     } else {
@@ -135,7 +135,7 @@ set_pencilmark(old: Array Rule, r: Int, c: Int, n: Int): Array Rule =
     }
   )
   // BN
-  |> for(0, 9, \(rules, p2) ->
+  |> for(0, 4, \(rules, p2) ->
     if p = p2 {
       Array.set(rules, rule_to_id(BN, b, n), new_single(p))
     } else {
@@ -145,9 +145,9 @@ set_pencilmark(old: Array Rule, r: Int, c: Int, n: Int): Array Rule =
   )
 
 new_sudoku(givens: Array Byte): Sudoku =
-  assert(Array.len(givens) = 9 * 9, "input wrong size") then
+  assert(Array.len(givens) = 4 * 4, "input wrong size") then
   let old = Iter.forever(new_rule())
-    |> Iter.take(9 * 9 * 4)
+    |> Iter.take(4 * 4 * 4)
     |> Array.from_iter() in
   Sudoku(
     givens
@@ -157,8 +157,8 @@ new_sudoku(givens: Array Byte): Sudoku =
       match String.digit_to_nat(given) {
         Some(n) ->
           assert(!(n = 0), "given cannot be 0") then
-          let r = i / 9 in
-          let c = mod(i, 9) in
+          let r = i / 4 in
+          let c = mod(i, 4) in
           set_pencilmark(rules, r, c, n - 1),
         None ->
           rules,
@@ -172,7 +172,7 @@ solve_rec(sudoku: Sudoku): Iter Sudoku =
     |> Iter.items()
     |> Iter.enumerate()
     |> Iter.filter(\((_, rule)) -> !check_set(rule))
-    |> Iter.foldl((10, None), \((min, min_opt), (idx, rule)) ->
+    |> Iter.foldl((5, None), \((min, min_opt), (idx, rule)) ->
       let count = count_options(rule) in
       if count < min { 
         (count, Some(idx)) 
@@ -202,7 +202,7 @@ solve(sudoku: Sudoku): Array Sudoku =
   |> Array.from_iter()
 
 proc main(): () =
-  // 546993 solutions
-  let givens = ".......6..2.9..1....8..1..52..5..4....3..2....4......7.3..6.5....91.............." in
-  let solutions = new_sudoku(givens) |> solve() in
+  let givens = ".1..3..14..2..4." in
+  let sudoku = new_sudoku(givens) in
+  let solutions = solve(sudoku) in
   do Io.writeln(String.int_to_string(Array.len(solutions)))

@@ -3,7 +3,7 @@ use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
     self as annot, Interner, LocalLt, Lt, Mode, Path, Shape, ShapeInner, SlotId,
 };
-use crate::data::obligation_annot_ast::{self as ob, StackLt, Type};
+use crate::data::obligation_annot_ast::{self as ob, Type};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
 use crate::pretty_print::utils::FuncRenderer;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
@@ -37,14 +37,13 @@ fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
     dst_mode == Mode::Owned && !lt.does_not_exceed(path)
 }
 
-fn select_dups(path: &Path, src_ty: &Type, dst_ty: &Type, lt_obligation: &StackLt) -> Selector {
-    debug_assert_eq!(dst_ty.shape(), &lt_obligation.shape);
-    debug_assert_eq!(src_ty.shape(), &lt_obligation.shape);
+fn select_dups(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &Type) -> Selector {
+    debug_assert_eq!(src_ty.shape(), dst_ty.shape());
 
-    let mut result = Selector::none(&lt_obligation.shape);
-    for (&slot, lt) in lt_obligation.iter() {
-        let src_mode = *src_ty.res()[slot].unwrap_stack();
-        let dst_mode = *dst_ty.res()[slot].unwrap_stack();
+    let mut result = Selector::none(src_ty.shape());
+    for (slot, lt) in src_ty.stack_lt(customs.view_shapes()) {
+        let src_mode = *src_ty.res()[slot].modes.unwrap_stack();
+        let dst_mode = *dst_ty.res()[slot].modes.unwrap_stack();
 
         if should_dup(path, src_mode, dst_mode, lt) {
             result.insert(slot);
@@ -58,14 +57,13 @@ fn should_move(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
     dst_mode == Mode::Owned && lt.does_not_exceed(path)
 }
 
-fn select_moves(path: &Path, src_ty: &Type, dst_ty: &Type, lt_obligation: &StackLt) -> Selector {
-    debug_assert_eq!(dst_ty.shape(), &lt_obligation.shape);
-    debug_assert_eq!(src_ty.shape(), &lt_obligation.shape);
+fn select_moves(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &Type) -> Selector {
+    debug_assert_eq!(src_ty.shape(), dst_ty.shape());
 
-    let mut result = Selector::none(&lt_obligation.shape);
-    for (&slot, lt) in lt_obligation.iter() {
-        let src_mode = *src_ty.res()[slot].unwrap_stack();
-        let dst_mode = *dst_ty.res()[slot].unwrap_stack();
+    let mut result = Selector::none(src_ty.shape());
+    for (slot, lt) in src_ty.stack_lt(customs.view_shapes()) {
+        let src_mode = *src_ty.res()[slot].modes.unwrap_stack();
+        let dst_mode = *dst_ty.res()[slot].modes.unwrap_stack();
 
         if should_move(path, src_mode, dst_mode, lt) {
             result.insert(slot);
@@ -77,7 +75,7 @@ fn select_moves(path: &Path, src_ty: &Type, dst_ty: &Type, lt_obligation: &Stack
 fn select_owned(customs: &ob::CustomTypes, ty: &Type) -> Selector {
     let mut result = Selector::none(&ty.shape());
     for slot in ty.shape().top_level_slots(customs.view_shapes()) {
-        if *ty.res()[slot].unwrap_stack() == Mode::Owned {
+        if *ty.res()[slot].modes.unwrap_stack() == Mode::Owned {
             result.insert(slot);
         }
     }
@@ -133,7 +131,7 @@ fn empty_drops(expr: &ob::Expr) -> Option<BodyDrops> {
             let epilogues = bindings.iter().map(|_| LocalDrops::new()).collect();
             let sub_drops = bindings
                 .iter()
-                .map(|(_, _, expr, _)| empty_drops(expr))
+                .map(|(_, expr, _)| empty_drops(expr))
                 .collect();
             Some(BodyDrops::LetMany(LetManyDrops {
                 epilogues,
@@ -338,24 +336,30 @@ fn register_drops_for_slot(
 
 fn register_drops_for_binding(
     interner: &Interner,
+    customs: &ob::CustomTypes,
     drops: &mut BodyDrops,
-    binding_shape: &Shape,
+    binding_ty: &Type,
     binding_id: guard::LocalId,
     binding_path: &Path,
-    obligation: &StackLt,
 ) {
     let binding_path = Lazy::new(|| binding_path.as_local_lt(interner));
-    for (&slot, lt) in obligation.iter() {
+    for (slot, lt) in binding_ty.stack_lt(customs.view_shapes()) {
         match lt {
             Lt::Join(_) => {
                 // The binding escapes. Don't drop it.
             }
             Lt::Empty => {
                 // The binding is unused, so we can drop it immediately.
-                register_drops_for_slot(drops, binding_shape, binding_id, slot, &*binding_path);
+                register_drops_for_slot(
+                    drops,
+                    binding_ty.shape(),
+                    binding_id,
+                    slot,
+                    &*binding_path,
+                );
             }
             Lt::Local(lt) => {
-                register_drops_for_slot(drops, binding_shape, binding_id, slot, lt);
+                register_drops_for_slot(drops, binding_ty.shape(), binding_id, slot, &lt);
             }
         }
     }
@@ -363,6 +367,7 @@ fn register_drops_for_binding(
 
 fn register_drops_for_expr(
     interner: &Interner,
+    customs: &ob::CustomTypes,
     drops: &mut BodyDrops,
     mut num_locals: Count<guard::LocalId>,
     path: &Path,
@@ -370,27 +375,21 @@ fn register_drops_for_expr(
 ) {
     match expr {
         ob::Expr::LetMany(bindings, _) => {
-            for (i, (ty, obligation, sub_expr, _)) in bindings.iter().enumerate() {
+            for (i, (ty, sub_expr, _)) in bindings.iter().enumerate() {
                 let path = path.seq(i);
-                register_drops_for_expr(interner, drops, num_locals, &path, sub_expr);
+                register_drops_for_expr(interner, customs, drops, num_locals, &path, sub_expr);
 
                 // Only increment `num_locals` after recursing into `sub_expr`.
                 let binding_id = num_locals.inc();
 
-                register_drops_for_binding(
-                    interner,
-                    drops,
-                    &ty.shape(),
-                    binding_id,
-                    &path,
-                    obligation,
-                );
+                register_drops_for_binding(interner, customs, drops, ty, binding_id, &path);
             }
         }
 
         ob::Expr::If(_, then_case, else_case) => {
             register_drops_for_expr(
                 interner,
+                customs,
                 drops,
                 num_locals,
                 &path.seq(1).alt(0, 2),
@@ -398,6 +397,7 @@ fn register_drops_for_expr(
             );
             register_drops_for_expr(
                 interner,
+                customs,
                 drops,
                 num_locals,
                 &path.seq(1).alt(1, 2),
@@ -409,11 +409,11 @@ fn register_drops_for_expr(
     }
 }
 
-fn drops_for_func(interner: &Interner, func: &ob::FuncDef) -> FuncDrops {
+fn drops_for_func(interner: &Interner, customs: &ob::CustomTypes, func: &ob::FuncDef) -> FuncDrops {
     let mut arg_drops = Selector::none(&func.arg_ty.shape());
     let mut body_drops = empty_drops(&func.body);
 
-    for (&slot, lt) in func.arg_obligation.iter() {
+    for (slot, lt) in func.arg_ty.stack_lt(customs.view_shapes()) {
         match lt {
             Lt::Join(_) => {
                 // The function argument escapes. Don't drop it.
@@ -437,6 +437,7 @@ fn drops_for_func(interner: &Interner, func: &ob::FuncDef) -> FuncDrops {
     // We must start `num_locals` at 1 to account for the function argument.
     register_drops_for_expr(
         interner,
+        customs,
         body_drops.as_mut().unwrap(),
         Count::from_value(1),
         &annot::FUNC_BODY_PATH(),
@@ -453,7 +454,6 @@ fn drops_for_func(interner: &Interner, func: &ob::FuncDef) -> FuncDrops {
 struct LocalInfo {
     new_id: LocalId,
     ty: Type,
-    obligation: StackLt,
 }
 
 #[derive(Clone, Debug)]
@@ -495,7 +495,7 @@ impl Moves {
 
 fn annot_occur(
     interner: &Interner,
-    _customs: &ob::CustomTypes,
+    customs: &ob::CustomTypes,
     ctx: &mut Context,
     path: &Path,
     occur: ob::Occur,
@@ -503,10 +503,10 @@ fn annot_occur(
 ) -> (LocalId, Moves) {
     let binding = ctx.local_binding_mut(occur.id);
 
-    let dups = select_dups(path, &binding.ty, &occur.ty, &binding.obligation);
+    let dups = select_dups(customs, path, &binding.ty, &occur.ty);
     build_rc_op(interner, RcOp::Retain, dups, binding.new_id, builder);
 
-    let moves = select_moves(path, &binding.ty, &occur.ty, &binding.obligation);
+    let moves = select_moves(customs, path, &binding.ty, &occur.ty);
     (binding.new_id, Moves::new(occur.id, moves))
 }
 
@@ -558,7 +558,7 @@ fn annot_expr(
             let mut moves = Moves::empty();
 
             let final_local = ctx.with_scope(|ctx| {
-                for (i, (ty, obligation, body, metadata)) in bindings.into_iter().enumerate() {
+                for (i, (ty, body, metadata)) in bindings.into_iter().enumerate() {
                     let (final_local, rhs_moves) = annot_expr(
                         interner,
                         customs,
@@ -574,7 +574,6 @@ fn annot_expr(
                     ctx.add_local(LocalInfo {
                         new_id: final_local,
                         ty,
-                        obligation,
                     });
 
                     for (old_id, candidate_drops) in &epilogues[i] {
@@ -729,12 +728,12 @@ fn annot_expr(
             return (unwrap_id, moves);
         }
 
-        ob::Expr::WrapCustom(id, content) => {
+        ob::Expr::WrapCustom(id, _recipe, content) => {
             let (new_content, moves) = annot_occur(interner, customs, ctx, path, content, builder);
             (rc::Expr::WrapCustom(id, new_content), moves)
         }
 
-        ob::Expr::UnwrapCustom(id, wrapped) => {
+        ob::Expr::UnwrapCustom(id, _recipe, wrapped) => {
             let (new_wrapped, moves) = annot_occur(interner, customs, ctx, path, wrapped, builder);
             (rc::Expr::UnwrapCustom(id, new_wrapped), moves)
         }
@@ -880,13 +879,12 @@ fn annot_func(
     _func_id: ob::CustomFuncId,
     func: ob::FuncDef,
 ) -> rc::FuncDef {
-    let drops = drops_for_func(interner, &func);
+    let drops = drops_for_func(interner, customs, &func);
 
     let mut ctx = Context::new();
     ctx.add_local(LocalInfo {
         new_id: rc::ARG_LOCAL,
         ty: func.arg_ty.clone(),
-        obligation: func.arg_obligation,
     });
 
     let mut builder = Builder::new(Count::from_value(1));
@@ -898,13 +896,15 @@ fn annot_func(
         &mut builder,
     );
 
+    let ret_ty = annot::wrap_lts(&func.ret_ty);
+
     let (ret_local, _) = annot_expr(
         interner,
         customs,
         &mut ctx,
         &annot::FUNC_BODY_PATH(),
         func.body,
-        &func.ret_ty,
+        &ret_ty,
         Metadata::default(),
         drops.body_drops.as_ref(),
         &mut builder,
@@ -914,7 +914,7 @@ fn annot_func(
     rc::FuncDef {
         purity: func.purity,
         arg_ty: func.arg_ty,
-        ret_ty: func.ret_ty,
+        ret_ty,
         body: body,
         profile_point: func.profile_point,
     }

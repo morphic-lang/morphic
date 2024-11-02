@@ -7,8 +7,8 @@
 
 use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::flat_ast as flat;
-use crate::data::guarded_ast as guarded;
-use crate::data::guarded_ast::{self as guard, CanGuard};
+use crate::data::guarded_ast::{self as guard, CanGuard, RecipeContent};
+use crate::data::guarded_ast::{self as guarded, UnfoldRecipe};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
 use crate::data::profile as prof;
@@ -325,7 +325,7 @@ pub enum ResModes<M> {
 }
 
 impl<M> ResModes<M> {
-    pub fn map<N>(&self, f: impl Fn(&M) -> N) -> ResModes<N> {
+    pub fn map<N>(&self, mut f: impl FnMut(&M) -> N) -> ResModes<N> {
         match self {
             ResModes::Stack(stack) => ResModes::Stack(f(stack)),
             ResModes::Heap(HeapModes { access, storage }) => ResModes::Heap(HeapModes {
@@ -339,6 +339,13 @@ impl<M> ResModes<M> {
         match self {
             ResModes::Stack(stack) => stack,
             ResModes::Heap(HeapModes { storage, .. }) => storage,
+        }
+    }
+
+    pub fn stack_or_access(&self) -> &M {
+        match self {
+            ResModes::Stack(stack) => stack,
+            ResModes::Heap(HeapModes { access, .. }) => access,
         }
     }
 
@@ -361,6 +368,15 @@ impl<M> ResModes<M> {
 pub struct Res<M, L> {
     pub modes: ResModes<M>,
     pub lt: L,
+}
+
+impl<M, L> Res<M, L> {
+    pub fn map<N, K>(&self, f: impl FnMut(&M) -> N, mut g: impl FnMut(&L) -> K) -> Res<N, K> {
+        Res {
+            modes: self.modes.map(f),
+            lt: g(&self.lt),
+        }
+    }
 }
 
 #[id_type]
@@ -669,11 +685,25 @@ impl<M, L> Type<M, L> {
         self.iter().map(|res| &res.modes)
     }
 
+    pub fn iter_lts(&self) -> impl Iterator<Item = &L> {
+        self.iter().map(|res| &res.lt)
+    }
+
     pub fn iter_flat(&self) -> impl Iterator<Item = (&M, &L)> {
         FlatIter {
             state: FlatIterState::YieldInner,
             inner_iter: self.res.values(),
         }
+    }
+
+    pub fn stack_lt<'a>(
+        &self,
+        customs: impl MapRef<'a, CustomTypeId, Shape>,
+    ) -> impl Iterator<Item = (SlotId, &L)> {
+        self.shape
+            .top_level_slots(customs)
+            .into_iter()
+            .map(|slot| (slot, &self.res[slot].lt))
     }
 }
 
@@ -773,6 +803,382 @@ pub fn iter_shapes_mut<'a, T>(
     enumerate_shapes_mut(shapes, res).map(|(shape, _, res)| (shape, res))
 }
 
+pub fn join_everywhere<M: Clone>(
+    interner: &Interner,
+    ty: &Type<M, Lt>,
+    new_lt: &Lt,
+) -> Type<M, Lt> {
+    let f = |res: &Res<M, Lt>| Res {
+        modes: res.modes.clone(),
+        lt: res.lt.join(interner, new_lt),
+    };
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+pub fn lt_equiv<M>(ty1: &Type<M, Lt>, ty2: &Type<M, Lt>) -> bool {
+    debug_assert_eq!(ty1.shape(), ty2.shape());
+    ty1.iter()
+        .zip_eq(ty2.iter())
+        .all(|(res1, res2)| res1.lt == res2.lt)
+}
+
+pub fn nth_res_bounds(shapes: &[Shape], n: usize) -> (usize, usize) {
+    let start = shapes.iter().map(|shape| shape.num_slots).take(n).sum();
+    let end = start + shapes[n].num_slots;
+    (start, end)
+}
+
+pub fn split_shapes<M: Clone, L: Clone>(shapes: &[Shape], res: &[Res<M, L>]) -> Vec<Type<M, L>> {
+    iter_shapes(shapes, res)
+        .map(|(shape, res)| {
+            Type::new(
+                shape.clone(),
+                IdVec::from_vec(res.iter().cloned().collect()),
+            )
+        })
+        .collect()
+}
+
+pub fn elim_tuple<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> Vec<Type<M, L>> {
+    let ShapeInner::Tuple(shapes) = &*ty.shape().inner else {
+        panic!("expected `Tuple` type");
+    };
+    split_shapes(shapes, ty.res().as_slice())
+}
+
+pub fn elim_variants<'a, M: Clone, L: Clone>(
+    ty: &Type<M, L>,
+) -> IdVec<first_ord::VariantId, Type<M, L>> {
+    let ShapeInner::Variants(shapes) = &*ty.shape().inner else {
+        panic!("expected `Tuple` type");
+    };
+    let result = split_shapes(shapes.as_slice(), ty.res().as_slice());
+    assert_eq!(result.len(), shapes.len());
+    IdVec::from_vec(result)
+}
+
+pub fn elim_box_like<M: Clone, L: Clone>(
+    item: &Shape,
+    res: &[Res<M, L>],
+) -> (Res<M, L>, Type<M, L>) {
+    (
+        res[0].clone(),
+        Type::new(
+            item.clone(),
+            IdVec::from_vec(res[1..].iter().cloned().collect()),
+        ),
+    )
+}
+
+pub fn elim_array<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
+    let ShapeInner::Array(shape) = &*ty.shape().inner else {
+        panic!("expected `Array` type");
+    };
+    elim_box_like(shape, ty.res().as_slice())
+}
+
+pub fn elim_boxed<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
+    let ShapeInner::Boxed(shape) = &*ty.shape().inner else {
+        panic!("expected `Boxed` type");
+    };
+    elim_box_like(shape, ty.res().as_slice())
+}
+
+pub fn bind_lts<M>(
+    interner: &Interner,
+    ty1: &Type<M, LtParam>,
+    ty2: &Type<M, Lt>,
+) -> BTreeMap<LtParam, Lt> {
+    debug_assert_eq!(ty1.shape(), ty2.shape());
+    let mut result = BTreeMap::new();
+    for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
+        result
+            .entry(res1.lt)
+            .and_modify(|old: &mut Lt| *old = old.join(interner, &res2.lt))
+            .or_insert_with(|| res2.lt.clone());
+    }
+    result
+}
+
+pub fn subst_lts<M: Clone>(
+    interner: &Interner,
+    ty: &Type<M, Lt>,
+    subst: &BTreeMap<LtParam, Lt>,
+) -> Type<M, Lt> {
+    let f = |res: &Res<M, Lt>| {
+        let modes = res.modes.clone();
+        let lt = match &res.lt {
+            Lt::Empty => Lt::Empty,
+            Lt::Local(lt) => Lt::Local(lt.clone()),
+            Lt::Join(params) => params
+                .iter()
+                .map(|p| &subst[p])
+                .fold(Lt::Empty, |lt1, lt2| lt1.join(interner, lt2)),
+        };
+        Res { modes, lt }
+    };
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+/// Our analysis makes the following approximation: from the perspective of a function's caller all
+/// accesses the callee makes to its arguments happen at the same time. To implement this behavior,
+/// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
+/// current path. Even if we didn't make this approximation, we would have to somehow relativize the
+/// local lifetimes in the argument since they are not meaningful in the caller's scope.
+pub fn prepare_arg_type<M: Clone>(
+    interner: &Interner,
+    path: &Path,
+    ty: &Type<M, Lt>,
+) -> Type<M, Lt> {
+    let f = |res: &Res<M, Lt>| {
+        let modes = res.modes.clone();
+        let lt = match &res.lt {
+            Lt::Empty => Lt::Empty,
+            Lt::Local(_) => path.as_lt(interner),
+            Lt::Join(vars) => Lt::Join(vars.clone()),
+        };
+        Res { modes, lt }
+    };
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.res().values().map(f).collect()),
+    )
+}
+
+pub fn wrap_lts<M: Clone>(ty: &Type<M, LtParam>) -> Type<M, Lt> {
+    let f = |res: &Res<M, LtParam>| Res {
+        modes: res.modes.clone(),
+        lt: Lt::Join(NonEmptySet::new(res.lt)),
+    };
+    Type::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+fn extract_custom_content(interner: &Interner, shape: &Shape) -> Shape {
+    match &*shape.inner {
+        ShapeInner::Bool => Shape {
+            inner: interner.shape.new(ShapeInner::Bool),
+            num_slots: 0,
+        },
+        ShapeInner::Num(num_type) => Shape {
+            inner: interner.shape.new(ShapeInner::Num(*num_type)),
+            num_slots: 0,
+        },
+        ShapeInner::Tuple(items) => {
+            let items = items
+                .iter()
+                .map(|shape| extract_custom_content(interner, shape))
+                .collect::<Vec<_>>();
+            let num_slots = items.iter().map(|shape| shape.num_slots).sum();
+            let shape = ShapeInner::Tuple(items);
+            let inner = interner.shape.new(shape);
+            Shape { inner, num_slots }
+        }
+        ShapeInner::Variants(variants) => {
+            let variants = variants
+                .values()
+                .map(|shape| extract_custom_content(interner, shape))
+                .collect::<Vec<_>>();
+            let num_slots = variants.iter().map(|shape| shape.num_slots).sum();
+            let shape = ShapeInner::Variants(IdVec::from_vec(variants));
+            let inner = interner.shape.new(shape);
+            Shape { inner, num_slots }
+        }
+        ShapeInner::Custom(id) => Shape {
+            inner: interner.shape.new(ShapeInner::Custom(*id)),
+            num_slots: shape.num_slots,
+        },
+        ShapeInner::SelfCustom(id) => Shape {
+            inner: interner.shape.new(ShapeInner::Custom(*id)),
+            num_slots: shape.num_slots,
+        },
+        ShapeInner::Array(item_shape) => {
+            let item_shape = extract_custom_content(interner, item_shape);
+            let num_slots = 1 + item_shape.num_slots;
+            let shape = ShapeInner::Array(item_shape);
+            let inner = interner.shape.new(shape);
+            Shape { inner, num_slots }
+        }
+        ShapeInner::HoleArray(item_shape) => {
+            let item_shape = extract_custom_content(interner, item_shape);
+            let num_slots = 1 + item_shape.num_slots;
+            let shape = ShapeInner::HoleArray(item_shape);
+            let inner = interner.shape.new(shape);
+            Shape { inner, num_slots }
+        }
+        ShapeInner::Boxed(item_shape) => {
+            let item_shape = extract_custom_content(interner, item_shape);
+            let num_slots = 1 + item_shape.num_slots;
+            let shape = ShapeInner::Boxed(item_shape);
+            let inner = interner.shape.new(shape);
+            Shape { inner, num_slots }
+        }
+    }
+}
+
+fn unfold_impl<M: Clone, L: Clone>(
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, CustomTypeDef>,
+    sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
+    recipe: &RecipeContent,
+    shape: &Shape,
+    res: &[Res<M, L>],
+    out_res: &mut IdVec<SlotId, Res<M, L>>,
+) -> Shape {
+    match (&*shape.inner, recipe) {
+        (ShapeInner::Bool, RecipeContent::Bool) => {
+            debug_assert!(res.is_empty());
+            shape.clone()
+        }
+        (ShapeInner::Num(_), RecipeContent::Num(_)) => {
+            debug_assert!(res.is_empty());
+            shape.clone()
+        }
+        (ShapeInner::Tuple(shapes), RecipeContent::Tuple(recipes)) => {
+            let shapes = iter_shapes(shapes, res)
+                .zip_eq(recipes)
+                .map(|((shape, res), recipe)| {
+                    unfold_impl(interner, customs, sccs, recipe, shape, res, out_res)
+                })
+                .collect::<Vec<_>>();
+
+            let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
+            let shape = ShapeInner::Tuple(shapes);
+            let inner = interner.shape.new(shape);
+            Shape { inner, num_slots }
+        }
+        (ShapeInner::Variants(shapes), RecipeContent::Variants(recipes)) => {
+            let shapes = iter_shapes(shapes.as_slice(), res)
+                .zip_eq(recipes.values())
+                .map(|((shape, res), recipe)| {
+                    unfold_impl(interner, customs, sccs, recipe, shape, res, out_res)
+                })
+                .collect::<Vec<_>>();
+
+            let num_slots = shapes.iter().map(|shape| shape.num_slots).sum();
+            let shape = ShapeInner::Variants(IdVec::from_vec(shapes));
+            let inner = interner.shape.new(shape);
+            Shape { inner, num_slots }
+        }
+        (ShapeInner::SelfCustom(_), _) => {
+            panic!("`unfold` was called on the *content* of a custom type")
+        }
+        (ShapeInner::Custom(id1), RecipeContent::DoNothing(id2)) => {
+            debug_assert_eq!(id1, id2);
+            debug_assert_eq!(res.len(), shape.num_slots);
+
+            let _ = out_res.extend(res.iter().cloned());
+            shape.clone()
+        }
+        (ShapeInner::Custom(id1), RecipeContent::Unfold(id2)) => {
+            debug_assert_eq!(id1, id2);
+            let custom = &customs[*id1];
+            let content_res = custom.subst_helper.do_subst(res);
+            debug_assert_eq!(content_res.len(), custom.content.num_slots);
+
+            let _ = out_res.extend(content_res);
+            extract_custom_content(interner, &custom.content)
+        }
+        (ShapeInner::Array(item_shape), RecipeContent::Array(item_recipe)) => {
+            let _ = out_res.push(res[0].clone());
+            let item_shape = unfold_impl(
+                interner,
+                customs,
+                sccs,
+                item_recipe,
+                item_shape,
+                &res[1..],
+                out_res,
+            );
+            let num_slots = 1 + item_shape.num_slots;
+            Shape {
+                inner: interner.shape.new(ShapeInner::Array(item_shape)),
+                num_slots,
+            }
+        }
+        (ShapeInner::HoleArray(item_shape), RecipeContent::HoleArray(item_recipe)) => {
+            let _ = out_res.push(res[0].clone());
+            let item_shape = unfold_impl(
+                interner,
+                customs,
+                sccs,
+                item_recipe,
+                item_shape,
+                &res[1..],
+                out_res,
+            );
+            let num_slots = 1 + item_shape.num_slots;
+            Shape {
+                inner: interner.shape.new(ShapeInner::HoleArray(item_shape)),
+                num_slots,
+            }
+        }
+        (ShapeInner::Boxed(item_shape), RecipeContent::Boxed(item_recipe)) => {
+            let _ = out_res.push(res[0].clone());
+            let item_shape = unfold_impl(
+                interner,
+                customs,
+                sccs,
+                item_recipe,
+                item_shape,
+                &res[1..],
+                out_res,
+            );
+            let num_slots = 1 + item_shape.num_slots;
+            Shape {
+                inner: interner.shape.new(ShapeInner::Boxed(item_shape)),
+                num_slots,
+            }
+        }
+        _ => panic!("shape and recipe do not match"),
+    }
+}
+
+pub fn unfold<M: Clone, L: Clone>(
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, CustomTypeDef>,
+    sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
+    recipe: &UnfoldRecipe,
+    ty: &Type<M, L>,
+) -> Type<M, L> {
+    let mut res = IdVec::new();
+    let shape = match recipe {
+        UnfoldRecipe::UnfoldThenRecurse(recipe) => {
+            let ShapeInner::Custom(id) = &*ty.shape().inner else {
+                unreachable!();
+            };
+            let custom = &customs[*id];
+            unfold_impl(
+                interner,
+                customs,
+                sccs,
+                recipe,
+                &extract_custom_content(interner, &custom.content),
+                &custom.subst_helper.do_subst(ty.res().as_slice()),
+                &mut res,
+            )
+        }
+        UnfoldRecipe::Recurse(recipe) => unfold_impl(
+            interner,
+            customs,
+            sccs,
+            recipe,
+            &ty.shape(),
+            ty.res().as_slice(),
+            &mut res,
+        ),
+    };
+    Type::new(shape, res)
+}
+
 #[derive(Clone, Debug)]
 pub struct Occur<M, L> {
     pub id: guard::LocalId,
@@ -846,8 +1252,8 @@ pub enum Expr<M, L> {
         Type<M, L>, // Input type
         Type<M, L>, // Output type
     ),
-    WrapCustom(CustomTypeId, Occur<M, L>),
-    UnwrapCustom(CustomTypeId, Occur<M, L>),
+    WrapCustom(CustomTypeId, UnfoldRecipe, Occur<M, L>),
+    UnwrapCustom(CustomTypeId, UnfoldRecipe, Occur<M, L>),
 
     Intrinsic(Intrinsic, Occur<M, L>),
     ArrayOp(ArrayOp<M, L>),

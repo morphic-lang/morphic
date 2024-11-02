@@ -425,11 +425,11 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             write!(w, "unwrap boxed ")?;
             write_occur(w, context.type_renderer, content)
         }
-        Expr::WrapCustom(type_id, occur) => {
+        Expr::WrapCustom(type_id, _recipe, occur) => {
             write!(w, "wrap custom {} ", context.type_renderer.render(*type_id))?;
             write_occur(w, context.type_renderer, occur)
         }
-        Expr::UnwrapCustom(type_id, occur) => {
+        Expr::UnwrapCustom(type_id, _recipe, occur) => {
             write!(
                 w,
                 "unwrap custom {} ",

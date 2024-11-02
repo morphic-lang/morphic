@@ -6,91 +6,19 @@
 //! convenient to let custom types remain mode polymorphic until the next pass).
 
 use crate::data::first_order_ast as first_ord;
-use crate::data::guarded_ast as guard;
+use crate::data::guarded_ast::{self as guard, UnfoldRecipe};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{Interner, Lt, Mode, ResModes, Shape, SlotId, SubstHelper};
+use crate::data::mode_annot_ast2::{self as annot, Lt, LtParam, Mode};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::collection_ext::{FnWrap, MapRef};
-use crate::util::iter::IterExt;
 use id_collections::{id_type, IdVec};
-use std::collections::BTreeMap;
-use std::fmt;
 
 #[id_type]
 pub struct CustomFuncId(usize);
 
-#[derive(Clone, Debug)]
-pub struct StackLt {
-    pub shape: Shape,
-    pub data: BTreeMap<SlotId, Lt>,
-}
-
-impl StackLt {
-    pub fn join(&self, interner: &Interner, other: &StackLt) -> StackLt {
-        debug_assert_eq!(self.shape, other.shape);
-        let iter = self.data.iter().zip_eq(other.data.iter());
-        let data = iter.map(|((k1, v1), (k2, v2))| {
-            debug_assert_eq!(k1, k2);
-            (k1.clone(), v1.join(interner, v2))
-        });
-        StackLt {
-            shape: self.shape.clone(),
-            data: data.collect(),
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&SlotId, &Lt)> {
-        self.data.iter()
-    }
-}
-
-impl fmt::Display for StackLt {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "StackLt {{ ")?;
-        for (i, (slot, lt)) in self.data.iter().enumerate() {
-            write!(f, "{}: {}", slot.0, lt.display())?;
-            if i < self.data.len() - 1 {
-                write!(f, ", ")?;
-            }
-        }
-        write!(f, " }}")
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Type {
-    shape: Shape,
-    res: IdVec<SlotId, ResModes<Mode>>,
-}
-
-impl Type {
-    pub fn new(shape: Shape, res: IdVec<SlotId, ResModes<Mode>>) -> Type {
-        debug_assert_eq!(shape.num_slots, res.len());
-        Type { shape, res }
-    }
-
-    pub fn unit(interner: &Interner) -> Type {
-        Type {
-            shape: Shape::unit(interner),
-            res: IdVec::new(),
-        }
-    }
-
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    pub fn res(&self) -> &IdVec<SlotId, ResModes<Mode>> {
-        &self.res
-    }
-
-    pub fn res_mut(&mut self) -> &mut IdVec<SlotId, ResModes<Mode>> {
-        &mut self.res
-    }
-}
+pub type Type = annot::Type<Mode, Lt>;
 
 #[derive(Clone, Debug)]
 pub struct Occur {
@@ -139,7 +67,7 @@ pub enum IoOp {
 pub enum Expr {
     Local(Occur),
     Call(Purity, CustomFuncId, Occur),
-    LetMany(Vec<(Type, StackLt, Expr, Metadata)>, Occur),
+    LetMany(Vec<(Type, Expr, Metadata)>, Occur),
 
     If(Occur, Box<Expr>, Box<Expr>),
     CheckVariant(first_ord::VariantId, Occur), // Returns a bool
@@ -162,8 +90,8 @@ pub enum Expr {
         Type, // Input type
         Type, // Output type
     ),
-    WrapCustom(first_ord::CustomTypeId, Occur),
-    UnwrapCustom(first_ord::CustomTypeId, Occur),
+    WrapCustom(first_ord::CustomTypeId, UnfoldRecipe, Occur),
+    UnwrapCustom(first_ord::CustomTypeId, UnfoldRecipe, Occur),
 
     Intrinsic(Intrinsic, Occur),
     ArrayOp(ArrayOp),
@@ -185,29 +113,14 @@ pub enum Expr {
 pub struct FuncDef {
     pub purity: Purity,
     pub arg_ty: Type,
-    pub ret_ty: Type,
-    pub arg_obligation: StackLt,
+    pub ret_ty: annot::Type<Mode, LtParam>,
 
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 
-#[derive(Clone, Debug)]
-pub struct CustomTypeDef {
-    pub content: Shape,
-    pub subst_helper: SubstHelper,
-}
-
-#[derive(Clone, Debug)]
-pub struct CustomTypes {
-    pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
-}
-
-impl CustomTypes {
-    pub fn view_shapes(&self) -> impl MapRef<'_, first_ord::CustomTypeId, Shape> {
-        FnWrap::wrap(|id| &self.types[id].content)
-    }
-}
+pub type CustomTypeDef = annot::CustomTypeDef;
+pub type CustomTypes = annot::CustomTypes;
 
 #[derive(Clone, Debug)]
 pub struct Program {
