@@ -680,3 +680,57 @@ impl<L> annot::Type<ModeVar, L> {
         }
     }
 }
+
+pub struct DisplaySolvedType<'a, L> {
+    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
+    type_: &'a annot::Type<ModeSolution, L>,
+}
+
+impl fmt::Display for DisplaySolvedType<'_, Lt> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut w = Vec::new();
+        write_type(
+            &mut w,
+            self.type_renderer,
+            write_mode_solution,
+            write_lifetime,
+            self.type_,
+        )
+        .unwrap();
+        f.write_str(str::from_utf8(&w).unwrap())
+    }
+}
+
+impl fmt::Display for DisplaySolvedType<'_, LtParam> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut w = Vec::new();
+        write_type(
+            &mut w,
+            self.type_renderer,
+            write_mode_solution,
+            write_lifetime_param,
+            self.type_,
+        )
+        .unwrap();
+        f.write_str(str::from_utf8(&w).unwrap())
+    }
+}
+
+impl<L> annot::Type<ModeSolution, L> {
+    pub fn display<'a>(&'a self) -> DisplaySolvedType<'a, L> {
+        DisplaySolvedType {
+            type_renderer: None,
+            type_: self,
+        }
+    }
+
+    pub fn display_with<'a>(
+        &'a self,
+        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    ) -> DisplaySolvedType<'a, L> {
+        DisplaySolvedType {
+            type_renderer: Some(type_renderer),
+            type_: self,
+        }
+    }
+}

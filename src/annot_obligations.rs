@@ -200,11 +200,15 @@ fn solve_expr(
         annot::Expr::Unreachable(ty) => Expr::Unreachable(solve_type(inst_params, ty)),
 
         annot::Expr::Tuple(fields) => {
-            let fields = fields
+            let mut fields_rev = fields
                 .into_iter()
                 .rev()
                 .map(|occur| solve_occur(inst_params, occur))
-                .collect();
+                .collect::<Vec<_>>();
+            let fields = {
+                fields_rev.reverse();
+                fields_rev
+            };
             Expr::Tuple(fields)
         }
 
@@ -468,28 +472,24 @@ fn propagate_spatial_impl(
             }
         }
         ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
-            if *res[0].modes.stack_or_storage() == Mode::Owned {
-                let inner = propagate_spatial_impl(
-                    interner,
-                    customs,
-                    seen,
-                    start + 1,
-                    shape,
-                    &res[1..],
-                    out,
-                );
-                let ob = res[0].lt.join(interner, &inner);
-                out.insert(
-                    SlotId(start),
-                    Res {
-                        modes: res[0].modes.clone(),
-                        lt: ob.clone(),
-                    },
-                );
-                ob
+            // This recursive call has the side effect of populating `out`, so we make the call
+            // regardless of whether we need the return value.
+            let inner = propagate_spatial_impl(interner, customs, seen, start, shape, res, out);
+
+            let outer = if *res[0].modes.stack_or_storage() == Mode::Owned {
+                res[0].lt.join(interner, &inner)
             } else {
-                Lt::Empty
-            }
+                res[0].lt.clone()
+            };
+
+            out.insert_vacant(
+                SlotId(start),
+                Res {
+                    modes: res[0].modes.clone(),
+                    lt: outer.clone(),
+                },
+            );
+            outer
         }
     }
 }
@@ -506,6 +506,7 @@ fn propagate_spatial(interner: &Interner, customs: &ob::CustomTypes, ty: &Type) 
         ty.res().as_slice(),
         &mut out,
     );
+    println!("{} {} {}", ty.res().len(), out.len(), ty.display());
     Type::new(ty.shape().clone(), out.to_id_vec(ty.res().count()))
 }
 
@@ -525,7 +526,7 @@ fn propagate_temporal(
         };
         Res {
             modes: src_res.modes.clone(),
-            lt,
+            lt: src_res.lt.join(interner, &lt),
         }
     };
 
@@ -559,9 +560,9 @@ type LocalContext = local_context::LocalContext<guard::LocalId, LocalInfo>;
 fn create_occurs_from_model(
     sig: &model::Signature,
     interner: &Interner,
-    ctx: &mut LocalContext,
+    _ctx: &mut LocalContext,
     path: &annot::Path,
-    args: &[guard::LocalId],
+    args: &[&Occur],
     ret: &Type,
 ) -> Vec<Occur> {
     assert!(args.len() >= sig.args.fixed.len());
@@ -569,9 +570,9 @@ fn create_occurs_from_model(
     // Create a fresh occurrence for each function argument.
     let mut arg_occurs = args
         .iter()
-        .map(|&id| {
-            let ty = replace_lts(&ctx.local_binding(id).ty, || Lt::Empty);
-            Occur { id, ty }
+        .map(|arg| {
+            let ty = replace_lts(&arg.ty, || Lt::Empty);
+            Occur { id: arg.id, ty }
         })
         .collect::<Vec<_>>();
 
@@ -709,7 +710,7 @@ fn instantiate_model(
     interner: &Interner,
     ctx: &mut LocalContext,
     path: &annot::Path,
-    args: &[guard::LocalId],
+    args: &[&Occur],
     ret: &Type,
 ) -> Vec<Occur> {
     let occurs = create_occurs_from_model(sig, interner, ctx, path, args, ret);
@@ -808,6 +809,8 @@ fn annot_expr(
                 });
             }
 
+            let ret_occur = handle_occur(interner, ctx, &path.seq(bindings.len()), ret, fut_ty);
+
             let mut new_bindings_rev = Vec::new();
             for (i, (_, expr, metadata)) in bindings.into_iter().enumerate().rev() {
                 let local = guard::LocalId(locals_offset + i);
@@ -831,8 +834,6 @@ fn annot_expr(
 
                 new_bindings_rev.push((fut_ty, new_expr, metadata.clone()));
             }
-
-            let ret_occur = handle_occur(interner, ctx, &path.seq(bindings.len()), ret, fut_ty);
 
             let new_bindings = {
                 new_bindings_rev.reverse();
@@ -932,13 +933,13 @@ fn annot_expr(
 
         Expr::WrapBoxed(content, _output_ty) => {
             let mut occurs =
-                instantiate_model(&*model::box_new, interner, ctx, path, &[content.id], fut_ty);
+                instantiate_model(&*model::box_new, interner, ctx, path, &[content], fut_ty);
             Expr::WrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
         }
 
         Expr::UnwrapBoxed(wrapped, _input_ty, _output_ty) => {
             let mut occurs =
-                instantiate_model(&*model::box_get, interner, ctx, path, &[wrapped.id], fut_ty);
+                instantiate_model(&*model::box_get, interner, ctx, path, &[wrapped], fut_ty);
             let wrapped_ty = ctx.local_binding(wrapped.id).ty.clone();
             Expr::UnwrapBoxed(occurs.pop().unwrap(), wrapped_ty, fut_ty.clone())
         }
@@ -977,14 +978,8 @@ fn annot_expr(
         Expr::Intrinsic(intr, arg) => Expr::Intrinsic(*intr, arg.clone()),
 
         Expr::ArrayOp(ArrayOp::Get(arr, idx, _)) => {
-            let occurs = instantiate_model(
-                &*model::array_get,
-                interner,
-                ctx,
-                path,
-                &[arr.id, idx.id],
-                fut_ty,
-            );
+            let occurs =
+                instantiate_model(&*model::array_get, interner, ctx, path, &[arr, idx], fut_ty);
             let mut occurs = occurs.into_iter();
             Expr::ArrayOp(ArrayOp::Get(
                 occurs.next().unwrap(),
@@ -999,7 +994,7 @@ fn annot_expr(
                 interner,
                 ctx,
                 path,
-                &[arr.id, idx.id],
+                &[arr, idx],
                 fut_ty,
             );
             let mut occurs = occurs.into_iter();
@@ -1010,8 +1005,7 @@ fn annot_expr(
         }
 
         Expr::ArrayOp(ArrayOp::Len(arr)) => {
-            let occurs =
-                instantiate_model(&*model::array_len, interner, ctx, path, &[arr.id], fut_ty);
+            let occurs = instantiate_model(&*model::array_len, interner, ctx, path, &[arr], fut_ty);
             let mut occurs = occurs.into_iter();
             Expr::ArrayOp(ArrayOp::Len(occurs.next().unwrap()))
         }
@@ -1022,7 +1016,7 @@ fn annot_expr(
                 interner,
                 ctx,
                 path,
-                &[arr.id, item.id],
+                &[arr, item],
                 fut_ty,
             );
             let mut occurs = occurs.into_iter();
@@ -1033,8 +1027,7 @@ fn annot_expr(
         }
 
         Expr::ArrayOp(ArrayOp::Pop(arr)) => {
-            let occurs =
-                instantiate_model(&*model::array_pop, interner, ctx, path, &[arr.id], fut_ty);
+            let occurs = instantiate_model(&*model::array_pop, interner, ctx, path, &[arr], fut_ty);
             let mut occurs = occurs.into_iter();
             Expr::ArrayOp(ArrayOp::Pop(occurs.next().unwrap()))
         }
@@ -1045,7 +1038,7 @@ fn annot_expr(
                 interner,
                 ctx,
                 path,
-                &[hole.id, item.id],
+                &[hole, item],
                 fut_ty,
             );
             let mut occurs = occurs.into_iter();
@@ -1061,7 +1054,7 @@ fn annot_expr(
                 interner,
                 ctx,
                 path,
-                &[arr.id, cap.id],
+                &[arr, cap],
                 fut_ty,
             );
             let mut occurs = occurs.into_iter();
@@ -1077,8 +1070,7 @@ fn annot_expr(
         }
 
         Expr::IoOp(IoOp::Output(arr)) => {
-            let occurs =
-                instantiate_model(&*model::io_output, interner, ctx, path, &[arr.id], fut_ty);
+            let occurs = instantiate_model(&*model::io_output, interner, ctx, path, &[arr], fut_ty);
             let mut occurs = occurs.into_iter();
             Expr::IoOp(IoOp::Output(occurs.next().unwrap()))
         }
@@ -1089,17 +1081,17 @@ fn annot_expr(
                 interner,
                 ctx,
                 path,
-                &[msg.id],
+                &[msg],
                 &Type::unit(interner),
             );
             let mut occurs = occurs.into_iter();
             Expr::Panic(fut_ty.clone(), occurs.next().unwrap())
         }
 
-        Expr::ArrayLit(_item_ty, item) => {
-            let item_ids = item.iter().map(|occur| occur.id).collect::<Vec<_>>();
+        Expr::ArrayLit(_item_ty, items) => {
+            let item_refs = items.iter().collect::<Vec<_>>();
             let occurs =
-                instantiate_model(&*model::array_new, interner, ctx, path, &item_ids, fut_ty);
+                instantiate_model(&*model::array_new, interner, ctx, path, &item_refs, fut_ty);
             let (_, ret_item_ty) = annot::elim_array(fut_ty);
             Expr::ArrayLit(ret_item_ty, occurs)
         }
@@ -1124,7 +1116,8 @@ struct SolverScc {
 fn annot_scc(
     interner: &Interner,
     customs: &ob::CustomTypes,
-    funcs: &IdMap<ob::CustomFuncId, FuncDef>,
+    funcs: &IdVec<ob::CustomFuncId, FuncDef>,
+    funcs_annot: &IdMap<ob::CustomFuncId, FuncDef>,
     func_renderer: &FuncRenderer<ob::CustomFuncId>,
     scc: Scc<ob::CustomFuncId>,
 ) -> SolverScc {
@@ -1150,7 +1143,7 @@ fn annot_scc(
                 let mut new_arg_tys = BTreeMap::new();
                 let mut bodies = BTreeMap::new();
                 let assumptions = SignatureAssumptions {
-                    known_defs: funcs,
+                    known_defs: funcs_annot,
                     pending_args: &arg_tys,
                     pending_rets: &ret_tys,
                 };
@@ -1242,6 +1235,7 @@ fn annot_program(
         let annotated = annot_scc(
             interner,
             &program.custom_types,
+            &program.funcs,
             &funcs_annot,
             &func_renderer,
             scc,
