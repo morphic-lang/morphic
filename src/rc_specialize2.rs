@@ -274,14 +274,15 @@ fn build_plan(
         RcOpPlan::NoOp => builder.add_binding(rc::Type::Tuple(vec![]), rc::Expr::Tuple(vec![])),
 
         RcOpPlan::LeafOp => {
+            let scheme = make_scheme(insts, &root_shape, &prepare_resources(root_res));
             let rc_op = match rc_op {
                 annot::RcOp::Retain => rc::RcOp::Retain,
-                annot::RcOp::Release => {
-                    let scheme = make_scheme(insts, &root_shape, &prepare_resources(root_res));
-                    rc::RcOp::Release(scheme)
-                }
+                annot::RcOp::Release => rc::RcOp::Release,
             };
-            builder.add_binding(rc::Type::Tuple(vec![]), rc::Expr::RcOp(rc_op, root_id))
+            builder.add_binding(
+                rc::Type::Tuple(vec![]),
+                rc::Expr::RcOp(scheme, rc_op, root_id),
+            )
         }
 
         RcOpPlan::Tuple(plans) => {
@@ -542,11 +543,13 @@ fn lower_expr(
                 &arr_ty.shape(),
                 &prepare_resources(arr_ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(rc::ArrayOp::Get(
+            rc::Expr::ArrayOp(
                 scheme,
-                ctx.local_binding(*arr).new_id,
-                ctx.local_binding(*idx).new_id,
-            ))
+                rc::ArrayOp::Get(
+                    ctx.local_binding(*arr).new_id,
+                    ctx.local_binding(*idx).new_id,
+                ),
+            )
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Extract(arr_ty, arr, idx)) => {
             let scheme = make_scheme(
@@ -554,11 +557,13 @@ fn lower_expr(
                 &arr_ty.shape(),
                 &prepare_resources(arr_ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(rc::ArrayOp::Extract(
+            rc::Expr::ArrayOp(
                 scheme,
-                ctx.local_binding(*arr).new_id,
-                ctx.local_binding(*idx).new_id,
-            ))
+                rc::ArrayOp::Extract(
+                    ctx.local_binding(*arr).new_id,
+                    ctx.local_binding(*idx).new_id,
+                ),
+            )
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Len(arr_ty, arr)) => {
             let scheme = make_scheme(
@@ -566,7 +571,7 @@ fn lower_expr(
                 &arr_ty.shape(),
                 &prepare_resources(arr_ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(rc::ArrayOp::Len(scheme, ctx.local_binding(*arr).new_id))
+            rc::Expr::ArrayOp(scheme, rc::ArrayOp::Len(ctx.local_binding(*arr).new_id))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Push(arr_ty, arr, item)) => {
             let scheme = make_scheme(
@@ -574,11 +579,13 @@ fn lower_expr(
                 &arr_ty.shape(),
                 &prepare_resources(arr_ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(rc::ArrayOp::Push(
+            rc::Expr::ArrayOp(
                 scheme,
-                ctx.local_binding(*arr).new_id,
-                ctx.local_binding(*item).new_id,
-            ))
+                rc::ArrayOp::Push(
+                    ctx.local_binding(*arr).new_id,
+                    ctx.local_binding(*item).new_id,
+                ),
+            )
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Pop(arr_ty, arr)) => {
             let scheme = make_scheme(
@@ -586,7 +593,7 @@ fn lower_expr(
                 &arr_ty.shape(),
                 &prepare_resources(arr_ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(rc::ArrayOp::Pop(scheme, ctx.local_binding(*arr).new_id))
+            rc::Expr::ArrayOp(scheme, rc::ArrayOp::Pop(ctx.local_binding(*arr).new_id))
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Replace(arr_ty, arr, idx)) => {
             let scheme = make_scheme(
@@ -594,11 +601,13 @@ fn lower_expr(
                 &arr_ty.shape(),
                 &prepare_resources(arr_ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(rc::ArrayOp::Replace(
+            rc::Expr::ArrayOp(
                 scheme,
-                ctx.local_binding(*arr).new_id,
-                ctx.local_binding(*idx).new_id,
-            ))
+                rc::ArrayOp::Replace(
+                    ctx.local_binding(*arr).new_id,
+                    ctx.local_binding(*idx).new_id,
+                ),
+            )
         }
         annot::Expr::ArrayOp(annot::ArrayOp::Reserve(arr_ty, arr, cap)) => {
             let scheme = make_scheme(
@@ -606,11 +615,13 @@ fn lower_expr(
                 &arr_ty.shape(),
                 &prepare_resources(arr_ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(rc::ArrayOp::Reserve(
+            rc::Expr::ArrayOp(
                 scheme,
-                ctx.local_binding(*arr).new_id,
-                ctx.local_binding(*cap).new_id,
-            ))
+                rc::ArrayOp::Reserve(
+                    ctx.local_binding(*arr).new_id,
+                    ctx.local_binding(*cap).new_id,
+                ),
+            )
         }
         annot::Expr::IoOp(annot::IoOp::Input) => rc::Expr::IoOp(rc::IoOp::Input),
         annot::Expr::IoOp(annot::IoOp::Output(local)) => {

@@ -25,47 +25,40 @@ pub type Type = rc::Type;
 // Mutable operations on arrays with refcount 1 should mutate
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
-    New(ModeScheme),
+    New,
 
     Get(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
-        LocalId,    // Index
+        LocalId, // Array
+        LocalId, // Index
     ),
 
     Extract(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
-        LocalId,    // Index
+        LocalId, // Array
+        LocalId, // Index
     ),
 
     // Returns int
     Len(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
+        LocalId, // Array
     ),
 
     Push(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
-        LocalId,    // Item
+        LocalId, // Array
+        LocalId, // Item
     ),
 
     Pop(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
+        LocalId, // Array
     ),
 
     Replace(
-        ModeScheme, // Scheme of input
-        LocalId,    // Hole array
-        LocalId,    // Item
+        LocalId, // Hole array
+        LocalId, // Item
     ),
 
     Reserve(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
-        LocalId,    // Capacity
+        LocalId, // Array
+        LocalId, // Capacity
     ),
 }
 
@@ -113,10 +106,10 @@ pub enum Expr {
         ModeScheme, // Output type
     ),
 
-    RcOp(RcOp, Type, LocalId), // Takes any type, returns unit
+    RcOp(ModeScheme, RcOp, LocalId), // Takes any type, returns unit
 
     Intrinsic(Intrinsic, LocalId),
-    ArrayOp(ArrayOp),
+    ArrayOp(ModeScheme, ArrayOp),
     IoOp(IoOp),
     // Takes message by borrow (not that it matters when the program is about to end anyway...)
     Panic(

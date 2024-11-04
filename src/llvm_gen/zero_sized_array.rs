@@ -1,10 +1,9 @@
-use crate::data::low_ast as low;
+use crate::data::mode_annot_ast2::Mode;
 use crate::data::rc_specialized_ast2::ModeScheme;
 use crate::llvm_gen::array::ArrayImpl;
 use crate::llvm_gen::fountain_pen::scope;
 use crate::llvm_gen::tal::{ProfileRc, Tal};
 use crate::llvm_gen::{get_llvm_type, is_zero_sized, Globals, Instances};
-use inkwell::context::Context;
 use inkwell::module::Linkage;
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
@@ -12,8 +11,7 @@ use inkwell::values::FunctionValue;
 
 #[derive(Clone, Debug)]
 pub struct ZeroSizedArrayImpl<'a> {
-    low_item_type: low::Type,
-
+    mode: Mode,
     item_type: BasicTypeEnum<'a>,
     array_type: BasicTypeEnum<'a>,
     hole_array_type: BasicTypeEnum<'a>,
@@ -26,23 +24,31 @@ pub struct ZeroSizedArrayImpl<'a> {
     replace: FunctionValue<'a>,
     reserve: FunctionValue<'a>,
     retain_array: FunctionValue<'a>,
+    derived_retain_array: FunctionValue<'a>,
     release_array: FunctionValue<'a>,
     retain_hole: FunctionValue<'a>,
+    derived_retain_hole: FunctionValue<'a>,
     release_hole: FunctionValue<'a>,
 }
 
 impl<'a> ZeroSizedArrayImpl<'a> {
     pub fn declare(
         globals: &Globals<'a, '_>,
-        instances: &Instances<'a>,
-        low_item_type: &low::Type,
+        _instances: &Instances<'a>,
+        scheme: &ModeScheme,
     ) -> Self {
-        debug_assert!(is_zero_sized(globals, low_item_type));
-
         let context = globals.context;
         let module = globals.module;
 
-        let item_type = get_llvm_type(globals, instances, low_item_type);
+        let (ModeScheme::Array(mode, item_scheme) | ModeScheme::HoleArray(mode, item_scheme)) =
+            scheme
+        else {
+            panic!();
+        };
+
+        let item_type = get_llvm_type(globals, &item_scheme.as_type());
+
+        debug_assert!(is_zero_sized(globals, &item_scheme.as_type()));
         let i64_type = context.i64_type();
         let void_type = context.void_type();
 
@@ -112,14 +118,18 @@ impl<'a> ZeroSizedArrayImpl<'a> {
 
         let retain_array = void_fun("retain", &[array_type.into()]);
 
+        let derived_retain_array = void_fun("derived_retain", &[array_type.into()]);
+
         let release_array = void_fun("release", &[array_type.into()]);
 
         let retain_hole = void_fun("retain_hole", &[hole_array_type.into()]);
 
+        let derived_retain_hole = void_fun("derived_retain_hole", &[hole_array_type.into()]);
+
         let release_hole = void_fun("release_hole", &[hole_array_type.into()]);
 
         Self {
-            low_item_type: low_item_type.clone(),
+            mode: *mode,
             item_type,
             array_type,
             hole_array_type,
@@ -132,15 +142,24 @@ impl<'a> ZeroSizedArrayImpl<'a> {
             replace,
             reserve,
             retain_array,
+            derived_retain_array,
             release_array,
             retain_hole,
+            derived_retain_hole,
             release_hole,
         }
     }
 }
 
 impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
-    fn define(&self, context: &'a Context, target: &TargetData, tal: &Tal<'a>) {
+    fn define(
+        &self,
+        globals: &Globals<'a, '_>,
+        _instance: &mut Instances<'a>,
+        target: &TargetData,
+        tal: &Tal<'a>,
+    ) {
+        let context = globals.context;
         // define 'new'
         {
             let s = scope(self.new, context, target);
@@ -235,6 +254,20 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
             s.ret_void();
         }
 
+        // define 'derived_retain_array'
+        {
+            let s = scope(self.derived_retain_array, context, target);
+            // let array = s.arg(0); UNUSED ARGUMENT
+
+            if self.mode == Mode::Owned {
+                if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                    s.call_void(record_retain, &[]);
+                }
+            }
+
+            s.ret_void();
+        }
+
         // define 'release_array'
         {
             let s = scope(self.release_array, context, target);
@@ -254,6 +287,20 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
 
             if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
                 s.call_void(record_retain, &[]);
+            }
+
+            s.ret_void();
+        }
+
+        // define 'derived_retain_hole_array'
+        {
+            let s = scope(self.derived_retain_hole, context, target);
+            // let array = s.arg(0); UNUSED ARGUMENT
+
+            if self.mode == Mode::Owned {
+                if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                    s.call_void(record_retain, &[]);
+                }
             }
 
             s.ret_void();
@@ -320,8 +367,11 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         self.retain_array
     }
 
-    fn release_array(&self, item_scheme: &ModeScheme) -> FunctionValue<'a> {
-        debug_assert!(item_scheme.as_type() == self.low_item_type);
+    fn derived_retain_array(&self) -> FunctionValue<'a> {
+        self.derived_retain_array
+    }
+
+    fn release_array(&self) -> FunctionValue<'a> {
         self.release_array
     }
 
@@ -329,8 +379,11 @@ impl<'a> ArrayImpl<'a> for ZeroSizedArrayImpl<'a> {
         self.retain_hole
     }
 
-    fn release_hole(&self, item_scheme: &ModeScheme) -> FunctionValue<'a> {
-        debug_assert!(item_scheme.as_type() == self.low_item_type);
+    fn derived_retain_hole(&self) -> FunctionValue<'a> {
+        self.derived_retain_hole
+    }
+
+    fn release_hole(&self) -> FunctionValue<'a> {
         self.release_hole
     }
 }

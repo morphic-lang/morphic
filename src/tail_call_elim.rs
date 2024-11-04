@@ -272,11 +272,11 @@ fn trans_expr(
 
         rc::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
 
-        rc::Expr::RcOp(op, local) => tail::Expr::RcOp(op.clone(), *local),
+        rc::Expr::RcOp(scheme, op, local) => tail::Expr::RcOp(scheme.clone(), op.clone(), *local),
 
         rc::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
 
-        rc::Expr::ArrayOp(op) => tail::Expr::ArrayOp(op.clone()),
+        rc::Expr::ArrayOp(scheme, op) => tail::Expr::ArrayOp(scheme.clone(), op.clone()),
 
         rc::Expr::IoOp(op) => tail::Expr::IoOp(op.clone()),
 

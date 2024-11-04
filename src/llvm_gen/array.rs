@@ -1,11 +1,17 @@
 use crate::llvm_gen::tal::Tal;
-use inkwell::context::Context;
+use crate::llvm_gen::{Globals, Instances};
 use inkwell::targets::TargetData;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::FunctionValue;
 
 pub trait ArrayImpl<'a> {
-    fn define(&self, context: &'a Context, target: &TargetData, tal: &Tal<'a>);
+    fn define<'b>(
+        &self,
+        globals: &Globals<'a, 'b>,
+        instances: &mut Instances<'a>,
+        target: &'b TargetData,
+        tal: &Tal<'a>,
+    );
 
     fn item_type(&self) -> BasicTypeEnum<'a>;
     fn array_type(&self) -> BasicTypeEnum<'a>;

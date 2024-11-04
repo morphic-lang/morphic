@@ -59,37 +59,30 @@ impl ModeScheme {
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
     Get(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
-        LocalId,    // Index
+        LocalId, // Array
+        LocalId, // Index
     ), // Returns item
     Extract(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
-        LocalId,    // Index
+        LocalId, // Array
+        LocalId, // Index
     ), // Returns tuple of (item, hole array)
     Len(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
+        LocalId, // Array
     ),
     Push(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
-        LocalId,    // Item
+        LocalId, // Array
+        LocalId, // Item
     ),
     Pop(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
+        LocalId, // Array
     ), // Returns tuple (array, item)
     Replace(
-        ModeScheme, // Scheme of input
-        LocalId,    // Hole array
-        LocalId,    // Item
+        LocalId, // Hole array
+        LocalId, // Item
     ), // Returns new array
     Reserve(
-        ModeScheme, // Scheme of input
-        LocalId,    // Array
-        LocalId,    // Capacity
+        LocalId, // Array
+        LocalId, // Capacity
     ), // Returns new array
 }
 
@@ -99,10 +92,10 @@ pub enum IoOp {
     Output(LocalId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum RcOp {
     Retain,
-    Release(ModeScheme),
+    Release,
 }
 
 #[derive(Clone, Debug)]
@@ -123,21 +116,14 @@ pub enum Expr {
         LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, LocalId),
-    WrapBoxed(
-        LocalId,
-        ModeScheme, // Output type
-    ),
-    UnwrapBoxed(
-        LocalId,
-        ModeScheme, // Input type
-        ModeScheme, // Output type
-    ),
+    WrapBoxed(LocalId, ModeScheme),
+    UnwrapBoxed(LocalId, ModeScheme, ModeScheme),
     WrapCustom(CustomTypeId, LocalId),
     UnwrapCustom(CustomTypeId, LocalId),
-    RcOp(RcOp, LocalId),
+    RcOp(ModeScheme, RcOp, LocalId),
 
     Intrinsic(Intrinsic, LocalId),
-    ArrayOp(ArrayOp),
+    ArrayOp(ModeScheme, ArrayOp),
     IoOp(IoOp),
     Panic(
         Type,    // Return type

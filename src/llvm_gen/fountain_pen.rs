@@ -50,6 +50,14 @@ impl<'a, 'b> Scope<'a, 'b> {
         }
     }
 
+    pub fn builder(&self) -> &Builder<'a> {
+        &self.builder
+    }
+
+    pub fn func(&self) -> FunctionValue<'a> {
+        self.func
+    }
+
     pub fn str(&self, s: &str) -> BasicValueEnum<'a> {
         self.builder
             .build_global_string_ptr(s, "global_str")

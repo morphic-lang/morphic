@@ -13,14 +13,16 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
 use crate::data::mode_annot_ast2::Mode;
 use crate::data::profile as prof;
-use crate::data::rc_specialized_ast2::ModeScheme;
+use crate::data::rc_specialized_ast2::{ModeScheme, ModeSchemeId, RcOp};
 use crate::data::tail_rec_ast as tail;
 use crate::llvm_gen::array::ArrayImpl;
-use crate::llvm_gen::cow_array::{CowArrayImpl, CowArrayIoImpl};
+use crate::llvm_gen::cow_array::{
+    cow_array_type, cow_hole_array_type, CowArrayImpl, CowArrayIoImpl,
+};
 use crate::llvm_gen::prof_report::{
     define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
 };
-use crate::llvm_gen::rc::RcBoxBuiltin;
+use crate::llvm_gen::rc::{rc_ptr_type, RcBoxBuiltin};
 use crate::llvm_gen::tal::{ProfileRc, Tal};
 use crate::llvm_gen::zero_sized_array::ZeroSizedArrayImpl;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
@@ -46,7 +48,6 @@ use inkwell::values::{
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use inkwell::{FloatPredicate, IntPredicate};
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::io::Write;
@@ -113,8 +114,7 @@ impl<'a, 'b> VariantsType<'a, 'b> {
     }
 
     fn new(
-        globals: &Globals<'a, '_>,
-        instances: &Instances<'a>,
+        globals: &Globals<'a, 'b>,
         variants: &'b IdVec<first_ord::VariantId, low::Type>,
     ) -> VariantsType<'a, 'b> {
         let discrim_type = if variants.len() <= 1 << 8 {
@@ -131,7 +131,7 @@ impl<'a, 'b> VariantsType<'a, 'b> {
             let mut max_alignment = 1;
             let mut max_size = 0;
             for variant_type in variants.values() {
-                let variant_type = get_llvm_type(globals, instances, &variant_type);
+                let variant_type = get_llvm_type(globals, &variant_type);
                 debug_assert!(variant_type.is_sized());
                 let alignment = globals.target.get_abi_alignment(&variant_type);
                 let size = globals.target.get_abi_size(&variant_type);
@@ -188,10 +188,9 @@ impl<'a, 'b> VariantsType<'a, 'b> {
     fn content_type<'c>(
         &self,
         globals: &Globals<'a, 'c>,
-        instances: &Instances<'a>,
         variant_id: first_ord::VariantId,
     ) -> BasicTypeEnum<'a> {
-        get_llvm_type(globals, instances, &self.variants[variant_id])
+        get_llvm_type(globals, &self.variants[variant_id])
     }
 
     fn discrim_const(&self, id: first_ord::VariantId) -> IntValue<'a> {
@@ -270,7 +269,6 @@ impl<'a> VariantsValue<'a> {
         &self,
         builder: &Builder<'a>,
         globals: &Globals<'a, '_>,
-        instances: &Instances<'a>,
         type_: &VariantsType<'a, '_>,
         id: first_ord::VariantId,
     ) -> BasicValueEnum<'a> {
@@ -285,7 +283,7 @@ impl<'a> VariantsValue<'a> {
             .unwrap();
         builder.build_store(byte_array_ptr, byte_array).unwrap();
 
-        let content_type = type_.content_type(globals, instances, id);
+        let content_type = type_.content_type(globals, id);
         let content_ptr = builder
             .build_bitcast(
                 byte_array_ptr,
@@ -368,10 +366,10 @@ impl<'a> TupleType<'a> {
         self.inner.into()
     }
 
-    fn new(globals: &Globals<'a, '_>, instances: &Instances<'a>, fields: &Vec<low::Type>) -> Self {
+    fn new<'b>(globals: &Globals<'a, 'b>, fields: &Vec<low::Type>) -> Self {
         let fields = fields
             .iter()
-            .map(|field| get_llvm_type(globals, instances, field))
+            .map(|field| get_llvm_type(globals, field))
             .collect::<Vec<_>>();
         let type_ = globals.context.struct_type(&fields[..], false);
         Self { inner: type_ }
@@ -421,6 +419,14 @@ enum IsZeroSized {
     ZeroSized,
 }
 
+// #[derive(Clone, Debug)]
+// struct Globals<'a, 'b> {
+//     context: &'a Context,
+//     module: &'b Module<'a>,
+//     custom_types: &'a IdVec<low::CustomTypeId, low::Type>,
+//     target: &'b TargetData,
+//     tal: Tal<'a>,
+// }
 #[derive(Clone, Debug)]
 struct Globals<'a, 'b> {
     context: &'a Context,
@@ -428,41 +434,40 @@ struct Globals<'a, 'b> {
     target: &'b TargetData,
     tal: Tal<'a>,
     custom_types_zero_sized: IdVec<low::CustomTypeId, IsZeroSized>,
-    custom_types: IdVec<low::CustomTypeId, CustomTypeDecls<'a>>,
+    custom_raw_types: IdVec<low::CustomTypeId, low::Type>,
+    custom_schemes: IdVec<ModeSchemeId, ModeScheme>,
     profile_points: IdVec<prof::ProfilePointId, ProfilePointDecls<'a>>,
 }
 
 #[derive(Clone, Debug)]
 struct CustomTypeDecls<'a> {
     type_: BasicTypeEnum<'a>,
-    retain: BTreeMap<ModeScheme, FunctionValue<'a>>,
-    derived_retain: BTreeMap<ModeScheme, FunctionValue<'a>>,
+    retain: FunctionValue<'a>,
+    derived_retain: FunctionValue<'a>,
     release: FunctionValue<'a>,
 }
 
 impl<'a> CustomTypeDecls<'a> {
-    fn declare_type(context: &'a Context, id: first_ord::CustomTypeId) -> Self {
-        Self {
-            type_: context.opaque_struct_type(&format!("type_{}", id.0)),
-            retain: BTreeMap::new(),
-            retain: BTreeMap::new(),
-        }
-    }
-
-    fn declare(
-        context: &'a Context,
+    fn declare<'b>(
+        globals: &Globals<'a, 'b>,
         module: &Module<'a>,
-        first_ord_id: first_ord::CustomTypeId,
-        ty: StructType<'a>,
+        mode_scheme_id: ModeSchemeId,
+        ty_: &low::Type,
     ) -> Self {
-        let void_type = context.void_type();
+        let ty = get_llvm_type(globals, &ty_);
+        let void_type = globals.context.void_type();
         let release_func = module.add_function(
-            &format!("release_{}_{}", first_ord_id.0, low_id.0),
+            &format!("release_{}", mode_scheme_id.0),
             void_type.fn_type(&[ty.into()], false),
             Some(Linkage::Internal),
         );
         let retain_func = module.add_function(
-            &format!("retain_{}_{}", first_ord_id.0, low_id.0),
+            &format!("retain_{}", mode_scheme_id.0),
+            void_type.fn_type(&[ty.into()], false),
+            Some(Linkage::Internal),
+        );
+        let derived_retain_func = module.add_function(
+            &format!("derived_retain_{}", mode_scheme_id.0),
             void_type.fn_type(&[ty.into()], false),
             Some(Linkage::Internal),
         );
@@ -470,37 +475,49 @@ impl<'a> CustomTypeDecls<'a> {
             type_: ty,
             release: release_func,
             retain: retain_func,
+            derived_retain: derived_retain_func,
         }
     }
 
-    fn define_type<'b>(
+    fn define<'b>(
         &self,
         globals: &Globals<'a, 'b>,
-        instances: &Instances<'a>,
-        ty: &low::Type,
+        instances: &mut Instances<'a>,
+        scheme: &ModeScheme,
     ) {
-        let ty = get_llvm_type(globals, instances, ty);
-        self.type_.set_body(&[ty], false);
-    }
-
-    fn define<'b>(&self, globals: &Globals<'a, 'b>, instances: &Instances<'a>, ty: &low::Type) {
         let context = globals.context;
         let builder = context.create_builder();
 
         let retain_entry = context.append_basic_block(self.retain, "retain_entry");
 
         builder.position_at_end(retain_entry);
-        let arg = self.retain.get_nth_param(0).unwrap().into_struct_value();
-        // customs types are wrapped in one element structs
-        let arg = builder.build_extract_value(arg, 0, "content").unwrap();
+        let arg = self.retain.get_nth_param(0).unwrap();
 
         gen_rc_op(
-            RcOp::Retain,
+            DerivedRcOp::Retain,
             &builder,
             instances,
             globals,
             self.retain,
-            ty,
+            scheme,
+            arg,
+        );
+
+        builder.build_return(None).unwrap();
+
+        let derived_retain_entry =
+            context.append_basic_block(self.derived_retain, "derived_retain_entry");
+
+        builder.position_at_end(derived_retain_entry);
+        let arg = self.derived_retain.get_nth_param(0).unwrap();
+
+        gen_rc_op(
+            DerivedRcOp::DerivedRetain,
+            &builder,
+            instances,
+            globals,
+            self.derived_retain,
+            scheme,
             arg,
         );
 
@@ -509,17 +526,15 @@ impl<'a> CustomTypeDecls<'a> {
         let release_entry = context.append_basic_block(self.release, "release_entry");
 
         builder.position_at_end(release_entry);
-        let arg = self.release.get_nth_param(0).unwrap().into_struct_value();
-        // customs types are wrapped in one element structs
-        let arg = builder.build_extract_value(arg, 0, "content").unwrap();
+        let arg = self.release.get_nth_param(0).unwrap();
 
         gen_rc_op(
-            RcOp::Release,
+            DerivedRcOp::Release,
             &builder,
             instances,
             globals,
             self.release,
-            ty,
+            scheme,
             arg,
         );
 
@@ -599,208 +614,112 @@ fn declare_profile_points<'a>(
 }
 
 struct Instances<'a> {
-    cow_arrays: RefCell<BTreeMap<low::Type, Rc<dyn ArrayImpl<'a> + 'a>>>,
     cow_array_io: CowArrayIoImpl<'a>,
-    rcs: RefCell<BTreeMap<low::Type, RcBoxBuiltin<'a>>>,
+    rcs: BTreeMap<ModeScheme, RcBoxBuiltin<'a>>,
+    pending_rcs: Vec<ModeScheme>,
+    cow_arrays: BTreeMap<ModeScheme, Rc<dyn ArrayImpl<'a> + 'a>>,
+    pending_cow_arrays: Vec<ModeScheme>,
 }
 
 impl<'a> Instances<'a> {
     fn new<'b>(globals: &Globals<'a, 'b>) -> Self {
         let mut cow_arrays = BTreeMap::new();
-        let byte_cow_builtin = CowArrayImpl::declare(
-            globals.context,
-            globals.target,
-            globals.module,
-            globals.context.i8_type().into(),
+
+        let owned_string = ModeScheme::Array(
+            Mode::Owned,
+            Box::new(ModeScheme::Num(first_ord::NumType::Byte)),
         );
+        let borrowed_string = ModeScheme::Array(
+            Mode::Borrowed,
+            Box::new(ModeScheme::Num(first_ord::NumType::Byte)),
+        );
+
+        let owned_string_cow_builtin = CowArrayImpl::declare(globals, &owned_string);
+
+        let borrowed_string_cow_builtin = CowArrayImpl::declare(globals, &borrowed_string);
 
         cow_arrays.insert(
-            low::Type::Num(first_ord::NumType::Byte),
-            Rc::new(byte_cow_builtin) as Rc<dyn ArrayImpl<'a>>,
+            owned_string.clone(),
+            Rc::new(owned_string_cow_builtin.clone()) as Rc<dyn ArrayImpl<'a>>,
         );
-        let cow_array_io =
-            CowArrayIoImpl::declare(globals.context, globals.module, byte_cow_builtin);
+        cow_arrays.insert(
+            borrowed_string.clone(),
+            Rc::new(borrowed_string_cow_builtin.clone()) as Rc<dyn ArrayImpl<'a>>,
+        );
+
+        let cow_array_io: CowArrayIoImpl<'_> = CowArrayIoImpl::declare(
+            globals.context,
+            globals.module,
+            owned_string_cow_builtin,
+            borrowed_string_cow_builtin,
+        );
 
         Self {
-            cow_arrays: RefCell::new(cow_arrays),
             cow_array_io: cow_array_io,
-            rcs: RefCell::new(BTreeMap::new()),
+            rcs: BTreeMap::new(),
+            pending_rcs: vec![],
+            cow_arrays: cow_arrays,
+            pending_cow_arrays: vec![owned_string, borrowed_string],
         }
     }
 
     fn get_cow_array<'b>(
-        &self,
+        &mut self,
         globals: &Globals<'a, 'b>,
-        item_type: &low::Type,
+        mode_scheme: &ModeScheme,
     ) -> Rc<dyn ArrayImpl<'a> + 'a> {
-        if let Some(existing) = self.cow_arrays.borrow().get(&item_type.clone()) {
+        if let Some(existing) = self.cow_arrays.get(mode_scheme) {
             return existing.clone();
         }
-        let ty = get_llvm_type(globals, self, item_type);
-        let new_builtin = if is_zero_sized(globals, item_type) {
-            Rc::new(ZeroSizedArrayImpl::declare(globals, self, ty)) as Rc<dyn ArrayImpl<'a>>
+        let new_builtin = if is_zero_sized(globals, &mode_scheme.as_type()) {
+            Rc::new(ZeroSizedArrayImpl::declare(globals, self, &mode_scheme))
+                as Rc<dyn ArrayImpl<'a>>
         } else {
-            Rc::new(CowArrayImpl::declare(globals, self, ty)) as Rc<dyn ArrayImpl<'a>>
+            Rc::new(CowArrayImpl::declare(globals, &mode_scheme)) as Rc<dyn ArrayImpl<'a>>
         };
         self.cow_arrays
-            .borrow_mut()
-            .insert(item_type.clone(), new_builtin.clone());
+            .insert(mode_scheme.clone(), new_builtin.clone());
+
+        self.pending_cow_arrays.push(mode_scheme.clone());
         new_builtin
     }
 
-    fn get_rc<'b>(&self, globals: &Globals<'a, 'b>, item_type: &low::Type) -> RcBoxBuiltin<'a> {
-        if let Some(existing) = self.rcs.borrow().get(&item_type.clone()) {
-            return *existing;
+    fn get_rc<'b>(
+        &mut self,
+        globals: &Globals<'a, 'b>,
+        mode_scheme: &ModeScheme,
+    ) -> RcBoxBuiltin<'a> {
+        if let Some(existing) = self.rcs.get(&mode_scheme) {
+            return existing.clone();
         }
-        let new_builtin = RcBoxBuiltin::declare(
-            globals.context,
-            globals.module,
-            get_llvm_type(globals, self, item_type),
-        );
-        self.rcs.borrow_mut().insert(item_type.clone(), new_builtin);
+        let new_builtin = RcBoxBuiltin::declare(globals, globals.module, &mode_scheme);
+        self.rcs.insert(mode_scheme.clone(), new_builtin.clone());
+        self.pending_rcs.push(mode_scheme.clone());
         return new_builtin;
     }
 
     fn define<'b>(
-        &self,
+        &mut self,
         globals: &Globals<'a, 'b>,
         rc_progress: impl ProgressLogger,
         cow_progress: impl ProgressLogger,
     ) {
-        let builder = globals.context.create_builder();
-        let void_type = globals.context.void_type();
-
         // rcs
-        let mut rc_progress = rc_progress.start_session(Some(self.rcs.borrow().len()));
-        for (i, (inner_type, rc_builtin)) in self.rcs.borrow().iter().enumerate() {
-            let llvm_inner_type = get_llvm_type(globals, self, inner_type);
-
-            let release_func = globals.module.add_function(
-                &format!("rc_release_{}", i),
-                void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
-                    false,
-                ),
-                Some(Linkage::Internal),
-            );
-
-            let release_entry = globals
-                .context
-                .append_basic_block(release_func, "release_entry");
-
-            builder.position_at_end(release_entry);
-            let arg = release_func.get_nth_param(0).unwrap();
-
-            let arg = builder
-                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
-                .unwrap();
-
-            gen_rc_op(
-                RcOp::Release,
-                &builder,
-                self,
-                globals,
-                release_func,
-                inner_type,
-                arg,
-            );
-
-            builder.build_return(None).unwrap();
-
-            rc_builtin.define(
-                globals.context,
-                globals.target,
-                &globals.tal,
-                Some(release_func),
-            );
-
+        let mut rc_progress = rc_progress.start_session(None);
+        while let Some(pending_rc) = self.pending_rcs.pop() {
+            let rc_builtin = self.rcs.get(&pending_rc).unwrap().clone();
             rc_progress.update(1);
+            rc_builtin.define(globals, self, globals.target, &globals.tal);
         }
+
         rc_progress.finish();
 
         // cow arrays
-        let mut cow_progress = cow_progress.start_session(Some(self.cow_arrays.borrow().len() + 1));
-        for (i, (inner_type, cow_array_builtin)) in self.cow_arrays.borrow().iter().enumerate() {
-            let llvm_inner_type = get_llvm_type(globals, self, inner_type);
-
-            let retain_func = globals.module.add_function(
-                &format!("cow_array_retain_{}", i),
-                void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
-                    false,
-                ),
-                Some(Linkage::Internal),
-            );
-
-            let retain_entry = globals
-                .context
-                .append_basic_block(retain_func, "retain_entry");
-
-            builder.position_at_end(retain_entry);
-            let arg = retain_func.get_nth_param(0).unwrap();
-
-            let arg = builder
-                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
-                .unwrap();
-
-            gen_rc_op(
-                RcOp::Retain,
-                &builder,
-                self,
-                globals,
-                retain_func,
-                inner_type,
-                arg,
-            );
-
-            builder.build_return(None).unwrap();
-
-            let release_func = globals.module.add_function(
-                &format!("cow_array_release_{}", i),
-                void_type.fn_type(
-                    &[llvm_inner_type.ptr_type(AddressSpace::default()).into()],
-                    false,
-                ),
-                Some(Linkage::Internal),
-            );
-
-            let release_entry = globals
-                .context
-                .append_basic_block(release_func, "release_entry");
-
-            builder.position_at_end(release_entry);
-            let arg = release_func.get_nth_param(0).unwrap();
-
-            let arg = builder
-                .build_load(llvm_inner_type, arg.into_pointer_value(), "arg")
-                .unwrap();
-
-            gen_rc_op(
-                RcOp::Release,
-                &builder,
-                self,
-                globals,
-                release_func,
-                inner_type,
-                arg,
-            );
-
-            builder.build_return(None).unwrap();
-
-            // TODO: dont generate retains/releases that aren't used
-            if is_zero_sized(globals, inner_type) {
-                cow_array_builtin.define(globals.context, globals.target, &globals.tal, None, None);
-            } else {
-                cow_array_builtin.define(
-                    globals.context,
-                    globals.target,
-                    &globals.tal,
-                    Some(retain_func),
-                    Some(release_func),
-                );
-            }
-
+        let mut cow_progress = cow_progress.start_session(None);
+        while let Some(pending_cow_array) = self.pending_cow_arrays.pop() {
+            let cow_builtin = self.cow_arrays.get(&pending_cow_array).unwrap().clone();
             cow_progress.update(1);
+            cow_builtin.define(globals, self, globals.target, &globals.tal);
         }
 
         self.cow_array_io
@@ -828,45 +747,32 @@ fn ceil_div_test() {
     assert_eq!(ceil_div(9, 3), 3);
 }
 
-fn get_llvm_type<'a, 'b>(
-    globals: &Globals<'a, 'b>,
-    instances: &Instances<'a>,
-    type_: &low::Type,
-) -> BasicTypeEnum<'a> {
+fn get_llvm_type<'a, 'b>(globals: &Globals<'a, 'b>, type_: &low::Type) -> BasicTypeEnum<'a> {
     match type_ {
         low::Type::Bool => globals.context.bool_type().into(),
         low::Type::Num(first_ord::NumType::Byte) => globals.context.i8_type().into(),
         low::Type::Num(first_ord::NumType::Int) => globals.context.i64_type().into(),
         low::Type::Num(first_ord::NumType::Float) => globals.context.f64_type().into(),
-        low::Type::Tuple(item_types) => TupleType::new(globals, instances, item_types).into_raw(),
-        low::Type::Variants(variants) => VariantsType::new(globals, instances, variants).into_raw(),
-        low::Type::Custom(type_id) => globals.custom_types[type_id].type_.into(),
-        low::Type::Array(item_type) => instances
-            .get_cow_array(globals, item_type)
-            .array_type()
-            .into(),
-        low::Type::HoleArray(item_type) => instances
-            .get_cow_array(globals, item_type)
-            .hole_array_type()
-            .into(),
-        low::Type::Boxed(type_) => instances
-            .get_rc(globals, type_)
-            .rc_type
-            .ptr_type(AddressSpace::default())
-            .into(),
+        low::Type::Tuple(item_types) => TupleType::new(globals, item_types).into_raw(),
+        low::Type::Variants(variants) => VariantsType::new(globals, variants).into_raw(),
+        low::Type::Custom(type_id) => get_llvm_type(globals, &globals.custom_raw_types[type_id]),
+        low::Type::Array(_item_type) => cow_array_type(globals),
+        low::Type::HoleArray(_item_type) => cow_hole_array_type(globals),
+        low::Type::Boxed(_type_) => rc_ptr_type(globals),
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum RcOp {
+#[derive(Copy, Clone, Debug)]
+pub enum DerivedRcOp {
+    DerivedRetain,
     Retain,
     Release,
 }
 
 fn gen_rc_op<'a, 'b>(
-    op: RcOp,
+    op: DerivedRcOp,
     builder: &Builder<'a>,
-    instances: &Instances<'a>,
+    instances: &mut Instances<'a>,
     globals: &Globals<'a, 'b>,
     func: FunctionValue<'a>,
     scheme: &ModeScheme,
@@ -875,40 +781,76 @@ fn gen_rc_op<'a, 'b>(
     match scheme {
         ModeScheme::Bool => {}
         ModeScheme::Num(_) => {}
-        ModeScheme::Array(mode, item_scheme) => match op {
-            RcOp::Retain => {
-                let retain_func = instances
-                    .get_cow_array(globals, &item_scheme.as_type())
-                    .retain_array();
+        ModeScheme::Array(_, _) => match op {
+            DerivedRcOp::Retain => {
+                let retain_func = instances.get_cow_array(globals, scheme).retain_array();
                 builder
                     .build_call(retain_func, &[arg.into()], "retain_cow_array")
                     .unwrap();
             }
-            RcOp::Release => {
-                if *mode == Mode::Owned {
-                    let release_func = instances
-                        .get_cow_array(globals, &item_scheme.as_type())
-                        .release_array();
-                    builder
-                        .build_call(release_func, &[arg.into()], "release_cow_array")
-                        .unwrap();
-                }
+            DerivedRcOp::DerivedRetain => {
+                let derived_retain_func = instances
+                    .get_cow_array(globals, scheme)
+                    .derived_retain_array();
+                builder
+                    .build_call(
+                        derived_retain_func,
+                        &[arg.into()],
+                        "derived_retain_cow_array",
+                    )
+                    .unwrap();
+            }
+            DerivedRcOp::Release => {
+                let release_func = instances.get_cow_array(globals, scheme).release_array();
+                builder
+                    .build_call(release_func, &[arg.into()], "release_cow_array")
+                    .unwrap();
             }
         },
-        ModeScheme::HoleArray(mode, item_type) => match op {
-            RcOp::Retain => {
-                let retain_func = instances.get_cow_array(globals, item_type).retain_hole();
+        ModeScheme::HoleArray(_, _) => match op {
+            DerivedRcOp::Retain => {
+                let retain_func = instances.get_cow_array(globals, scheme).retain_hole();
                 builder
                     .build_call(retain_func, &[arg.into()], "retain_cow_hole_array")
                     .unwrap();
             }
-            RcOp::Release => {
-                if *mode == Mode::Owned {
-                    let release_func = instances.get_cow_array(globals, item_type).release_hole();
-                    builder
-                        .build_call(release_func, &[arg.into()], "release_cow_hole_array")
-                        .unwrap();
-                }
+            DerivedRcOp::DerivedRetain => {
+                let derived_retain_func = instances
+                    .get_cow_array(globals, scheme)
+                    .derived_retain_hole();
+                builder
+                    .build_call(
+                        derived_retain_func,
+                        &[arg.into()],
+                        "derived_retain_cow_hole_array",
+                    )
+                    .unwrap();
+            }
+            DerivedRcOp::Release => {
+                let release_func = instances.get_cow_array(globals, scheme).release_hole();
+                builder
+                    .build_call(release_func, &[arg.into()], "release_cow_hole_array")
+                    .unwrap();
+            }
+        },
+        ModeScheme::Boxed(_, _) => match op {
+            DerivedRcOp::Retain => {
+                let retain_func = instances.get_rc(globals, scheme).retain;
+                builder
+                    .build_call(retain_func, &[arg.into()], "retain_boxed")
+                    .unwrap();
+            }
+            DerivedRcOp::DerivedRetain => {
+                let derived_retain_func = instances.get_rc(globals, scheme).derived_retain;
+                builder
+                    .build_call(derived_retain_func, &[arg.into()], "derived_retain_boxed")
+                    .unwrap();
+            }
+            DerivedRcOp::Release => {
+                let release_func = instances.get_rc(globals, scheme).release;
+                builder
+                    .build_call(release_func, &[arg.into()], "release_boxed")
+                    .unwrap();
             }
         },
         ModeScheme::Tuple(item_types) => {
@@ -927,10 +869,11 @@ fn gen_rc_op<'a, 'b>(
             }
         }
         ModeScheme::Variants(variant_types) => {
-            let type_ = VariantsType::new(globals, instances, &variant_types);
+            let variants = &variant_types.map_refs(|_i, x| x.as_type());
+            let type_ = VariantsType::new(globals, variants);
             let arg = VariantsValue::from_raw(arg);
             arg.build_switch(builder, globals, func, &type_, |id| {
-                let content = arg.build_get_content(builder, globals, instances, &type_, id);
+                let content = arg.build_get_content(builder, globals, &type_, id);
                 gen_rc_op(
                     op,
                     builder,
@@ -942,36 +885,17 @@ fn gen_rc_op<'a, 'b>(
                 );
             });
         }
-        ModeScheme::Boxed(mode, inner_type) => match op {
-            RcOp::Retain => {
-                let retain_func = instances.get_rc(globals, inner_type).retain;
-                builder
-                    .build_call(retain_func, &[arg.into()], "retain_boxed")
-                    .unwrap();
-            }
-            RcOp::Release => {
-                if *mode == Mode::Owned {
-                    let release_func = instances.get_rc(globals, inner_type).release;
-                    builder
-                        .build_call(release_func, &[arg.into()], "release_boxed")
-                        .unwrap();
-                }
-            }
-        },
-        ModeScheme::Custom(type_id) => match op {
-            RcOp::Retain => {
-                let retain_func = globals.custom_types[type_id].retain;
-                builder
-                    .build_call(retain_func, &[arg.into()], "retain_boxed")
-                    .unwrap();
-            }
-            RcOp::Release => {
-                let release_func = globals.custom_types[type_id].release;
-                builder
-                    .build_call(release_func, &[arg.into()], "release_boxed")
-                    .unwrap();
-            }
-        },
+        ModeScheme::Custom(mode_scheme_id, _type_id) => {
+            gen_rc_op(
+                op,
+                builder,
+                instances,
+                globals,
+                func,
+                &globals.custom_schemes[mode_scheme_id],
+                arg,
+            );
+        }
     }
 }
 
@@ -1120,7 +1044,7 @@ fn build_binop_float_args<'a>(
 
 fn gen_expr<'a, 'b>(
     builder: &Builder<'a>,
-    instances: &Instances<'a>,
+    instances: &mut Instances<'a>,
     globals: &Globals<'a, 'b>,
     func: FunctionValue<'a>,
     tail_targets: &IdVec<tail::TailFuncId, TailCallTarget>,
@@ -1200,7 +1124,7 @@ fn gen_expr<'a, 'b>(
         }
         E::LetMany(bindings, local_id) => {
             let count = locals.count();
-            for (_, binding_expr) in bindings {
+            for (_, binding_expr, _metadata) in bindings {
                 let binding_val = gen_expr(
                     builder,
                     instances,
@@ -1221,7 +1145,7 @@ fn gen_expr<'a, 'b>(
             builder.build_unreachable().unwrap();
             let unreachable_block = context.append_basic_block(func, "after_unreachable");
             builder.position_at_end(unreachable_block);
-            get_undef(&get_llvm_type(globals, instances, type_))
+            get_undef(&get_llvm_type(globals, type_))
         }
         E::Tuple(fields) => {
             let type_ = TupleType::from_raw(globals, fields.iter().map(|id| locals[id].get_type()));
@@ -1233,7 +1157,7 @@ fn gen_expr<'a, 'b>(
             TupleValue::from_raw(locals[local_id]).build_get_field(builder, *elem)
         }
         E::WrapVariant(variants, variant_id, local_id) => {
-            let variant_type = VariantsType::new(globals, instances, &variants);
+            let variant_type = VariantsType::new(globals, &variants);
             let discrim = variant_type.discrim_const(*variant_id);
             let byte_array = variant_type.build_bytes(builder, globals, locals[local_id]);
             variant_type
@@ -1241,26 +1165,12 @@ fn gen_expr<'a, 'b>(
                 .into_raw()
         }
         E::UnwrapVariant(variants, variant_id, local_id) => {
-            let variant_type = VariantsType::new(globals, instances, variants);
+            let variant_type = VariantsType::new(globals, variants);
             let variant_value = VariantsValue::from_raw(locals[local_id]);
-            variant_value.build_get_content(builder, globals, instances, &variant_type, *variant_id)
+            variant_value.build_get_content(builder, globals, &variant_type, *variant_id)
         }
-        E::WrapCustom(type_id, local_id) => {
-            let mut custom_type_val = globals.custom_types[type_id].type_.get_undef();
-            custom_type_val = builder
-                .build_insert_value(custom_type_val, locals[local_id], 0, "insert")
-                .unwrap()
-                .into_struct_value();
-
-            custom_type_val.into()
-        }
-        E::UnwrapCustom(_type_id, local_id) => {
-            let custom_type_content = builder
-                .build_extract_value(locals[local_id].into_struct_value(), 0, "custom_type_val")
-                .unwrap();
-
-            custom_type_content
-        }
+        E::WrapCustom(_type_id, local_id) => locals[local_id].into(),
+        E::UnwrapCustom(_type_id, local_id) => locals[local_id].into(),
         E::CheckVariant(variant_id, local_id) => {
             let discrim = VariantsValue::from_raw(locals[local_id]).build_get_discrim(builder);
 
@@ -1282,8 +1192,8 @@ fn gen_expr<'a, 'b>(
                 .left()
                 .unwrap()
         }
-        E::UnwrapBoxed(local_id, inner_type) => {
-            let builtin = instances.get_rc(globals, inner_type);
+        E::UnwrapBoxed(local_id, input_scheme, output_scheme) => {
+            let builtin = instances.get_rc(globals, input_scheme);
             let ptr = builder
                 .build_call(builtin.get, &[locals[local_id].into()], "unbox")
                 .unwrap()
@@ -1291,34 +1201,26 @@ fn gen_expr<'a, 'b>(
                 .left()
                 .unwrap()
                 .into_pointer_value();
-            builder
+            let result = builder
                 .build_load(
-                    get_llvm_type(globals, instances, inner_type),
+                    get_llvm_type(globals, &output_scheme.as_type()),
                     ptr,
                     "content",
                 )
-                .unwrap()
+                .unwrap();
+            result
         }
-        E::Retain(local_id, ty) => {
+        E::RcOp(mode_scheme, rc_op, local_id) => {
             gen_rc_op(
-                RcOp::Retain,
-                builder,
+                match rc_op {
+                    RcOp::Retain => DerivedRcOp::Retain,
+                    RcOp::Release => DerivedRcOp::Release,
+                },
+                &builder,
                 instances,
                 globals,
                 func,
-                ty,
-                locals[local_id],
-            );
-            context.struct_type(&[], false).get_undef().into()
-        }
-        E::Release(local_id, ty) => {
-            gen_rc_op(
-                RcOp::Release,
-                builder,
-                instances,
-                globals,
-                func,
-                ty,
+                mode_scheme,
                 locals[local_id],
             );
             context.struct_type(&[], false).get_undef().into()
@@ -1628,10 +1530,10 @@ fn gen_expr<'a, 'b>(
                     .unwrap()
             }
         },
-        E::ArrayOp(item_type, array_op) => {
-            let builtin = instances.get_cow_array(globals, item_type);
+        E::ArrayOp(mode_scheme, array_op) => {
+            let builtin: Rc<dyn ArrayImpl<'_>> = instances.get_cow_array(globals, mode_scheme);
             match array_op {
-                low::ArrayOp::New(_) => builder
+                low::ArrayOp::New => builder
                     .build_call(builtin.new(), &[], "cow_array_new")
                     .unwrap()
                     .try_as_basic_value()
@@ -1702,7 +1604,7 @@ fn gen_expr<'a, 'b>(
             }
         }
         E::IoOp(io_op) => {
-            let builtin_io = instances.cow_array_io;
+            let builtin_io = &instances.cow_array_io;
             match io_op {
                 low::IoOp::Input => builder
                     .build_call(builtin_io.input, &[], "cow_array_input")
@@ -1724,7 +1626,7 @@ fn gen_expr<'a, 'b>(
             }
         }
         E::Panic(ret_type, message_id) => {
-            let builtin_io = instances.cow_array_io;
+            let builtin_io = &instances.cow_array_io;
             builder
                 .build_call(
                     builtin_io.output_error,
@@ -1744,7 +1646,7 @@ fn gen_expr<'a, 'b>(
             builder.build_unreachable().unwrap();
             let unreachable_block = context.append_basic_block(func, "after_panic");
             builder.position_at_end(unreachable_block);
-            get_undef(&get_llvm_type(globals, instances, ret_type))
+            get_undef(&get_llvm_type(globals, ret_type))
         }
         E::BoolLit(val) => {
             BasicValueEnum::from(context.bool_type().const_int(*val as u64, false)).into()
@@ -1763,7 +1665,7 @@ fn gen_expr<'a, 'b>(
 
 fn gen_function<'a, 'b>(
     context: &'a Context,
-    instances: &Instances<'a>,
+    instances: &mut Instances<'a>,
     globals: &Globals<'a, 'b>,
     func_decl: FunctionValue<'a>,
     funcs: &IdVec<low::CustomFuncId, FunctionValue<'a>>,
@@ -1825,7 +1727,7 @@ fn gen_function<'a, 'b>(
     // implemented via blocks which may be jumped to, and their arguments are implemented as mutable
     // variables.
     let tail_targets = func.tail_funcs.map_refs(|tail_id, tail_func| {
-        let arg_ty = get_llvm_type(globals, instances, &tail_func.arg_type);
+        let arg_ty = get_llvm_type(globals, &tail_func.arg_type);
         let arg_var = builder
             .build_alloca(arg_ty, &format!("tail_{}_arg", tail_id.0))
             .unwrap();
@@ -2123,14 +2025,12 @@ fn find_zero_sized(
     custom_types_zero_sized.map(|_, zero_sized| zero_sized.unwrap())
 }
 
-fn declare_customs<'a>(
-    context: &'a Context,
+fn declare_customs<'a, 'b>(
+    globals: &Globals<'a, 'b>,
     module: &Module<'a>,
-    types: &IdVec<low::CustomTypeId, low::Type>,
-) -> IdVec<low::CustomTypeId, CustomTypeDecls<'a>> {
-    types.map_refs(|type_id, type_def| {
-        let type_ = CustomTypeDecls::declare_type(context, type_id);
-        CustomTypeDecls::declare(context, module, type_id, type_id, type_)
+) -> IdVec<ModeSchemeId, CustomTypeDecls<'a>> {
+    globals.custom_schemes.map_refs(|scheme_id, scheme| {
+        CustomTypeDecls::declare(globals, module, scheme_id, &scheme.as_type())
     })
 }
 
@@ -2143,7 +2043,7 @@ fn gen_program<'a>(
     cow_progress: impl ProgressLogger,
     type_progress: impl ProgressLogger,
 ) -> Module<'a> {
-    let module = context.create_module("module");
+    let module: Module = context.create_module("module");
     module.set_triple(&target_machine.get_triple());
     module.set_data_layout(&target_machine.get_target_data().get_data_layout());
 
@@ -2153,13 +2053,11 @@ fn gen_program<'a>(
         .any(|(_, prof_point)| prof_point.record_rc);
 
     let tal = Tal::declare(
-        context,
+        &context,
         &module,
         &target_machine.get_target_data(),
         profile_record_rc,
     );
-
-    let custom_types = declare_customs(context, &module, &program.custom_types.types);
 
     let profile_points = declare_profile_points(&context, &module, &program);
 
@@ -2170,37 +2068,25 @@ fn gen_program<'a>(
     let custom_types_zero_sized = find_zero_sized(&program.custom_types.types, &type_dep_order);
 
     let globals = Globals {
-        context,
+        context: &context,
         module: &module,
         target: &target_machine.get_target_data(),
         tal,
         custom_types_zero_sized,
-        custom_types,
+        custom_schemes: program.schemes,
+        custom_raw_types: program.custom_types.types,
         profile_points,
     };
 
-    let instances = Instances::new(&globals);
+    let custom_types = declare_customs(&globals, &module);
 
-    for type_id in type_dep_order {
-        let type_decls = &globals.custom_types[type_id];
-        type_decls.define_type(&globals, &instances, &program.custom_types.types[type_id]);
-
-        debug_assert!(type_decls.type_.is_sized());
-
-        // Note: the following assertion is checking an *equality of booleans* to check that types
-        // have zero size iff they are marked as having zero size.  We're not asserting that all
-        // types have zero size!
-        debug_assert_eq!(
-            globals.target.get_abi_size(&type_decls.type_) == 0,
-            globals.custom_types_zero_sized[type_id] == IsZeroSized::ZeroSized
-        );
-    }
+    let mut instances = Instances::new(&globals);
 
     let mut func_progress = func_progress.start_session(Some(program.funcs.len()));
 
     let funcs = program.funcs.map_refs(|func_id, func_def| {
-        let return_type = get_llvm_type(&globals, &instances, &func_def.ret_type);
-        let arg_type = get_llvm_type(&globals, &instances, &func_def.arg_type);
+        let return_type = get_llvm_type(&globals, &func_def.ret_type);
+        let arg_type = get_llvm_type(&globals, &func_def.arg_type);
 
         module.add_function(
             &format!("func_{}", func_id.0),
@@ -2211,8 +2097,8 @@ fn gen_program<'a>(
 
     for (func_id, func) in &funcs {
         gen_function(
-            context,
-            &instances,
+            &context,
+            &mut instances,
             &globals,
             *func,
             &funcs,
@@ -2226,9 +2112,9 @@ fn gen_program<'a>(
 
     instances.define(&globals, rc_progress, cow_progress);
 
-    let mut type_progress = type_progress.start_session(Some(program.custom_types.types.len()));
-    for (type_id, type_decls) in &globals.custom_types {
-        type_decls.define(&globals, &instances, &program.custom_types.types[type_id]);
+    let mut type_progress = type_progress.start_session(Some(custom_types.len()));
+    for (type_id, type_decls) in &custom_types {
+        type_decls.define(&globals, &mut instances, &globals.custom_schemes[type_id]);
         type_progress.update(1);
     }
     type_progress.finish();
@@ -2259,7 +2145,7 @@ fn gen_program<'a>(
 
     if program.profile_points.len() > 0 {
         let prof_report_fn = define_prof_report_fn(
-            context,
+            &context,
             &target_machine.get_target_data(),
             &module,
             &tal,
@@ -2330,7 +2216,7 @@ fn run_cc(target: cli::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
 
             let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
             std::process::Command::new(clang.path)
-                .arg("-O3")
+                .arg("-O0")
                 .arg("-ffunction-sections")
                 .arg("-fdata-sections")
                 .arg("-fPIC")
@@ -2404,7 +2290,19 @@ fn run_cc(target: cli::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
 
 fn verify_llvm(module: &Module) {
     if let Err(err) = module.verify() {
-        panic!("LLVM verification failed:\n{}", err.to_string());
+        let module_tmp_file: tempfile::NamedTempFile = tempfile::Builder::new()
+            .suffix(".ll")
+            .tempfile_in("")
+            .unwrap();
+
+        let (_file, path) = module_tmp_file.keep().unwrap();
+
+        module.print_to_file(&path).unwrap();
+        panic!(
+            "LLVM verification failed (module written to {}):\n{}",
+            &path.display(),
+            err.to_string()
+        );
     }
 }
 

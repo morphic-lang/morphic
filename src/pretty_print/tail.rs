@@ -176,11 +176,13 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
         Expr::UnwrapCustom(type_id, local_id) => {
             write![w, "unwrap custom ~{} %{}", type_id.0, local_id.0]
         }
-        Expr::WrapBoxed(local_id, _) => write![w, "wrap boxed %{}", local_id.0],
-        Expr::UnwrapBoxed(local_id, _, _) => write![w, "unwrap boxed %{}", local_id.0],
-        Expr::RcOp(op, local_id) => match op {
+        Expr::WrapBoxed(local_id, _type) => write![w, "wrap boxed %{}", local_id.0],
+        Expr::UnwrapBoxed(local_id, _input_type, _type) => {
+            write![w, "unwrap boxed %{}", local_id.0]
+        }
+        Expr::RcOp(_mode_scheme, op, local_id) => match op {
             RcOp::Retain => write_single(w, "retain", local_id),
-            RcOp::Release(_) => write_single(w, "release", local_id),
+            RcOp::Release => write_single(w, "release", local_id),
         },
         Expr::CheckVariant(variant_id, local_id) => {
             write![w, "check variant {} %{}", variant_id.0, local_id.0]
@@ -193,18 +195,18 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             local_id.0
         ],
 
-        Expr::ArrayOp(array_op) => match array_op {
-            ArrayOp::Get(_, local_id1, local_id2) => write_double(w, "get", local_id1, local_id2),
-            ArrayOp::Extract(_, local_id1, local_id2) => {
+        Expr::ArrayOp(_mode_scheme, array_op) => match array_op {
+            ArrayOp::Get(local_id1, local_id2) => write_double(w, "get", local_id1, local_id2),
+            ArrayOp::Extract(local_id1, local_id2) => {
                 write_double(w, "extract", local_id1, local_id2)
             }
-            ArrayOp::Len(_, local_id) => write_single(w, "len", local_id),
-            ArrayOp::Push(_, local_id1, local_id2) => write_double(w, "push", local_id1, local_id2),
-            ArrayOp::Pop(_, local_id) => write_single(w, "pop", local_id),
-            ArrayOp::Replace(_, local_id1, local_id2) => {
+            ArrayOp::Len(local_id) => write_single(w, "len", local_id),
+            ArrayOp::Push(local_id1, local_id2) => write_double(w, "push", local_id1, local_id2),
+            ArrayOp::Pop(local_id) => write_single(w, "pop", local_id),
+            ArrayOp::Replace(local_id1, local_id2) => {
                 write_double(w, "replace", local_id1, local_id2)
             }
-            ArrayOp::Reserve(_, local_id1, local_id2) => {
+            ArrayOp::Reserve(local_id1, local_id2) => {
                 write_double(w, "reserve", local_id1, local_id2)
             }
         },

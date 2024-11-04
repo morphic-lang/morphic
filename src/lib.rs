@@ -94,7 +94,7 @@ mod lower_structures;
 
 mod interpreter;
 
-// mod llvm_gen;
+mod llvm_gen;
 
 #[cfg(test)]
 mod test;
@@ -115,7 +115,7 @@ enum ErrorKind {
     CheckMainFailed(check_main::Error),
     CreateArtifactsFailed(io::Error),
     WriteIrFailed(io::Error),
-    // LlvmGenFailed(llvm_gen::Error),
+    LlvmGenFailed(llvm_gen::Error),
     WaitChildFailed(io::Error),
     ChildFailed { exit_status: Option<i32> },
 }
@@ -157,7 +157,7 @@ impl Error {
                 "Could not write intermediate representation artifacts: {}",
                 err
             ),
-            // LlvmGenFailed(err) => writeln!(dest, "{}", err),
+            LlvmGenFailed(err) => writeln!(dest, "{}", err),
             WaitChildFailed(err) => writeln!(dest, "Could not execute compiled program: {}", err),
             ChildFailed {
                 exit_status: Some(_),
@@ -222,9 +222,8 @@ pub fn run(
     )?;
 
     match config.mode {
-        cli::RunMode::Compile { .. } => {
-            // Ok(llvm_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::LlvmGenFailed)?)
-            todo!()
+        cli::RunMode::Compile { valgrind } => {
+            Ok(llvm_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::LlvmGenFailed)?)
         }
         cli::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
     }
@@ -233,7 +232,7 @@ pub fn run(
 pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Result<(), Error> {
     match config.target {
         cli::TargetConfig::Llvm(_) => {
-            let _lowered = compile_to_low_ast(
+            let lowered = compile_to_low_ast(
                 &config.src_path,
                 config.purity_mode,
                 &config.profile_syms,
@@ -243,8 +242,7 @@ pub fn build(config: cli::BuildConfig, files: &mut file_cache::FileCache) -> Res
                 config.progress,
                 &config.pass_options,
             )?;
-            // Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
-            todo!()
+            Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::LlvmGenFailed)?)
         }
         cli::TargetConfig::Ml(_) => match config.artifact_dir {
             None => Err(Error {
@@ -358,13 +356,17 @@ fn compile_to_first_order_ast(
 
         pretty_print::first_order::write_sml_program(&mut out_file, &first_order)
             .map_err(ErrorKind::WriteIrFailed)?;
-    }
 
-    if let Some(artifact_dir) = artifact_dir {
         let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.ml"))
             .map_err(ErrorKind::WriteIrFailed)?;
 
         pretty_print::first_order::write_ocaml_program(&mut out_file, &first_order)
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("first_order.mor"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::first_order::write_morphic_program(&mut out_file, &first_order)
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 

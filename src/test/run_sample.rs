@@ -61,27 +61,25 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
         .wait()
         .expect("Waiting on child process/thread failed");
 
-    assert_eq!(
-        status, expected_status,
-        "Child process returned unexpected status"
-    );
-
     assert!(
-        &output[..] == expected_out.as_ref(),
-        r#"Program output did not match expected output:
-      actual: {actual:?}
-    expected: {expected:?}"#,
-        actual = String::from_utf8_lossy(&output),
-        expected = String::from_utf8_lossy(expected_out.as_ref())
-    );
-
-    assert!(
-        &err_output[..] == expected_err.as_ref(),
-        r#"Program stderr did not match expected stderr:
-      actual: {actual:?}
-    expected: {expected:?}"#,
-        actual = String::from_utf8_lossy(&err_output),
-        expected = String::from_utf8_lossy(expected_err.as_ref())
+        status == expected_status
+            && &output[..] == expected_out.as_ref()
+            && &err_output[..] == expected_err.as_ref(),
+        r#"Program execution did not match expectations:
+            status:   {actual_status:?}
+            expected: {expected_status:?}
+            ---------------------------------------------
+            stdout:   {actual_stdout:?}
+            expected: {expected_stdout:?}
+            ---------------------------------------------
+            stderr:  {actual_stderr:?}
+            expected {expected_stderr:?}"#,
+        actual_status = status,
+        expected_status = expected_status,
+        actual_stdout = String::from_utf8_lossy(&output),
+        expected_stdout = String::from_utf8_lossy(expected_out.as_ref()),
+        actual_stderr = String::from_utf8_lossy(&err_output),
+        expected_stderr = String::from_utf8_lossy(expected_err.as_ref())
     );
 }
 

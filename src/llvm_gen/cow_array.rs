@@ -1,9 +1,11 @@
-use crate::data::low_ast as low;
+use core::panic;
+
+use crate::data::mode_annot_ast2::Mode;
 use crate::data::rc_specialized_ast2::ModeScheme;
 use crate::llvm_gen::array::ArrayImpl;
 use crate::llvm_gen::fountain_pen::{scope, Scope};
 use crate::llvm_gen::tal::Tal;
-use crate::llvm_gen::{get_llvm_type, Globals, Instances};
+use crate::llvm_gen::{gen_rc_op, get_llvm_type, DerivedRcOp, Globals, Instances};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::TargetData;
@@ -20,9 +22,34 @@ const F_ARR_LEN: u32 = 2; // has type u64
 const F_HOLE_IDX: u32 = 0; // has type u64
 const F_HOLE_ARR: u32 = 1; // has type CowArray<T>
 
+pub fn cow_array_type<'a>(globals: &Globals<'a, '_>) -> BasicTypeEnum<'a> {
+    let context = globals.context;
+    let i64_type = context.i64_type();
+    let i8_type = context.i8_type();
+
+    let ptr_type = i8_type.ptr_type(AddressSpace::default());
+
+    let array_type =
+        context.struct_type(&[ptr_type.into(), i64_type.into(), i64_type.into()], false);
+
+    array_type.into()
+}
+
+pub fn cow_hole_array_type<'a>(globals: &Globals<'a, '_>) -> BasicTypeEnum<'a> {
+    let i64_type = globals.context.i64_type();
+    let array_type = cow_array_type(globals);
+
+    let hole_array_type = globals
+        .context
+        .struct_type(&[i64_type.into(), array_type.into()], false);
+
+    hole_array_type.into()
+}
+
 #[derive(Clone, Debug)]
 pub struct CowArrayImpl<'a> {
-    low_item_type: low::Type,
+    pub mode: Mode,
+    pub item_scheme: ModeScheme,
 
     // implementation details
     ensure_cap: FunctionValue<'a>,
@@ -42,29 +69,30 @@ pub struct CowArrayImpl<'a> {
     replace: FunctionValue<'a>,
     reserve: FunctionValue<'a>,
     retain_array: FunctionValue<'a>,
+    derived_retain_array: FunctionValue<'a>,
     release_array: FunctionValue<'a>,
     retain_hole: FunctionValue<'a>,
+    derived_retain_hole: FunctionValue<'a>,
     release_hole: FunctionValue<'a>,
 }
 
 impl<'a> CowArrayImpl<'a> {
-    pub fn declare_type() {}
-
-    pub fn declare(
-        globals: &Globals<'a, '_>,
-        instances: &Instances<'a>,
-        low_item_type: &low::Type,
-    ) -> Self {
+    pub fn declare(globals: &Globals<'a, '_>, scheme: &ModeScheme) -> Self {
         let context = globals.context;
         let module = globals.module;
 
-        let item_type = get_llvm_type(globals, instances, low_item_type);
+        let (ModeScheme::Array(mode, item_scheme) | ModeScheme::HoleArray(mode, item_scheme)) =
+            scheme
+        else {
+            panic!();
+        };
+
+        let item_type = get_llvm_type(globals, &item_scheme.as_type());
         let void_type = context.void_type();
         let i64_type = context.i64_type();
         let item_ptr_type = item_type.ptr_type(AddressSpace::default());
 
-        let array_type = context.opaque_struct_type("builtin_cow_array");
-        array_type.set_body(
+        let array_type = context.struct_type(
             &[item_ptr_type.into(), i64_type.into(), i64_type.into()],
             false,
         );
@@ -128,6 +156,12 @@ impl<'a> CowArrayImpl<'a> {
             Some(Linkage::Internal),
         );
 
+        let derived_retain_array = module.add_function(
+            "builtin_cow_array_derived_retain",
+            void_type.fn_type(&[array_type.into()], false),
+            Some(Linkage::Internal),
+        );
+
         let release_array = module.add_function(
             "builtin_cow_array_release",
             void_type.fn_type(&[array_type.into()], false),
@@ -136,6 +170,12 @@ impl<'a> CowArrayImpl<'a> {
 
         let retain_hole = module.add_function(
             "builtin_cow_array_retain_hole",
+            void_type.fn_type(&[hole_array_type.into()], false),
+            Some(Linkage::Internal),
+        );
+
+        let derived_retain_hole = module.add_function(
+            "builtin_cow_array_derived_retain_hole",
             void_type.fn_type(&[hole_array_type.into()], false),
             Some(Linkage::Internal),
         );
@@ -165,7 +205,8 @@ impl<'a> CowArrayImpl<'a> {
         );
 
         Self {
-            low_item_type: low_item_type.clone(),
+            mode: *mode,
+            item_scheme: (**item_scheme).clone(),
 
             obtain_unique,
             ensure_cap,
@@ -183,15 +224,24 @@ impl<'a> CowArrayImpl<'a> {
             replace,
             reserve,
             retain_array,
+            derived_retain_array,
             release_array,
             retain_hole,
+            derived_retain_hole,
             release_hole,
         }
     }
 }
 
 impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
-    fn define<'b>(&self, context: &'a Context, target: &'b TargetData, tal: &Tal<'a>) {
+    fn define<'b>(
+        &self,
+        globals: &Globals<'a, 'b>,
+        instances: &mut Instances<'a>,
+        target: &'b TargetData,
+        tal: &Tal<'a>,
+    ) {
+        let context = globals.context;
         let array_type = self.array_type;
 
         // Offset a reference (an *i64) into the underlying heap buffer by sizeof(i64) to skip the leading
@@ -246,6 +296,16 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
             s.call_void(self.bounds_check, &[me, idx]);
             let data = s.field(me, F_ARR_DATA);
+
+            gen_rc_op(
+                DerivedRcOp::DerivedRetain,
+                s.builder(),
+                instances,
+                globals,
+                s.func(),
+                &self.item_scheme,
+                s.ptr_get(self.item_type, s.buf_addr(self.item_type, data, idx)),
+            );
 
             s.ret(s.make_tup(&[
                 s.buf_get(self.item_type, data, idx),
@@ -320,11 +380,23 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let item = s.arg(1);
             let idx = s.field(hole, F_HOLE_IDX);
             let me = s.field(hole, F_HOLE_ARR);
-            let new_me = s.call(self.obtain_unique, &[me]);
+            let me = s.call(self.obtain_unique, &[me]);
 
-            s.buf_set(self.item_type, s.field(new_me, F_ARR_DATA), idx, item);
+            let data = s.field(me, F_ARR_DATA);
 
-            s.ret(new_me);
+            gen_rc_op(
+                DerivedRcOp::Release,
+                s.builder(),
+                instances,
+                globals,
+                s.func(),
+                &self.item_scheme,
+                s.ptr_get(self.item_type, s.buf_addr(self.item_type, data, idx)),
+            );
+
+            s.buf_set(self.item_type, s.field(me, F_ARR_DATA), idx, item);
+
+            s.ret(me);
         }
 
         // define 'reserve'
@@ -417,6 +489,25 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             s.ret_void();
         }
 
+        // define 'derived_retain_array'
+        {
+            let s = scope(self.derived_retain_array, context, target);
+            let me = s.arg(0);
+
+            let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
+
+            if self.mode == Mode::Owned {
+                s.if_(s.not(s.is_null(refcount_ptr)), |s| {
+                    s.ptr_set(
+                        refcount_ptr,
+                        s.add(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1)),
+                    );
+                });
+            }
+
+            s.ret_void();
+        }
+
         // define 'release_array'
         {
             let s = scope(self.release_array, context, target);
@@ -425,17 +516,24 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             s.if_(s.not(s.is_null(refcount_ptr)), |s| {
-                let new_refcount = s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
+                let new_refcount: BasicValueEnum<'_> =
+                    s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
                 s.ptr_set(refcount_ptr, new_refcount);
 
                 let data = s.field(me, F_ARR_DATA);
 
                 s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                    if let Some(item_release) = item_release {
-                        s.for_(s.field(me, F_ARR_LEN), |s, i| {
-                            s.call_void(item_release, &[s.buf_addr(self.item_type, data, i)]);
-                        });
-                    }
+                    s.for_(s.field(me, F_ARR_LEN), |s, i| {
+                        gen_rc_op(
+                            DerivedRcOp::Release,
+                            s.builder(),
+                            instances,
+                            globals,
+                            s.func(),
+                            &self.item_scheme,
+                            s.ptr_get(self.item_type, s.buf_addr(self.item_type, data, i)),
+                        );
+                    });
                     s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
                 });
             });
@@ -452,35 +550,21 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             s.ret_void();
         }
 
+        // define 'derived_retain_hole'
+        {
+            let s = scope(self.derived_retain_hole, context, target);
+            let me = s.arg(0);
+
+            s.call_void(self.derived_retain_array, &[s.field(me, F_HOLE_ARR)]);
+            s.ret_void();
+        }
+
         // define 'release_hole'
         {
             let s = scope(self.release_hole, context, target);
             let me = s.arg(0);
 
-            let hole_idx = s.field(me, F_HOLE_IDX);
-            let arr = s.field(me, F_HOLE_ARR);
-
-            let refcount_ptr = data_to_buf(&s, s.field(arr, F_ARR_DATA));
-
-            let new_refcount = s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
-            s.ptr_set(refcount_ptr, new_refcount);
-
-            let data = s.field(arr, F_ARR_DATA);
-
-            s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                if let Some(item_release) = item_release {
-                    // TODO: Investigate implementing this as two 'for' loops covering the ranges
-                    // [0, hole_idx) and [hole_idx + 1, len), and determine if this would be faster
-                    // than using a single 'for' loop with an internal branch.
-                    s.for_(s.field(arr, F_ARR_LEN), |s, i| {
-                        s.if_(s.ne(i, hole_idx), |s| {
-                            s.call_void(item_release, &[s.buf_addr(self.item_type, data, i)]);
-                        });
-                    });
-                }
-                s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
-            });
-
+            s.call_void(self.release_array, &[s.field(me, F_HOLE_ARR)]);
             s.ret_void();
         }
 
@@ -568,7 +652,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let s = scope(self.obtain_unique, context, target);
             let me = s.arg(0);
 
-            let refcount = data_to_buf(&s, s.field(me, F_ARR_DATA));
+            let refcount: BasicValueEnum<'a> = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             s.if_(s.is_null(refcount), |s| {
                 let me = s.make_struct(
@@ -585,10 +669,6 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
             let len = s.field(me, F_ARR_LEN);
             let cap = s.field(me, F_ARR_CAP);
-
-            s.if_(s.eq(cap, s.usize(0)), |s| {
-                s.print("failure", &[], tal);
-            });
 
             s.if_(s.eq(s.ptr_get(s.i64_t(), refcount), s.i64(1)), |s| {
                 s.ret(me);
@@ -615,18 +695,24 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                 );
             });
 
-            if let Some(item_retain) = item_retain {
-                s.for_(len, |s, i| {
-                    s.call_void(
-                        item_retain,
-                        &[s.buf_addr(
+            s.for_(len, |s, i| {
+                gen_rc_op(
+                    DerivedRcOp::DerivedRetain,
+                    s.builder(),
+                    instances,
+                    globals,
+                    s.func(),
+                    &self.item_scheme,
+                    s.ptr_get(
+                        self.item_type,
+                        s.buf_addr(
                             self.item_type,
                             s.ptr_cast(self.item_type.into(), s.field(me, F_ARR_DATA)),
                             i,
-                        )],
-                    );
-                });
-            }
+                        ),
+                    ),
+                );
+            });
 
             s.call(
                 tal.memcpy,
@@ -700,7 +786,11 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
         self.retain_array
     }
 
-    fn release_array(&self, _item_scheme: &ModeScheme) -> FunctionValue<'a> {
+    fn derived_retain_array(&self) -> FunctionValue<'a> {
+        self.derived_retain_array
+    }
+
+    fn release_array(&self) -> FunctionValue<'a> {
         self.release_array
     }
 
@@ -708,14 +798,19 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
         self.retain_hole
     }
 
-    fn release_hole(&self, _item_scheme: &ModeScheme) -> FunctionValue<'a> {
+    fn derived_retain_hole(&self) -> FunctionValue<'a> {
+        self.derived_retain_hole
+    }
+
+    fn release_hole(&self) -> FunctionValue<'a> {
         self.release_hole
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct CowArrayIoImpl<'a> {
-    pub byte_array_type: CowArrayImpl<'a>,
+    pub owned_byte_array: CowArrayImpl<'a>,
+    pub borrowed_byte_array: CowArrayImpl<'a>,
     pub input: FunctionValue<'a>,
     pub output: FunctionValue<'a>,
     pub output_error: FunctionValue<'a>,
@@ -725,30 +820,32 @@ impl<'a> CowArrayIoImpl<'a> {
     pub fn declare(
         context: &'a Context,
         module: &Module<'a>,
-        byte_array_type: CowArrayImpl<'a>,
+        owned_byte_array: CowArrayImpl<'a>,
+        borrowed_byte_array: CowArrayImpl<'a>,
     ) -> Self {
         let void_type = context.void_type();
 
         let input = module.add_function(
             "builtin_cow_array_input",
-            byte_array_type.array_type.fn_type(&[], false),
+            owned_byte_array.array_type.fn_type(&[], false),
             Some(Linkage::Internal),
         );
 
         let output = module.add_function(
             "builtin_cow_array_output",
-            void_type.fn_type(&[byte_array_type.array_type.into()], false),
+            void_type.fn_type(&[borrowed_byte_array.array_type.into()], false),
             Some(Linkage::Internal),
         );
 
         let output_error = module.add_function(
             "builtin_cow_array_output_error",
-            void_type.fn_type(&[byte_array_type.array_type.into()], false),
+            void_type.fn_type(&[borrowed_byte_array.array_type.into()], false),
             Some(Linkage::Internal),
         );
 
         Self {
-            byte_array_type,
+            owned_byte_array,
+            borrowed_byte_array,
             input,
             output,
             output_error,
@@ -761,8 +858,8 @@ impl<'a> CowArrayIoImpl<'a> {
             let s = scope(self.input, context, target);
 
             s.call(tal.flush, &[]);
-            let array = s.alloca(self.byte_array_type.array_type);
-            s.ptr_set(array, s.call(self.byte_array_type.new, &[]));
+            let array = s.alloca(self.owned_byte_array.array_type);
+            s.ptr_set(array, s.call(self.owned_byte_array.new, &[]));
 
             let getchar_result = s.alloca(s.i32_t());
             s.while_(
@@ -779,9 +876,9 @@ impl<'a> CowArrayIoImpl<'a> {
                     s.ptr_set(
                         array,
                         s.call(
-                            self.byte_array_type.push,
+                            self.owned_byte_array.push,
                             &[
-                                s.ptr_get(self.byte_array_type.array_type, array),
+                                s.ptr_get(self.owned_byte_array.array_type, array),
                                 input_byte,
                             ],
                         ),
@@ -789,7 +886,7 @@ impl<'a> CowArrayIoImpl<'a> {
                 },
             );
 
-            s.ret(s.ptr_get(self.byte_array_type.array_type, array));
+            s.ret(s.ptr_get(self.owned_byte_array.array_type, array));
         }
 
         // define 'output'

@@ -45,10 +45,10 @@ pub enum Expr {
     WrapCustom(CustomTypeId, rc::LocalId),
     UnwrapCustom(CustomTypeId, rc::LocalId),
 
-    RcOp(RcOp, rc::LocalId),
+    RcOp(ModeScheme, RcOp, rc::LocalId),
 
     Intrinsic(Intrinsic, rc::LocalId),
-    ArrayOp(rc::ArrayOp),
+    ArrayOp(ModeScheme, rc::ArrayOp),
     IoOp(rc::IoOp),
     Panic(rc::Type, rc::LocalId),
 

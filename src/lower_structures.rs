@@ -169,48 +169,34 @@ fn lower_expr(
         tail::Expr::UnwrapCustom(type_id, wrapped_id) => {
             low::Expr::UnwrapCustom(*type_id, wrapped_id.lookup_in(context))
         }
-        tail::Expr::RcOp(op, local_id) => {
-            let type_ = context.local_binding(*local_id).0.clone();
-            low::Expr::RcOp(op.clone(), type_, local_id.lookup_in(context))
+        tail::Expr::RcOp(scheme, op, local_id) => {
+            low::Expr::RcOp(scheme.clone(), op.clone(), local_id.lookup_in(context))
         }
         tail::Expr::Intrinsic(intr, local_id) => {
             low::Expr::Intrinsic(*intr, local_id.lookup_in(context))
         }
-        tail::Expr::ArrayOp(array_op) => {
+        tail::Expr::ArrayOp(mode_scheme, array_op) => {
             let array_expr = match array_op {
-                rc::ArrayOp::Get(scheme, array_id, index_id) => low::ArrayOp::Get(
-                    scheme.clone(),
-                    array_id.lookup_in(context),
-                    index_id.lookup_in(context),
-                ),
-                rc::ArrayOp::Extract(scheme, array_id, index_id) => low::ArrayOp::Extract(
-                    scheme.clone(),
-                    array_id.lookup_in(context),
-                    index_id.lookup_in(context),
-                ),
-                rc::ArrayOp::Len(scheme, array_id) => {
-                    low::ArrayOp::Len(scheme.clone(), array_id.lookup_in(context))
+                rc::ArrayOp::Get(array_id, index_id) => {
+                    low::ArrayOp::Get(array_id.lookup_in(context), index_id.lookup_in(context))
                 }
-                rc::ArrayOp::Push(scheme, array_id, item_id) => low::ArrayOp::Push(
-                    scheme.clone(),
-                    array_id.lookup_in(context),
-                    item_id.lookup_in(context),
-                ),
-                rc::ArrayOp::Pop(scheme, array_id) => {
-                    low::ArrayOp::Pop(scheme.clone(), array_id.lookup_in(context))
+                rc::ArrayOp::Extract(array_id, index_id) => {
+                    low::ArrayOp::Extract(array_id.lookup_in(context), index_id.lookup_in(context))
                 }
-                rc::ArrayOp::Replace(scheme, array_id, item_id) => low::ArrayOp::Replace(
-                    scheme.clone(),
-                    array_id.lookup_in(context),
-                    item_id.lookup_in(context),
-                ),
-                rc::ArrayOp::Reserve(scheme, array_id, capacity_id) => low::ArrayOp::Reserve(
-                    scheme.clone(),
+                rc::ArrayOp::Len(array_id) => low::ArrayOp::Len(array_id.lookup_in(context)),
+                rc::ArrayOp::Push(array_id, item_id) => {
+                    low::ArrayOp::Push(array_id.lookup_in(context), item_id.lookup_in(context))
+                }
+                rc::ArrayOp::Pop(array_id) => low::ArrayOp::Pop(array_id.lookup_in(context)),
+                rc::ArrayOp::Replace(array_id, item_id) => {
+                    low::ArrayOp::Replace(array_id.lookup_in(context), item_id.lookup_in(context))
+                }
+                rc::ArrayOp::Reserve(array_id, capacity_id) => low::ArrayOp::Reserve(
                     array_id.lookup_in(context),
                     capacity_id.lookup_in(context),
                 ),
             };
-            low::Expr::ArrayOp(array_expr)
+            low::Expr::ArrayOp(mode_scheme.clone(), array_expr)
         }
         tail::Expr::IoOp(io_type) => low::Expr::IoOp(match io_type {
             rc::IoOp::Input => low::IoOp::Input,
@@ -227,7 +213,7 @@ fn lower_expr(
 
             let mut result_id = builder.add_expr(
                 result_type.clone(),
-                low::Expr::ArrayOp(low::ArrayOp::New(scheme.clone())),
+                low::Expr::ArrayOp(scheme.clone(), low::ArrayOp::New),
             );
 
             let capacity_id = builder.add_expr(
@@ -237,21 +223,19 @@ fn lower_expr(
 
             result_id = builder.add_expr(
                 result_type.clone(),
-                low::Expr::ArrayOp(low::ArrayOp::Reserve(
+                low::Expr::ArrayOp(
                     scheme.clone(),
-                    result_id,
-                    capacity_id,
-                )),
+                    low::ArrayOp::Reserve(result_id, capacity_id),
+                ),
             );
 
             for elem_id in elems {
                 result_id = builder.add_expr(
                     result_type.clone(),
-                    low::Expr::ArrayOp(low::ArrayOp::Push(
+                    low::Expr::ArrayOp(
                         scheme.clone(),
-                        result_id,
-                        elem_id.lookup_in(context),
-                    )),
+                        low::ArrayOp::Push(result_id, elem_id.lookup_in(context)),
+                    ),
                 );
             }
 
