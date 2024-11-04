@@ -135,16 +135,9 @@ impl Lt {
         }
     }
 
-    pub fn contains(&self, other: &Path) -> bool {
-        match (self, other) {
-            (Lt::Empty, _) => false,
-            (Lt::Local(l), p) => l.contains(p),
-            (Lt::Join(_), _) => true,
-        }
-    }
-
-    /// True iff no leaf of `self` occurs "later in time" than `other`. This condition is
-    /// reflexive, but non-transitive.
+    /// `true` iff no leaf of `self` occurs "later in time" than `other`. `other` is treated as
+    /// "left biased" in the sense that, if other is a `prefix` of some branch of `self`, we return
+    /// `true`.
     ///
     /// Panics if `self` and `other` are not structurally compatible.
     pub fn does_not_exceed(&self, other: &Path) -> bool {
@@ -185,62 +178,13 @@ impl LocalLt {
         }
     }
 
-    pub fn contains(&self, rhs: &Path) -> bool {
-        let mut lhs = self;
-        for elem in &rhs.0 {
-            match (lhs, elem) {
-                (LocalLt::Final, _) => {
-                    panic!(
-                        "compared lifetimes of different lengths (while technically well-defined, \
-                         this is almost certainly a bug)"
-                    )
-                }
-                (LocalLt::Seq(inner, i1), PathElem::Seq(i2)) => {
-                    if i1 < i2 {
-                        return false;
-                    } else if i1 > i2 {
-                        return true;
-                    } else {
-                        lhs = inner;
-                        continue;
-                    }
-                }
-                (LocalLt::Alt(alt), PathElem::Alt { i, n }) => {
-                    if alt.len() != *n {
-                        panic!("incompatible lifetimes");
-                    }
-                    match &alt[*i] {
-                        None => {
-                            return false;
-                        }
-                        Some(inner) => {
-                            lhs = inner;
-                            continue;
-                        }
-                    }
-                }
-                _ => {
-                    panic!("incompatible lifetimes");
-                }
-            }
-        }
-        assert!(
-            *lhs == LocalLt::Final,
-            "compared lifetimes of different lengths (while technically well-defined, this is \
-             almost certainly a bug)"
-        );
-        true
-    }
-
     pub fn does_not_exceed(&self, rhs: &Path) -> bool {
         let mut lhs = self;
         for elem in &rhs.0 {
             match (lhs, elem) {
                 (LocalLt::Final, _) => {
-                    panic!(
-                        "compared lifetimes of different lengths (while technically well-defined, \
-                         this is almost certainly a bug)"
-                    )
+                    // `lhs` is a prefix of `rhs`
+                    return false;
                 }
                 (LocalLt::Seq(inner, i1), PathElem::Seq(i2)) => {
                     if i1 < i2 {
@@ -271,11 +215,7 @@ impl LocalLt {
                 }
             }
         }
-        assert!(
-            *lhs == LocalLt::Final,
-            "compared lifetimes of different lengths (while technically well-defined, this is \
-             almost certainly a bug)"
-        );
+        // `rhs` is a prefix of or "equal to" `lhs`
         true
     }
 }
@@ -898,6 +838,14 @@ pub fn elim_boxed<M: Clone, L: Clone, I: Id + 'static>(
     elim_box_like(shape, ty.res().as_slice())
 }
 
+pub fn arg_path(path: &Path, arg_idx: usize, num_args: usize) -> Path {
+    if num_args > 1 {
+        path.seq(arg_idx)
+    } else {
+        path.clone()
+    }
+}
+
 pub fn bind_lts<M, I: Id + 'static>(
     interner: &Interner<I>,
     ty1: &Type<M, LtParam, I>,
@@ -1458,9 +1406,5 @@ mod tests {
         assert!(!lt.does_not_exceed(&before));
         assert!(lt.does_not_exceed(&eq)); // reflexivity
         assert!(lt.does_not_exceed(&after));
-
-        assert!(lt.contains(&before));
-        assert!(lt.contains(&eq));
-        assert!(!lt.contains(&after));
     }
 }

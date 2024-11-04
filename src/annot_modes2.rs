@@ -743,7 +743,7 @@ fn create_occurs_from_model(
 
     let get_lt = get_lt;
 
-    for (arg, occur) in sig.args.iter().zip(&mut arg_occurs) {
+    for (i, (arg, occur)) in sig.args.iter().zip(&mut arg_occurs).enumerate() {
         for (slot, model_res) in arg.get_res(&occur.ty.shape()) {
             // Impose mode constraints on the argument.
             let res = &mut occur.ty.res_mut()[slot];
@@ -755,7 +755,7 @@ fn create_occurs_from_model(
             } else if sig.unused_lts.contains(&model_res.lt) {
                 Lt::Empty
             } else {
-                path.as_lt(interner)
+                annot::arg_path(path, i, args.len()).as_lt(interner)
             };
         }
     }

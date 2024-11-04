@@ -4,8 +4,8 @@ use crate::data::flat_ast as flat;
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
-    self as annot, enumerate_shapes, Lt, LtParam, Mode, ModeParam, ModeSolution, Path, Res,
-    ResModes, ShapeInner, SlotId, TypeFo,
+    self as annot, iter_shapes, Lt, LtParam, Mode, ModeParam, ModeSolution, Path, Res, ResModes,
+    ShapeInner, SlotId, TypeFo,
 };
 use crate::data::obligation_annot_ast::{
     self as ob, ArrayOp, CustomFuncId, CustomTypeId, Expr, FuncDef, IoOp, Occur, RetType, Shape,
@@ -432,86 +432,110 @@ pub fn solve_program(interner: &Interner, program: annot::Program) -> ob::Progra
 // Perform flow analysis to recompute lifetimes, this time mediated by the concrete modes we have
 // inferred.
 
-fn propagate_spatial_impl(
-    interner: &Interner,
-    customs: &ob::CustomTypes,
-    seen: &mut BTreeSet<(CustomTypeId, Vec<Res<Mode, Lt>>)>,
-    start: usize,
-    shape: &Shape,
-    res: &[Res<Mode, Lt>],
-    out: &mut IdMap<SlotId, Res<Mode, Lt>>,
-) -> Lt {
-    match &*shape.inner {
-        ShapeInner::Bool | ShapeInner::Num(_) => Lt::Empty,
-        ShapeInner::Tuple(shapes) => {
-            let iter = enumerate_shapes(shapes, res, start);
-            iter.fold(Lt::Empty, |acc, (shape, (start, _), res)| {
-                let ob = propagate_spatial_impl(interner, customs, seen, start, shape, res, out);
-                acc.join(interner, &ob)
-            })
-        }
-        ShapeInner::Variants(shapes) => {
-            let iter = enumerate_shapes(shapes.as_slice(), res, start);
-            iter.fold(Lt::Empty, |acc, (shape, (start, _), res)| {
-                let ob = propagate_spatial_impl(interner, customs, seen, start, shape, res, out);
-                acc.join(interner, &ob)
-            })
-        }
-        &ShapeInner::Custom(id) | &ShapeInner::SelfCustom(id) => {
-            let this = (id, res.to_vec());
-            if !seen.contains(&this) {
-                seen.insert(this);
-                let custom = &customs.types[id];
-                propagate_spatial_impl(
-                    interner,
-                    customs,
-                    seen,
-                    start,
-                    &custom.content,
-                    &custom.subst_helper.do_subst(res),
-                    out,
-                )
-            } else {
-                Lt::Empty
+struct Graph {
+    nodes: IdVec<SlotId, Res<Mode, Lt>>,
+    edges_in: IdVec<SlotId, BTreeSet<SlotId>>,
+}
+
+impl Graph {
+    fn from_type_impl(
+        customs: &ob::CustomTypes,
+        seen: &mut BTreeSet<CustomTypeId>,
+        edges_in: &mut IdVec<SlotId, BTreeSet<SlotId>>,
+        container: Option<SlotId>,
+        shape: &Shape,
+        res: &[SlotId],
+    ) {
+        match &*shape.inner {
+            ShapeInner::Bool | ShapeInner::Num(_) => {}
+            ShapeInner::Tuple(shapes) => {
+                for (shape, res) in iter_shapes(shapes, res) {
+                    Self::from_type_impl(customs, seen, edges_in, container, shape, res);
+                }
+            }
+            ShapeInner::Variants(shapes) => {
+                for (shape, res) in iter_shapes(shapes.as_slice(), res) {
+                    Self::from_type_impl(customs, seen, edges_in, container, shape, res);
+                }
+            }
+            &ShapeInner::Custom(id) | &ShapeInner::SelfCustom(id) => {
+                if !seen.contains(&id) {
+                    seen.insert(id);
+                    let custom = &customs.types[id];
+                    Self::from_type_impl(
+                        customs,
+                        seen,
+                        edges_in,
+                        container,
+                        &custom.content,
+                        &custom.subst_helper.do_subst(res),
+                    );
+                }
+            }
+            ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
+                if let Some(container) = container {
+                    edges_in[container].insert(res[0]);
+                }
+                Self::from_type_impl(customs, seen, edges_in, Some(res[0]), shape, &res[1..]);
             }
         }
-        ShapeInner::Array(shape) | ShapeInner::HoleArray(shape) | ShapeInner::Boxed(shape) => {
-            // This recursive call has the side effect of populating `out`, so we make the call
-            // regardless of whether we need the return value.
-            let inner = propagate_spatial_impl(interner, customs, seen, start, shape, res, out);
+    }
 
-            let outer = if *res[0].modes.stack_or_storage() == Mode::Owned {
-                res[0].lt.join(interner, &inner)
-            } else {
-                res[0].lt.clone()
-            };
+    fn from_type(customs: &ob::CustomTypes, ty: &Type) -> Self {
+        let mut edges_in = ty.res().map_refs(|_, _| BTreeSet::new());
+        let identity = ty.res().count().into_iter().collect::<Vec<_>>();
+        Self::from_type_impl(
+            customs,
+            &mut BTreeSet::new(),
+            &mut edges_in,
+            None,
+            ty.shape(),
+            &identity,
+        );
+        Self {
+            nodes: ty.res().clone(),
+            edges_in,
+        }
+    }
 
-            out.insert_vacant(
-                SlotId(start),
-                Res {
-                    modes: res[0].modes.clone(),
-                    lt: outer.clone(),
-                },
-            );
-            outer
+    fn fix(&mut self, interner: &Interner) {
+        let collect_lifetimes = |graph: &Graph, scc: Scc<_>| {
+            scc.nodes
+                .iter()
+                .map(|&node| graph.nodes[node].lt.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let sccs: Sccs<usize, _> = find_components(self.nodes.count(), |node| &self.edges_in[node]);
+        for (_, scc) in &sccs {
+            let mut old_lts = collect_lifetimes(self, scc);
+            loop {
+                for &dst in scc.nodes {
+                    for &src in &self.edges_in[dst] {
+                        let src_mode = self.nodes[src].modes.stack_or_access();
+                        let dst_mode = self.nodes[dst].modes.stack_or_access();
+                        if *src_mode == Mode::Owned && *dst_mode == Mode::Owned {
+                            let new_lt = self.nodes[dst].lt.join(interner, &self.nodes[src].lt);
+                            self.nodes[dst].lt = new_lt;
+                        }
+                    }
+                }
+
+                let new_lts = collect_lifetimes(self, scc);
+                if old_lts.iter().zip_eq(&new_lts).all(|(old, new)| old == new) {
+                    break;
+                }
+
+                old_lts = new_lts;
+            }
         }
     }
 }
 
 fn propagate_spatial(interner: &Interner, customs: &ob::CustomTypes, ty: &Type) -> Type {
-    let mut seen = BTreeSet::new();
-    let mut out = IdMap::new();
-    let _ = propagate_spatial_impl(
-        interner,
-        customs,
-        &mut seen,
-        0,
-        ty.shape(),
-        ty.res().as_slice(),
-        &mut out,
-    );
-    println!("{} {} {}", ty.res().len(), out.len(), ty.display());
-    Type::new(ty.shape().clone(), out.to_id_vec(ty.res().count()))
+    let mut graph = Graph::from_type(customs, ty);
+    graph.fix(interner);
+    Type::new(ty.shape().clone(), graph.nodes)
 }
 
 fn propagate_temporal(
@@ -604,7 +628,7 @@ fn create_occurs_from_model(
 
     let get_lt = get_lt;
 
-    for (arg, occur) in sig.args.iter().zip(&mut arg_occurs) {
+    for (i, (arg, occur)) in sig.args.iter().zip(&mut arg_occurs).enumerate() {
         for (slot, model_res) in arg.get_res(&occur.ty.shape()) {
             // Substitute for model lifetimes using the mapping constructed from the return.
             let res = &mut occur.ty.res_mut()[slot];
@@ -613,7 +637,7 @@ fn create_occurs_from_model(
             } else if sig.unused_lts.contains(&model_res.lt) {
                 Lt::Empty
             } else {
-                path.as_lt(interner)
+                annot::arg_path(path, i, args.len()).as_lt(interner)
             };
         }
     }
@@ -719,8 +743,14 @@ fn instantiate_model(
 ) -> Vec<Occur> {
     let occurs = create_occurs_from_model(sig, interner, ctx, path, args, ret);
 
-    for occur in &occurs {
-        propagate_occur(interner, ctx, path, occur.id, &occur.ty);
+    for (i, occur) in occurs.iter().enumerate() {
+        propagate_occur(
+            interner,
+            ctx,
+            &annot::arg_path(path, i, occurs.len()),
+            occur.id,
+            &occur.ty,
+        );
     }
 
     occurs
