@@ -544,9 +544,9 @@ impl<Repr> VarOccurs<Repr> {
     }
 }
 
-fn get_res_impl(
+fn get_res_impl<I>(
     model: &Type,
-    shape: &Shape,
+    shape: &Shape<I>,
     next_slot: usize,
     out_res: &mut BTreeMap<SlotId, Res<ModelMode, ModelLt>>,
 ) -> usize {
@@ -576,11 +576,11 @@ fn get_res_impl(
     }
 }
 
-fn extract_vars_impl<T, Repr>(
-    make: &impl Fn(&Shape, &[T]) -> Repr,
+fn extract_vars_impl<I, T, Repr>(
+    make: &impl Fn(&Shape<I>, &[T]) -> Repr,
     kind: VarOccurKind,
     model: &Type,
-    shape: &Shape,
+    shape: &Shape<I>,
     start: usize,
     res: &[T],
     out: &mut IdMap<TypeVar, VarOccurs<Repr>>,
@@ -629,17 +629,17 @@ fn extract_vars_impl<T, Repr>(
 }
 
 impl Type {
-    pub fn get_res(&self, shape: &Shape) -> BTreeMap<SlotId, Res<ModelMode, ModelLt>> {
+    pub fn get_res<I>(&self, shape: &Shape<I>) -> BTreeMap<SlotId, Res<ModelMode, ModelLt>> {
         let mut out_res = BTreeMap::new();
         get_res_impl(self, shape, 0, &mut out_res);
         out_res
     }
 
-    pub fn extract_vars<T, Repr>(
+    pub fn extract_vars<I, T, Repr>(
         &self,
-        make: impl Fn(&Shape, &[T]) -> Repr,
+        make: impl Fn(&Shape<I>, &[T]) -> Repr,
         kind: VarOccurKind,
-        shape: &Shape,
+        shape: &Shape<I>,
         res: &[T],
         out: &mut IdMap<TypeVar, VarOccurs<Repr>>,
     ) {

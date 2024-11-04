@@ -1,9 +1,9 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
-    enumerate_shapes, iter_shapes, Lt, Mode, Res, ResModes, Shape, ShapeInner, SlotId,
+    enumerate_shapes, iter_shapes, Lt, Mode, Res, ResModes, ShapeInner, SlotId,
 };
-use crate::data::obligation_annot_ast as ob;
+use crate::data::obligation_annot_ast::{self as ob, CustomTypeId, Shape};
 use crate::data::rc_annot_ast::{self as annot, Selector};
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId};
 use crate::util::collection_ext::VecExt;
@@ -69,12 +69,12 @@ fn prepare_resources(res: &[Res<Mode, Lt>]) -> Vec<Mode> {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ReleaseSpec {
-    custom_id: first_ord::CustomTypeId,
+    custom_id: CustomTypeId,
     res: Vec<Mode>,
 }
 
 impl ReleaseSpec {
-    fn new(custom_id: first_ord::CustomTypeId, res: Vec<Mode>) -> Self {
+    fn new(custom_id: CustomTypeId, res: Vec<Mode>) -> Self {
         Self { custom_id, res }
     }
 

@@ -1,3 +1,4 @@
+use crate::data::first_order_ast as first_ord;
 use crate::data::mode_annot_ast2::{Interner, LocalLt, Lt, LtParam, Mode, Path};
 use std::io::{self, Write};
 use std::{fmt, str};
@@ -94,7 +95,9 @@ impl Lt {
 }
 
 pub fn write_path(w: &mut dyn Write, path: &Path) -> io::Result<()> {
-    write_lifetime(w, &path.as_lt(&Interner::empty()))
+    // XXX: The ID type doesn't matter here, so we just use the first order type.
+    let interner = Interner::<first_ord::CustomTypeId>::empty();
+    write_lifetime(w, &path.as_lt(&interner))
 }
 
 pub struct DisplayPath<'a>(&'a Path);

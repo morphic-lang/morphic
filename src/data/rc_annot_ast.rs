@@ -1,8 +1,8 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{self as annot, Shape, SlotId};
-use crate::data::obligation_annot_ast::{self as ob, CustomTypeDef};
+use crate::data::mode_annot_ast2::SlotId;
+use crate::data::obligation_annot_ast::{self as ob, CustomTypeDef, CustomTypeId, Shape};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Debug)]
 pub struct Selector {
-    pub shape: annot::Shape,
+    pub shape: Shape,
     pub true_: BTreeSet<SlotId>,
 }
 
@@ -131,8 +131,8 @@ pub enum Expr {
         ob::Type, // Input type
         ob::Type, // Output type
     ),
-    WrapCustom(first_ord::CustomTypeId, LocalId),
-    UnwrapCustom(first_ord::CustomTypeId, LocalId),
+    WrapCustom(CustomTypeId, LocalId),
+    UnwrapCustom(CustomTypeId, LocalId),
 
     RcOp(RcOp, Selector, LocalId),
 
@@ -164,14 +164,14 @@ pub struct FuncDef {
 
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
-    pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
+    pub types: IdVec<CustomTypeId, CustomTypeDef>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
-    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<ob::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<ob::CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,

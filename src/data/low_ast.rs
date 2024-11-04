@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
+use crate::data::obligation_annot_ast as ob;
 use crate::data::profile as prof;
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId, RcOp};
 use crate::data::resolved_ast as res;
@@ -17,7 +18,7 @@ pub struct LocalId(pub usize);
 #[id_type]
 pub struct CustomFuncId(pub usize);
 
-pub type CustomTypeId = first_ord::CustomTypeId;
+pub type CustomTypeId = ob::CustomTypeId;
 
 pub type Type = rc::Type;
 
@@ -155,7 +156,7 @@ pub struct FuncDef {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: rc::CustomTypes,
-    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<CustomFuncId, tail::TailFuncSymbols>,
     pub schemes: IdVec<ModeSchemeId, ModeScheme>,

@@ -40,25 +40,25 @@ impl GuardPhase {
 }
 
 #[derive(Clone, Debug)]
-pub enum RecipeContent {
+pub enum RecipeContent<I> {
     Bool,
     Num(first_ord::NumType),
-    Tuple(Vec<RecipeContent>),
-    Variants(IdVec<first_ord::VariantId, RecipeContent>),
+    Tuple(Vec<RecipeContent<I>>),
+    Variants(IdVec<first_ord::VariantId, RecipeContent<I>>),
 
     // Cases for `Type::Custom`
-    DoNothing(first_ord::CustomTypeId),
-    Unfold(first_ord::CustomTypeId),
+    DoNothing(I),
+    Unfold(I),
 
-    Array(Box<RecipeContent>),
-    HoleArray(Box<RecipeContent>),
-    Boxed(Box<RecipeContent>),
+    Array(Box<RecipeContent<I>>),
+    HoleArray(Box<RecipeContent<I>>),
+    Boxed(Box<RecipeContent<I>>),
 }
 
 #[derive(Clone, Debug)]
-pub enum UnfoldRecipe {
-    UnfoldThenRecurse(RecipeContent),
-    Recurse(RecipeContent),
+pub enum UnfoldRecipe<I> {
+    UnfoldThenRecurse(RecipeContent<I>),
+    Recurse(RecipeContent<I>),
 }
 
 #[id_type]
@@ -165,8 +165,16 @@ pub enum Expr {
         LocalId,
         Type, // Inner type
     ),
-    WrapCustom(first_ord::CustomTypeId, UnfoldRecipe, LocalId),
-    UnwrapCustom(first_ord::CustomTypeId, UnfoldRecipe, LocalId),
+    WrapCustom(
+        first_ord::CustomTypeId,
+        UnfoldRecipe<first_ord::CustomTypeId>,
+        LocalId,
+    ),
+    UnwrapCustom(
+        first_ord::CustomTypeId,
+        UnfoldRecipe<first_ord::CustomTypeId>,
+        LocalId,
+    ),
 
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),

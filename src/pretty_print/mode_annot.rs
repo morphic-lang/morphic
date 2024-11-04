@@ -11,13 +11,14 @@ use crate::pretty_print::utils::{
     write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
 };
 use core::str;
+use id_collections::Id;
 use std::fmt;
 use std::io::{self, Write};
 
 const TAB_SIZE: usize = 2;
 const CONSTRS_PER_LINE: usize = 10;
 
-type Type = annot::Type<ModeSolution, Lt>;
+type Type<I> = annot::Type<ModeSolution, Lt, I>;
 type Occur = annot::Occur<ModeSolution, Lt>;
 type Expr = annot::Expr<ModeSolution, Lt>;
 
@@ -97,24 +98,24 @@ pub fn write_resource<M, L>(
     Ok(())
 }
 
-pub fn write_custom(
+pub fn write_custom<I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    type_id: CustomTypeId,
+    type_renderer: Option<&CustomTypeRenderer<I>>,
+    type_id: I,
 ) -> io::Result<()> {
     if let Some(type_renderer) = type_renderer {
         write!(w, "{}", type_renderer.render(type_id))
     } else {
-        write!(w, "Custom#{}", type_id.0)
+        write!(w, "Custom#{}", type_id.to_index())
     }
 }
 
-fn write_type_impl<M, L>(
+fn write_type_impl<M, L, I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
+    type_renderer: Option<&CustomTypeRenderer<I>>,
     write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
     write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
-    shape: &Shape,
+    shape: &Shape<I>,
     res: &[Res<M, L>],
 ) -> io::Result<()> {
     match &*shape.inner {
@@ -140,7 +141,7 @@ fn write_type_impl<M, L>(
                 write_resource(w, write_mode, write_lifetime, res)
             })
         }
-        ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.0),
+        ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.to_index()),
         ShapeInner::Array(shape) => {
             write_resource(w, write_mode, write_lifetime, &res[0])?;
             write!(w, " Array (")?;
@@ -183,12 +184,12 @@ fn write_type_impl<M, L>(
     }
 }
 
-pub fn write_type<M, L>(
+pub fn write_type<M, L, I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
+    type_renderer: Option<&CustomTypeRenderer<I>>,
     write_mode: impl Fn(&mut dyn Write, &M) -> io::Result<()>,
     write_lifetime: impl Fn(&mut dyn Write, &L) -> io::Result<()>,
-    type_: &annot::Type<M, L>,
+    type_: &annot::Type<M, L, I>,
 ) -> io::Result<()> {
     write_type_impl(
         w,
@@ -200,11 +201,11 @@ pub fn write_type<M, L>(
     )
 }
 
-fn write_shape_impl(
+fn write_shape_impl<I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
+    type_renderer: Option<&CustomTypeRenderer<I>>,
     pos: Position,
-    shape: &Shape,
+    shape: &Shape<I>,
 ) -> io::Result<()> {
     let write_res = |w: &mut dyn Write| {
         let dummy = Res {
@@ -236,7 +237,7 @@ fn write_shape_impl(
             write_custom(w, type_renderer, *type_id)?;
             write!(w, "<...>")
         }
-        ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.0),
+        ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.to_index()),
         ShapeInner::Array(shape) => {
             write_res(w)?;
             write!(w, " Array (")?;
@@ -258,18 +259,18 @@ fn write_shape_impl(
     }
 }
 
-pub fn write_shape(
+pub fn write_shape<I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    shape: &Shape,
+    type_renderer: Option<&CustomTypeRenderer<I>>,
+    shape: &Shape<I>,
 ) -> io::Result<()> {
     write_shape_impl(w, type_renderer, Position::Stack, shape)
 }
 
-pub fn write_solved_type(
+pub fn write_solved_type<I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
-    type_: &Type,
+    type_renderer: &CustomTypeRenderer<I>,
+    type_: &Type<I>,
 ) -> io::Result<()> {
     write_type(
         w,
@@ -314,7 +315,7 @@ fn write_double(
     write!(w, ")")
 }
 
-fn match_string_bytes(bindings: &[(Type, Expr, Metadata)]) -> Option<String> {
+fn match_string_bytes(bindings: &[(Type<CustomTypeId>, Expr, Metadata)]) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
         if let (_, Expr::ByteLit(byte), _) = binding {
@@ -564,11 +565,11 @@ pub fn write_func(
     Ok(())
 }
 
-pub fn write_typedef(
+pub fn write_typedef<I: Id + 'static, J: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    typedef: &CustomTypeDef,
-    type_id: CustomTypeId,
+    type_renderer: Option<&CustomTypeRenderer<I>>,
+    typedef: &CustomTypeDef<I, J>,
+    type_id: I,
 ) -> io::Result<()> {
     write!(w, "custom type ")?;
     write_custom(w, type_renderer, type_id)?;
@@ -595,12 +596,12 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
 
 // Convenience wrappers for debugging which implement `Display`
 
-pub struct DisplayShape<'a> {
-    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
-    shape: &'a Shape,
+pub struct DisplayShape<'a, I> {
+    type_renderer: Option<&'a CustomTypeRenderer<I>>,
+    shape: &'a Shape<I>,
 }
 
-impl fmt::Display for DisplayShape<'_> {
+impl<I: Id + 'static> fmt::Display for DisplayShape<'_, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut w = Vec::<u8>::new();
         write_shape(&mut w, self.type_renderer, self.shape).unwrap();
@@ -608,8 +609,8 @@ impl fmt::Display for DisplayShape<'_> {
     }
 }
 
-impl Shape {
-    pub fn display<'a>(&'a self) -> DisplayShape<'a> {
+impl<I: Id + 'static> Shape<I> {
+    pub fn display<'a>(&'a self) -> DisplayShape<'a, I> {
         DisplayShape {
             type_renderer: None,
             shape: self,
@@ -618,8 +619,8 @@ impl Shape {
 
     pub fn display_with<'a>(
         &'a self,
-        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
-    ) -> DisplayShape<'a> {
+        type_renderer: &'a CustomTypeRenderer<I>,
+    ) -> DisplayShape<'a, I> {
         DisplayShape {
             type_renderer: Some(type_renderer),
             shape: self,
@@ -627,12 +628,12 @@ impl Shape {
     }
 }
 
-pub struct DisplaySolverType<'a, L> {
-    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
-    type_: &'a annot::Type<ModeVar, L>,
+pub struct DisplaySolverType<'a, L, I> {
+    type_renderer: Option<&'a CustomTypeRenderer<I>>,
+    type_: &'a annot::Type<ModeVar, L, I>,
 }
 
-impl fmt::Display for DisplaySolverType<'_, Lt> {
+impl<I: Id + 'static> fmt::Display for DisplaySolverType<'_, Lt, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut w = Vec::new();
         write_type(
@@ -647,7 +648,7 @@ impl fmt::Display for DisplaySolverType<'_, Lt> {
     }
 }
 
-impl fmt::Display for DisplaySolverType<'_, LtParam> {
+impl<I: Id + 'static> fmt::Display for DisplaySolverType<'_, LtParam, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut w = Vec::new();
         write_type(
@@ -662,8 +663,8 @@ impl fmt::Display for DisplaySolverType<'_, LtParam> {
     }
 }
 
-impl<L> annot::Type<ModeVar, L> {
-    pub fn display<'a>(&'a self) -> DisplaySolverType<'a, L> {
+impl<L, I: Id + 'static> annot::Type<ModeVar, L, I> {
+    pub fn display<'a>(&'a self) -> DisplaySolverType<'a, L, I> {
         DisplaySolverType {
             type_renderer: None,
             type_: self,
@@ -672,8 +673,8 @@ impl<L> annot::Type<ModeVar, L> {
 
     pub fn display_with<'a>(
         &'a self,
-        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
-    ) -> DisplaySolverType<'a, L> {
+        type_renderer: &'a CustomTypeRenderer<I>,
+    ) -> DisplaySolverType<'a, L, I> {
         DisplaySolverType {
             type_renderer: Some(type_renderer),
             type_: self,
@@ -681,12 +682,12 @@ impl<L> annot::Type<ModeVar, L> {
     }
 }
 
-pub struct DisplaySolvedType<'a, L> {
-    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
-    type_: &'a annot::Type<ModeSolution, L>,
+pub struct DisplaySolvedType<'a, L, I> {
+    type_renderer: Option<&'a CustomTypeRenderer<I>>,
+    type_: &'a annot::Type<ModeSolution, L, I>,
 }
 
-impl fmt::Display for DisplaySolvedType<'_, Lt> {
+impl<I: Id + 'static> fmt::Display for DisplaySolvedType<'_, Lt, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut w = Vec::new();
         write_type(
@@ -701,7 +702,7 @@ impl fmt::Display for DisplaySolvedType<'_, Lt> {
     }
 }
 
-impl fmt::Display for DisplaySolvedType<'_, LtParam> {
+impl<I: Id + 'static> fmt::Display for DisplaySolvedType<'_, LtParam, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut w = Vec::new();
         write_type(
@@ -716,8 +717,8 @@ impl fmt::Display for DisplaySolvedType<'_, LtParam> {
     }
 }
 
-impl<L> annot::Type<ModeSolution, L> {
-    pub fn display<'a>(&'a self) -> DisplaySolvedType<'a, L> {
+impl<L, I: Id + 'static> annot::Type<ModeSolution, L, I> {
+    pub fn display<'a>(&'a self) -> DisplaySolvedType<'a, L, I> {
         DisplaySolvedType {
             type_renderer: None,
             type_: self,
@@ -726,8 +727,8 @@ impl<L> annot::Type<ModeSolution, L> {
 
     pub fn display_with<'a>(
         &'a self,
-        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
-    ) -> DisplaySolvedType<'a, L> {
+        type_renderer: &'a CustomTypeRenderer<I>,
+    ) -> DisplaySolvedType<'a, L, I> {
         DisplaySolvedType {
             type_renderer: Some(type_renderer),
             type_: self,

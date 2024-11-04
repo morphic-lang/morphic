@@ -1,11 +1,10 @@
-use crate::data::first_order_ast::CustomTypeId;
 use crate::data::metadata::Metadata;
 use crate::data::obligation_annot_ast::{
-    ArrayOp, CustomFuncId, CustomTypeDef, Expr, FuncDef, IoOp, Occur, Program, Type,
+    ArrayOp, CustomFuncId, CustomTypeId, Expr, FuncDef, IoOp, Occur, Program, Type,
 };
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common;
-use crate::pretty_print::mode_annot::{self as annot_pp, write_custom, write_shape};
+use crate::pretty_print::mode_annot::{self as annot_pp};
 use crate::pretty_print::utils::{
     write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
 };
@@ -299,25 +298,12 @@ pub fn write_func(
     Ok(())
 }
 
-pub fn write_typedef(
-    w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    typedef: &CustomTypeDef,
-    type_id: CustomTypeId,
-) -> io::Result<()> {
-    write!(w, "custom type ")?;
-    write_custom(w, type_renderer, type_id)?;
-    write!(w, " = ")?;
-    write_shape(w, type_renderer, &typedef.content)?;
-    Ok(())
-}
-
 pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
     for (i, typedef) in &program.custom_types.types {
-        write_typedef(w, Some(&type_renderer), typedef, i)?;
+        annot_pp::write_typedef(w, Some(&type_renderer), typedef, i)?;
         writeln!(w)?;
     }
     writeln!(w)?;

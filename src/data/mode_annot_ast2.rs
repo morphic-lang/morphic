@@ -19,18 +19,18 @@ use crate::util::inequality_graph2 as in_eq;
 use crate::util::intern::{self, Interned};
 use crate::util::iter::IterExt;
 use crate::util::non_empty_set::NonEmptySet;
-use id_collections::{id_type, IdVec};
+use id_collections::{id_type, Id, IdVec};
 use id_graph_sccs::{SccKind, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 use std::iter;
 
-pub struct Interner {
-    pub shape: intern::Interner<ShapeInner>,
+pub struct Interner<I> {
+    pub shape: intern::Interner<ShapeInner<I>>,
     pub lt: intern::Interner<LocalLt>,
 }
 
-impl Interner {
+impl<I: Id + 'static> Interner<I> {
     pub fn empty() -> Self {
         Interner {
             shape: intern::Interner::empty(),
@@ -65,7 +65,7 @@ impl Path {
         Self(elems)
     }
 
-    pub fn as_local_lt(&self, interner: &Interner) -> Interned<LocalLt> {
+    pub fn as_local_lt<I: Id + 'static>(&self, interner: &Interner<I>) -> Interned<LocalLt> {
         let mut result = LocalLt::Final;
         for elem in self.0.iter().copied().rev() {
             match elem {
@@ -82,7 +82,7 @@ impl Path {
         interner.lt.new(result)
     }
 
-    pub fn as_lt(&self, interner: &Interner) -> Lt {
+    pub fn as_lt<I: Id + 'static>(&self, interner: &Interner<I>) -> Lt {
         Lt::Local(self.as_local_lt(interner))
     }
 }
@@ -126,7 +126,7 @@ impl Lt {
     /// `l2` that occurs "later in time".
     ///
     /// Panics if `self` and `other` are not structurally compatible.
-    pub fn join(&self, interner: &Interner, other: &Self) -> Self {
+    pub fn join<I: Id + 'static>(&self, interner: &Interner<I>, other: &Self) -> Self {
         match (self, other) {
             (Lt::Empty, l) | (l, Lt::Empty) => l.clone(),
             (Lt::Local(l1), Lt::Local(l2)) => Lt::Local(interner.lt.new(l1.join(interner, l2))),
@@ -157,7 +157,7 @@ impl Lt {
 }
 
 impl LocalLt {
-    pub fn join(&self, interner: &Interner, rhs: &Self) -> Self {
+    pub fn join<I: Id + 'static>(&self, interner: &Interner<I>, rhs: &Self) -> Self {
         match (self, rhs) {
             (LocalLt::Final, _) | (_, LocalLt::Final) => LocalLt::Final,
             (LocalLt::Seq(l1, i1), LocalLt::Seq(l2, i2)) => {
@@ -383,44 +383,32 @@ impl<M, L> Res<M, L> {
 pub struct SlotId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ShapeInner {
+pub enum ShapeInner<I> {
     Bool,
     Num(first_ord::NumType),
-    Tuple(Vec<Shape>),
-    Variants(IdVec<first_ord::VariantId, Shape>),
-    Custom(first_ord::CustomTypeId),
-    SelfCustom(first_ord::CustomTypeId),
-    Array(Shape),
-    HoleArray(Shape),
-    Boxed(Shape),
+    Tuple(Vec<Shape<I>>),
+    Variants(IdVec<first_ord::VariantId, Shape<I>>),
+    Custom(I),
+    SelfCustom(I),
+    Array(Shape<I>),
+    HoleArray(Shape<I>),
+    Boxed(Shape<I>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Shape {
-    pub inner: Interned<ShapeInner>,
+pub struct Shape<I> {
+    pub inner: Interned<ShapeInner<I>>,
     pub num_slots: usize,
 }
 
-impl Shape {
-    pub fn unit(interner: &Interner) -> Shape {
-        Shape {
-            inner: interner.shape.new(ShapeInner::Tuple(vec![])),
-            num_slots: 0,
-        }
-    }
+pub type ShapeFo = Shape<first_ord::CustomTypeId>;
 
-    pub fn bool_(interner: &Interner) -> Shape {
-        Shape {
-            inner: interner.shape.new(ShapeInner::Bool),
-            num_slots: 0,
-        }
-    }
-
+impl ShapeFo {
     pub fn from_guarded<'a>(
-        interner: &Interner,
-        customs: &IdVec<CustomTypeId, CustomTypeDef>,
+        interner: &Interner<first_ord::CustomTypeId>,
+        customs: &IdVec<first_ord::CustomTypeId, CustomTypeDefFo>,
         ty: &guard::Type,
-    ) -> Shape {
+    ) -> Self {
         match ty {
             guard::Type::Bool => Shape {
                 inner: interner.shape.new(ShapeInner::Bool),
@@ -473,10 +461,26 @@ impl Shape {
             }
         }
     }
+}
+
+impl<I: Id + 'static> Shape<I> {
+    pub fn unit(interner: &Interner<I>) -> Self {
+        Self {
+            inner: interner.shape.new(ShapeInner::Tuple(vec![])),
+            num_slots: 0,
+        }
+    }
+
+    pub fn bool_(interner: &Interner<I>) -> Self {
+        Self {
+            inner: interner.shape.new(ShapeInner::Bool),
+            num_slots: 0,
+        }
+    }
 
     fn top_level_slots_impl<'a>(
         &self,
-        customs: impl MapRef<'a, CustomTypeId, Shape>,
+        customs: impl MapRef<'a, I, Shape<I>>,
         next_slot: usize,
         slots: &mut BTreeSet<SlotId>,
     ) -> usize {
@@ -502,19 +506,16 @@ impl Shape {
         }
     }
 
-    pub fn top_level_slots<'a>(
-        &self,
-        customs: impl MapRef<'a, CustomTypeId, Shape>,
-    ) -> BTreeSet<SlotId> {
+    pub fn top_level_slots<'a>(&self, customs: impl MapRef<'a, I, Shape<I>>) -> BTreeSet<SlotId> {
         let mut slots = BTreeSet::new();
         self.top_level_slots_impl(customs, 0, &mut slots);
         slots
     }
 
-    fn positions_impl<'a>(
+    fn positions_impl<'a, J: Id + 'static>(
         &self,
-        customs: impl MapRef<'a, CustomTypeId, CustomTypeDef>,
-        sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
+        customs: impl MapRef<'a, I, CustomTypeDef<I, J>>,
+        sccs: &Sccs<J, I>,
         pos: Position,
         result: &mut Vec<Position>,
     ) {
@@ -542,9 +543,8 @@ impl Shape {
                     if custom.can_guard == CanGuard::Yes {
                         assert!(
                             pos == Position::Heap,
-                            "`Shape::positions` was called on a type with non-trival cyclic custom \
-                             '{}' in stack position",
-                             self.display(),
+                            "`Shape::positions` was called on a type with a non-trival cyclic \
+                             custom in stack position",
                         );
                         result.extend(iter::repeat(Position::Heap).take(custom.num_slots));
                     } else {
@@ -562,10 +562,10 @@ impl Shape {
         }
     }
 
-    pub fn positions<'a>(
+    pub fn positions<'a, J: Id + 'static>(
         &self,
-        customs: &IdVec<CustomTypeId, CustomTypeDef>,
-        sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
+        customs: &IdVec<I, CustomTypeDef<I, J>>,
+        sccs: &Sccs<J, I>,
     ) -> Vec<Position> {
         let mut result = Vec::new();
         self.positions_impl(customs, sccs, Position::Stack, &mut result);
@@ -573,10 +573,10 @@ impl Shape {
         result
     }
 
-    pub fn gen_resources<'a, M, L>(
+    pub fn gen_resources<'a, M, L, J: Id + 'static>(
         &self,
-        customs: &IdVec<CustomTypeId, CustomTypeDef>,
-        sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
+        customs: &IdVec<I, CustomTypeDef<I, J>>,
+        sccs: &Sccs<J, I>,
         mut next_mode: impl FnMut() -> M,
         mut next_lt: impl FnMut() -> L,
     ) -> IdVec<SlotId, Res<M, L>> {
@@ -640,32 +640,34 @@ impl<'a, M, L> Iterator for FlatIter<'a, M, L> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Type<M, L> {
-    shape: Shape,
+pub struct Type<M, L, I> {
+    shape: Shape<I>,
     res: IdVec<SlotId, Res<M, L>>,
 }
 
-impl<M, L> Type<M, L> {
-    pub fn new(shape: Shape, res: IdVec<SlotId, Res<M, L>>) -> Self {
+pub type TypeFo<M, L> = Type<M, L, first_ord::CustomTypeId>;
+
+impl<M, L, I: Id + 'static> Type<M, L, I> {
+    pub fn new(shape: Shape<I>, res: IdVec<SlotId, Res<M, L>>) -> Self {
         debug_assert_eq!(shape.num_slots, res.len());
         Type { shape, res }
     }
 
-    pub fn unit(interner: &Interner) -> Self {
+    pub fn unit(interner: &Interner<I>) -> Self {
         Type {
             shape: Shape::unit(interner),
             res: IdVec::new(),
         }
     }
 
-    pub fn bool_(interner: &Interner) -> Self {
+    pub fn bool_(interner: &Interner<I>) -> Self {
         Type {
             shape: Shape::bool_(interner),
             res: IdVec::new(),
         }
     }
 
-    pub fn shape(&self) -> &Shape {
+    pub fn shape(&self) -> &Shape<I> {
         &self.shape
     }
 
@@ -698,7 +700,7 @@ impl<M, L> Type<M, L> {
 
     pub fn stack_lt<'a>(
         &self,
-        customs: impl MapRef<'a, CustomTypeId, Shape>,
+        customs: impl MapRef<'a, I, Shape<I>>,
     ) -> impl Iterator<Item = (SlotId, &L)> {
         self.shape
             .top_level_slots(customs)
@@ -708,15 +710,15 @@ impl<M, L> Type<M, L> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ShapeIter<'a, T> {
-    shapes: std::slice::Iter<'a, Shape>,
+pub struct ShapeIter<'a, T, I> {
+    shapes: std::slice::Iter<'a, Shape<I>>,
     res: &'a [T],
     start: usize,
     off: usize,
 }
 
-impl<'a, T> Iterator for ShapeIter<'a, T> {
-    type Item = (&'a Shape, (usize, usize), &'a [T]);
+impl<'a, T, I> Iterator for ShapeIter<'a, T, I> {
+    type Item = (&'a Shape<I>, (usize, usize), &'a [T]);
 
     fn next(&mut self) -> Option<Self::Item> {
         let shape = self.shapes.next()?;
@@ -728,17 +730,17 @@ impl<'a, T> Iterator for ShapeIter<'a, T> {
     }
 }
 
-impl<'a, T> ExactSizeIterator for ShapeIter<'a, T> {
+impl<'a, T, I> ExactSizeIterator for ShapeIter<'a, T, I> {
     fn len(&self) -> usize {
         self.shapes.len()
     }
 }
 
-pub fn enumerate_shapes<'a, T>(
-    shapes: &'a [Shape],
+pub fn enumerate_shapes<'a, T, I>(
+    shapes: &'a [Shape<I>],
     res: &'a [T],
     start: usize,
-) -> impl ExactSizeIterator<Item = (&'a Shape, (usize, usize), &'a [T])> {
+) -> impl ExactSizeIterator<Item = (&'a Shape<I>, (usize, usize), &'a [T])> {
     ShapeIter {
         shapes: shapes.iter(),
         res,
@@ -747,22 +749,22 @@ pub fn enumerate_shapes<'a, T>(
     }
 }
 
-pub fn iter_shapes<'a, T>(
-    shapes: &'a [Shape],
+pub fn iter_shapes<'a, T, I>(
+    shapes: &'a [Shape<I>],
     res: &'a [T],
-) -> impl ExactSizeIterator<Item = (&'a Shape, &'a [T])> {
+) -> impl ExactSizeIterator<Item = (&'a Shape<I>, &'a [T])> {
     enumerate_shapes(shapes, res, 0).map(|(shape, _, res)| (shape, res))
 }
 
 #[derive(Debug)]
-pub struct ShapeIterMut<'a, T> {
-    shapes: std::slice::Iter<'a, Shape>,
+pub struct ShapeIterMut<'a, T, I> {
+    shapes: std::slice::Iter<'a, Shape<I>>,
     rest: &'a mut [T],
     start: usize,
 }
 
-impl<'a, T> Iterator for ShapeIterMut<'a, T> {
-    type Item = (&'a Shape, (usize, usize), &'a mut [T]);
+impl<'a, T, I> Iterator for ShapeIterMut<'a, T, I> {
+    type Item = (&'a Shape<I>, (usize, usize), &'a mut [T]);
 
     fn next(&mut self) -> Option<Self::Item> {
         let shape = self.shapes.next()?;
@@ -779,16 +781,16 @@ impl<'a, T> Iterator for ShapeIterMut<'a, T> {
     }
 }
 
-impl<'a, T> ExactSizeIterator for ShapeIterMut<'a, T> {
+impl<'a, T, I> ExactSizeIterator for ShapeIterMut<'a, T, I> {
     fn len(&self) -> usize {
         self.shapes.len()
     }
 }
 
-pub fn enumerate_shapes_mut<'a, T>(
-    shapes: &'a [Shape],
+pub fn enumerate_shapes_mut<'a, T, I>(
+    shapes: &'a [Shape<I>],
     res: &'a mut [T],
-) -> impl ExactSizeIterator<Item = (&'a Shape, (usize, usize), &'a mut [T])> {
+) -> impl ExactSizeIterator<Item = (&'a Shape<I>, (usize, usize), &'a mut [T])> {
     ShapeIterMut {
         shapes: shapes.iter(),
         rest: res,
@@ -796,18 +798,18 @@ pub fn enumerate_shapes_mut<'a, T>(
     }
 }
 
-pub fn iter_shapes_mut<'a, T>(
-    shapes: &'a [Shape],
+pub fn iter_shapes_mut<'a, T, I>(
+    shapes: &'a [Shape<I>],
     res: &'a mut [T],
-) -> impl ExactSizeIterator<Item = (&'a Shape, &'a mut [T])> {
+) -> impl ExactSizeIterator<Item = (&'a Shape<I>, &'a mut [T])> {
     enumerate_shapes_mut(shapes, res).map(|(shape, _, res)| (shape, res))
 }
 
-pub fn join_everywhere<M: Clone>(
-    interner: &Interner,
-    ty: &Type<M, Lt>,
+pub fn join_everywhere<M: Clone, I: Id + 'static>(
+    interner: &Interner<I>,
+    ty: &Type<M, Lt, I>,
     new_lt: &Lt,
-) -> Type<M, Lt> {
+) -> Type<M, Lt, I> {
     let f = |res: &Res<M, Lt>| Res {
         modes: res.modes.clone(),
         lt: res.lt.join(interner, new_lt),
@@ -818,20 +820,23 @@ pub fn join_everywhere<M: Clone>(
     )
 }
 
-pub fn lt_equiv<M>(ty1: &Type<M, Lt>, ty2: &Type<M, Lt>) -> bool {
-    debug_assert_eq!(ty1.shape(), ty2.shape());
+pub fn lt_equiv<M, I: Id + 'static>(ty1: &Type<M, Lt, I>, ty2: &Type<M, Lt, I>) -> bool {
+    debug_assert!(ty1.shape() == ty2.shape());
     ty1.iter()
         .zip_eq(ty2.iter())
         .all(|(res1, res2)| res1.lt == res2.lt)
 }
 
-pub fn nth_res_bounds(shapes: &[Shape], n: usize) -> (usize, usize) {
+pub fn nth_res_bounds<I>(shapes: &[Shape<I>], n: usize) -> (usize, usize) {
     let start = shapes.iter().map(|shape| shape.num_slots).take(n).sum();
     let end = start + shapes[n].num_slots;
     (start, end)
 }
 
-pub fn split_shapes<M: Clone, L: Clone>(shapes: &[Shape], res: &[Res<M, L>]) -> Vec<Type<M, L>> {
+pub fn split_shapes<M: Clone, L: Clone, I: Id + 'static>(
+    shapes: &[Shape<I>],
+    res: &[Res<M, L>],
+) -> Vec<Type<M, L, I>> {
     iter_shapes(shapes, res)
         .map(|(shape, res)| {
             Type::new(
@@ -842,16 +847,18 @@ pub fn split_shapes<M: Clone, L: Clone>(shapes: &[Shape], res: &[Res<M, L>]) -> 
         .collect()
 }
 
-pub fn elim_tuple<'a, M: Clone, L: Clone>(ty: &Type<M, L>) -> Vec<Type<M, L>> {
+pub fn elim_tuple<'a, M: Clone, L: Clone, I: Id + 'static>(
+    ty: &Type<M, L, I>,
+) -> Vec<Type<M, L, I>> {
     let ShapeInner::Tuple(shapes) = &*ty.shape().inner else {
         panic!("expected `Tuple` type");
     };
     split_shapes(shapes, ty.res().as_slice())
 }
 
-pub fn elim_variants<'a, M: Clone, L: Clone>(
-    ty: &Type<M, L>,
-) -> IdVec<first_ord::VariantId, Type<M, L>> {
+pub fn elim_variants<'a, M: Clone, L: Clone, I: Id + 'static>(
+    ty: &Type<M, L, I>,
+) -> IdVec<first_ord::VariantId, Type<M, L, I>> {
     let ShapeInner::Variants(shapes) = &*ty.shape().inner else {
         panic!("expected `Tuple` type");
     };
@@ -860,10 +867,10 @@ pub fn elim_variants<'a, M: Clone, L: Clone>(
     IdVec::from_vec(result)
 }
 
-pub fn elim_box_like<M: Clone, L: Clone>(
-    item: &Shape,
+pub fn elim_box_like<M: Clone, L: Clone, I: Id + 'static>(
+    item: &Shape<I>,
     res: &[Res<M, L>],
-) -> (Res<M, L>, Type<M, L>) {
+) -> (Res<M, L>, Type<M, L, I>) {
     (
         res[0].clone(),
         Type::new(
@@ -873,26 +880,30 @@ pub fn elim_box_like<M: Clone, L: Clone>(
     )
 }
 
-pub fn elim_array<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
+pub fn elim_array<M: Clone, L: Clone, I: Id + 'static>(
+    ty: &Type<M, L, I>,
+) -> (Res<M, L>, Type<M, L, I>) {
     let ShapeInner::Array(shape) = &*ty.shape().inner else {
         panic!("expected `Array` type");
     };
     elim_box_like(shape, ty.res().as_slice())
 }
 
-pub fn elim_boxed<M: Clone, L: Clone>(ty: &Type<M, L>) -> (Res<M, L>, Type<M, L>) {
+pub fn elim_boxed<M: Clone, L: Clone, I: Id + 'static>(
+    ty: &Type<M, L, I>,
+) -> (Res<M, L>, Type<M, L, I>) {
     let ShapeInner::Boxed(shape) = &*ty.shape().inner else {
         panic!("expected `Boxed` type");
     };
     elim_box_like(shape, ty.res().as_slice())
 }
 
-pub fn bind_lts<M>(
-    interner: &Interner,
-    ty1: &Type<M, LtParam>,
-    ty2: &Type<M, Lt>,
+pub fn bind_lts<M, I: Id + 'static>(
+    interner: &Interner<I>,
+    ty1: &Type<M, LtParam, I>,
+    ty2: &Type<M, Lt, I>,
 ) -> BTreeMap<LtParam, Lt> {
-    debug_assert_eq!(ty1.shape(), ty2.shape());
+    debug_assert!(ty1.shape() == ty2.shape());
     let mut result = BTreeMap::new();
     for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
         result
@@ -903,11 +914,11 @@ pub fn bind_lts<M>(
     result
 }
 
-pub fn subst_lts<M: Clone>(
-    interner: &Interner,
-    ty: &Type<M, Lt>,
+pub fn subst_lts<M: Clone, I: Id + 'static>(
+    interner: &Interner<I>,
+    ty: &Type<M, Lt, I>,
     subst: &BTreeMap<LtParam, Lt>,
-) -> Type<M, Lt> {
+) -> Type<M, Lt, I> {
     let f = |res: &Res<M, Lt>| {
         let modes = res.modes.clone();
         let lt = match &res.lt {
@@ -931,11 +942,11 @@ pub fn subst_lts<M: Clone>(
 /// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
 /// current path. Even if we didn't make this approximation, we would have to somehow relativize the
 /// local lifetimes in the argument since they are not meaningful in the caller's scope.
-pub fn prepare_arg_type<M: Clone>(
-    interner: &Interner,
+pub fn prepare_arg_type<M: Clone, I: Id + 'static>(
+    interner: &Interner<I>,
     path: &Path,
-    ty: &Type<M, Lt>,
-) -> Type<M, Lt> {
+    ty: &Type<M, Lt, I>,
+) -> Type<M, Lt, I> {
     let f = |res: &Res<M, Lt>| {
         let modes = res.modes.clone();
         let lt = match &res.lt {
@@ -951,7 +962,7 @@ pub fn prepare_arg_type<M: Clone>(
     )
 }
 
-pub fn wrap_lts<M: Clone>(ty: &Type<M, LtParam>) -> Type<M, Lt> {
+pub fn wrap_lts<M: Clone, I: Id + 'static>(ty: &Type<M, LtParam, I>) -> Type<M, Lt, I> {
     let f = |res: &Res<M, LtParam>| Res {
         modes: res.modes.clone(),
         lt: Lt::Join(NonEmptySet::new(res.lt)),
@@ -962,7 +973,7 @@ pub fn wrap_lts<M: Clone>(ty: &Type<M, LtParam>) -> Type<M, Lt> {
     )
 }
 
-fn extract_custom_content(interner: &Interner, shape: &Shape) -> Shape {
+fn extract_custom_content<I: Id + 'static>(interner: &Interner<I>, shape: &Shape<I>) -> Shape<I> {
     match &*shape.inner {
         ShapeInner::Bool => Shape {
             inner: interner.shape.new(ShapeInner::Bool),
@@ -1024,15 +1035,15 @@ fn extract_custom_content(interner: &Interner, shape: &Shape) -> Shape {
     }
 }
 
-fn unfold_impl<M: Clone, L: Clone>(
-    interner: &Interner,
-    customs: &IdVec<CustomTypeId, CustomTypeDef>,
-    sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
-    recipe: &RecipeContent,
-    shape: &Shape,
+fn unfold_impl<M: Clone, L: Clone, I: Id + 'static, J: Id>(
+    interner: &Interner<I>,
+    customs: &IdVec<I, CustomTypeDef<I, J>>,
+    sccs: &Sccs<J, I>,
+    recipe: &RecipeContent<I>,
+    shape: &Shape<I>,
     res: &[Res<M, L>],
     out_res: &mut IdVec<SlotId, Res<M, L>>,
-) -> Shape {
+) -> Shape<I> {
     match (&*shape.inner, recipe) {
         (ShapeInner::Bool, RecipeContent::Bool) => {
             debug_assert!(res.is_empty());
@@ -1072,14 +1083,14 @@ fn unfold_impl<M: Clone, L: Clone>(
             panic!("`unfold` was called on the *content* of a custom type")
         }
         (ShapeInner::Custom(id1), RecipeContent::DoNothing(id2)) => {
-            debug_assert_eq!(id1, id2);
+            debug_assert_eq!(id1.to_index(), id2.to_index());
             debug_assert_eq!(res.len(), shape.num_slots);
 
             let _ = out_res.extend(res.iter().cloned());
             shape.clone()
         }
         (ShapeInner::Custom(id1), RecipeContent::Unfold(id2)) => {
-            debug_assert_eq!(id1, id2);
+            debug_assert_eq!(id1.to_index(), id2.to_index());
             let custom = &customs[*id1];
             let content_res = custom.subst_helper.do_subst(res);
             debug_assert_eq!(content_res.len(), custom.content.num_slots);
@@ -1142,13 +1153,13 @@ fn unfold_impl<M: Clone, L: Clone>(
     }
 }
 
-pub fn unfold<M: Clone, L: Clone>(
-    interner: &Interner,
-    customs: &IdVec<CustomTypeId, CustomTypeDef>,
-    sccs: &Sccs<flat::CustomTypeSccId, CustomTypeId>,
-    recipe: &UnfoldRecipe,
-    ty: &Type<M, L>,
-) -> Type<M, L> {
+pub fn unfold<M: Clone, L: Clone, I: Id + 'static, J: Id>(
+    interner: &Interner<I>,
+    customs: &IdVec<I, CustomTypeDef<I, J>>,
+    sccs: &Sccs<J, I>,
+    recipe: &UnfoldRecipe<I>,
+    ty: &Type<M, L, I>,
+) -> Type<M, L, I> {
     let mut res = IdVec::new();
     let shape = match recipe {
         UnfoldRecipe::UnfoldThenRecurse(recipe) => {
@@ -1182,15 +1193,15 @@ pub fn unfold<M: Clone, L: Clone>(
 #[derive(Clone, Debug)]
 pub struct Occur<M, L> {
     pub id: guard::LocalId,
-    pub ty: Type<M, L>,
+    pub ty: Type<M, L, first_ord::CustomTypeId>,
 }
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp<M, L> {
     Get(
-        Occur<M, L>, // Array
-        Occur<M, L>, // Index
-        Type<M, L>,  // Return type; needed for retain insertion
+        Occur<M, L>,                         // Array
+        Occur<M, L>,                         // Index
+        Type<M, L, first_ord::CustomTypeId>, // Return type; needed for retain insertion
     ), // Returns item
     Extract(
         Occur<M, L>, // Array
@@ -1218,8 +1229,10 @@ pub enum ArrayOp<M, L> {
 
 #[derive(Clone, Debug)]
 pub enum IoOp<M, L> {
-    Input,               // Returns array of bytes
-    Output(Occur<M, L>), // Takes array of bytes, returns unit
+    // Returns array of bytes
+    Input,
+    // Takes array of bytes, returns unit
+    Output(Occur<M, L>),
 }
 
 #[derive(Clone, Debug)]
@@ -1227,43 +1240,51 @@ pub enum Expr<M, L> {
     Local(Occur<M, L>),
     Call(Purity, first_ord::CustomFuncId, Occur<M, L>),
     LetMany(
-        Vec<(Type<M, L>, Expr<M, L>, Metadata)>, // Bound values. Each is assigned a new sequential `LocalId`
-        Occur<M, L>,                             // Result
+        Vec<(TypeFo<M, L>, Expr<M, L>, Metadata)>, // Bound values. Each is assigned a new sequential `LocalId`
+        Occur<M, L>,                               // Result
     ),
 
     If(Occur<M, L>, Box<Expr<M, L>>, Box<Expr<M, L>>),
     CheckVariant(first_ord::VariantId, Occur<M, L>), // Returns a bool
-    Unreachable(Type<M, L>),
+    Unreachable(TypeFo<M, L>),
 
     Tuple(Vec<Occur<M, L>>),
     TupleField(Occur<M, L>, usize),
     WrapVariant(
-        IdVec<first_ord::VariantId, Type<M, L>>,
+        IdVec<first_ord::VariantId, TypeFo<M, L>>,
         first_ord::VariantId,
         Occur<M, L>,
     ),
     UnwrapVariant(first_ord::VariantId, Occur<M, L>),
     WrapBoxed(
         Occur<M, L>,
-        Type<M, L>, // Output type
+        TypeFo<M, L>, // Output type
     ),
     UnwrapBoxed(
         Occur<M, L>,
-        Type<M, L>, // Input type
-        Type<M, L>, // Output type
+        TypeFo<M, L>, // Input type
+        TypeFo<M, L>, // Output type
     ),
-    WrapCustom(CustomTypeId, UnfoldRecipe, Occur<M, L>),
-    UnwrapCustom(CustomTypeId, UnfoldRecipe, Occur<M, L>),
+    WrapCustom(
+        CustomTypeId,
+        UnfoldRecipe<first_ord::CustomTypeId>,
+        Occur<M, L>,
+    ),
+    UnwrapCustom(
+        CustomTypeId,
+        UnfoldRecipe<first_ord::CustomTypeId>,
+        Occur<M, L>,
+    ),
 
     Intrinsic(Intrinsic, Occur<M, L>),
     ArrayOp(ArrayOp<M, L>),
     IoOp(IoOp<M, L>),
     Panic(
-        Type<M, L>, // Return type
+        TypeFo<M, L>, // Return type
         Occur<M, L>,
     ),
 
-    ArrayLit(Type<M, L>, Vec<Occur<M, L>>),
+    ArrayLit(TypeFo<M, L>, Vec<Occur<M, L>>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -1281,8 +1302,8 @@ pub struct Constrs {
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub purity: Purity,
-    pub arg_ty: Type<ModeParam, Lt>,
-    pub ret_ty: Type<ModeParam, LtParam>,
+    pub arg_ty: TypeFo<ModeParam, Lt>,
+    pub ret_ty: TypeFo<ModeParam, LtParam>,
     pub constrs: Constrs,
 
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
@@ -1339,24 +1360,26 @@ impl SubstHelper {
 }
 
 #[derive(Clone, Debug)]
-pub struct CustomTypeDef {
-    pub content: Shape,
+pub struct CustomTypeDef<I, J> {
+    pub content: Shape<I>,
     pub subst_helper: SubstHelper,
     pub num_slots: usize,
-    pub scc: flat::CustomTypeSccId,
+    pub scc: J,
     pub can_guard: guarded::CanGuard,
 }
 
+pub type CustomTypeDefFo = CustomTypeDef<first_ord::CustomTypeId, flat::CustomTypeSccId>;
+
 #[derive(Clone, Debug)]
-pub struct CustomTypes {
+pub struct CustomTypes<I: Id, J: Id> {
     // Guarded customs.
-    pub types: IdVec<CustomTypeId, CustomTypeDef>,
+    pub types: IdVec<I, CustomTypeDef<I, J>>,
     // The SCCs of the *pre-guarded* customs.
-    pub sccs: Sccs<flat::CustomTypeSccId, CustomTypeId>,
+    pub sccs: Sccs<J, I>,
 }
 
-impl CustomTypes {
-    pub fn view_shapes(&self) -> impl MapRef<'_, first_ord::CustomTypeId, Shape> {
+impl<I: Id, J: Id> CustomTypes<I, J> {
+    pub fn view_shapes(&self) -> impl MapRef<'_, I, Shape<I>> {
         FnWrap::wrap(|id| &self.types[id].content)
     }
 }
@@ -1364,7 +1387,7 @@ impl CustomTypes {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: CustomTypes,
+    pub custom_types: CustomTypes<first_ord::CustomTypeId, flat::CustomTypeSccId>,
     pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
@@ -1378,7 +1401,7 @@ mod tests {
 
     #[test]
     fn test_path_as_lt() {
-        let interner = Interner::empty();
+        let interner: Interner<first_ord::CustomTypeId> = Interner::empty();
         let new = |lt| interner.lt.new(lt);
         let path = Path::root().seq(0).alt(1, 3).seq(2276);
         let expected = Lt::Local(new(LocalLt::Seq(
@@ -1394,7 +1417,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let interner = Interner::empty();
+        let interner: Interner<first_ord::CustomTypeId> = Interner::empty();
         let new = |lt| interner.lt.new(lt);
         let lhs = Lt::Local(new(LocalLt::Seq(
             new(LocalLt::Seq(
@@ -1417,7 +1440,7 @@ mod tests {
 
     #[test]
     fn test_lt_order() {
-        let interner = Interner::empty();
+        let interner: Interner<first_ord::CustomTypeId> = Interner::empty();
         let new = |lt| interner.lt.new(lt);
         let lt = Lt::Local(new(LocalLt::Seq(
             new(LocalLt::Alt(vec![

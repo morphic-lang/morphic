@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
+use crate::data::obligation_annot_ast::CustomTypeId;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId, RcOp};
@@ -41,8 +42,8 @@ pub enum Expr {
         ModeScheme, // Input type
         ModeScheme, // Output type
     ),
-    WrapCustom(first_ord::CustomTypeId, rc::LocalId),
-    UnwrapCustom(first_ord::CustomTypeId, rc::LocalId),
+    WrapCustom(CustomTypeId, rc::LocalId),
+    UnwrapCustom(CustomTypeId, rc::LocalId),
 
     RcOp(RcOp, rc::LocalId),
 
@@ -98,7 +99,7 @@ pub struct FuncDef {
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: rc::CustomTypes,
-    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<CustomFuncId, TailFuncSymbols>,
     pub schemes: IdVec<ModeSchemeId, ModeScheme>,

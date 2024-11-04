@@ -141,7 +141,7 @@ fn recipe_content(
     phase: GuardPhase,
     shadow_phase: GuardPhase,
     ty: &anon::Type,
-) -> RecipeContent {
+) -> RecipeContent<CustomTypeId> {
     match ty {
         anon::Type::Bool => RecipeContent::Bool,
         anon::Type::Num(num_ty) => RecipeContent::Num(*num_ty),
@@ -224,7 +224,7 @@ impl Trans<'_> {
         guard(self.customs, self.can_guard, GuardPhase::Structural, ty)
     }
 
-    fn unfold_recipe(&self, id: CustomTypeId) -> UnfoldRecipe {
+    fn unfold_recipe(&self, id: CustomTypeId) -> UnfoldRecipe<CustomTypeId> {
         let custom = &self.customs.types[id];
         let guard_unfolds = GuardPhase::should_guard(
             GuardPhase::Structural,

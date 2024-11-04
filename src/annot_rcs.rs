@@ -1,9 +1,7 @@
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{
-    self as annot, Interner, LocalLt, Lt, Mode, Path, Shape, ShapeInner, SlotId,
-};
-use crate::data::obligation_annot_ast::{self as ob, Type};
+use crate::data::mode_annot_ast2::{self as annot, LocalLt, Lt, Mode, Path, ShapeInner, SlotId};
+use crate::data::obligation_annot_ast::{self as ob, CustomTypeId, Shape, Type};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
 use crate::pretty_print::utils::FuncRenderer;
 use crate::util::let_builder::{FromBindings, LetManyBuilder};
@@ -22,6 +20,7 @@ impl FromBindings for Expr {
     }
 }
 
+type Interner = annot::Interner<CustomTypeId>;
 type Builder = LetManyBuilder<Expr>;
 type Context = LocalContext<guard::LocalId, LocalInfo>;
 

@@ -5,12 +5,12 @@
 use crate::data::borrow_model as model;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::CustomTypeSccId;
-use crate::data::guarded_ast::{self as guard, LocalId, UnfoldRecipe};
+use crate::data::guarded_ast::{self as guard, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
-    self as annot, HeapModes, Interner, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur,
-    Position, Res, ResModes, Shape, ShapeInner, SlotId, SubstHelper, Type,
+    self as annot, HeapModes, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, Position,
+    Res, ResModes, ShapeFo, ShapeInner, SlotId, SubstHelper, TypeFo,
 };
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -25,6 +25,9 @@ use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::iter;
+
+type Interner = annot::Interner<CustomTypeId>;
+type UnfoldRecipe = guard::UnfoldRecipe<CustomTypeId>;
 
 // It is crucial that RC specialization (the next pass) does not inhibit tail calls by inserting
 // retains/releases after them. Hence, this pass must detect tail calls during constraint
@@ -249,7 +252,10 @@ fn compute_tail_calls(
 // We start by lifting the set of custom type definitions from the previous pass into the current
 // pass by annotating them with fresh mode and lifetime parameters.
 
-fn count_num_slots(customs: &IdMap<CustomTypeId, annot::CustomTypeDef>, ty: &guard::Type) -> usize {
+fn count_num_slots(
+    customs: &IdMap<CustomTypeId, annot::CustomTypeDefFo>,
+    ty: &guard::Type,
+) -> usize {
     match ty {
         guard::Type::Bool => 0,
         guard::Type::Num(_) => 0,
@@ -285,27 +291,27 @@ fn next_heap<M: Id>(next_mode: &mut Count<M>) -> HeapModes<M> {
 struct SccParameterizer<'a> {
     interner: &'a Interner,
     customs: &'a guard::CustomTypes,
-    parameterized: &'a IdMap<CustomTypeId, annot::CustomTypeDef>,
+    parameterized: &'a IdMap<CustomTypeId, annot::CustomTypeDefFo>,
     scc_id: CustomTypeSccId,
     scc_num_slots: usize,
     next_slot: Count<SlotId>,
 }
 
 impl<'a> SccParameterizer<'a> {
-    fn parameterize_impl(&mut self, ty: &guard::Type, out_res: &mut Vec<SlotId>) -> Shape {
+    fn parameterize_impl(&mut self, ty: &guard::Type, out_res: &mut Vec<SlotId>) -> ShapeFo {
         match ty {
-            guard::Type::Bool => Shape {
+            guard::Type::Bool => ShapeFo {
                 inner: self.interner.shape.new(ShapeInner::Bool),
                 num_slots: 0,
             },
-            guard::Type::Num(num_ty) => Shape {
+            guard::Type::Num(num_ty) => ShapeFo {
                 inner: self.interner.shape.new(ShapeInner::Num(*num_ty)),
                 num_slots: 0,
             },
             guard::Type::Tuple(tys) => {
                 let tys = tys.map_refs(|ty| self.parameterize_impl(ty, out_res));
                 let num_slots = tys.iter().map(|ty| ty.num_slots).sum();
-                Shape {
+                ShapeFo {
                     inner: self.interner.shape.new(ShapeInner::Tuple(tys)),
                     num_slots,
                 }
@@ -313,7 +319,7 @@ impl<'a> SccParameterizer<'a> {
             guard::Type::Variants(tys) => {
                 let tys = tys.map_refs(|_, ty| self.parameterize_impl(ty, out_res));
                 let num_slots = tys.values().map(|ty| ty.num_slots).sum();
-                Shape {
+                ShapeFo {
                     inner: self.interner.shape.new(ShapeInner::Variants(tys)),
                     num_slots,
                 }
@@ -326,7 +332,7 @@ impl<'a> SccParameterizer<'a> {
                     let slots = iter::repeat_with(move || next_slot.inc());
                     let num_slots = self.scc_num_slots;
                     out_res.extend(slots.take(num_slots));
-                    Shape {
+                    ShapeFo {
                         inner: self.interner.shape.new(ShapeInner::SelfCustom(*id)),
                         num_slots,
                     }
@@ -334,7 +340,7 @@ impl<'a> SccParameterizer<'a> {
                     let num_slots = self.parameterized[*id].num_slots;
                     let slots = iter::repeat_with(|| self.next_slot.inc());
                     out_res.extend(slots.take(num_slots));
-                    Shape {
+                    ShapeFo {
                         inner: self.interner.shape.new(ShapeInner::Custom(*id)),
                         num_slots,
                     }
@@ -343,7 +349,7 @@ impl<'a> SccParameterizer<'a> {
             guard::Type::Array(ty) => {
                 out_res.push(self.next_slot.inc());
                 let shape = self.parameterize_impl(ty, out_res);
-                Shape {
+                ShapeFo {
                     num_slots: 1 + shape.num_slots,
                     inner: self.interner.shape.new(ShapeInner::Array(shape)),
                 }
@@ -351,7 +357,7 @@ impl<'a> SccParameterizer<'a> {
             guard::Type::HoleArray(ty) => {
                 out_res.push(self.next_slot.inc());
                 let shape = self.parameterize_impl(ty, out_res);
-                Shape {
+                ShapeFo {
                     num_slots: 1 + shape.num_slots,
                     inner: self.interner.shape.new(ShapeInner::HoleArray(shape)),
                 }
@@ -359,7 +365,7 @@ impl<'a> SccParameterizer<'a> {
             guard::Type::Boxed(ty) => {
                 out_res.push(self.next_slot.inc());
                 let shape = self.parameterize_impl(ty, out_res);
-                Shape {
+                ShapeFo {
                     num_slots: 1 + shape.num_slots,
                     inner: self.interner.shape.new(ShapeInner::Boxed(shape)),
                 }
@@ -367,7 +373,7 @@ impl<'a> SccParameterizer<'a> {
         }
     }
 
-    fn parameterize(&mut self, kind: SccKind, ty: &guard::Type) -> (Shape, SubstHelper) {
+    fn parameterize(&mut self, kind: SccKind, ty: &guard::Type) -> (ShapeFo, SubstHelper) {
         let mut res = Vec::new();
         let shape = self.parameterize_impl(ty, &mut res);
         debug_assert_eq!(res.len(), shape.num_slots);
@@ -378,9 +384,9 @@ impl<'a> SccParameterizer<'a> {
 fn parameterize_custom_scc(
     interner: &Interner,
     customs: &guard::CustomTypes,
-    parameterized: &IdMap<CustomTypeId, annot::CustomTypeDef>,
+    parameterized: &IdMap<CustomTypeId, annot::CustomTypeDefFo>,
     scc: (CustomTypeSccId, Scc<'_, CustomTypeId>),
-) -> BTreeMap<CustomTypeId, annot::CustomTypeDef> {
+) -> BTreeMap<CustomTypeId, annot::CustomTypeDefFo> {
     let (scc_id, scc) = scc;
 
     let scc_num_slots = scc
@@ -408,7 +414,7 @@ fn parameterize_custom_scc(
             let (content, subst_helper) = parameterizer.parameterize(scc.kind, &custom.content);
             (
                 id,
-                annot::CustomTypeDef {
+                annot::CustomTypeDefFo {
                     content,
                     subst_helper,
                     num_slots: scc_num_slots,
@@ -426,7 +432,7 @@ fn parameterize_custom_scc(
 fn parameterize_customs(
     interner: &Interner,
     customs: &guard::CustomTypes,
-) -> IdVec<CustomTypeId, annot::CustomTypeDef> {
+) -> IdVec<CustomTypeId, annot::CustomTypeDefFo> {
     let mut parameterized = IdMap::new();
     for scc in &customs.sccs {
         let to_populate = parameterize_custom_scc(interner, &customs, &parameterized, scc);
@@ -439,17 +445,17 @@ fn parameterize_customs(
 
 fn parameterize_type<'a>(
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     ty: &guard::Type,
-) -> Type<ModeParam, LtParam> {
+) -> TypeFo<ModeParam, LtParam> {
     // All the machinery we use here is *very* similar to the machinery above for parameterizing
     // customs, but just different enough that it's hard to merge them.
-    let shape = Shape::from_guarded(interner, customs, ty);
+    let shape = ShapeFo::from_guarded(interner, customs, ty);
     let mut mode_count = Count::new();
     let mut lt_count = Count::new();
     let res = shape.gen_resources(customs, sccs, || mode_count.inc(), || lt_count.inc());
-    Type::new(shape, res)
+    TypeFo::new(shape, res)
 }
 
 // ---------------------
@@ -499,7 +505,11 @@ fn require_eq(constrs: &mut ConstrGraph, modes1: &ResModes<ModeVar>, modes2: &Re
     }
 }
 
-fn bind_modes<L1, L2>(constrs: &mut ConstrGraph, ty1: &Type<ModeVar, L1>, ty2: &Type<ModeVar, L2>) {
+fn bind_modes<L1, L2>(
+    constrs: &mut ConstrGraph,
+    ty1: &TypeFo<ModeVar, L1>,
+    ty2: &TypeFo<ModeVar, L2>,
+) {
     debug_assert_eq!(ty1.shape(), ty2.shape());
     for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
         require_eq(constrs, &res1.modes, &res2.modes);
@@ -508,7 +518,10 @@ fn bind_modes<L1, L2>(constrs: &mut ConstrGraph, ty1: &Type<ModeVar, L1>, ty2: &
 
 // Unfortunately, we can't quite use `MapRef` as the type of `subst` here because, for the callers
 // of this function to be efficient, `subst` must return values (not references).
-fn subst_modes<M1: Clone, M2, L: Clone>(ty: &Type<M1, L>, subst: impl Fn(M1) -> M2) -> Type<M2, L> {
+fn subst_modes<M1: Clone, M2, L: Clone>(
+    ty: &TypeFo<M1, L>,
+    subst: impl Fn(M1) -> M2,
+) -> TypeFo<M2, L> {
     let f = |res: &Res<M1, L>| {
         let modes = match &res.modes {
             ResModes::Stack(stack) => ResModes::Stack(subst(stack.clone())),
@@ -520,7 +533,7 @@ fn subst_modes<M1: Clone, M2, L: Clone>(ty: &Type<M1, L>, subst: impl Fn(M1) -> 
         let lt = res.lt.clone();
         Res { modes, lt }
     };
-    Type::new(
+    TypeFo::new(
         ty.shape().clone(),
         IdVec::from_vec(ty.iter().map(f).collect()),
     )
@@ -558,8 +571,8 @@ fn emit_occur_constr(
 fn emit_occur_constrs(
     constrs: &mut ConstrGraph,
     scope: &annot::Path,
-    binding_ty: &Type<ModeVar, Lt>,
-    use_ty: &Type<ModeVar, Lt>,
+    binding_ty: &TypeFo<ModeVar, Lt>,
+    use_ty: &TypeFo<ModeVar, Lt>,
 ) {
     debug_assert_eq!(binding_ty.shape(), use_ty.shape());
     for (binding_res, use_res) in binding_ty.iter().zip_eq(use_ty.iter()) {
@@ -577,15 +590,15 @@ fn emit_occur_constrs(
 /// contravariant in their lifetimes (unlike in Rust).
 fn left_meet(
     interner: &Interner,
-    ty1: &Type<ModeVar, Lt>,
-    ty2: &Type<ModeVar, Lt>,
-) -> Type<ModeVar, Lt> {
+    ty1: &TypeFo<ModeVar, Lt>,
+    ty2: &TypeFo<ModeVar, Lt>,
+) -> TypeFo<ModeVar, Lt> {
     debug_assert_eq!(ty1.shape(), ty2.shape());
     let f = |(res1, res2): (&Res<_, Lt>, &Res<_, Lt>)| Res {
         modes: res1.modes.clone(),
         lt: res1.lt.join(interner, &res2.lt),
     };
-    Type::new(
+    TypeFo::new(
         ty1.shape().clone(),
         IdVec::from_vec(ty1.iter().zip_eq(ty2.iter()).map(f).collect()),
     )
@@ -595,8 +608,8 @@ fn left_meet(
 fn freshen_type<M, L1, L2>(
     constrs: &mut ConstrGraph,
     mut fresh_lt: impl FnMut() -> L2,
-    ty: &Type<M, L1>,
-) -> Type<ModeVar, L2> {
+    ty: &TypeFo<M, L1>,
+) -> TypeFo<ModeVar, L2> {
     let f = |res: &Res<_, _>| {
         let modes = match res.modes {
             ResModes::Stack(_) => ResModes::Stack(constrs.fresh_var()),
@@ -608,13 +621,13 @@ fn freshen_type<M, L1, L2>(
         let lt = fresh_lt();
         Res { modes, lt }
     };
-    annot::Type::new(
+    annot::TypeFo::new(
         ty.shape().clone(),
         IdVec::from_vec(ty.iter().map(f).collect()),
     )
 }
 
-fn freshen_type_unused<M, L>(constrs: &mut ConstrGraph, ty: &Type<M, L>) -> Type<ModeVar, Lt> {
+fn freshen_type_unused<M, L>(constrs: &mut ConstrGraph, ty: &TypeFo<M, L>) -> TypeFo<ModeVar, Lt> {
     freshen_type(constrs, || Lt::Empty, ty)
 }
 
@@ -625,7 +638,7 @@ fn instantiate_occur_in_position(
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     constrs: &mut ConstrGraph,
     id: LocalId,
-    use_ty: &Type<ModeVar, Lt>,
+    use_ty: &TypeFo<ModeVar, Lt>,
 ) -> Occur<ModeVar, Lt> {
     let binding = ctx.local_binding_mut(id);
 
@@ -651,7 +664,7 @@ fn instantiate_occur(
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     constrs: &mut ConstrGraph,
     id: LocalId,
-    use_ty: &Type<ModeVar, Lt>,
+    use_ty: &TypeFo<ModeVar, Lt>,
 ) -> Occur<ModeVar, Lt> {
     instantiate_occur_in_position(
         strategy,
@@ -668,13 +681,13 @@ fn create_occurs_from_model(
     sig: &model::Signature,
     _strategy: Strategy,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: &annot::Path,
     args: &[LocalId],
-    ret: &Type<ModeVar, Lt>,
+    ret: &TypeFo<ModeVar, Lt>,
 ) -> Vec<annot::Occur<ModeVar, Lt>> {
     assert!(args.len() >= sig.args.fixed.len());
 
@@ -755,7 +768,7 @@ fn create_occurs_from_model(
     let mut vars = IdMap::new();
     for ((i, model), occur) in sig.args.iter().enumerate().zip(&arg_occurs) {
         model.extract_vars(
-            |shape, res| Type::new(shape.clone(), IdVec::from_vec(res.to_vec())),
+            |shape, res| TypeFo::new(shape.clone(), IdVec::from_vec(res.to_vec())),
             model::VarOccurKind::Arg(i),
             &occur.ty.shape(),
             occur.ty.res().as_slice(),
@@ -763,7 +776,7 @@ fn create_occurs_from_model(
         );
     }
     sig.ret.extract_vars(
-        |shape, res| Type::new(shape.clone(), IdVec::from_vec(res.to_vec())),
+        |shape, res| TypeFo::new(shape.clone(), IdVec::from_vec(res.to_vec())),
         model::VarOccurKind::Ret,
         &ret.shape(),
         ret.res().as_slice(),
@@ -863,13 +876,13 @@ fn instantiate_model(
     sig: &model::Signature,
     strategy: Strategy,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: &annot::Path,
     args: &[LocalId],
-    ret: &Type<ModeVar, Lt>,
+    ret: &TypeFo<ModeVar, Lt>,
 ) -> Vec<annot::Occur<ModeVar, Lt>> {
     let occurs = create_occurs_from_model(
         sig, strategy, interner, customs, sccs, constrs, ctx, path, args, ret,
@@ -888,8 +901,8 @@ fn instantiate_model(
 #[derive(Clone, Copy, Debug)]
 struct SignatureAssumptions<'a> {
     known_defs: &'a IdMap<CustomFuncId, annot::FuncDef>,
-    pending_args: &'a BTreeMap<CustomFuncId, Type<ModeVar, Lt>>,
-    pending_rets: &'a BTreeMap<CustomFuncId, Type<ModeVar, LtParam>>,
+    pending_args: &'a BTreeMap<CustomFuncId, TypeFo<ModeVar, Lt>>,
+    pending_rets: &'a BTreeMap<CustomFuncId, TypeFo<ModeVar, LtParam>>,
 }
 
 impl<'a> SignatureAssumptions<'a> {
@@ -897,7 +910,7 @@ impl<'a> SignatureAssumptions<'a> {
         &self,
         constrs: &mut ConstrGraph,
         id: CustomFuncId,
-    ) -> (Type<ModeVar, Lt>, Type<ModeVar, LtParam>) {
+    ) -> (TypeFo<ModeVar, Lt>, TypeFo<ModeVar, LtParam>) {
         self.known_defs.get(id).map_or_else(
             || {
                 (
@@ -918,7 +931,7 @@ impl<'a> SignatureAssumptions<'a> {
 
 struct LocalInfo {
     scope: annot::Path,
-    ty: Type<ModeVar, Lt>,
+    ty: TypeFo<ModeVar, Lt>,
 }
 
 // This function is the core logic for this pass. It implements the judgment from the paper:
@@ -929,13 +942,13 @@ struct LocalInfo {
 fn instantiate_expr(
     strategy: Strategy,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     sigs: SignatureAssumptions,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: annot::Path,
-    fut_ty: &Type<ModeVar, Lt>,
+    fut_ty: &TypeFo<ModeVar, Lt>,
     expr: &TailExpr,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
 ) -> annot::Expr<ModeVar, Lt> {
@@ -1063,13 +1076,13 @@ fn instantiate_expr(
                 ctx,
                 constrs,
                 *discrim,
-                &Type::bool_(interner),
+                &TypeFo::bool_(interner),
             );
             annot::Expr::If(discrim, Box::new(then_case), Box::new(else_case))
         }
 
         TailExpr::CheckVariant(variant_id, variant) => {
-            assert!(fut_ty.shape() == &Shape::bool_(interner));
+            assert!(fut_ty.shape() == &ShapeFo::bool_(interner));
             let variants_ty = ctx.local_binding(*variant).ty.clone(); // appease the borrow checker
             annot::Expr::CheckVariant(
                 *variant_id,
@@ -1207,8 +1220,8 @@ fn instantiate_expr(
         // operate on arithmetic types. If this changes, we will have to update this.
         TailExpr::Intrinsic(intr, arg) => {
             let sig = intrinsic_sig(*intr);
-            let ty = Type::new(
-                Shape::from_guarded(interner, customs, &guard::Type::from_intr(&sig.arg)),
+            let ty = TypeFo::new(
+                ShapeFo::from_guarded(interner, customs, &guard::Type::from_intr(&sig.arg)),
                 IdVec::new(),
             );
             annot::Expr::Intrinsic(*intr, Occur { id: *arg, ty })
@@ -1393,7 +1406,7 @@ fn instantiate_expr(
                 ctx,
                 &path,
                 &[*msg_id],
-                &Type::unit(interner),
+                &TypeFo::unit(interner),
             );
             let mut occurs = occurs.into_iter();
             annot::Expr::Panic(fut_ty.clone(), occurs.next().unwrap())
@@ -1428,8 +1441,8 @@ fn instantiate_expr(
 
 #[derive(Clone, Debug)]
 struct SolverScc {
-    func_args: BTreeMap<CustomFuncId, Type<ModeVar, Lt>>,
-    func_rets: BTreeMap<CustomFuncId, Type<ModeVar, LtParam>>,
+    func_args: BTreeMap<CustomFuncId, TypeFo<ModeVar, Lt>>,
+    func_rets: BTreeMap<CustomFuncId, TypeFo<ModeVar, LtParam>>,
     func_bodies: BTreeMap<CustomFuncId, annot::Expr<ModeVar, Lt>>,
     scc_constrs: ConstrGraph,
 }
@@ -1437,7 +1450,7 @@ struct SolverScc {
 fn instantiate_scc(
     strategy: Strategy,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
@@ -1594,7 +1607,7 @@ fn instantiate_scc(
 
 type Solution = in_eq::Solution<ModeVar, ModeParam, Mode>;
 
-fn extract_type(solution: &Solution, ty: &Type<ModeVar, Lt>) -> Type<ModeSolution, Lt> {
+fn extract_type(solution: &Solution, ty: &TypeFo<ModeVar, Lt>) -> TypeFo<ModeSolution, Lt> {
     subst_modes(ty, |m| ModeSolution {
         lb: solution.lower_bounds[m].clone(),
         solver_var: m,
@@ -1727,7 +1740,7 @@ fn extract_expr(
 fn solve_scc(
     strategy: Strategy,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDef>,
+    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &mut IdMap<CustomFuncId, annot::FuncDef>,

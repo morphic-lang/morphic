@@ -6,6 +6,7 @@
 //! convenient to let custom types remain mode polymorphic until the next pass).
 
 use crate::data::first_order_ast as first_ord;
+use crate::data::flat_ast as flat;
 use crate::data::guarded_ast::{self as guard, UnfoldRecipe};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
@@ -16,9 +17,14 @@ use crate::data::resolved_ast as res;
 use id_collections::{id_type, IdVec};
 
 #[id_type]
-pub struct CustomFuncId(usize);
+pub struct CustomFuncId(pub usize);
 
-pub type Type = annot::Type<Mode, Lt>;
+pub type CustomTypeId = first_ord::CustomTypeId;
+pub type CustomTypeSccId = flat::CustomTypeSccId;
+
+pub type Shape = annot::Shape<CustomTypeId>;
+pub type Type = annot::Type<Mode, Lt, CustomTypeId>;
+pub type RetType = annot::Type<Mode, LtParam, CustomTypeId>;
 
 #[derive(Clone, Debug)]
 pub struct Occur {
@@ -90,8 +96,8 @@ pub enum Expr {
         Type, // Input type
         Type, // Output type
     ),
-    WrapCustom(first_ord::CustomTypeId, UnfoldRecipe, Occur),
-    UnwrapCustom(first_ord::CustomTypeId, UnfoldRecipe, Occur),
+    WrapCustom(CustomTypeId, UnfoldRecipe<CustomTypeId>, Occur),
+    UnwrapCustom(CustomTypeId, UnfoldRecipe<CustomTypeId>, Occur),
 
     Intrinsic(Intrinsic, Occur),
     ArrayOp(ArrayOp),
@@ -113,20 +119,20 @@ pub enum Expr {
 pub struct FuncDef {
     pub purity: Purity,
     pub arg_ty: Type,
-    pub ret_ty: annot::Type<Mode, LtParam>,
+    pub ret_ty: RetType,
 
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 
-pub type CustomTypeDef = annot::CustomTypeDef;
-pub type CustomTypes = annot::CustomTypes;
+pub type CustomTypeDef = annot::CustomTypeDef<CustomTypeId, CustomTypeSccId>;
+pub type CustomTypes = annot::CustomTypes<CustomTypeId, CustomTypeSccId>;
 
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
     pub custom_types: CustomTypes,
-    pub custom_type_symbols: IdVec<first_ord::CustomTypeId, first_ord::CustomTypeSymbols>,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,

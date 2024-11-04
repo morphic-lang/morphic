@@ -2,6 +2,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::Mode;
+use crate::data::obligation_annot_ast::CustomTypeId;
 use crate::data::rc_specialized_ast2::{self as rc, ModeScheme};
 use crate::data::tail_rec_ast as tail;
 use crate::util::local_context::LocalContext;
@@ -71,7 +72,7 @@ fn lower_expr(
     metadata: &Metadata,
     context: &mut LocalContext<rc::LocalId, (rc::Type, low::LocalId)>,
     builder: &mut LowAstBuilder,
-    typedefs: &IdVec<first_ord::CustomTypeId, rc::Type>,
+    typedefs: &IdVec<CustomTypeId, rc::Type>,
 ) -> low::LocalId {
     let new_expr = match expr {
         tail::Expr::LetMany(bindings, final_local_id) => {
@@ -266,7 +267,7 @@ fn lower_expr(
 }
 
 fn lower_function_body(
-    typedefs: &IdVec<first_ord::CustomTypeId, rc::Type>,
+    typedefs: &IdVec<CustomTypeId, rc::Type>,
     arg_type: &rc::Type,
     ret_type: &rc::Type,
     body: tail::Expr,
@@ -289,10 +290,7 @@ fn lower_function_body(
     builder.build(final_local_id)
 }
 
-fn lower_function(
-    func: tail::FuncDef,
-    typedefs: &IdVec<first_ord::CustomTypeId, rc::Type>,
-) -> low::FuncDef {
+fn lower_function(func: tail::FuncDef, typedefs: &IdVec<CustomTypeId, rc::Type>) -> low::FuncDef {
     // Appease the borrow checker
     let ret_type = &func.ret_type;
 

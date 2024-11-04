@@ -1,13 +1,15 @@
 use crate::data::borrow_model as model;
-use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
+use crate::data::first_order_ast::{self as first_ord};
+use crate::data::flat_ast as flat;
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast2::{
-    self as annot, enumerate_shapes, Interner, Lt, LtParam, Mode, ModeParam, ModeSolution, Path,
-    Res, ResModes, Shape, ShapeInner, SlotId,
+    self as annot, enumerate_shapes, Lt, LtParam, Mode, ModeParam, ModeSolution, Path, Res,
+    ResModes, ShapeInner, SlotId, TypeFo,
 };
 use crate::data::obligation_annot_ast::{
-    self as ob, ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, Occur, Type,
+    self as ob, ArrayOp, CustomFuncId, CustomTypeId, Expr, FuncDef, IoOp, Occur, RetType, Shape,
+    Type,
 };
 use crate::pretty_print::utils::FuncRenderer;
 use crate::util::instance_queue::InstanceQueue;
@@ -18,6 +20,8 @@ use crate::util::progress_logger::ProgressSession;
 use id_collections::{Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
+
+type Interner = annot::Interner<CustomTypeId>;
 
 // --------------------
 // Step 1: Mode solving
@@ -33,7 +37,7 @@ struct FuncSpec {
 
 type FuncInstances = InstanceQueue<FuncSpec, CustomFuncId>;
 
-fn solve_type(inst_params: &IdVec<ModeParam, Mode>, ty: &annot::Type<ModeSolution, Lt>) -> Type {
+fn solve_type(inst_params: &IdVec<ModeParam, Mode>, ty: &TypeFo<ModeSolution, Lt>) -> Type {
     let res = ty.res().map_refs(|_, res| {
         let modes = res.modes.map(|mode| mode.lb.instantiate(inst_params));
         let lt = res.lt.clone();
@@ -54,7 +58,7 @@ fn solve_occur(
 
 fn solve_expr(
     interner: &Interner,
-    customs: &annot::CustomTypes,
+    customs: &annot::CustomTypes<first_ord::CustomTypeId, flat::CustomTypeSccId>,
     funcs: &IdVec<first_ord::CustomFuncId, annot::FuncDef>,
     func_renderer: &FuncRenderer<first_ord::CustomFuncId>,
     insts: &mut FuncInstances,
@@ -323,7 +327,7 @@ fn solve_expr(
 
 fn solve_func(
     interner: &Interner,
-    customs: &annot::CustomTypes,
+    customs: &annot::CustomTypes<first_ord::CustomTypeId, flat::CustomTypeSccId>,
     funcs: &IdVec<first_ord::CustomFuncId, annot::FuncDef>,
     func_renderer: &FuncRenderer<first_ord::CustomFuncId>,
     func_insts: &mut FuncInstances,
@@ -540,10 +544,10 @@ fn propagate_temporal(
     Type::new(src_ty.shape().clone(), IdVec::from_vec(new_src_res))
 }
 
-fn replace_lts<L1, L2>(
-    ty: &annot::Type<Mode, L1>,
+fn replace_lts<L1, L2, I: Id + 'static>(
+    ty: &annot::Type<Mode, L1, I>,
     mut f: impl FnMut() -> L2,
-) -> annot::Type<Mode, L2> {
+) -> annot::Type<Mode, L2, I> {
     annot::Type::new(
         ty.shape().clone(),
         ty.res().map_refs(|_, res| res.map(Clone::clone, |_| f())),
@@ -726,11 +730,11 @@ fn instantiate_model(
 struct SignatureAssumptions<'a> {
     known_defs: &'a IdMap<CustomFuncId, FuncDef>,
     pending_args: &'a BTreeMap<CustomFuncId, Type>,
-    pending_rets: &'a BTreeMap<CustomFuncId, annot::Type<Mode, LtParam>>,
+    pending_rets: &'a BTreeMap<CustomFuncId, RetType>,
 }
 
 impl SignatureAssumptions<'_> {
-    fn sig_of(&self, id: CustomFuncId) -> (&Type, &annot::Type<Mode, LtParam>) {
+    fn sig_of(&self, id: CustomFuncId) -> (&Type, &RetType) {
         self.known_defs.get(id).map_or_else(
             || {
                 let arg_type = self.pending_args.get(&id).unwrap();
@@ -1109,7 +1113,7 @@ fn annot_expr(
 #[derive(Clone, Debug)]
 struct SolverScc {
     func_args: BTreeMap<CustomFuncId, Type>,
-    func_rets: BTreeMap<CustomFuncId, annot::Type<Mode, LtParam>>,
+    func_rets: BTreeMap<CustomFuncId, RetType>,
     func_bodies: BTreeMap<CustomFuncId, Expr>,
 }
 
