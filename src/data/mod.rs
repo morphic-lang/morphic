@@ -28,37 +28,17 @@ pub mod anon_sum_ast;
 
 pub mod flat_ast;
 
-pub mod alias_annot_ast;
-
-pub mod mutation_annot_ast;
-
-// new passes
-
-pub mod fate_annot_ast;
-
-pub mod alias_specialized_ast;
-
 pub mod borrow_model;
 
 pub mod guarded_ast;
 
-pub mod mode_annot_ast;
 pub mod mode_annot_ast2;
 
 pub mod obligation_annot_ast;
 
 pub mod rc_annot_ast;
 
-pub mod rc_specialized_ast;
 pub mod rc_specialized_ast2;
-
-// end new passes
-
-pub mod repr_unified_ast;
-
-pub mod repr_constrained_ast;
-
-pub mod repr_specialized_ast;
 
 pub mod tail_rec_ast;
 

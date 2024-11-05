@@ -23,12 +23,6 @@ pub struct ErrorKind {
 
 pub type Error = Locate<ErrorKind>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Precedence {
-    Root,
-    CtorArg,
-}
-
 impl RawErrorKind {
     fn render(
         &self,

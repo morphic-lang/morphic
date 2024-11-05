@@ -51,42 +51,15 @@ mod split_custom_types;
 
 mod flatten;
 
-// Abstract interpretation utilities
-mod alias_spec_flag;
-mod field_path;
-mod fixed_point;
-mod mutation_status;
-mod stack_path;
-
-mod annot_aliases;
-
-mod annot_mutation;
-
-// new passes
-
-mod annot_fates;
-
-mod specialize_aliases;
-
 mod guard_types;
 
-mod annot_modes;
 mod annot_modes2;
 
 mod annot_obligations;
 
 mod annot_rcs;
 
-mod rc_specialize;
 mod rc_specialize2;
-
-// end new passes
-
-mod unify_reprs;
-
-mod constrain_reprs;
-
-mod specialize_reprs;
 
 mod tail_call_elim;
 
