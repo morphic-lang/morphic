@@ -1,30 +1,11 @@
 # To Do
 
-## LetMany everywhere
-- [x] modify parser to emit LetManys
-- [x] modify every other pass to take LetMany
-
-## Tail call elimination
-- [x] add scc entry point analysis
-- [x] modify `llvm_gen.rs` to compile scc
-
 ## Profiling
-
-## RC elision
-- [ ] fate analysis pass
-- [ ] add symbolic borrows
-- [ ] monomorphize
-- [ ] modify every subsequent pass
-- [ ] replace item with get + replace
-
-## `lower_structures.rs` v2
-- [ ] don't emit retain/releases for types without heap content
-- [ ] monomorphize builtins
 
 ## Source level array changes
 - [ ] truncate
 - [ ] swap
-- [ ] capacity
+- [x] capacity
 - [ ] into_iter
 
 ## `lower_closures.rs`
@@ -39,8 +20,7 @@
 ## thread debug symbols through more passes
 - [x] function monomorphization
 - [x] lower closures
-- [ ] alias analysis
-- [ ] lower structures
+- [x] lower structures
 - [ ] thread variable names through
 
 ## `split_custom_types.rs`
@@ -50,7 +30,7 @@
 - [ ] make code generic over size of `size_t`
 - [ ] support wasm
 - [ ] add some command line flags (opt level, target, etc)
-- [ ] add tail calls
+- [x] add tail calls
 - [ ] use fastcc calling convention
 
 ## `flat_array.rs`
@@ -60,7 +40,7 @@
 - [ ] include capacity for new
 
 ## Source level changes
-- [ ] expsose capacity for arrays
+- [x] expose capacity for arrays
 - [ ] do notation
 
 ## persistent arrays

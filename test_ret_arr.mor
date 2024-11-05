@@ -1,9 +1,0 @@
-new(): Array Int = [1, 2, 3]
-
-f(a: Array Int): Int =
-  get(a, 0)
-
-proc main(): () =
-  let a = new() in
-  let x = f(a) in
-  do output("Completed all tests\n")
