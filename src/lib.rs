@@ -53,13 +53,13 @@ mod flatten;
 
 mod guard_types;
 
-mod annot_modes2;
+mod annot_modes;
 
 mod annot_obligations;
 
 mod annot_rcs;
 
-mod rc_specialize2;
+mod rc_specialize;
 
 mod tail_call_elim;
 
@@ -394,9 +394,9 @@ fn compile_to_low_ast(
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    let interner = crate::data::mode_annot_ast2::Interner::empty();
-    let mode_annot = annot_modes2::annot_modes(
-        annot_modes2::Strategy::Default,
+    let interner = crate::data::mode_annot_ast::Interner::empty();
+    let mode_annot = annot_modes::annot_modes(
+        annot_modes::Strategy::Default,
         &interner,
         guarded,
         progress_ui::bar(progress, "annot_modes"),
@@ -430,9 +430,9 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "annot_rcs"),
     );
 
-    let rc_specialized = rc_specialize2::rc_specialize(
+    let rc_specialized = rc_specialize::rc_specialize(
         rc_annot,
-        rc_specialize2::Strategy::Default,
+        rc_specialize::Strategy::Default,
         progress_ui::bar(progress, "rc_specialize"),
     );
 

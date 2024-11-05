@@ -4,7 +4,7 @@ use crate::data::metadata::Metadata;
 use crate::data::obligation_annot_ast::CustomTypeId;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId, RcOp};
+use crate::data::rc_specialized_ast::{self as rc, ModeScheme, ModeSchemeId, RcOp};
 use crate::data::resolved_ast as res;
 use id_collections::{id_type, IdVec};
 

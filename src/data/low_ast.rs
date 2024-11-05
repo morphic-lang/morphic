@@ -3,7 +3,7 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
 use crate::data::obligation_annot_ast as ob;
 use crate::data::profile as prof;
-use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId, RcOp};
+use crate::data::rc_specialized_ast::{self as rc, ModeScheme, ModeSchemeId, RcOp};
 use crate::data::resolved_ast as res;
 use crate::data::tail_rec_ast as tail;
 use id_collections::{id_type, IdVec};

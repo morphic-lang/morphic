@@ -2,7 +2,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::metadata::Metadata;
 use crate::data::obligation_annot_ast as ob;
 use crate::data::purity::Purity;
-use crate::data::rc_specialized_ast2 as rc;
+use crate::data::rc_specialized_ast as rc;
 use crate::data::tail_rec_ast::{self as tail, TailFuncSymbols};
 use crate::util::graph::{self, Graph};
 use crate::util::let_builder::{BuildMatch, FromBindings, LetManyBuilder};

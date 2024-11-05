@@ -32,13 +32,13 @@ pub mod borrow_model;
 
 pub mod guarded_ast;
 
-pub mod mode_annot_ast2;
+pub mod mode_annot_ast;
 
 pub mod obligation_annot_ast;
 
 pub mod rc_annot_ast;
 
-pub mod rc_specialized_ast2;
+pub mod rc_specialized_ast;
 
 pub mod tail_rec_ast;
 

@@ -1,6 +1,6 @@
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{
+use crate::data::mode_annot_ast::{
     self as annot, ArrayOp, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt, LtParam, Mode,
     ModeParam, ModeSolution, ModeVar, Position, Program, Res, ResModes, Shape, ShapeInner,
 };

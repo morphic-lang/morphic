@@ -1,6 +1,6 @@
 use crate::data::first_order_ast::NumType;
 use crate::data::obligation_annot_ast::CustomTypeId;
-use crate::data::rc_specialized_ast2::{ArrayOp, IoOp, LocalId, RcOp, Type};
+use crate::data::rc_specialized_ast::{ArrayOp, IoOp, LocalId, RcOp, Type};
 use crate::data::tail_rec_ast::{CustomFuncId, Expr, FuncDef, Program};
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{

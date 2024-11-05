@@ -2,7 +2,7 @@
 //! operation.
 
 use crate::data::first_order_ast::NumType;
-use crate::data::mode_annot_ast2::{
+use crate::data::mode_annot_ast::{
     self as annot, HeapModes, Position, Res, ResModes, Shape, ShapeInner, SlotId,
 };
 use crate::util::iter::IterExt;

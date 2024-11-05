@@ -1,11 +1,11 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{
+use crate::data::mode_annot_ast::{
     enumerate_shapes, iter_shapes, Lt, Mode, Res, ResModes, ShapeInner, SlotId,
 };
 use crate::data::obligation_annot_ast::{self as ob, CustomTypeId, Shape};
 use crate::data::rc_annot_ast::{self as annot, Selector};
-use crate::data::rc_specialized_ast2::{self as rc, ModeScheme, ModeSchemeId};
+use crate::data::rc_specialized_ast::{self as rc, ModeScheme, ModeSchemeId};
 use crate::util::collection_ext::VecExt;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;

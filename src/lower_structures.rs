@@ -1,9 +1,9 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::Mode;
+use crate::data::mode_annot_ast::Mode;
 use crate::data::obligation_annot_ast::CustomTypeId;
-use crate::data::rc_specialized_ast2::{self as rc, ModeScheme};
+use crate::data::rc_specialized_ast::{self as rc, ModeScheme};
 use crate::data::tail_rec_ast as tail;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::ProgressLogger;

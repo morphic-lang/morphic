@@ -1,7 +1,7 @@
 use core::panic;
 
-use crate::data::mode_annot_ast2::Mode;
-use crate::data::rc_specialized_ast2::ModeScheme;
+use crate::data::mode_annot_ast::Mode;
+use crate::data::rc_specialized_ast::ModeScheme;
 use crate::llvm_gen::array::ArrayImpl;
 use crate::llvm_gen::fountain_pen::{scope, Scope};
 use crate::llvm_gen::tal::Tal;

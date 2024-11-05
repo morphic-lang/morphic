@@ -11,9 +11,9 @@ mod zero_sized_array;
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
-use crate::data::mode_annot_ast2::Mode;
+use crate::data::mode_annot_ast::Mode;
 use crate::data::profile as prof;
-use crate::data::rc_specialized_ast2::{ModeScheme, ModeSchemeId, RcOp};
+use crate::data::rc_specialized_ast::{ModeScheme, ModeSchemeId, RcOp};
 use crate::data::tail_rec_ast as tail;
 use crate::llvm_gen::array::ArrayImpl;
 use crate::llvm_gen::cow_array::{

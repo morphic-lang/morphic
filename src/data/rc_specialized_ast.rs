@@ -1,7 +1,7 @@
 use crate::data::first_order_ast::{self as first_ord};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::Mode;
+use crate::data::mode_annot_ast::Mode;
 use crate::data::obligation_annot_ast::{CustomFuncId, CustomTypeId};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;

@@ -8,7 +8,7 @@ use crate::data::flat_ast::CustomTypeSccId;
 use crate::data::guarded_ast::{self as guard, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{
+use crate::data::mode_annot_ast::{
     self as annot, HeapModes, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, Position,
     Res, ResModes, ShapeFo, ShapeInner, SlotId, SubstHelper, TypeFo,
 };

@@ -10,7 +10,7 @@ use crate::data::flat_ast as flat;
 use crate::data::guarded_ast::{self as guard, UnfoldRecipe};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{self as annot, Lt, LtParam, Mode};
+use crate::data::mode_annot_ast::{self as annot, Lt, LtParam, Mode};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;

@@ -1,7 +1,7 @@
 use crate::data::first_order_ast::NumType;
 use crate::data::low_ast::{ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, LocalId, Program, Type};
 use crate::data::obligation_annot_ast::CustomTypeId;
-use crate::data::rc_specialized_ast2::RcOp;
+use crate::data::rc_specialized_ast::RcOp;
 use crate::data::tail_rec_ast::TailFuncId;
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{

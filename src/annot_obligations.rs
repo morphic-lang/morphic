@@ -3,7 +3,7 @@ use crate::data::first_order_ast::{self as first_ord};
 use crate::data::flat_ast as flat;
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast2::{
+use crate::data::mode_annot_ast::{
     self as annot, iter_shapes, Lt, LtParam, Mode, ModeParam, ModeSolution, Path, Res, ResModes,
     ShapeInner, SlotId, TypeFo,
 };

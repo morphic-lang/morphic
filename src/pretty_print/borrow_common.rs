@@ -1,5 +1,5 @@
 use crate::data::first_order_ast as first_ord;
-use crate::data::mode_annot_ast2::{Interner, LocalLt, Lt, LtParam, Mode, Path};
+use crate::data::mode_annot_ast::{Interner, LocalLt, Lt, LtParam, Mode, Path};
 use std::io::{self, Write};
 use std::{fmt, str};
 

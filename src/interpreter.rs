@@ -1,8 +1,8 @@
 use crate::data::first_order_ast::{NumType, VariantId};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast::{ArrayOp, CustomFuncId, Expr, IoOp, LocalId, Program, Type};
-use crate::data::mode_annot_ast2::Mode;
-use crate::data::rc_specialized_ast2::{ModeScheme, ModeSchemeId, RcOp};
+use crate::data::mode_annot_ast::Mode;
+use crate::data::rc_specialized_ast::{ModeScheme, ModeSchemeId, RcOp};
 use crate::data::tail_rec_ast as tail;
 use crate::pretty_print::utils::{FuncRenderer, TailFuncRenderer};
 use crate::pseudoprocess::{spawn_thread, Child, ExitStatus, Stdio};
