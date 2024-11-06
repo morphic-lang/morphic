@@ -1612,7 +1612,7 @@ fn gen_expr<'a, 'b>(
                     .try_as_basic_value()
                     .left()
                     .unwrap(),
-                low::IoOp::Output(array_id) => {
+                low::IoOp::Output(_input_type, array_id) => {
                     builder
                         .build_call(
                             builtin_io.output,
@@ -1625,7 +1625,7 @@ fn gen_expr<'a, 'b>(
                 }
             }
         }
-        E::Panic(ret_type, message_id) => {
+        E::Panic(ret_type, _input_type, message_id) => {
             let builtin_io = &instances.cow_array_io;
             builder
                 .build_call(

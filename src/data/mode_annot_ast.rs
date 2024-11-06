@@ -117,6 +117,41 @@ pub enum LocalLt {
     Alt(Vec<Option<Interned<LocalLt>>>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cmp {
+    Boundary,
+    Before,
+    After,
+    Prefix,
+    Suffix,
+}
+
+impl Cmp {
+    pub fn leq(&self) -> bool {
+        match self {
+            Cmp::Boundary | Cmp::Before => true,
+            Cmp::After => false,
+            Cmp::Prefix | Cmp::Suffix => {
+                panic!("{self:?} cannot be interpreted as an unbiased comparison")
+            }
+        }
+    }
+
+    pub fn leq_left_biased(&self) -> bool {
+        match self {
+            Cmp::Boundary | Cmp::Before | Cmp::Prefix => true,
+            Cmp::After | Cmp::Suffix => false,
+        }
+    }
+
+    pub fn leq_right_biased(&self) -> bool {
+        match self {
+            Cmp::Boundary | Cmp::Before | Cmp::Suffix => true,
+            Cmp::After | Cmp::Prefix => false,
+        }
+    }
+}
+
 impl Lt {
     pub fn var(x: LtParam) -> Self {
         Lt::Join(NonEmptySet::new(x))
@@ -135,16 +170,12 @@ impl Lt {
         }
     }
 
-    /// `true` iff no leaf of `self` occurs "later in time" than `other`. `other` is treated as
-    /// "left biased" in the sense that, if other is a `prefix` of some branch of `self`, we return
-    /// `true`.
-    ///
     /// Panics if `self` and `other` are not structurally compatible.
-    pub fn does_not_exceed(&self, other: &Path) -> bool {
+    pub fn cmp_path(&self, other: &Path) -> Cmp {
         match (self, other) {
-            (Lt::Empty, _) => true,
-            (Lt::Local(l), p) => l.does_not_exceed(p),
-            (Lt::Join(_), _) => false,
+            (Lt::Empty, _) => Cmp::Before,
+            (Lt::Local(l), p) => l.cmp_path(p),
+            (Lt::Join(_), _) => Cmp::After,
         }
     }
 }
@@ -178,19 +209,18 @@ impl LocalLt {
         }
     }
 
-    pub fn does_not_exceed(&self, rhs: &Path) -> bool {
+    pub fn cmp_path(&self, rhs: &Path) -> Cmp {
         let mut lhs = self;
         for elem in &rhs.0 {
             match (lhs, elem) {
                 (LocalLt::Final, _) => {
-                    // `lhs` is a prefix of `rhs`
-                    return false;
+                    return Cmp::Prefix;
                 }
                 (LocalLt::Seq(inner, i1), PathElem::Seq(i2)) => {
                     if i1 < i2 {
-                        return true;
+                        return Cmp::Before;
                     } else if i1 > i2 {
-                        return false;
+                        return Cmp::After;
                     } else {
                         lhs = inner;
                         continue;
@@ -202,7 +232,7 @@ impl LocalLt {
                     }
                     match &alt[*i] {
                         None => {
-                            return true;
+                            return Cmp::Before;
                         }
                         Some(inner) => {
                             lhs = inner;
@@ -215,8 +245,11 @@ impl LocalLt {
                 }
             }
         }
-        // `rhs` is a prefix of or "equal to" `lhs`
-        true
+        if *lhs == LocalLt::Final {
+            Cmp::Boundary
+        } else {
+            Cmp::Suffix
+        }
     }
 }
 
@@ -1403,8 +1436,8 @@ mod tests {
         let eq = Path::root().seq(0).alt(1, 3).seq(2276);
         let after = Path::root().seq(0).alt(1, 3).seq(2277);
 
-        assert!(!lt.does_not_exceed(&before));
-        assert!(lt.does_not_exceed(&eq)); // reflexivity
-        assert!(lt.does_not_exceed(&after));
+        assert_eq!(lt.cmp_path(&before), Cmp::After);
+        assert_eq!(lt.cmp_path(&eq), Cmp::Boundary);
+        assert_eq!(lt.cmp_path(&after), Cmp::Before);
     }
 }

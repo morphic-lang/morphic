@@ -64,8 +64,13 @@ pub enum ArrayOp {
 
 #[derive(Clone, Debug)]
 pub enum IoOp {
-    Input,           // Returns array of bytes
-    Output(LocalId), // Takes array of bytes by borrow, returns unit
+    // Returns array of bytes
+    Input,
+    // Takes array of bytes by borrow, returns unit
+    Output(
+        ModeScheme, // Input type
+        LocalId,
+    ),
 }
 
 #[derive(Clone, Debug)]
@@ -113,8 +118,9 @@ pub enum Expr {
     IoOp(IoOp),
     // Takes message by borrow (not that it matters when the program is about to end anyway...)
     Panic(
-        Type,    // Return type
-        LocalId, // Message
+        Type,       // Output type
+        ModeScheme, // Input type
+        LocalId,    // Message
     ),
 
     BoolLit(bool),

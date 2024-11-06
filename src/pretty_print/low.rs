@@ -233,10 +233,10 @@ fn write_expr(
 
         Expr::IoOp(ioop) => match ioop {
             IoOp::Input => write![w, "input"],
-            IoOp::Output(local_id) => write_single(w, "output", local_id),
+            IoOp::Output(_, local_id) => write_single(w, "output", local_id),
         },
 
-        Expr::Panic(_ret_type, local_id) => write_single(w, "panic", local_id),
+        Expr::Panic(_ret_type, _input_type, local_id) => write_single(w, "panic", local_id),
 
         Expr::BoolLit(val) => write![w, "{}", if *val { "True" } else { "False" }],
         Expr::ByteLit(val) => write![w, "{:?}", (*val as char)],

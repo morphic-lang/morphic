@@ -179,8 +179,7 @@ pub fn run(
 ) -> Result<pseudoprocess::Child, Error> {
     let pass_options = PassOptions {
         defunc_mode: cli::SpecializationMode::Specialize,
-        rc_mode: config.rc_mode,
-        mutation_mode: config.mutation_mode,
+        rc_strat: config.rc_strat,
     };
 
     let lowered = compile_to_low_ast(
@@ -396,7 +395,7 @@ fn compile_to_low_ast(
 
     let interner = crate::data::mode_annot_ast::Interner::empty();
     let mode_annot = annot_modes::annot_modes(
-        annot_modes::Strategy::Default,
+        pass_options.rc_strat,
         &interner,
         guarded,
         progress_ui::bar(progress, "annot_modes"),
@@ -430,11 +429,8 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "annot_rcs"),
     );
 
-    let rc_specialized = rc_specialize::rc_specialize(
-        rc_annot,
-        rc_specialize::Strategy::Default,
-        progress_ui::bar(progress, "rc_specialize"),
-    );
+    let rc_specialized =
+        rc_specialize::rc_specialize(rc_annot, progress_ui::bar(progress, "rc_specialize"));
 
     let tail_rec = tail_call_elim::tail_call_elim(
         rc_specialized.clone(),

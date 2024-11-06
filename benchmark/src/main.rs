@@ -5,9 +5,8 @@ use morphic::cli;
 use morphic::cli::ArtifactDir;
 use morphic::cli::LlvmConfig;
 use morphic::cli::MlConfig;
-use morphic::cli::MutationMode;
 use morphic::cli::PassOptions;
-use morphic::cli::RcMode;
+use morphic::cli::RcStrategy;
 use morphic::cli::SpecializationMode;
 use morphic::file_cache::FileCache;
 use morphic::progress_ui::ProgressMode;
@@ -176,8 +175,7 @@ struct ProfSkippedTail {
 #[derive(Copy, Clone, Debug)]
 struct SampleOptions {
     is_native: bool,
-    rc_mode: RcMode,
-    mutation_mode: MutationMode,
+    rc_strat: RcStrategy,
     profile_record_rc: bool,
 }
 
@@ -260,8 +258,7 @@ fn build_exe(
             progress: ProgressMode::Hidden,
             pass_options: PassOptions {
                 defunc_mode,
-                rc_mode: options.rc_mode,
-                mutation_mode: options.mutation_mode,
+                rc_strat: options.rc_strat,
                 ..Default::default()
             },
         },
@@ -274,26 +271,34 @@ fn build_exe(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Variant {
-    rc_mode: RcMode,
+    rc_strat: RcStrategy,
     record_rc: bool,
 }
 
 impl Variant {
     fn tag(&self) -> String {
-        let rc_mode_str = match self.rc_mode {
-            RcMode::Elide => "elide",
-            RcMode::Trivial => "trivial",
+        let rc_strat_str = match self.rc_strat {
+            RcStrategy::Default => "default",
+            RcStrategy::Perceus => "perceus",
+            RcStrategy::ImmutableBeans => "immutable_beans",
         };
         let record_rc_str = if self.record_rc { "rc" } else { "time" };
-        format!("{}_{}", rc_mode_str, record_rc_str)
+        format!("{}_{}", rc_strat_str, record_rc_str)
     }
 }
 
 fn variants() -> Vec<Variant> {
     let mut variants = Vec::new();
-    for rc_mode in [RcMode::Elide, RcMode::Trivial] {
+    for rc_strat in [
+        RcStrategy::Default,
+        RcStrategy::Perceus,
+        RcStrategy::ImmutableBeans,
+    ] {
         for record_rc in [false, true] {
-            variants.push(Variant { rc_mode, record_rc });
+            variants.push(Variant {
+                rc_strat,
+                record_rc,
+            });
         }
     }
     variants
@@ -372,7 +377,6 @@ fn compile_sample(
     src_path: impl AsRef<Path> + Clone,
     profile_mod: &[&str],
     profile_func: &str,
-    mutation_mode: MutationMode,
 ) {
     for variant in variants() {
         let tag = variant.tag();
@@ -386,8 +390,7 @@ fn compile_sample(
             SpecializationMode::Specialize,
             SampleOptions {
                 is_native: true,
-                rc_mode: variant.rc_mode,
-                mutation_mode,
+                rc_strat: variant.rc_strat,
                 profile_record_rc: variant.record_rc,
             },
         );
@@ -415,7 +418,6 @@ fn sample_primes() {
         "samples/bench_primes_iter.mor",
         &[],
         "count_primes",
-        MutationMode::Optimize,
     );
 
     bench_sample(
@@ -461,7 +463,6 @@ fn sample_quicksort() {
         "samples/bench_quicksort.mor",
         &[],
         "quicksort",
-        MutationMode::Optimize,
     );
 
     bench_sample(
@@ -486,7 +487,6 @@ fn sample_primes_sieve() {
         "samples/bench_primes_sieve.mor",
         &[],
         "sieve",
-        MutationMode::Optimize,
     );
 
     bench_sample(iters, "bench_primes_sieve.mor", &[], "sieve", stdin, stdout);
@@ -507,7 +507,6 @@ fn sample_parse_json() {
         "samples/bench_parse_json.mor",
         &[],
         "parse_json",
-        MutationMode::Optimize,
     );
 
     bench_sample(
@@ -538,7 +537,6 @@ fn sample_calc() {
         "samples/bench_calc.mor",
         &[],
         "eval_exprs",
-        MutationMode::Optimize,
     );
 
     bench_sample(iters, "bench_calc.mor", &[], "eval_exprs", stdin, stdout);
@@ -558,7 +556,6 @@ fn sample_unify() {
         "samples/bench_unify.mor",
         &[],
         "solve_problems",
-        MutationMode::AlwaysImmut,
     );
 
     bench_sample(
@@ -588,7 +585,6 @@ fn sample_words_trie() {
         "samples/bench_words_trie.mor",
         &[],
         "count_words",
-        MutationMode::AlwaysImmut,
     );
 
     bench_sample(
@@ -612,7 +608,6 @@ fn sample_cfold() {
         "samples/bench_cfold.mor",
         &[],
         "test_cfold",
-        MutationMode::Optimize,
     );
 
     bench_sample(iters, "bench_cfold.mor", &[], "test_cfold", stdin, stdout);
@@ -629,7 +624,6 @@ fn sample_deriv() {
         "samples/bench_deriv.mor",
         &[],
         "run_deriv",
-        MutationMode::Optimize,
     );
 
     bench_sample(iters, "bench_deriv.mor", &[], "run_deriv", stdin, stdout);
@@ -646,7 +640,6 @@ fn sample_nqueens() {
         "samples/bench_nqueens.mor",
         &[],
         "nqueens",
-        MutationMode::Optimize,
     );
 
     bench_sample(iters, "bench_nqueens.mor", &[], "nqueens", stdin, stdout);
@@ -663,7 +656,6 @@ fn sample_rbtree() {
         "samples/bench_rbtree.mor",
         &[],
         "test_rbtree",
-        MutationMode::Optimize,
     );
 
     bench_sample(iters, "bench_rbtree.mor", &[], "test_rbtree", stdin, stdout);
@@ -680,7 +672,6 @@ fn sample_rbtreeck() {
         "samples/bench_rbtree.mor",
         &[],
         "test_rbtreeck",
-        MutationMode::Optimize,
     );
 
     bench_sample(

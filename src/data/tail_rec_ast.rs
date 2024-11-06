@@ -50,7 +50,11 @@ pub enum Expr {
     Intrinsic(Intrinsic, rc::LocalId),
     ArrayOp(ModeScheme, rc::ArrayOp),
     IoOp(rc::IoOp),
-    Panic(rc::Type, rc::LocalId),
+    Panic(
+        rc::Type,   // Output type
+        ModeScheme, // Input type
+        rc::LocalId,
+    ),
 
     ArrayLit(
         ModeScheme,       // Scheme of *item*

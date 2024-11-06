@@ -2,6 +2,7 @@
 //! inference paper. A signficant proportion of the machinery is dedicated to specialization. The
 //! core logic for the pass is contained in `instantiate_expr`.
 
+use crate::cli::RcStrategy;
 use crate::data::borrow_model as model;
 use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
 use crate::data::flat_ast::CustomTypeSccId;
@@ -550,7 +551,7 @@ fn emit_occur_constr(
         constrs.require_le_const(&Mode::Owned, binding_heap.access);
         constrs.require_le_const(&Mode::Owned, use_heap.access);
     }
-    if use_lt.does_not_exceed(scope) {
+    if use_lt.cmp_path(scope).leq() {
         // Case: this is a non-escaping ("opportunistic" or "borrow") occurrence.
         match (binding_modes, use_modes) {
             (ResModes::Stack(binding_stack), ResModes::Stack(use_stack)) => {
@@ -632,7 +633,7 @@ fn freshen_type_unused<M, L>(constrs: &mut ConstrGraph, ty: &TypeFo<M, L>) -> Ty
 }
 
 fn instantiate_occur_in_position(
-    _strategy: Strategy,
+    _strategy: RcStrategy,
     interner: &Interner,
     pos: IsTail,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
@@ -659,7 +660,7 @@ fn instantiate_occur_in_position(
 /// Generate occurrence constraints and merge `use_ty` into the typing context. Corresponds to the
 /// I-Occur rule.
 fn instantiate_occur(
-    strategy: Strategy,
+    strategy: RcStrategy,
     interner: &Interner,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     constrs: &mut ConstrGraph,
@@ -679,7 +680,7 @@ fn instantiate_occur(
 
 fn create_occurs_from_model(
     sig: &model::Signature,
-    _strategy: Strategy,
+    _strategy: RcStrategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
@@ -874,7 +875,7 @@ fn create_occurs_from_model(
 
 fn instantiate_model(
     sig: &model::Signature,
-    strategy: Strategy,
+    strategy: RcStrategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
@@ -940,7 +941,7 @@ struct LocalInfo {
 // Note that we must return a set of updates rather than mutating Γ because I-Match requires that we
 // check all branches in the initial Γ.
 fn instantiate_expr(
-    strategy: Strategy,
+    strategy: RcStrategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
@@ -1448,7 +1449,7 @@ struct SolverScc {
 }
 
 fn instantiate_scc(
-    strategy: Strategy,
+    strategy: RcStrategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
@@ -1575,11 +1576,11 @@ fn instantiate_scc(
 
             // We could avoid a lot of the work in the "always owned" case, but this is the simplest
             // intervention point
-            if strategy == Strategy::AlwaysOwned {
+            if strategy == RcStrategy::Perceus {
                 for var in constrs.var_count() {
                     constrs.require_le_const(&Mode::Owned, var);
                 }
-            } else if strategy == Strategy::OnlyTrivialBorrows {
+            } else if strategy == RcStrategy::ImmutableBeans {
                 for var in ret_tys
                     .values()
                     .flat_map(|ty| ty.iter_flat())
@@ -1738,7 +1739,7 @@ fn extract_expr(
 // each SCC of functions.
 
 fn solve_scc(
-    strategy: Strategy,
+    strategy: RcStrategy,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
@@ -1826,15 +1827,8 @@ fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &TailExpr) {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Strategy {
-    Default,
-    AlwaysOwned,        // similar to "Perceus"
-    OnlyTrivialBorrows, // similar to "Immutable Beans"
-}
-
 pub fn annot_modes(
-    strategy: Strategy,
+    strategy: RcStrategy,
     interner: &Interner,
     program: guard::Program,
     progress: impl ProgressLogger,

@@ -9,8 +9,7 @@ use std::path::Path;
 
 pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: AsRef<[u8]>>(
     mode: cli::RunMode,
-    rc_mode: cli::RcMode,
-    mutation_mode: cli::MutationMode,
+    rc_strat: cli::RcStrategy,
     path: SrcPath,
     given_in: In,
     expected_out: Out,
@@ -21,8 +20,7 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
         src_path: path.as_ref().to_owned(),
         purity_mode: cli::PurityMode::Checked,
         mode,
-        rc_mode,
-        mutation_mode,
+        rc_strat: rc_strat,
         stdio: Stdio::Piped,
     };
 
@@ -86,8 +84,7 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
 macro_rules! sample_interpret {
     (
         $name:ident $path:expr ;
-        $( rc_mode = $rc_mode:expr ; )?
-        $( mutation_mode = $mutation_mode:expr ; )?
+        $( rc_strat = $rc_strat:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -96,20 +93,14 @@ macro_rules! sample_interpret {
         #[test]
         fn interpret() {
             #[allow(unused_mut, unused_assignments)]
-            let mut rc_mode = crate::cli::RcMode::default();
-            #[allow(unused_mut, unused_assignments)]
-            let mut mutation_mode = crate::cli::MutationMode::default();
+            let mut rc_strat = crate::cli::RcStrategy::default();
             #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
             let mut status = crate::pseudoprocess::ExitStatus::Success;
 
             $(
-                rc_mode = $rc_mode;
-            )?
-
-            $(
-                mutation_mode = $mutation_mode;
+                rc_strat = $rc_strat;
             )?
 
             $(
@@ -122,8 +113,7 @@ macro_rules! sample_interpret {
 
             crate::test::run_sample::run_sample(
                 crate::cli::RunMode::Interpret,
-                rc_mode,
-                mutation_mode,
+                rc_strat,
                 $path,
                 $stdin,
                 $stdout,
@@ -137,8 +127,7 @@ macro_rules! sample_interpret {
 macro_rules! sample_compile {
     (
         $name:ident $path:expr ;
-        $( rc_mode = $rc_mode:expr ; )?
-        $( mutation_mode = $mutation_mode:expr ; )?
+        $( rc_strat = $rc_strat:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -148,20 +137,14 @@ macro_rules! sample_compile {
         #[test]
         fn compile() {
             #[allow(unused_mut, unused_assignments)]
-            let mut rc_mode = crate::cli::RcMode::default();
-            #[allow(unused_mut, unused_assignments)]
-            let mut mutation_mode = crate::cli::MutationMode::default();
+            let mut rc_strat = crate::cli::RcStrategy::default();
             #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
             let mut status = crate::pseudoprocess::ExitStatus::Success;
 
             $(
-                rc_mode = $rc_mode;
-            )?
-
-            $(
-                mutation_mode = $mutation_mode;
+                rc_strat = $rc_strat;
             )?
 
             $(
@@ -181,8 +164,7 @@ macro_rules! sample_compile {
 
             crate::test::run_sample::run_sample(
                 crate::cli::RunMode::Compile { valgrind: Some(valgrind) },
-                rc_mode,
-                mutation_mode,
+                rc_strat,
                 $path,
                 $stdin,
                 $stdout,
@@ -193,11 +175,10 @@ macro_rules! sample_compile {
     };
 }
 
-macro_rules! sample_rc_mode {
+macro_rules! sample_rc_strat {
     (
         $name:ident $path:expr ;
-        $( rc_mode = $rc_mode:expr ; )?
-        $( mutation_mode = $mutation_mode:expr ; )?
+        $( rc_strat = $rc_strat:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -206,8 +187,7 @@ macro_rules! sample_rc_mode {
     ) => {
         sample_interpret! {
             $name $path ;
-            $( rc_mode = $rc_mode ; )?
-            $( mutation_mode = $mutation_mode ; )?
+            $( rc_strat = $rc_strat ; )?
             stdin = $stdin ;
             stdout = $stdout ;
             $( stderr = $stderr ; )?
@@ -216,8 +196,7 @@ macro_rules! sample_rc_mode {
 
         sample_compile! {
             $name $path ;
-            $( rc_mode = $rc_mode ; )?
-            $( mutation_mode = $mutation_mode ; )?
+            $( rc_strat = $rc_strat ; )?
             stdin = $stdin ;
             stdout = $stdout ;
             $( stderr = $stderr ; )?
@@ -228,8 +207,7 @@ macro_rules! sample_rc_mode {
 
     (
         $name:ident $path:expr ;
-        $( rc_mode = $rc_mode:expr ; )?
-        $( mutation_mode = $mutation_mode:expr ; )?
+        $( rc_strat = $rc_strat:expr ; )?
         compile_only = true ;
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
@@ -239,8 +217,7 @@ macro_rules! sample_rc_mode {
     ) => {
         sample_compile! {
             $name $path ;
-            $( rc_mode = $rc_mode ; )?
-            $( mutation_mode = $mutation_mode ; )?
+            $( rc_strat = $rc_strat ; )?
             stdin = $stdin ;
             stdout = $stdout ;
             $( stderr = $stderr ; )?
@@ -253,7 +230,6 @@ macro_rules! sample_rc_mode {
 macro_rules! sample {
     (
         $name:ident $path:expr ;
-        $( mutation_mode = $mutation_mode:expr ; )?
         $( compile_only = $compile_only:tt ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
@@ -265,13 +241,12 @@ macro_rules! sample {
             #[allow(unused_imports)]
             use super::*;
 
-            mod rc_elide {
+            mod rc_default {
                 #[allow(unused_imports)]
                 use super::*;
-                sample_rc_mode! {
+                sample_rc_strat! {
                     $name $path ;
-                    rc_mode = crate::cli::RcMode::Elide;
-                    $( mutation_mode = $mutation_mode ; )?
+                    rc_strat = crate::cli::RcStrategy::Default;
                     $( compile_only = $compile_only ; )?
                     stdin = $stdin ;
                     stdout = $stdout ;
@@ -281,13 +256,27 @@ macro_rules! sample {
                 }
             }
 
-            mod rc_trivial {
+            // mod rc_perceus {
+            //     #[allow(unused_imports)]
+            //     use super::*;
+            //     sample_rc_strat! {
+            //         $name $path ;
+            //         rc_strat = crate::cli::RcStrategy::Perceus;
+            //         $( compile_only = $compile_only ; )?
+            //         stdin = $stdin ;
+            //         stdout = $stdout ;
+            //         $( stderr = $stderr ; )?
+            //         $( status = $status ; )?
+            //         $( leak_check = $leak_check ; )?
+            //     }
+            // }
+
+            mod rc_immutable_beans {
                 #[allow(unused_imports)]
                 use super::*;
-                sample_rc_mode! {
+                sample_rc_strat! {
                     $name $path ;
-                    rc_mode = crate::cli::RcMode::Trivial;
-                    $( mutation_mode = $mutation_mode ; )?
+                    rc_strat = crate::cli::RcStrategy::ImmutableBeans;
                     $( compile_only = $compile_only ; )?
                     stdin = $stdin ;
                     stdout = $stdout ;
@@ -301,8 +290,7 @@ macro_rules! sample {
 
     (
         $name:ident $path:expr ;
-        rc_mode = $rc_mode:expr ;
-        $( mutation_mode = $mutation_mode:expr ; )?
+        rc_strat = $rc_strat:expr ;
         $( compile_only = $compile_only:tt ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
@@ -314,10 +302,9 @@ macro_rules! sample {
             #[allow(unused_imports)]
             use super::*;
 
-            sample_rc_mode! {
+            sample_rc_strat! {
                 $name $path ;
-                rc_mode = $rc_mode;
-                $( mutation_mode = $mutation_mode ; )?
+                rc_strat = $rc_strat;
                 $( compile_only = $compile_only ; )?
                 stdin = $stdin ;
                 stdout = $stdout ;

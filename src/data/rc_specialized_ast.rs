@@ -86,10 +86,13 @@ pub enum ArrayOp {
     ), // Returns new array
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum IoOp {
     Input,
-    Output(LocalId),
+    Output(
+        ModeScheme, // Input
+        LocalId,
+    ),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -126,8 +129,9 @@ pub enum Expr {
     ArrayOp(ModeScheme, ArrayOp),
     IoOp(IoOp),
     Panic(
-        Type,    // Return type
-        LocalId, // Message
+        Type,       // Output
+        ModeScheme, // Input
+        LocalId,    // Message
     ),
 
     ArrayLit(

@@ -101,7 +101,10 @@ pub enum ArrayOp {
 #[derive(Clone, Debug)]
 pub enum IoOp {
     Input,
-    Output(LocalId),
+    Output(
+        ob::Type, // Input type
+        LocalId,
+    ),
 }
 
 #[derive(Clone, Debug)]
@@ -139,7 +142,11 @@ pub enum Expr {
     Intrinsic(Intrinsic, LocalId),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
-    Panic(ob::Type, LocalId),
+    Panic(
+        ob::Type, // Output type
+        ob::Type, // Input type
+        LocalId,
+    ),
 
     ArrayLit(
         ob::Type,     // Item type

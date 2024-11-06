@@ -1,4 +1,3 @@
-use crate::cli::MutationMode;
 use crate::pseudoprocess::ExitStatus::Failure;
 
 sample! { io "samples/io.mor";
@@ -317,7 +316,6 @@ sample! { bench_primes_sieve "samples/bench_primes_sieve.mor";
 }
 
 sample! { bench_words_trie "samples/bench_words_trie.mor";
-    mutation_mode = MutationMode::AlwaysImmut;
     compile_only = true;
     stdin = concat!(
         "2\n", // first number is iteration count
@@ -330,7 +328,6 @@ sample! { bench_words_trie "samples/bench_words_trie.mor";
 }
 
 sample! { bench_unify "samples/bench_unify.mor";
-    mutation_mode = MutationMode::AlwaysImmut;
     compile_only = true;
     stdin = concat!(
         "2\n", // first number is iteration count

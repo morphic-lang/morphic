@@ -29,8 +29,7 @@ pub enum PurityMode {
 pub struct RunConfig {
     pub src_path: PathBuf,
     pub mode: RunMode,
-    pub rc_mode: RcMode,
-    pub mutation_mode: MutationMode,
+    pub rc_strat: RcStrategy,
     pub purity_mode: PurityMode,
 
     // This controls the stdio capture behavior of the *user* program.  Logging and error messages
@@ -75,47 +74,26 @@ impl Default for SpecializationMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RcMode {
-    Elide,
-    Trivial,
+pub enum RcStrategy {
+    Default,
+    Perceus,        // similar to "Perceus"
+    ImmutableBeans, // similar to "Immutable Beans"
 }
 
-impl Default for RcMode {
+impl Default for RcStrategy {
     fn default() -> Self {
-        RcMode::Elide
+        RcStrategy::Default
     }
 }
 
-const RC_MODES: &[&str] = &["elide", "trivial"];
-const DEFAULT_RC_MODE: &str = "elide";
+const RC_STRATS: &[&str] = &["default", "perceus", "immutable-beans"];
+const DEFAULT_RC_STRATS: &str = "default";
 
-fn parse_rc_mode(s: &str) -> RcMode {
+fn parse_rc_strat(s: &str) -> RcStrategy {
     match s {
-        "elide" => RcMode::Elide,
-        "trivial" => RcMode::Trivial,
-        _ => unreachable!(),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MutationMode {
-    Optimize,
-    AlwaysImmut,
-}
-
-impl Default for MutationMode {
-    fn default() -> Self {
-        MutationMode::Optimize
-    }
-}
-
-const MUTATION_MODES: &[&str] = &["optimize", "always-immut"];
-const DEFAULT_MUTATION_MODE: &str = "optimize";
-
-fn parse_mutation_mode(s: &str) -> MutationMode {
-    match s {
-        "optimize" => MutationMode::Optimize,
-        "always-immut" => MutationMode::AlwaysImmut,
+        "default" => RcStrategy::Default,
+        "perceus" => RcStrategy::Perceus,
+        "immutable-beans" => RcStrategy::ImmutableBeans,
         _ => unreachable!(),
     }
 }
@@ -123,16 +101,14 @@ fn parse_mutation_mode(s: &str) -> MutationMode {
 #[derive(Clone, Debug)]
 pub struct PassOptions {
     pub defunc_mode: SpecializationMode,
-    pub rc_mode: RcMode,
-    pub mutation_mode: MutationMode,
+    pub rc_strat: RcStrategy,
 }
 
 impl Default for PassOptions {
     fn default() -> Self {
         Self {
             defunc_mode: SpecializationMode::default(),
-            rc_mode: RcMode::default(),
-            mutation_mode: MutationMode::default(),
+            rc_strat: RcStrategy::default(),
         }
     }
 }
@@ -218,17 +194,12 @@ impl Config {
                                 generating LLVM and running a fully compiled executable.",
                             ),
                     )
-                    .arg(Arg::new("rc-mode")
-                        .long("rc-mode")
-                        .value_parser(PossibleValuesParser::new(RC_MODES))
-                        .default_value(DEFAULT_RC_MODE)
-                        .help("Same as '--rc-mode' for 'morphic build'."),
+                    .arg(Arg::new("rc-strat")
+                        .long("rc-strat")
+                        .value_parser(PossibleValuesParser::new(RC_STRATS))
+                        .default_value(DEFAULT_RC_STRATS)
+                        .help("Same as '--rc-strat' for 'morphic build'."),
                     )
-                    .arg(Arg::new("mutation-mode")
-                        .long("mutation-mode")
-                        .value_parser(PossibleValuesParser::new(MUTATION_MODES))
-                        .default_value(DEFAULT_MUTATION_MODE),
-                    ),
             )
             .subcommand(
                 Command::new("build")
@@ -321,20 +292,14 @@ impl Config {
                             .default_value("specialize"),
                     )
                     .arg(
-                        Arg::new("rc-mode")
-                        .long("rc-mode")
+                        Arg::new("rc-strat")
+                        .long("rc-strat")
                         .help(
                             "Set whether or not to elide reference counting operations. This is \
                             mostly useful for working around compiler bugs."
                         )
-                        .value_parser(PossibleValuesParser::new(RC_MODES))
-                        .default_value(DEFAULT_RC_MODE),
-                    )
-                    .arg(
-                        Arg::new("mutation-mode")
-                        .long("mutation-mode")
-                        .value_parser(PossibleValuesParser::new(MUTATION_MODES))
-                        .default_value(DEFAULT_MUTATION_MODE),
+                        .value_parser(PossibleValuesParser::new(RC_STRATS))
+                        .default_value(DEFAULT_RC_STRATS),
                     )
                     .arg(
                         Arg::new("progress")
@@ -372,17 +337,13 @@ impl Config {
                 }
             };
 
-            let rc_mode = parse_rc_mode(matches.get_one::<String>("rc-mode").unwrap());
-
-            let mutation_mode =
-                parse_mutation_mode(matches.get_one::<String>("mutation-mode").unwrap());
+            let rc_strat = parse_rc_strat(matches.get_one::<String>("rc-strat").unwrap());
 
             let run_config = RunConfig {
                 src_path,
                 purity_mode,
                 mode,
-                rc_mode,
-                mutation_mode,
+                rc_strat: rc_strat,
                 stdio: Stdio::Inherit,
             };
             return Self::RunConfig(run_config);
@@ -454,10 +415,7 @@ impl Config {
                 _ => unreachable!(),
             };
 
-            let rc_mode = parse_rc_mode(matches.get_one::<String>("rc-mode").unwrap());
-
-            let mutation_mode =
-                parse_mutation_mode(matches.get_one::<String>("mutation-mode").unwrap());
+            let rc_strat = parse_rc_strat(matches.get_one::<String>("rc-strat").unwrap());
 
             let progress = if matches.get_flag("progress") {
                 ProgressMode::Visible
@@ -477,8 +435,7 @@ impl Config {
                 progress,
                 pass_options: PassOptions {
                     defunc_mode,
-                    rc_mode,
-                    mutation_mode,
+                    rc_strat: rc_strat,
                 },
             };
             return Self::BuildConfig(build_config);

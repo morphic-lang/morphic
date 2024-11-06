@@ -624,11 +624,21 @@ fn lower_expr(
             )
         }
         annot::Expr::IoOp(annot::IoOp::Input) => rc::Expr::IoOp(rc::IoOp::Input),
-        annot::Expr::IoOp(annot::IoOp::Output(local)) => {
-            rc::Expr::IoOp(rc::IoOp::Output(ctx.local_binding(*local).new_id))
+        annot::Expr::IoOp(annot::IoOp::Output(ty, local)) => {
+            let scheme = make_scheme(insts, &ty.shape(), &prepare_resources(ty.res().as_slice()));
+            rc::Expr::IoOp(rc::IoOp::Output(scheme, ctx.local_binding(*local).new_id))
         }
-        annot::Expr::Panic(ret_ty, msg) => {
-            rc::Expr::Panic(lower_type(&ret_ty.shape()), ctx.local_binding(*msg).new_id)
+        annot::Expr::Panic(ret_ty, input_ty, msg) => {
+            let input_scheme = make_scheme(
+                insts,
+                &input_ty.shape(),
+                &prepare_resources(input_ty.res().as_slice()),
+            );
+            rc::Expr::Panic(
+                lower_type(&ret_ty.shape()),
+                input_scheme,
+                ctx.local_binding(*msg).new_id,
+            )
         }
         annot::Expr::ArrayLit(item_ty, items) => {
             let scheme = make_scheme(
@@ -690,17 +700,7 @@ fn lower_func(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Strategy {
-    Default,
-    Trivial,
-}
-
-pub fn rc_specialize(
-    program: annot::Program,
-    _strategy: Strategy,
-    progress: impl ProgressLogger,
-) -> rc::Program {
+pub fn rc_specialize(program: annot::Program, progress: impl ProgressLogger) -> rc::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
     let mut queue = ReleaseInstances::new();

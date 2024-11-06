@@ -179,11 +179,16 @@ impl Heap<'_> {
     fn value_to_str(&self, kind: HeapId) -> String {
         match &self[kind] {
             Value::Bool(val) => val.to_string(),
-            Value::Num(NumValue::Byte(Wrapping(val))) => (*val as char).to_string(),
+            Value::Num(NumValue::Byte(Wrapping(val))) => format!("{:?}", *val as char),
             Value::Num(NumValue::Int(Wrapping(val))) => val.to_string(),
             Value::Num(NumValue::Float(val)) => val.to_string(),
-            Value::ArrayContent(_rc, _contents) => {
-                unreachable!("cannot convert array content to string")
+            Value::ArrayContent(rc, contents) => {
+                let contents_str = contents
+                    .iter()
+                    .map(|heap_id| self.value_to_str(*heap_id))
+                    .collect::<Vec<String>>()
+                    .join(",");
+                format!["rc:{} [{}]", rc, contents_str]
             }
             Value::Array(_len, None) => {
                 format!["empty array on stack"]
@@ -197,7 +202,7 @@ impl Heap<'_> {
                     .map(|heap_id| self.value_to_str(*heap_id))
                     .collect::<Vec<String>>()
                     .join(",");
-                format!["rc:{} array [{}]", rc, contents_str]
+                format!["array rc:{} [{}]", rc, contents_str]
             }
             Value::HoleArray(_len, hole, ptr) => {
                 let Value::ArrayContent(rc, contents) = &self[*ptr] else {
@@ -953,6 +958,24 @@ fn interpret_call(
     }
 }
 
+// We call this function when implementing built-ins that always take borrowed arguments under the
+// normal rc elision, but owned arguments under Perceus. This is equivalent to calling `release`,
+// but better expresses the intent of the caller.
+fn discard_owned_input(
+    custom_schemes: &IdVec<ModeSchemeId, ModeScheme>,
+    heap: &mut Heap,
+    heap_id: HeapId,
+    scheme: &ModeScheme,
+    stacktrace: StackTrace,
+) {
+    match scheme {
+        ModeScheme::Array(_, _) | ModeScheme::HoleArray(_, _) | ModeScheme::Boxed(_, _) => {}
+        _ => stacktrace.panic("expected an array or box type"),
+    };
+    // println!["RELEASING {}", heap.value_to_str(heap_id)];
+    release(custom_schemes, heap, heap_id, scheme, stacktrace);
+}
+
 fn interpret_expr(
     func_renderer: &TailFuncRenderer<CustomFuncId>,
     expr: &Expr,
@@ -1123,7 +1146,7 @@ fn interpret_expr(
                 heap.add(Value::Box(1, heap_id))
             }
 
-            Expr::UnwrapBoxed(local_id, _input_scheme, output_scheme) => {
+            Expr::UnwrapBoxed(local_id, input_scheme, output_scheme) => {
                 let heap_id = locals[local_id];
                 let local_heap_id =
                     unwrap_boxed(heap, heap_id, stacktrace.add_frame("unwrap boxed"));
@@ -1135,6 +1158,7 @@ fn interpret_expr(
                     stacktrace.add_frame("unwrap boxed typecheck"),
                 );
 
+                discard_owned_input(&program.schemes, heap, heap_id, input_scheme, stacktrace);
                 local_heap_id
             }
 
@@ -1469,20 +1493,23 @@ fn interpret_expr(
 
             Expr::ArrayOp(_scheme, ArrayOp::New) => heap.add(Value::Array(0, None)),
 
-            Expr::ArrayOp(_scheme, ArrayOp::Len(array_id)) => {
+            Expr::ArrayOp(scheme, ArrayOp::Len(array_id)) => {
                 let array_id = locals[array_id];
 
                 // We *intentionally* avoid asserting that the array is live here. It needn't be
                 // since `len` does not access the heap under the LLVM backend.
                 let kind = &heap[array_id];
-                match kind {
+                let result = match kind {
                     Value::Array(len, _) => {
                         heap.add(Value::Num(NumValue::Int(Wrapping(*len as i64))))
                     }
                     _ => {
                         stacktrace.panic(format!["expected an array received {:?}", kind]);
                     }
-                }
+                };
+
+                discard_owned_input(&program.schemes, heap, array_id, scheme, stacktrace);
+                result
             }
 
             Expr::ArrayOp(scheme, ArrayOp::Push(array_id, item_id)) => {
@@ -1545,13 +1572,13 @@ fn interpret_expr(
                 }
             }
 
-            Expr::ArrayOp(_scheme, ArrayOp::Get(array_id, index_id)) => {
+            Expr::ArrayOp(scheme, ArrayOp::Get(array_id, index_id)) => {
                 let array_heap_id = locals[array_id];
                 let index_heap_id = locals[index_id];
 
                 let index = unwrap_int(heap, index_heap_id, stacktrace.add_frame("get index"));
 
-                match &heap[array_heap_id] {
+                let result = match &heap[array_heap_id] {
                     Value::Array(_, None) => {
                         bounds_check(stderr, 0, index.0)?;
                         unreachable!()
@@ -1565,7 +1592,10 @@ fn interpret_expr(
                     kind => {
                         stacktrace.panic(format!["expected an array received {:?}", kind]);
                     }
-                }
+                };
+
+                discard_owned_input(&program.schemes, heap, array_heap_id, scheme, stacktrace);
+                result
             }
 
             Expr::ArrayOp(scheme, ArrayOp::Extract(array_id, index_id)) => {
@@ -1698,7 +1728,7 @@ fn interpret_expr(
                 new_array(heap, heap_ids)
             }
 
-            Expr::IoOp(IoOp::Output(array_id)) => {
+            Expr::IoOp(IoOp::Output(input_scheme, array_id)) => {
                 let array_heap_id = locals[array_id];
 
                 let Value::Array(_, ptr) = heap[array_heap_id] else {
@@ -1708,7 +1738,7 @@ fn interpret_expr(
                     ));
                 };
 
-                match ptr {
+                let result = match ptr {
                     None => HeapId(0),
 
                     Some(ptr) => {
@@ -1734,10 +1764,21 @@ fn interpret_expr(
 
                         HeapId(0)
                     }
-                }
+                };
+
+                // println!["DISCARDING {:?}", heap.value_to_str(array_heap_id)];
+                // println!["scheme {:?}", input_scheme];
+                discard_owned_input(
+                    &program.schemes,
+                    heap,
+                    array_heap_id,
+                    input_scheme,
+                    stacktrace,
+                );
+                result
             }
 
-            Expr::Panic(_ret_type, array_id) => {
+            Expr::Panic(_ret_type, input_scheme, array_id) => {
                 let array_heap_id = locals[array_id];
 
                 let Value::Array(_, ptr) = heap[array_heap_id] else {
@@ -1747,7 +1788,7 @@ fn interpret_expr(
                     ));
                 };
 
-                match ptr {
+                let result = match ptr {
                     None => HeapId(0),
 
                     Some(ptr) => {
@@ -1773,7 +1814,16 @@ fn interpret_expr(
 
                         return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
                     }
-                }
+                };
+
+                discard_owned_input(
+                    &program.schemes,
+                    heap,
+                    array_heap_id,
+                    input_scheme,
+                    stacktrace,
+                );
+                result
             }
 
             Expr::BoolLit(val) => heap.add(Value::Bool(*val)),

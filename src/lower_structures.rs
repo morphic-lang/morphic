@@ -200,11 +200,15 @@ fn lower_expr(
         }
         tail::Expr::IoOp(io_type) => low::Expr::IoOp(match io_type {
             rc::IoOp::Input => low::IoOp::Input,
-            rc::IoOp::Output(output_id) => low::IoOp::Output(output_id.lookup_in(context)),
+            rc::IoOp::Output(input_type, output_id) => {
+                low::IoOp::Output(input_type.clone(), output_id.lookup_in(context))
+            }
         }),
-        tail::Expr::Panic(ret_type, message) => {
-            low::Expr::Panic(ret_type.clone(), message.lookup_in(context))
-        }
+        tail::Expr::Panic(ret_type, input_type, message) => low::Expr::Panic(
+            ret_type.clone(),
+            input_type.clone(),
+            message.lookup_in(context),
+        ),
         tail::Expr::ArrayLit(item_scheme, elems) => {
             // TODO: we are inlining some knowledge here about the signatures of `Array.new`,
             // `Array.reserve`, and `Array.push`. Types should be determined instead by the same

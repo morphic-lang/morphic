@@ -538,34 +538,31 @@ fn propagate_spatial(interner: &Interner, customs: &ob::CustomTypes, ty: &Type) 
     Type::new(ty.shape().clone(), graph.nodes)
 }
 
+fn should_propagate_temporal(src_mode: &ResModes<Mode>, dst_mode: &ResModes<Mode>) -> bool {
+    let src_mode = src_mode.stack_or_access();
+    let dst_mode = dst_mode.stack_or_access();
+    match (src_mode, dst_mode) {
+        (Mode::Owned, Mode::Borrowed) | (Mode::Borrowed, Mode::Borrowed) => true,
+        (Mode::Owned, Mode::Owned) => false,
+        (Mode::Borrowed, Mode::Owned) => unreachable!("impossible by construction"),
+    }
+}
+
 fn propagate_temporal(
     interner: &Interner,
     occur_path: &Path,
-    src_ty: &Type,
-    dst_ty: &Type,
-) -> Type {
-    let propagate = |(src_res, dst_res): (&Res<_, Lt>, &Res<_, Lt>)| {
-        let src_mode = src_res.modes.stack_or_access();
-        let dst_mode = dst_res.modes.stack_or_access();
-        let lt = match (src_mode, dst_mode) {
-            (Mode::Owned, Mode::Borrowed) | (Mode::Borrowed, Mode::Borrowed) => dst_res.lt.clone(),
-            (Mode::Owned, Mode::Owned) => occur_path.as_lt(interner),
-            (Mode::Borrowed, Mode::Owned) => unreachable!("impossible by construction"),
-        };
-        Res {
-            modes: src_res.modes.clone(),
-            lt: src_res.lt.join(interner, &lt),
-        }
+    src_res: &Res<Mode, Lt>,
+    dst_res: &Res<Mode, Lt>,
+) -> Res<Mode, Lt> {
+    let lt = if should_propagate_temporal(&src_res.modes, &dst_res.modes) {
+        dst_res.lt.clone()
+    } else {
+        occur_path.as_lt(interner)
     };
-
-    let new_src_res = src_ty
-        .res()
-        .values()
-        .zip_eq(dst_ty.res().values())
-        .map(propagate)
-        .collect::<Vec<_>>();
-
-    Type::new(src_ty.shape().clone(), IdVec::from_vec(new_src_res))
+    Res {
+        modes: src_res.modes.clone(),
+        lt: src_res.lt.join(interner, &lt),
+    }
 }
 
 fn replace_lts<L1, L2, I: Id + 'static>(
@@ -609,7 +606,8 @@ fn create_occurs_from_model(
     ///////////////////////////////////////
 
     // Set up a mapping from model lifetimes to lifetimes.
-    let mut get_lt = IdVec::from_count_with(sig.lt_count, |_| None);
+    let mut get_ret: IdVec<model::ModelLt, Option<Res<Mode, Lt>>> =
+        IdVec::from_count_with(sig.lt_count, |_| None);
 
     for (slot, model_res) in sig.ret.get_res(&ret.shape()) {
         if sig.unused_lts.contains(&model_res.lt) {
@@ -618,22 +616,27 @@ fn create_occurs_from_model(
 
         // Update the lifetime mapping based on the return.
         let res = &ret.res()[slot];
-        match &mut get_lt[model_res.lt] {
-            entry @ None => *entry = Some(res.lt.clone()),
+        match &mut get_ret[model_res.lt] {
+            entry @ None => *entry = Some(res.clone()),
             Some(_) => {
                 panic!("a lifetime variable cannot appear more than once in a model return type");
             }
         }
     }
 
-    let get_lt = get_lt;
+    let get_ret = get_ret;
 
     for (i, (arg, occur)) in sig.args.iter().zip(&mut arg_occurs).enumerate() {
         for (slot, model_res) in arg.get_res(&occur.ty.shape()) {
+            let arg_res = &mut occur.ty.res_mut()[slot];
+
             // Substitute for model lifetimes using the mapping constructed from the return.
-            let res = &mut occur.ty.res_mut()[slot];
-            res.lt = if let Some(lt) = &get_lt[model_res.lt] {
-                lt.clone()
+            arg_res.lt = if let Some(ret_res) = &get_ret[model_res.lt] {
+                if should_propagate_temporal(&arg_res.modes, &ret_res.modes) {
+                    ret_res.lt.clone()
+                } else {
+                    annot::arg_path(path, i, args.len()).as_lt(interner)
+                }
             } else if sig.unused_lts.contains(&model_res.lt) {
                 Lt::Empty
             } else {
@@ -679,7 +682,9 @@ fn create_occurs_from_model(
                     &mut arg_occurs[loc.occur_idx].ty.res_mut().as_mut_slice()[loc.start..loc.end];
 
                 for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.res().values()) {
-                    arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
+                    if should_propagate_temporal(&arg_res.modes, &ret_res.modes) {
+                        arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
+                    }
                 }
             }
         }
@@ -711,7 +716,9 @@ fn create_occurs_from_model(
                             [loc.start..loc.end];
 
                         for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.res().values()) {
-                            arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
+                            if should_propagate_temporal(&arg_res.modes, &ret_res.modes) {
+                                arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
+                            }
                         }
                     }
                 }
@@ -730,7 +737,16 @@ fn propagate_occur(
     ty: &Type,
 ) {
     let binding = ctx.local_binding_mut(local);
-    binding.ty = propagate_temporal(interner, path, &binding.ty, ty);
+
+    let new_src_res = binding
+        .ty
+        .res()
+        .values()
+        .zip_eq(ty.res().values())
+        .map(|(src_res, dst_res)| propagate_temporal(interner, path, src_res, dst_res))
+        .collect::<Vec<_>>();
+
+    binding.ty = Type::new(binding.ty.shape().clone(), IdVec::from_vec(new_src_res))
 }
 
 fn instantiate_model(
@@ -780,23 +796,14 @@ fn handle_occur(
     interner: &Interner,
     ctx: &mut LocalContext,
     path: &Path,
-    occur: &Occur,
-    fut_ty: &Type,
+    occur: guard::LocalId,
+    use_ty: &Type,
 ) -> Occur {
     // Throw out the existing lifetimes; we are recomputing them. Keep the modes.
-    let res = occur
-        .ty
-        .iter_modes()
-        .cloned()
-        .zip_eq(fut_ty.iter_lts().cloned())
-        .map(|(modes, lt)| Res { modes, lt })
-        .collect();
-    let use_ty = Type::new(occur.ty.shape().clone(), IdVec::from_vec(res));
-
-    propagate_occur(interner, ctx, path, occur.id, &use_ty);
+    propagate_occur(interner, ctx, path, occur, &use_ty);
     Occur {
-        id: occur.id,
-        ty: use_ty,
+        id: occur,
+        ty: use_ty.clone(),
     }
 }
 
@@ -811,7 +818,7 @@ fn annot_expr(
     fut_ty: &Type,
 ) -> Expr {
     match expr {
-        Expr::Local(occur) => Expr::Local(handle_occur(interner, ctx, path, occur, fut_ty)),
+        Expr::Local(occur) => Expr::Local(handle_occur(interner, ctx, path, occur.id, fut_ty)),
 
         Expr::Call(purity, func_id, arg) => {
             let (arg_ty, ret_ty) = sigs.sig_of(*func_id);
@@ -827,7 +834,7 @@ fn annot_expr(
                 &path.as_lt(interner),
             );
 
-            let arg = handle_occur(interner, ctx, path, arg, &arg_ty);
+            let arg = handle_occur(interner, ctx, path, arg.id, &arg_ty);
             Expr::Call(*purity, *func_id, arg)
         }
 
@@ -843,7 +850,7 @@ fn annot_expr(
                 });
             }
 
-            let ret_occur = handle_occur(interner, ctx, &path.seq(bindings.len()), ret, fut_ty);
+            let ret_occur = handle_occur(interner, ctx, &path.seq(bindings.len()), ret.id, fut_ty);
 
             let mut new_bindings_rev = Vec::new();
             for (i, (_, expr, metadata)) in bindings.into_iter().enumerate().rev() {
@@ -898,8 +905,13 @@ fn annot_expr(
                 then_case,
                 fut_ty,
             );
-            let discrim =
-                handle_occur(interner, ctx, &path.seq(0), discrim, &Type::bool_(interner));
+            let discrim = handle_occur(
+                interner,
+                ctx,
+                &path.seq(0),
+                discrim.id,
+                &Type::bool_(interner),
+            );
             Expr::If(discrim, Box::new(then_case), Box::new(else_case))
         }
 
@@ -908,7 +920,7 @@ fn annot_expr(
             let variants_ty = &ctx.local_binding(variant.id).ty.clone(); // appease the borrow checker
             Expr::CheckVariant(
                 *variant_id,
-                handle_occur(interner, ctx, path, variant, variants_ty),
+                handle_occur(interner, ctx, path, variant.id, variants_ty),
             )
         }
 
@@ -922,7 +934,7 @@ fn annot_expr(
                 .enumerate()
                 .rev()
                 .map(|(i, (occur, item_ty))| {
-                    handle_occur(interner, ctx, &path.seq(i), occur, item_ty)
+                    handle_occur(interner, ctx, &path.seq(i), occur.id, item_ty)
                 })
                 .collect::<Vec<_>>();
             let fields = {
@@ -933,7 +945,7 @@ fn annot_expr(
         }
 
         Expr::TupleField(tup, idx) => {
-            let mut tuple_ty = replace_lts(&ctx.local_binding(tup.id).ty, || Lt::Empty);
+            let mut tuple_ty = replace_lts(&tup.ty, || Lt::Empty);
             let ShapeInner::Tuple(shapes) = &*tuple_ty.shape().inner else {
                 panic!("expected `Tuple` type");
             };
@@ -941,18 +953,24 @@ fn annot_expr(
             let (start, end) = annot::nth_res_bounds(shapes, *idx);
             tuple_ty.res_mut().as_mut_slice()[start..end].clone_from_slice(fut_ty.res().as_slice());
 
-            let occur = handle_occur(interner, ctx, path, tup, &tuple_ty);
+            let occur = handle_occur(interner, ctx, path, tup.id, &tuple_ty);
             Expr::TupleField(occur, *idx)
         }
 
         Expr::WrapVariant(_variants, variant_id, content) => {
             let fut_variant_tys = annot::elim_variants(fut_ty);
-            let occur = handle_occur(interner, ctx, path, content, &fut_variant_tys[*variant_id]);
+            let occur = handle_occur(
+                interner,
+                ctx,
+                path,
+                content.id,
+                &fut_variant_tys[*variant_id],
+            );
             Expr::WrapVariant(fut_variant_tys, *variant_id, occur)
         }
 
         Expr::UnwrapVariant(variant_id, wrapped) => {
-            let mut variants_ty = replace_lts(&ctx.local_binding(wrapped.id).ty, || Lt::Empty);
+            let mut variants_ty = replace_lts(&wrapped.ty, || Lt::Empty);
             let ShapeInner::Variants(shapes) = &*variants_ty.shape().inner else {
                 panic!("expected `Variants` type");
             };
@@ -961,7 +979,7 @@ fn annot_expr(
             variants_ty.res_mut().as_mut_slice()[start..end]
                 .clone_from_slice(fut_ty.res().as_slice());
 
-            let occur = handle_occur(interner, ctx, path, wrapped, &variants_ty);
+            let occur = handle_occur(interner, ctx, path, wrapped.id, &variants_ty);
             Expr::UnwrapVariant(*variant_id, occur)
         }
 
@@ -981,7 +999,7 @@ fn annot_expr(
         Expr::WrapCustom(custom_id, recipe, unfolded) => {
             let fut_unfolded =
                 annot::unfold(interner, &customs.types, &customs.sccs, recipe, fut_ty);
-            let occur = handle_occur(interner, ctx, path, unfolded, &fut_unfolded);
+            let occur = handle_occur(interner, ctx, path, unfolded.id, &fut_unfolded);
             Expr::WrapCustom(*custom_id, recipe.clone(), occur)
         }
 
@@ -1005,7 +1023,7 @@ fn annot_expr(
                 annot::subst_lts(interner, &annot::wrap_lts(&fresh_folded), &lt_subst)
             };
 
-            let occur = handle_occur(interner, ctx, path, folded, &fresh_folded);
+            let occur = handle_occur(interner, ctx, path, folded.id, &fresh_folded);
             Expr::UnwrapCustom(*custom_id, recipe.clone(), occur)
         }
 
@@ -1313,6 +1331,11 @@ pub fn annot_obligations(
     progress: impl ProgressLogger,
 ) -> ob::Program {
     let program = solve_program(interner, program);
+    {
+        let file = std::fs::File::create("annotated.ob").unwrap();
+        let mut writer = std::io::BufWriter::new(file);
+        crate::pretty_print::obligation_annot::write_program(&mut writer, &program);
+    }
     let program = annot_program(interner, program, progress);
     program
 }

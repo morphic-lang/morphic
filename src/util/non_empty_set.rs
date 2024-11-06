@@ -18,6 +18,13 @@ impl<T> NonEmptySet<T> {
     pub fn iter<'a>(&'a self) -> btree_set::Iter<'a, T> {
         self.0.iter()
     }
+
+    pub fn is_subset(&self, other: &Self) -> bool
+    where
+        T: Ord,
+    {
+        self.0.is_subset(&other.0)
+    }
 }
 
 impl<T: Ord> Extend<T> for NonEmptySet<T> {

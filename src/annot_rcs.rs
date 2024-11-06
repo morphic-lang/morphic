@@ -1,6 +1,8 @@
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast::{self as annot, LocalLt, Lt, Mode, Path, ShapeInner, SlotId};
+use crate::data::mode_annot_ast::{
+    self as annot, Cmp, LocalLt, Lt, Mode, Path, ShapeInner, SlotId,
+};
 use crate::data::obligation_annot_ast::{self as ob, CustomTypeId, Shape, Type};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
 use crate::pretty_print::utils::FuncRenderer;
@@ -33,7 +35,7 @@ fn assert_transition_ok(src_mode: Mode, dst_mode: Mode) {
 
 fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
     assert_transition_ok(src_mode, dst_mode);
-    dst_mode == Mode::Owned && !lt.does_not_exceed(path)
+    dst_mode == Mode::Owned && !lt.cmp_path(path).leq()
 }
 
 fn select_dups(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &Type) -> Selector {
@@ -45,6 +47,18 @@ fn select_dups(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &T
         let dst_mode = *dst_ty.res()[slot].modes.unwrap_stack();
 
         if should_dup(path, src_mode, dst_mode, lt) {
+            // {
+            //     let cmp = lt.cmp_path(path);
+            //     if cmp == Cmp::Suffix || cmp == Cmp::Prefix {
+            //         println!(
+            //             "should_dup: path: {}, src_ty: {}, dst_ty: {}, lt: {}",
+            //             path.display(),
+            //             src_ty.display(),
+            //             dst_ty.display(),
+            //             lt.display(),
+            //         );
+            //     }
+            // }
             result.insert(slot);
         }
     }
@@ -53,7 +67,7 @@ fn select_dups(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &T
 
 fn should_move(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
     assert_transition_ok(src_mode, dst_mode);
-    dst_mode == Mode::Owned && lt.does_not_exceed(path)
+    dst_mode == Mode::Owned && lt.cmp_path(path).leq()
 }
 
 fn select_moves(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &Type) -> Selector {
@@ -746,8 +760,8 @@ fn annot_expr(
             let item_retains = select_owned(customs, &ret_ty);
 
             let arr_ty = arr.ty.clone();
-            let (new_arr, moves1) = annot_occur(interner, customs, ctx, path, arr, builder);
-            let (new_idx, moves2) = annot_occur(interner, customs, ctx, path, idx, builder);
+            let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
+            let (new_idx, moves2) = annot_occur(interner, customs, ctx, &path.seq(1), idx, builder);
 
             let mut moves = moves1;
             moves.merge(moves2);
@@ -761,8 +775,8 @@ fn annot_expr(
 
         ob::Expr::ArrayOp(ob::ArrayOp::Extract(arr, idx)) => {
             let arr_ty = arr.ty.clone();
-            let (new_arr, moves1) = annot_occur(interner, customs, ctx, path, arr, builder);
-            let (new_idx, moves2) = annot_occur(interner, customs, ctx, path, idx, builder);
+            let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
+            let (new_idx, moves2) = annot_occur(interner, customs, ctx, &path.seq(1), idx, builder);
 
             let mut moves = moves1;
             moves.merge(moves2);
@@ -782,8 +796,9 @@ fn annot_expr(
 
         ob::Expr::ArrayOp(ob::ArrayOp::Push(arr, item)) => {
             let arr_ty = arr.ty.clone();
-            let (new_arr, moves1) = annot_occur(interner, customs, ctx, path, arr, builder);
-            let (new_item, moves2) = annot_occur(interner, customs, ctx, path, item, builder);
+            let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
+            let (new_item, moves2) =
+                annot_occur(interner, customs, ctx, &path.seq(1), item, builder);
 
             let mut moves = moves1;
             moves.merge(moves2);
@@ -803,8 +818,9 @@ fn annot_expr(
 
         ob::Expr::ArrayOp(ob::ArrayOp::Replace(arr, item)) => {
             let arr_ty = arr.ty.clone();
-            let (new_arr, moves1) = annot_occur(interner, customs, ctx, path, arr, builder);
-            let (new_item, moves2) = annot_occur(interner, customs, ctx, path, item, builder);
+            let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
+            let (new_item, moves2) =
+                annot_occur(interner, customs, ctx, &path.seq(1), item, builder);
 
             let mut moves = moves1;
             moves.merge(moves2);
@@ -817,8 +833,8 @@ fn annot_expr(
 
         ob::Expr::ArrayOp(ob::ArrayOp::Reserve(arr, cap)) => {
             let arr_ty = arr.ty.clone();
-            let (new_arr, moves1) = annot_occur(interner, customs, ctx, path, arr, builder);
-            let (new_cap, moves2) = annot_occur(interner, customs, ctx, path, cap, builder);
+            let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
+            let (new_cap, moves2) = annot_occur(interner, customs, ctx, &path.seq(1), cap, builder);
 
             let mut moves = moves1;
             moves.merge(moves2);
@@ -832,13 +848,15 @@ fn annot_expr(
         ob::Expr::IoOp(ob::IoOp::Input) => (rc::Expr::IoOp(rc::IoOp::Input), Moves::empty()),
 
         ob::Expr::IoOp(ob::IoOp::Output(val)) => {
+            let val_ty = val.ty.clone();
             let (new_val, moves) = annot_occur(interner, customs, ctx, path, val, builder);
-            (rc::Expr::IoOp(rc::IoOp::Output(new_val)), moves)
+            (rc::Expr::IoOp(rc::IoOp::Output(val_ty, new_val)), moves)
         }
 
         ob::Expr::Panic(ret_ty, msg) => {
+            let input_ty = msg.ty.clone();
             let (new_msg, moves) = annot_occur(interner, customs, ctx, path, msg, builder);
-            (rc::Expr::Panic(ret_ty, new_msg), moves)
+            (rc::Expr::Panic(ret_ty, input_ty, new_msg), moves)
         }
 
         ob::Expr::ArrayLit(item_ty, items) => {
@@ -873,11 +891,12 @@ fn annot_expr(
 
 fn annot_func(
     interner: &Interner,
-    _func_renderer: &FuncRenderer<ob::CustomFuncId>,
+    func_renderer: &FuncRenderer<ob::CustomFuncId>,
     customs: &ob::CustomTypes,
-    _func_id: ob::CustomFuncId,
+    func_id: ob::CustomFuncId,
     func: ob::FuncDef,
 ) -> rc::FuncDef {
+    // println!("annot_func: func: {}", func_renderer.render(func_id));
     let drops = drops_for_func(interner, customs, &func);
 
     let mut ctx = Context::new();

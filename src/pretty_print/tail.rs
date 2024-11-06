@@ -213,10 +213,10 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
 
         Expr::IoOp(ioop) => match ioop {
             IoOp::Input => write![w, "input"],
-            IoOp::Output(local_id) => write_single(w, "output", local_id),
+            IoOp::Output(_, local_id) => write_single(w, "output", local_id),
         },
 
-        Expr::Panic(_ret_type, local_id) => write_single(w, "panic", local_id),
+        Expr::Panic(_ret_type, _input_type, local_id) => write_single(w, "panic", local_id),
 
         Expr::ArrayLit(_, elem_ids) => {
             let elems_are_contiguous = elem_ids.len() > 1

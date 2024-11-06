@@ -280,7 +280,9 @@ fn trans_expr(
 
         rc::Expr::IoOp(op) => tail::Expr::IoOp(op.clone()),
 
-        rc::Expr::Panic(ret_type, message) => tail::Expr::Panic(ret_type.clone(), *message),
+        rc::Expr::Panic(ret_type, input_type, message) => {
+            tail::Expr::Panic(ret_type.clone(), input_type.clone(), *message)
+        }
 
         rc::Expr::ArrayLit(scheme, items) => tail::Expr::ArrayLit(scheme.clone(), items.clone()),
 
