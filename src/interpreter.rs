@@ -423,13 +423,11 @@ fn release(
         }
         (Value::Array(_, None), ModeScheme::Array(_, _)) => {}
 
-        (Value::Array(_, Some(ptr)), ModeScheme::Array(_, _))
-        | (Value::HoleArray(_, _, ptr), ModeScheme::HoleArray(_, _)) => {
+        (Value::Array(_, Some(ptr)), ModeScheme::Array(mode, item_scheme)) => {
             let ptr = *ptr;
-            release(custom_schemes, heap, ptr, scheme, stacktrace)
-        }
-        (Value::ArrayContent(rc, content), ModeScheme::Array(mode, scheme))
-        | (Value::ArrayContent(rc, content), ModeScheme::HoleArray(mode, scheme)) => {
+            let Value::ArrayContent(rc, content) = &mut heap[ptr] else {
+                panic!()
+            };
             if *mode == Mode::Owned {
                 if *rc == 0 {
                     stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
@@ -442,12 +440,43 @@ fn release(
                             custom_schemes,
                             heap,
                             sub_heap_id,
-                            scheme,
+                            item_scheme,
                             stacktrace.add_frame("releasing subthings"),
                         );
                     }
                 }
             }
+        }
+        (Value::HoleArray(_, hole_idx, ptr), ModeScheme::HoleArray(mode, item_scheme)) => {
+            let hole_idx = *hole_idx;
+            let ptr = *ptr;
+            let Value::ArrayContent(rc, content) = &mut heap[ptr] else {
+                panic!();
+            };
+            if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
+                }
+                *rc -= 1;
+
+                if *rc == 0 {
+                    for (i, sub_heap_id) in content.clone().iter().enumerate() {
+                        if i as i64 != hole_idx {
+                            release(
+                                custom_schemes,
+                                heap,
+                                *sub_heap_id,
+                                item_scheme,
+                                stacktrace.add_frame("releasing subthings"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        (Value::ArrayContent(_rc, _content), ModeScheme::Array(_mode, _scheme))
+        | (Value::ArrayContent(_rc, _content), ModeScheme::HoleArray(_mode, _scheme)) => {
+            panic!()
         }
         (Value::Box(rc, content), ModeScheme::Boxed(mode, scheme)) => {
             if *mode == Mode::Owned {
@@ -1625,17 +1654,6 @@ fn interpret_expr(
                         bounds_check(stderr, array.len(), index.0)?;
 
                         let get_item = array[index.0 as usize];
-                        let ModeScheme::Array(_, item_scheme) = scheme else {
-                            unreachable!();
-                        };
-
-                        derived_retain(
-                            &program.schemes,
-                            heap,
-                            get_item,
-                            item_scheme,
-                            stacktrace.add_frame("item derived retain"),
-                        );
 
                         let hole_array_id = heap.add(Value::HoleArray(len, index.0, ptr));
                         heap.add(Value::Tuple(vec![get_item, hole_array_id]))
@@ -1664,19 +1682,7 @@ fn interpret_expr(
                         let array =
                             unwrap_array_content(heap, ptr, stacktrace.add_frame("array replace"));
 
-                        let ModeScheme::HoleArray(_, item_scheme) = scheme else {
-                            unreachable!();
-                        };
-
-                        let old_item_id = array[idx as usize];
                         array[idx as usize] = item_heap_id;
-                        release(
-                            &program.schemes,
-                            heap,
-                            old_item_id,
-                            item_scheme,
-                            stacktrace.add_frame("replace release item"),
-                        );
 
                         heap.add(Value::Array(len, Some(ptr)))
                     }

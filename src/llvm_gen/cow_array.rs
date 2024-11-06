@@ -297,16 +297,6 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             s.call_void(self.bounds_check, &[me, idx]);
             let data = s.field(me, F_ARR_DATA);
 
-            gen_rc_op(
-                DerivedRcOp::DerivedRetain,
-                s.builder(),
-                instances,
-                globals,
-                s.func(),
-                &self.item_scheme,
-                s.ptr_get(self.item_type, s.buf_addr(self.item_type, data, idx)),
-            );
-
             s.ret(s.make_tup(&[
                 s.buf_get(self.item_type, data, idx),
                 s.make_struct(self.hole_array_type, &[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)]),
@@ -381,18 +371,6 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let idx = s.field(hole, F_HOLE_IDX);
             let me = s.field(hole, F_HOLE_ARR);
             let me = s.call(self.obtain_unique, &[me]);
-
-            let data = s.field(me, F_ARR_DATA);
-
-            gen_rc_op(
-                DerivedRcOp::Release,
-                s.builder(),
-                instances,
-                globals,
-                s.func(),
-                &self.item_scheme,
-                s.ptr_get(self.item_type, s.buf_addr(self.item_type, data, idx)),
-            );
 
             s.buf_set(self.item_type, s.field(me, F_ARR_DATA), idx, item);
 
@@ -563,8 +541,38 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
         {
             let s = scope(self.release_hole, context, target);
             let me = s.arg(0);
+            let hole_idx = s.field(me, F_HOLE_IDX);
 
-            s.call_void(self.release_array, &[s.field(me, F_HOLE_ARR)]);
+            let me = s.field(me, F_HOLE_ARR);
+
+            let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
+
+            s.if_(s.not(s.is_null(refcount_ptr)), |s| {
+                let new_refcount: BasicValueEnum<'_> =
+                    s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
+                s.ptr_set(refcount_ptr, new_refcount);
+
+                let data = s.field(me, F_ARR_DATA);
+
+                s.if_(s.eq(new_refcount, s.i64(0)), |s| {
+                    s.for_(s.field(me, F_ARR_LEN), |s, i| {
+                        // TODO: investigate if using two for loops is faster than a for loop with a branch
+                        s.if_(s.ne(i, hole_idx), |s| {
+                            gen_rc_op(
+                                DerivedRcOp::Release,
+                                s.builder(),
+                                instances,
+                                globals,
+                                s.func(),
+                                &self.item_scheme,
+                                s.ptr_get(self.item_type, s.buf_addr(self.item_type, data, i)),
+                            );
+                        });
+                    });
+                    s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
+                });
+            });
+
             s.ret_void();
         }
 
