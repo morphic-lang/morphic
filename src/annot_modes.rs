@@ -547,10 +547,7 @@ fn emit_occur_constr(
     use_modes: &ResModes<ModeVar>,
     use_lt: &Lt,
 ) {
-    if let (ResModes::Heap(binding_heap), ResModes::Heap(use_heap)) = (binding_modes, use_modes) {
-        constrs.require_le_const(&Mode::Owned, binding_heap.access);
-        constrs.require_le_const(&Mode::Owned, use_heap.access);
-    }
+    // println!("{} <? {}", use_lt.display(), scope.display());
     if use_lt.cmp_path(scope).leq() {
         // Case: this is a non-escaping ("opportunistic" or "borrow") occurrence.
         match (binding_modes, use_modes) {

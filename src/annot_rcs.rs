@@ -61,6 +61,7 @@ fn assert_transition_ok(src_mode: Mode, dst_mode: Mode) {
 
 fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
     assert_transition_ok(src_mode, dst_mode);
+    // println!("{} <? {}", lt.display(), path.display());
     dst_mode == Mode::Owned && !lt.cmp_path(path).leq()
 }
 
@@ -883,10 +884,14 @@ fn annot_expr(
         }
 
         ob::Expr::ArrayLit(item_ty, items) => {
+            let n = items.len();
             let (new_items, moves): (Vec<_>, Vec<_>) = items
                 .into_iter()
                 .enumerate()
-                .map(|(i, item)| annot_occur(interner, customs, ctx, &path.seq(i), item, builder))
+                .map(|(i, item)| {
+                    let item_path = if n > 1 { path.seq(i) } else { path.clone() };
+                    annot_occur(interner, customs, ctx, &item_path, item, builder)
+                })
                 .unzip();
 
             let moves = moves.into_iter().fold(Moves::empty(), |mut acc, m| {

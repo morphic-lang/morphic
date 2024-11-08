@@ -1,9 +1,10 @@
-use crate::data::mode_annot_ast::{self as annot, Mode, Path, Res, ShapeInner, SlotId};
+use crate::data::mode_annot_ast::{self as annot, Mode, Path, ShapeInner, SlotId};
 use crate::data::num_type::NumType;
 use crate::data::obligation_annot_ast::{CustomFuncId, CustomTypeId, Type};
 use crate::data::rc_annot_ast::{
     ArrayOp, CustomTypes, Expr, FuncDef, IoOp, LocalId, Occur, Program, RcOp,
 };
+use crate::pretty_print::utils::FuncRenderer;
 use id_collections::IdVec;
 use std::collections::BTreeMap;
 
@@ -77,7 +78,8 @@ fn assert_all_borrowed(customs: &CustomTypes, ty: &Type) {
 }
 
 fn is_live(ty: &Type, slot: SlotId, path: &Path) -> bool {
-    ty.res()[slot].lt.cmp_path(path).leq()
+    let lt = &ty.res()[slot].lt;
+    lt.cmp_path(path).leq_right_biased()
 }
 
 fn assert_all_live(customs: &CustomTypes, ctx: &mut LocalContext, path: &Path, local_id: LocalId) {
@@ -111,11 +113,6 @@ fn type_check_expr(
             let num_locals = ctx.len();
             let mut i: usize = 0;
             for (binding_ty, expr, _) in bindings {
-                ctx.add_local(LocalInfo {
-                    ty: binding_ty.clone(),
-                    moves: Moves::new(customs, binding_ty),
-                });
-
                 // XXX: Lifetimes were computed in the pass before retain/release insertion, so we
                 // need to update `path` as if the retains/releases are not present.
                 match expr {
@@ -130,8 +127,9 @@ fn type_check_expr(
                     Expr::RcOp(RcOp::Release, selector, local_id) => {
                         let effective_i = i.saturating_sub(1);
                         let local_info = ctx.local_binding_mut(*local_id);
-                        println!("selector: {:?}", selector);
-                        println!("local_ty: {}", local_info.ty.display());
+                        // println!("selector: {}", selector.display());
+                        // println!("local_ty: {}", local_info.ty.display());
+                        // println!("local_id: {:?}", local_id);
                         for &slot in &selector.true_ {
                             assert!(is_live(&local_info.ty, slot, &path.seq(effective_i)));
                             local_info.moves.dec(slot);
@@ -150,6 +148,11 @@ fn type_check_expr(
                         i += 1;
                     }
                 }
+
+                ctx.add_local(LocalInfo {
+                    ty: binding_ty.clone(),
+                    moves: Moves::new(customs, binding_ty),
+                });
             }
 
             assert_eq!(&final_local.ty, ret_ty);
@@ -230,7 +233,7 @@ fn type_check_expr(
         Expr::Intrinsic(_intr, _local_id) => {}
         Expr::ArrayOp(ArrayOp::Get(arr, _idx)) => {
             assert_all_borrowed(customs, &arr.ty);
-            assert_all_live(customs, ctx, path, arr.id);
+            assert_all_live(customs, ctx, &path.seq(0), arr.id);
             record_moves(customs, ctx, arr);
         }
         Expr::ArrayOp(ArrayOp::Extract(arr, _idx)) => {
@@ -286,7 +289,11 @@ fn type_check_expr(
 }
 
 pub fn type_check(interner: &Interner, program: &Program) {
-    for (_, func) in &program.funcs {
+    // let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
+    let _func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
+    for (_func_id, func) in &program.funcs {
+        // println!("-------------------------------------");
+        // println!("type checking function: {}", func_renderer.render(func_id));
         let mut ctx = LocalContext::new();
         ctx.add_local(LocalInfo {
             ty: func.arg_ty.clone(),
@@ -301,5 +308,6 @@ pub fn type_check(interner: &Interner, program: &Program) {
             &func.body,
             &annot::wrap_lts(&func.ret_ty),
         );
+        // println!("+++++++++++++++++++++++++++++++++++++");
     }
 }

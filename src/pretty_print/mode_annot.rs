@@ -110,13 +110,12 @@ pub fn write_custom<I: Id + 'static>(
     }
 }
 
-fn write_type_impl<M, L, I: Id + 'static>(
+pub fn write_type_raw<T, I: Id + 'static>(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<I>>,
-    write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
-    write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
+    write_res: &impl Fn(&mut dyn Write, &T) -> io::Result<()>,
     shape: &Shape<I>,
-    res: &[Res<M, L>],
+    res: &[T],
 ) -> io::Result<()> {
     match &*shape.inner {
         ShapeInner::Bool => write!(w, "Bool"),
@@ -126,59 +125,36 @@ fn write_type_impl<M, L, I: Id + 'static>(
         ShapeInner::Tuple(shapes) => {
             let items = annot::iter_shapes(shapes, res);
             write_delimited(w, items, "(", ")", ", ", |w, (shape, res)| {
-                write_type_impl(w, type_renderer, write_mode, write_lifetime, shape, res)
+                write_type_raw(w, type_renderer, write_res, shape, res)
             })
         }
         ShapeInner::Variants(shapes) => {
             let items = annot::iter_shapes(shapes.as_slice(), res);
             write_delimited(w, items, "{", "}", ", ", |w, (shape, res)| {
-                write_type_impl(w, type_renderer, write_mode, write_lifetime, shape, res)
+                write_type_raw(w, type_renderer, write_res, shape, res)
             })
         }
         ShapeInner::Custom(type_id) => {
             write_custom(w, type_renderer, *type_id)?;
-            write_delimited(w, res, "<", ">", ", ", |w, res| {
-                write_resource(w, write_mode, write_lifetime, res)
-            })
+            write_delimited(w, res, "<", ">", ", ", |w, res| write_res(w, res))
         }
         ShapeInner::SelfCustom(type_id) => write!(w, "Self#{}", type_id.to_index()),
         ShapeInner::Array(shape) => {
-            write_resource(w, write_mode, write_lifetime, &res[0])?;
+            write_res(w, &res[0])?;
             write!(w, " Array (")?;
-            write_type_impl(
-                w,
-                type_renderer,
-                write_mode,
-                write_lifetime,
-                shape,
-                &res[1..],
-            )?;
+            write_type_raw(w, type_renderer, write_res, shape, &res[1..])?;
             write!(w, ")")
         }
         ShapeInner::HoleArray(shape) => {
-            write_resource(w, write_mode, write_lifetime, &res[0])?;
+            write_res(w, &res[0])?;
             write!(w, " HoleArray (")?;
-            write_type_impl(
-                w,
-                type_renderer,
-                write_mode,
-                write_lifetime,
-                shape,
-                &res[1..],
-            )?;
+            write_type_raw(w, type_renderer, write_res, shape, &res[1..])?;
             write!(w, ")")
         }
         ShapeInner::Boxed(shape) => {
-            write_resource(w, write_mode, write_lifetime, &res[0])?;
+            write_res(w, &res[0])?;
             write!(w, " Boxed (")?;
-            write_type_impl(
-                w,
-                type_renderer,
-                write_mode,
-                write_lifetime,
-                shape,
-                &res[1..],
-            )?;
+            write_type_raw(w, type_renderer, write_res, shape, &res[1..])?;
             write!(w, ")")
         }
     }
@@ -191,11 +167,10 @@ pub fn write_type<M, L, I: Id + 'static>(
     write_lifetime: impl Fn(&mut dyn Write, &L) -> io::Result<()>,
     type_: &annot::Type<M, L, I>,
 ) -> io::Result<()> {
-    write_type_impl(
+    write_type_raw(
         w,
         type_renderer,
-        &write_mode,
-        &write_lifetime,
+        &|w, res| write_resource(w, &write_mode, &write_lifetime, res),
         &type_.shape(),
         type_.res().as_slice(),
     )

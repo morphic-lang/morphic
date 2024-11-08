@@ -8,5 +8,6 @@ pub mod low;
 pub mod mode_annot;
 pub mod mono;
 pub mod obligation_annot;
+pub mod rc_annot;
 pub mod tail;
 pub mod typed;

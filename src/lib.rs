@@ -431,6 +431,14 @@ fn compile_to_low_ast(
         progress_ui::bar(progress, "annot_rcs"),
     );
 
+    if let Some(artifact_dir) = artifact_dir {
+        let mut out_file = fs::File::create(artifact_dir.artifact_path("rc_annot"))
+            .map_err(ErrorKind::WriteIrFailed)?;
+
+        pretty_print::rc_annot::write_program(&mut out_file, &rc_annot)
+            .map_err(ErrorKind::WriteIrFailed)?;
+    }
+
     type_check_borrows::type_check(&interner, &rc_annot);
 
     let rc_specialized =
