@@ -28,6 +28,7 @@ use crate::llvm_gen::zero_sized_array::ZeroSizedArrayImpl;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use crate::{cli, progress_ui};
+use core::borrow;
 use find_clang::find_default_clang;
 use id_collections::IdVec;
 use id_graph_sccs::{SccKind, Sccs};
@@ -613,12 +614,17 @@ fn declare_profile_points<'a>(
     decls
 }
 
+#[derive(Clone, Debug)]
+enum PendingDefine {
+    Rc(ModeScheme),
+    CowArray(ModeScheme),
+}
+
 struct Instances<'a> {
     cow_array_io: CowArrayIoImpl<'a>,
     rcs: BTreeMap<ModeScheme, RcBoxBuiltin<'a>>,
-    pending_rcs: Vec<ModeScheme>,
     cow_arrays: BTreeMap<ModeScheme, Rc<dyn ArrayImpl<'a> + 'a>>,
-    pending_cow_arrays: Vec<ModeScheme>,
+    pending: Vec<PendingDefine>,
 }
 
 impl<'a> Instances<'a> {
@@ -657,9 +663,11 @@ impl<'a> Instances<'a> {
         Self {
             cow_array_io: cow_array_io,
             rcs: BTreeMap::new(),
-            pending_rcs: vec![],
             cow_arrays: cow_arrays,
-            pending_cow_arrays: vec![owned_string, borrowed_string],
+            pending: vec![
+                PendingDefine::CowArray(owned_string),
+                PendingDefine::CowArray(borrowed_string),
+            ],
         }
     }
 
@@ -680,7 +688,8 @@ impl<'a> Instances<'a> {
         self.cow_arrays
             .insert(mode_scheme.clone(), new_builtin.clone());
 
-        self.pending_cow_arrays.push(mode_scheme.clone());
+        self.pending
+            .push(PendingDefine::CowArray(mode_scheme.clone()));
         new_builtin
     }
 
@@ -694,39 +703,32 @@ impl<'a> Instances<'a> {
         }
         let new_builtin = RcBoxBuiltin::declare(globals, globals.module, &mode_scheme);
         self.rcs.insert(mode_scheme.clone(), new_builtin.clone());
-        self.pending_rcs.push(mode_scheme.clone());
+        self.pending.push(PendingDefine::Rc(mode_scheme.clone()));
         return new_builtin;
     }
 
     fn define<'b>(
         &mut self,
         globals: &Globals<'a, 'b>,
-        rc_progress: impl ProgressLogger,
-        cow_progress: impl ProgressLogger,
+        // TODO: fix progress tracker someday?
+        _rc_progress: impl ProgressLogger,
+        _cow_progress: impl ProgressLogger,
     ) {
-        // rcs
-        let mut rc_progress = rc_progress.start_session(None);
-        while let Some(pending_rc) = self.pending_rcs.pop() {
-            let rc_builtin = self.rcs.get(&pending_rc).unwrap().clone();
-            rc_progress.update(1);
-            rc_builtin.define(globals, self, globals.target, &globals.tal);
-        }
-
-        rc_progress.finish();
-
-        // cow arrays
-        let mut cow_progress = cow_progress.start_session(None);
-        while let Some(pending_cow_array) = self.pending_cow_arrays.pop() {
-            let cow_builtin = self.cow_arrays.get(&pending_cow_array).unwrap().clone();
-            cow_progress.update(1);
-            cow_builtin.define(globals, self, globals.target, &globals.tal);
-        }
-
         self.cow_array_io
             .define(globals.context, globals.target, &globals.tal);
-        cow_progress.update(1);
 
-        cow_progress.finish();
+        while let Some(pending_op) = self.pending.pop() {
+            match pending_op {
+                PendingDefine::Rc(scheme) => {
+                    let rc_builtin = self.rcs.get(&scheme).unwrap().clone();
+                    rc_builtin.define(globals, self, globals.target, &globals.tal);
+                }
+                PendingDefine::CowArray(scheme) => {
+                    let cow_builtin = self.cow_arrays.get(&scheme).unwrap().clone();
+                    cow_builtin.define(globals, self, globals.target, &globals.tal);
+                }
+            }
+        }
     }
 }
 
