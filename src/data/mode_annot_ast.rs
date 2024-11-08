@@ -612,7 +612,7 @@ impl<'a, M, L> Iterator for FlatIter<'a, M, L> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Type<M, L, I> {
     shape: Shape<I>,
     res: IdVec<SlotId, Res<M, L>>,
@@ -1243,7 +1243,6 @@ pub enum Expr<M, L> {
     ),
     UnwrapBoxed(
         Occur<M, L>,
-        TypeFo<M, L>, // Input type
         TypeFo<M, L>, // Output type
     ),
     WrapCustom(

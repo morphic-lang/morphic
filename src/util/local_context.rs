@@ -1,6 +1,6 @@
 use id_collections::{Count, Id, IdVec};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalContext<Var: Id, T> {
     stack: IdVec<Var, T>,
 }

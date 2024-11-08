@@ -1181,8 +1181,7 @@ fn instantiate_expr(
                 &[*wrapped],
                 fut_ty,
             );
-            let wrapped_ty = ctx.local_binding(*wrapped).ty.clone();
-            annot::Expr::UnwrapBoxed(occurs.pop().unwrap(), wrapped_ty, fut_ty.clone())
+            annot::Expr::UnwrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
         }
 
         TailExpr::WrapCustom(custom_id, recipe, unfolded) => {
@@ -1672,9 +1671,8 @@ fn extract_expr(
             extract_occur(solution, content),
             extract_type(solution, output_ty),
         ),
-        E::UnwrapBoxed(wrapped, input_ty, output_ty) => E::UnwrapBoxed(
+        E::UnwrapBoxed(wrapped, output_ty) => E::UnwrapBoxed(
             extract_occur(solution, wrapped),
-            extract_type(solution, input_ty),
             extract_type(solution, output_ty),
         ),
         E::WrapCustom(id, recipe, content) => {

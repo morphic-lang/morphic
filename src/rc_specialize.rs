@@ -377,6 +377,10 @@ struct LocalInfo {
     new_id: rc::LocalId,
 }
 
+fn new_id(ctx: &LocalContext<annot::LocalId, LocalInfo>, local: &annot::Occur) -> rc::LocalId {
+    ctx.local_binding(local.id).new_id
+}
+
 fn lower_expr(
     funcs: &IdVec<ob::CustomFuncId, annot::FuncDef>,
     customs: &annot::CustomTypes,
@@ -389,8 +393,8 @@ fn lower_expr(
 ) -> rc::LocalId {
     let new_expr = match expr {
         // The only interesting case...
-        annot::Expr::RcOp(op, sel, arg) => {
-            let plan = RcOpPlan::from_selector(customs, &ctx.local_binding(*arg).old_ty, sel);
+        annot::Expr::RcOp(op, sel, arg_id) => {
+            let plan = RcOpPlan::from_selector(customs, &ctx.local_binding(*arg_id).old_ty, sel);
 
             metadata.add_comment(format!(
                 "rc_specialize: {}: {plan}",
@@ -400,7 +404,7 @@ fn lower_expr(
                 },
             ));
 
-            let arg = ctx.local_binding(*arg);
+            let arg = ctx.local_binding(*arg_id);
             let unit = build_plan(
                 customs,
                 insts,
@@ -414,10 +418,8 @@ fn lower_expr(
             rc::Expr::Local(unit)
         }
 
-        annot::Expr::Local(local) => rc::Expr::Local(ctx.local_binding(*local).new_id),
-        annot::Expr::Call(purity, func, arg) => {
-            rc::Expr::Call(*purity, *func, ctx.local_binding(*arg).new_id)
-        }
+        annot::Expr::Local(local) => rc::Expr::Local(new_id(ctx, &local)),
+        annot::Expr::Call(purity, func, arg) => rc::Expr::Call(*purity, *func, new_id(ctx, &arg)),
         annot::Expr::LetMany(bindings, ret) => {
             let final_local = ctx.with_scope(|ctx| {
                 for (binding_ty, expr, metadata) in bindings {
@@ -439,7 +441,7 @@ fn lower_expr(
                         new_id: final_local,
                     });
                 }
-                ctx.local_binding(*ret).new_id
+                new_id(ctx, &ret)
             });
 
             // Note: Early return! We circumvent the usual return flow because we don't actually
@@ -477,31 +479,26 @@ fn lower_expr(
                 case_builder.to_expr(final_local)
             };
             rc::Expr::If(
-                ctx.local_binding(*discrim).new_id,
+                new_id(ctx, &discrim),
                 Box::new(then_case),
                 Box::new(else_case),
             )
         }
         annot::Expr::CheckVariant(variant_id, variant) => {
-            rc::Expr::CheckVariant(*variant_id, ctx.local_binding(*variant).new_id)
+            rc::Expr::CheckVariant(*variant_id, new_id(ctx, &variant))
         }
         annot::Expr::Unreachable(ty) => rc::Expr::Unreachable(lower_type(&ty.shape())),
-        annot::Expr::Tuple(fields) => rc::Expr::Tuple(
-            fields
-                .iter()
-                .map(|local| ctx.local_binding(*local).new_id)
-                .collect(),
-        ),
-        annot::Expr::TupleField(tup, idx) => {
-            rc::Expr::TupleField(ctx.local_binding(*tup).new_id, *idx)
+        annot::Expr::Tuple(fields) => {
+            rc::Expr::Tuple(fields.iter().map(|local| new_id(ctx, &local)).collect())
         }
+        annot::Expr::TupleField(tup, idx) => rc::Expr::TupleField(new_id(ctx, &tup), *idx),
         annot::Expr::WrapVariant(variants, variant_id, content) => rc::Expr::WrapVariant(
             variants.map_refs(|_, ty| lower_type(&ty.shape())),
             *variant_id,
-            ctx.local_binding(*content).new_id,
+            new_id(ctx, &content),
         ),
         annot::Expr::UnwrapVariant(variant_id, wrapped) => {
-            rc::Expr::UnwrapVariant(*variant_id, ctx.local_binding(*wrapped).new_id)
+            rc::Expr::UnwrapVariant(*variant_id, new_id(ctx, &wrapped))
         }
         annot::Expr::WrapBoxed(content, output_ty) => {
             let output_scheme = make_scheme(
@@ -509,136 +506,115 @@ fn lower_expr(
                 &output_ty.shape(),
                 &prepare_resources(output_ty.res().as_slice()),
             );
-            rc::Expr::WrapBoxed(ctx.local_binding(*content).new_id, output_scheme)
+            rc::Expr::WrapBoxed(new_id(ctx, &content), output_scheme)
         }
-        annot::Expr::UnwrapBoxed(wrapped, input_ty, output_ty) => {
+        annot::Expr::UnwrapBoxed(wrapped, output_ty) => {
             let input_scheme = make_scheme(
                 insts,
-                &input_ty.shape(),
-                &prepare_resources(input_ty.res().as_slice()),
+                &wrapped.ty.shape(),
+                &prepare_resources(wrapped.ty.res().as_slice()),
             );
             let output_scheme = make_scheme(
                 insts,
                 &output_ty.shape(),
                 &prepare_resources(output_ty.res().as_slice()),
             );
-            rc::Expr::UnwrapBoxed(
-                ctx.local_binding(*wrapped).new_id,
-                input_scheme,
-                output_scheme,
-            )
+            rc::Expr::UnwrapBoxed(new_id(ctx, &wrapped), input_scheme, output_scheme)
         }
-        &annot::Expr::WrapCustom(custom_id, content) => {
-            rc::Expr::WrapCustom(custom_id, ctx.local_binding(content).new_id)
+        annot::Expr::WrapCustom(custom_id, content) => {
+            rc::Expr::WrapCustom(*custom_id, new_id(ctx, &content))
         }
-        &annot::Expr::UnwrapCustom(custom_id, wrapped) => {
-            rc::Expr::UnwrapCustom(custom_id, ctx.local_binding(wrapped).new_id)
+        annot::Expr::UnwrapCustom(custom_id, wrapped) => {
+            rc::Expr::UnwrapCustom(*custom_id, new_id(ctx, &wrapped))
         }
-        &annot::Expr::Intrinsic(intr, arg) => {
-            rc::Expr::Intrinsic(intr, ctx.local_binding(arg).new_id)
-        }
-        annot::Expr::ArrayOp(annot::ArrayOp::Get(arr_ty, arr, idx)) => {
+        annot::Expr::Intrinsic(intr, arg) => rc::Expr::Intrinsic(*intr, new_id(ctx, &arg)),
+        annot::Expr::ArrayOp(annot::ArrayOp::Get(arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape(),
-                &prepare_resources(arr_ty.res().as_slice()),
+                &arr.ty.shape(),
+                &prepare_resources(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
-                rc::ArrayOp::Get(
-                    ctx.local_binding(*arr).new_id,
-                    ctx.local_binding(*idx).new_id,
-                ),
+                rc::ArrayOp::Get(new_id(ctx, &arr), new_id(ctx, &idx)),
             )
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Extract(arr_ty, arr, idx)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Extract(arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape(),
-                &prepare_resources(arr_ty.res().as_slice()),
+                &arr.ty.shape(),
+                &prepare_resources(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
-                rc::ArrayOp::Extract(
-                    ctx.local_binding(*arr).new_id,
-                    ctx.local_binding(*idx).new_id,
-                ),
+                rc::ArrayOp::Extract(new_id(ctx, &arr), new_id(ctx, &idx)),
             )
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Len(arr_ty, arr)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Len(arr)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape(),
-                &prepare_resources(arr_ty.res().as_slice()),
+                &arr.ty.shape(),
+                &prepare_resources(arr.ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(scheme, rc::ArrayOp::Len(ctx.local_binding(*arr).new_id))
+            rc::Expr::ArrayOp(scheme, rc::ArrayOp::Len(new_id(ctx, &arr)))
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Push(arr_ty, arr, item)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Push(arr, item)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape(),
-                &prepare_resources(arr_ty.res().as_slice()),
+                &arr.ty.shape(),
+                &prepare_resources(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
-                rc::ArrayOp::Push(
-                    ctx.local_binding(*arr).new_id,
-                    ctx.local_binding(*item).new_id,
-                ),
+                rc::ArrayOp::Push(new_id(ctx, &arr), new_id(ctx, &item)),
             )
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Pop(arr_ty, arr)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Pop(arr)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape(),
-                &prepare_resources(arr_ty.res().as_slice()),
+                &arr.ty.shape(),
+                &prepare_resources(arr.ty.res().as_slice()),
             );
-            rc::Expr::ArrayOp(scheme, rc::ArrayOp::Pop(ctx.local_binding(*arr).new_id))
+            rc::Expr::ArrayOp(scheme, rc::ArrayOp::Pop(new_id(ctx, &arr)))
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Replace(arr_ty, arr, idx)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Replace(arr, idx)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape(),
-                &prepare_resources(arr_ty.res().as_slice()),
+                &arr.ty.shape(),
+                &prepare_resources(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
-                rc::ArrayOp::Replace(
-                    ctx.local_binding(*arr).new_id,
-                    ctx.local_binding(*idx).new_id,
-                ),
+                rc::ArrayOp::Replace(new_id(ctx, &arr), new_id(ctx, &idx)),
             )
         }
-        annot::Expr::ArrayOp(annot::ArrayOp::Reserve(arr_ty, arr, cap)) => {
+        annot::Expr::ArrayOp(annot::ArrayOp::Reserve(arr, cap)) => {
             let scheme = make_scheme(
                 insts,
-                &arr_ty.shape(),
-                &prepare_resources(arr_ty.res().as_slice()),
+                &arr.ty.shape(),
+                &prepare_resources(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
-                rc::ArrayOp::Reserve(
-                    ctx.local_binding(*arr).new_id,
-                    ctx.local_binding(*cap).new_id,
-                ),
+                rc::ArrayOp::Reserve(new_id(ctx, &arr), new_id(ctx, &cap)),
             )
         }
         annot::Expr::IoOp(annot::IoOp::Input) => rc::Expr::IoOp(rc::IoOp::Input),
-        annot::Expr::IoOp(annot::IoOp::Output(ty, local)) => {
-            let scheme = make_scheme(insts, &ty.shape(), &prepare_resources(ty.res().as_slice()));
-            rc::Expr::IoOp(rc::IoOp::Output(scheme, ctx.local_binding(*local).new_id))
+        annot::Expr::IoOp(annot::IoOp::Output(local)) => {
+            let scheme = make_scheme(
+                insts,
+                &local.ty.shape(),
+                &prepare_resources(local.ty.res().as_slice()),
+            );
+            rc::Expr::IoOp(rc::IoOp::Output(scheme, new_id(ctx, &local)))
         }
-        annot::Expr::Panic(ret_ty, input_ty, msg) => {
+        annot::Expr::Panic(ret_ty, msg) => {
             let input_scheme = make_scheme(
                 insts,
-                &input_ty.shape(),
-                &prepare_resources(input_ty.res().as_slice()),
+                &msg.ty.shape(),
+                &prepare_resources(msg.ty.res().as_slice()),
             );
-            rc::Expr::Panic(
-                lower_type(&ret_ty.shape()),
-                input_scheme,
-                ctx.local_binding(*msg).new_id,
-            )
+            rc::Expr::Panic(lower_type(&ret_ty.shape()), input_scheme, new_id(ctx, &msg))
         }
         annot::Expr::ArrayLit(item_ty, items) => {
             let scheme = make_scheme(
@@ -648,10 +624,7 @@ fn lower_expr(
             );
             rc::Expr::ArrayLit(
                 scheme,
-                items
-                    .iter()
-                    .map(|local| ctx.local_binding(*local).new_id)
-                    .collect(),
+                items.iter().map(|local| new_id(ctx, &local)).collect(),
             )
         }
         annot::Expr::BoolLit(lit) => rc::Expr::BoolLit(*lit),

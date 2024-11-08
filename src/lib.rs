@@ -59,6 +59,8 @@ mod annot_obligations;
 
 mod annot_rcs;
 
+mod type_check_borrows;
+
 mod rc_specialize;
 
 mod tail_call_elim;
@@ -428,6 +430,8 @@ fn compile_to_low_ast(
         obligation_annot,
         progress_ui::bar(progress, "annot_rcs"),
     );
+
+    type_check_borrows::type_check(&interner, &rc_annot);
 
     let rc_specialized =
         rc_specialize::rc_specialize(rc_annot, progress_ui::bar(progress, "rc_specialize"));

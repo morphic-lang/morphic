@@ -1,29 +1,55 @@
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast::{
-    self as annot, Cmp, LocalLt, Lt, Mode, Path, ShapeInner, SlotId,
-};
+use crate::data::mode_annot_ast::{self as annot, LocalLt, Lt, Mode, Path, ShapeInner, SlotId};
 use crate::data::obligation_annot_ast::{self as ob, CustomTypeId, Shape, Type};
-use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, RcOp, Selector};
+use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, Occur, RcOp, Selector};
 use crate::pretty_print::utils::FuncRenderer;
-use crate::util::let_builder::{FromBindings, LetManyBuilder};
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
 use once_cell::sync::Lazy;
 use std::collections::BTreeMap;
 
-impl FromBindings for Expr {
-    type LocalId = LocalId;
-    type Type = Type;
+#[derive(Clone, Debug)]
+struct Builder {
+    num_locals: Count<LocalId>,
+    bindings: Vec<(Type, Expr, Metadata)>,
+}
 
-    fn from_bindings(bindings: Vec<(Type, Expr, Metadata)>, ret: LocalId) -> Self {
-        Expr::LetMany(bindings, ret)
+impl Builder {
+    pub fn new(num_locals: Count<LocalId>) -> Self {
+        Builder {
+            num_locals,
+            bindings: Vec::new(),
+        }
+    }
+
+    pub fn add_binding(&mut self, ty: Type, expr: Expr) -> LocalId {
+        self.add_binding_with_metadata(ty, expr, Metadata::default())
+    }
+
+    pub fn add_binding_with_metadata(
+        &mut self,
+        ty: Type,
+        expr: Expr,
+        metadata: Metadata,
+    ) -> LocalId {
+        let id = self.num_locals.inc();
+        self.bindings.push((ty, expr, metadata));
+        id
+    }
+
+    pub fn to_expr(self, ret: Occur) -> Expr {
+        debug_assert!(ret.id.0 < self.num_locals.to_value());
+        Expr::LetMany(self.bindings, ret)
+    }
+
+    pub fn child(&self) -> Builder {
+        Builder::new(self.num_locals)
     }
 }
 
 type Interner = annot::Interner<CustomTypeId>;
-type Builder = LetManyBuilder<Expr>;
 type Context = LocalContext<guard::LocalId, LocalInfo>;
 
 fn assert_transition_ok(src_mode: Mode, dst_mode: Mode) {
@@ -513,14 +539,18 @@ fn annot_occur(
     path: &Path,
     occur: ob::Occur,
     builder: &mut Builder,
-) -> (LocalId, Moves) {
+) -> (Occur, Moves) {
     let binding = ctx.local_binding_mut(occur.id);
+    let new_occur = Occur {
+        id: binding.new_id,
+        ty: occur.ty,
+    };
 
-    let dups = select_dups(customs, path, &binding.ty, &occur.ty);
-    build_rc_op(interner, RcOp::Retain, dups, binding.new_id, builder);
+    let dups = select_dups(customs, path, &binding.ty, &new_occur.ty);
+    build_rc_op(interner, RcOp::Retain, dups, new_occur.id, builder);
 
-    let moves = select_moves(customs, path, &binding.ty, &occur.ty);
-    (binding.new_id, Moves::new(occur.id, moves))
+    let moves = select_moves(customs, path, &binding.ty, &new_occur.ty);
+    (new_occur, Moves::new(occur.id, moves))
 }
 
 fn unwrap_item(ty: &Type) -> Type {
@@ -646,7 +676,7 @@ fn annot_expr(
                     );
                 }
 
-                let (final_local, moves) = annot_expr(
+                let (final_id, moves) = annot_expr(
                     interner,
                     customs,
                     ctx,
@@ -658,6 +688,10 @@ fn annot_expr(
                     &mut case_builder,
                 );
 
+                let final_local = Occur {
+                    id: final_id,
+                    ty: ret_ty.clone(),
+                };
                 (case_builder.to_expr(final_local), moves)
             };
 
@@ -729,12 +763,12 @@ fn annot_expr(
             (rc::Expr::WrapBoxed(new_content, output_ty), moves)
         }
 
-        ob::Expr::UnwrapBoxed(wrapped, input_ty, output_ty) => {
+        ob::Expr::UnwrapBoxed(wrapped, output_ty) => {
             let item_retains = select_owned(customs, &output_ty);
 
             let (new_wrapped, moves) = annot_occur(interner, customs, ctx, path, wrapped, builder);
 
-            let unwrap_op = rc::Expr::UnwrapBoxed(new_wrapped, input_ty, output_ty);
+            let unwrap_op = rc::Expr::UnwrapBoxed(new_wrapped, output_ty);
             let unwrap_id = builder.add_binding(ret_ty.clone(), unwrap_op);
 
             build_rc_op(interner, RcOp::Retain, item_retains, unwrap_id, builder);
@@ -759,14 +793,13 @@ fn annot_expr(
         ob::Expr::ArrayOp(ob::ArrayOp::Get(arr, idx, ret_ty)) => {
             let item_retains = select_owned(customs, &ret_ty);
 
-            let arr_ty = arr.ty.clone();
             let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
             let (new_idx, moves2) = annot_occur(interner, customs, ctx, &path.seq(1), idx, builder);
 
             let mut moves = moves1;
             moves.merge(moves2);
 
-            let get_op = rc::Expr::ArrayOp(rc::ArrayOp::Get(arr_ty, new_arr, new_idx));
+            let get_op = rc::Expr::ArrayOp(rc::ArrayOp::Get(new_arr, new_idx));
             let get_id = builder.add_binding(ret_ty, get_op);
 
             build_rc_op(interner, RcOp::Retain, item_retains, get_id, builder);
@@ -774,7 +807,6 @@ fn annot_expr(
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Extract(arr, idx)) => {
-            let arr_ty = arr.ty.clone();
             let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
             let (new_idx, moves2) = annot_occur(interner, customs, ctx, &path.seq(1), idx, builder);
 
@@ -782,20 +814,17 @@ fn annot_expr(
             moves.merge(moves2);
 
             (
-                rc::Expr::ArrayOp(rc::ArrayOp::Extract(arr_ty, new_arr, new_idx)),
+                rc::Expr::ArrayOp(rc::ArrayOp::Extract(new_arr, new_idx)),
                 moves,
             )
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Len(arr)) => {
-            let arr_ty = arr.ty.clone();
             let (new_arr, moves) = annot_occur(interner, customs, ctx, path, arr, builder);
-
-            (rc::Expr::ArrayOp(rc::ArrayOp::Len(arr_ty, new_arr)), moves)
+            (rc::Expr::ArrayOp(rc::ArrayOp::Len(new_arr)), moves)
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Push(arr, item)) => {
-            let arr_ty = arr.ty.clone();
             let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
             let (new_item, moves2) =
                 annot_occur(interner, customs, ctx, &path.seq(1), item, builder);
@@ -804,20 +833,17 @@ fn annot_expr(
             moves.merge(moves2);
 
             (
-                rc::Expr::ArrayOp(rc::ArrayOp::Push(arr_ty, new_arr, new_item)),
+                rc::Expr::ArrayOp(rc::ArrayOp::Push(new_arr, new_item)),
                 moves,
             )
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Pop(arr)) => {
-            let arr_ty = arr.ty.clone();
             let (new_arr, moves) = annot_occur(interner, customs, ctx, path, arr, builder);
-
-            (rc::Expr::ArrayOp(rc::ArrayOp::Pop(arr_ty, new_arr)), moves)
+            (rc::Expr::ArrayOp(rc::ArrayOp::Pop(new_arr)), moves)
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Replace(arr, item)) => {
-            let arr_ty = arr.ty.clone();
             let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
             let (new_item, moves2) =
                 annot_occur(interner, customs, ctx, &path.seq(1), item, builder);
@@ -826,13 +852,12 @@ fn annot_expr(
             moves.merge(moves2);
 
             (
-                rc::Expr::ArrayOp(rc::ArrayOp::Replace(arr_ty, new_arr, new_item)),
+                rc::Expr::ArrayOp(rc::ArrayOp::Replace(new_arr, new_item)),
                 moves,
             )
         }
 
         ob::Expr::ArrayOp(ob::ArrayOp::Reserve(arr, cap)) => {
-            let arr_ty = arr.ty.clone();
             let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
             let (new_cap, moves2) = annot_occur(interner, customs, ctx, &path.seq(1), cap, builder);
 
@@ -840,7 +865,7 @@ fn annot_expr(
             moves.merge(moves2);
 
             (
-                rc::Expr::ArrayOp(rc::ArrayOp::Reserve(arr_ty, new_arr, new_cap)),
+                rc::Expr::ArrayOp(rc::ArrayOp::Reserve(new_arr, new_cap)),
                 moves,
             )
         }
@@ -848,15 +873,13 @@ fn annot_expr(
         ob::Expr::IoOp(ob::IoOp::Input) => (rc::Expr::IoOp(rc::IoOp::Input), Moves::empty()),
 
         ob::Expr::IoOp(ob::IoOp::Output(val)) => {
-            let val_ty = val.ty.clone();
             let (new_val, moves) = annot_occur(interner, customs, ctx, path, val, builder);
-            (rc::Expr::IoOp(rc::IoOp::Output(val_ty, new_val)), moves)
+            (rc::Expr::IoOp(rc::IoOp::Output(new_val)), moves)
         }
 
         ob::Expr::Panic(ret_ty, msg) => {
-            let input_ty = msg.ty.clone();
             let (new_msg, moves) = annot_occur(interner, customs, ctx, path, msg, builder);
-            (rc::Expr::Panic(ret_ty, input_ty, new_msg), moves)
+            (rc::Expr::Panic(ret_ty, new_msg), moves)
         }
 
         ob::Expr::ArrayLit(item_ty, items) => {
@@ -891,9 +914,9 @@ fn annot_expr(
 
 fn annot_func(
     interner: &Interner,
-    func_renderer: &FuncRenderer<ob::CustomFuncId>,
+    _func_renderer: &FuncRenderer<ob::CustomFuncId>,
     customs: &ob::CustomTypes,
-    func_id: ob::CustomFuncId,
+    _func_id: ob::CustomFuncId,
     func: ob::FuncDef,
 ) -> rc::FuncDef {
     // println!("annot_func: func: {}", func_renderer.render(func_id));
@@ -916,7 +939,7 @@ fn annot_func(
 
     let ret_ty = annot::wrap_lts(&func.ret_ty);
 
-    let (ret_local, _) = annot_expr(
+    let (ret_id, _) = annot_expr(
         interner,
         customs,
         &mut ctx,
@@ -928,11 +951,15 @@ fn annot_func(
         &mut builder,
     );
 
+    let ret_local = Occur {
+        id: ret_id,
+        ty: ret_ty,
+    };
     let body = builder.to_expr(ret_local);
     rc::FuncDef {
         purity: func.purity,
         arg_ty: func.arg_ty,
-        ret_ty,
+        ret_ty: func.ret_ty,
         body: body,
         profile_point: func.profile_point,
     }

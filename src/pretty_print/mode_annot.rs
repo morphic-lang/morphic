@@ -422,7 +422,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             write!(w, "wrap boxed ")?;
             write_occur(w, context.type_renderer, content)
         }
-        Expr::UnwrapBoxed(content, _, _) => {
+        Expr::UnwrapBoxed(content, _) => {
             write!(w, "unwrap boxed ")?;
             write_occur(w, context.type_renderer, content)
         }

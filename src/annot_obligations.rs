@@ -233,9 +233,8 @@ fn solve_expr(
             solve_type(inst_params, output_ty),
         ),
 
-        annot::Expr::UnwrapBoxed(wrapped, input_ty, output_ty) => Expr::UnwrapBoxed(
+        annot::Expr::UnwrapBoxed(wrapped, output_ty) => Expr::UnwrapBoxed(
             solve_occur(inst_params, wrapped),
-            solve_type(inst_params, input_ty),
             solve_type(inst_params, output_ty),
         ),
 
@@ -989,11 +988,10 @@ fn annot_expr(
             Expr::WrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
         }
 
-        Expr::UnwrapBoxed(wrapped, _input_ty, _output_ty) => {
+        Expr::UnwrapBoxed(wrapped, _output_ty) => {
             let mut occurs =
                 instantiate_model(&*model::box_get, interner, ctx, path, &[wrapped], fut_ty);
-            let wrapped_ty = ctx.local_binding(wrapped.id).ty.clone();
-            Expr::UnwrapBoxed(occurs.pop().unwrap(), wrapped_ty, fut_ty.clone())
+            Expr::UnwrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
         }
 
         Expr::WrapCustom(custom_id, recipe, unfolded) => {
@@ -1331,11 +1329,6 @@ pub fn annot_obligations(
     progress: impl ProgressLogger,
 ) -> ob::Program {
     let program = solve_program(interner, program);
-    {
-        let file = std::fs::File::create("annotated.ob").unwrap();
-        let mut writer = std::io::BufWriter::new(file);
-        crate::pretty_print::obligation_annot::write_program(&mut writer, &program);
-    }
     let program = annot_program(interner, program, progress);
     program
 }

@@ -93,7 +93,6 @@ pub enum Expr {
     ),
     UnwrapBoxed(
         Occur,
-        Type, // Input type
         Type, // Output type
     ),
     WrapCustom(CustomTypeId, UnfoldRecipe<CustomTypeId>, Occur),

@@ -6,6 +6,7 @@ use crate::data::obligation_annot_ast::{self as ob, CustomTypeDef, CustomTypeId,
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
+use crate::util::collection_ext::{FnWrap, MapRef};
 use id_collections::{id_type, IdVec};
 use std::collections::BTreeSet;
 
@@ -87,70 +88,71 @@ pub enum RcOp {
 }
 
 #[derive(Clone, Debug)]
+pub struct Occur {
+    pub id: LocalId,
+    pub ty: ob::Type,
+}
+
+#[derive(Clone, Debug)]
 pub enum ArrayOp {
     // The type is the the type of the input array (not merely its item)
-    Get(ob::Type, LocalId, LocalId),
-    Extract(ob::Type, LocalId, LocalId),
-    Len(ob::Type, LocalId),
-    Push(ob::Type, LocalId, LocalId),
-    Pop(ob::Type, LocalId),
-    Replace(ob::Type, LocalId, LocalId),
-    Reserve(ob::Type, LocalId, LocalId),
+    Get(Occur, Occur),
+    Extract(Occur, Occur),
+    Len(Occur),
+    Push(Occur, Occur),
+    Pop(Occur),
+    Replace(Occur, Occur),
+    Reserve(Occur, Occur),
 }
 
 #[derive(Clone, Debug)]
 pub enum IoOp {
     Input,
-    Output(
-        ob::Type, // Input type
-        LocalId,
-    ),
+    Output(Occur),
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Local(LocalId),
-    Call(Purity, ob::CustomFuncId, LocalId),
-    LetMany(Vec<(ob::Type, Expr, Metadata)>, LocalId),
+    Local(Occur),
+    Call(Purity, ob::CustomFuncId, Occur),
+    LetMany(Vec<(ob::Type, Expr, Metadata)>, Occur),
 
-    If(LocalId, Box<Expr>, Box<Expr>),
-    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
+    If(Occur, Box<Expr>, Box<Expr>),
+    CheckVariant(first_ord::VariantId, Occur), // Returns a bool
     Unreachable(ob::Type),
 
-    Tuple(Vec<LocalId>),
-    TupleField(LocalId, usize),
+    Tuple(Vec<Occur>),
+    TupleField(Occur, usize),
     WrapVariant(
         IdVec<first_ord::VariantId, ob::Type>,
         first_ord::VariantId,
-        LocalId,
+        Occur,
     ),
-    UnwrapVariant(first_ord::VariantId, LocalId),
+    UnwrapVariant(first_ord::VariantId, Occur),
     WrapBoxed(
-        LocalId,
+        Occur,    // Input
         ob::Type, // Output type
     ),
     UnwrapBoxed(
-        LocalId,
-        ob::Type, // Input type
+        Occur,    // Input
         ob::Type, // Output type
     ),
-    WrapCustom(CustomTypeId, LocalId),
-    UnwrapCustom(CustomTypeId, LocalId),
+    WrapCustom(CustomTypeId, Occur),
+    UnwrapCustom(CustomTypeId, Occur),
 
     RcOp(RcOp, Selector, LocalId),
 
-    Intrinsic(Intrinsic, LocalId),
+    Intrinsic(Intrinsic, Occur),
     ArrayOp(ArrayOp),
     IoOp(IoOp),
     Panic(
         ob::Type, // Output type
-        ob::Type, // Input type
-        LocalId,
+        Occur,    // Input
     ),
 
     ArrayLit(
-        ob::Type,     // Item type
-        Vec<LocalId>, // Elements
+        ob::Type,   // Item type
+        Vec<Occur>, // Elements
     ),
     BoolLit(bool),
     ByteLit(u8),
@@ -163,7 +165,7 @@ pub enum Expr {
 pub struct FuncDef {
     pub purity: Purity,
     pub arg_ty: ob::Type,
-    pub ret_ty: ob::Type,
+    pub ret_ty: ob::RetType,
 
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
@@ -172,6 +174,12 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
     pub types: IdVec<CustomTypeId, CustomTypeDef>,
+}
+
+impl CustomTypes {
+    pub fn view_shapes(&self) -> impl MapRef<'_, CustomTypeId, Shape> {
+        FnWrap::wrap(|id| &self.types[id].content)
+    }
 }
 
 #[derive(Clone, Debug)]
