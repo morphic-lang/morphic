@@ -23,7 +23,7 @@ use id_collections::{id_type, Id, IdVec};
 use id_graph_sccs::{SccKind, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
-use std::iter;
+use std::{fmt, iter};
 
 pub struct Interner<I> {
     pub shape: intern::Interner<ShapeInner<I>>,
@@ -137,17 +137,20 @@ impl Cmp {
         }
     }
 
-    pub fn leq_left_biased(&self) -> bool {
-        match self {
-            Cmp::Boundary | Cmp::Before | Cmp::Prefix => true,
-            Cmp::After | Cmp::Suffix => false,
-        }
-    }
-
     pub fn leq_right_biased(&self) -> bool {
         match self {
             Cmp::Boundary | Cmp::Before | Cmp::Suffix => true,
             Cmp::After | Cmp::Prefix => false,
+        }
+    }
+
+    pub fn geq(&self) -> bool {
+        match self {
+            Cmp::Boundary | Cmp::After => true,
+            Cmp::Before => false,
+            Cmp::Prefix | Cmp::Suffix => {
+                panic!("{self:?} cannot be interpreted as an unbiased comparison")
+            }
         }
     }
 }
@@ -258,6 +261,15 @@ pub enum Mode {
     // Do not reorder these variants. That will change the derived `Ord`
     Borrowed,
     Owned,
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Mode::Borrowed => write!(f, "&"),
+            Mode::Owned => write!(f, "*"),
+        }
+    }
 }
 
 impl in_eq::BoundedSemilattice for Mode {
@@ -1273,10 +1285,23 @@ pub enum Expr<M, L> {
 
 /// `sig` stores all the constraints on the mode parameters of the function signature. We also keep
 /// around a copy of all constraints generated during inference in `all` for debugging.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Constrs {
     pub sig: IdVec<ModeParam, in_eq::LowerBound<ModeParam, Mode>>,
     pub all: in_eq::ConstrGraph<ModeVar, Mode>,
+}
+
+impl fmt::Debug for Constrs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{{ ")?;
+        for (rhs, lbs) in self.sig.iter() {
+            for lhs in &lbs.lb_vars {
+                write!(f, "{} <= {}, ", lhs.0, rhs.0)?;
+            }
+        }
+        write!(f, "}}")?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]

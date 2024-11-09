@@ -548,6 +548,12 @@ fn annot_occur(
     };
 
     let dups = select_dups(customs, path, &binding.ty, &new_occur.ty);
+    // println!(
+    //     "annotating occur: %{} as {}",
+    //     new_occur.id.0,
+    //     new_occur.ty.display()
+    // );
+    // println!("dups: {}", dups.display());
     build_rc_op(interner, RcOp::Retain, dups, new_occur.id, builder);
 
     let moves = select_moves(customs, path, &binding.ty, &new_occur.ty);
@@ -568,6 +574,7 @@ fn unwrap_item(ty: &Type) -> Type {
 }
 
 fn annot_expr(
+    func: ob::CustomFuncId,
     interner: &Interner,
     customs: &ob::CustomTypes,
     ctx: &mut Context,
@@ -604,6 +611,7 @@ fn annot_expr(
             let final_local = ctx.with_scope(|ctx| {
                 for (i, (ty, body, metadata)) in bindings.into_iter().enumerate() {
                     let (final_local, rhs_moves) = annot_expr(
+                        func,
                         interner,
                         customs,
                         ctx,
@@ -629,13 +637,8 @@ fn annot_expr(
                         } else {
                             candidate_drops.clone()
                         };
-                        build_rc_op(
-                            interner,
-                            RcOp::Release,
-                            drops,
-                            ctx.local_binding(*old_id).new_id,
-                            builder,
-                        );
+                        let new_id = ctx.local_binding(*old_id).new_id;
+                        build_rc_op(interner, RcOp::Release, drops, new_id, builder);
                     }
 
                     moves.merge_with_scope(num_enclosing_vars, rhs_moves);
@@ -678,6 +681,7 @@ fn annot_expr(
                 }
 
                 let (final_id, moves) = annot_expr(
+                    func,
                     interner,
                     customs,
                     ctx,
@@ -921,7 +925,7 @@ fn annot_func(
     interner: &Interner,
     _func_renderer: &FuncRenderer<ob::CustomFuncId>,
     customs: &ob::CustomTypes,
-    _func_id: ob::CustomFuncId,
+    func_id: ob::CustomFuncId,
     func: ob::FuncDef,
 ) -> rc::FuncDef {
     // println!("annot_func: func: {}", func_renderer.render(func_id));
@@ -945,6 +949,7 @@ fn annot_func(
     let ret_ty = annot::wrap_lts(&func.ret_ty);
 
     let (ret_id, _) = annot_expr(
+        func_id,
         interner,
         customs,
         &mut ctx,
@@ -983,6 +988,8 @@ pub fn annot_rcs(
             .funcs
             .into_iter()
             .map(|(func_id, func)| {
+                // println!("--------------------------------------");
+                // println!("annot_rcs: func: {}", func_renderer.render(func_id));
                 let annot = annot_func(
                     interner,
                     &func_renderer,
@@ -990,6 +997,7 @@ pub fn annot_rcs(
                     func_id,
                     func,
                 );
+                // println!("++++++++++++++++++++++++++++++++++++++");
                 progress.update(1);
                 annot
             })

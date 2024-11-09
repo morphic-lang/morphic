@@ -112,6 +112,7 @@ fn write_selector(
             }
         })
         .collect::<Vec<_>>();
+    write!(w, "{} ", selector.true_.len())?;
     annot_pp::write_type_raw(
         w,
         type_renderer,

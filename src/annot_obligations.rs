@@ -833,6 +833,13 @@ fn annot_expr(
                 &path.as_lt(interner),
             );
 
+            // println!(
+            //     "calling {} with %{}",
+            //     func_renderer.render(*func_id),
+            //     arg.id.0,
+            // );
+            // println!("{}", arg_ty.display(),);
+            // println!("{}", ctx.local_binding(arg.id).ty.display());
             let arg = handle_occur(interner, ctx, path, arg.id, &arg_ty);
             Expr::Call(*purity, *func_id, arg)
         }
@@ -1199,6 +1206,7 @@ fn annot_scc(
                 };
 
                 for id in scc.nodes {
+                    // println!("annotating {}", func_renderer.render(id));
                     let func = &funcs[id];
                     let mut ctx = LocalContext::new();
 
@@ -1281,7 +1289,7 @@ fn annot_program(
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
     let mut funcs_annot = IdMap::new();
-    for (_, scc) in &func_sccs {
+    for (_func_id, scc) in &func_sccs {
         let annotated = annot_scc(
             interner,
             &program.custom_types,

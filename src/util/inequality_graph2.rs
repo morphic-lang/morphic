@@ -22,7 +22,7 @@ pub trait BoundedSemilattice {
 pub struct VarConstrs<Var, T> {
     /// If a variable `v` has a `VarConstrs` struct whose `lb_vars` vec contains a variable `u`,
     /// that encodes the constraint `u <= v`.
-    pub lb_vars: Vec<Var>,
+    pub lb_vars: BTreeSet<Var>,
 
     /// If a variable `v` has a `VarConstrs` struct whose `lb_const` field is a constant value `c`,
     /// that encodes the constraint `c <= v`.
@@ -80,7 +80,7 @@ where
 
     pub fn fresh_var(&mut self) -> SolverVar {
         self.vars.push(VarConstrs {
-            lb_vars: Vec::new(),
+            lb_vars: BTreeSet::new(),
             lb_const: T::least(),
         })
     }
@@ -90,7 +90,7 @@ where
         // Small optimization (not necessary for correctness): don't add reflexive `<=` constraints.
         // This isn't very important, but it's so easy that it feels silly not to do it.
         if var1 != var2 {
-            self.vars[var2].lb_vars.push(var1);
+            self.vars[var2].lb_vars.insert(var1);
         }
     }
 
@@ -181,14 +181,50 @@ where
     ) -> IdVec<ExternalVar, SolverVar> {
         let vars = subgraph.map_refs(|_, _| self.fresh_var());
 
-        for (external, upper_bound) in subgraph {
-            for other_external in &upper_bound.lb_vars {
-                self.require_le(vars[external], vars[other_external]);
+        for (rhs, lb) in subgraph {
+            for lhs in &lb.lb_vars {
+                self.require_le(vars[lhs], vars[rhs]);
             }
-            self.require_le_const(&upper_bound.lb_const, vars[external]);
+            self.require_le_const(&lb.lb_const, vars[rhs]);
         }
 
         vars
+    }
+
+    pub fn requires(&self, var1: SolverVar, var2: SolverVar) -> bool {
+        self.vars[var2].lb_vars.contains(&var1)
+    }
+
+    pub fn saturate(&mut self) {
+        loop {
+            let mut new = Vec::new();
+            for (rhs1, lb1) in self.vars.iter() {
+                for &lhs1 in &lb1.lb_vars {
+                    // lhs1 <= rhs1
+                    for (rhs2, lb2) in self.vars.iter() {
+                        for &lhs2 in &lb2.lb_vars {
+                            if rhs1 == lhs2 {
+                                // rhs1 = lhs2 <= rhs2`
+                                new.push((lhs1, rhs2));
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut changed = false;
+            for (lhs, rhs) in new {
+                let lb = &mut self.vars[rhs].lb_vars;
+                if !lb.contains(&lhs) {
+                    lb.insert(lhs);
+                    changed = true;
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
     }
 }
 

@@ -949,6 +949,7 @@ fn instantiate_expr(
     fut_ty: &TypeFo<ModeVar, Lt>,
     expr: &TailExpr,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    func_renderer: &FuncRenderer<CustomFuncId>,
 ) -> annot::Expr<ModeVar, Lt> {
     match expr {
         TailExpr::Local(local) => {
@@ -1023,6 +1024,7 @@ fn instantiate_expr(
                     &fut_ty,
                     binding_expr,
                     type_renderer,
+                    func_renderer,
                 );
 
                 bindings_annot_rev.push((fut_ty, expr_annot, metadata.clone()));
@@ -1054,6 +1056,7 @@ fn instantiate_expr(
                 fut_ty,
                 else_expr,
                 type_renderer,
+                func_renderer,
             );
             let then_case = instantiate_expr(
                 strategy,
@@ -1067,6 +1070,7 @@ fn instantiate_expr(
                 fut_ty,
                 then_expr,
                 type_renderer,
+                func_renderer,
             );
             let discrim = instantiate_occur(
                 strategy,
@@ -1453,7 +1457,7 @@ fn instantiate_scc(
     funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
     scc: Scc<CustomFuncId>,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
-    _func_renderer: &FuncRenderer<CustomFuncId>,
+    func_renderer: &FuncRenderer<CustomFuncId>,
 ) -> SolverScc {
     match scc.kind {
         SccKind::Acyclic | SccKind::Cyclic => {
@@ -1536,6 +1540,7 @@ fn instantiate_scc(
                         &ret_ty,
                         &func.body,
                         type_renderer,
+                        func_renderer,
                     );
                     bodies.insert(*id, expr);
 

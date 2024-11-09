@@ -28,7 +28,6 @@ use crate::llvm_gen::zero_sized_array::ZeroSizedArrayImpl;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use crate::{cli, progress_ui};
-use core::borrow;
 use find_clang::find_default_clang;
 use id_collections::IdVec;
 use id_graph_sccs::{SccKind, Sccs};
