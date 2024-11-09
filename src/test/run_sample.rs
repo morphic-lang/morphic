@@ -256,20 +256,20 @@ macro_rules! sample {
                 }
             }
 
-            // mod rc_perceus {
-            //     #[allow(unused_imports)]
-            //     use super::*;
-            //     sample_rc_strat! {
-            //         $name $path ;
-            //         rc_strat = crate::cli::RcStrategy::Perceus;
-            //         $( compile_only = $compile_only ; )?
-            //         stdin = $stdin ;
-            //         stdout = $stdout ;
-            //         $( stderr = $stderr ; )?
-            //         $( status = $status ; )?
-            //         $( leak_check = $leak_check ; )?
-            //     }
-            // }
+            mod rc_perceus {
+                #[allow(unused_imports)]
+                use super::*;
+                sample_rc_strat! {
+                    $name $path ;
+                    rc_strat = crate::cli::RcStrategy::Perceus;
+                    $( compile_only = $compile_only ; )?
+                    stdin = $stdin ;
+                    stdout = $stdout ;
+                    $( stderr = $stderr ; )?
+                    $( status = $status ; )?
+                    $( leak_check = $leak_check ; )?
+                }
+            }
 
             mod rc_immutable_beans {
                 #[allow(unused_imports)]

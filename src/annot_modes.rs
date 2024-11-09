@@ -602,18 +602,34 @@ fn left_meet(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IgnorePerceus {
+    Yes,
+    No,
+}
+
+fn fresh_var(strategy: RcStrategy, ignore: IgnorePerceus, constrs: &mut ConstrGraph) -> ModeVar {
+    let var = constrs.fresh_var();
+    if strategy == RcStrategy::Perceus && ignore == IgnorePerceus::No {
+        constrs.require_le_const(&Mode::Owned, var);
+    }
+    var
+}
+
 /// Replaces parameters with fresh variables from the constraint graph.
 fn freshen_type<M, L1, L2>(
+    strategy: RcStrategy,
+    ignore: IgnorePerceus,
     constrs: &mut ConstrGraph,
     mut fresh_lt: impl FnMut() -> L2,
     ty: &TypeFo<M, L1>,
 ) -> TypeFo<ModeVar, L2> {
     let f = |res: &Res<_, _>| {
         let modes = match res.modes {
-            ResModes::Stack(_) => ResModes::Stack(constrs.fresh_var()),
+            ResModes::Stack(_) => ResModes::Stack(fresh_var(strategy, ignore, constrs)),
             ResModes::Heap(_) => ResModes::Heap(HeapModes {
-                access: constrs.fresh_var(),
-                storage: constrs.fresh_var(),
+                access: fresh_var(strategy, ignore, constrs),
+                storage: fresh_var(strategy, ignore, constrs),
             }),
         };
         let lt = fresh_lt();
@@ -625,12 +641,16 @@ fn freshen_type<M, L1, L2>(
     )
 }
 
-fn freshen_type_unused<M, L>(constrs: &mut ConstrGraph, ty: &TypeFo<M, L>) -> TypeFo<ModeVar, Lt> {
-    freshen_type(constrs, || Lt::Empty, ty)
+fn freshen_type_unused<M, L>(
+    strategy: RcStrategy,
+    ignore: IgnorePerceus,
+    constrs: &mut ConstrGraph,
+    ty: &TypeFo<M, L>,
+) -> TypeFo<ModeVar, Lt> {
+    freshen_type(strategy, ignore, constrs, || Lt::Empty, ty)
 }
 
 fn instantiate_occur_in_position(
-    _strategy: RcStrategy,
     interner: &Interner,
     pos: IsTail,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
@@ -657,27 +677,19 @@ fn instantiate_occur_in_position(
 /// Generate occurrence constraints and merge `use_ty` into the typing context. Corresponds to the
 /// I-Occur rule.
 fn instantiate_occur(
-    strategy: RcStrategy,
     interner: &Interner,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     constrs: &mut ConstrGraph,
     id: LocalId,
     use_ty: &TypeFo<ModeVar, Lt>,
 ) -> Occur<ModeVar, Lt> {
-    instantiate_occur_in_position(
-        strategy,
-        interner,
-        IsTail::NotTail,
-        ctx,
-        constrs,
-        id,
-        use_ty,
-    )
+    instantiate_occur_in_position(interner, IsTail::NotTail, ctx, constrs, id, use_ty)
 }
 
 fn create_occurs_from_model(
     sig: &model::Signature,
-    _strategy: RcStrategy,
+    strategy: RcStrategy,
+    ignore: IgnorePerceus,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
@@ -693,7 +705,7 @@ fn create_occurs_from_model(
     let mut arg_occurs = args
         .iter()
         .map(|&id| {
-            let ty = freshen_type_unused(constrs, &ctx.local_binding(id).ty);
+            let ty = freshen_type_unused(strategy, ignore, constrs, &ctx.local_binding(id).ty);
             annot::Occur { id, ty }
         })
         .collect::<Vec<_>>();
@@ -703,7 +715,7 @@ fn create_occurs_from_model(
     ///////////////////////////////////////
 
     // Set up a mapping from model modes to mode variables.
-    let get_mode = IdVec::from_count_with(sig.mode_count, |_| constrs.fresh_var());
+    let get_mode = IdVec::from_count_with(sig.mode_count, |_| fresh_var(strategy, ignore, constrs));
 
     let get_modes = |modes| match modes {
         ResModes::Stack(stack) => ResModes::Stack(get_mode[stack]),
@@ -873,6 +885,7 @@ fn create_occurs_from_model(
 fn instantiate_model(
     sig: &model::Signature,
     strategy: RcStrategy,
+    ignore: IgnorePerceus,
     interner: &Interner,
     customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
@@ -883,11 +896,11 @@ fn instantiate_model(
     ret: &TypeFo<ModeVar, Lt>,
 ) -> Vec<annot::Occur<ModeVar, Lt>> {
     let occurs = create_occurs_from_model(
-        sig, strategy, interner, customs, sccs, constrs, ctx, path, args, ret,
+        sig, strategy, ignore, interner, customs, sccs, constrs, ctx, path, args, ret,
     );
 
     for occur in &occurs {
-        instantiate_occur(strategy, interner, ctx, constrs, occur.id, &occur.ty);
+        instantiate_occur(interner, ctx, constrs, occur.id, &occur.ty);
     }
 
     occurs
@@ -953,7 +966,7 @@ fn instantiate_expr(
 ) -> annot::Expr<ModeVar, Lt> {
     match expr {
         TailExpr::Local(local) => {
-            let occur = instantiate_occur(strategy, interner, ctx, constrs, *local, fut_ty);
+            let occur = instantiate_occur(interner, ctx, constrs, *local, fut_ty);
             annot::Expr::Local(occur)
         }
 
@@ -972,9 +985,7 @@ fn instantiate_expr(
                 &annot::subst_lts(interner, &arg_ty, &lt_subst),
                 &path,
             );
-            let arg = instantiate_occur_in_position(
-                strategy, interner, *pos, ctx, constrs, *arg, &arg_ty,
-            );
+            let arg = instantiate_occur_in_position(interner, *pos, ctx, constrs, *arg, &arg_ty);
 
             annot::Expr::Call(*purity, *func, arg)
         }
@@ -992,6 +1003,8 @@ fn instantiate_expr(
 
             for (binding_ty, _, _) in bindings {
                 let annot_ty = freshen_type_unused(
+                    strategy,
+                    IgnorePerceus::No,
                     constrs,
                     &parameterize_type(interner, customs, sccs, binding_ty),
                 );
@@ -1001,8 +1014,7 @@ fn instantiate_expr(
                 });
             }
 
-            let result_occur =
-                instantiate_occur(strategy, interner, ctx, constrs, *result_id, fut_ty);
+            let result_occur = instantiate_occur(interner, ctx, constrs, *result_id, fut_ty);
 
             let mut bindings_annot_rev = Vec::new();
             for (i, (_, binding_expr, metadata)) in bindings.iter().enumerate().rev() {
@@ -1072,23 +1084,22 @@ fn instantiate_expr(
                 type_renderer,
                 func_renderer,
             );
-            let discrim = instantiate_occur(
-                strategy,
-                interner,
-                ctx,
-                constrs,
-                *discrim,
-                &TypeFo::bool_(interner),
-            );
+            let discrim =
+                instantiate_occur(interner, ctx, constrs, *discrim, &TypeFo::bool_(interner));
             annot::Expr::If(discrim, Box::new(then_case), Box::new(else_case))
         }
 
         TailExpr::CheckVariant(variant_id, variant) => {
             assert!(fut_ty.shape() == &ShapeFo::bool_(interner));
-            let variants_ty = ctx.local_binding(*variant).ty.clone(); // appease the borrow checker
+            let variants_ty = freshen_type_unused(
+                strategy,
+                IgnorePerceus::Yes,
+                constrs,
+                &ctx.local_binding(*variant).ty,
+            );
             annot::Expr::CheckVariant(
                 *variant_id,
-                instantiate_occur(strategy, interner, ctx, constrs, *variant, &variants_ty),
+                instantiate_occur(interner, ctx, constrs, *variant, &variants_ty),
             )
         }
 
@@ -1103,7 +1114,7 @@ fn instantiate_expr(
                 .zip_eq(fut_item_tys)
                 .rev()
                 .map(|(item_id, item_ty)| {
-                    instantiate_occur(strategy, interner, ctx, constrs, *item_id, &item_ty)
+                    instantiate_occur(interner, ctx, constrs, *item_id, &item_ty)
                 })
                 .collect::<Vec<_>>();
             let occurs = {
@@ -1114,7 +1125,12 @@ fn instantiate_expr(
         }
 
         TailExpr::TupleField(tuple_id, idx) => {
-            let mut tuple_ty = freshen_type_unused(constrs, &ctx.local_binding(*tuple_id).ty);
+            let mut tuple_ty = freshen_type_unused(
+                strategy,
+                IgnorePerceus::Yes,
+                constrs,
+                &ctx.local_binding(*tuple_id).ty,
+            );
             let ShapeInner::Tuple(shapes) = &*tuple_ty.shape().inner else {
                 panic!("expected `Tuple` type");
             };
@@ -1122,14 +1138,13 @@ fn instantiate_expr(
             let (start, end) = annot::nth_res_bounds(shapes, *idx);
             tuple_ty.res_mut().as_mut_slice()[start..end].clone_from_slice(fut_ty.res().as_slice());
 
-            let occur = instantiate_occur(strategy, interner, ctx, constrs, *tuple_id, &tuple_ty);
+            let occur = instantiate_occur(interner, ctx, constrs, *tuple_id, &tuple_ty);
             annot::Expr::TupleField(occur, *idx)
         }
 
         TailExpr::WrapVariant(_variant_tys, variant_id, content) => {
             let fut_variant_tys = annot::elim_variants(fut_ty);
             let occur = instantiate_occur(
-                strategy,
                 interner,
                 ctx,
                 constrs,
@@ -1140,7 +1155,12 @@ fn instantiate_expr(
         }
 
         TailExpr::UnwrapVariant(_variant_tys, variant_id, wrapped) => {
-            let mut variants_ty = freshen_type_unused(constrs, &ctx.local_binding(*wrapped).ty);
+            let mut variants_ty = freshen_type_unused(
+                strategy,
+                IgnorePerceus::No,
+                constrs,
+                &ctx.local_binding(*wrapped).ty,
+            );
             let ShapeInner::Variants(shapes) = &*variants_ty.shape().inner else {
                 panic!("expected `Variants` type");
             };
@@ -1149,7 +1169,7 @@ fn instantiate_expr(
             variants_ty.res_mut().as_mut_slice()[start..end]
                 .clone_from_slice(fut_ty.res().as_slice());
 
-            let occur = instantiate_occur(strategy, interner, ctx, constrs, *wrapped, &variants_ty);
+            let occur = instantiate_occur(interner, ctx, constrs, *wrapped, &variants_ty);
             annot::Expr::UnwrapVariant(*variant_id, occur)
         }
 
@@ -1157,6 +1177,7 @@ fn instantiate_expr(
             let mut occurs = instantiate_model(
                 &*model::box_new,
                 strategy,
+                IgnorePerceus::No,
                 interner,
                 customs,
                 sccs,
@@ -1173,6 +1194,7 @@ fn instantiate_expr(
             let mut occurs = instantiate_model(
                 &*model::box_get,
                 strategy,
+                IgnorePerceus::Yes,
                 interner,
                 customs,
                 sccs,
@@ -1187,15 +1209,20 @@ fn instantiate_expr(
 
         TailExpr::WrapCustom(custom_id, recipe, unfolded) => {
             let fut_unfolded = annot::unfold(interner, customs, sccs, recipe, fut_ty);
-            let occur =
-                instantiate_occur(strategy, interner, ctx, constrs, *unfolded, &fut_unfolded);
+            let occur = instantiate_occur(interner, ctx, constrs, *unfolded, &fut_unfolded);
             annot::Expr::WrapCustom(*custom_id, recipe.clone(), occur)
         }
 
         TailExpr::UnwrapCustom(custom_id, recipe, folded) => {
             let fresh_folded = {
                 let mut lt_count = Count::new();
-                freshen_type(constrs, || lt_count.inc(), &ctx.local_binding(*folded).ty)
+                freshen_type(
+                    strategy,
+                    IgnorePerceus::No,
+                    constrs,
+                    || lt_count.inc(),
+                    &ctx.local_binding(*folded).ty,
+                )
             };
 
             let fresh_folded = {
@@ -1213,7 +1240,7 @@ fn instantiate_expr(
                 annot::subst_lts(interner, &annot::wrap_lts(&fresh_folded), &lt_subst)
             };
 
-            let occur = instantiate_occur(strategy, interner, ctx, constrs, *folded, &fresh_folded);
+            let occur = instantiate_occur(interner, ctx, constrs, *folded, &fresh_folded);
             annot::Expr::UnwrapCustom(*custom_id, recipe.clone(), occur)
         }
 
@@ -1232,6 +1259,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::array_get,
                 strategy,
+                IgnorePerceus::Yes,
                 interner,
                 customs,
                 sccs,
@@ -1253,6 +1281,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::array_extract,
                 strategy,
+                IgnorePerceus::No,
                 interner,
                 customs,
                 sccs,
@@ -1273,6 +1302,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::array_len,
                 strategy,
+                IgnorePerceus::Yes,
                 interner,
                 customs,
                 sccs,
@@ -1290,6 +1320,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::array_push,
                 strategy,
+                IgnorePerceus::No,
                 interner,
                 customs,
                 sccs,
@@ -1310,6 +1341,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::array_pop,
                 strategy,
+                IgnorePerceus::No,
                 interner,
                 customs,
                 sccs,
@@ -1327,6 +1359,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::array_replace,
                 strategy,
+                IgnorePerceus::No,
                 interner,
                 customs,
                 sccs,
@@ -1347,6 +1380,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::array_reserve,
                 strategy,
+                IgnorePerceus::No,
                 interner,
                 customs,
                 sccs,
@@ -1367,6 +1401,7 @@ fn instantiate_expr(
             let _ = instantiate_model(
                 &*model::io_input,
                 strategy,
+                IgnorePerceus::No,
                 interner,
                 customs,
                 sccs,
@@ -1383,6 +1418,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::io_output,
                 strategy,
+                IgnorePerceus::Yes,
                 interner,
                 customs,
                 sccs,
@@ -1400,6 +1436,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::panic,
                 strategy,
+                IgnorePerceus::Yes,
                 interner,
                 customs,
                 sccs,
@@ -1417,6 +1454,7 @@ fn instantiate_expr(
             let occurs = instantiate_model(
                 &*model::array_new,
                 strategy,
+                IgnorePerceus::No,
                 interner,
                 customs,
                 sccs,
@@ -1473,6 +1511,8 @@ fn instantiate_scc(
                     (
                         *id,
                         freshen_type_unused(
+                            strategy,
+                            IgnorePerceus::No,
                             &mut constrs,
                             &parameterize_type(interner, customs, sccs, &funcs[id].arg_ty),
                         ),
@@ -1488,6 +1528,8 @@ fn instantiate_scc(
                     (
                         *id,
                         freshen_type(
+                            strategy,
+                            IgnorePerceus::No,
                             &mut constrs,
                             &mut || next_lt.inc(),
                             &parameterize_type(interner, customs, sccs, &funcs[id].ret_ty),
@@ -1518,6 +1560,8 @@ fn instantiate_scc(
                     let mut ctx = LocalContext::new();
 
                     let arg_ty = freshen_type_unused(
+                        strategy,
+                        IgnorePerceus::No,
                         &mut constrs,
                         &parameterize_type(interner, customs, sccs, &func.arg_ty),
                     );
@@ -1575,13 +1619,7 @@ fn instantiate_scc(
                 arg_tys = new_arg_tys;
             };
 
-            // We could avoid a lot of the work in the "always owned" case, but this is the simplest
-            // intervention point
-            if strategy == RcStrategy::Perceus {
-                for var in constrs.var_count() {
-                    constrs.require_le_const(&Mode::Owned, var);
-                }
-            } else if strategy == RcStrategy::ImmutableBeans {
+            if strategy == RcStrategy::ImmutableBeans {
                 for var in ret_tys
                     .values()
                     .flat_map(|ty| ty.iter_flat())

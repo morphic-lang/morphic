@@ -923,10 +923,9 @@ fn annot_expr(
 
         Expr::CheckVariant(variant_id, variant) => {
             assert!(fut_ty.shape() == &Shape::bool_(interner));
-            let variants_ty = &ctx.local_binding(variant.id).ty.clone(); // appease the borrow checker
             Expr::CheckVariant(
                 *variant_id,
-                handle_occur(interner, ctx, path, variant.id, variants_ty),
+                handle_occur(interner, ctx, path, variant.id, &variant.ty),
             )
         }
 
@@ -1011,7 +1010,7 @@ fn annot_expr(
         Expr::UnwrapCustom(custom_id, recipe, folded) => {
             let fresh_folded = {
                 let mut lt_count = Count::new();
-                replace_lts(&ctx.local_binding(folded.id).ty, move || lt_count.inc())
+                replace_lts(&folded.ty, move || lt_count.inc())
             };
 
             let fresh_folded = {

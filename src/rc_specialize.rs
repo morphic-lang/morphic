@@ -6,6 +6,7 @@ use crate::data::mode_annot_ast::{
 use crate::data::obligation_annot_ast::{self as ob, CustomTypeId, Shape};
 use crate::data::rc_annot_ast::{self as annot, Selector};
 use crate::data::rc_specialized_ast::{self as rc, ModeScheme, ModeSchemeId};
+use crate::pretty_print::utils::FuncRenderer;
 use crate::util::collection_ext::VecExt;
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
@@ -394,7 +395,15 @@ fn lower_expr(
     let new_expr = match expr {
         // The only interesting case...
         annot::Expr::RcOp(op, sel, arg_id) => {
-            let plan = RcOpPlan::from_selector(customs, &ctx.local_binding(*arg_id).old_ty, sel);
+            let arg = ctx.local_binding(*arg_id);
+            let plan = RcOpPlan::from_selector(customs, &arg.old_ty, sel);
+            // println!(
+            //     "%{}: {}",
+            //     arg_id.0,
+            //     ctx.local_binding(*arg_id).old_ty.display()
+            // );
+            // println!("{}", sel.display());
+            // println!("{}", plan);
 
             metadata.add_comment(format!(
                 "rc_specialize: {}: {plan}",
@@ -404,7 +413,6 @@ fn lower_expr(
                 },
             ));
 
-            let arg = ctx.local_binding(*arg_id);
             let unit = build_plan(
                 customs,
                 insts,
@@ -638,10 +646,19 @@ fn lower_expr(
 
 fn lower_func(
     customs: &annot::CustomTypes,
+    _func_renderer: &FuncRenderer<ob::CustomFuncId>,
     funcs: &IdVec<ob::CustomFuncId, annot::FuncDef>,
     insts: &mut ReleaseInstances,
-    func: &annot::FuncDef,
+    func_id: ob::CustomFuncId,
 ) -> rc::FuncDef {
+    // println!("---------------------------------");
+    // println!(
+    //     "func_id: {}, func: {}",
+    //     func_id.0,
+    //     func_renderer.render(func_id)
+    // );
+
+    let func = &funcs[func_id];
     let arg_type = lower_type(&func.arg_ty.shape());
     let ret_type = lower_type(&func.ret_ty.shape());
 
@@ -663,6 +680,7 @@ fn lower_func(
         Metadata::default(),
         &mut builder,
     );
+    // println!("+++++++++++++++++++++++++++++++++");
 
     rc::FuncDef {
         purity: func.purity,
@@ -674,6 +692,7 @@ fn lower_func(
 }
 
 pub fn rc_specialize(program: annot::Program, progress: impl ProgressLogger) -> rc::Program {
+    let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
     let mut queue = ReleaseInstances::new();
@@ -681,10 +700,10 @@ pub fn rc_specialize(program: annot::Program, progress: impl ProgressLogger) -> 
 
     let customs = &program.custom_types;
 
-    for (id, func) in &program.funcs {
-        let new_func = lower_func(customs, &program.funcs, &mut queue, &func);
+    for (func_id, _) in &program.funcs {
+        let new_func = lower_func(customs, &func_renderer, &program.funcs, &mut queue, func_id);
         let pushed_id = funcs.push(new_func);
-        debug_assert_eq!(pushed_id, id);
+        debug_assert_eq!(pushed_id, func_id);
         progress.update(1);
     }
 

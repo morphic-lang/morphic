@@ -2217,7 +2217,7 @@ fn run_cc(target: cli::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
 
             let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
             std::process::Command::new(clang.path)
-                .arg("-O0")
+                .arg("-O3")
                 .arg("-ffunction-sections")
                 .arg("-fdata-sections")
                 .arg("-fPIC")
