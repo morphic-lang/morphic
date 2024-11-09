@@ -255,7 +255,7 @@ fn build_exe(
             } else {
                 Some(artifact_dir.clone())
             },
-            progress: ProgressMode::Hidden,
+            progress: ProgressMode::Visible,
             pass_options: PassOptions {
                 defunc_mode,
                 rc_strat: options.rc_strat,
@@ -280,7 +280,8 @@ impl Variant {
         let rc_strat_str = match self.rc_strat {
             RcStrategy::Default => "default",
             RcStrategy::Perceus => "perceus",
-            RcStrategy::ImmutableBeans => "immutable_beans",
+            // RcStrategy::ImmutableBeans => "immutable_beans",
+            RcStrategy::ImmutableBeans => panic!("ImmutableBeans is not supported"),
         };
         let record_rc_str = if self.record_rc { "rc" } else { "time" };
         format!("{}_{}", rc_strat_str, record_rc_str)
@@ -292,7 +293,7 @@ fn variants() -> Vec<Variant> {
     for rc_strat in [
         RcStrategy::Default,
         RcStrategy::Perceus,
-        RcStrategy::ImmutableBeans,
+        // RcStrategy::ImmutableBeans,
     ] {
         for record_rc in [false, true] {
             variants.push(Variant {
@@ -320,6 +321,7 @@ fn bench_sample(
 ) {
     for variant in variants() {
         let variant_name = format!("{bench_name}_{tag}", tag = variant.tag());
+        println!("benchmarking {}", variant_name);
 
         let exe_path = std::env::current_dir()
             .unwrap()
