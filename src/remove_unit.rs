@@ -1,5 +1,5 @@
 use id_collections::{Id, IdVec};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 // this pass does 2 things:
 // 1. for any 1 variant custom type, the custom type is removed and replaced with the variant
@@ -24,46 +24,61 @@ impl<'a> Context<'a> {
         self.remove_type(t.clone()) == Type::Tuple(Vec::new())
     }
 
-    pub fn remove_type(&mut self, t: Type) -> Type {
+    fn remove_type_rec(&mut self, t: Type, seen: BTreeSet<CustomTypeId>) -> Option<Type> {
         match t {
-            Type::Bool => Type::Bool,
-            Type::Num(n) => Type::Num(n),
-            Type::Array(type_) => Type::Array(Box::new(self.remove_type(*type_))),
+            Type::Bool => Some(Type::Bool),
+            Type::Num(n) => Some(Type::Num(n)),
+            Type::Array(type_) => Some(Type::Array(Box::new(
+                self.remove_type_rec(*type_, seen.clone())?,
+            ))),
 
-            Type::HoleArray(type_) => Type::HoleArray(Box::new(self.remove_type(*type_))),
+            Type::HoleArray(type_) => Some(Type::HoleArray(Box::new(
+                self.remove_type_rec(*type_, seen.clone())?,
+            ))),
             Type::Tuple(types) => {
                 let mut new_types = Vec::new();
                 for type_ in types {
                     if self.is_unit(&type_) {
                         continue;
                     } else {
-                        let new_type = self.remove_type(type_);
+                        let new_type = self.remove_type_rec(type_, seen.clone())?;
                         new_types.push(new_type);
                     }
                 }
 
                 if new_types.len() == 1 {
-                    new_types.remove(0)
+                    Some(new_types.remove(0))
                 } else {
-                    Type::Tuple(new_types)
+                    Some(Type::Tuple(new_types))
                 }
             }
 
             Type::Custom(type_id) => match self.remove_type_cache.get(&type_id) {
-                Some(res) => res.clone(),
+                Some(res) => Some(res.clone()),
                 None => {
-                    let res = match self.type_reduction.get(&type_id) {
-                        Some(t) => {
-                            let t = t.clone();
-                            self.remove_type(t.clone())
-                        }
-                        None => Type::Custom(type_id),
-                    };
-                    self.remove_type_cache.insert(type_id, res.clone());
-                    res
+                    if seen.contains(&type_id) {
+                        None
+                    } else {
+                        let mut new_seen = seen.clone();
+                        new_seen.insert(type_id);
+                        let res = match self.type_reduction.get(&type_id) {
+                            Some(t) => {
+                                let t = t.clone();
+                                self.remove_type_rec(t.clone(), new_seen)?
+                            }
+                            None => Type::Custom(type_id),
+                        };
+                        self.remove_type_cache.insert(type_id, res.clone());
+                        Some(res)
+                    }
                 }
             },
         }
+    }
+
+    pub fn remove_type(&mut self, t: Type) -> Type {
+        self.remove_type_rec(t.clone(), BTreeSet::new())
+            .unwrap_or(t)
     }
 
     pub fn remove_expr(&mut self, e: Expr) -> Expr {

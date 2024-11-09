@@ -169,6 +169,15 @@ pub find(it: Iter a, f: a -> Bool): Option a =
     None -> None,
   }
 
+pub find_map(it: Iter a, f: a -> Option b): Option b =
+  match next(it) {
+    Some(x, xs) -> match f(x) {
+      Some(y) -> Some(y),
+      None -> find_map(xs, f),
+    },
+    None -> None,
+  }
+
 pub proc for_each(it: Iter a, f: proc a -> ()): () =
   match next(it) {
     Some(x, xs) ->
