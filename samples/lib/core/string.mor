@@ -95,3 +95,5 @@ pub equal(a: Array Byte, b: Array Byte): Bool =
   } else {
     False
   }
+
+pub concat(x : Array Byte, y : Array Byte): Array Byte = Array.concat(x, y)

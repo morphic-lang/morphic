@@ -62,3 +62,19 @@ pub unwrap(opt: Option a): a =
     Some(x) -> x,
     None -> panic("Cannot call 'Option.unwrap' on a 'None' value\n"),
   }
+
+concat_from(a: Array t, b: Array t, i: Int): Array t =
+  if i = len(b) {
+    a
+  } else {
+    concat_from(push(a, get(b, i)), b, i + 1)
+  }
+
+pub concat(a: Array t, b: Array t): Array t =
+  concat_from(a, b, 0)
+
+pub str(opt: Option a, fn: a -> Array Byte): Array Byte =
+  match opt {
+    Some(x) -> concat(concat("Some(", fn(x)), ")"),
+    None -> "None",
+  }

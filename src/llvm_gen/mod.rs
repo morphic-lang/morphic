@@ -2111,14 +2111,14 @@ fn gen_program<'a>(
 
     func_progress.finish();
 
-    instances.define(&globals, rc_progress, cow_progress);
-
     let mut type_progress = type_progress.start_session(Some(custom_types.len()));
     for (type_id, type_decls) in &custom_types {
         type_decls.define(&globals, &mut instances, &globals.custom_schemes[type_id]);
         type_progress.update(1);
     }
     type_progress.finish();
+
+    instances.define(&globals, rc_progress, cow_progress);
 
     let i32_type = context.i32_type();
     let unit_type = context.struct_type(&[], false);

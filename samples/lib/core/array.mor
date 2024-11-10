@@ -1,4 +1,5 @@
 import Iter expose { Iter }
+import Option expose { Option { Some, None } }
 
 // TODO: This is a temporary workaround.  We should have a namespacing system for builtins.
 module NoShadow = {
@@ -19,6 +20,13 @@ pub update(arr: Array a, i: Int, f: a -> a): Array a =
   let (x, hole) = extract(arr, i) in
   hole(f(x))
 
+pub try_get(arr: Array a, i: Int): Option a =
+  if i >= 0 && i < len(arr) {
+    Some(get(arr, i))
+  } else {
+    None
+  }
+
 concat_from(a: Array t, b: Array t, i: Int): Array t =
   if i = len(b) {
     a
@@ -28,6 +36,48 @@ concat_from(a: Array t, b: Array t, i: Int): Array t =
 
 pub concat(a: Array t, b: Array t): Array t =
   concat_from(a, b, 0)
+
+find_index_rec(arr: Array t, p: t -> Bool, i: Int): Option Int =
+  if i >= len(arr) {
+    None
+  } else if p(get(arr, i)) {
+    Some(i)
+  } else {
+    find_index_rec(arr, p, i + 1)
+  }
+
+pub find_index(arr: Array t, p: t -> Bool):  Option Int =
+  find_index_rec(arr, p, 0)
+
+all_rec(arr: Array a, f: a -> Bool, i: Int): Bool =
+  if i >= len(arr) {
+    True
+  } else if !f(get(arr, i)) {
+    False
+  } else {
+    all_rec(arr, f, i + 1)
+  }
+
+pub all(arr: Array a, f: a -> Bool): Bool =
+  all_rec(arr, f, 0)
+
+equal_rec(arr1: Array a, arr2: Array a, eq: (a, a) -> Bool, i: Int): Bool =
+  if i >= len(arr1) {
+    True
+  } else if i >= len(arr2) {
+    False
+  } else if !eq(get(arr1, i), get(arr2, i)) {
+    False
+  } else {
+    equal_rec(arr1, arr2, eq, i + 1)
+  }
+
+pub equal(arr1: Array a, arr2: Array a, eq: (a, a) -> Bool): Bool =
+  if !(len(arr1) = len(arr2)) {
+    False
+  } else {
+    equal_rec(arr1, arr2, eq, 0)
+  }
 
 fill_with_rec(arr: Array t, count: Int, mk_val: () -> t): Array t =
   if count > 0 {
