@@ -11,7 +11,7 @@ use crate::data::obligation_annot_ast::{
     self as ob, ArrayOp, CustomFuncId, CustomTypeId, Expr, FuncDef, IoOp, Occur, RetType, Shape,
     Type,
 };
-use crate::pretty_print::utils::FuncRenderer;
+use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
 use crate::util::local_context;
@@ -811,6 +811,7 @@ fn annot_expr(
     customs: &ob::CustomTypes,
     sigs: SignatureAssumptions<'_>,
     func_renderer: &FuncRenderer<ob::CustomFuncId>,
+    type_renderer: &CustomTypeRenderer<ob::CustomTypeId>,
     path: &Path,
     ctx: &mut LocalContext,
     expr: &Expr,
@@ -833,13 +834,6 @@ fn annot_expr(
                 &path.as_lt(interner),
             );
 
-            // println!(
-            //     "calling {} with %{}",
-            //     func_renderer.render(*func_id),
-            //     arg.id.0,
-            // );
-            // println!("{}", arg_ty.display(),);
-            // println!("{}", ctx.local_binding(arg.id).ty.display());
             let arg = handle_occur(interner, ctx, path, arg.id, &arg_ty);
             Expr::Call(*purity, *func_id, arg)
         }
@@ -873,6 +867,7 @@ fn annot_expr(
                     customs,
                     sigs,
                     func_renderer,
+                    type_renderer,
                     &path.seq(i),
                     ctx,
                     expr,
@@ -896,6 +891,7 @@ fn annot_expr(
                 customs,
                 sigs,
                 func_renderer,
+                type_renderer,
                 &path.seq(1).alt(1, 2),
                 ctx,
                 else_case,
@@ -906,6 +902,7 @@ fn annot_expr(
                 customs,
                 sigs,
                 func_renderer,
+                type_renderer,
                 &path.seq(1).alt(0, 2),
                 ctx,
                 then_case,
@@ -1175,6 +1172,7 @@ fn annot_scc(
     funcs: &IdVec<ob::CustomFuncId, FuncDef>,
     funcs_annot: &IdMap<ob::CustomFuncId, FuncDef>,
     func_renderer: &FuncRenderer<ob::CustomFuncId>,
+    type_renderer: &CustomTypeRenderer<ob::CustomTypeId>,
     scc: Scc<ob::CustomFuncId>,
 ) -> SolverScc {
     match scc.kind {
@@ -1205,6 +1203,7 @@ fn annot_scc(
                 };
 
                 for id in scc.nodes {
+                    // println!("-------------------------------------------");
                     // println!("annotating {}", func_renderer.render(id));
                     let func = &funcs[id];
                     let mut ctx = LocalContext::new();
@@ -1221,6 +1220,7 @@ fn annot_scc(
                         customs,
                         assumptions,
                         func_renderer,
+                        type_renderer,
                         &annot::FUNC_BODY_PATH(),
                         &mut ctx,
                         &func.body,
@@ -1278,6 +1278,7 @@ fn annot_program(
     progress: impl ProgressLogger,
 ) -> ob::Program {
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
+    let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
 
     let func_sccs: Sccs<usize, _> = find_components(program.funcs.count(), |id| {
         let mut deps = BTreeSet::new();
@@ -1295,6 +1296,7 @@ fn annot_program(
             &program.funcs,
             &funcs_annot,
             &func_renderer,
+            &type_renderer,
             scc,
         );
 

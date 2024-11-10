@@ -667,19 +667,39 @@ impl ModeProp {
 }
 
 declare_signatures! {
+    // below the top-level:
+    // - u inherits t's access modes
+    // - u inherits t's storage modes
+    // at the top-level
+    // - u's stack mode = t's access mode = t's storage mode
     pub box_new: (u) -> Boxed a Own t
         where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
+    // below the top-level:
+    // - u inherits t's access modes
+    // - u inherits t's storage modes
+    // at the top-level
+    // - u's stack mode is t's access mode
     pub box_get: (Boxed a m t) -> u
         where t.lt <- u.lt, u.stack = t.access;
 
+    // below the top-level:
+    // - u inherits t's access modes
+    // - u inherits t's storage modes
+    // at the top-level
+    // - u's stack mode = t's access mode = t's storage mode
     pub array_new: (u..) -> Array a Own t
         where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
+    // below the top-level:
+    // - u inherits t's access modes
+    // - u inherits t's storage modes
+    // at the top-level
+    // - u's stack mode is t's access mode
     pub array_get: (Array a m t, Int) -> u
         where t.lt <- u.lt, u.stack = t.access;
 
-    pub array_extract: (Array a Own t, Int) -> (u, HoleArray a Own t)
+    pub array_extract: (Array a Own t, Int) -> (u, HoleArray b Own t)
         where t.lt <- u.lt, u.stack = t.storage;
 
     /// Since the `len` field of an array lives on the stack, it's technically OK to read it after
@@ -687,16 +707,26 @@ declare_signatures! {
     /// use the empty lifetime.
     pub array_len: (Array Emp m t) -> Int;
 
-    pub array_push: (Array a Own t, u) -> Array a Own t
+    // below the top-level:
+    // - u's access modes are t's access modes
+    // - u's storage modes are t's storage modes
+    // at the top-level
+    // - u's stack mode is t's storage mode
+    pub array_push: (Array a Own t, u) -> Array b Own t
         where u.lt <- t.lt, u.stack = t.storage;
 
-    pub array_pop: (Array a Own t) -> (Array a Own t, u)
+    // below the top-level:
+    // - u's access modes are t's access modes
+    // - u's storage modes are t's storage modes
+    // at the top-level
+    // - u's stack mode is t's storage mode
+    pub array_pop: (Array a Own t) -> (Array b Own t, u)
         where t.lt <- u.lt, u.stack = t.storage;
 
-    pub array_replace: (HoleArray a Own t, u) -> Array a Own t
+    pub array_replace: (HoleArray a Own t, u) -> Array b Own t
         where u.lt <- t.lt, u.stack = t.storage;
 
-    pub array_reserve: (Array a Own t, Int) -> Array a Own t;
+    pub array_reserve: (Array a Own t, Int) -> Array b Own t;
 
     pub io_input: () -> Array a Own Byte;
 

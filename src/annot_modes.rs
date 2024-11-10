@@ -1538,6 +1538,16 @@ fn instantiate_scc(
                 })
                 .collect::<BTreeMap<_, _>>();
 
+            if strategy == RcStrategy::ImmutableBeans {
+                for var in ret_tys
+                    .values()
+                    .flat_map(|ty| ty.iter_flat())
+                    .map(|(m, _)| *m)
+                {
+                    constrs.require_le_const(&Mode::Owned, var);
+                }
+            }
+
             let sig_params = {
                 let mut params = BTreeSet::new();
                 while first_lt != next_lt {
@@ -1618,16 +1628,6 @@ fn instantiate_scc(
 
                 arg_tys = new_arg_tys;
             };
-
-            if strategy == RcStrategy::ImmutableBeans {
-                for var in ret_tys
-                    .values()
-                    .flat_map(|ty| ty.iter_flat())
-                    .map(|(m, _)| *m)
-                {
-                    constrs.require_le_const(&Mode::Owned, var);
-                }
-            }
 
             SolverScc {
                 func_args: new_arg_tys,
