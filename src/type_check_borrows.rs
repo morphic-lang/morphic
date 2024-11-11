@@ -1,6 +1,8 @@
 use crate::data::mode_annot_ast::{self as annot, Mode, Path, ShapeInner, SlotId};
 use crate::data::num_type::NumType;
-use crate::data::obligation_annot_ast::{CustomFuncId, CustomTypeId, Shape, Type};
+use crate::data::obligation_annot_ast::{
+    as_value_type, wrap_lts, BindRes, BindType, CustomFuncId, CustomTypeId, Shape, Type,
+};
 use crate::data::rc_annot_ast::{
     ArrayOp, CustomTypes, Expr, FuncDef, IoOp, LocalId, Occur, Program, RcOp,
 };
@@ -10,20 +12,16 @@ use core::panic;
 use id_collections::IdVec;
 use std::collections::BTreeMap;
 
-fn mode(ty: &Type, slot: SlotId) -> Mode {
-    *ty.res()[slot].modes.stack_or_storage()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Moves(BTreeMap<SlotId, u32>);
 
 impl Moves {
-    fn rc1(customs: &CustomTypes, ty: &Type) -> Self {
+    fn rc1(customs: &CustomTypes, ty: &BindType) -> Self {
         let modes = ty
             .shape()
             .top_level_slots(customs.view_shapes())
             .iter()
-            .map(|&slot| match mode(ty, slot) {
+            .map(|&slot| match ty.res()[slot].mode() {
                 Mode::Owned => (slot, 1),
                 Mode::Borrowed => (slot, 0),
             })
@@ -31,7 +29,7 @@ impl Moves {
         Self(modes)
     }
 
-    fn rc0(customs: &CustomTypes, ty: &Type) -> Self {
+    fn rc0(customs: &CustomTypes, ty: &BindType) -> Self {
         let modes = ty
             .shape()
             .top_level_slots(customs.view_shapes())
@@ -81,7 +79,7 @@ impl Moves {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LocalInfo {
-    ty: Type,
+    ty: BindType,
     moves: Moves,
 }
 
@@ -93,7 +91,7 @@ fn record_moves(customs: &CustomTypes, ctx: &mut LocalContext, local: &Occur) {
 
     let slots = local.ty.shape().top_level_slots(customs.view_shapes());
     for slot in slots {
-        if mode(&local.ty, slot) == Mode::Owned {
+        if local.ty.res()[slot].mode() == Mode::Owned {
             local_info.moves.dec(slot);
         }
     }
@@ -117,16 +115,25 @@ fn assert_all_borrowed(customs: &CustomTypes, ty: &Type) {
         .shape()
         .top_level_slots(customs.view_shapes())
         .iter()
-        .all(|&slot| { mode(ty, slot) == Mode::Borrowed }));
+        .all(|&slot| { ty.res()[slot].mode() == Mode::Borrowed }));
 }
 
 fn assert_all_live(customs: &CustomTypes, ctx: &mut LocalContext, path: &Path, local_id: LocalId) {
     let ty = &ctx.local_binding(local_id).ty;
-    assert!(ty
+    let ok = ty
         .shape()
         .top_level_slots(customs.view_shapes())
         .iter()
-        .all(|&slot| ty.res()[slot].lt.cmp_path(path).geq()))
+        .all(|&slot| {
+            ty.res()[slot]
+                .lt()
+                .map_or(true, |lt| lt.cmp_path(path).geq())
+        });
+    assert!(
+        ok,
+        "variable %{} is not live where it is accessed",
+        local_id.0
+    );
 }
 
 fn type_check_expr(
@@ -168,10 +175,16 @@ fn type_check_expr(
                         let local_info = ctx.local_binding_mut(*local_id);
                         for &slot in &selector.true_ {
                             let res = &local_info.ty.res()[slot];
-                            if *res.modes.stack_or_storage() == Mode::Owned {
-                                local_info.moves.dec(slot);
-                                assert!(res.lt.cmp_path(&path.seq(effective_i)).leq_right_biased());
-                            }
+                            match res {
+                                BindRes::StackOwned(lt) => {
+                                    local_info.moves.dec(slot);
+                                    assert!(lt.cmp_path(&path.seq(effective_i)).leq_right_biased());
+                                }
+                                BindRes::HeapOwned => {
+                                    local_info.moves.dec(slot);
+                                }
+                                BindRes::Borrowed(_) => {}
+                            };
                         }
                     }
                     _ => {
@@ -185,7 +198,7 @@ fn type_check_expr(
                             ctx,
                             &path.seq(i),
                             expr,
-                            binding_ty,
+                            &as_value_type(binding_ty),
                         );
                         i += 1;
                     }
@@ -330,7 +343,7 @@ fn type_check_expr(
                 panic!("expected byte array type");
             };
             assert_eq!(ret_ty.res().len(), 1, "expected byte array type");
-            assert_eq!(mode(ret_ty, SlotId(0)), Mode::Owned);
+            assert_eq!(ret_ty.res()[SlotId(0)].mode(), Mode::Owned);
         }
         Expr::IoOp(IoOp::Output(local)) => {
             assert_all_borrowed(customs, &local.ty);
@@ -340,6 +353,7 @@ fn type_check_expr(
             assert_all_borrowed(customs, &local.ty);
         }
         Expr::ArrayLit(_item_ty, items) => {
+            // TODO: assert the right thing about the item type
             // let item_ty = extract_item_type(ret_ty);
             for item in items {
                 // assert_eq!(item_ty.shape(), item.ty.shape());
@@ -357,6 +371,8 @@ pub fn type_check(interner: &Interner, program: &Program) {
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
     for (func_id, func) in &program.funcs {
+        // println!("-----------------------------");
+        // println!("type checking {}", func_renderer.render(func_id));
         let mut ctx = LocalContext::new();
         ctx.add_local(LocalInfo {
             ty: func.arg_ty.clone(),
@@ -372,7 +388,8 @@ pub fn type_check(interner: &Interner, program: &Program) {
             &mut ctx,
             &annot::FUNC_BODY_PATH(),
             &func.body,
-            &annot::wrap_lts(&func.ret_ty),
+            &wrap_lts(&func.ret_ty),
         );
+        // println!("+++++++++++++++++++++++++++++");
     }
 }

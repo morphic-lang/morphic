@@ -18,9 +18,9 @@ use std::io::{self, Write};
 const TAB_SIZE: usize = 2;
 const CONSTRS_PER_LINE: usize = 10;
 
-type Type<I> = annot::Type<ModeSolution, Lt, I>;
-type Occur = annot::Occur<ModeSolution, Lt>;
-type Expr = annot::Expr<ModeSolution, Lt>;
+type Type<I> = annot::Type<Res<ModeSolution, Lt>, I>;
+type Occur = annot::Occur<Res<ModeSolution, Lt>, CustomTypeId>;
+type Expr = annot::Expr<Res<ModeSolution, Lt>, CustomTypeId, CustomFuncId>;
 
 #[derive(Clone, Debug, Copy)]
 pub struct Context<'a> {
@@ -165,7 +165,7 @@ pub fn write_type<M, L, I: Id + 'static>(
     type_renderer: Option<&CustomTypeRenderer<I>>,
     write_mode: impl Fn(&mut dyn Write, &M) -> io::Result<()>,
     write_lifetime: impl Fn(&mut dyn Write, &L) -> io::Result<()>,
-    type_: &annot::Type<M, L, I>,
+    type_: &annot::Type<Res<M, L>, I>,
 ) -> io::Result<()> {
     write_type_raw(
         w,
@@ -605,7 +605,7 @@ impl<I: Id + 'static> Shape<I> {
 
 pub struct DisplaySolverType<'a, L, I> {
     type_renderer: Option<&'a CustomTypeRenderer<I>>,
-    type_: &'a annot::Type<ModeVar, L, I>,
+    type_: &'a annot::Type<Res<ModeVar, L>, I>,
 }
 
 impl<I: Id + 'static> fmt::Display for DisplaySolverType<'_, Lt, I> {
@@ -638,7 +638,7 @@ impl<I: Id + 'static> fmt::Display for DisplaySolverType<'_, LtParam, I> {
     }
 }
 
-impl<L, I: Id + 'static> annot::Type<ModeVar, L, I> {
+impl<L, I: Id + 'static> annot::Type<Res<ModeVar, L>, I> {
     pub fn display<'a>(&'a self) -> DisplaySolverType<'a, L, I> {
         DisplaySolverType {
             type_renderer: None,
@@ -659,7 +659,7 @@ impl<L, I: Id + 'static> annot::Type<ModeVar, L, I> {
 
 pub struct DisplaySolvedType<'a, L, I> {
     type_renderer: Option<&'a CustomTypeRenderer<I>>,
-    type_: &'a annot::Type<ModeSolution, L, I>,
+    type_: &'a annot::Type<Res<ModeSolution, L>, I>,
 }
 
 impl<I: Id + 'static> fmt::Display for DisplaySolvedType<'_, Lt, I> {
@@ -692,7 +692,7 @@ impl<I: Id + 'static> fmt::Display for DisplaySolvedType<'_, LtParam, I> {
     }
 }
 
-impl<L, I: Id + 'static> annot::Type<ModeSolution, L, I> {
+impl<L, I: Id + 'static> annot::Type<Res<ModeSolution, L>, I> {
     pub fn display<'a>(&'a self) -> DisplaySolvedType<'a, L, I> {
         DisplaySolvedType {
             type_renderer: None,

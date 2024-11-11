@@ -1,9 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast::{
-    enumerate_shapes, iter_shapes, Lt, Mode, Res, ResModes, ShapeInner, SlotId,
-};
-use crate::data::obligation_annot_ast::{self as ob, CustomTypeId, Shape};
+use crate::data::mode_annot_ast::{enumerate_shapes, iter_shapes, Lt, Mode, ShapeInner, SlotId};
+use crate::data::obligation_annot_ast::{self as ob, BindRes, CustomTypeId, Shape, ValueRes};
 use crate::data::rc_annot_ast::{self as annot, Selector};
 use crate::data::rc_specialized_ast::{self as rc, ModeScheme, ModeSchemeId};
 use crate::pretty_print::utils::FuncRenderer;
@@ -59,13 +57,12 @@ type ReleaseInstances = InstanceQueue<ReleaseSpec, ModeSchemeId>;
 
 // We only care about storage modes when creating release plans. We throw out any other modes to
 // avoid duplicate specializations.
-fn prepare_resources(res: &[Res<Mode, Lt>]) -> Vec<Mode> {
-    res.iter()
-        .map(|res| match &res.modes {
-            ResModes::Stack(mode) => *mode,
-            ResModes::Heap(modes) => modes.storage,
-        })
-        .collect()
+fn prepare_value_res(res: &[ValueRes<Lt>]) -> Vec<Mode> {
+    res.iter().map(|res| res.mode()).collect()
+}
+
+fn prepare_bind_res(res: &[BindRes<Lt>]) -> Vec<Mode> {
+    res.iter().map(|res| res.mode()).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -189,7 +186,7 @@ impl RcOpPlan {
         true_: &BTreeSet<SlotId>,
         start: usize,
         shape: &Shape,
-        res: &[Res<Mode, Lt>],
+        res: &[BindRes<Lt>],
     ) -> Self {
         match &*shape.inner {
             ShapeInner::Bool => Self::NoOp,
@@ -242,7 +239,7 @@ impl RcOpPlan {
                 }
             }
             ShapeInner::Array(_) | ShapeInner::HoleArray(_) | ShapeInner::Boxed(_) => {
-                let mode = *res[0].modes.stack_or_storage();
+                let mode = res[0].mode();
                 if true_.contains(&SlotId(start)) && mode == Mode::Owned {
                     Self::LeafOp
                 } else {
@@ -252,7 +249,7 @@ impl RcOpPlan {
         }
     }
 
-    fn from_selector(customs: &annot::CustomTypes, ty: &ob::Type, sel: &Selector) -> Self {
+    fn from_selector(customs: &annot::CustomTypes, ty: &ob::BindType, sel: &Selector) -> Self {
         debug_assert_eq!(ty.shape(), &sel.shape);
         Self::from_selector_impl(customs, &sel.true_, 0, &sel.shape, ty.res().as_slice())
     }
@@ -267,7 +264,7 @@ fn build_plan(
     rc_op: annot::RcOp,
     root_id: rc::LocalId,
     root_shape: &Shape,
-    root_res: &[Res<Mode, Lt>],
+    root_res: &[BindRes<Lt>],
     plan: &RcOpPlan,
     builder: &mut LetManyBuilder,
 ) -> rc::LocalId {
@@ -275,7 +272,7 @@ fn build_plan(
         RcOpPlan::NoOp => builder.add_binding(rc::Type::Tuple(vec![]), rc::Expr::Tuple(vec![])),
 
         RcOpPlan::LeafOp => {
-            let scheme = make_scheme(insts, &root_shape, &prepare_resources(root_res));
+            let scheme = make_scheme(insts, &root_shape, &prepare_bind_res(root_res));
             let rc_op = match rc_op {
                 annot::RcOp::Retain => rc::RcOp::Retain,
                 annot::RcOp::Release => rc::RcOp::Release,
@@ -373,7 +370,7 @@ fn build_plan(
 
 #[derive(Clone, Debug)]
 struct LocalInfo {
-    old_ty: ob::Type,
+    old_ty: ob::BindType,
     new_ty: rc::Type,
     new_id: rc::LocalId,
 }
@@ -512,7 +509,7 @@ fn lower_expr(
             let output_scheme = make_scheme(
                 insts,
                 &output_ty.shape(),
-                &prepare_resources(output_ty.res().as_slice()),
+                &prepare_value_res(output_ty.res().as_slice()),
             );
             rc::Expr::WrapBoxed(new_id(ctx, &content), output_scheme)
         }
@@ -520,12 +517,12 @@ fn lower_expr(
             let input_scheme = make_scheme(
                 insts,
                 &wrapped.ty.shape(),
-                &prepare_resources(wrapped.ty.res().as_slice()),
+                &prepare_value_res(wrapped.ty.res().as_slice()),
             );
             let output_scheme = make_scheme(
                 insts,
                 &output_ty.shape(),
-                &prepare_resources(output_ty.res().as_slice()),
+                &prepare_value_res(output_ty.res().as_slice()),
             );
             rc::Expr::UnwrapBoxed(new_id(ctx, &wrapped), input_scheme, output_scheme)
         }
@@ -540,7 +537,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &arr.ty.shape(),
-                &prepare_resources(arr.ty.res().as_slice()),
+                &prepare_value_res(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
@@ -551,7 +548,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &arr.ty.shape(),
-                &prepare_resources(arr.ty.res().as_slice()),
+                &prepare_value_res(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
@@ -562,7 +559,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &arr.ty.shape(),
-                &prepare_resources(arr.ty.res().as_slice()),
+                &prepare_value_res(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(scheme, rc::ArrayOp::Len(new_id(ctx, &arr)))
         }
@@ -570,7 +567,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &arr.ty.shape(),
-                &prepare_resources(arr.ty.res().as_slice()),
+                &prepare_value_res(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
@@ -581,7 +578,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &arr.ty.shape(),
-                &prepare_resources(arr.ty.res().as_slice()),
+                &prepare_value_res(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(scheme, rc::ArrayOp::Pop(new_id(ctx, &arr)))
         }
@@ -589,7 +586,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &arr.ty.shape(),
-                &prepare_resources(arr.ty.res().as_slice()),
+                &prepare_value_res(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
@@ -600,7 +597,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &arr.ty.shape(),
-                &prepare_resources(arr.ty.res().as_slice()),
+                &prepare_value_res(arr.ty.res().as_slice()),
             );
             rc::Expr::ArrayOp(
                 scheme,
@@ -612,7 +609,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &local.ty.shape(),
-                &prepare_resources(local.ty.res().as_slice()),
+                &prepare_value_res(local.ty.res().as_slice()),
             );
             rc::Expr::IoOp(rc::IoOp::Output(scheme, new_id(ctx, &local)))
         }
@@ -620,7 +617,7 @@ fn lower_expr(
             let input_scheme = make_scheme(
                 insts,
                 &msg.ty.shape(),
-                &prepare_resources(msg.ty.res().as_slice()),
+                &prepare_value_res(msg.ty.res().as_slice()),
             );
             rc::Expr::Panic(lower_type(&ret_ty.shape()), input_scheme, new_id(ctx, &msg))
         }
@@ -628,7 +625,7 @@ fn lower_expr(
             let scheme = make_scheme(
                 insts,
                 &item_ty.shape(),
-                &prepare_resources(item_ty.res().as_slice()),
+                &prepare_value_res(item_ty.res().as_slice()),
             );
             rc::Expr::ArrayLit(
                 scheme,

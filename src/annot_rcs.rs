@@ -1,9 +1,12 @@
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast::{self as annot, LocalLt, Lt, Mode, Path, ShapeInner, SlotId};
-use crate::data::obligation_annot_ast::{self as ob, CustomTypeId, Shape, Type};
+use crate::data::mode_annot_ast::{self as annot, LocalLt, Lt, Path, Position, ShapeInner, SlotId};
+use crate::data::obligation_annot_ast::{
+    self as ob, as_value_type, wrap_lts, BindRes, BindType, CustomTypeId, Shape, Type, ValueRes,
+};
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, Occur, RcOp, Selector};
 use crate::pretty_print::utils::FuncRenderer;
+use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
@@ -13,7 +16,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug)]
 struct Builder {
     num_locals: Count<LocalId>,
-    bindings: Vec<(Type, Expr, Metadata)>,
+    bindings: Vec<(BindType, Expr, Metadata)>,
 }
 
 impl Builder {
@@ -24,13 +27,13 @@ impl Builder {
         }
     }
 
-    pub fn add_binding(&mut self, ty: Type, expr: Expr) -> LocalId {
+    pub fn add_binding(&mut self, ty: BindType, expr: Expr) -> LocalId {
         self.add_binding_with_metadata(ty, expr, Metadata::default())
     }
 
     pub fn add_binding_with_metadata(
         &mut self,
-        ty: Type,
+        ty: BindType,
         expr: Expr,
         metadata: Metadata,
     ) -> LocalId {
@@ -52,61 +55,65 @@ impl Builder {
 type Interner = annot::Interner<CustomTypeId>;
 type Context = LocalContext<guard::LocalId, LocalInfo>;
 
-fn assert_transition_ok(src_mode: Mode, dst_mode: Mode) {
-    debug_assert!(
-        !(src_mode == Mode::Borrowed && dst_mode == Mode::Owned),
-        "borrowed to owned transitions should be prevented by constraint generation"
-    );
-}
+fn select_dups(
+    customs: &ob::CustomTypes,
+    path: &Path,
+    bind_ty: &BindType,
+    use_ty: &Type,
+) -> Selector {
+    debug_assert_eq!(bind_ty.shape(), use_ty.shape());
+    let mut result = Selector::none(bind_ty.shape());
+    for slot in bind_ty.shape().top_level_slots(customs.view_shapes()) {
+        match (&bind_ty.res()[slot], &use_ty.res()[slot]) {
+            (BindRes::StackOwned(lt), ValueRes::Owned) => {
+                if !lt.cmp_path(path).leq() {
+                    result.insert(slot);
+                }
+            }
 
-fn should_dup(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
-    assert_transition_ok(src_mode, dst_mode);
-    // println!("{} <? {}", lt.display(), path.display());
-    dst_mode == Mode::Owned && !lt.cmp_path(path).leq()
-}
+            // do nothing: the binding is used as borrowed
+            (BindRes::StackOwned(_), ValueRes::Borrowed(_)) => {}
+            (BindRes::Borrowed(_), ValueRes::Borrowed(_)) => {}
 
-fn select_dups(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &Type) -> Selector {
-    debug_assert_eq!(src_ty.shape(), dst_ty.shape());
+            (BindRes::HeapOwned, ValueRes::Owned) | (BindRes::HeapOwned, ValueRes::Borrowed(_)) => {
+                unimplemented!("top-level slots should never have heap resources")
+            }
 
-    let mut result = Selector::none(src_ty.shape());
-    for (slot, lt) in src_ty.stack_lt(customs.view_shapes()) {
-        let src_mode = *src_ty.res()[slot].modes.unwrap_stack();
-        let dst_mode = *dst_ty.res()[slot].modes.unwrap_stack();
-
-        if should_dup(path, src_mode, dst_mode, lt) {
-            // {
-            //     let cmp = lt.cmp_path(path);
-            //     if cmp == Cmp::Suffix || cmp == Cmp::Prefix {
-            //         println!(
-            //             "should_dup: path: {}, src_ty: {}, dst_ty: {}, lt: {}",
-            //             path.display(),
-            //             src_ty.display(),
-            //             dst_ty.display(),
-            //             lt.display(),
-            //         );
-            //     }
-            // }
-            result.insert(slot);
+            (BindRes::Borrowed(_), ValueRes::Owned) => {
+                unimplemented!("forbidden by mode constraint generation")
+            }
         }
     }
     result
 }
 
-fn should_move(path: &Path, src_mode: Mode, dst_mode: Mode, lt: &Lt) -> bool {
-    assert_transition_ok(src_mode, dst_mode);
-    dst_mode == Mode::Owned && lt.cmp_path(path).leq()
-}
+fn select_moves(
+    customs: &ob::CustomTypes,
+    path: &Path,
+    bind_ty: &BindType,
+    use_ty: &Type,
+) -> Selector {
+    debug_assert_eq!(bind_ty.shape(), use_ty.shape());
+    let mut result = Selector::none(bind_ty.shape());
+    for slot in bind_ty.shape().top_level_slots(customs.view_shapes()) {
+        match (&bind_ty.res()[slot], &use_ty.res()[slot]) {
+            (BindRes::StackOwned(lt), ValueRes::Owned) => {
+                if lt.cmp_path(path).leq() {
+                    result.insert(slot);
+                }
+            }
 
-fn select_moves(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &Type) -> Selector {
-    debug_assert_eq!(src_ty.shape(), dst_ty.shape());
+            // do nothing: the binding is used as borrowed
+            (BindRes::StackOwned(_), ValueRes::Borrowed(_)) => {}
+            (BindRes::Borrowed(_), ValueRes::Borrowed(_)) => {}
 
-    let mut result = Selector::none(src_ty.shape());
-    for (slot, lt) in src_ty.stack_lt(customs.view_shapes()) {
-        let src_mode = *src_ty.res()[slot].modes.unwrap_stack();
-        let dst_mode = *dst_ty.res()[slot].modes.unwrap_stack();
+            (BindRes::HeapOwned, ValueRes::Owned) | (BindRes::HeapOwned, ValueRes::Borrowed(_)) => {
+                unimplemented!("top-level slots should never have heap resources")
+            }
 
-        if should_move(path, src_mode, dst_mode, lt) {
-            result.insert(slot);
+            (BindRes::Borrowed(_), ValueRes::Owned) => {
+                unimplemented!("forbidden by mode constraint generation")
+            }
         }
     }
     result
@@ -115,8 +122,11 @@ fn select_moves(customs: &ob::CustomTypes, path: &Path, src_ty: &Type, dst_ty: &
 fn select_owned(customs: &ob::CustomTypes, ty: &Type) -> Selector {
     let mut result = Selector::none(&ty.shape());
     for slot in ty.shape().top_level_slots(customs.view_shapes()) {
-        if *ty.res()[slot].modes.unwrap_stack() == Mode::Owned {
-            result.insert(slot);
+        match &ty.res()[slot] {
+            ValueRes::Owned => {
+                result.insert(slot);
+            }
+            ValueRes::Borrowed(_) => {}
         }
     }
     result
@@ -130,7 +140,10 @@ fn build_rc_op(
     builder: &mut Builder,
 ) {
     if slots.nonempty() {
-        builder.add_binding(Type::unit(interner), rc::Expr::RcOp(op, slots, target));
+        builder.add_binding(
+            annot::Type::unit(interner),
+            rc::Expr::RcOp(op, slots, target),
+        );
     }
 }
 
@@ -378,12 +391,17 @@ fn register_drops_for_binding(
     interner: &Interner,
     customs: &ob::CustomTypes,
     drops: &mut BodyDrops,
-    binding_ty: &Type,
+    binding_ty: &BindType,
     binding_id: guard::LocalId,
     binding_path: &Path,
 ) {
     let binding_path = Lazy::new(|| binding_path.as_local_lt(interner));
-    for (slot, lt) in binding_ty.stack_lt(customs.view_shapes()) {
+    for slot in binding_ty.shape().top_level_slots(customs.view_shapes()) {
+        let lt = match &binding_ty.res()[slot] {
+            BindRes::StackOwned(lt) => lt,
+            BindRes::HeapOwned => unreachable!("top-level slots should never have heap resources"),
+            BindRes::Borrowed(lt) => lt,
+        };
         match lt {
             Lt::Join(_) => {
                 // The binding escapes. Don't drop it.
@@ -453,7 +471,12 @@ fn drops_for_func(interner: &Interner, customs: &ob::CustomTypes, func: &ob::Fun
     let mut arg_drops = Selector::none(&func.arg_ty.shape());
     let mut body_drops = empty_drops(&func.body);
 
-    for (slot, lt) in func.arg_ty.stack_lt(customs.view_shapes()) {
+    for slot in func.arg_ty.shape().top_level_slots(customs.view_shapes()) {
+        let lt = match &func.arg_ty.res()[slot] {
+            BindRes::StackOwned(lt) => lt,
+            BindRes::HeapOwned => unreachable!("top-level slots should never have heap resources"),
+            BindRes::Borrowed(lt) => lt,
+        };
         match lt {
             Lt::Join(_) => {
                 // The function argument escapes. Don't drop it.
@@ -493,7 +516,7 @@ fn drops_for_func(interner: &Interner, customs: &ob::CustomTypes, func: &ob::Fun
 #[derive(Clone, Debug)]
 struct LocalInfo {
     new_id: LocalId,
-    ty: Type,
+    ty: BindType,
 }
 
 #[derive(Clone, Debug)]
@@ -548,12 +571,6 @@ fn annot_occur(
     };
 
     let dups = select_dups(customs, path, &binding.ty, &new_occur.ty);
-    // println!(
-    //     "annotating occur: %{} as {}",
-    //     new_occur.id.0,
-    //     new_occur.ty.display()
-    // );
-    // println!("dups: {}", dups.display());
     build_rc_op(interner, RcOp::Retain, dups, new_occur.id, builder);
 
     let moves = select_moves(customs, path, &binding.ty, &new_occur.ty);
@@ -573,6 +590,24 @@ fn unwrap_item(ty: &Type) -> Type {
     )
 }
 
+// XXX: Anywhere we call this function is a bit of a hack.
+fn add_unused_stack_lts(customs: &ob::CustomTypes, ty: &Type) -> BindType {
+    let pos = ty.shape().positions(&customs.types, &customs.sccs);
+    let res = ty
+        .res()
+        .values()
+        .zip_eq(pos.iter())
+        .map(|(res, pos)| match res {
+            ValueRes::Owned => match pos {
+                Position::Stack => BindRes::StackOwned(Lt::Empty),
+                Position::Heap => BindRes::HeapOwned,
+            },
+            ValueRes::Borrowed(lt) => BindRes::Borrowed(lt.clone()),
+        })
+        .collect();
+    BindType::new(ty.shape().clone(), IdVec::from_vec(res))
+}
+
 fn annot_expr(
     func: ob::CustomFuncId,
     interner: &Interner,
@@ -580,7 +615,7 @@ fn annot_expr(
     ctx: &mut Context,
     path: &Path,
     expr: ob::Expr,
-    ret_ty: &Type,
+    ret_ty: &BindType,
     metadata: Metadata,
     drops: Option<&BodyDrops>,
     builder: &mut Builder,
@@ -695,7 +730,7 @@ fn annot_expr(
 
                 let final_local = Occur {
                     id: final_id,
-                    ty: ret_ty.clone(),
+                    ty: as_value_type(ret_ty),
                 };
                 (case_builder.to_expr(final_local), moves)
             };
@@ -773,8 +808,9 @@ fn annot_expr(
 
             let (new_wrapped, moves) = annot_occur(interner, customs, ctx, path, wrapped, builder);
 
+            let binding_ty = add_unused_stack_lts(customs, &output_ty);
             let unwrap_op = rc::Expr::UnwrapBoxed(new_wrapped, output_ty);
-            let unwrap_id = builder.add_binding(ret_ty.clone(), unwrap_op);
+            let unwrap_id = builder.add_binding(binding_ty, unwrap_op);
 
             build_rc_op(interner, RcOp::Retain, item_retains, unwrap_id, builder);
             return (unwrap_id, moves);
@@ -805,7 +841,7 @@ fn annot_expr(
             moves.merge(moves2);
 
             let get_op = rc::Expr::ArrayOp(rc::ArrayOp::Get(new_arr, new_idx));
-            let get_id = builder.add_binding(ret_ty, get_op);
+            let get_id = builder.add_binding(add_unused_stack_lts(customs, &ret_ty), get_op);
 
             build_rc_op(interner, RcOp::Retain, item_retains, get_id, builder);
             return (get_id, moves);
@@ -928,7 +964,6 @@ fn annot_func(
     func_id: ob::CustomFuncId,
     func: ob::FuncDef,
 ) -> rc::FuncDef {
-    // println!("annot_func: func: {}", func_renderer.render(func_id));
     let drops = drops_for_func(interner, customs, &func);
 
     let mut ctx = Context::new();
@@ -946,7 +981,7 @@ fn annot_func(
         &mut builder,
     );
 
-    let ret_ty = annot::wrap_lts(&func.ret_ty);
+    let ret_ty = wrap_lts(&func.ret_ty);
 
     let (ret_id, _) = annot_expr(
         func_id,
@@ -955,7 +990,7 @@ fn annot_func(
         &mut ctx,
         &annot::FUNC_BODY_PATH(),
         func.body,
-        &ret_ty,
+        &add_unused_stack_lts(customs, &ret_ty),
         Metadata::default(),
         drops.body_drops.as_ref(),
         &mut builder,
@@ -988,8 +1023,6 @@ pub fn annot_rcs(
             .funcs
             .into_iter()
             .map(|(func_id, func)| {
-                // println!("--------------------------------------");
-                // println!("annot_rcs: func: {}", func_renderer.render(func_id));
                 let annot = annot_func(
                     interner,
                     &func_renderer,
@@ -997,7 +1030,6 @@ pub fn annot_rcs(
                     func_id,
                     func,
                 );
-                // println!("++++++++++++++++++++++++++++++++++++++");
                 progress.update(1);
                 annot
             })

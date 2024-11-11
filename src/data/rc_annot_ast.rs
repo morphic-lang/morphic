@@ -115,7 +115,7 @@ pub enum IoOp {
 pub enum Expr {
     Local(Occur),
     Call(Purity, ob::CustomFuncId, Occur),
-    LetMany(Vec<(ob::Type, Expr, Metadata)>, Occur),
+    LetMany(Vec<(ob::BindType, Expr, Metadata)>, Occur),
 
     If(Occur, Box<Expr>, Box<Expr>),
     CheckVariant(first_ord::VariantId, Occur), // Returns a bool
@@ -164,7 +164,7 @@ pub enum Expr {
 
 pub struct FuncDef {
     pub purity: Purity,
-    pub arg_ty: ob::Type,
+    pub arg_ty: ob::BindType,
     pub ret_ty: ob::RetType,
 
     pub body: Expr,

@@ -777,7 +777,7 @@ fn unwrap_array_content<'a>(
     match &mut heap[ptr] {
         Value::ArrayContent(rc, content) => {
             if *rc <= 0 {
-                stacktrace.panic("accessing rc {} array");
+                stacktrace.panic(format!["accessing rc {rc} array"]);
             } else {
                 content
             }

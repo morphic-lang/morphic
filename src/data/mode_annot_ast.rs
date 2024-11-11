@@ -9,6 +9,7 @@ use crate::data::first_order_ast::{self as first_ord, CustomTypeId};
 use crate::data::flat_ast as flat;
 use crate::data::guarded_ast::{self as guard, CanGuard, RecipeContent};
 use crate::data::guarded_ast::{self as guarded, UnfoldRecipe};
+use crate::data::intrinsics as intrs;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
 use crate::data::profile as prof;
@@ -263,8 +264,8 @@ pub enum Mode {
     Owned,
 }
 
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Mode::Borrowed => write!(f, "&"),
             Mode::Owned => write!(f, "*"),
@@ -386,12 +387,10 @@ pub struct Shape<I> {
     pub num_slots: usize,
 }
 
-pub type ShapeFo = Shape<first_ord::CustomTypeId>;
-
-impl ShapeFo {
+impl Shape<CustomTypeId> {
     pub fn from_guarded<'a>(
-        interner: &Interner<first_ord::CustomTypeId>,
-        customs: &IdVec<first_ord::CustomTypeId, CustomTypeDefFo>,
+        interner: &Interner<CustomTypeId>,
+        customs: &IdVec<CustomTypeId, CustomTypeDef<CustomTypeId, flat::CustomTypeSccId>>,
         ty: &guard::Type,
     ) -> Self {
         match ty {
@@ -460,6 +459,28 @@ impl<I: Id + 'static> Shape<I> {
         Self {
             inner: interner.shape.new(ShapeInner::Bool),
             num_slots: 0,
+        }
+    }
+
+    pub fn from_intr(interner: &Interner<I>, type_: &intrs::Type) -> Self {
+        match type_ {
+            intrs::Type::Bool => Shape {
+                inner: interner.shape.new(ShapeInner::Bool),
+                num_slots: 0,
+            },
+            intrs::Type::Num(num_type) => Shape {
+                inner: interner.shape.new(ShapeInner::Num(*num_type)),
+                num_slots: 0,
+            },
+            intrs::Type::Tuple(items) => Shape {
+                inner: interner.shape.new(ShapeInner::Tuple(
+                    items
+                        .iter()
+                        .map(|ty| Shape::from_intr(interner, ty))
+                        .collect(),
+                )),
+                num_slots: 0,
+            },
         }
     }
 
@@ -625,15 +646,13 @@ impl<'a, M, L> Iterator for FlatIter<'a, M, L> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Type<M, L, I> {
+pub struct Type<R, I> {
     shape: Shape<I>,
-    res: IdVec<SlotId, Res<M, L>>,
+    res: IdVec<SlotId, R>,
 }
 
-pub type TypeFo<M, L> = Type<M, L, first_ord::CustomTypeId>;
-
-impl<M, L, I: Id + 'static> Type<M, L, I> {
-    pub fn new(shape: Shape<I>, res: IdVec<SlotId, Res<M, L>>) -> Self {
+impl<R, I: Id + 'static> Type<R, I> {
+    pub fn new(shape: Shape<I>, res: IdVec<SlotId, R>) -> Self {
         debug_assert_eq!(shape.num_slots, res.len());
         Type { shape, res }
     }
@@ -652,22 +671,31 @@ impl<M, L, I: Id + 'static> Type<M, L, I> {
         }
     }
 
+    pub fn from_intr(interner: &Interner<I>, ty: &intrs::Type) -> Self {
+        Type {
+            shape: Shape::from_intr(interner, ty),
+            res: IdVec::new(),
+        }
+    }
+
     pub fn shape(&self) -> &Shape<I> {
         &self.shape
     }
 
-    pub fn res(&self) -> &IdVec<SlotId, Res<M, L>> {
+    pub fn res(&self) -> &IdVec<SlotId, R> {
         &self.res
     }
 
-    pub fn res_mut(&mut self) -> &mut IdVec<SlotId, Res<M, L>> {
+    pub fn res_mut(&mut self) -> &mut IdVec<SlotId, R> {
         &mut self.res
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Res<M, L>> {
+    pub fn iter(&self) -> impl Iterator<Item = &R> {
         self.res.values()
     }
+}
 
+impl<M, L, I: Id + 'static> Type<Res<M, L>, I> {
     pub fn iter_modes(&self) -> impl Iterator<Item = &ResModes<M>> {
         self.iter().map(|res| &res.modes)
     }
@@ -681,16 +709,6 @@ impl<M, L, I: Id + 'static> Type<M, L, I> {
             state: FlatIterState::YieldInner,
             inner_iter: self.res.values(),
         }
-    }
-
-    pub fn stack_lt<'a>(
-        &self,
-        customs: impl MapRef<'a, I, Shape<I>>,
-    ) -> impl Iterator<Item = (SlotId, &L)> {
-        self.shape
-            .top_level_slots(customs)
-            .into_iter()
-            .map(|slot| (slot, &self.res[slot].lt))
     }
 }
 
@@ -790,38 +808,13 @@ pub fn iter_shapes_mut<'a, T, I>(
     enumerate_shapes_mut(shapes, res).map(|(shape, _, res)| (shape, res))
 }
 
-pub fn join_everywhere<M: Clone, I: Id + 'static>(
-    interner: &Interner<I>,
-    ty: &Type<M, Lt, I>,
-    new_lt: &Lt,
-) -> Type<M, Lt, I> {
-    let f = |res: &Res<M, Lt>| Res {
-        modes: res.modes.clone(),
-        lt: res.lt.join(interner, new_lt),
-    };
-    Type::new(
-        ty.shape().clone(),
-        IdVec::from_vec(ty.iter().map(f).collect()),
-    )
-}
-
-pub fn lt_equiv<M, I: Id + 'static>(ty1: &Type<M, Lt, I>, ty2: &Type<M, Lt, I>) -> bool {
-    debug_assert!(ty1.shape() == ty2.shape());
-    ty1.iter()
-        .zip_eq(ty2.iter())
-        .all(|(res1, res2)| res1.lt == res2.lt)
-}
-
 pub fn nth_res_bounds<I>(shapes: &[Shape<I>], n: usize) -> (usize, usize) {
     let start = shapes.iter().map(|shape| shape.num_slots).take(n).sum();
     let end = start + shapes[n].num_slots;
     (start, end)
 }
 
-pub fn split_shapes<M: Clone, L: Clone, I: Id + 'static>(
-    shapes: &[Shape<I>],
-    res: &[Res<M, L>],
-) -> Vec<Type<M, L, I>> {
+pub fn split_shapes<R: Clone, I: Id + 'static>(shapes: &[Shape<I>], res: &[R]) -> Vec<Type<R, I>> {
     iter_shapes(shapes, res)
         .map(|(shape, res)| {
             Type::new(
@@ -832,18 +825,16 @@ pub fn split_shapes<M: Clone, L: Clone, I: Id + 'static>(
         .collect()
 }
 
-pub fn elim_tuple<'a, M: Clone, L: Clone, I: Id + 'static>(
-    ty: &Type<M, L, I>,
-) -> Vec<Type<M, L, I>> {
+pub fn elim_tuple<'a, R: Clone, I: Id + 'static>(ty: &Type<R, I>) -> Vec<Type<R, I>> {
     let ShapeInner::Tuple(shapes) = &*ty.shape().inner else {
         panic!("expected `Tuple` type");
     };
     split_shapes(shapes, ty.res().as_slice())
 }
 
-pub fn elim_variants<'a, M: Clone, L: Clone, I: Id + 'static>(
-    ty: &Type<M, L, I>,
-) -> IdVec<first_ord::VariantId, Type<M, L, I>> {
+pub fn elim_variants<'a, R: Clone, I: Id + 'static>(
+    ty: &Type<R, I>,
+) -> IdVec<first_ord::VariantId, Type<R, I>> {
     let ShapeInner::Variants(shapes) = &*ty.shape().inner else {
         panic!("expected `Tuple` type");
     };
@@ -852,10 +843,7 @@ pub fn elim_variants<'a, M: Clone, L: Clone, I: Id + 'static>(
     IdVec::from_vec(result)
 }
 
-pub fn elim_box_like<M: Clone, L: Clone, I: Id + 'static>(
-    item: &Shape<I>,
-    res: &[Res<M, L>],
-) -> (Res<M, L>, Type<M, L, I>) {
+pub fn elim_box_like<R: Clone, I: Id + 'static>(item: &Shape<I>, res: &[R]) -> (R, Type<R, I>) {
     (
         res[0].clone(),
         Type::new(
@@ -865,18 +853,14 @@ pub fn elim_box_like<M: Clone, L: Clone, I: Id + 'static>(
     )
 }
 
-pub fn elim_array<M: Clone, L: Clone, I: Id + 'static>(
-    ty: &Type<M, L, I>,
-) -> (Res<M, L>, Type<M, L, I>) {
+pub fn elim_array<R: Clone, I: Id + 'static>(ty: &Type<R, I>) -> (R, Type<R, I>) {
     let ShapeInner::Array(shape) = &*ty.shape().inner else {
         panic!("expected `Array` type");
     };
     elim_box_like(shape, ty.res().as_slice())
 }
 
-pub fn elim_boxed<M: Clone, L: Clone, I: Id + 'static>(
-    ty: &Type<M, L, I>,
-) -> (Res<M, L>, Type<M, L, I>) {
+pub fn elim_boxed<R: Clone, I: Id + 'static>(ty: &Type<R, I>) -> (R, Type<R, I>) {
     let ShapeInner::Boxed(shape) = &*ty.shape().inner else {
         panic!("expected `Boxed` type");
     };
@@ -889,81 +873,6 @@ pub fn arg_path(path: &Path, arg_idx: usize, num_args: usize) -> Path {
     } else {
         path.clone()
     }
-}
-
-pub fn bind_lts<M, I: Id + 'static>(
-    interner: &Interner<I>,
-    ty1: &Type<M, LtParam, I>,
-    ty2: &Type<M, Lt, I>,
-) -> BTreeMap<LtParam, Lt> {
-    debug_assert!(ty1.shape() == ty2.shape());
-    let mut result = BTreeMap::new();
-    for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
-        result
-            .entry(res1.lt)
-            .and_modify(|old: &mut Lt| *old = old.join(interner, &res2.lt))
-            .or_insert_with(|| res2.lt.clone());
-    }
-    result
-}
-
-pub fn subst_lts<M: Clone, I: Id + 'static>(
-    interner: &Interner<I>,
-    ty: &Type<M, Lt, I>,
-    subst: &BTreeMap<LtParam, Lt>,
-) -> Type<M, Lt, I> {
-    let f = |res: &Res<M, Lt>| {
-        let modes = res.modes.clone();
-        let lt = match &res.lt {
-            Lt::Empty => Lt::Empty,
-            Lt::Local(lt) => Lt::Local(lt.clone()),
-            Lt::Join(params) => params
-                .iter()
-                .map(|p| &subst[p])
-                .fold(Lt::Empty, |lt1, lt2| lt1.join(interner, lt2)),
-        };
-        Res { modes, lt }
-    };
-    Type::new(
-        ty.shape().clone(),
-        IdVec::from_vec(ty.iter().map(f).collect()),
-    )
-}
-
-/// Our analysis makes the following approximation: from the perspective of a function's caller all
-/// accesses the callee makes to its arguments happen at the same time. To implement this behavior,
-/// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
-/// current path. Even if we didn't make this approximation, we would have to somehow relativize the
-/// local lifetimes in the argument since they are not meaningful in the caller's scope.
-pub fn prepare_arg_type<M: Clone, I: Id + 'static>(
-    interner: &Interner<I>,
-    path: &Path,
-    ty: &Type<M, Lt, I>,
-) -> Type<M, Lt, I> {
-    let f = |res: &Res<M, Lt>| {
-        let modes = res.modes.clone();
-        let lt = match &res.lt {
-            Lt::Empty => Lt::Empty,
-            Lt::Local(_) => path.as_lt(interner),
-            Lt::Join(vars) => Lt::Join(vars.clone()),
-        };
-        Res { modes, lt }
-    };
-    Type::new(
-        ty.shape().clone(),
-        IdVec::from_vec(ty.res().values().map(f).collect()),
-    )
-}
-
-pub fn wrap_lts<M: Clone, I: Id + 'static>(ty: &Type<M, LtParam, I>) -> Type<M, Lt, I> {
-    let f = |res: &Res<M, LtParam>| Res {
-        modes: res.modes.clone(),
-        lt: Lt::Join(NonEmptySet::new(res.lt)),
-    };
-    Type::new(
-        ty.shape().clone(),
-        IdVec::from_vec(ty.iter().map(f).collect()),
-    )
 }
 
 fn extract_custom_content<I: Id + 'static>(interner: &Interner<I>, shape: &Shape<I>) -> Shape<I> {
@@ -1028,14 +937,14 @@ fn extract_custom_content<I: Id + 'static>(interner: &Interner<I>, shape: &Shape
     }
 }
 
-fn unfold_impl<M: Clone, L: Clone, I: Id + 'static, J: Id>(
+fn unfold_impl<R: Clone, I: Id + 'static, J: Id>(
     interner: &Interner<I>,
     customs: &IdVec<I, CustomTypeDef<I, J>>,
     sccs: &Sccs<J, I>,
     recipe: &RecipeContent<I>,
     shape: &Shape<I>,
-    res: &[Res<M, L>],
-    out_res: &mut IdVec<SlotId, Res<M, L>>,
+    res: &[R],
+    out_res: &mut IdVec<SlotId, R>,
 ) -> Shape<I> {
     match (&*shape.inner, recipe) {
         (ShapeInner::Bool, RecipeContent::Bool) => {
@@ -1146,13 +1055,13 @@ fn unfold_impl<M: Clone, L: Clone, I: Id + 'static, J: Id>(
     }
 }
 
-pub fn unfold<M: Clone, L: Clone, I: Id + 'static, J: Id>(
+pub fn unfold<R: Clone, I: Id + 'static, J: Id>(
     interner: &Interner<I>,
     customs: &IdVec<I, CustomTypeDef<I, J>>,
     sccs: &Sccs<J, I>,
     recipe: &UnfoldRecipe<I>,
-    ty: &Type<M, L, I>,
-) -> Type<M, L, I> {
+    ty: &Type<R, I>,
+) -> Type<R, I> {
     let mut res = IdVec::new();
     let shape = match recipe {
         UnfoldRecipe::UnfoldThenRecurse(recipe) => {
@@ -1184,99 +1093,91 @@ pub fn unfold<M: Clone, L: Clone, I: Id + 'static, J: Id>(
 }
 
 #[derive(Clone, Debug)]
-pub struct Occur<M, L> {
+pub struct Occur<R, I> {
     pub id: guard::LocalId,
-    pub ty: Type<M, L, first_ord::CustomTypeId>,
+    pub ty: Type<R, I>,
 }
 
 #[derive(Clone, Debug)]
-pub enum ArrayOp<M, L> {
+pub enum ArrayOp<R, I> {
     Get(
-        Occur<M, L>,                         // Array
-        Occur<M, L>,                         // Index
-        Type<M, L, first_ord::CustomTypeId>, // Return type; needed for retain insertion
+        Occur<R, I>, // Array
+        Occur<R, I>, // Index
+        Type<R, I>,  // Return type; needed for retain insertion
     ), // Returns item
     Extract(
-        Occur<M, L>, // Array
-        Occur<M, L>, // Index
+        Occur<R, I>, // Array
+        Occur<R, I>, // Index
     ), // Returns tuple (item, hole array)
     Len(
-        Occur<M, L>, // Array
+        Occur<R, I>, // Array
     ), // Returns int
     Push(
-        Occur<M, L>, // Array
-        Occur<M, L>, // Item
+        Occur<R, I>, // Array
+        Occur<R, I>, // Item
     ), // Returns new array
     Pop(
-        Occur<M, L>, // Array
+        Occur<R, I>, // Array
     ), // Returns tuple (array, item)
     Replace(
-        Occur<M, L>, // Hole array
-        Occur<M, L>, // Item
+        Occur<R, I>, // Hole array
+        Occur<R, I>, // Item
     ), // Returns new array
     Reserve(
-        Occur<M, L>, // Array
-        Occur<M, L>, // Capacity
+        Occur<R, I>, // Array
+        Occur<R, I>, // Capacity
     ), // Returns new array
 }
 
 #[derive(Clone, Debug)]
-pub enum IoOp<M, L> {
+pub enum IoOp<R, I> {
     // Returns array of bytes
     Input,
     // Takes array of bytes, returns unit
-    Output(Occur<M, L>),
+    Output(Occur<R, I>),
 }
 
 #[derive(Clone, Debug)]
-pub enum Expr<M, L> {
-    Local(Occur<M, L>),
-    Call(Purity, first_ord::CustomFuncId, Occur<M, L>),
+pub enum Expr<R, I, J> {
+    Local(Occur<R, I>),
+    Call(Purity, J, Occur<R, I>),
     LetMany(
-        Vec<(TypeFo<M, L>, Expr<M, L>, Metadata)>, // Bound values. Each is assigned a new sequential `LocalId`
-        Occur<M, L>,                               // Result
+        Vec<(Type<R, I>, Expr<R, I, J>, Metadata)>, // Bound values. Each is assigned a new sequential `LocalId`
+        Occur<R, I>,                                // Result
     ),
 
-    If(Occur<M, L>, Box<Expr<M, L>>, Box<Expr<M, L>>),
-    CheckVariant(first_ord::VariantId, Occur<M, L>), // Returns a bool
-    Unreachable(TypeFo<M, L>),
+    If(Occur<R, I>, Box<Expr<R, I, J>>, Box<Expr<R, I, J>>),
+    CheckVariant(first_ord::VariantId, Occur<R, I>), // Returns a bool
+    Unreachable(Type<R, I>),
 
-    Tuple(Vec<Occur<M, L>>),
-    TupleField(Occur<M, L>, usize),
+    Tuple(Vec<Occur<R, I>>),
+    TupleField(Occur<R, I>, usize),
     WrapVariant(
-        IdVec<first_ord::VariantId, TypeFo<M, L>>,
+        IdVec<first_ord::VariantId, Type<R, I>>,
         first_ord::VariantId,
-        Occur<M, L>,
+        Occur<R, I>,
     ),
-    UnwrapVariant(first_ord::VariantId, Occur<M, L>),
+    UnwrapVariant(first_ord::VariantId, Occur<R, I>),
     WrapBoxed(
-        Occur<M, L>,
-        TypeFo<M, L>, // Output type
+        Occur<R, I>,
+        Type<R, I>, // Output type
     ),
     UnwrapBoxed(
-        Occur<M, L>,
-        TypeFo<M, L>, // Output type
+        Occur<R, I>,
+        Type<R, I>, // Output type
     ),
-    WrapCustom(
-        CustomTypeId,
-        UnfoldRecipe<first_ord::CustomTypeId>,
-        Occur<M, L>,
-    ),
-    UnwrapCustom(
-        CustomTypeId,
-        UnfoldRecipe<first_ord::CustomTypeId>,
-        Occur<M, L>,
-    ),
+    WrapCustom(CustomTypeId, UnfoldRecipe<CustomTypeId>, Occur<R, I>),
+    UnwrapCustom(CustomTypeId, UnfoldRecipe<CustomTypeId>, Occur<R, I>),
 
-    Intrinsic(Intrinsic, Occur<M, L>),
-    ArrayOp(ArrayOp<M, L>),
-    IoOp(IoOp<M, L>),
+    Intrinsic(Intrinsic, Occur<R, I>),
+    ArrayOp(ArrayOp<R, I>),
+    IoOp(IoOp<R, I>),
     Panic(
-        TypeFo<M, L>, // Return type
-        Occur<M, L>,
+        Type<R, I>, // Return type
+        Occur<R, I>,
     ),
 
-    ArrayLit(TypeFo<M, L>, Vec<Occur<M, L>>),
+    ArrayLit(Type<R, I>, Vec<Occur<R, I>>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -1307,13 +1208,13 @@ impl fmt::Debug for Constrs {
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub purity: Purity,
-    pub arg_ty: TypeFo<ModeParam, Lt>,
-    pub ret_ty: TypeFo<ModeParam, LtParam>,
+    pub arg_ty: Type<Res<ModeParam, Lt>, CustomTypeId>,
+    pub ret_ty: Type<Res<ModeParam, LtParam>, CustomTypeId>,
     pub constrs: Constrs,
 
     // Every function's body occurs in a scope with exactly one free variable with index 0, holding
     // the argument
-    pub body: Expr<ModeSolution, Lt>,
+    pub body: Expr<Res<ModeSolution, Lt>, CustomTypeId, first_ord::CustomFuncId>,
     pub profile_point: Option<prof::ProfilePointId>,
 }
 
@@ -1373,8 +1274,6 @@ pub struct CustomTypeDef<I, J> {
     pub can_guard: guarded::CanGuard,
 }
 
-pub type CustomTypeDefFo = CustomTypeDef<first_ord::CustomTypeId, flat::CustomTypeSccId>;
-
 #[derive(Clone, Debug)]
 pub struct CustomTypes<I: Id, J: Id> {
     // Guarded customs.
@@ -1392,7 +1291,7 @@ impl<I: Id, J: Id> CustomTypes<I, J> {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: CustomTypes<first_ord::CustomTypeId, flat::CustomTypeSccId>,
+    pub custom_types: CustomTypes<CustomTypeId, flat::CustomTypeSccId>,
     pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<first_ord::CustomFuncId, FuncDef>,
     pub func_symbols: IdVec<first_ord::CustomFuncId, first_ord::FuncSymbols>,
@@ -1406,7 +1305,7 @@ mod tests {
 
     #[test]
     fn test_path_as_lt() {
-        let interner: Interner<first_ord::CustomTypeId> = Interner::empty();
+        let interner: Interner<CustomTypeId> = Interner::empty();
         let new = |lt| interner.lt.new(lt);
         let path = Path::root().seq(0).alt(1, 3).seq(2276);
         let expected = Lt::Local(new(LocalLt::Seq(
@@ -1422,7 +1321,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let interner: Interner<first_ord::CustomTypeId> = Interner::empty();
+        let interner: Interner<CustomTypeId> = Interner::empty();
         let new = |lt| interner.lt.new(lt);
         let lhs = Lt::Local(new(LocalLt::Seq(
             new(LocalLt::Seq(
@@ -1445,7 +1344,7 @@ mod tests {
 
     #[test]
     fn test_lt_order() {
-        let interner: Interner<first_ord::CustomTypeId> = Interner::empty();
+        let interner: Interner<CustomTypeId> = Interner::empty();
         let new = |lt| interner.lt.new(lt);
         let lt = Lt::Local(new(LocalLt::Seq(
             new(LocalLt::Alt(vec![

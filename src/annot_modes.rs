@@ -10,8 +10,8 @@ use crate::data::guarded_ast::{self as guard, LocalId};
 use crate::data::intrinsics as intr;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast::{
-    self as annot, HeapModes, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, Position,
-    Res, ResModes, ShapeFo, ShapeInner, SlotId, SubstHelper, TypeFo,
+    self as annot, HeapModes, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, Path,
+    Position, Res, ResModes, ShapeInner, SlotId, SubstHelper,
 };
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -21,6 +21,7 @@ use crate::util::collection_ext::VecExt;
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
+use crate::util::non_empty_set::NonEmptySet;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{id_type, Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
@@ -29,6 +30,11 @@ use std::iter;
 
 type Interner = annot::Interner<CustomTypeId>;
 type UnfoldRecipe = guard::UnfoldRecipe<CustomTypeId>;
+type ShapeFo = annot::Shape<CustomTypeId>;
+type TypeFo<R> = annot::Type<R, CustomTypeId>;
+type OccurFo<R> = annot::Occur<R, CustomTypeId>;
+type ExprFo<R> = annot::Expr<R, CustomTypeId, CustomFuncId>;
+type CustomTypeDefFo = annot::CustomTypeDef<CustomTypeId, CustomTypeSccId>;
 
 // It is crucial that RC specialization (the next pass) does not inhibit tail calls by inserting
 // retains/releases after them. Hence, this pass must detect tail calls during constraint
@@ -253,10 +259,7 @@ fn compute_tail_calls(
 // We start by lifting the set of custom type definitions from the previous pass into the current
 // pass by annotating them with fresh mode and lifetime parameters.
 
-fn count_num_slots(
-    customs: &IdMap<CustomTypeId, annot::CustomTypeDefFo>,
-    ty: &guard::Type,
-) -> usize {
+fn count_num_slots(customs: &IdMap<CustomTypeId, CustomTypeDefFo>, ty: &guard::Type) -> usize {
     match ty {
         guard::Type::Bool => 0,
         guard::Type::Num(_) => 0,
@@ -292,7 +295,7 @@ fn next_heap<M: Id>(next_mode: &mut Count<M>) -> HeapModes<M> {
 struct SccParameterizer<'a> {
     interner: &'a Interner,
     customs: &'a guard::CustomTypes,
-    parameterized: &'a IdMap<CustomTypeId, annot::CustomTypeDefFo>,
+    parameterized: &'a IdMap<CustomTypeId, CustomTypeDefFo>,
     scc_id: CustomTypeSccId,
     scc_num_slots: usize,
     next_slot: Count<SlotId>,
@@ -385,9 +388,9 @@ impl<'a> SccParameterizer<'a> {
 fn parameterize_custom_scc(
     interner: &Interner,
     customs: &guard::CustomTypes,
-    parameterized: &IdMap<CustomTypeId, annot::CustomTypeDefFo>,
+    parameterized: &IdMap<CustomTypeId, CustomTypeDefFo>,
     scc: (CustomTypeSccId, Scc<'_, CustomTypeId>),
-) -> BTreeMap<CustomTypeId, annot::CustomTypeDefFo> {
+) -> BTreeMap<CustomTypeId, CustomTypeDefFo> {
     let (scc_id, scc) = scc;
 
     let scc_num_slots = scc
@@ -415,7 +418,7 @@ fn parameterize_custom_scc(
             let (content, subst_helper) = parameterizer.parameterize(scc.kind, &custom.content);
             (
                 id,
-                annot::CustomTypeDefFo {
+                CustomTypeDefFo {
                     content,
                     subst_helper,
                     num_slots: scc_num_slots,
@@ -433,7 +436,7 @@ fn parameterize_custom_scc(
 fn parameterize_customs(
     interner: &Interner,
     customs: &guard::CustomTypes,
-) -> IdVec<CustomTypeId, annot::CustomTypeDefFo> {
+) -> IdVec<CustomTypeId, CustomTypeDefFo> {
     let mut parameterized = IdMap::new();
     for scc in &customs.sccs {
         let to_populate = parameterize_custom_scc(interner, &customs, &parameterized, scc);
@@ -446,10 +449,10 @@ fn parameterize_customs(
 
 fn parameterize_type<'a>(
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     ty: &guard::Type,
-) -> TypeFo<ModeParam, LtParam> {
+) -> TypeFo<Res<ModeParam, LtParam>> {
     // All the machinery we use here is *very* similar to the machinery above for parameterizing
     // customs, but just different enough that it's hard to merge them.
     let shape = ShapeFo::from_guarded(interner, customs, ty);
@@ -508,8 +511,8 @@ fn require_eq(constrs: &mut ConstrGraph, modes1: &ResModes<ModeVar>, modes2: &Re
 
 fn bind_modes<L1, L2>(
     constrs: &mut ConstrGraph,
-    ty1: &TypeFo<ModeVar, L1>,
-    ty2: &TypeFo<ModeVar, L2>,
+    ty1: &TypeFo<Res<ModeVar, L1>>,
+    ty2: &TypeFo<Res<ModeVar, L2>>,
 ) {
     debug_assert_eq!(ty1.shape(), ty2.shape());
     for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
@@ -520,9 +523,9 @@ fn bind_modes<L1, L2>(
 // Unfortunately, we can't quite use `MapRef` as the type of `subst` here because, for the callers
 // of this function to be efficient, `subst` must return values (not references).
 fn subst_modes<M1: Clone, M2, L: Clone>(
-    ty: &TypeFo<M1, L>,
+    ty: &TypeFo<Res<M1, L>>,
     subst: impl Fn(M1) -> M2,
-) -> TypeFo<M2, L> {
+) -> TypeFo<Res<M2, L>> {
     let f = |res: &Res<M1, L>| {
         let modes = match &res.modes {
             ResModes::Stack(stack) => ResModes::Stack(subst(stack.clone())),
@@ -547,7 +550,6 @@ fn emit_occur_constr(
     use_modes: &ResModes<ModeVar>,
     use_lt: &Lt,
 ) {
-    // println!("{} <? {}", use_lt.display(), scope.display());
     if use_lt.cmp_path(scope).leq() {
         // Case: this is a non-escaping ("opportunistic" or "borrow") occurrence.
         match (binding_modes, use_modes) {
@@ -569,8 +571,8 @@ fn emit_occur_constr(
 fn emit_occur_constrs(
     constrs: &mut ConstrGraph,
     scope: &annot::Path,
-    binding_ty: &TypeFo<ModeVar, Lt>,
-    use_ty: &TypeFo<ModeVar, Lt>,
+    binding_ty: &TypeFo<Res<ModeVar, Lt>>,
+    use_ty: &TypeFo<Res<ModeVar, Lt>>,
 ) {
     debug_assert_eq!(binding_ty.shape(), use_ty.shape());
     for (binding_res, use_res) in binding_ty.iter().zip_eq(use_ty.iter()) {
@@ -588,9 +590,9 @@ fn emit_occur_constrs(
 /// contravariant in their lifetimes (unlike in Rust).
 fn left_meet(
     interner: &Interner,
-    ty1: &TypeFo<ModeVar, Lt>,
-    ty2: &TypeFo<ModeVar, Lt>,
-) -> TypeFo<ModeVar, Lt> {
+    ty1: &TypeFo<Res<ModeVar, Lt>>,
+    ty2: &TypeFo<Res<ModeVar, Lt>>,
+) -> TypeFo<Res<ModeVar, Lt>> {
     debug_assert_eq!(ty1.shape(), ty2.shape());
     let f = |(res1, res2): (&Res<_, Lt>, &Res<_, Lt>)| Res {
         modes: res1.modes.clone(),
@@ -622,8 +624,8 @@ fn freshen_type<M, L1, L2>(
     ignore: IgnorePerceus,
     constrs: &mut ConstrGraph,
     mut fresh_lt: impl FnMut() -> L2,
-    ty: &TypeFo<M, L1>,
-) -> TypeFo<ModeVar, L2> {
+    ty: &TypeFo<Res<M, L1>>,
+) -> TypeFo<Res<ModeVar, L2>> {
     let f = |res: &Res<_, _>| {
         let modes = match res.modes {
             ResModes::Stack(_) => ResModes::Stack(fresh_var(strategy, ignore, constrs)),
@@ -635,7 +637,7 @@ fn freshen_type<M, L1, L2>(
         let lt = fresh_lt();
         Res { modes, lt }
     };
-    annot::TypeFo::new(
+    TypeFo::new(
         ty.shape().clone(),
         IdVec::from_vec(ty.iter().map(f).collect()),
     )
@@ -645,8 +647,8 @@ fn freshen_type_unused<M, L>(
     strategy: RcStrategy,
     ignore: IgnorePerceus,
     constrs: &mut ConstrGraph,
-    ty: &TypeFo<M, L>,
-) -> TypeFo<ModeVar, Lt> {
+    ty: &TypeFo<Res<M, L>>,
+) -> TypeFo<Res<ModeVar, Lt>> {
     freshen_type(strategy, ignore, constrs, || Lt::Empty, ty)
 }
 
@@ -656,8 +658,8 @@ fn instantiate_occur_in_position(
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     constrs: &mut ConstrGraph,
     id: LocalId,
-    use_ty: &TypeFo<ModeVar, Lt>,
-) -> Occur<ModeVar, Lt> {
+    use_ty: &TypeFo<Res<ModeVar, Lt>>,
+) -> OccurFo<Res<ModeVar, Lt>> {
     let binding = ctx.local_binding_mut(id);
 
     if pos == IsTail::Tail {
@@ -674,6 +676,103 @@ fn instantiate_occur_in_position(
     }
 }
 
+fn join_everywhere<M: Clone>(
+    interner: &Interner,
+    ty: &TypeFo<Res<M, Lt>>,
+    new_lt: &Lt,
+) -> TypeFo<Res<M, Lt>> {
+    let f = |res: &Res<M, Lt>| Res {
+        modes: res.modes.clone(),
+        lt: res.lt.join(interner, new_lt),
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+fn lt_equiv<M>(ty1: &TypeFo<Res<M, Lt>>, ty2: &TypeFo<Res<M, Lt>>) -> bool {
+    debug_assert!(ty1.shape() == ty2.shape());
+    ty1.iter()
+        .zip_eq(ty2.iter())
+        .all(|(res1, res2)| res1.lt == res2.lt)
+}
+
+fn bind_lts<M>(
+    interner: &Interner,
+    ty1: &TypeFo<Res<M, LtParam>>,
+    ty2: &TypeFo<Res<M, Lt>>,
+) -> BTreeMap<LtParam, Lt> {
+    debug_assert!(ty1.shape() == ty2.shape());
+    let mut result = BTreeMap::new();
+    for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
+        result
+            .entry(res1.lt)
+            .and_modify(|old: &mut Lt| *old = old.join(interner, &res2.lt))
+            .or_insert_with(|| res2.lt.clone());
+    }
+    result
+}
+
+fn subst_lts<M: Clone>(
+    interner: &Interner,
+    ty: &TypeFo<Res<M, Lt>>,
+    subst: &BTreeMap<LtParam, Lt>,
+) -> TypeFo<Res<M, Lt>> {
+    let f = |res: &Res<M, Lt>| {
+        let modes = res.modes.clone();
+        let lt = match &res.lt {
+            Lt::Empty => Lt::Empty,
+            Lt::Local(lt) => Lt::Local(lt.clone()),
+            Lt::Join(params) => params
+                .iter()
+                .map(|p| &subst[p])
+                .fold(Lt::Empty, |lt1, lt2| lt1.join(interner, lt2)),
+        };
+        Res { modes, lt }
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+/// Our analysis makes the following approximation: from the perspective of a function's caller all
+/// accesses the callee makes to its arguments happen at the same time. To implement this behavior,
+/// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
+/// current path. Even if we didn't make this approximation, we would have to somehow relativize the
+/// local lifetimes in the argument since they are not meaningful in the caller's scope.
+fn prepare_arg_type<M: Clone>(
+    interner: &Interner,
+    path: &Path,
+    ty: &TypeFo<Res<M, Lt>>,
+) -> TypeFo<Res<M, Lt>> {
+    let f = |res: &Res<M, Lt>| {
+        let modes = res.modes.clone();
+        let lt = match &res.lt {
+            Lt::Empty => Lt::Empty,
+            Lt::Local(_) => path.as_lt(interner),
+            Lt::Join(vars) => Lt::Join(vars.clone()),
+        };
+        Res { modes, lt }
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+fn wrap_lts<M: Clone>(ty: &TypeFo<Res<M, LtParam>>) -> TypeFo<Res<M, Lt>> {
+    let f = |res: &Res<M, LtParam>| Res {
+        modes: res.modes.clone(),
+        lt: Lt::Join(NonEmptySet::new(res.lt)),
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
 /// Generate occurrence constraints and merge `use_ty` into the typing context. Corresponds to the
 /// I-Occur rule.
 fn instantiate_occur(
@@ -681,8 +780,8 @@ fn instantiate_occur(
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     constrs: &mut ConstrGraph,
     id: LocalId,
-    use_ty: &TypeFo<ModeVar, Lt>,
-) -> Occur<ModeVar, Lt> {
+    use_ty: &TypeFo<Res<ModeVar, Lt>>,
+) -> OccurFo<Res<ModeVar, Lt>> {
     instantiate_occur_in_position(interner, IsTail::NotTail, ctx, constrs, id, use_ty)
 }
 
@@ -691,14 +790,14 @@ fn create_occurs_from_model(
     strategy: RcStrategy,
     ignore: IgnorePerceus,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: &annot::Path,
     args: &[LocalId],
-    ret: &TypeFo<ModeVar, Lt>,
-) -> Vec<annot::Occur<ModeVar, Lt>> {
+    ret: &TypeFo<Res<ModeVar, Lt>>,
+) -> Vec<OccurFo<Res<ModeVar, Lt>>> {
     assert!(args.len() >= sig.args.fixed.len());
 
     // Create a fresh occurrence for each function argument.
@@ -813,7 +912,7 @@ fn create_occurs_from_model(
                     let arg_res = &mut arg_occurs[loc.occur_idx].ty.res_mut().as_mut_slice()
                         [loc.start..loc.end];
 
-                    for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.res().values()) {
+                    for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.iter()) {
                         arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
                     }
                 }
@@ -870,7 +969,7 @@ fn create_occurs_from_model(
                         let arg_res = &mut arg_occurs[loc.occur_idx].ty.res_mut().as_mut_slice()
                             [loc.start..loc.end];
 
-                        for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.res().values()) {
+                        for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.iter()) {
                             arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
                         }
                     }
@@ -887,14 +986,14 @@ fn instantiate_model(
     strategy: RcStrategy,
     ignore: IgnorePerceus,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: &annot::Path,
     args: &[LocalId],
-    ret: &TypeFo<ModeVar, Lt>,
-) -> Vec<annot::Occur<ModeVar, Lt>> {
+    ret: &TypeFo<Res<ModeVar, Lt>>,
+) -> Vec<OccurFo<Res<ModeVar, Lt>>> {
     let occurs = create_occurs_from_model(
         sig, strategy, ignore, interner, customs, sccs, constrs, ctx, path, args, ret,
     );
@@ -912,8 +1011,8 @@ fn instantiate_model(
 #[derive(Clone, Copy, Debug)]
 struct SignatureAssumptions<'a> {
     known_defs: &'a IdMap<CustomFuncId, annot::FuncDef>,
-    pending_args: &'a BTreeMap<CustomFuncId, TypeFo<ModeVar, Lt>>,
-    pending_rets: &'a BTreeMap<CustomFuncId, TypeFo<ModeVar, LtParam>>,
+    pending_args: &'a BTreeMap<CustomFuncId, TypeFo<Res<ModeVar, Lt>>>,
+    pending_rets: &'a BTreeMap<CustomFuncId, TypeFo<Res<ModeVar, LtParam>>>,
 }
 
 impl<'a> SignatureAssumptions<'a> {
@@ -921,7 +1020,7 @@ impl<'a> SignatureAssumptions<'a> {
         &self,
         constrs: &mut ConstrGraph,
         id: CustomFuncId,
-    ) -> (TypeFo<ModeVar, Lt>, TypeFo<ModeVar, LtParam>) {
+    ) -> (TypeFo<Res<ModeVar, Lt>>, TypeFo<Res<ModeVar, LtParam>>) {
         self.known_defs.get(id).map_or_else(
             || {
                 (
@@ -942,7 +1041,7 @@ impl<'a> SignatureAssumptions<'a> {
 
 struct LocalInfo {
     scope: annot::Path,
-    ty: TypeFo<ModeVar, Lt>,
+    ty: TypeFo<Res<ModeVar, Lt>>,
 }
 
 // This function is the core logic for this pass. It implements the judgment from the paper:
@@ -953,17 +1052,17 @@ struct LocalInfo {
 fn instantiate_expr(
     strategy: RcStrategy,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     sigs: SignatureAssumptions,
     constrs: &mut ConstrGraph,
     ctx: &mut LocalContext<LocalId, LocalInfo>,
     path: annot::Path,
-    fut_ty: &TypeFo<ModeVar, Lt>,
+    fut_ty: &TypeFo<Res<ModeVar, Lt>>,
     expr: &TailExpr,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     func_renderer: &FuncRenderer<CustomFuncId>,
-) -> annot::Expr<ModeVar, Lt> {
+) -> ExprFo<Res<ModeVar, Lt>> {
     match expr {
         TailExpr::Local(local) => {
             let occur = instantiate_occur(interner, ctx, constrs, *local, fut_ty);
@@ -974,17 +1073,13 @@ fn instantiate_expr(
             let (arg_ty, ret_ty) = sigs.sig_of(constrs, *func);
 
             bind_modes(constrs, &ret_ty, fut_ty);
-            let lt_subst = annot::bind_lts(interner, &ret_ty, fut_ty);
-            let arg_ty = annot::prepare_arg_type(interner, &path, &arg_ty);
+            let lt_subst = bind_lts(interner, &ret_ty, fut_ty);
+            let arg_ty = prepare_arg_type(interner, &path, &arg_ty);
             let path = path.as_lt(interner);
 
             // This `join_everywhere` reflects the fact that we assume that functions access all of
             // their arguments. We could be more precise here.
-            let arg_ty = annot::join_everywhere(
-                interner,
-                &annot::subst_lts(interner, &arg_ty, &lt_subst),
-                &path,
-            );
+            let arg_ty = join_everywhere(interner, &subst_lts(interner, &arg_ty, &lt_subst), &path);
             let arg = instantiate_occur_in_position(interner, *pos, ctx, constrs, *arg, &arg_ty);
 
             annot::Expr::Call(*purity, *func, arg)
@@ -1091,6 +1186,7 @@ fn instantiate_expr(
 
         TailExpr::CheckVariant(variant_id, variant) => {
             assert!(fut_ty.shape() == &ShapeFo::bool_(interner));
+            // You can match on something whose fields are dead!
             let variants_ty = freshen_type_unused(
                 strategy,
                 IgnorePerceus::Yes,
@@ -1236,8 +1332,8 @@ fn instantiate_expr(
                 bind_modes(constrs, &fresh_unfolded, fut_ty);
 
                 // Join the lifetimes in `fut_ty` which are identified under folding.
-                let lt_subst = annot::bind_lts(interner, &fresh_unfolded, fut_ty);
-                annot::subst_lts(interner, &annot::wrap_lts(&fresh_folded), &lt_subst)
+                let lt_subst = bind_lts(interner, &fresh_unfolded, fut_ty);
+                subst_lts(interner, &wrap_lts(&fresh_folded), &lt_subst)
             };
 
             let occur = instantiate_occur(interner, ctx, constrs, *folded, &fresh_folded);
@@ -1248,10 +1344,7 @@ fn instantiate_expr(
         // operate on arithmetic types. If this changes, we will have to update this.
         TailExpr::Intrinsic(intr, arg) => {
             let sig = intrinsic_sig(*intr);
-            let ty = TypeFo::new(
-                ShapeFo::from_guarded(interner, customs, &guard::Type::from_intr(&sig.arg)),
-                IdVec::new(),
-            );
+            let ty = TypeFo::from_intr(interner, &sig.arg);
             annot::Expr::Intrinsic(*intr, Occur { id: *arg, ty })
         }
 
@@ -1480,16 +1573,16 @@ fn instantiate_expr(
 
 #[derive(Clone, Debug)]
 struct SolverScc {
-    func_args: BTreeMap<CustomFuncId, TypeFo<ModeVar, Lt>>,
-    func_rets: BTreeMap<CustomFuncId, TypeFo<ModeVar, LtParam>>,
-    func_bodies: BTreeMap<CustomFuncId, annot::Expr<ModeVar, Lt>>,
+    func_args: BTreeMap<CustomFuncId, TypeFo<Res<ModeVar, Lt>>>,
+    func_rets: BTreeMap<CustomFuncId, TypeFo<Res<ModeVar, LtParam>>>,
+    func_bodies: BTreeMap<CustomFuncId, ExprFo<Res<ModeVar, Lt>>>,
     scc_constrs: ConstrGraph,
 }
 
 fn instantiate_scc(
     strategy: RcStrategy,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
@@ -1581,7 +1674,7 @@ fn instantiate_scc(
                     });
                     debug_assert_eq!(arg_id, guard::ARG_LOCAL);
 
-                    let ret_ty = annot::wrap_lts(&ret_tys[id]);
+                    let ret_ty = wrap_lts(&ret_tys[id]);
                     let expr = instantiate_expr(
                         strategy,
                         interner,
@@ -1621,7 +1714,7 @@ fn instantiate_scc(
                 if new_arg_tys
                     .values()
                     .zip_eq(arg_tys.values())
-                    .all(|(new, old)| annot::lt_equiv(new, old))
+                    .all(|(new, old)| lt_equiv(new, old))
                 {
                     break (new_arg_tys, bodies);
                 }
@@ -1647,7 +1740,10 @@ fn instantiate_scc(
 
 type Solution = in_eq::Solution<ModeVar, ModeParam, Mode>;
 
-fn extract_type(solution: &Solution, ty: &TypeFo<ModeVar, Lt>) -> TypeFo<ModeSolution, Lt> {
+fn extract_type(
+    solution: &Solution,
+    ty: &TypeFo<Res<ModeVar, Lt>>,
+) -> TypeFo<Res<ModeSolution, Lt>> {
     subst_modes(ty, |m| ModeSolution {
         lb: solution.lower_bounds[m].clone(),
         solver_var: m,
@@ -1656,9 +1752,9 @@ fn extract_type(solution: &Solution, ty: &TypeFo<ModeVar, Lt>) -> TypeFo<ModeSol
 
 fn extract_occur(
     solution: &Solution,
-    occur: &Occur<ModeVar, Lt>,
-) -> annot::Occur<ModeSolution, Lt> {
-    annot::Occur {
+    occur: &OccurFo<Res<ModeVar, Lt>>,
+) -> OccurFo<Res<ModeSolution, Lt>> {
+    OccurFo {
         id: occur.id,
         ty: extract_type(solution, &occur.ty),
     }
@@ -1666,8 +1762,8 @@ fn extract_occur(
 
 fn extract_expr(
     solution: &Solution,
-    expr: &annot::Expr<ModeVar, Lt>,
-) -> annot::Expr<ModeSolution, Lt> {
+    expr: &ExprFo<Res<ModeVar, Lt>>,
+) -> ExprFo<Res<ModeSolution, Lt>> {
     use annot::Expr as E;
     match expr {
         E::Local(occur) => E::Local(extract_occur(solution, occur)),
@@ -1779,7 +1875,7 @@ fn extract_expr(
 fn solve_scc(
     strategy: RcStrategy,
     interner: &Interner,
-    customs: &IdVec<CustomTypeId, annot::CustomTypeDefFo>,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
     sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
     funcs: &IdVec<CustomFuncId, TailFuncDef>,
     funcs_annot: &mut IdMap<CustomFuncId, annot::FuncDef>,

@@ -667,34 +667,34 @@ impl ModeProp {
 }
 
 declare_signatures! {
-    // below the top-level:
+    // Below the top-level:
     // - u inherits t's access modes
     // - u inherits t's storage modes
-    // at the top-level
+    // At the top-level:
     // - u's stack mode = t's access mode = t's storage mode
     pub box_new: (u) -> Boxed a Own t
         where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
-    // below the top-level:
+    // Below the top-level:
     // - u inherits t's access modes
     // - u inherits t's storage modes
-    // at the top-level
+    // At the top-level:
     // - u's stack mode is t's access mode
     pub box_get: (Boxed a m t) -> u
         where t.lt <- u.lt, u.stack = t.access;
 
-    // below the top-level:
+    // Below the top-level:
     // - u inherits t's access modes
     // - u inherits t's storage modes
-    // at the top-level
+    // At the top-level:
     // - u's stack mode = t's access mode = t's storage mode
     pub array_new: (u..) -> Array a Own t
         where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
-    // below the top-level:
+    // Below the top-level:
     // - u inherits t's access modes
     // - u inherits t's storage modes
-    // at the top-level
+    // At the top-level:
     // - u's stack mode is t's access mode
     pub array_get: (Array a m t, Int) -> u
         where t.lt <- u.lt, u.stack = t.access;
@@ -707,18 +707,18 @@ declare_signatures! {
     /// use the empty lifetime.
     pub array_len: (Array Emp m t) -> Int;
 
-    // below the top-level:
+    // Below the top-level:
     // - u's access modes are t's access modes
     // - u's storage modes are t's storage modes
-    // at the top-level
+    // At the top-level:
     // - u's stack mode is t's storage mode
     pub array_push: (Array a Own t, u) -> Array b Own t
         where u.lt <- t.lt, u.stack = t.storage;
 
-    // below the top-level:
+    // Below the top-level:
     // - u's access modes are t's access modes
     // - u's storage modes are t's storage modes
-    // at the top-level
+    // At the top-level:
     // - u's stack mode is t's storage mode
     pub array_pop: (Array a Own t) -> (Array b Own t, u)
         where t.lt <- u.lt, u.stack = t.storage;

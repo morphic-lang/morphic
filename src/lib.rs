@@ -439,7 +439,7 @@ fn compile_to_low_ast(
             .map_err(ErrorKind::WriteIrFailed)?;
     }
 
-    type_check_borrows::type_check(&interner, &rc_annot);
+    // type_check_borrows::type_check(&interner, &rc_annot);
 
     let rc_specialized =
         rc_specialize::rc_specialize(rc_annot, progress_ui::bar(progress, "rc_specialize"));

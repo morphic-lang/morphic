@@ -1,10 +1,10 @@
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast::SlotId;
-use crate::data::obligation_annot_ast::{CustomFuncId, CustomTypeId, Type};
+use crate::data::obligation_annot_ast::{BindType, CustomFuncId, CustomTypeId};
 use crate::data::rc_annot_ast::{ArrayOp, Expr, FuncDef, IoOp, Occur, Program, RcOp, Selector};
 use crate::intrinsic_config::intrinsic_to_name;
-use crate::pretty_print::borrow_common;
 use crate::pretty_print::mode_annot::{self as annot_pp};
+use crate::pretty_print::obligation_annot::{self as ob_annot_pp};
 use crate::pretty_print::utils::{
     write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
 };
@@ -35,27 +35,13 @@ impl<'a> Context<'a> {
     }
 }
 
-fn write_type(
-    w: &mut dyn Write,
-    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    type_: &Type,
-) -> io::Result<()> {
-    annot_pp::write_type(
-        w,
-        type_renderer,
-        borrow_common::write_mode,
-        borrow_common::write_lifetime,
-        type_,
-    )
-}
-
 fn write_occur(
     w: &mut dyn Write,
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     occur: &Occur,
 ) -> io::Result<()> {
     write!(w, "%{} as ", occur.id.0)?;
-    write_type(w, Some(type_renderer), &occur.ty)
+    ob_annot_pp::write_type(w, Some(type_renderer), &occur.ty)
 }
 
 fn write_single(
@@ -83,7 +69,7 @@ fn write_double(
     write!(w, ")")
 }
 
-fn match_string_bytes(bindings: &[(Type, Expr, Metadata)]) -> Option<String> {
+fn match_string_bytes(bindings: &[(BindType, Expr, Metadata)]) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
         if let (_, Expr::ByteLit(byte), _) = binding {
@@ -134,6 +120,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             write!(w, "let")?;
             let new_context = context.add_indent();
             let mut index = 0;
+            let mut real_index = 0;
             while index < bindings.len() {
                 if let Some(string) = match_string_bytes(&bindings[index..]) {
                     new_context.writeln(w)?;
@@ -148,12 +135,13 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                         string,
                     )?;
                     index += string.len();
+                    real_index += string.len();
                 } else {
                     let (binding_type, binding_expr, metadata) = &bindings[index];
                     write_metadata(w, new_context.indentation, metadata)?;
                     new_context.writeln(w)?;
-                    write!(w, "{}: %{}: ", index, context.num_locals + index)?;
-                    write_type(w, Some(context.type_renderer), binding_type)?;
+                    write!(w, "{}: %{}: ", real_index, context.num_locals + index)?;
+                    ob_annot_pp::write_bind_type(w, Some(context.type_renderer), binding_type)?;
                     new_context.writeln(w)?;
                     write!(w, " = ")?;
                     write_expr(
@@ -164,7 +152,14 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                             ..new_context
                         },
                     )?;
+
                     index += 1;
+                    match binding_expr {
+                        Expr::RcOp(_, _, _) => {}
+                        _ => {
+                            real_index += 1;
+                        }
+                    }
                 }
             }
             context.writeln(w)?;
@@ -309,15 +304,9 @@ pub fn write_func(
     func_id: CustomFuncId,
 ) -> io::Result<()> {
     write!(w, "func {} (%0: ", func_renderer.render(func_id))?;
-    write_type(w, Some(type_renderer), &func.arg_ty)?;
+    ob_annot_pp::write_bind_type(w, Some(type_renderer), &func.arg_ty)?;
     write!(w, "): ")?;
-    annot_pp::write_type(
-        w,
-        Some(type_renderer),
-        borrow_common::write_mode,
-        borrow_common::write_lifetime_param,
-        &func.ret_ty,
-    )?;
+    ob_annot_pp::write_ret_type(w, Some(type_renderer), &func.ret_ty)?;
     write!(w, " =\n")?;
 
     let context = Context {
