@@ -18,22 +18,22 @@ use std::{fmt, str};
 const TAB_SIZE: usize = 2;
 
 #[derive(Clone, Debug, Copy)]
-struct Context<'a> {
-    type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
-    func_renderer: &'a FuncRenderer<CustomFuncId>,
-    indentation: usize,
-    num_locals: usize,
+pub struct Context<'a> {
+    pub type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    pub func_renderer: &'a FuncRenderer<CustomFuncId>,
+    pub indentation: usize,
+    pub num_locals: usize,
 }
 
 impl<'a> Context<'a> {
-    fn add_indent(&self) -> Self {
+    pub fn add_indent(&self) -> Self {
         Self {
             indentation: self.indentation + TAB_SIZE,
             ..*self
         }
     }
 
-    fn writeln(&self, w: &mut dyn Write) -> io::Result<()> {
+    pub fn writeln(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(w)?;
         write!(w, "{}", " ".repeat(self.indentation))
     }
@@ -47,14 +47,7 @@ pub fn write_bind_type(
     annot_pp::write_type_raw(
         w,
         type_renderer,
-        &|w, res| {
-            write_bind_resource(
-                w,
-                &borrow_common::write_mode,
-                &borrow_common::write_lifetime,
-                res,
-            )
-        },
+        &|w, res| write_bind_resource(w, &borrow_common::write_lifetime, res),
         &type_.shape(),
         type_.res().as_slice(),
     )
@@ -68,14 +61,7 @@ pub fn write_ret_type(
     annot_pp::write_type_raw(
         w,
         type_renderer,
-        &|w, res| {
-            write_value_resource(
-                w,
-                &borrow_common::write_mode,
-                &borrow_common::write_lifetime_param,
-                res,
-            )
-        },
+        &|w, res| write_value_resource(w, &borrow_common::write_lifetime_param, res),
         &type_.shape(),
         type_.res().as_slice(),
     )
@@ -89,24 +75,16 @@ pub fn write_type(
     annot_pp::write_type_raw(
         w,
         type_renderer,
-        &|w, res| {
-            write_value_resource(
-                w,
-                &borrow_common::write_mode,
-                &borrow_common::write_lifetime,
-                res,
-            )
-        },
+        &|w, res| write_value_resource(w, &borrow_common::write_lifetime, res),
         &type_.shape(),
         type_.res().as_slice(),
     )
 }
 
-pub fn write_value_resource<M, LtT>(
+pub fn write_value_resource<L>(
     w: &mut dyn Write,
-    _write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
-    write_lifetime: &impl Fn(&mut dyn Write, &LtT) -> io::Result<()>,
-    res: &ValueRes<LtT>,
+    write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
+    res: &ValueRes<L>,
 ) -> io::Result<()> {
     match res {
         ValueRes::Owned => write!(w, "●")?,
@@ -120,9 +98,8 @@ pub fn write_value_resource<M, LtT>(
     Ok(())
 }
 
-pub fn write_bind_resource<M, L>(
+pub fn write_bind_resource<L>(
     w: &mut dyn Write,
-    _write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
     write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
     res: &BindRes<L>,
 ) -> io::Result<()> {
@@ -193,7 +170,7 @@ fn match_string_bytes(bindings: &[(BindType, Expr, Metadata)]) -> Option<String>
     String::from_utf8(result_bytes).ok()
 }
 
-fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
+pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
     match expr {
         Expr::Local(occur) => write_occur(w, context.type_renderer, occur),
         Expr::Call(_purity, func_id, occur) => {

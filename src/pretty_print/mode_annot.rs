@@ -23,14 +23,14 @@ type Occur = annot::Occur<Res<ModeSolution, Lt>, CustomTypeId>;
 type Expr = annot::Expr<Res<ModeSolution, Lt>, CustomTypeId, CustomFuncId>;
 
 #[derive(Clone, Debug, Copy)]
-pub struct Context<'a> {
-    pub type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
-    pub func_renderer: &'a FuncRenderer<CustomFuncId>,
+pub struct Context<'a, I, J> {
+    pub type_renderer: &'a CustomTypeRenderer<I>,
+    pub func_renderer: &'a FuncRenderer<J>,
     pub indentation: usize,
     pub num_locals: usize,
 }
 
-impl<'a> Context<'a> {
+impl<'a, I, J> Context<'a, I, J> {
     fn add_indent(&self) -> Self {
         Self {
             indentation: self.indentation + TAB_SIZE,
@@ -256,44 +256,55 @@ pub fn write_solved_type<I: Id + 'static>(
     )
 }
 
-pub fn write_occur(
+pub fn write_occur<R, I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
-    occur: &Occur,
+    type_renderer: &CustomTypeRenderer<I>,
+    write_res: &impl Fn(&mut dyn Write, &R) -> io::Result<()>,
+    occur: &annot::Occur<R, I>,
 ) -> io::Result<()> {
     write!(w, "%{} as ", occur.id.0)?;
-    write_solved_type(w, type_renderer, &occur.ty)
+    write_type_raw(
+        w,
+        Some(type_renderer),
+        write_res,
+        occur.ty.shape(),
+        occur.ty.res().as_slice(),
+    )
 }
 
-fn write_single(
+fn write_single<R, I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: &CustomTypeRenderer<I>,
+    write_res: &impl Fn(&mut dyn Write, &R) -> io::Result<()>,
     name: &str,
-    occur: &Occur,
+    occur: &annot::Occur<R, I>,
 ) -> io::Result<()> {
     write!(w, "{name}(")?;
-    write_occur(w, type_renderer, occur)?;
+    write_occur(w, type_renderer, write_res, occur)?;
     write!(w, ")")
 }
 
-fn write_double(
+fn write_double<R, I: Id + 'static>(
     w: &mut dyn Write,
-    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_renderer: &CustomTypeRenderer<I>,
+    write_res: &impl Fn(&mut dyn Write, &R) -> io::Result<()>,
     name: &str,
-    occur1: &Occur,
-    occur2: &Occur,
+    occur1: &annot::Occur<R, I>,
+    occur2: &annot::Occur<R, I>,
 ) -> io::Result<()> {
     write!(w, "{name}(")?;
-    write_occur(w, type_renderer, occur1)?;
+    write_occur(w, type_renderer, write_res, occur1)?;
     write!(w, ", ")?;
-    write_occur(w, type_renderer, occur2)?;
+    write_occur(w, type_renderer, write_res, occur2)?;
     write!(w, ")")
 }
 
-fn match_string_bytes(bindings: &[(Type<CustomTypeId>, Expr, Metadata)]) -> Option<String> {
+fn match_string_bytes<R, I: Id + 'static, J: Id + 'static>(
+    bindings: &[(annot::Type<R, I>, annot::Expr<R, I, J>, Metadata)],
+) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
-        if let (_, Expr::ByteLit(byte), _) = binding {
+        if let (_, annot::Expr::ByteLit(byte), _) = binding {
             result_bytes.push(*byte);
         } else {
             break;
@@ -305,15 +316,20 @@ fn match_string_bytes(bindings: &[(Type<CustomTypeId>, Expr, Metadata)]) -> Opti
     String::from_utf8(result_bytes).ok()
 }
 
-pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()> {
+pub fn write_expr<R, I: Id + 'static, J: Id + 'static>(
+    w: &mut dyn Write,
+    write_res: &impl Fn(&mut dyn Write, &R) -> io::Result<()>,
+    expr: &annot::Expr<R, I, J>,
+    context: Context<I, J>,
+) -> io::Result<()> {
     match expr {
-        Expr::Local(occur) => write_occur(w, context.type_renderer, occur),
-        Expr::Call(_purity, func_id, occur) => {
+        annot::Expr::Local(occur) => write_occur(w, context.type_renderer, write_res, occur),
+        annot::Expr::Call(_purity, func_id, occur) => {
             write!(w, "call {} (", context.func_renderer.render(func_id))?;
-            write_occur(w, context.type_renderer, occur)?;
+            write_occur(w, context.type_renderer, write_res, occur)?;
             write!(w, ")")
         }
-        Expr::LetMany(bindings, final_local) => {
+        annot::Expr::LetMany(bindings, final_local) => {
             write!(w, "let")?;
             let new_context = context.add_indent();
             let mut index = 0;
@@ -336,11 +352,18 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
                     write_metadata(w, new_context.indentation, metadata)?;
                     new_context.writeln(w)?;
                     write!(w, "{}: %{}: ", index, context.num_locals + index)?;
-                    write_solved_type(w, context.type_renderer, binding_type)?;
+                    write_type_raw(
+                        w,
+                        Some(context.type_renderer),
+                        write_res,
+                        binding_type.shape(),
+                        binding_type.res().as_slice(),
+                    )?;
                     new_context.writeln(w)?;
                     write!(w, " = ")?;
                     write_expr(
                         w,
+                        write_res,
                         binding_expr,
                         Context {
                             num_locals: context.num_locals + index,
@@ -352,98 +375,123 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             }
             context.writeln(w)?;
             write!(w, "in ")?;
-            write_occur(w, context.type_renderer, final_local)?;
+            write_occur(w, context.type_renderer, write_res, final_local)?;
             Ok(())
         }
-        Expr::If(occur, then_branch, else_branch) => {
+        annot::Expr::If(occur, then_branch, else_branch) => {
             write!(w, "if ")?;
-            write_occur(w, context.type_renderer, occur)?;
+            write_occur(w, context.type_renderer, write_res, occur)?;
             write!(w, " {{")?;
 
             let new_context = context.add_indent();
             new_context.writeln(w)?;
-            write_expr(w, then_branch, new_context)?;
+            write_expr(w, write_res, then_branch, new_context)?;
             context.writeln(w)?;
 
             write!(w, "}} else {{")?;
             new_context.writeln(w)?;
-            write_expr(w, else_branch, new_context)?;
+            write_expr(w, write_res, else_branch, new_context)?;
             context.writeln(w)?;
 
             write!(w, "}}")?;
             Ok(())
         }
-        Expr::CheckVariant(variant_id, occur) => {
+        annot::Expr::CheckVariant(variant_id, occur) => {
             write!(w, "check variant {} ", variant_id.0)?;
-            write_occur(w, context.type_renderer, occur)
+            write_occur(w, context.type_renderer, write_res, occur)
         }
-        Expr::Unreachable(_type) => write!(w, "unreachable"),
-        Expr::Tuple(elems) => write_delimited(w, elems, "(", ")", ", ", |w, occur| {
-            write_occur(w, context.type_renderer, occur)
+        annot::Expr::Unreachable(_type) => write!(w, "unreachable"),
+        annot::Expr::Tuple(elems) => write_delimited(w, elems, "(", ")", ", ", |w, occur| {
+            write_occur(w, context.type_renderer, write_res, occur)
         }),
-        Expr::TupleField(occur, index) => {
+        annot::Expr::TupleField(occur, index) => {
             write!(w, "tuple field {} ", index)?;
-            write_occur(w, context.type_renderer, occur)
+            write_occur(w, context.type_renderer, write_res, occur)
         }
-        Expr::WrapVariant(_variants, variant_id, occur) => {
+        annot::Expr::WrapVariant(_variants, variant_id, occur) => {
             write!(w, "wrap variant {} ", variant_id.0)?;
-            write_occur(w, context.type_renderer, occur)
+            write_occur(w, context.type_renderer, write_res, occur)
         }
-        Expr::UnwrapVariant(variant_id, occur) => {
+        annot::Expr::UnwrapVariant(variant_id, occur) => {
             write!(w, "unwrap variant {} ", variant_id.0)?;
-            write_occur(w, context.type_renderer, occur)
+            write_occur(w, context.type_renderer, write_res, occur)
         }
-        Expr::WrapBoxed(content, _) => {
+        annot::Expr::WrapBoxed(content, _) => {
             write!(w, "wrap boxed ")?;
-            write_occur(w, context.type_renderer, content)
+            write_occur(w, context.type_renderer, write_res, content)
         }
-        Expr::UnwrapBoxed(content, _) => {
+        annot::Expr::UnwrapBoxed(content, _) => {
             write!(w, "unwrap boxed ")?;
-            write_occur(w, context.type_renderer, content)
+            write_occur(w, context.type_renderer, write_res, content)
         }
-        Expr::WrapCustom(type_id, _recipe, occur) => {
+        annot::Expr::WrapCustom(type_id, _recipe, occur) => {
             write!(w, "wrap custom {} ", context.type_renderer.render(*type_id))?;
-            write_occur(w, context.type_renderer, occur)
+            write_occur(w, context.type_renderer, write_res, occur)
         }
-        Expr::UnwrapCustom(type_id, _recipe, occur) => {
+        annot::Expr::UnwrapCustom(type_id, _recipe, occur) => {
             write!(
                 w,
                 "unwrap custom {} ",
                 context.type_renderer.render(*type_id)
             )?;
-            write_occur(w, context.type_renderer, occur)
+            write_occur(w, context.type_renderer, write_res, occur)
         }
-        Expr::Intrinsic(intr, local_id) => {
+        annot::Expr::Intrinsic(intr, local_id) => {
             write!(w, "{} ", intrinsic_to_name(*intr).debug_name())?;
-            write_occur(w, context.type_renderer, local_id)
+            write_occur(w, context.type_renderer, write_res, local_id)
         }
-        Expr::ArrayOp(array_op) => match array_op {
+        annot::Expr::ArrayOp(array_op) => match array_op {
             ArrayOp::Get(occur1, occur2, output_type) => {
-                write_double(w, context.type_renderer, "get", occur1, occur2)?;
+                write_double(w, context.type_renderer, write_res, "get", occur1, occur2)?;
                 write!(w, " as ")?;
-                write_solved_type(w, context.type_renderer, output_type)
+                write_type_raw(
+                    w,
+                    Some(context.type_renderer),
+                    write_res,
+                    output_type.shape(),
+                    output_type.res().as_slice(),
+                )
             }
-            ArrayOp::Extract(occur1, occur2) => {
-                write_double(w, context.type_renderer, "extract", occur1, occur2)
-            }
-            ArrayOp::Len(occur) => write_single(w, context.type_renderer, "len", occur),
+            ArrayOp::Extract(occur1, occur2) => write_double(
+                w,
+                context.type_renderer,
+                write_res,
+                "extract",
+                occur1,
+                occur2,
+            ),
+            ArrayOp::Len(occur) => write_single(w, context.type_renderer, write_res, "len", occur),
             ArrayOp::Push(occur1, occur2) => {
-                write_double(w, context.type_renderer, "push", occur1, occur2)
+                write_double(w, context.type_renderer, write_res, "push", occur1, occur2)
             }
-            ArrayOp::Pop(occur) => write_single(w, context.type_renderer, "pop", occur),
-            ArrayOp::Replace(occur1, occur2) => {
-                write_double(w, context.type_renderer, "replace", occur1, occur2)
-            }
-            ArrayOp::Reserve(occur1, occur2) => {
-                write_double(w, context.type_renderer, "reserve", occur1, occur2)
-            }
+            ArrayOp::Pop(occur) => write_single(w, context.type_renderer, write_res, "pop", occur),
+            ArrayOp::Replace(occur1, occur2) => write_double(
+                w,
+                context.type_renderer,
+                write_res,
+                "replace",
+                occur1,
+                occur2,
+            ),
+            ArrayOp::Reserve(occur1, occur2) => write_double(
+                w,
+                context.type_renderer,
+                write_res,
+                "reserve",
+                occur1,
+                occur2,
+            ),
         },
-        Expr::IoOp(io_op) => match io_op {
+        annot::Expr::IoOp(io_op) => match io_op {
             IoOp::Input => write!(w, "input"),
-            IoOp::Output(occur) => write_single(w, context.type_renderer, "output", occur),
+            IoOp::Output(occur) => {
+                write_single(w, context.type_renderer, write_res, "output", occur)
+            }
         },
-        Expr::Panic(_ret_type, occur) => write_single(w, context.type_renderer, "panic", occur),
-        Expr::ArrayLit(_type, elem_occurs) => {
+        annot::Expr::Panic(_ret_type, occur) => {
+            write_single(w, context.type_renderer, write_res, "panic", occur)
+        }
+        annot::Expr::ArrayLit(_type, elem_occurs) => {
             let elem_ids = elem_occurs.iter().map(|occur| occur.id).collect::<Vec<_>>();
 
             let elems_are_contiguous = elem_ids.len() > 1
@@ -467,10 +515,10 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             }
             Ok(())
         }
-        Expr::BoolLit(val) => write!(w, "{}", if *val { "True" } else { "False" }),
-        Expr::ByteLit(val) => write!(w, "{:?}", (*val as char)),
-        Expr::IntLit(val) => write!(w, "{}", val),
-        Expr::FloatLit(val) => write!(w, "{}", val),
+        annot::Expr::BoolLit(val) => write!(w, "{}", if *val { "True" } else { "False" }),
+        annot::Expr::ByteLit(val) => write!(w, "{:?}", (*val as char)),
+        annot::Expr::IntLit(val) => write!(w, "{}", val),
+        annot::Expr::FloatLit(val) => write!(w, "{}", val),
     }
 }
 
@@ -535,7 +583,12 @@ pub fn write_func(
         num_locals: 1,
     };
 
-    write_expr(w, &func.body, context)?;
+    write_expr(
+        w,
+        &|w, res| write_resource(w, &write_mode_solution, &write_lifetime, res),
+        &func.body,
+        context,
+    )?;
     writeln!(w)?;
     Ok(())
 }

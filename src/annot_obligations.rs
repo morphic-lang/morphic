@@ -16,6 +16,7 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::intrinsic_config::intrinsic_sig;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
+use crate::pretty_print::{borrow_common as common_pp, mode_annot as annot_pp};
 use crate::util::instance_queue::InstanceQueue;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
@@ -24,6 +25,7 @@ use crate::util::progress_logger::ProgressSession;
 use id_collections::{Count, Id, IdMap, IdVec};
 use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 
 type Interner = annot::Interner<CustomTypeId>;
 
@@ -385,6 +387,64 @@ pub struct SolvedProgram {
     pub func_symbols: IdVec<CustomFuncId, first_ord::FuncSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
+}
+
+pub fn write_solved_func(
+    w: &mut dyn io::Write,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    func_renderer: &FuncRenderer<CustomFuncId>,
+    func: &SolvedFuncDef,
+    func_id: CustomFuncId,
+) -> io::Result<()> {
+    write!(w, "func {} (%0: ", func_renderer.render(func_id))?;
+    annot_pp::write_type_raw(
+        w,
+        Some(type_renderer),
+        &|w, res| common_pp::write_mode(w, res),
+        func.arg_ty.shape(),
+        func.arg_ty.res().as_slice(),
+    )?;
+    write!(w, "): ")?;
+    annot_pp::write_type_raw(
+        w,
+        Some(type_renderer),
+        &|w, res| common_pp::write_mode(w, res),
+        func.ret_ty.shape(),
+        func.ret_ty.res().as_slice(),
+    )?;
+    write!(w, " =\n")?;
+
+    let context = annot_pp::Context {
+        type_renderer,
+        func_renderer,
+        indentation: 0,
+        num_locals: 1,
+    };
+
+    annot_pp::write_expr(
+        w,
+        &|w, res| common_pp::write_mode(w, res),
+        &func.body,
+        context,
+    )?;
+    writeln!(w)?;
+    Ok(())
+}
+
+pub fn write_solved_program(w: &mut dyn io::Write, program: &SolvedProgram) -> io::Result<()> {
+    let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
+    let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
+
+    for (i, typedef) in &program.custom_types.types {
+        annot_pp::write_typedef(w, Some(&type_renderer), typedef, i)?;
+        writeln!(w)?;
+    }
+    writeln!(w)?;
+    for (i, func) in &program.funcs {
+        write_solved_func(w, &type_renderer, &func_renderer, func, i)?;
+        writeln!(w)?;
+    }
+    Ok(())
 }
 
 fn solve_func(
@@ -946,6 +1006,13 @@ fn annot_expr(
                 &path.as_lt(interner),
             );
 
+            // println!(
+            //     "calling {} with %{}\n\t{}\n\t{}",
+            //     func_renderer.render(func_id),
+            //     arg.id.0,
+            //     ctx.local_binding(arg.id).ty.display_with(type_renderer),
+            //     arg_ty.display_with(type_renderer)
+            // );
             let arg = handle_occur(interner, ctx, path, arg.id, &arg_ty);
             Expr::Call(*purity, *func_id, arg)
         }
@@ -1332,6 +1399,8 @@ fn annot_scc(
                 };
 
                 for id in scc.nodes {
+                    // println!("-------------------------------------------");
+                    // println!("annotating function {}", func_renderer.render(id));
                     let func = &funcs[id];
                     let mut ctx = LocalContext::new();
 
@@ -1353,6 +1422,7 @@ fn annot_scc(
                         &func.body,
                         &ret_ty,
                     );
+                    // println!("+++++++++++++++++++++++++++++++++++++++++++");
                     bodies.insert(*id, expr);
 
                     new_arg_tys.insert(*id, ctx.local_binding(arg_id).ty.clone());
@@ -1465,6 +1535,11 @@ pub fn annot_obligations(
     progress: impl ProgressLogger,
 ) -> ob::Program {
     let program = solve_program(interner, program);
+    {
+        let file = std::fs::File::create("annotated.ob").unwrap();
+        let mut writer = std::io::BufWriter::new(file);
+        write_solved_program(&mut writer, &program).unwrap();
+    }
     let program = annot_program(interner, program, progress);
     program
 }

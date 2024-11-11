@@ -1166,8 +1166,8 @@ pub enum Expr<R, I, J> {
         Occur<R, I>,
         Type<R, I>, // Output type
     ),
-    WrapCustom(CustomTypeId, UnfoldRecipe<CustomTypeId>, Occur<R, I>),
-    UnwrapCustom(CustomTypeId, UnfoldRecipe<CustomTypeId>, Occur<R, I>),
+    WrapCustom(I, UnfoldRecipe<I>, Occur<R, I>),
+    UnwrapCustom(I, UnfoldRecipe<I>, Occur<R, I>),
 
     Intrinsic(Intrinsic, Occur<R, I>),
     ArrayOp(ArrayOp<R, I>),
