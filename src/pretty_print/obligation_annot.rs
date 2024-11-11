@@ -1,7 +1,11 @@
 use crate::data::metadata::Metadata;
+use crate::data::mode_annot_ast::Lt;
+use crate::data::mode_annot_ast::{self as annot};
 use crate::data::obligation_annot_ast::{
-    ArrayOp, CustomFuncId, CustomTypeId, Expr, FuncDef, IoOp, Occur, Program, Type,
+    ArrayOp, BindType, CustomFuncId, CustomTypeId, Expr, FuncDef, IoOp, Occur, Program, RetType,
+    Type,
 };
+use crate::data::obligation_annot_ast::{BindRes, ValueRes};
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::borrow_common;
 use crate::pretty_print::mode_annot::{self as annot_pp};
@@ -35,18 +39,109 @@ impl<'a> Context<'a> {
     }
 }
 
-fn write_type(
+pub fn write_bind_type(
     w: &mut dyn Write,
     type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
-    type_: &Type,
+    type_: &BindType,
 ) -> io::Result<()> {
-    annot_pp::write_type(
+    annot_pp::write_type_raw(
         w,
         type_renderer,
-        borrow_common::write_mode,
-        borrow_common::write_lifetime,
-        type_,
+        &|w, res| {
+            write_bind_resource(
+                w,
+                &borrow_common::write_mode,
+                &borrow_common::write_lifetime,
+                res,
+            )
+        },
+        &type_.shape(),
+        type_.res().as_slice(),
     )
+}
+
+pub fn write_ret_type(
+    w: &mut dyn Write,
+    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
+    type_: &RetType,
+) -> io::Result<()> {
+    annot_pp::write_type_raw(
+        w,
+        type_renderer,
+        &|w, res| {
+            write_value_resource(
+                w,
+                &borrow_common::write_mode,
+                &borrow_common::write_lifetime_param,
+                res,
+            )
+        },
+        &type_.shape(),
+        type_.res().as_slice(),
+    )
+}
+
+pub fn write_type(
+    w: &mut dyn Write,
+    type_renderer: Option<&CustomTypeRenderer<CustomTypeId>>,
+    type_: &annot::Type<ValueRes<Lt>, CustomTypeId>,
+) -> io::Result<()> {
+    annot_pp::write_type_raw(
+        w,
+        type_renderer,
+        &|w, res| {
+            write_value_resource(
+                w,
+                &borrow_common::write_mode,
+                &borrow_common::write_lifetime,
+                res,
+            )
+        },
+        &type_.shape(),
+        type_.res().as_slice(),
+    )
+}
+
+pub fn write_value_resource<M, LtT>(
+    w: &mut dyn Write,
+    _write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
+    write_lifetime: &impl Fn(&mut dyn Write, &LtT) -> io::Result<()>,
+    res: &ValueRes<LtT>,
+) -> io::Result<()> {
+    match res {
+        ValueRes::Owned => write!(w, "●")?,
+        ValueRes::Borrowed(lt) => {
+            write!(w, "&")?;
+            write!(w, "<")?;
+            write_lifetime(w, lt)?;
+            write!(w, ">")?;
+        }
+    }
+    Ok(())
+}
+
+pub fn write_bind_resource<M, L>(
+    w: &mut dyn Write,
+    _write_mode: &impl Fn(&mut dyn Write, &M) -> io::Result<()>,
+    write_lifetime: &impl Fn(&mut dyn Write, &L) -> io::Result<()>,
+    res: &BindRes<L>,
+) -> io::Result<()> {
+    match res {
+        BindRes::StackOwned(lt) => {
+            write!(w, "●")?;
+            write!(w, "<")?;
+            write_lifetime(w, lt)?;
+            write!(w, ">")?;
+        }
+        BindRes::HeapOwned => write!(w, "●")?,
+        BindRes::Borrowed(lt) => {
+            write!(w, "&")?;
+            write!(w, "<")?;
+            write_lifetime(w, lt)?;
+            write!(w, ">")?;
+        }
+    }
+    Ok(())
 }
 
 fn write_occur(
@@ -83,7 +178,7 @@ fn write_double(
     write!(w, ")")
 }
 
-fn match_string_bytes(bindings: &[(Type, Expr, Metadata)]) -> Option<String> {
+fn match_string_bytes(bindings: &[(BindType, Expr, Metadata)]) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
         if let (_, Expr::ByteLit(byte), _) = binding {
@@ -129,7 +224,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                     write_metadata(w, new_context.indentation, metadata)?;
                     new_context.writeln(w)?;
                     write!(w, "{}: %{}: ", index, context.num_locals + index)?;
-                    write_type(w, Some(context.type_renderer), binding_type)?;
+                    write_bind_type(w, Some(context.type_renderer), binding_type)?;
                     new_context.writeln(w)?;
                     write!(w, " = ")?;
                     write_expr(
@@ -275,15 +370,9 @@ pub fn write_func(
     func_id: CustomFuncId,
 ) -> io::Result<()> {
     write!(w, "func {} (%0: ", func_renderer.render(func_id))?;
-    write_type(w, Some(type_renderer), &func.arg_ty)?;
+    write_bind_type(w, Some(type_renderer), &func.arg_ty)?;
     write!(w, "): ")?;
-    annot_pp::write_type(
-        w,
-        Some(type_renderer),
-        borrow_common::write_mode,
-        borrow_common::write_lifetime_param,
-        &func.ret_ty,
-    )?;
+    write_ret_type(w, Some(type_renderer), &func.ret_ty)?;
     write!(w, " =\n")?;
 
     let context = Context {
@@ -340,6 +429,38 @@ impl Type {
         type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
     ) -> DisplayType<'a> {
         DisplayType {
+            type_renderer: Some(type_renderer),
+            type_: self,
+        }
+    }
+}
+
+pub struct DisplayBindType<'a> {
+    type_renderer: Option<&'a CustomTypeRenderer<CustomTypeId>>,
+    type_: &'a BindType,
+}
+
+impl fmt::Display for DisplayBindType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut w = Vec::new();
+        write_bind_type(&mut w, self.type_renderer, self.type_).unwrap();
+        f.write_str(str::from_utf8(&w).unwrap())
+    }
+}
+
+impl BindType {
+    pub fn display<'a>(&'a self) -> DisplayBindType<'a> {
+        DisplayBindType {
+            type_renderer: None,
+            type_: self,
+        }
+    }
+
+    pub fn display_with<'a>(
+        &'a self,
+        type_renderer: &'a CustomTypeRenderer<CustomTypeId>,
+    ) -> DisplayBindType<'a> {
+        DisplayBindType {
             type_renderer: Some(type_renderer),
             type_: self,
         }
