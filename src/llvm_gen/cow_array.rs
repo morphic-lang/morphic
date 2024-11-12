@@ -4,7 +4,7 @@ use crate::data::mode_annot_ast::Mode;
 use crate::data::rc_specialized_ast::ModeScheme;
 use crate::llvm_gen::array::ArrayImpl;
 use crate::llvm_gen::fountain_pen::{scope, Scope};
-use crate::llvm_gen::tal::Tal;
+use crate::llvm_gen::tal::{ProfileRc, Tal};
 use crate::llvm_gen::{gen_rc_op, get_llvm_type, DerivedRcOp, Globals, Instances};
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
@@ -457,6 +457,10 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
 
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
+            if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                s.call_void(record_retain, &[]);
+            }
+
             s.if_(s.not(s.is_null(refcount_ptr)), |s| {
                 s.ptr_set(
                     refcount_ptr,
@@ -475,6 +479,10 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             if self.mode == Mode::Owned {
+                if let Some(ProfileRc { record_retain, .. }) = tal.prof_rc {
+                    s.call_void(record_retain, &[]);
+                }
+
                 s.if_(s.not(s.is_null(refcount_ptr)), |s| {
                     s.ptr_set(
                         refcount_ptr,
@@ -494,6 +502,10 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             if self.mode == Mode::Owned {
+                if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
+                    s.call_void(record_release, &[]);
+                }
+
                 s.if_(s.not(s.is_null(refcount_ptr)), |s| {
                     let new_refcount: BasicValueEnum<'_> =
                         s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
@@ -550,6 +562,10 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             if self.mode == Mode::Owned {
+                if let Some(ProfileRc { record_release, .. }) = tal.prof_rc {
+                    s.call_void(record_release, &[]);
+                }
+
                 s.if_(s.not(s.is_null(refcount_ptr)), |s| {
                     let new_refcount: BasicValueEnum<'_> =
                         s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
