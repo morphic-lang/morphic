@@ -1371,80 +1371,75 @@ fn annot_scc(
     type_renderer: &CustomTypeRenderer<ob::CustomTypeId>,
     scc: Scc<ob::CustomFuncId>,
 ) -> SolverScc {
-    match scc.kind {
-        SccKind::Acyclic | SccKind::Cyclic => {
-            // TODO: if the SCC is acyclic, we can skip lifetime fixed point iteration
+    let mut next_lt = Count::new();
 
-            let mut next_lt = Count::new();
+    let mut arg_tys = scc
+        .nodes
+        .iter()
+        .map(|id| (*id, init_bind_res(customs, &funcs[id].arg_ty, || Lt::Empty)))
+        .collect::<BTreeMap<_, _>>();
 
-            let mut arg_tys = scc
-                .nodes
-                .iter()
-                .map(|id| (*id, init_bind_res(customs, &funcs[id].arg_ty, || Lt::Empty)))
-                .collect::<BTreeMap<_, _>>();
+    let ret_tys = scc
+        .nodes
+        .iter()
+        .map(|id| (*id, init_value_res(&funcs[id].ret_ty, || next_lt.inc())))
+        .collect::<BTreeMap<_, _>>();
 
-            let ret_tys = scc
-                .nodes
-                .iter()
-                .map(|id| (*id, init_value_res(&funcs[id].ret_ty, || next_lt.inc())))
-                .collect::<BTreeMap<_, _>>();
+    let (new_arg_tys, bodies) = loop {
+        let mut new_arg_tys = BTreeMap::new();
+        let mut bodies = BTreeMap::new();
+        let assumptions = SignatureAssumptions {
+            known_defs: funcs_annot,
+            pending_args: &arg_tys,
+            pending_rets: &ret_tys,
+        };
 
-            let (new_arg_tys, bodies) = loop {
-                let mut new_arg_tys = BTreeMap::new();
-                let mut bodies = BTreeMap::new();
-                let assumptions = SignatureAssumptions {
-                    known_defs: funcs_annot,
-                    pending_args: &arg_tys,
-                    pending_rets: &ret_tys,
-                };
+        for id in scc.nodes {
+            // println!("-------------------------------------------");
+            // println!("annotating function {}", func_renderer.render(id));
+            let func = &funcs[id];
+            let mut ctx = LocalContext::new();
 
-                for id in scc.nodes {
-                    // println!("-------------------------------------------");
-                    // println!("annotating function {}", func_renderer.render(id));
-                    let func = &funcs[id];
-                    let mut ctx = LocalContext::new();
+            let arg_id = ctx.add_local(LocalInfo2 {
+                ty: init_bind_res(customs, &func.arg_ty, || Lt::Empty),
+                metadata: Metadata::default(),
+            });
+            debug_assert_eq!(arg_id, guard::ARG_LOCAL);
 
-                    let arg_id = ctx.add_local(LocalInfo2 {
-                        ty: init_bind_res(customs, &func.arg_ty, || Lt::Empty),
-                        metadata: Metadata::default(),
-                    });
-                    debug_assert_eq!(arg_id, guard::ARG_LOCAL);
+            let ret_ty = wrap_lts(&ret_tys[id]);
+            let expr = annot_expr(
+                interner,
+                customs,
+                assumptions,
+                func_renderer,
+                type_renderer,
+                &annot::FUNC_BODY_PATH(),
+                &mut ctx,
+                &func.body,
+                &ret_ty,
+            );
+            // println!("+++++++++++++++++++++++++++++++++++++++++++");
+            bodies.insert(*id, expr);
 
-                    let ret_ty = wrap_lts(&ret_tys[id]);
-                    let expr = annot_expr(
-                        interner,
-                        customs,
-                        assumptions,
-                        func_renderer,
-                        type_renderer,
-                        &annot::FUNC_BODY_PATH(),
-                        &mut ctx,
-                        &func.body,
-                        &ret_ty,
-                    );
-                    // println!("+++++++++++++++++++++++++++++++++++++++++++");
-                    bodies.insert(*id, expr);
-
-                    new_arg_tys.insert(*id, ctx.local_binding(arg_id).ty.clone());
-                }
-
-                if new_arg_tys
-                    .values()
-                    .zip_eq(arg_tys.values())
-                    .all(|(new, old)| lt_equiv(new, old))
-                {
-                    break (new_arg_tys, bodies);
-                }
-
-                arg_tys = new_arg_tys;
-            };
-
-            SolverScc {
-                func_args: new_arg_tys,
-                func_rets: ret_tys,
-                func_bodies: bodies,
-            }
+            new_arg_tys.insert(*id, ctx.local_binding(arg_id).ty.clone());
         }
+
+        if scc.kind == SccKind::Acyclic
+            || new_arg_tys
+                .values()
+                .zip_eq(arg_tys.values())
+                .all(|(new, old)| lt_equiv(new, old))
+        {
+            break (new_arg_tys, bodies);
+        }
+
+        arg_tys = new_arg_tys;
+    };
+
+    SolverScc {
+        func_args: new_arg_tys,
+        func_rets: ret_tys,
+        func_bodies: bodies,
     }
 }
 

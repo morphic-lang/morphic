@@ -17,7 +17,7 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::intrinsic_config::intrinsic_sig;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
-use crate::util::collection_ext::VecExt;
+use crate::util::collection_ext::{BTreeMapExt, VecExt};
 use crate::util::inequality_graph2 as in_eq;
 use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
@@ -650,6 +650,17 @@ fn freshen_type_unused<M, L>(
     ty: &TypeFo<Res<M, L>>,
 ) -> TypeFo<Res<ModeVar, Lt>> {
     freshen_type(strategy, ignore, constrs, || Lt::Empty, ty)
+}
+
+fn erase_lts(ty: &TypeFo<Res<ModeVar, Lt>>) -> TypeFo<Res<ModeVar, Lt>> {
+    let f = |res: &Res<ModeVar, Lt>| Res {
+        modes: res.modes.clone(),
+        lt: Lt::Empty,
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
 }
 
 fn instantiate_occur_in_position(
@@ -1579,6 +1590,34 @@ struct SolverScc {
     scc_constrs: ConstrGraph,
 }
 
+fn add_fresh_modes<L: Clone>(
+    strategy: RcStrategy,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    constrs: &mut ConstrGraph,
+    ty: &TypeFo<L>,
+) -> TypeFo<Res<ModeVar, L>> {
+    let pos = ty.shape().positions(customs, sccs);
+    let res = pos
+        .iter()
+        .zip_eq(ty.iter())
+        .map(|(pos, lt)| {
+            let modes = match pos {
+                Position::Stack => ResModes::Stack(fresh_var(strategy, IgnorePerceus::No, constrs)),
+                Position::Heap => ResModes::Heap(HeapModes {
+                    access: fresh_var(strategy, IgnorePerceus::No, constrs),
+                    storage: fresh_var(strategy, IgnorePerceus::No, constrs),
+                }),
+            };
+            Res {
+                modes,
+                lt: lt.clone(),
+            }
+        })
+        .collect();
+    annot::Type::new(ty.shape().clone(), IdVec::from_vec(res))
+}
+
 fn instantiate_scc(
     strategy: RcStrategy,
     interner: &Interner,
@@ -1590,145 +1629,112 @@ fn instantiate_scc(
     type_renderer: &CustomTypeRenderer<CustomTypeId>,
     func_renderer: &FuncRenderer<CustomFuncId>,
 ) -> SolverScc {
-    match scc.kind {
-        SccKind::Acyclic | SccKind::Cyclic => {
-            // TODO: if the SCC is acyclic, we can skip lifetime fixed point iteration
+    let ret_tys: BTreeMap<_, annot::Type<LtParam, _>> = {
+        let mut count = Count::new();
+        scc.nodes
+            .iter()
+            .map(|id| {
+                let ret_shape = annot::Shape::from_guarded(interner, customs, &funcs[id].ret_ty);
+                let ret_res = (0..ret_shape.num_slots).map(|_| count.inc()).collect();
+                let ret_ty = annot::Type::new(ret_shape, IdVec::from_vec(ret_res));
+                (*id, ret_ty)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
 
-            let mut constrs = ConstrGraph::new();
-            let mut next_lt = Count::new();
+    let mut arg_tys: BTreeMap<_, annot::Type<Lt, _>> = {
+        scc.nodes
+            .iter()
+            .map(|id| {
+                let arg_shape = annot::Shape::from_guarded(interner, customs, &funcs[id].arg_ty);
+                let arg_res = (0..arg_shape.num_slots).map(|_| Lt::Empty).collect();
+                let arg_ty = annot::Type::new(arg_shape, IdVec::from_vec(arg_res));
+                (*id, arg_ty)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
 
-            let mut arg_tys = scc
-                .nodes
-                .iter()
-                .map(|id| {
-                    (
-                        *id,
-                        freshen_type_unused(
-                            strategy,
-                            IgnorePerceus::No,
-                            &mut constrs,
-                            &parameterize_type(interner, customs, sccs, &funcs[id].arg_ty),
-                        ),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
+    // let mut iter = 0;
+    let (arg_tys, ret_tys, bodies, constrs) = loop {
+        let mut constrs = ConstrGraph::new();
+        let pending_args =
+            arg_tys.map_refs(|_, ty| add_fresh_modes(strategy, customs, sccs, &mut constrs, ty));
+        let pending_rets =
+            ret_tys.map_refs(|_, ty| add_fresh_modes(strategy, customs, sccs, &mut constrs, ty));
 
-            let mut first_lt = next_lt;
-            let ret_tys = scc
-                .nodes
-                .iter()
-                .map(|id| {
-                    (
-                        *id,
-                        freshen_type(
-                            strategy,
-                            IgnorePerceus::No,
-                            &mut constrs,
-                            &mut || next_lt.inc(),
-                            &parameterize_type(interner, customs, sccs, &funcs[id].ret_ty),
-                        ),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-
-            if strategy == RcStrategy::ImmutableBeans {
-                for var in ret_tys
-                    .values()
-                    .flat_map(|ty| ty.iter_flat())
-                    .map(|(m, _)| *m)
-                {
-                    constrs.require_le_const(&Mode::Owned, var);
-                }
-            }
-
-            let sig_params = {
-                let mut params = BTreeSet::new();
-                while first_lt != next_lt {
-                    params.insert(first_lt.inc());
-                }
-                params
-            };
-
-            let (new_arg_tys, bodies) = loop {
-                let mut new_arg_tys = BTreeMap::new();
-                let mut bodies = BTreeMap::new();
-                let assumptions = SignatureAssumptions {
-                    known_defs: funcs_annot,
-                    pending_args: &arg_tys,
-                    pending_rets: &ret_tys,
-                };
-
-                for id in scc.nodes {
-                    let func = &funcs[id];
-                    let mut ctx = LocalContext::new();
-
-                    let arg_ty = freshen_type_unused(
-                        strategy,
-                        IgnorePerceus::No,
-                        &mut constrs,
-                        &parameterize_type(interner, customs, sccs, &func.arg_ty),
-                    );
-                    let arg_id = ctx.add_local(LocalInfo {
-                        scope: annot::ARG_SCOPE(),
-                        ty: arg_ty,
-                    });
-                    debug_assert_eq!(arg_id, guard::ARG_LOCAL);
-
-                    let ret_ty = wrap_lts(&ret_tys[id]);
-                    let expr = instantiate_expr(
-                        strategy,
-                        interner,
-                        customs,
-                        sccs,
-                        assumptions,
-                        &mut constrs,
-                        &mut ctx,
-                        annot::FUNC_BODY_PATH(),
-                        &ret_ty,
-                        &func.body,
-                        type_renderer,
-                        func_renderer,
-                    );
-                    bodies.insert(*id, expr);
-
-                    new_arg_tys.insert(*id, (ctx.local_binding(guard::ARG_LOCAL).ty).clone());
-                }
-
-                debug_assert!(
-                    {
-                        let params_found = new_arg_tys
-                            .values()
-                            .flat_map(|ty| ty.iter().map(|res| &res.lt))
-                            .filter_map(|lt| match lt {
-                                Lt::Empty | Lt::Local(_) => None,
-                                Lt::Join(params) => Some(params.iter().copied()),
-                            })
-                            .flatten()
-                            .collect::<BTreeSet<_>>();
-                        params_found.is_subset(&sig_params)
-                    },
-                    "Some temporary lifetime parameters leaked into the function arguments during \
-                     expression instantiation. Only parameters from the return type should appear."
-                );
-
-                if new_arg_tys
-                    .values()
-                    .zip_eq(arg_tys.values())
-                    .all(|(new, old)| lt_equiv(new, old))
-                {
-                    break (new_arg_tys, bodies);
-                }
-
-                arg_tys = new_arg_tys;
-            };
-
-            SolverScc {
-                func_args: new_arg_tys,
-                func_rets: ret_tys,
-                func_bodies: bodies,
-                scc_constrs: constrs,
+        if strategy == RcStrategy::ImmutableBeans {
+            for var in pending_rets
+                .values()
+                .flat_map(|ty| ty.iter_flat())
+                .map(|(m, _)| *m)
+            {
+                constrs.require_le_const(&Mode::Owned, var);
             }
         }
+
+        let assumptions = SignatureAssumptions {
+            known_defs: funcs_annot,
+            pending_args: &pending_args,
+            pending_rets: &pending_rets,
+        };
+
+        let mut new_args = BTreeMap::new();
+        let mut bodies = BTreeMap::new();
+
+        for id in scc.nodes {
+            let func = &funcs[id];
+            let mut ctx = LocalContext::new();
+
+            let arg_id = ctx.add_local(LocalInfo {
+                scope: annot::ARG_SCOPE(),
+                ty: pending_args[id].clone(),
+            });
+            debug_assert_eq!(arg_id, guard::ARG_LOCAL);
+
+            let ret_ty = wrap_lts(&pending_rets[id]);
+            let expr = instantiate_expr(
+                strategy,
+                interner,
+                customs,
+                sccs,
+                assumptions,
+                &mut constrs,
+                &mut ctx,
+                annot::FUNC_BODY_PATH(),
+                &ret_ty,
+                &func.body,
+                type_renderer,
+                func_renderer,
+            );
+            bodies.insert_vacant(*id, expr);
+            new_args.insert_vacant(*id, (ctx.local_binding(guard::ARG_LOCAL).ty).clone());
+        }
+
+        if scc.kind == SccKind::Acyclic
+            || new_args
+                .values()
+                .zip_eq(pending_args.values())
+                .all(|(new, old)| lt_equiv(new, old))
+        {
+            break (new_args, pending_rets, bodies, constrs);
+        }
+
+        for (arg_ty, new_arg_ty) in arg_tys.values_mut().zip_eq(new_args.values()) {
+            for (arg_res, new_arg_res) in arg_ty
+                .res_mut()
+                .values_mut()
+                .zip_eq(new_arg_ty.res().values())
+            {
+                *arg_res = new_arg_res.lt.clone();
+            }
+        }
+    };
+
+    SolverScc {
+        func_args: arg_tys,
+        func_rets: ret_tys,
+        func_bodies: bodies,
+        scc_constrs: constrs,
     }
 }
 

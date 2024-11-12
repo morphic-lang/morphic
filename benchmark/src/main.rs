@@ -703,13 +703,13 @@ fn main() {
 
     sample_primes_sieve();
 
-    // sample_parse_json();
+    sample_parse_json();
 
     sample_calc();
 
     sample_unify();
 
-    // sample_words_trie();
+    sample_words_trie();
 
     sample_cfold();
     sample_deriv();

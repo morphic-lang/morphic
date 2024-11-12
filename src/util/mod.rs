@@ -22,6 +22,8 @@ pub mod im_rc_ext;
 pub mod inequality_graph;
 pub mod inequality_graph2;
 
+pub mod fixed_point;
+
 pub mod event_set;
 
 pub mod progress_logger;

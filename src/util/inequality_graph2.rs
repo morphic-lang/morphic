@@ -195,6 +195,10 @@ where
         self.vars[var2].lb_vars.contains(&var1)
     }
 
+    pub fn lower_bounds(&self, var: SolverVar) -> &VarConstrs<SolverVar, T> {
+        &self.vars[var]
+    }
+
     pub fn saturate(&mut self) {
         loop {
             let mut new = Vec::new();
@@ -228,20 +232,28 @@ where
     }
 }
 
+impl<Var: Id, T: fmt::Display> fmt::Display for VarConstrs<Var, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{{ ")?;
+        write!(f, "{}, ", self.lb_const)?;
+        for lb_var in self.lb_vars.iter() {
+            write!(f, "{}, ", lb_var.to_index())?;
+        }
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
+
 impl<Var: Id, T: fmt::Display> fmt::Display for ConstrGraph<Var, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[ ")?;
-        for (i, (var, constrs)) in self.vars.iter().enumerate() {
-            write!(f, "{} ≤ {}", constrs.lb_const, var.to_index())?;
+        for (var, constrs) in self.vars.iter() {
+            write!(f, "{} ≤ {}, ", constrs.lb_const, var.to_index())?;
             for lb_var in constrs.lb_vars.iter() {
-                write!(f, ", ")?;
-                write!(f, "{} ≤ {}", lb_var.to_index(), var.to_index())?;
-            }
-            if i + 1 < self.vars.len() {
-                write!(f, ", ")?;
+                write!(f, "{} ≤ {}, ", lb_var.to_index(), var.to_index())?;
             }
         }
-        write!(f, " ]")?;
+        write!(f, "]")?;
         Ok(())
     }
 }
