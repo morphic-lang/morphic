@@ -419,14 +419,6 @@ enum IsZeroSized {
     ZeroSized,
 }
 
-// #[derive(Clone, Debug)]
-// struct Globals<'a, 'b> {
-//     context: &'a Context,
-//     module: &'b Module<'a>,
-//     custom_types: &'a IdVec<low::CustomTypeId, low::Type>,
-//     target: &'b TargetData,
-//     tal: Tal<'a>,
-// }
 #[derive(Clone, Debug)]
 struct Globals<'a, 'b> {
     context: &'a Context,

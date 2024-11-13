@@ -327,10 +327,15 @@ fn bench_sample(
             .join("out2")
             .join(variant_name.clone());
 
+        let needs_repeat = !variant.record_rc;
+        let needed_iters_0 = if needs_repeat { iters.0 } else { 1 };
+        let needed_iters_1 = if needs_repeat { iters.1 } else { 1 };
+
         let mut results = Vec::new();
         let mut counts: Option<Vec<RcCounts>> = None;
-        for _ in 0..iters.0 {
-            let report: ProfReport = run_exe(&exe_path, iters.1, extra_stdin, expected_stdout);
+        for _ in 0..needed_iters_0 {
+            let report: ProfReport =
+                run_exe(&exe_path, needed_iters_1, extra_stdin, expected_stdout);
 
             let timing = &report.timings[0];
 
@@ -341,7 +346,7 @@ fn bench_sample(
 
             let specialization = &timing.specializations[0];
 
-            assert_eq!(specialization.total_calls, iters.1);
+            assert_eq!(specialization.total_calls, needed_iters_1);
 
             let total_nanos = specialization.total_clock_nanos;
 
@@ -598,6 +603,30 @@ fn sample_words_trie() {
     );
 }
 
+fn sample_text_stats() {
+    let iters = (10, 30);
+
+    let stdin = include_str!("../../samples/sample-input/shakespeare.txt");
+
+    let stdout = "317\n";
+
+    compile_sample(
+        "bench_text_stats.mor",
+        "samples/bench_text_stats.mor",
+        &[],
+        "compute_stats",
+    );
+
+    bench_sample(
+        iters,
+        "bench_text_stats.mor",
+        &[],
+        "compute_stats",
+        stdin,
+        stdout,
+    );
+}
+
 fn sample_cfold() {
     let iters = (10, 10);
 
@@ -710,6 +739,8 @@ fn main() {
     sample_unify();
 
     sample_words_trie();
+
+    sample_text_stats();
 
     sample_cfold();
     sample_deriv();

@@ -61,6 +61,17 @@ all_rec(arr: Array a, f: a -> Bool, i: Int): Bool =
 pub all(arr: Array a, f: a -> Bool): Bool =
   all_rec(arr, f, 0)
 
+foldl_rec(arr: Array t, accum: u, f: (u, t) -> u, i: Int): u =
+  if i >= len(arr) {
+    accum
+  } else {
+    foldl_rec(arr, f(accum, get(arr, i)), f, i + 1)
+  }
+
+pub foldl(arr: Array t, accum: accum, f: (accum, t) -> accum): accum =
+  foldl_rec(arr, accum, f, 0)
+
+
 equal_rec(arr1: Array a, arr2: Array a, eq: (a, a) -> Bool, i: Int): Bool =
   if i >= len(arr1) {
     True
