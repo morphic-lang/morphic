@@ -727,9 +727,7 @@ fn propagate_get(interner: &Interner, input_ty: &Type, output_ty: &Type) -> Type
             (ValueRes::Owned, ValueRes::Borrowed(lt)) => {
                 input_lt = input_lt.join(interner, lt);
             }
-            (ValueRes::Borrowed(_), ValueRes::Owned) => {
-                unreachable!("impossible by construction")
-            }
+            (ValueRes::Borrowed(_), ValueRes::Owned) => {}
             (ValueRes::Owned, ValueRes::Owned) => {}
             (ValueRes::Borrowed(_), ValueRes::Borrowed(_)) => {}
         }
