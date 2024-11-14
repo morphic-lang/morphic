@@ -20,7 +20,7 @@ int_mod(x: Int, y: Int): Int =
   x - ((x / y) * y)
 
 proc main(): () =
-  let map = HashMap.string_hashmap(16) in
+  let map = HashMap.string_hashmap in
   // Insert numbers 0 to 9 with keys "key0" to "key9"
   let map_filled = for(0, 100, map, \(m, i) -> 
     HashMap.insert(m, String.concat("key", String.int_to_string(i)), i)
@@ -54,6 +54,16 @@ proc main(): () =
       m
     }
   ) in
+
+  // Test overriding a value
+  let map_override = HashMap.insert(map_empty, "testkey", 1) in
+  let map_override2 = HashMap.insert(map_override, "testkey", 2) in
+  let override_val = HashMap.get(map_override2, "testkey") in
+  do test("Override value should be Some(2)", String.equal(Option.str(override_val, String.int_to_string), "Some(2)")) then
+
+  let map_override3 = HashMap.remove(map_override2, "testkey") in
+  let override_val2 = HashMap.get(map_override3, "testkey") in
+  do test("Value should be None after removal", String.equal(Option.str(override_val2, String.int_to_string), "None")) then
 
   // Check if it's empty
   let empty = HashMap.is_empty(map_empty) in

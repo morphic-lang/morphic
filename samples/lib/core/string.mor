@@ -97,3 +97,7 @@ pub equal(a: Array Byte, b: Array Byte): Bool =
   }
 
 pub concat(x : Array Byte, y : Array Byte): Array Byte = Array.concat(x, y)
+
+pub join(xs: Array (Array Byte), sep: Array Byte): Array Byte =
+  (Iter.join(Iter.items(xs) |> Iter.map(Iter.items), Iter.items(sep)) |> Array.from_iter())
+  

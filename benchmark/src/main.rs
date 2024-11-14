@@ -292,7 +292,7 @@ fn variants() -> Vec<Variant> {
     for rc_strat in [
         RcStrategy::Default,
         RcStrategy::Perceus,
-        RcStrategy::ImmutableBeans,
+        // RcStrategy::ImmutableBeans,
     ] {
         for record_rc in [false, true] {
             variants.push(Variant {
@@ -627,6 +627,23 @@ fn sample_text_stats() {
     );
 }
 
+fn sample_lisp() {
+    let iters = (10, 30);
+
+    let stdin = include_str!("../../samples/sample-input/lisp-interpreter.lisp");
+
+    let stdout = "((O . ()) . ((O . (O . ())) . ((O . (O . (O . ()))) . ((O . (O . (O . (O . ())))) . ((O . (O . (O . (O . (O . ()))))) . ())))))\n";
+
+    compile_sample(
+        "bench_lisp.mor",
+        "samples/bench_lisp.mor",
+        &[],
+        "run_program",
+    );
+
+    bench_sample(iters, "bench_lisp.mor", &[], "run_program", stdin, stdout);
+}
+
 fn sample_cfold() {
     let iters = (10, 10);
 
@@ -726,11 +743,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    sample_quicksort();
-
-    sample_primes();
-
+    // these have 0 retains omitted, we don't run them
+    // sample_quicksort();
+    // sample_primes();
     sample_primes_sieve();
+    sample_nqueens();
 
     sample_parse_json();
 
@@ -742,9 +759,11 @@ fn main() {
 
     sample_text_stats();
 
+    sample_lisp();
+
     sample_cfold();
     sample_deriv();
-    sample_nqueens();
     sample_rbtree();
-    sample_rbtreeck();
+
+    // sample_rbtreeck();
 }
