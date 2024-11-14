@@ -4,6 +4,8 @@ pub module Iter = file "iter.mor" with { Option }
 
 pub module Array = file "array.mor" with { Iter, Option }
 
+pub module Result = file "result.mor" with { Array, Option }
+
 pub module String = file "string.mor" with { Array, Option, Iter }
 
 pub module Func = file "func.mor"

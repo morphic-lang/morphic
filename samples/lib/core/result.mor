@@ -1,0 +1,91 @@
+import Array expose { concat }
+import Option expose { Option { Some, None } }
+
+pub type Result a e {
+  pub Ok(a),
+  pub Err(e),
+}
+
+pub is_ok(res: Result a e): Bool =
+  match res {
+    Ok(x) -> True,
+    Err(_) -> False,
+  }
+
+pub is_error(res: Result a e): Bool =
+  match res {
+    Ok(_) -> False,
+    Err(_) -> True,
+  }
+
+pub or_default(res: Result a e, def: a): a =
+  match res {
+    Ok(x) -> x,
+    Err(_) -> def,
+  }
+
+pub map(res: Result a e, fn: a -> b): Result b e =
+  match res {
+    Ok(x) -> Ok(fn(x)),
+    Err(err) -> Err(err),
+  }
+
+pub and_then(res: Result a e, fn: a -> Result b e): Result b e =
+  match res {
+    Ok(x) -> fn(x),
+    Err(err) -> Err(err),
+  }
+
+pub or_else(res: Result a e, fn: () -> Result a e): Result a e =
+  match res {
+    Ok(x) -> Ok(x),
+    Err(_) -> fn(),
+  }
+
+identity(x: a): a = x
+
+pub flatten(res: Result (Result a e) e): Result a e =
+  and_then(res, identity)
+
+pub both(fst: Result a e, snd: Result b e): Result (a, b) e =
+  match (fst, snd) {
+    (Ok(x), Ok(y)) -> Ok(x, y),
+    (Err(err), _) -> Err(err),
+    (_, Err(err)) -> Err(err),
+  }
+
+pub either(fst: Result a e, snd: Result a e): Result a e =
+  match (fst, snd) {
+    (Ok(x), _) -> Ok(x),
+    (_, Ok(y)) -> Ok(y),
+    (Err(err1), Err(_)) -> Err(err1),
+  }
+
+pub unwrap(res: Result a e): a =
+  match res {
+    Ok(x) -> x,
+    Err(_) -> panic("Cannot call 'Result.unwrap' on an 'Err' value\n"),
+  }
+
+pub str(res: Result a e, fn: a -> Array Byte, err_fn: e -> Array Byte): Array Byte =
+  match res {
+    Ok(x) -> concat(concat("Ok(", fn(x)), ")"),
+    Err(err) -> concat(concat("Err(", err_fn(err)), ")"),
+  }
+
+pub ok_or(opt: Option a, err: e): Result a e =
+  match opt {
+    Some(x) -> Ok(x),
+    None -> Err(err),
+  }
+
+pub all_ok(results: Array (Result a e)): Result (Array a) e =
+  Array.foldl(
+    results,
+    Ok([]),
+    \(acc, x) -> match (acc, x) {
+      (Ok(vals), Ok(val)) -> Ok(concat(vals, [val])),
+      (Err(err), _) -> Err(err),
+      (_, Err(err)) -> Err(err),
+    },
+  )

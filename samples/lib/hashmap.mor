@@ -1,6 +1,7 @@
 import Core
   expose {
     module Option expose { Option { Some, None } },
+    module Result expose { Result { Ok, Err } },
     module Array,
     module Iter expose { Iter },
     module Func expose { const },
@@ -73,12 +74,12 @@ pub type HashMap k v {
   )
 }
 
-pub empty(size: Int, hash: k -> Int, eq: (k, k) -> Bool): HashMap k v =
+pub empty(hash: k -> Int, eq: (k, k) -> Bool): HashMap k v =
   HashMap(
-    size,
+    8,
     hash,
     eq,
-    Array.fill_with(size, \() -> Bucket.empty()),
+    Array.fill_with(8, \() -> Bucket.empty()),
     0,
   )
 
@@ -166,5 +167,20 @@ pub string_eq(a: Array Byte, b: Array Byte): Bool =
   Array.equal(a, b, \(p, q) -> p =& q)
 
 // Create a HashMap specialized for string keys
-pub string_hashmap(size: Int): HashMap (Array Byte) v =
-  empty(size, string_hash, string_eq)
+pub string_hashmap: HashMap (Array Byte) v =
+  empty(string_hash, string_eq)
+
+
+pub to_string(this: HashMap k v, key_to_str: k -> Array Byte, val_to_str: v -> Array Byte): Array Byte =
+  let HashMap(_, _, _, buckets, _) = this in
+  String.concat("HashMap{", 
+    String.join(
+    buckets
+    |> Iter.items()
+    |> Iter.flat_map(\Bucket.Bucket(entries) -> Iter.items(entries))
+    |> Iter.map(\Bucket.Entry(k, v) -> 
+      String.join([key_to_str(k), " -> ", val_to_str(v)], "")
+    )
+    |> Array.from_iter(), ", "
+  ))
+  |> String.concat("}")

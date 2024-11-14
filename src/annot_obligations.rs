@@ -1528,11 +1528,6 @@ pub fn annot_obligations(
     progress: impl ProgressLogger,
 ) -> ob::Program {
     let program = solve_program(interner, program);
-    {
-        let file = std::fs::File::create("annotated.ob").unwrap();
-        let mut writer = std::io::BufWriter::new(file);
-        write_solved_program(&mut writer, &program).unwrap();
-    }
     let program = annot_program(interner, program, progress);
     program
 }

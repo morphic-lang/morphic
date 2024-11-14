@@ -71,6 +71,50 @@ foldl_rec(arr: Array t, accum: u, f: (u, t) -> u, i: Int): u =
 pub foldl(arr: Array t, accum: accum, f: (accum, t) -> accum): accum =
   foldl_rec(arr, accum, f, 0)
 
+map_rec(arr: Array t, f: t -> u, i: Int): Array u =
+  if i < 0 {
+    []
+  } else {
+    push(map_rec(arr, f, i - 1), f(get(arr, i)))
+  }
+
+pub is_empty(arr: Array a): Bool = len(arr) = 0
+
+pub map(arr: Array t, f: t -> u): Array u =
+  map_rec(arr, f, len(arr) - 1)
+
+slice_rec(arr: Array t, start: Int, end: Int, i: Int): Array t =
+  if i < start {
+    []
+  } else {
+    push(slice_rec(arr, start, end, i - 1), get(arr, i))
+  }
+
+pub slice(arr: Array t, start: Int, end: Int): Array t =
+  if start < 0 || end < 0 || start >= len(arr) || end > len(arr) || end <= start {
+    []
+  } else {
+    slice_rec(arr, start, end, end - 1)
+  }
+
+zip_rec(a: Array t, b: Array u, i: Int): Array (t, u) =
+  if i < 0 {
+    []
+  } else {
+    push(zip_rec(a, b, i - 1), (get(a, i), get(b, i)))
+  }
+
+pub zip(a: Array t, b: Array u): Array (t, u) =
+  let start = if len(a) < len(b) { len(a) } else { len(b) } - 1 in
+  if start < 0 {
+    []
+  } else {
+    zip_rec(a, b, start)
+  }
+
+pub push_front(val: t, arr: Array t): Array t =
+  concat([val], arr)
+
 
 equal_rec(arr1: Array a, arr2: Array a, eq: (a, a) -> Bool, i: Int): Bool =
   if i >= len(arr1) {
@@ -108,6 +152,17 @@ pub from_iter_with_capacity(iter: Iter a, capacity: Int): Array a =
 
 pub from_iter(iter: Iter a): Array a =
   from_iter_with_capacity(iter, 0)
+
+reverse_rec(arr: Array t, i: Int, result: Array t): Array t =
+  if i < 0 {
+    result
+  } else {
+    reverse_rec(arr, i - 1, push(result, get(arr, i)))
+  }
+
+pub reverse(arr: Array t): Array t =
+  reverse_rec(arr, len(arr) - 1, [])
+
 
 pub str(arr: Array a, s: a -> Array Byte): Array Byte =
   let n = len(arr) - 1 in
