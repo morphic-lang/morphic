@@ -67,9 +67,12 @@ proc read_text_rec(acc: Array Byte): Array Byte=
     do read_text_rec(String.concat(String.concat(acc, "\n"), next_line))
   }
 
+
 compute_stats(words : Array String): Array String =
+  let xROMEO = "ROMEO" in
+  let xRomeo = "Romeo" in
   let romeo_foldl_fn = \(count, String(word)) ->
-    if (String.equal(word, "ROMEO") || String.equal(word, "Romeo")) {
+    if (String.equal(word, xROMEO) || String.equal(word, xRomeo)) {
       count + 1
     } else {
       count
