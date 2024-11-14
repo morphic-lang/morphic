@@ -90,11 +90,7 @@ pub string_to_int(str: Array Byte): Option Int =
   }
 
 pub equal(a: Array Byte, b: Array Byte): Bool =
-  if len(a) = len(b) {
-    Iter.all(Iter.zip(Iter.items(a), Iter.items(b)), \(x, y) -> x =& y)
-  } else {
-    False
-  }
+  Array.equal(a, b, \(x, y) -> x =& y)
 
 pub concat(x : Array Byte, y : Array Byte): Array Byte = Array.concat(x, y)
 
