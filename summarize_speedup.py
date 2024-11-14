@@ -22,6 +22,7 @@ def parse_times(results_dir):
 def parse_rcs(results_dir):
     retain_counts = defaultdict(dict)
     release_counts = defaultdict(dict)
+    rc1_counts = defaultdict(dict)
     for fname in os.listdir(results_dir):
         # parse a filename of the form "bench_{name}.mor_native_{tag}_time.txt" into a tuple
         # (name, tag) using regular expressions
@@ -33,6 +34,7 @@ def parse_rcs(results_dir):
             rcs = json.load(f)
         retain_counts[match.group("name")][match.group("tag")] = rcs[0]["total_retain_count"]
         release_counts[match.group("name")][match.group("tag")] = rcs[0]["total_release_count"]
+        rc1_counts[match.group("name")][match.group("tag")] = rcs[0]["total_rc1_count"]
     return (retain_counts, release_counts)
 
 def get_speedups(bench_name, all_times):

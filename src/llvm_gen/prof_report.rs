@@ -1,8 +1,8 @@
-use crate::llvm_gen::fountain_pen::{scope, Scope};
-use crate::llvm_gen::tal::Tal;
 use crate::data::low_ast as low;
 use crate::data::profile as prof;
 use crate::data::tail_rec_ast as tail;
+use crate::llvm_gen::fountain_pen::{scope, Scope};
+use crate::llvm_gen::tal::Tal;
 use crate::util::iter::try_zip_eq;
 use id_collections::IdVec;
 use inkwell::context::Context;
@@ -24,6 +24,7 @@ pub struct ProfilePointCounters<'a> {
     pub total_clock_nanos: GlobalValue<'a>,
     pub total_retain_count: Option<GlobalValue<'a>>,
     pub total_release_count: Option<GlobalValue<'a>>,
+    pub total_rc1_count: Option<GlobalValue<'a>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -276,6 +277,20 @@ pub fn define_prof_report_fn<'a>(
                                                                                 .into(),
                                                                         )),
                                                                     ));
+
+                                                                    if let Some(total_rc1_count) =
+                                                                        counters.total_rc1_count
+                                                                    {
+                                                                        entries.push((
+                                                                        "total_rc1_count",
+                                                                        DynU64(s.ptr_get(
+                                                                            s.i64_t(),
+                                                                            total_rc1_count
+                                                                                .as_pointer_value()
+                                                                                .into(),
+                                                                        )),
+                                                                    ));
+                                                                    }
                                                                 }
 
                                                                 Object(SingleLine, entries)

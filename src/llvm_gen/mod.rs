@@ -560,7 +560,7 @@ fn declare_profile_points<'a>(
             );
             total_clock_nanos.set_initializer(&context.i64_type().const_zero());
 
-            let (total_retain_count, total_release_count) =
+            let (total_retain_count, total_release_count, total_rc1_count) =
                 if program.profile_points[prof_id].record_rc {
                     let total_retain_count = module.add_global(
                         context.i64_type(),
@@ -576,9 +576,20 @@ fn declare_profile_points<'a>(
                     );
                     total_release_count.set_initializer(&context.i64_type().const_zero());
 
-                    (Some(total_retain_count), Some(total_release_count))
+                    let total_rc1_count = module.add_global(
+                        context.i64_type(),
+                        None, // TODO: Is this the correct address space annotation?
+                        &format!("total_rc1_count_{}", func_id.0),
+                    );
+                    total_rc1_count.set_initializer(&context.i64_type().const_zero());
+
+                    (
+                        Some(total_retain_count),
+                        Some(total_release_count),
+                        Some(total_rc1_count),
+                    )
                 } else {
-                    (None, None)
+                    (None, None, None)
                 };
 
             let existing = decls[prof_id].counters.insert(
@@ -588,6 +599,7 @@ fn declare_profile_points<'a>(
                     total_clock_nanos,
                     total_retain_count,
                     total_release_count,
+                    total_rc1_count,
                 },
             );
             debug_assert!(existing.is_none());
@@ -1671,7 +1683,7 @@ fn gen_function<'a, 'b>(
 
     let i64_t = context.i64_type();
 
-    let (start_clock_nanos, start_retain_count, start_release_count) =
+    let (start_clock_nanos, start_retain_count, start_release_count, start_rc1_count) =
         if let Some(prof_id) = func.profile_point {
             let start_clock_nanos = builder
                 .build_call(globals.tal.prof_clock_nanos, &[], "start_clock_nanos")
@@ -1706,14 +1718,27 @@ fn gen_function<'a, 'b>(
             } else {
                 None
             };
+            let start_rc1_count = if counters.total_rc1_count.is_some() {
+                let start_rc1_count = builder
+                    .build_call(
+                        globals.tal.prof_rc.unwrap().get_rc1_count,
+                        &[],
+                        "start_rc1_count",
+                    )
+                    .unwrap();
+                Some(start_rc1_count)
+            } else {
+                None
+            };
 
             (
                 Some(start_clock_nanos),
                 start_retain_count,
                 start_release_count,
+                start_rc1_count,
             )
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
 
     // Declare tail call targets, but don't populate their bodies yet. Tail functions are

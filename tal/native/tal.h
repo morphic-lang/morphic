@@ -24,8 +24,10 @@ void prof_report_done(void);
 
 void prof_rc_record_retain(void);
 void prof_rc_record_release(void);
+void prof_rc_record_rc1(void);
 uint64_t prof_rc_get_retain_count(void);
 uint64_t prof_rc_get_release_count(void);
+uint64_t prof_rc_get_rc1_count(void);
 
 
 #endif

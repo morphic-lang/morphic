@@ -28,8 +28,10 @@ pub mod wasm {
 pub struct ProfileRc<'a> {
     pub record_retain: FunctionValue<'a>,
     pub record_release: FunctionValue<'a>,
+    pub record_rc1: FunctionValue<'a>,
     pub get_retain_count: FunctionValue<'a>,
     pub get_release_count: FunctionValue<'a>,
+    pub get_rc1_count: FunctionValue<'a>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -221,6 +223,11 @@ impl<'a> Tal<'a> {
                 void_t.fn_type(&[], false),
                 Some(Linkage::External),
             );
+            let record_rc1 = module.add_function(
+                "prof_rc_record_rc1",
+                void_t.fn_type(&[], false),
+                Some(Linkage::External),
+            );
             let get_retain_count = module.add_function(
                 "prof_rc_get_retain_count",
                 i64_t.fn_type(&[], false),
@@ -231,11 +238,18 @@ impl<'a> Tal<'a> {
                 i64_t.fn_type(&[], false),
                 Some(Linkage::External),
             );
+            let get_rc1_count = module.add_function(
+                "prof_rc_get_rc1_count",
+                i64_t.fn_type(&[], false),
+                Some(Linkage::External),
+            );
             Some(ProfileRc {
                 record_retain,
                 record_release,
+                record_rc1,
                 get_retain_count,
                 get_release_count,
+                get_rc1_count,
             })
         } else {
             None
