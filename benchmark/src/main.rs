@@ -680,20 +680,50 @@ fn sample_deriv() {
     bench_sample(iters, "bench_deriv.mor", &[], "run_deriv", stdin, stdout);
 }
 
-fn sample_nqueens() {
+fn sample_nqueens_functional() {
     let iters = (10, 5);
 
-    let stdin = "13\n";
+    let stdin = "nqueens-functional\n13\n";
     let stdout = "73712\n";
 
     compile_sample(
-        "bench_nqueens.mor",
+        "bench_nqueens_functional.mor",
+        "samples/bench_nqueens.mor",
+        &[],
+        "nqueens",
+    );
+
+    bench_sample(
+        iters,
+        "bench_nqueens_functional.mor",
+        &[],
+        "nqueens",
+        stdin,
+        stdout,
+    );
+}
+
+fn sample_nqueens_iterative() {
+    let iters = (10, 5);
+
+    let stdin = "nqueens-iterative\n13\n";
+    let stdout = "73712\n";
+
+    compile_sample(
+        "bench_nqueens_iterative.mor",
         "samples/bench_nqueens.mor",
         &[],
         "nqueens2",
     );
 
-    bench_sample(iters, "bench_nqueens.mor", &[], "nqueens2", stdin, stdout);
+    bench_sample(
+        iters,
+        "bench_nqueens_iterative.mor",
+        &[],
+        "nqueens2",
+        stdin,
+        stdout,
+    );
 }
 
 fn sample_rbtree() {
@@ -751,13 +781,14 @@ fn main() {
     // sample_quicksort();
     // sample_primes();
     // sample_primes_sieve();
-    // sample_nqueens();
+    sample_nqueens_iterative();
+    sample_nqueens_functional();
 
     // sample_parse_json();
 
     // sample_calc();
 
-    sample_unify();
+    // sample_unify();
 
     // sample_words_trie();
 
