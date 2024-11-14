@@ -163,6 +163,7 @@ struct ProfSpecialization {
     total_clock_nanos: u64,
     total_retain_count: Option<u64>,
     total_release_count: Option<u64>,
+    total_rc1_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -308,6 +309,7 @@ fn variants() -> Vec<Variant> {
 struct RcCounts {
     total_retain_count: u64,
     total_release_count: u64,
+    total_rc1_count: u64,
 }
 
 fn bench_sample(
@@ -355,15 +357,17 @@ fn bench_sample(
             match (
                 specialization.total_retain_count,
                 specialization.total_release_count,
+                specialization.total_rc1_count,
             ) {
-                (Some(total_retain_count), Some(total_release_count)) => {
+                (Some(total_retain_count), Some(total_release_count), Some(total_rc1_count)) => {
                     let counts = counts.get_or_insert_with(|| Vec::new());
                     counts.push(RcCounts {
                         total_retain_count,
                         total_release_count,
+                        total_rc1_count,
                     });
                 }
-                (None, None) => {}
+                (None, None, None) => {}
                 _ => {
                     panic!("Expected both retain and release counts to be present, or neither");
                 }
@@ -677,19 +681,19 @@ fn sample_deriv() {
 }
 
 fn sample_nqueens() {
-    let iters = (10, 10);
+    let iters = (10, 5);
 
-    let stdin = "11\n";
-    let stdout = "2680\n";
+    let stdin = "13\n";
+    let stdout = "73712\n";
 
     compile_sample(
         "bench_nqueens.mor",
         "samples/bench_nqueens.mor",
         &[],
-        "nqueens",
+        "nqueens2",
     );
 
-    bench_sample(iters, "bench_nqueens.mor", &[], "nqueens", stdin, stdout);
+    bench_sample(iters, "bench_nqueens.mor", &[], "nqueens2", stdin, stdout);
 }
 
 fn sample_rbtree() {
@@ -746,24 +750,24 @@ fn main() {
     // these have 0 retains omitted, we don't run them
     // sample_quicksort();
     // sample_primes();
-    sample_primes_sieve();
-    sample_nqueens();
+    // sample_primes_sieve();
+    // sample_nqueens();
 
-    sample_parse_json();
+    // sample_parse_json();
 
-    sample_calc();
+    // sample_calc();
 
     sample_unify();
 
-    sample_words_trie();
+    // sample_words_trie();
 
-    sample_text_stats();
+    // sample_text_stats();
 
-    sample_lisp();
+    // sample_lisp();
 
-    sample_cfold();
-    sample_deriv();
-    sample_rbtree();
+    // sample_cfold();
+    // sample_deriv();
+    // sample_rbtree();
 
     // sample_rbtreeck();
 }

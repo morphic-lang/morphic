@@ -698,6 +698,10 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
             let cap = s.field(me, F_ARR_CAP);
 
             s.if_(s.eq(s.ptr_get(s.i64_t(), refcount), s.i64(1)), |s| {
+                if let Some(ProfileRc { record_rc1, .. }) = tal.prof_rc {
+                    s.call_void(record_rc1, &[]);
+                }
+
                 s.ret(me);
             });
 
