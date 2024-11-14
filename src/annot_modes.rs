@@ -674,7 +674,11 @@ fn instantiate_occur_in_position(
     let binding = ctx.local_binding_mut(id);
 
     let use_ty = if pos == IsTail::Tail {
-        join_everywhere(interner, use_ty, &annot::ARG_SCOPE().as_lt(interner))
+        join_everywhere(
+            interner,
+            use_ty,
+            &annot::Path::root().seq(3).as_lt(interner),
+        )
     } else {
         use_ty.clone()
     };
