@@ -1852,6 +1852,9 @@ fn gen_function<'a, 'b>(
                 counters.total_release_count,
                 |prof_rc| prof_rc.get_release_count,
             );
+            gen_rc_count_update(start_rc1_count, counters.total_rc1_count, |prof_rc| {
+                prof_rc.get_rc1_count
+            });
 
             let old_calls = builder
                 .build_load(i64_t, counters.total_calls.as_pointer_value(), "old_calls")
