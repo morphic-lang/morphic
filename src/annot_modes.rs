@@ -673,18 +673,17 @@ fn instantiate_occur_in_position(
 ) -> OccurFo<Res<ModeVar, Lt>> {
     let binding = ctx.local_binding_mut(id);
 
-    if pos == IsTail::Tail {
-        bind_modes(constrs, &binding.ty, use_ty);
+    let use_ty = if pos == IsTail::Tail {
+        join_everywhere(interner, use_ty, &annot::ARG_SCOPE().as_lt(interner))
     } else {
-        emit_occur_constrs(constrs, &binding.scope, &binding.ty, use_ty);
-    }
+        use_ty.clone()
+    };
+
+    emit_occur_constrs(constrs, &binding.scope, &binding.ty, &use_ty);
 
     binding.ty = left_meet(interner, &binding.ty, &use_ty);
 
-    annot::Occur {
-        id,
-        ty: use_ty.clone(),
-    }
+    annot::Occur { id, ty: use_ty }
 }
 
 fn join_everywhere<M: Clone>(

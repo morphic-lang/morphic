@@ -11,7 +11,7 @@ use crate::util::local_context::LocalContext;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use id_collections::{Count, IdVec};
 use once_cell::sync::Lazy;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
 struct Builder {
@@ -136,10 +136,19 @@ fn build_rc_op(
     interner: &Interner,
     op: RcOp,
     slots: Selector,
+    target_ty: &Type,
     target: LocalId,
     builder: &mut Builder,
 ) {
-    if slots.nonempty() {
+    let owned = target_ty
+        .res()
+        .iter()
+        .filter_map(|(slot, res)| match res {
+            ValueRes::Owned => Some(slot),
+            ValueRes::Borrowed(_) => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if slots.true_.intersection(&owned).any(|_| true) {
         builder.add_binding(
             annot::Type::unit(interner),
             rc::Expr::RcOp(op, slots, target),
@@ -564,14 +573,21 @@ fn annot_occur(
     occur: ob::Occur,
     builder: &mut Builder,
 ) -> (Occur, Moves) {
-    let binding = ctx.local_binding_mut(occur.id);
+    let binding = ctx.local_binding_mut(occur.id).clone();
     let new_occur = Occur {
         id: binding.new_id,
         ty: occur.ty,
     };
 
     let dups = select_dups(customs, path, &binding.ty, &new_occur.ty);
-    build_rc_op(interner, RcOp::Retain, dups, new_occur.id, builder);
+    build_rc_op(
+        interner,
+        RcOp::Retain,
+        dups,
+        &new_occur.ty,
+        new_occur.id,
+        builder,
+    );
 
     let moves = select_moves(customs, path, &binding.ty, &new_occur.ty);
     (new_occur, Moves::new(occur.id, moves))
@@ -672,8 +688,15 @@ fn annot_expr(
                         } else {
                             candidate_drops.clone()
                         };
-                        let new_id = ctx.local_binding(*old_id).new_id;
-                        build_rc_op(interner, RcOp::Release, drops, new_id, builder);
+                        let binding = ctx.local_binding(*old_id);
+                        build_rc_op(
+                            interner,
+                            RcOp::Release,
+                            drops,
+                            &as_value_type(&binding.ty),
+                            binding.new_id,
+                            builder,
+                        );
                     }
 
                     moves.merge_with_scope(num_enclosing_vars, rhs_moves);
@@ -703,6 +726,7 @@ fn annot_expr(
                 let mut case_builder = builder.child();
 
                 for (binding_id, drops) in prologue {
+                    let binding = ctx.local_binding(*binding_id);
                     build_rc_op(
                         interner,
                         RcOp::Release,
@@ -710,7 +734,8 @@ fn annot_expr(
                         // were moved along this branch, it would have a non-trivial obligation
                         // along this branch, and it's candidate drop would end up somewhere else.
                         drops.clone(),
-                        ctx.local_binding(*binding_id).new_id,
+                        &as_value_type(&binding.ty),
+                        binding.new_id,
                         &mut case_builder,
                     );
                 }
@@ -809,10 +834,18 @@ fn annot_expr(
             let (new_wrapped, moves) = annot_occur(interner, customs, ctx, path, wrapped, builder);
 
             let binding_ty = add_unused_stack_lts(customs, &output_ty);
+            let binding_ty_as_value = as_value_type(&binding_ty);
             let unwrap_op = rc::Expr::UnwrapBoxed(new_wrapped, output_ty);
             let unwrap_id = builder.add_binding(binding_ty, unwrap_op);
 
-            build_rc_op(interner, RcOp::Retain, item_retains, unwrap_id, builder);
+            build_rc_op(
+                interner,
+                RcOp::Retain,
+                item_retains,
+                &binding_ty_as_value,
+                unwrap_id,
+                builder,
+            );
             return (unwrap_id, moves);
         }
 
@@ -843,7 +876,14 @@ fn annot_expr(
             let get_op = rc::Expr::ArrayOp(rc::ArrayOp::Get(new_arr, new_idx));
             let get_id = builder.add_binding(add_unused_stack_lts(customs, &ret_ty), get_op);
 
-            build_rc_op(interner, RcOp::Retain, item_retains, get_id, builder);
+            build_rc_op(
+                interner,
+                RcOp::Retain,
+                item_retains,
+                &ret_ty,
+                get_id,
+                builder,
+            );
             return (get_id, moves);
         }
 
@@ -977,6 +1017,7 @@ fn annot_func(
         interner,
         RcOp::Release,
         drops.arg_drops,
+        &as_value_type(&func.arg_ty),
         rc::ARG_LOCAL,
         &mut builder,
     );
