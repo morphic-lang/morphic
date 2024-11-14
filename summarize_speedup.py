@@ -16,7 +16,9 @@ def parse_times(results_dir):
         # the file contains a comma-separated list of integers, which we can parse as a JSON array
         with open(os.path.join(results_dir, fname), "r") as f:
             times = json.load(f)
-        all_times[match.group("name")][match.group("tag")] = np.mean(times)
+        # Calculate quartiles (25%, 50% (median), 75%)
+        quartiles = np.percentile(times, [25, 50, 75])
+        all_times[match.group("name")][match.group("tag")] = quartiles
     return all_times
 
 def parse_rcs(results_dir):
@@ -40,27 +42,48 @@ def parse_rcs(results_dir):
 def get_speedups(bench_name, all_times):
     speedups = dict()
     for name, times in all_times.items():
-        baseline = times[bench_name]
-        elide = times["default"]
-        speedup = baseline / elide
-        print(f"{name}: {speedup:.2f}x")
-        speedups[name] = speedup
+        baseline = times[bench_name]  # [Q1, median, Q3]
+        elide = times["default"]      # [Q1, median, Q3]
+        # Calculate speedup for each quartile
+        q1_speedup = baseline[0] / elide[0]      # Q1 speedup
+        median_speedup = baseline[1] / elide[1]   # median speedup
+        q3_speedup = baseline[2] / elide[2]      # Q3 speedup
+        speedups[name] = [q1_speedup, median_speedup, q3_speedup]
+        print(f"{name}: Q1={q1_speedup:.2f}x, median={median_speedup:.2f}x, Q3={q3_speedup:.2f}x")
     return speedups
 
 def plot_speedups(name, speedups):
     names = sorted(speedups.keys())
-    values = [speedups[name] for name in names]
     plt.figure(figsize=(8, 4))
-    plt.bar(names, values)
+    
+    x = np.arange(len(names))
+    width = 0.6
+    
+    # Create bars for median speedup (using index 1 for median from speedups)
+    medians = [speedups[benchmark][1] for benchmark in names]
+    bars = plt.bar(x, medians, width, color='blue')
+    
+    # Add error bars for Q1 and Q3
+    q1s = [speedups[benchmark][0] for benchmark in names]
+    q3s = [speedups[benchmark][2] for benchmark in names]
+    yerr = np.array([(m-q1, q3-m) for m, q1, q3 in zip(medians, q1s, q3s)]).T
+    # Ensure yerr values are non-negative
+    yerr_low = np.maximum(0, np.array(medians) - np.array(q1s))
+    yerr_high = np.maximum(0, np.array(q3s) - np.array(medians))
+    yerr = np.array([yerr_low, yerr_high])
+    plt.errorbar(x, medians, yerr=yerr, fmt='none', color='black', capsize=5, capthick=1, elinewidth=2)
     plt.ylabel("Speedup")
-    plt.xticks(rotation=45, ha="right")
-    # add a label over each bar
-    for i, v in enumerate(values):
+    plt.xticks(x, names, rotation=45, ha="right")
+    
+    # Add labels for median values
+    for i, v in enumerate(medians):
         plt.text(i, v + 0.05, f"{v:.2f}", ha="center", va="bottom")
+    
     plt.ylim(0, 8.5)
-    # add a horizontal line at y=1
+    # Add a horizontal line at y=1
     plt.axhline(1, color="black", linewidth=1, linestyle="--")
     plt.title(f"Speedup due to full borrow inference vs {name}")
+    
     plt.tight_layout()
     os.makedirs("figure_out", exist_ok=True)
     plt.savefig(f"figure_out/speedups_{name}.png")
