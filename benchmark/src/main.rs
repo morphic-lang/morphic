@@ -41,17 +41,14 @@ fn drive_subprocess(
     let output = child.wait_with_output().expect("Waiting on child failed");
 
     assert!(
-        output.status.success(),
-        "Child process did not exit successfully: exit status {:?}, stderr:\n{}",
+        output.status.success() && &output.stdout as &[u8] == expected_stdout.as_bytes(),
+        "Child process failed:\n\
+         Exit status: {:?}\n\
+         Stderr:\n{}\n\
+         Expected stdout: {:?}\n\
+         Actual stdout: {:?}",
         output.status.code(),
         String::from_utf8(output.stderr).unwrap(),
-    );
-    assert!(
-        &output.stdout as &[u8] == expected_stdout.as_bytes(),
-        "Sample stdout did not match expected stdout.\
-                 \n  Expected: {:?}\
-                 \n    Actual: {:?}\
-                 \n",
         expected_stdout,
         String::from_utf8_lossy(&output.stdout),
     );
@@ -212,18 +209,10 @@ fn build_exe(
         filename_prefix: binary_path.file_name().unwrap().into(),
     };
 
-    if options.is_native {
-        if artifact_dir.dir_path.exists() {
-            return (binary_path, artifact_dir);
-        } else {
-            std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
-        }
+    if artifact_dir.dir_path.exists() {
+        return (binary_path, artifact_dir);
     } else {
-        if artifact_dir.dir_path.exists() {
-            return (binary_path, artifact_dir);
-        } else {
-            std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
-        }
+        std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
     }
 
     let mut files = FileCache::new();
@@ -295,7 +284,7 @@ fn variants() -> Vec<Variant> {
         RcStrategy::Perceus,
         // RcStrategy::ImmutableBeans,
     ] {
-        for record_rc in [false, true] {
+        for record_rc in [true] {
             variants.push(Variant {
                 rc_strat,
                 record_rc,
@@ -362,9 +351,9 @@ fn bench_sample(
                 (Some(total_retain_count), Some(total_release_count), Some(total_rc1_count)) => {
                     let counts = counts.get_or_insert_with(|| Vec::new());
                     counts.push(RcCounts {
-                        total_retain_count,
-                        total_release_count,
-                        total_rc1_count,
+                        total_retain_count: total_retain_count * iters.1,
+                        total_release_count: total_release_count * iters.1,
+                        total_rc1_count: total_rc1_count * iters.1,
                     });
                 }
                 (None, None, None) => {}
@@ -405,7 +394,7 @@ fn compile_sample(
             },
         );
 
-        write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
+        // write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
     }
 }
 
@@ -780,25 +769,25 @@ fn main() {
     // these have 0 retains omitted, we don't run them
     // sample_quicksort();
     // sample_primes();
-    // sample_primes_sieve();
+    sample_primes_sieve();
     sample_nqueens_iterative();
     sample_nqueens_functional();
 
-    // sample_parse_json();
+    sample_parse_json();
 
-    // sample_calc();
+    sample_calc();
 
-    // sample_unify();
+    sample_unify();
 
-    // sample_words_trie();
+    sample_words_trie();
 
-    // sample_text_stats();
+    sample_text_stats();
 
-    // sample_lisp();
+    sample_lisp();
 
-    // sample_cfold();
-    // sample_deriv();
-    // sample_rbtree();
+    sample_cfold();
+    sample_deriv();
+    sample_rbtree();
 
-    // sample_rbtreeck();
+    sample_rbtreeck();
 }

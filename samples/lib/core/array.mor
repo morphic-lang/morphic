@@ -101,7 +101,8 @@ zip_rec(a: Array t, b: Array u, i: Int): Array (t, u) =
   if i < 0 {
     []
   } else {
-    push(zip_rec(a, b, i - 1), (get(a, i), get(b, i)))
+    let (a1, b1) = (get(a, i), get(b, i)) in
+    push(zip_rec(a, b, i - 1), (a1, b1))
   }
 
 pub zip(a: Array t, b: Array u): Array (t, u) =

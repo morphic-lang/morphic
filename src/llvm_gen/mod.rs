@@ -25,6 +25,7 @@ use crate::llvm_gen::prof_report::{
 use crate::llvm_gen::rc::{rc_ptr_type, RcBoxBuiltin};
 use crate::llvm_gen::tal::{ProfileRc, Tal};
 use crate::llvm_gen::zero_sized_array::ZeroSizedArrayImpl;
+use crate::pretty_print::utils::TailFuncRenderer;
 use crate::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
 use crate::{cli, progress_ui};
@@ -2105,12 +2106,14 @@ fn gen_program<'a>(
 
     let mut func_progress = func_progress.start_session(Some(program.funcs.len()));
 
+    let func_renderer = TailFuncRenderer::from_symbols(&program.func_symbols);
+
     let funcs = program.funcs.map_refs(|func_id, func_def| {
         let return_type = get_llvm_type(&globals, &func_def.ret_type);
         let arg_type = get_llvm_type(&globals, &func_def.arg_type);
 
         module.add_function(
-            &format!("func_{}", func_id.0),
+            &format!("{}_{}", func_renderer.render(&func_id), func_id.0),
             return_type.fn_type(&[arg_type.into()], false),
             Some(Linkage::Internal),
         )
