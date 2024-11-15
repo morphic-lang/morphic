@@ -284,7 +284,7 @@ fn variants() -> Vec<Variant> {
         RcStrategy::Perceus,
         // RcStrategy::ImmutableBeans,
     ] {
-        for record_rc in [true] {
+        for record_rc in [true, false] {
             variants.push(Variant {
                 rc_strat,
                 record_rc,
