@@ -1,0 +1,13 @@
+[package]
+name = "morphic_macros"
+version = "0.1.0"
+authors = ["Benjamin Driscoll"]
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.86"
+quote = "1.0.36"
+syn = { version = "2.0.72", features = ["extra-traits", "parsing"] }

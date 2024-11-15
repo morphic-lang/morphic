@@ -8,7 +8,7 @@
 #define EOF -1
 
 /* Javascript needs an entry point to the wasm program. This wrapper will
-   provide the necessary arguments to the opt-proto main function and allow
+   provide the necessary arguments to the Morphic main function and allow
    Javascript to easily start execution. */
 void _start(void);
 

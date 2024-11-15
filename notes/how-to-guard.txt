@@ -1,0 +1,58 @@
+- a mention is "direct" if it is not behind a pointer and "indirect" otherwise
+- algorithm:
+  - To guard a type, recurse through it and track the current SCC (which might
+  be None). When we hit a cyclic (optimization), non-ZST custom anywhere, if it
+  belongs to the current SCC, leave it as is and, if it does not belong to the
+  current SCC, then inline its definition and recurse into that updating the
+  current SCC (and don't stop recursing when we hit a pointer). Do this to both
+  type definitions and the types of stack variables. This assumes that all
+  internal dependency edges in a non-ZST SCCs are indirect, i.e. all
+  self-customs are behind RCs.
+- To match up the result of an unwrap with the argument of an unwrap, recurse
+  through the arugment type and, for each occurrence of a custom in the SCC being
+  unwrapped, unfold i.e. replace it with the content of its typedef
+- Anytime you enter an SCC from the outside, the parent should get to choose the
+  head modes
+
+List1 = () + int * Rc List1
+List2 = () + List1 * Rc List2
+List3 = () + Rc List1 * Rc List3
+let x : Rc List2 = ...
+let y : Rc List3 = ...
+
+----
+William's algo
+----
+
+List1 = () + int * Rc List1
+List2 = () + (() + int * Rc List1) * Rc List2
+List3 = () + Rc (() + int * Rc List1) * Rc List3
+
+Rc List2
+=> Rc (() + List1 * Rc List2) 
+=> Rc (() + (() + int * Rc List1) * Rc List2)
+
+Rc List3
+=> Rc (() + Rc List1 * Rc List3)
+=> Rc (() + Rc (() + int * Rc List1) * Rc List3)
+
+----
+Ben's algo
+----
+
+Rc List2
+=> Rc (() + List1 * Rc List2) 
+=> Rc (() + (() + int * Rc List1) * Rc List2)
+
+Rc List3
+=> Rc (() + Rc List1 * Rc List3)
+
+----
+
+- Produce an entry for each type in a cyclic SCC
+- The body of a type's corresponding entry should be the body of the type but with all direct self
+customs replaced with entries
+- For all types and type definitions, replace "external" types with their corresponding entries
+except for indirect internal references in type definitions and in the original (non-entry types)
+- When you match up "unfold . guard" and "guard . unfold" you might end with some "TEntry"
+in the latter where you have a "T" in the former

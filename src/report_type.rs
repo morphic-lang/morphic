@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::IdVec;
 
 /// Intermediate representation of partially-inferred types used for error reporting
 #[derive(Clone, Debug)]
@@ -120,7 +120,7 @@ fn find_custom_quals(program: &res::Program) -> IdVec<res::CustomTypeId, Qualifi
         *name_counts.entry(type_syms.type_name.clone()).or_insert(0) += 1;
     }
 
-    let mut quals = IdVec::from_items(vec![Qualification::Unqualified; program.custom_types.len()]);
+    let mut quals = IdVec::from_vec(vec![Qualification::Unqualified; program.custom_types.len()]);
 
     for (id, type_syms) in &program.custom_type_symbols {
         debug_assert!(name_counts[&type_syms.type_name] > 0);

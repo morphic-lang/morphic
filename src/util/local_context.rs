@@ -1,7 +1,6 @@
-use crate::util::id_type::Id;
-use crate::util::id_vec::IdVec;
+use id_collections::{Count, Id, IdVec};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalContext<Var: Id, T> {
     stack: IdVec<Var, T>,
 }
@@ -13,33 +12,46 @@ impl<Var: Id, T> LocalContext<Var, T> {
         }
     }
 
+    pub fn inner(&self) -> &IdVec<Var, T> {
+        &self.stack
+    }
+
     pub fn add_local(&mut self, binding: T) -> Var {
         self.stack.push(binding)
     }
 
-    pub fn truncate(&mut self, len: usize) {
-        self.stack.truncate(len);
+    pub fn pop_local(&mut self) -> (Var, T) {
+        self.stack.pop().unwrap()
     }
 
-    pub fn local_binding(&self, local: Var) -> &T
-    where
-        T: Clone,
-    {
+    pub fn truncate(&mut self, count: Count<Var>) {
+        self.stack.truncate(count);
+    }
+
+    pub fn local_binding(&self, local: Var) -> &T {
         &self.stack[local]
+    }
+
+    pub fn local_binding_mut(&mut self, local: Var) -> &mut T {
+        &mut self.stack[local]
     }
 
     pub fn with_scope<R, F: for<'a> FnOnce(&'a mut LocalContext<Var, T>) -> R>(
         &mut self,
         body: F,
     ) -> R {
-        let old_len = self.stack.len();
+        let old_count = self.stack.count();
         let result = body(self);
-        debug_assert!(self.stack.len() >= old_len);
-        self.stack.items.truncate(old_len);
+        debug_assert!(self.stack.count() >= old_count);
+        self.stack.truncate(old_count);
         result
     }
 
     pub fn len(&self) -> usize {
         self.stack.len()
+    }
+
+    pub fn count(&self) -> Count<Var> {
+        self.stack.count()
     }
 }

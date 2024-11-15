@@ -1,7 +1,7 @@
 //! This module renders unhandled patterns detected by the exhaustivity cheker.
 
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::IdVec;
 
 #[derive(Clone, Debug)]
 pub enum Pattern {

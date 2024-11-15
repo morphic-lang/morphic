@@ -1,0 +1,186 @@
+import Core
+  expose {
+    module Option expose { Option { Some, None } },
+    module Result expose { Result { Ok, Err } },
+    module Array,
+    module Iter expose { Iter },
+    module Func expose { const },
+    module String,
+  }
+
+module Bucket = {
+  import Core
+    expose {
+      module Option expose { Option { Some, None } },
+      module Iter expose { Iter },
+      module Array,
+    }
+
+  pub type Entry k v {
+    pub Entry(k, v)
+  }
+
+  pub type Bucket k v {
+    pub Bucket(Array (Entry k v))
+  }
+
+  pub empty(): Bucket k v =
+    Bucket([])
+
+  pub find(this: Bucket k v, key: k, eq: (k, k) -> Bool): Option v =
+    let Bucket(entries) = this in
+    entries
+    |> Iter.items()
+    |> Iter.find_map(\Entry(k, v) -> 
+      if eq(k, key) { 
+        Some(v) 
+      } else { 
+        None 
+      }
+    )
+
+  pub insert(this: Bucket k v, key: k, value: v, eq: (k, k) -> Bool): Bucket k v =
+    let Bucket(entries) = this in
+    match Array.find_index(entries, \Entry(k, _) -> eq(k, key)) {
+      Some(idx) ->
+        Bucket(Array.set(entries, idx, Entry(key, value))),
+      None ->
+        Bucket(Array.push(entries, Entry(key, value))),
+    }
+
+  pub remove(this: Bucket k v, key: k, eq: (k, k) -> Bool): Bucket k v =
+    let Bucket(entries) = this in
+    Bucket(
+      entries
+      |> Iter.items()
+      |> Iter.filter(\Entry(k, _) -> !eq(k, key))
+      |> Array.from_iter()
+    )
+
+} with { Core }
+
+pub type HashMap k v {
+  HashMap(
+    // Number of buckets
+    Int,
+    // Hash function
+    k -> Int,
+    // Equality function
+    (k, k) -> Bool,
+    // Buckets
+    Array (Bucket.Bucket k v),
+    // Total number of entries
+    Int,
+  )
+}
+
+pub empty(hash: k -> Int, eq: (k, k) -> Bool): HashMap k v =
+  HashMap(
+    8,
+    hash,
+    eq,
+    Array.fill_with(8, \() -> Bucket.empty()),
+    0,
+  )
+
+int_mod(x: Int, y: Int): Int =
+  x - ((x / y) * y)
+
+get_bucket_index(hash: Int, size: Int): Int =
+  int_mod(
+    // Ensure positive
+    if hash < 0 { -hash } else { hash },
+    size
+  )
+
+pub get(this: HashMap k v, key: k): Option v =
+  let HashMap(size, hash, eq, buckets, _) = this in
+  let bucket_idx = get_bucket_index(hash(key), size) in
+  match Array.try_get(buckets, bucket_idx) {
+    Some(bucket) -> Bucket.find(bucket, key, eq),
+    None -> None,
+  }
+
+resize_if_needed(map: HashMap k v): HashMap k v =
+  let HashMap(size, hash, eq, buckets, count) = map in
+  // Resize when load factor > 0.75
+  if count > (size * 3 / 4) {
+    let new_size = size * 2 in
+    let new_buckets = Array.fill_with(new_size, \() -> Bucket.empty()) in
+    // Rehash all entries
+    let new_map = HashMap(new_size, hash, eq, new_buckets, 0) in
+    buckets
+  |> Iter.items()
+    |> Iter.foldl(new_map, \(acc, Bucket.Bucket(entries)) ->
+      entries
+      |> Iter.items()
+      |> Iter.foldl(acc, \(m, Bucket.Entry(k, v)) ->
+        insert_internal(m, k, v)
+  )
+    )
+  } else {
+    map
+  }
+
+insert_internal(this: HashMap k v, key: k, value: v): HashMap k v =
+  let HashMap(size, hash, eq, buckets, count) = this in
+  let bucket_idx = get_bucket_index(hash(key), size) in
+  let old_bucket = Array.get(buckets, bucket_idx) in
+  let had_key = Option.is_some(Bucket.find(old_bucket, key, eq)) in
+  let new_buckets = Array.update(
+    buckets,
+    bucket_idx,
+    \bucket -> Bucket.insert(bucket, key, value, eq),
+  ) in
+  HashMap(size, hash, eq, new_buckets, if had_key { count } else { count + 1 })
+
+pub insert(this: HashMap k v, key: k, value: v): HashMap k v =
+  insert_internal(this, key, value)
+  |> resize_if_needed()
+
+pub remove(this: HashMap k v, key: k): HashMap k v =
+  let HashMap(size, hash, eq, buckets, count) = this in
+  let bucket_idx = get_bucket_index(hash(key), size) in
+  let old_bucket = Array.get(buckets, bucket_idx) in
+  let had_key = Option.is_some(Bucket.find(old_bucket, key, eq)) in
+  let new_buckets = Array.update(
+    buckets,
+    bucket_idx,
+    \bucket -> Bucket.remove(bucket, key, eq),
+  ) in
+  HashMap(size, hash, eq, new_buckets, if had_key { count - 1 } else { count })
+
+pub is_empty(this: HashMap k v): Bool =
+  let HashMap(_, _, _, _, count) = this in
+  count = 0
+
+// Utility functions for common key types
+pub string_hash(s: Array Byte): Int =
+  // Simple string hash function
+  s
+  |> Iter.items()
+  |> Iter.foldl(0, \(acc, byte) ->
+    (acc *  31) + byte_to_int(byte)
+  )
+
+pub string_eq(a: Array Byte, b: Array Byte): Bool =
+  Array.equal(a, b, \(p, q) -> p =& q)
+
+// Create a HashMap specialized for string keys
+pub string_hashmap: HashMap (Array Byte) v =
+  empty(string_hash, string_eq)
+
+
+pub to_string(this: HashMap k v, key_to_str: k -> Array Byte, val_to_str: v -> Array Byte): Array Byte =
+  let HashMap(_, _, _, buckets, _) = this in
+  String.concat("HashMap{", 
+    String.join(
+    buckets
+    |> Iter.items()
+    |> Iter.flat_map(\Bucket.Bucket(entries) -> Iter.items(entries))
+    |> Iter.map(\Bucket.Entry(k, v) -> 
+      String.join([key_to_str(k), " -> ", val_to_str(v)], "")
+    )
+    |> Array.from_iter(), ", "
+  ))
+  |> String.concat("}")

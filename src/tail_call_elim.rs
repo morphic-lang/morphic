@@ -1,13 +1,51 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use crate::data::first_order_ast as first_ord;
+use crate::data::metadata::Metadata;
+use crate::data::obligation_annot_ast as ob;
 use crate::data::purity::Purity;
 use crate::data::rc_specialized_ast as rc;
-use crate::data::repr_specialized_ast as special;
-use crate::data::tail_rec_ast as tail;
+use crate::data::tail_rec_ast::{self as tail, TailFuncSymbols};
 use crate::util::graph::{self, Graph};
-use crate::util::id_vec::IdVec;
+use crate::util::let_builder::{BuildMatch, FromBindings, LetManyBuilder};
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::{Count, IdVec};
+use std::collections::{BTreeMap, BTreeSet};
+
+impl FromBindings for tail::Expr {
+    type LocalId = rc::LocalId;
+    type Type = rc::Type;
+
+    fn from_bindings(bindings: Vec<(Self::Type, Self, Metadata)>, ret: Self::LocalId) -> Self {
+        tail::Expr::LetMany(bindings, ret)
+    }
+}
+
+impl BuildMatch for tail::Expr {
+    type VariantId = first_ord::VariantId;
+
+    fn bool_type() -> Self::Type {
+        rc::Type::Bool
+    }
+
+    fn build_binding(
+        builder: &mut crate::util::let_builder::LetManyBuilder<Self>,
+        ty: Self::Type,
+        expr: Self,
+    ) -> Self::LocalId {
+        builder.add_binding(ty, expr)
+    }
+
+    fn build_if(cond: Self::LocalId, then_expr: Self, else_expr: Self) -> Self {
+        tail::Expr::If(cond, Box::new(then_expr), Box::new(else_expr))
+    }
+
+    fn build_check_variant(variant: Self::VariantId, local: Self::LocalId) -> Self {
+        tail::Expr::CheckVariant(variant, local)
+    }
+
+    fn build_unwrap_variant(variant: Self::VariantId, local: Self::LocalId) -> Self {
+        tail::Expr::UnwrapVariant(variant, local)
+    }
+}
 
 fn last_index<T>(slice: &[T]) -> Option<usize> {
     if slice.is_empty() {
@@ -19,27 +57,26 @@ fn last_index<T>(slice: &[T]) -> Option<usize> {
 
 // This function should only be called on 'expr' when the expression occurs in tail position.
 fn add_tail_call_deps(
-    deps: &mut BTreeSet<special::CustomFuncId>,
+    deps: &mut BTreeSet<ob::CustomFuncId>,
     vars_in_scope: usize,
-    expr: &special::Expr,
+    expr: &rc::Expr,
 ) {
     match expr {
-        special::Expr::Call(_purity, id, _arg) => {
+        rc::Expr::Call(_purity, id, _arg) => {
             deps.insert(*id);
         }
 
-        special::Expr::Branch(_discrim, cases, _result_type) => {
-            for (_cond, body) in cases {
-                add_tail_call_deps(deps, vars_in_scope, body);
-            }
-        }
-
-        special::Expr::LetMany(bindings, final_local) => {
+        rc::Expr::LetMany(bindings, final_local) => {
             if let Some(last_i) = last_index(bindings) {
                 if final_local == &rc::LocalId(vars_in_scope + last_i) {
                     add_tail_call_deps(deps, vars_in_scope + last_i, &bindings[last_i].1);
                 }
             }
+        }
+
+        rc::Expr::If(_discrim, then_case, else_case) => {
+            add_tail_call_deps(deps, vars_in_scope, then_case);
+            add_tail_call_deps(deps, vars_in_scope, else_case);
         }
 
         _ => {}
@@ -61,27 +98,21 @@ enum Position {
 }
 
 fn mark_call_modes(
-    modes: &mut IdVec<special::CustomFuncId, CallMode>,
-    curr_scc: &BTreeSet<special::CustomFuncId>,
+    modes: &mut IdVec<ob::CustomFuncId, CallMode>,
+    curr_scc: &BTreeSet<ob::CustomFuncId>,
     pos: Position,
     vars_in_scope: usize,
-    expr: &special::Expr,
+    expr: &rc::Expr,
 ) {
     match expr {
-        special::Expr::Call(_purity, id, _arg) => {
+        rc::Expr::Call(_purity, id, _arg) => {
             if pos != Position::Tail || !curr_scc.contains(id) {
                 modes[id] = CallMode::NotAlwaysTail;
             }
         }
 
-        special::Expr::Branch(_discrim, cases, _result_type) => {
-            for (_cond, body) in cases {
-                mark_call_modes(modes, curr_scc, pos, vars_in_scope, body);
-            }
-        }
-
-        special::Expr::LetMany(bindings, final_local) => {
-            for (i, (_type, binding)) in bindings.iter().enumerate() {
+        rc::Expr::LetMany(bindings, final_local) => {
+            for (i, (_type, binding, _)) in bindings.iter().enumerate() {
                 let sub_pos =
                     if i + 1 == bindings.len() && final_local == &rc::LocalId(vars_in_scope + i) {
                         pos
@@ -93,6 +124,11 @@ fn mark_call_modes(
             }
         }
 
+        rc::Expr::If(_discrim, then_case, else_case) => {
+            mark_call_modes(modes, curr_scc, pos, vars_in_scope, then_case);
+            mark_call_modes(modes, curr_scc, pos, vars_in_scope, else_case);
+        }
+
         _ => {}
     }
 }
@@ -102,7 +138,7 @@ enum FuncMapping {
     Direct(tail::CustomFuncId),
     Variant(
         tail::CustomFuncId,
-        IdVec<first_ord::VariantId, special::Type>,
+        IdVec<first_ord::VariantId, rc::Type>,
         first_ord::VariantId,
     ),
 }
@@ -115,17 +151,17 @@ enum EntryPoint {
 }
 
 fn trans_expr(
-    funcs: &IdVec<special::CustomFuncId, special::FuncDef>,
-    mappings: &IdVec<special::CustomFuncId, Option<FuncMapping>>,
-    local_tail_mappings: &BTreeMap<special::CustomFuncId, tail::TailFuncId>,
+    funcs: &IdVec<ob::CustomFuncId, rc::FuncDef>,
+    mappings: &IdVec<ob::CustomFuncId, Option<FuncMapping>>,
+    local_tail_mappings: &BTreeMap<ob::CustomFuncId, tail::TailFuncId>,
     pos: Position,
     vars_in_scope: usize,
-    expr: &special::Expr,
+    expr: &rc::Expr,
 ) -> tail::Expr {
     match expr {
-        special::Expr::Local(id) => tail::Expr::Local(*id),
+        rc::Expr::Local(id) => tail::Expr::Local(*id),
 
-        special::Expr::Call(purity, func, arg) => {
+        rc::Expr::Call(purity, func, arg) => {
             if pos == Position::Tail && local_tail_mappings.contains_key(func) {
                 tail::Expr::TailCall(local_tail_mappings[func], *arg)
             } else {
@@ -142,12 +178,14 @@ fn trans_expr(
                         tail::Expr::LetMany(
                             vec![
                                 (
-                                    special::Type::Variants(variant_types.clone()),
+                                    rc::Type::Variants(variant_types.clone()),
                                     tail::Expr::WrapVariant(variant_types.clone(), *variant, *arg),
+                                    Metadata::default(),
                                 ),
                                 (
                                     funcs[func].ret_type.clone(),
                                     tail::Expr::Call(*purity, *new_func, local_wrapped_id),
+                                    Metadata::default(),
                                 ),
                             ],
                             local_return_id,
@@ -157,32 +195,11 @@ fn trans_expr(
             }
         }
 
-        special::Expr::Branch(discrim, cases, result_type) => tail::Expr::Branch(
-            *discrim,
-            cases
-                .iter()
-                .map(|(cond, body)| {
-                    (
-                        cond.clone(),
-                        trans_expr(
-                            funcs,
-                            mappings,
-                            local_tail_mappings,
-                            pos,
-                            vars_in_scope,
-                            body,
-                        ),
-                    )
-                })
-                .collect(),
-            result_type.clone(),
-        ),
-
-        special::Expr::LetMany(bindings, final_local) => tail::Expr::LetMany(
+        rc::Expr::LetMany(bindings, final_local) => tail::Expr::LetMany(
             bindings
                 .iter()
                 .enumerate()
-                .map(|(i, (type_, binding))| {
+                .map(|(i, (type_, binding, metadata))| {
                     let is_final_binding =
                         i + 1 == bindings.len() && final_local == &rc::LocalId(vars_in_scope + i);
 
@@ -192,78 +209,95 @@ fn trans_expr(
                         Position::NotTail
                     };
 
-                    (
-                        type_.clone(),
-                        trans_expr(
-                            funcs,
-                            mappings,
-                            local_tail_mappings,
-                            sub_pos,
-                            vars_in_scope + i,
-                            binding,
-                        ),
-                    )
+                    let new_binding = trans_expr(
+                        funcs,
+                        mappings,
+                        local_tail_mappings,
+                        sub_pos,
+                        vars_in_scope + i,
+                        binding,
+                    );
+
+                    (type_.clone(), new_binding, metadata.clone())
                 })
                 .collect(),
             *final_local,
         ),
 
-        special::Expr::Tuple(items) => tail::Expr::Tuple(items.clone()),
+        rc::Expr::If(discrim, then_case, else_case) => tail::Expr::If(
+            *discrim,
+            Box::new(trans_expr(
+                funcs,
+                mappings,
+                local_tail_mappings,
+                pos,
+                vars_in_scope,
+                then_case,
+            )),
+            Box::new(trans_expr(
+                funcs,
+                mappings,
+                local_tail_mappings,
+                pos,
+                vars_in_scope,
+                else_case,
+            )),
+        ),
 
-        special::Expr::TupleField(tuple, idx) => tail::Expr::TupleField(*tuple, *idx),
+        rc::Expr::CheckVariant(variant_id, variant) => {
+            tail::Expr::CheckVariant(*variant_id, *variant)
+        }
 
-        special::Expr::WrapVariant(variant_types, variant, content) => {
+        rc::Expr::Unreachable(ret_type) => tail::Expr::Unreachable(ret_type.clone()),
+
+        rc::Expr::Tuple(items) => tail::Expr::Tuple(items.clone()),
+
+        rc::Expr::TupleField(tuple, idx) => tail::Expr::TupleField(*tuple, *idx),
+
+        rc::Expr::WrapVariant(variant_types, variant, content) => {
             tail::Expr::WrapVariant(variant_types.clone(), *variant, *content)
         }
 
-        special::Expr::UnwrapVariant(variant, wrapped) => {
-            tail::Expr::UnwrapVariant(*variant, *wrapped)
+        rc::Expr::UnwrapVariant(variant, wrapped) => tail::Expr::UnwrapVariant(*variant, *wrapped),
+
+        rc::Expr::WrapBoxed(content, output_type) => {
+            tail::Expr::WrapBoxed(*content, output_type.clone())
         }
 
-        special::Expr::WrapBoxed(content, content_type) => {
-            tail::Expr::WrapBoxed(*content, content_type.clone())
+        rc::Expr::UnwrapBoxed(content, input_type, output_type) => {
+            tail::Expr::UnwrapBoxed(*content, input_type.clone(), output_type.clone())
         }
 
-        special::Expr::UnwrapBoxed(content, content_type) => {
-            tail::Expr::UnwrapBoxed(*content, content_type.clone())
+        rc::Expr::WrapCustom(custom, content) => tail::Expr::WrapCustom(*custom, *content),
+
+        rc::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
+
+        rc::Expr::RcOp(scheme, op, local) => tail::Expr::RcOp(scheme.clone(), op.clone(), *local),
+
+        rc::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
+
+        rc::Expr::ArrayOp(scheme, op) => tail::Expr::ArrayOp(scheme.clone(), op.clone()),
+
+        rc::Expr::IoOp(op) => tail::Expr::IoOp(op.clone()),
+
+        rc::Expr::Panic(ret_type, input_type, message) => {
+            tail::Expr::Panic(ret_type.clone(), input_type.clone(), *message)
         }
 
-        special::Expr::WrapCustom(custom, content) => tail::Expr::WrapCustom(*custom, *content),
+        rc::Expr::ArrayLit(scheme, items) => tail::Expr::ArrayLit(scheme.clone(), items.clone()),
 
-        special::Expr::UnwrapCustom(custom, wrapped) => tail::Expr::UnwrapCustom(*custom, *wrapped),
-
-        special::Expr::RcOp(op, container, inner_type, local) => {
-            tail::Expr::RcOp(*op, *container, inner_type.clone(), *local)
-        }
-
-        special::Expr::Intrinsic(intr, arg) => tail::Expr::Intrinsic(*intr, *arg),
-
-        special::Expr::ArrayOp(rep, item_type, op) => {
-            tail::Expr::ArrayOp(*rep, item_type.clone(), *op)
-        }
-
-        special::Expr::IoOp(rep, op) => tail::Expr::IoOp(*rep, *op),
-
-        special::Expr::Panic(ret_type, rep, message) => {
-            tail::Expr::Panic(ret_type.clone(), *rep, *message)
-        }
-
-        special::Expr::ArrayLit(rep, item_type, items) => {
-            tail::Expr::ArrayLit(*rep, item_type.clone(), items.clone())
-        }
-
-        &special::Expr::BoolLit(val) => tail::Expr::BoolLit(val),
-        &special::Expr::ByteLit(val) => tail::Expr::ByteLit(val),
-        &special::Expr::IntLit(val) => tail::Expr::IntLit(val),
-        &special::Expr::FloatLit(val) => tail::Expr::FloatLit(val),
+        &rc::Expr::BoolLit(val) => tail::Expr::BoolLit(val),
+        &rc::Expr::ByteLit(val) => tail::Expr::ByteLit(val),
+        &rc::Expr::IntLit(val) => tail::Expr::IntLit(val),
+        &rc::Expr::FloatLit(val) => tail::Expr::FloatLit(val),
     }
 }
 
-pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) -> tail::Program {
+pub fn tail_call_elim(program: rc::Program, progress: impl ProgressLogger) -> tail::Program {
     let progress = progress.start_session(None);
 
     let tail_call_deps = Graph {
-        edges_out: program.funcs.map(|_, func| {
+        edges_out: program.funcs.map_refs(|_, func| {
             let mut deps = BTreeSet::new();
             // The argument always provides exactly one free variable in scope for the body of the
             // function.
@@ -273,10 +307,10 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
     };
 
     let sccs: IdVec<tail::CustomFuncId, _> =
-        IdVec::from_items(graph::acyclic_and_cyclic_sccs(&tail_call_deps));
+        IdVec::from_vec(graph::acyclic_and_cyclic_sccs(&tail_call_deps));
 
     let modes = {
-        let mut modes = IdVec::from_items(vec![CallMode::AlwaysTail; program.funcs.len()]);
+        let mut modes = IdVec::from_vec(vec![CallMode::AlwaysTail; program.funcs.len()]);
 
         // In principle, 'main' could be tail-recursive, so we need to make sure it still has an
         // entry point even in that case.  In other words, we need this because our logic that marks
@@ -326,10 +360,10 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
     // controlled via a sum type argument.  'entry_points' provides information about a function
     // "from the inside", i.e. for use in generating its internal implementation.
     let (mappings, entry_points) = {
-        let mut mappings: IdVec<special::CustomFuncId, Option<FuncMapping>> =
-            IdVec::from_items(vec![None; program.funcs.len()]);
+        let mut mappings: IdVec<ob::CustomFuncId, Option<FuncMapping>> =
+            IdVec::from_vec(vec![None; program.funcs.len()]);
 
-        let entry_points = sccs.map(|new_func_id, scc| match scc {
+        let entry_points = sccs.map_refs(|new_func_id, scc| match scc {
             graph::Scc::Acyclic(orig_id) => {
                 debug_assert!(mappings[orig_id].is_none());
                 mappings[orig_id] = Some(FuncMapping::Direct(new_func_id));
@@ -357,11 +391,11 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                     _ => {
                         let entry_variants: IdVec<
                             first_ord::VariantId,
-                            (tail::TailFuncId, special::CustomFuncId),
-                        > = IdVec::from_items(not_always_tail_funcs);
+                            (tail::TailFuncId, ob::CustomFuncId),
+                        > = IdVec::from_vec(not_always_tail_funcs);
 
                         let variant_types = entry_variants
-                            .map(|_, (_, orig_id)| program.funcs[orig_id].arg_type.clone());
+                            .map_refs(|_, (_, orig_id)| program.funcs[orig_id].arg_type.clone());
 
                         for (variant_id, (_, orig_id)) in &entry_variants {
                             mappings[orig_id] = Some(FuncMapping::Variant(
@@ -372,7 +406,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                         }
 
                         EntryPoint::Variants(
-                            entry_variants.map(|_, (tail_func_id, _)| *tail_func_id),
+                            entry_variants.map(|_, (tail_func_id, _)| tail_func_id),
                         )
                     }
                 }
@@ -382,7 +416,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
         (mappings, entry_points)
     };
 
-    let mut new_funcs = sccs.map(|new_func_id, scc| match scc {
+    let mut new_funcs = sccs.map_refs(|new_func_id, scc| match scc {
         graph::Scc::Acyclic(orig_id) => {
             debug_assert_eq!(&entry_points[new_func_id], &EntryPoint::Direct);
 
@@ -390,6 +424,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
 
             tail::FuncDef {
                 tail_funcs: IdVec::new(),
+                tail_func_symbols: IdVec::new(),
 
                 purity: orig_def.purity,
                 arg_type: orig_def.arg_type.clone(),
@@ -423,7 +458,7 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                 .iter()
                 .all(|orig_id| &program.funcs[orig_id].purity == &purity));
 
-            let tail_funcs: IdVec<tail::TailFuncId, tail::TailFunc> = IdVec::from_items(
+            let tail_funcs = IdVec::from_vec(
                 orig_ids
                     .iter()
                     .map(|orig_id| {
@@ -445,6 +480,13 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                     .collect(),
             );
 
+            let tail_func_symbols = IdVec::from_vec(
+                orig_ids
+                    .iter()
+                    .map(|orig_id| program.func_symbols[orig_id].clone())
+                    .collect(),
+            );
+
             let (entry_arg_type, entry_body) = match &entry_points[new_func_id] {
                 EntryPoint::Direct => unreachable!(),
 
@@ -458,51 +500,34 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                 }
 
                 EntryPoint::Variants(entry_func_ids) => {
-                    let arg_variant_types = entry_func_ids.map(|_, entry_func_id| {
+                    let arg_variant_types = entry_func_ids.map_refs(|_, entry_func_id| {
                         program.funcs[orig_ids[entry_func_id.0]].arg_type.clone()
                     });
 
-                    let body = tail::Expr::Branch(
-                        rc::ARG_LOCAL,
-                        entry_func_ids
-                            .iter()
-                            .map(|(variant_id, tail_func_id)| {
-                                let unwrapped_var = rc::LocalId(1);
-                                let call_result_var = rc::LocalId(2);
+                    let mut builder = LetManyBuilder::new(Count::from_value(1));
 
-                                (
-                                    special::Condition::Variant(
-                                        variant_id,
-                                        Box::new(special::Condition::Any),
-                                    ),
-                                    tail::Expr::LetMany(
-                                        vec![
-                                            (
-                                                arg_variant_types[variant_id].clone(),
-                                                tail::Expr::UnwrapVariant(
-                                                    variant_id,
-                                                    rc::ARG_LOCAL,
-                                                ),
-                                            ),
-                                            (
-                                                ret_type.clone(),
-                                                tail::Expr::TailCall(*tail_func_id, unwrapped_var),
-                                            ),
-                                        ],
-                                        call_result_var,
-                                    ),
-                                )
-                            })
-                            .collect(),
-                        ret_type.clone(),
+                    let match_ = tail::Expr::build_match(
+                        &mut builder,
+                        rc::ARG_LOCAL,
+                        arg_variant_types.iter().map(|(id, ty)| (id, ty.clone())),
+                        &ret_type,
+                        || tail::Expr::Unreachable(ret_type.clone()),
+                        |builder, variant_id, unwrapped| {
+                            builder.add_binding(
+                                ret_type.clone(),
+                                tail::Expr::TailCall(entry_func_ids[variant_id], unwrapped),
+                            )
+                        },
                     );
 
-                    (special::Type::Variants(arg_variant_types), body)
+                    let body = builder.to_expr(match_);
+                    (rc::Type::Variants(arg_variant_types), body)
                 }
             };
 
             tail::FuncDef {
                 tail_funcs,
+                tail_func_symbols,
                 purity,
                 arg_type: entry_arg_type,
                 ret_type,
@@ -510,6 +535,13 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
                 profile_point: None,
             }
         }
+    });
+
+    let new_func_symbols = sccs.map_refs(|_, scc| match scc {
+        graph::Scc::Acyclic(orig_id) => {
+            TailFuncSymbols::Acyclic(program.func_symbols[orig_id].clone())
+        }
+        graph::Scc::Cyclic(_) => TailFuncSymbols::Cyclic,
     });
 
     let main = match &mappings[program.main] {
@@ -520,17 +552,18 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
         Some(FuncMapping::Variant(_, _, _)) => {
             let main_wrapper = tail::FuncDef {
                 tail_funcs: IdVec::new(),
+                tail_func_symbols: IdVec::new(),
 
                 purity: Purity::Impure,
-                arg_type: special::Type::Tuple(Vec::new()),
-                ret_type: special::Type::Tuple(Vec::new()),
+                arg_type: rc::Type::Tuple(Vec::new()),
+                ret_type: rc::Type::Tuple(Vec::new()),
                 body: trans_expr(
                     &program.funcs,
                     &mappings,
                     &BTreeMap::new(),
                     Position::Tail,
                     1,
-                    &special::Expr::Call(Purity::Impure, program.main, rc::ARG_LOCAL),
+                    &rc::Expr::Call(Purity::Impure, program.main, rc::ARG_LOCAL),
                 ),
                 profile_point: None,
             };
@@ -544,7 +577,10 @@ pub fn tail_call_elim(program: special::Program, progress: impl ProgressLogger) 
     tail::Program {
         mod_symbols: program.mod_symbols.clone(),
         custom_types: program.custom_types,
+        custom_type_symbols: program.custom_type_symbols,
         funcs: new_funcs,
+        func_symbols: new_func_symbols,
+        schemes: program.schemes,
         profile_points: program.profile_points,
         main,
     }

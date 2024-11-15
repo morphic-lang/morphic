@@ -4,9 +4,10 @@ use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub RepParamId);
+#[id_type]
+pub struct RepParamId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
@@ -26,7 +27,8 @@ pub enum Type<Rep> {
     Custom(mono::CustomTypeId, IdVec<RepParamId, Rep>),
 }
 
-id_type!(pub TemplateId);
+#[id_type]
+pub struct TemplateId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InCycle {

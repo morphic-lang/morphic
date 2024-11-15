@@ -1,69 +1,61 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
+use crate::data::obligation_annot_ast as ob;
 use crate::data::profile as prof;
-use crate::data::repr_constrained_ast as constrain;
-use crate::data::repr_specialized_ast as special;
+use crate::data::rc_specialized_ast::{self as rc, ModeScheme, ModeSchemeId, RcOp};
 use crate::data::resolved_ast as res;
 use crate::data::tail_rec_ast as tail;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
 // Second pass:
 // (1) flatten sum types over sum types
 
-id_type!(pub LocalId);
-id_type!(pub CustomFuncId);
-pub type CustomTypeId = special::CustomTypeId;
+#[id_type]
+pub struct LocalId(pub usize);
 
-pub type Type = special::Type;
+// TODO: We can just use `tail::CustomFuncId` here
+#[id_type]
+pub struct CustomFuncId(pub usize);
 
-// Mutable operations on persistent arrays with refcount 1 should mutate
+pub type CustomTypeId = ob::CustomTypeId;
+
+pub type Type = rc::Type;
+
+// Mutable operations on arrays with refcount 1 should mutate
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
-    New(),
+    New,
 
-    // Returns tuple of (item, hole array)
-    // Argument is borrowed
-    // Return value is borrowed
     Get(
         LocalId, // Array
         LocalId, // Index
     ),
 
-    // Returns tuple of (item, hole array)
-    // Argument is owned
-    // Returned item is owned
-    // Returned hole array is owned
     Extract(
         LocalId, // Array
         LocalId, // Index
     ),
 
     // Returns int
-    // Argument is borrowed
     Len(
         LocalId, // Array
     ),
 
-    // Arguments are owned; Return is owned
     Push(
         LocalId, // Array
         LocalId, // Item
     ),
 
-    // Returns type (array, item)
-    // Argument is owned; Return values are owned
     Pop(
         LocalId, // Array
     ),
 
-    // Returns new array
-    // Arguments are owned; Return is owned
     Replace(
         LocalId, // Hole array
         LocalId, // Item
     ),
 
-    // Arguments are owned; Return is owned
     Reserve(
         LocalId, // Array
         LocalId, // Capacity
@@ -72,8 +64,13 @@ pub enum ArrayOp {
 
 #[derive(Clone, Debug)]
 pub enum IoOp {
-    Input,           // Returns array of bytes
-    Output(LocalId), // Takes array of bytes by borrow, returns unit
+    // Returns array of bytes
+    Input,
+    // Takes array of bytes by borrow, returns unit
+    Output(
+        ModeScheme, // Input type
+        LocalId,
+    ),
 }
 
 #[derive(Clone, Debug)]
@@ -81,11 +78,13 @@ pub enum Expr {
     Local(LocalId),
     Call(CustomFuncId, LocalId),
     TailCall(tail::TailFuncId, LocalId),
-    If(LocalId, Box<Expr>, Box<Expr>),
     LetMany(
-        Vec<(Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
-        LocalId,           // body
+        Vec<(Type, Expr, Metadata)>, // bound values. Each is assigned a new sequential LocalId
+        LocalId,                     // body
     ),
+
+    If(LocalId, Box<Expr>, Box<Expr>),
+    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
     Unreachable(Type),
 
     Tuple(Vec<LocalId>),
@@ -104,27 +103,24 @@ pub enum Expr {
     UnwrapCustom(CustomTypeId, LocalId),
     WrapBoxed(
         LocalId,
-        Type, // Inner type
+        ModeScheme, // Output type
     ),
     UnwrapBoxed(
         LocalId,
-        Type, // Inner type
-    ), // Does not touch refcount
+        ModeScheme, // Input type
+        ModeScheme, // Output type
+    ),
 
-    // TODO: Consider using the same representation as the RC-specialized AST and subsequent passes
-    Retain(LocalId, Type),  // Takes any type, returns unit
-    Release(LocalId, Type), // Takes any type, returns unit
-
-    CheckVariant(first_ord::VariantId, LocalId), // Returns a bool
+    RcOp(ModeScheme, RcOp, LocalId), // Takes any type, returns unit
 
     Intrinsic(Intrinsic, LocalId),
-    ArrayOp(constrain::RepChoice, Type, ArrayOp), // Type is the item type
-    IoOp(constrain::RepChoice, IoOp),
+    ArrayOp(ModeScheme, ArrayOp),
+    IoOp(IoOp),
     // Takes message by borrow (not that it matters when the program is about to end anyway...)
     Panic(
-        Type,                 // Return type
-        constrain::RepChoice, // Message representation
-        LocalId,              // Message
+        Type,       // Output type
+        ModeScheme, // Input type
+        LocalId,    // Message
     ),
 
     BoolLit(bool),
@@ -145,6 +141,7 @@ pub struct TailFunc {
 #[derive(Clone, Debug)]
 pub struct FuncDef {
     pub tail_funcs: IdVec<tail::TailFuncId, TailFunc>,
+    pub tail_func_symbols: IdVec<tail::TailFuncId, first_ord::FuncSymbols>,
 
     pub arg_type: Type,
     pub ret_type: Type,
@@ -157,8 +154,11 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: IdVec<CustomTypeId, Type>,
+    pub custom_types: rc::CustomTypes,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<CustomFuncId, tail::TailFuncSymbols>,
+    pub schemes: IdVec<ModeSchemeId, ModeScheme>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

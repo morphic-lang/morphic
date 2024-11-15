@@ -105,3 +105,31 @@ void prof_report_done(void) {
         exit(1);
     }
 }
+
+static uint64_t prof_rc_retain_count = 0;
+static uint64_t prof_rc_release_count = 0;
+static uint64_t prof_rc_rc1_count = 0;
+
+void prof_rc_record_retain(void) {
+    prof_rc_retain_count++;
+}
+
+void prof_rc_record_release(void) {
+    prof_rc_release_count++;
+}
+
+void prof_rc_record_rc1(void) {
+    prof_rc_release_count++;
+}
+
+uint64_t prof_rc_get_retain_count(void) {
+    return prof_rc_retain_count;
+}
+
+uint64_t prof_rc_get_release_count(void) {
+    return prof_rc_release_count;
+}
+
+uint64_t prof_rc_get_rc1_count(void) {
+    return prof_rc_rc1_count;
+}

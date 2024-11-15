@@ -1,0 +1,116 @@
+// based off https://github.com/koka-lang/koka/blob/b3122869ac74bfb6f432f7e76eeb723b1f69a491/test/bench/koka/deriv.kk
+
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io expose { writeln },
+    module String expose { int_to_string, string_to_nat, equal },
+    module Option expose { Option { Some, None } },
+  }
+
+module Bench = file "lib/bench_common.mor" with { Core }
+  expose { repeat }
+
+type Expr {
+  Val(Int),
+  Var(Array Byte),
+  Add(Expr, Expr),
+  Mul(Expr, Expr),
+  Pow(Expr, Expr),
+  Ln(Expr),
+}
+
+pow_rec(accum: Int, a: Int, b: Int): Int =
+  if (b = 0) {
+    accum
+  } else {
+    pow_rec(a * accum, a, b - 1)
+  }
+
+pown(a: Int, b: Int): Int =
+  pow_rec(1, a, b)
+
+add(n0 : Expr, m0 : Expr) : Expr =
+  match(n0,m0) {
+    (Val(n),Val(m))        -> Val(n+m),
+    (Val(0),f)             -> f,
+    (f,Val(0))             -> f,
+    (f,Val(n))             -> add(Val(n),f),
+    (Val(n),Add(Val(m),f)) -> add(Val(n+m),f),
+    (f,Add(Val(n),g))      -> add(Val(n),add(f,g)),
+    (Add(f, g), h)         -> add(f,add(g,h)),
+    (f,g)                  -> Add(f, g),
+  }
+
+mul(n0 : Expr, m0 : Expr) : Expr =
+  match (n0,m0) {
+    (Val(n), Val(m))         -> Val(n*m),
+    (Val(0), _)              -> Val(0),
+    (_, Val(0))              -> Val(0),
+    (Val(1), f)              -> f,
+    (f, Val(1))              -> f,
+    (f, Val(n))              -> mul(Val(n),f),
+    (Val(n), Mul(Val(m), f)) -> mul(Val(n*m),f),
+    (f, Mul(Val(n), g))      -> mul(Val(n),mul(f,g)),
+    (Mul(f, g), h)           -> mul(f,mul(g,h)),
+    (f, g)                   -> Mul(f, g),
+  }
+
+powr(m0 : Expr, n0 : Expr) : Expr =
+  match (m0,n0) {
+    (Val(m), Val(n)) -> Val(pown(m,n)),
+    (_,  Val(0))     -> Val(1),
+    (f, Val(1))      -> f,
+    (Val(0), _)      -> Val(0),
+    (f, g)           -> Pow(f, g),
+  }
+
+ln(n : Expr) : Expr =
+  match n {
+    Val(1) -> Val(0),
+    f      -> Ln(f),
+  }
+
+d(x : Array Byte, e : Expr) : Expr =
+  match e {
+    Val(_)     -> Val(0),
+    Var(y)     -> if equal(x, y) { Val(1) } else { Val(0) },
+    Add(f, g)  -> add(d(x,f),d(x,g)),
+    Mul(f, g)  -> add(mul(f,d(x,g)),mul(g,d(x,f))),
+    Pow(f, g)  -> mul(powr(f,g),add(mul(mul(g,d(x,f)),powr(f,Val(-1))),mul(ln(f),d(x,g)))),
+    Ln(f)      -> mul(d(x,f),powr(f,Val(-1))),
+  }
+
+count(e : Expr) : Int =
+  match e {
+    Val(_)   -> 1,
+    Var(_)   -> 1,
+    Add(f,g) -> count(f) + count(g),
+    Mul(f,g) -> count(f) + count(g),
+    Pow(f,g) -> count(f) + count(g),
+    Ln(f)    -> count(f),
+  }
+
+endopow(n : Int, f : a -> a, e : a): a =
+  if n = 0 { e } else {
+    endopow(n - 1, f, f(e))
+  }
+
+deriv(f : Expr): Expr =
+  d("x",f)
+
+run_deriv(i : Int): Int =
+  let x = Var("x") in
+  let f = powr(x,x) in
+  let e = endopow(i, deriv, f) in
+  count(e)
+
+proc main(): () =
+  match (string_to_nat(do input()), string_to_nat(do input())) {
+    (Some(iters), Some(derivs)) ->
+      match repeat(iters, \() -> run_deriv(derivs)) {
+        Some(n) -> do writeln(int_to_string(n)),
+        None -> (),
+      },
+    (_, _) ->
+      do writeln("Please enter two positive integers (an iteration count and a derivative number)"),
+  }

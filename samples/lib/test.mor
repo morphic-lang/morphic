@@ -4,6 +4,7 @@ pub proc test(msg: Array Byte, cond: Bool): () =
   if cond {
     ()
   } else {
-    do output(concat("Test failed: ", msg)) then
+    do output("Test failed: ") then
+    do output(msg) then
     do output("\n")
   }

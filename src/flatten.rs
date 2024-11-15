@@ -3,16 +3,14 @@ use std::collections::BTreeSet;
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::flat_ast as flat;
-use crate::data::intrinsics as intrs;
 use crate::intrinsic_config::intrinsic_sig;
-use crate::util::graph::{strongly_connected, Graph};
-use crate::util::id_vec::IdVec;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::{IdMap, IdVec};
 
 pub fn flatten(program: anon::Program, progress: impl ProgressLogger) -> flat::Program {
     let mut progress = progress.start_session(Some(program.funcs.len()));
-    let flat_funcs = program.funcs.map(|_, func_def| {
-        let func_def_flat = flatten_func_def(&program, func_def);
+    let flat_funcs = program.funcs.map_refs(|_, func_def| {
+        let func_def_flat = flatten_func_def(&program, &func_def);
         progress.update(1);
         func_def_flat
     });
@@ -68,7 +66,7 @@ impl LocalsContext {
     }
 
     fn with_scope<R, F: for<'a> FnOnce(&'a mut LocalsContext) -> R>(&mut self, body: F) -> R {
-        let num_locals = self.locals.len();
+        let num_locals = self.locals.count();
         let result = body(self);
         self.locals.truncate(num_locals);
         result
@@ -225,23 +223,13 @@ fn flatten_expr(
         anon::Expr::Intrinsic(intr, arg) => {
             let (arg_local, arg_type) = flatten_expr(orig, ctx, builder, arg);
 
-            fn trans_type(type_: &intrs::Type) -> anon::Type {
-                match type_ {
-                    intrs::Type::Bool => anon::Type::Bool,
-                    intrs::Type::Num(num_type) => anon::Type::Num(*num_type),
-                    intrs::Type::Tuple(items) => {
-                        anon::Type::Tuple(items.iter().map(trans_type).collect())
-                    }
-                }
-            }
-
             let sig = intrinsic_sig(*intr);
 
-            debug_assert_eq!(&arg_type, &trans_type(&sig.arg));
+            debug_assert_eq!(&arg_type, &anon::Type::from_intr(&sig.arg));
 
             bind(
                 builder,
-                trans_type(&sig.ret),
+                anon::Type::from_intr(&sig.ret),
                 flat::Expr::Intrinsic(*intr, arg_local),
             )
         }
@@ -617,29 +605,27 @@ fn mark_custom_type_sccs(
         }
     }
 
-    let type_deps = Graph {
-        edges_out: typedefs.map(|_, content| {
-            let mut deps = BTreeSet::new();
-            add_type_deps(content, &mut deps);
-            deps.into_iter().collect()
-        }),
-    };
+    let sccs = id_graph_sccs::find_components(typedefs.count(), |def_id| {
+        let mut deps = BTreeSet::new();
+        add_type_deps(&typedefs[def_id], &mut deps);
+        deps
+    });
 
-    let sccs = IdVec::<flat::CustomTypeSccId, _>::from_items(strongly_connected(&type_deps));
-
-    let mut types = typedefs.map(|_, _| None);
+    let mut types = IdMap::new();
     for (scc_id, scc) in &sccs {
-        for type_ in scc {
-            debug_assert!(types[type_].is_none());
-            types[type_] = Some(flat::CustomTypeDef {
-                content: typedefs[type_].clone(),
-                scc: scc_id,
-            });
+        for def_id in scc.nodes {
+            types.insert_vacant(
+                def_id,
+                flat::CustomTypeDef {
+                    content: typedefs[def_id].clone(),
+                    scc: scc_id,
+                },
+            );
         }
     }
 
     flat::CustomTypes {
-        types: types.into_mapped(|_, type_def| type_def.unwrap()),
+        types: types.to_id_vec(typedefs.count()),
         sccs,
     }
 }

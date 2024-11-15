@@ -1,7 +1,7 @@
 #include "tal.h"
 #include "js_ffi.h"
 
-/* Provided by the opt-proto program we will be linked against. */
+/* Provided by the Morphic program we will be linked against. */
 extern int main(int argc, char **argv);
 
 void _start(void) {

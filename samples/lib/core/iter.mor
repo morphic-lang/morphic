@@ -169,6 +169,26 @@ pub find(it: Iter a, f: a -> Bool): Option a =
     None -> None,
   }
 
+pub find_map(it: Iter a, f: a -> Option b): Option b =
+  match next(it) {
+    Some(x, xs) -> match f(x) {
+      Some(y) -> Some(y),
+      None -> find_map(xs, f),
+    },
+    None -> None,
+  }
+
+pub join(it: Iter (Iter a), sep: Iter a): Iter a =
+  Iter(\() ->
+      match next(it) {
+        Some(x, xs) -> next(chain_lazy(x, \() -> chain_lazy(sep, \() -> join(xs, sep)))),
+        None -> None,
+      }
+    )
+
+pub find_index(it: Iter a, f: a -> Bool): Option Int =
+  find_map(enumerate(it), \(idx, x) -> if f(x) { Some(idx) } else { None })
+
 pub proc for_each(it: Iter a, f: proc a -> ()): () =
   match next(it) {
     Some(x, xs) ->

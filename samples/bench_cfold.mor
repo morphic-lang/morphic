@@ -1,0 +1,103 @@
+// based off https://github.com/koka-lang/koka/blob/b3122869ac74bfb6f432f7e76eeb723b1f69a491/test/bench/koka/cfold.kk
+
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io expose { writeln },
+    module String expose { int_to_string, string_to_nat },
+    module Math expose { cmp_max },
+    module Option expose { Option { Some, None } }
+  }
+
+module Bench = file "lib/bench_common.mor" with { Core }
+  expose { repeat }
+
+type Expr {
+  Var(Int),
+  Val(Int),
+  Add(Expr, Expr),
+  Mul(Expr, Expr),
+}
+
+mk_expr(n: Int, v: Int): Expr =
+  if n = 0 {
+   if v=0 { Var(1) } else { Val(v) }
+  } else {
+    Add( mk_expr(n - 1, v+1), mk_expr(n - 1, cmp_max(v - 1,0)) )
+  }
+
+append_add( e0 : Expr, e3 : Expr) : Expr =
+  match e0 {
+    Add(e1,e2) -> Add(e1, append_add(e2,e3)),
+    _          -> Add(e0,e3),
+  }
+
+append_mul( e0 : Expr, e3 : Expr) : Expr =
+  match e0 {
+    Mul(e1,e2) -> Mul(e1, append_mul(e2,e3)),
+    _          -> Mul(e0,e3),
+  }
+
+reassoc( e : Expr ) : Expr =
+  match e {
+    Add(e1,e2) -> append_add(reassoc(e1), reassoc(e2)),
+    Mul(e1,e2) -> append_mul(reassoc(e1), reassoc(e2)),
+    _ -> e,
+  }
+
+cfold( e : Expr) : Expr =
+  match e {
+    Add(e1,e2) ->
+      let e1_ = cfold(e1) in
+      let e2_ = cfold(e2) in
+      match e1_ {
+        Val(a) -> match e2_ {
+          Val(b)        -> Val(a+b),
+          Add(f,Val(b)) -> Add(Val(a+b),f),
+          Add(Val(b),f) -> Add(Val(a+b),f),
+          _             -> Add(e1_,e2_),
+        },
+        _ -> Add(e1_,e2_),
+      },
+    Mul(e1,e2) ->
+      let e1_ = cfold(e1) in
+      let e2_ = cfold(e2) in
+      match e1_ {
+        Val(a) -> match e2_ {
+          Val(b)        -> Val(a*b),
+          Mul(f,Val(b)) -> Mul(Val(a*b),f),
+          Mul(Val(b),f) -> Mul(Val(a*b),f),
+          _             -> Mul(e1_,e2_),
+        },
+        _ -> Mul(e1_,e2_),
+      },
+    _ -> e,
+  }
+
+eval(e : Expr) : Int =
+  match e {
+    Var(_)   -> 0,
+    Val(v)   -> v,
+    Add(l,r) -> eval(l) + eval(r),
+    Mul(l,r) -> eval(l) * eval(r),
+  }
+
+test_cfold(x : Int): Int =
+  let e = mk_expr(x, 1) in
+  let v1 = eval(e) in
+  let v2 = e |> reassoc() |> cfold() |> eval() in
+  if v1 = v2 {
+    v2
+  } else {
+    0
+  }
+
+proc main(): () =
+  match (string_to_nat(do input()), string_to_nat(do input())) {
+    (Some(iters), Some(depth)) ->
+      match repeat(iters, \() -> test_cfold(depth)) {
+        Some(n) -> do writeln(int_to_string(n)),
+        None -> (),
+      },
+    (_, _) ->
+      do writeln("Please enter two positive integers (an iteration count and a depth)"),
+  }

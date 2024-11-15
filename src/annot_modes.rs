@@ -1,2483 +1,2026 @@
-use im_rc::{OrdMap, OrdSet, Vector};
-use std::collections::{BTreeMap, BTreeSet};
+//! This module implements the specializing variant of first compiler pass described in the borrow
+//! inference paper. A signficant proportion of the machinery is dedicated to specialization. The
+//! core logic for the pass is contained in `instantiate_expr`.
 
-use crate::alias_spec_flag::lookup_concrete_cond;
-use crate::cli;
-use crate::data::alias_annot_ast as alias;
-use crate::data::alias_specialized_ast as spec;
-use crate::data::anon_sum_ast as anon;
-use crate::data::fate_annot_ast as fate;
-use crate::data::first_order_ast as first_ord;
-use crate::data::flat_ast as flat;
-use crate::data::mode_annot_ast as mode;
-use crate::field_path;
-use crate::stack_path;
-use crate::util::disjunction::Disj;
-use crate::util::event_set as event;
-use crate::util::graph::{strongly_connected, Graph};
-use crate::util::id_vec::IdVec;
-use crate::util::im_rc_ext::VectorExtensions;
-use crate::util::inequality_graph as ineq;
+use crate::cli::RcStrategy;
+use crate::data::borrow_model as model;
+use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, VariantId};
+use crate::data::flat_ast::CustomTypeSccId;
+use crate::data::guarded_ast::{self as guard, LocalId};
+use crate::data::intrinsics as intr;
+use crate::data::metadata::Metadata;
+use crate::data::mode_annot_ast::{
+    self as annot, HeapModes, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, Path,
+    Position, Res, ResModes, ShapeInner, SlotId, SubstHelper,
+};
+use crate::data::profile as prof;
+use crate::data::purity::Purity;
+use crate::intrinsic_config::intrinsic_sig;
+use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
+use crate::util::collection_ext::{BTreeMapExt, VecExt};
+use crate::util::inequality_graph2 as in_eq;
+use crate::util::iter::IterExt;
 use crate::util::local_context::LocalContext;
+use crate::util::non_empty_set::NonEmptySet;
 use crate::util::progress_logger::{ProgressLogger, ProgressSession};
+use id_collections::{id_type, Count, Id, IdMap, IdVec};
+use id_graph_sccs::{find_components, Scc, SccKind, Sccs};
+use std::collections::{BTreeMap, BTreeSet};
+use std::iter;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum OccurKind {
-    Intermediate,
-    Final,
-    Unused,
-}
+type Interner = annot::Interner<CustomTypeId>;
+type UnfoldRecipe = guard::UnfoldRecipe<CustomTypeId>;
+type ShapeFo = annot::Shape<CustomTypeId>;
+type TypeFo<R> = annot::Type<R, CustomTypeId>;
+type OccurFo<R> = annot::Occur<R, CustomTypeId>;
+type ExprFo<R> = annot::Expr<R, CustomTypeId, CustomFuncId>;
+type CustomTypeDefFo = annot::CustomTypeDef<CustomTypeId, CustomTypeSccId>;
 
-// TODO: Should we unify this with `OccurKind`?
-//
-// TODO: Should this exist at all?  We may not actually care about the distinct between `Used` vs
-// `Moved` in any code that consumes this type.
-//
-/// The ordering on this type is meaningful, with Used < Moved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum UseKind {
-    Used,
-    Moved,
-}
+// It is crucial that RC specialization (the next pass) does not inhibit tail calls by inserting
+// retains/releases after them. Hence, this pass must detect tail calls during constraint
+// generation. The machinery here is duplicative of the machinery for the actual tail call
+// elimination pass, but it is better to recompute later which calls are tail in case we accidently
+// *do* inhibit such a call.
 
-#[derive(Clone, Debug)]
-struct FutureUses {
-    uses: OrdMap<flat::LocalId, OrdMap<mode::StackPath, UseKind>>,
-}
-
-/// An `ExprUses` is conceptually a diff on a `FutureUses`.
-///
-/// Representing an expression's uses in terms of a diff, rather than in terms of a snapshot of all
-/// future uses, is useful because it allows us to more efficiently merge the effects of different
-/// arms of a `Branch` expression.  If we represented each branch arm's uses as a snapshot of all
-/// future uses, we would be forced to merge the use flags of *every* variable used during or after
-/// the branch, including uses which did not occur during the branch (and which therefore cannot
-/// actually vary across arms of the branch).
-///
-/// This is somewhat analogous to how it is more efficient to perform a git diff than to diff raw
-/// directories, because the git history provides extra information about which files changed since
-/// the most recent common ancestor.
-#[derive(Clone, Debug)]
-struct ExprUses {
-    uses: OrdMap<flat::LocalId, OrdMap<mode::StackPath, UseKind>>,
-}
-
-fn merge_uses(
-    curr_uses: &mut OrdMap<flat::LocalId, OrdMap<mode::StackPath, UseKind>>,
-    new_uses: &OrdMap<flat::LocalId, OrdMap<mode::StackPath, UseKind>>,
-) {
-    for (local, new_local_uses) in new_uses {
-        for (path, new_use_kind) in new_local_uses {
-            let curr_use_kind = curr_uses
-                .entry(*local)
-                .or_insert_with(OrdMap::new)
-                .entry(path.clone())
-                .or_insert(UseKind::Used);
-
-            *curr_use_kind = (*curr_use_kind).max(*new_use_kind);
-        }
+fn last_index<T>(slice: &[T]) -> Option<usize> {
+    if slice.is_empty() {
+        None
+    } else {
+        Some(slice.len() - 1)
     }
 }
 
-impl FutureUses {
-    fn add_expr_uses(&mut self, expr_uses: &ExprUses) {
-        merge_uses(&mut self.uses, &expr_uses.uses);
-    }
-}
-
-#[derive(Clone, Debug)]
-enum DeclarationSite {
-    Arg,
-    Block(fate::LetBlockId),
-}
-
-// TODO: Borrowing the type here is a good idea.  We should modify other passes to do this too.
-#[derive(Clone, Debug)]
-struct MarkOccurLocalInfo<'a> {
-    type_: &'a anon::Type,
-    decl_site: DeclarationSite,
-}
-
-type MarkOccurContext<'a> = LocalContext<flat::LocalId, MarkOccurLocalInfo<'a>>;
-
-fn mark_occur(
-    typedefs: &flat::CustomTypes,
-    local_info: &MarkOccurLocalInfo,
-    fate: &fate::Fate,
-    ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
-    future_uses_after_expr: Option<&OrdMap<mode::StackPath, UseKind>>,
-    future_uses_in_expr: Option<&OrdMap<mode::StackPath, UseKind>>,
-    extra_owned: Option<&BTreeSet<mode::StackPath>>,
-) -> BTreeMap<mode::StackPath, OccurKind> {
-    let mut result = BTreeMap::new();
-
-    for path in stack_path::stack_paths_in(typedefs, &local_info.type_) {
-        let used_after_expr = future_uses_after_expr
-            .map(|uses| uses.contains_key(&path))
-            .unwrap_or(false);
-
-        let used_later_in_expr = future_uses_in_expr
-            .map(|uses| uses.contains_key(&path))
-            .unwrap_or(false);
-
-        if used_after_expr || used_later_in_expr {
-            result.insert(path, OccurKind::Intermediate);
-            continue;
+// This function should only be called on 'expr' when the expression occurs in tail position.
+fn add_tail_call_deps(deps: &mut BTreeSet<CustomFuncId>, vars_in_scope: usize, expr: &guard::Expr) {
+    match expr {
+        guard::Expr::Call(_purity, id, _arg) => {
+            deps.insert(*id);
         }
 
-        // If we didn't 'continue' out of the previous check, we know this path will never be used
-        // again within the function.
-
-        let path_fate = &fate.fates[&stack_path::to_field_path(&path)];
-
-        let escapes_function = path_fate
-            .ret_destinations
-            .iter()
-            .any(|ret_dest| ret_fates[ret_dest] == spec::RetFate::MaybeUsed);
-
-        if escapes_function {
-            result.insert(path, OccurKind::Final);
-            continue;
+        guard::Expr::If(_discrim, then_case, else_case) => {
+            add_tail_call_deps(deps, vars_in_scope, then_case);
+            add_tail_call_deps(deps, vars_in_scope, else_case);
         }
 
-        let escapes_decl_block = match local_info.decl_site {
-            DeclarationSite::Arg => false,
-            DeclarationSite::Block(decl_block) => path_fate.blocks_escaped.contains(&decl_block),
-        };
-
-        if escapes_decl_block {
-            result.insert(path, OccurKind::Final);
-            continue;
-        }
-
-        match path_fate.internal {
-            fate::InternalFate::Owned => {
-                result.insert(path, OccurKind::Final);
-            }
-            fate::InternalFate::Accessed => {
-                let is_extra_owned = extra_owned
-                    .map(|extra_owned| extra_owned.contains(&path))
-                    .unwrap_or(false);
-
-                if is_extra_owned {
-                    result.insert(path, OccurKind::Final);
-                } else {
-                    result.insert(path, OccurKind::Intermediate);
+        guard::Expr::LetMany(bindings, final_local) => {
+            if let Some(last_i) = last_index(bindings) {
+                if *final_local == guard::LocalId(vars_in_scope + last_i) {
+                    add_tail_call_deps(deps, vars_in_scope + last_i, &bindings[last_i].1);
                 }
             }
-            fate::InternalFate::Unused => {
-                result.insert(path, OccurKind::Unused);
-            }
         }
-    }
 
-    result
-}
-
-fn mark_occur_mut<'a>(
-    typedefs: &flat::CustomTypes,
-    locals: &MarkOccurContext<'a>,
-    occur_fates: &IdVec<fate::OccurId, fate::Fate>,
-    ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
-    occur: fate::Local,
-    future_uses: &FutureUses,
-    expr_uses: &mut ExprUses,
-    occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
-    extra_owned: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
-) {
-    let this_occur_kinds = mark_occur(
-        typedefs,
-        locals.local_binding(occur.1),
-        &occur_fates[occur.0],
-        ret_fates,
-        future_uses.uses.get(&occur.1),
-        expr_uses.uses.get(&occur.1),
-        extra_owned.get(&occur.1),
-    );
-
-    for (path, path_occur_kind) in &this_occur_kinds {
-        let new_use_kind = match path_occur_kind {
-            OccurKind::Intermediate => Some(UseKind::Used),
-            OccurKind::Final => Some(UseKind::Moved),
-            OccurKind::Unused => None,
-        };
-
-        if let Some(new_use_kind) = new_use_kind {
-            let curr_expr_use = expr_uses
-                .uses
-                .entry(occur.1)
-                .or_insert_with(OrdMap::new)
-                .entry(path.clone())
-                .or_insert(UseKind::Used);
-
-            *curr_expr_use = (*curr_expr_use).max(new_use_kind);
-        }
-    }
-
-    debug_assert!(occur_kinds[occur.0].is_none());
-    occur_kinds[occur.0] = Some(this_occur_kinds);
-}
-
-// Marking tentative prologue drops doesn't contribute to expression uses, because when we mark a
-// prologue drop we're not sure yet whether or not it will be pruned later due to a prior `Final`
-// use of the same variable.  We don't want to foreclose the possibility of the variable in the drop
-// prologue being moved earlier for some other reason.
-fn mark_tentative_prologue_drops(
-    future_uses: &FutureUses,
-    expr_uses: &ExprUses,
-    to_be_mutated: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
-    tentative_drop_prologue: &mut BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
-) {
-    for (local, mutated_paths) in to_be_mutated {
-        for mutated_path in mutated_paths {
-            let used_after_expr = future_uses
-                .uses
-                .get(local)
-                .map(|uses| uses.contains_key(mutated_path))
-                .unwrap_or(false);
-
-            let used_later_in_expr = expr_uses
-                .uses
-                .get(local)
-                .map(|uses| uses.contains_key(mutated_path))
-                .unwrap_or(false);
-
-            if used_after_expr || used_later_in_expr {
-                continue;
-            }
-
-            tentative_drop_prologue
-                .entry(*local)
-                .or_insert_with(BTreeSet::new)
-                .insert(mutated_path.clone());
-        }
+        _ => {}
     }
 }
 
-fn mutations_from_aliases(
-    typedefs: &flat::CustomTypes,
-    version_aliases: &BTreeMap<alias::AliasCondition, spec::ConcreteAlias>,
-    aliases: &alias::LocalAliases,
-) -> BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>> {
-    let mut result = BTreeMap::new();
-    for ((other, other_path), cond) in &aliases.aliases {
-        for other_stack_path in
-            stack_path::split_stack_heap_3(typedefs, other_path.clone()).stack_paths()
-        {
-            if lookup_concrete_cond(version_aliases, cond) {
-                result
-                    .entry(*other)
-                    .or_insert_with(BTreeSet::new)
-                    .insert(other_stack_path.clone());
-            }
-        }
-    }
-    result
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Position {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IsTail {
     Tail,
     NotTail,
 }
 
-// This is a backwards data-flow pass, so all variable occurrences should be processed in reverse
-// order, both across expressions and within each expression.
-//
-// TODO: This doesn't have great asymptotics for deeply nested expressions, e.g. long chains of
-// if/else-if branches.  Can we do better?
-fn mark_expr_occurs<'a>(
-    orig: &spec::Program,
-    scc: &BTreeSet<(first_ord::CustomFuncId, spec::FuncVersionId)>,
-    this_version: &spec::FuncVersion,
-    locals: &mut MarkOccurContext<'a>,
-    occur_fates: &IdVec<fate::OccurId, fate::Fate>,
-    future_uses: &FutureUses,
-    position: Position,
-    expr: &'a fate::Expr,
-    occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
-    tentative_drop_prologues: &mut IdVec<
-        fate::ExprId,
-        Option<BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
-    >,
-) -> ExprUses {
-    debug_assert!(future_uses
-        .uses
-        .get_max()
-        .map(|(flat::LocalId(max_id), _)| *max_id < locals.len())
-        .unwrap_or(true));
+#[derive(Clone, Debug)]
+struct TailFuncDef {
+    purity: Purity,
+    arg_ty: guard::Type,
+    ret_ty: guard::Type,
+    body: TailExpr,
+    profile_point: Option<prof::ProfilePointId>,
+}
 
-    let mut expr_uses = ExprUses {
-        uses: OrdMap::new(),
-    };
+/// A `flat::Expr` where all tail calls are marked.
+#[derive(Clone, Debug)]
+enum TailExpr {
+    Local(LocalId),
+    Call(Purity, IsTail, CustomFuncId, LocalId),
+    LetMany(Vec<(guard::Type, TailExpr, Metadata)>, LocalId),
 
-    let mut tentative_drop_prologue = BTreeMap::new();
+    If(LocalId, Box<TailExpr>, Box<TailExpr>),
+    CheckVariant(VariantId, LocalId), // Returns a bool
+    Unreachable(guard::Type),
 
-    // We need to pass `locals`, `occur_kinds`, and `expr_uses` as arguments to appease the borrow
-    // checker.
-    let mark_with_extra_owned =
-        |locals: &mut MarkOccurContext<'a>,
-         occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
-         expr_uses: &mut ExprUses,
-         occur: fate::Local,
-         to_be_mutated: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>| {
-            mark_occur_mut(
-                &orig.custom_types,
-                locals,
-                occur_fates,
-                &this_version.ret_fate,
-                occur,
-                future_uses,
-                expr_uses,
-                occur_kinds,
-                &to_be_mutated,
-            );
-        };
+    Tuple(Vec<LocalId>),
+    TupleField(LocalId, usize),
+    WrapVariant(IdVec<VariantId, guard::Type>, VariantId, LocalId),
+    UnwrapVariant(IdVec<VariantId, guard::Type>, VariantId, LocalId),
+    WrapBoxed(LocalId, guard::Type),
+    UnwrapBoxed(LocalId, guard::Type),
+    WrapCustom(CustomTypeId, UnfoldRecipe, LocalId),
+    UnwrapCustom(CustomTypeId, UnfoldRecipe, LocalId),
 
-    let mark =
-        |locals: &mut MarkOccurContext<'a>,
-         occur_kinds: &mut IdVec<fate::OccurId, Option<BTreeMap<mode::StackPath, OccurKind>>>,
-         expr_uses: &mut ExprUses,
-         occur: fate::Local| {
-            mark_with_extra_owned(locals, occur_kinds, expr_uses, occur, &BTreeMap::new());
-        };
+    Intrinsic(intr::Intrinsic, LocalId),
+    ArrayOp(guard::ArrayOp),
+    IoOp(guard::IoOp),
+    Panic(guard::Type, LocalId),
 
-    match &expr.kind {
-        fate::ExprKind::Local(local) => {
-            mark(locals, occur_kinds, &mut expr_uses, *local);
-        }
+    ArrayLit(guard::Type, Vec<LocalId>),
+    BoolLit(bool),
+    ByteLit(u8),
+    IntLit(i64),
+    FloatLit(f64),
+}
 
-        fate::ExprKind::Call(call_id, _, callee, arg_aliases, _, arg) => {
-            debug_assert_eq!(&this_version.calls[call_id].0, callee);
-            let is_tail_rec_call =
-                position == Position::Tail && scc.contains(&this_version.calls[call_id]);
+fn mark_tail_calls(
+    tail_candidates: &BTreeSet<CustomFuncId>,
+    pos: IsTail,
+    vars_in_scope: usize,
+    expr: &guard::Expr,
+) -> TailExpr {
+    match expr {
+        guard::Expr::Local(id) => TailExpr::Local(*id),
 
-            let extra_owned = if is_tail_rec_call {
-                // For a tail-recursive call, we want to ensure that all drops happen *before* the
-                // tail call, so in this case `extra_owned` should be *every variable in scope*.
-                (0..locals.len())
-                    .map(flat::LocalId)
-                    .map(|local_id| {
-                        let type_ = locals.local_binding(local_id).type_;
-                        (
-                            local_id,
-                            stack_path::stack_paths_in(&orig.custom_types, type_)
-                                .into_iter()
-                                .collect(),
-                        )
-                    })
-                    .collect()
+        guard::Expr::Call(purity, func, arg) => {
+            let actual_pos = if pos == IsTail::Tail && tail_candidates.contains(func) {
+                IsTail::Tail
             } else {
-                // It's not important for `to_be_mutated` to contain directly / unconditionally
-                // mutated paths in the argument, because those will already be annotated with
-                // "owned" fates by fate analysis.  We only care about collecting paths which are
-                // mutated *indirectly* via aliases, and which fate analysis therefore can't catch.
-                let mut to_be_mutated = BTreeMap::new();
-                for (alias::ArgName(arg_field_path), callee_cond) in
-                    &orig.funcs[callee].mutation_sig.arg_mutation_conds
-                {
-                    match callee_cond {
-                        Disj::True => {
-                            // We don't need to consult the argument's folded aliases here, because
-                            // any two argument field paths related by a folded alias will collapse
-                            // down to the same stack path.
-                            //
-                            // Also, note that even if we were to miss a potential mutation here
-                            // (which doesn't appear to be possible, but there could always be
-                            // bugs...), that would only result in a precision / optimization issue,
-                            // and wouldn't threaten soundness.  Even if we were to set
-                            // `to_be_mutated` to the empty map for all calls, RC elision would
-                            // remain perfectly sound (but could result in deoptimizations in
-                            // downstream mutation optimization passes).
-                            for ((other_local, other_field_path), symbolic_cond) in
-                                &arg_aliases[arg_field_path].aliases
-                            {
-                                let concretely_aliased =
-                                    lookup_concrete_cond(&this_version.aliases, symbolic_cond);
-
-                                if concretely_aliased {
-                                    for other_stack_path in stack_path::split_stack_heap_3(
-                                        &orig.custom_types,
-                                        other_field_path.clone(),
-                                    )
-                                    .stack_paths()
-                                    {
-                                        to_be_mutated
-                                            .entry(*other_local)
-                                            .or_insert_with(BTreeSet::new)
-                                            .insert(other_stack_path);
-                                    }
-                                }
-                            }
-                        }
-                        Disj::Any(_) => {
-                            // If this mutation occurs, it's due to an alias edge, so we don't need
-                            // to explicitly handle it here; if it occurs under the current set of
-                            // concrete aliasing edges for this version of the function, we'll
-                            // propagate it via the aliases incident on an unconditionally mutated
-                            // path.
-                            //
-                            // TODO: Could we do this in mutation analysis as well?  Maybe mutation
-                            // signatures only need to explicitly store the *unconditionally*
-                            // mutated argument names?
-                        }
-                    }
-                }
-
-                to_be_mutated
+                IsTail::NotTail
             };
-
-            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *arg, &extra_owned);
-
-            mark_tentative_prologue_drops(
-                future_uses,
-                &expr_uses,
-                &extra_owned,
-                &mut tentative_drop_prologue,
-            );
+            TailExpr::Call(*purity, actual_pos, *func, *arg)
         }
 
-        fate::ExprKind::Branch(discrim, cases, _ret_type) => {
-            // TODO: This was the only place where branch block ids were originally intended to be
-            // used. Should we remove them now that we don't use them here?
-            for (_, _cond, body, _) in cases {
-                let case_uses = mark_expr_occurs(
-                    orig,
-                    scc,
-                    this_version,
-                    locals,
-                    occur_fates,
-                    future_uses,
-                    position,
-                    body,
-                    occur_kinds,
-                    tentative_drop_prologues,
-                );
+        guard::Expr::LetMany(bindings, final_local) => TailExpr::LetMany(
+            bindings
+                .iter()
+                .enumerate()
+                .map(|(i, (ty, binding, metadata))| {
+                    let is_final_binding = i + 1 == bindings.len()
+                        && *final_local == guard::LocalId(vars_in_scope + i);
 
-                merge_uses(&mut expr_uses.uses, &case_uses.uses);
-            }
-
-            mark(locals, occur_kinds, &mut expr_uses, *discrim);
-        }
-
-        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
-            // We're only using `with_scope` here for its debug assertion, and to signal intent; by
-            // the time the passed closure returns, we've manually truncated away all the variables
-            // which it would usually be `with_scope`'s responsibility to remove.
-            locals.with_scope(|sub_locals| {
-                let locals_offset = sub_locals.len();
-
-                for (type_, _) in bindings {
-                    sub_locals.add_local(MarkOccurLocalInfo {
-                        type_,
-                        decl_site: DeclarationSite::Block(*block_id),
-                    });
-                }
-
-                // This is for internal bookkeeping only.  It doesn't leave this call's scope.
-                let mut internal_future_uses = future_uses.clone();
-
-                // We can't use `mark` here because of an obscure borrow checker error.
-                //
-                // Actually, we *can* we use `mark` here, but only if we annotate its type signature
-                // explicitly with a higher-rank trait bound, and make it a `dyn` closure (because
-                // `impl Trait` on variables isn't supported).  It's not worth it.
-                mark_occur_mut(
-                    &orig.custom_types,
-                    sub_locals,
-                    occur_fates,
-                    &this_version.ret_fate,
-                    *final_local,
-                    future_uses,
-                    &mut expr_uses,
-                    occur_kinds,
-                    &BTreeMap::new(),
-                );
-                internal_future_uses.add_expr_uses(&expr_uses);
-
-                for (idx, (_, rhs)) in bindings.iter().enumerate().rev() {
-                    let binding_local = flat::LocalId(idx + locals_offset);
-
-                    // NOTE: After truncation, `sub_locals` contains all locals *strictly* before
-                    // `binding_local`.
-                    sub_locals.truncate(binding_local.0);
-                    internal_future_uses.uses.remove(&binding_local);
-
-                    let rhs_position = if idx + 1 == bindings.len()
-                        && flat::LocalId(locals_offset + idx) == final_local.1
-                    {
-                        position
+                    let sub_pos = if is_final_binding {
+                        pos
                     } else {
-                        Position::NotTail
+                        IsTail::NotTail
                     };
 
-                    let rhs_uses = mark_expr_occurs(
-                        orig,
-                        scc,
-                        this_version,
-                        sub_locals,
-                        occur_fates,
-                        &internal_future_uses,
-                        rhs_position,
-                        rhs,
-                        occur_kinds,
-                        tentative_drop_prologues,
-                    );
-                    internal_future_uses.add_expr_uses(&rhs_uses);
-                    merge_uses(&mut expr_uses.uses, &rhs_uses.uses);
-                }
+                    (
+                        ty.clone(),
+                        mark_tail_calls(tail_candidates, sub_pos, vars_in_scope + i, binding),
+                        metadata.clone(),
+                    )
+                })
+                .collect(),
+            *final_local,
+        ),
 
-                // We need to clean up `expr_uses` so it contains only variables in the enclosing
-                // scope (outside this let block).
-                for bound_local in
-                    (locals_offset..locals_offset + bindings.len()).map(flat::LocalId)
-                {
-                    expr_uses.uses.remove(&bound_local);
-                }
-            });
+        guard::Expr::If(discrim, then_case, else_case) => TailExpr::If(
+            *discrim,
+            Box::new(mark_tail_calls(
+                tail_candidates,
+                pos,
+                vars_in_scope,
+                then_case,
+            )),
+            Box::new(mark_tail_calls(
+                tail_candidates,
+                pos,
+                vars_in_scope,
+                else_case,
+            )),
+        ),
+        guard::Expr::CheckVariant(variant_id, variant) => {
+            TailExpr::CheckVariant(*variant_id, *variant)
         }
+        guard::Expr::Unreachable(ret_ty) => TailExpr::Unreachable(ret_ty.clone()),
 
-        fate::ExprKind::Tuple(items) => {
-            for item in items {
-                mark(locals, occur_kinds, &mut expr_uses, *item);
-            }
+        guard::Expr::Tuple(items) => TailExpr::Tuple(items.clone()),
+        guard::Expr::TupleField(tuple, idx) => TailExpr::TupleField(*tuple, *idx),
+        guard::Expr::WrapVariant(variant_types, variant, content) => {
+            TailExpr::WrapVariant(variant_types.clone(), *variant, *content)
         }
-
-        fate::ExprKind::TupleField(tuple, _index) => {
-            mark(locals, occur_kinds, &mut expr_uses, *tuple);
+        guard::Expr::UnwrapVariant(variant_types, variant, wrapped) => {
+            TailExpr::UnwrapVariant(variant_types.clone(), *variant, *wrapped)
         }
-
-        fate::ExprKind::WrapVariant(_variant_types, _variant_id, content) => {
-            mark(locals, occur_kinds, &mut expr_uses, *content);
+        guard::Expr::WrapBoxed(content, content_type) => {
+            TailExpr::WrapBoxed(*content, content_type.clone())
         }
-
-        fate::ExprKind::UnwrapVariant(_variant_id, wrapped) => {
-            mark(locals, occur_kinds, &mut expr_uses, *wrapped);
+        guard::Expr::UnwrapBoxed(content, content_type) => {
+            TailExpr::UnwrapBoxed(*content, content_type.clone())
         }
-
-        fate::ExprKind::WrapBoxed(content, _item_type) => {
-            mark(locals, occur_kinds, &mut expr_uses, *content);
+        guard::Expr::WrapCustom(custom, recipe, content) => {
+            TailExpr::WrapCustom(*custom, recipe.clone(), *content)
         }
-
-        fate::ExprKind::UnwrapBoxed(wrapped, _item_type, _, _) => {
-            mark(locals, occur_kinds, &mut expr_uses, *wrapped);
+        guard::Expr::UnwrapCustom(custom, recipe, wrapped) => {
+            TailExpr::UnwrapCustom(*custom, recipe.clone(), *wrapped)
         }
-
-        fate::ExprKind::WrapCustom(_custom_id, content) => {
-            mark(locals, occur_kinds, &mut expr_uses, *content);
+        guard::Expr::Intrinsic(intr, arg) => TailExpr::Intrinsic(*intr, *arg),
+        guard::Expr::ArrayOp(op) => TailExpr::ArrayOp(op.clone()),
+        guard::Expr::IoOp(op) => TailExpr::IoOp(*op),
+        guard::Expr::Panic(ret_type, message) => TailExpr::Panic(ret_type.clone(), *message),
+        guard::Expr::ArrayLit(item_type, items) => {
+            TailExpr::ArrayLit(item_type.clone(), items.clone())
         }
-
-        fate::ExprKind::UnwrapCustom(_custom_id, content) => {
-            mark(locals, occur_kinds, &mut expr_uses, *content);
-        }
-
-        fate::ExprKind::Intrinsic(_intr, arg) => {
-            mark(locals, occur_kinds, &mut expr_uses, *arg);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_item_type, _aliases, array, index, _, _)) => {
-            mark(locals, occur_kinds, &mut expr_uses, *array);
-            mark(locals, occur_kinds, &mut expr_uses, *index);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(
-            _item_type,
-            array_aliases,
-            array,
-            index,
-        )) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
-            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
-            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *index, &to_be_mutated);
-            mark_tentative_prologue_drops(
-                future_uses,
-                &expr_uses,
-                &to_be_mutated,
-                &mut tentative_drop_prologue,
-            );
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_item_type, _aliases, array)) => {
-            mark(locals, occur_kinds, &mut expr_uses, *array);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_item_type, array_aliases, array, item)) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
-            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
-            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
-            mark_tentative_prologue_drops(
-                future_uses,
-                &expr_uses,
-                &to_be_mutated,
-                &mut tentative_drop_prologue,
-            );
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_item_type, array_aliases, array)) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
-            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
-            mark_tentative_prologue_drops(
-                future_uses,
-                &expr_uses,
-                &to_be_mutated,
-                &mut tentative_drop_prologue,
-            );
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(
-            _item_type,
-            hole_array_aliases,
-            hole_array,
-            item,
-        )) => {
-            let to_be_mutated = mutations_from_aliases(
-                &orig.custom_types,
-                &this_version.aliases,
-                hole_array_aliases,
-            );
-            mark_with_extra_owned(
-                locals,
-                occur_kinds,
-                &mut expr_uses,
-                *hole_array,
-                &to_be_mutated,
-            );
-            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *item, &to_be_mutated);
-            mark_tentative_prologue_drops(
-                future_uses,
-                &expr_uses,
-                &to_be_mutated,
-                &mut tentative_drop_prologue,
-            );
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(
-            _item_type,
-            array_aliases,
-            array,
-            capacity,
-        )) => {
-            let to_be_mutated =
-                mutations_from_aliases(&orig.custom_types, &this_version.aliases, array_aliases);
-            mark_with_extra_owned(locals, occur_kinds, &mut expr_uses, *array, &to_be_mutated);
-            mark_with_extra_owned(
-                locals,
-                occur_kinds,
-                &mut expr_uses,
-                *capacity,
-                &to_be_mutated,
-            );
-            mark_tentative_prologue_drops(
-                future_uses,
-                &expr_uses,
-                &to_be_mutated,
-                &mut tentative_drop_prologue,
-            );
-        }
-
-        fate::ExprKind::IoOp(fate::IoOp::Input) => {}
-
-        fate::ExprKind::IoOp(fate::IoOp::Output(_aliases, byte_array)) => {
-            mark(locals, occur_kinds, &mut expr_uses, *byte_array);
-        }
-
-        fate::ExprKind::Panic(_aliases, message) => {
-            mark(locals, occur_kinds, &mut expr_uses, *message);
-        }
-
-        fate::ExprKind::ArrayLit(_item_type, items) => {
-            for item in items {
-                mark(locals, occur_kinds, &mut expr_uses, *item);
-            }
-        }
-
-        fate::ExprKind::BoolLit(_) => {}
-        fate::ExprKind::ByteLit(_) => {}
-        fate::ExprKind::IntLit(_) => {}
-        fate::ExprKind::FloatLit(_) => {}
+        guard::Expr::BoolLit(val) => TailExpr::BoolLit(*val),
+        guard::Expr::ByteLit(val) => TailExpr::ByteLit(*val),
+        guard::Expr::IntLit(val) => TailExpr::IntLit(*val),
+        guard::Expr::FloatLit(val) => TailExpr::FloatLit(*val),
     }
-
-    debug_assert!(expr_uses
-        .uses
-        .get_max()
-        .map(|(flat::LocalId(max_id), _)| *max_id < locals.len())
-        .unwrap_or(true));
-
-    debug_assert!(tentative_drop_prologues[expr.id].is_none());
-    tentative_drop_prologues[expr.id] = Some(tentative_drop_prologue);
-
-    expr_uses
 }
 
-#[derive(Clone, Debug)]
-struct MarkedOccurs {
-    occur_kinds: IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
-    tentative_drop_prologues:
-        IdVec<fate::ExprId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
-}
+fn compute_tail_calls(
+    funcs: &IdVec<CustomFuncId, guard::FuncDef>,
+) -> IdVec<CustomFuncId, TailFuncDef> {
+    #[id_type]
+    struct TailSccId(usize);
 
-fn mark_func_occurs(
-    program: &spec::Program,
-    scc: &BTreeSet<(first_ord::CustomFuncId, spec::FuncVersionId)>,
-    func_def: &spec::FuncDef,
-    version: &spec::FuncVersion,
-) -> MarkedOccurs {
-    let mut occur_kinds = IdVec::from_items(vec![None; func_def.occur_fates.len()]);
-    let mut tentative_drop_prologues = IdVec::from_items(vec![None; func_def.expr_annots.len()]);
-
-    let mut locals = LocalContext::new();
-    locals.add_local(MarkOccurLocalInfo {
-        type_: &func_def.arg_type,
-        decl_site: DeclarationSite::Arg,
+    let sccs: Sccs<TailSccId, _> = find_components(funcs.count(), |func_id| {
+        let mut deps = BTreeSet::new();
+        // The argument always provides exactly one free variable in scope for the body of the
+        // function.
+        add_tail_call_deps(&mut deps, 1, &funcs[func_id].body);
+        deps
     });
 
-    let body_uses = mark_expr_occurs(
-        program,
-        scc,
-        version,
-        &mut locals,
-        &func_def.occur_fates,
-        &FutureUses {
-            uses: OrdMap::new(),
+    let mut tail_funcs = IdMap::new();
+    for (_, scc) in &sccs {
+        let tail_candidates = scc.nodes.into_iter().copied().collect();
+        for func_id in scc.nodes {
+            let func = &funcs[func_id];
+            let body = mark_tail_calls(&tail_candidates, IsTail::Tail, 1, &func.body);
+            tail_funcs.insert(
+                func_id,
+                TailFuncDef {
+                    purity: func.purity,
+                    arg_ty: func.arg_type.clone(),
+                    ret_ty: func.ret_type.clone(),
+                    body,
+                    profile_point: func.profile_point,
+                },
+            );
+        }
+    }
+
+    tail_funcs.to_id_vec(funcs.count())
+}
+
+// ------------------------
+// Step 1: Parameterization
+// ------------------------
+// We start by lifting the set of custom type definitions from the previous pass into the current
+// pass by annotating them with fresh mode and lifetime parameters.
+
+fn count_num_slots(customs: &IdMap<CustomTypeId, CustomTypeDefFo>, ty: &guard::Type) -> usize {
+    match ty {
+        guard::Type::Bool => 0,
+        guard::Type::Num(_) => 0,
+        guard::Type::Tuple(items) => items
+            .iter()
+            .map(|item| count_num_slots(customs, item))
+            .sum(),
+        guard::Type::Variants(variants) => variants
+            .values()
+            .map(|item| count_num_slots(customs, item))
+            .sum(),
+        guard::Type::Custom(id) => match customs.get(*id) {
+            Some(custom) => custom.num_slots,
+            // This is a typedef in the same SCC; the reference to it here contributes no additional
+            // parameters to the entire SCC.
+            None => 0,
         },
-        Position::Tail,
-        &func_def.body,
-        &mut occur_kinds,
-        &mut tentative_drop_prologues,
-    );
-
-    debug_assert!(body_uses.uses.keys().all(|&local| local == flat::ARG_LOCAL));
-
-    MarkedOccurs {
-        occur_kinds: occur_kinds.into_mapped(|_, kinds| kinds.unwrap()),
-        tentative_drop_prologues: tentative_drop_prologues
-            .into_mapped(|_, prologue| prologue.unwrap()),
+        guard::Type::Array(content) => 1 + count_num_slots(customs, content),
+        guard::Type::HoleArray(content) => 1 + count_num_slots(customs, content),
+        guard::Type::Boxed(content) => 1 + count_num_slots(customs, content),
     }
 }
 
-#[derive(Clone, Debug)]
-struct PastMoves {
-    moves: OrdMap<flat::LocalId, OrdSet<mode::StackPath>>,
-}
-
-/// An `ExprMoves` is conceptually a diff on a `PastMoves`
-#[derive(Clone, Debug)]
-struct ExprMoves {
-    moves: OrdMap<flat::LocalId, OrdSet<mode::StackPath>>,
-}
-
-fn merge_moves(
-    curr_moves: &mut OrdMap<flat::LocalId, OrdSet<mode::StackPath>>,
-    new_moves: &OrdMap<flat::LocalId, OrdSet<mode::StackPath>>,
-) {
-    for (local, new_local_moves) in new_moves {
-        curr_moves
-            .entry(*local)
-            .or_insert_with(OrdSet::new)
-            .extend(new_local_moves.iter().cloned())
+// We separate this out because there is code depends on `access` and `storage` creating in a
+// consistent order (see where this is called).
+fn next_heap<M: Id>(next_mode: &mut Count<M>) -> HeapModes<M> {
+    HeapModes {
+        access: next_mode.inc(),
+        storage: next_mode.inc(),
     }
 }
 
-fn add_move(
-    occur_kinds: &IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
-    expr_moves: &mut ExprMoves,
-    occur: fate::Local,
-) {
-    for (path, kind) in &occur_kinds[occur.0] {
-        match kind {
-            OccurKind::Intermediate | OccurKind::Unused => {}
-            OccurKind::Final => {
-                expr_moves
-                    .moves
-                    .entry(occur.1)
-                    .or_insert_with(OrdSet::new)
-                    .insert(path.clone());
+struct SccParameterizer<'a> {
+    interner: &'a Interner,
+    customs: &'a guard::CustomTypes,
+    parameterized: &'a IdMap<CustomTypeId, CustomTypeDefFo>,
+    scc_id: CustomTypeSccId,
+    scc_num_slots: usize,
+    next_slot: Count<SlotId>,
+}
+
+impl<'a> SccParameterizer<'a> {
+    fn parameterize_impl(&mut self, ty: &guard::Type, out_res: &mut Vec<SlotId>) -> ShapeFo {
+        match ty {
+            guard::Type::Bool => ShapeFo {
+                inner: self.interner.shape.new(ShapeInner::Bool),
+                num_slots: 0,
+            },
+            guard::Type::Num(num_ty) => ShapeFo {
+                inner: self.interner.shape.new(ShapeInner::Num(*num_ty)),
+                num_slots: 0,
+            },
+            guard::Type::Tuple(tys) => {
+                let tys = tys.map_refs(|ty| self.parameterize_impl(ty, out_res));
+                let num_slots = tys.iter().map(|ty| ty.num_slots).sum();
+                ShapeFo {
+                    inner: self.interner.shape.new(ShapeInner::Tuple(tys)),
+                    num_slots,
+                }
+            }
+            guard::Type::Variants(tys) => {
+                let tys = tys.map_refs(|_, ty| self.parameterize_impl(ty, out_res));
+                let num_slots = tys.values().map(|ty| ty.num_slots).sum();
+                ShapeFo {
+                    inner: self.interner.shape.new(ShapeInner::Variants(tys)),
+                    num_slots,
+                }
+            }
+            guard::Type::Custom(id) => {
+                if self.customs.types[*id].scc == self.scc_id {
+                    // This is a typedef in the same SCC, so we need to parameterize it by all the
+                    // SCC parameters.
+                    let mut next_slot = Count::<SlotId>::new();
+                    let slots = iter::repeat_with(move || next_slot.inc());
+                    let num_slots = self.scc_num_slots;
+                    out_res.extend(slots.take(num_slots));
+                    ShapeFo {
+                        inner: self.interner.shape.new(ShapeInner::SelfCustom(*id)),
+                        num_slots,
+                    }
+                } else {
+                    let num_slots = self.parameterized[*id].num_slots;
+                    let slots = iter::repeat_with(|| self.next_slot.inc());
+                    out_res.extend(slots.take(num_slots));
+                    ShapeFo {
+                        inner: self.interner.shape.new(ShapeInner::Custom(*id)),
+                        num_slots,
+                    }
+                }
+            }
+            guard::Type::Array(ty) => {
+                out_res.push(self.next_slot.inc());
+                let shape = self.parameterize_impl(ty, out_res);
+                ShapeFo {
+                    num_slots: 1 + shape.num_slots,
+                    inner: self.interner.shape.new(ShapeInner::Array(shape)),
+                }
+            }
+            guard::Type::HoleArray(ty) => {
+                out_res.push(self.next_slot.inc());
+                let shape = self.parameterize_impl(ty, out_res);
+                ShapeFo {
+                    num_slots: 1 + shape.num_slots,
+                    inner: self.interner.shape.new(ShapeInner::HoleArray(shape)),
+                }
+            }
+            guard::Type::Boxed(ty) => {
+                out_res.push(self.next_slot.inc());
+                let shape = self.parameterize_impl(ty, out_res);
+                ShapeFo {
+                    num_slots: 1 + shape.num_slots,
+                    inner: self.interner.shape.new(ShapeInner::Boxed(shape)),
+                }
             }
         }
     }
+
+    fn parameterize(&mut self, kind: SccKind, ty: &guard::Type) -> (ShapeFo, SubstHelper) {
+        let mut res = Vec::new();
+        let shape = self.parameterize_impl(ty, &mut res);
+        debug_assert_eq!(res.len(), shape.num_slots);
+        (shape, SubstHelper::new(kind, res))
+    }
 }
 
-fn get_missing_drops(
-    typedefs: &flat::CustomTypes,
-    moves_for_local: Option<&OrdSet<mode::StackPath>>,
-    type_: &anon::Type,
-) -> BTreeSet<mode::StackPath> {
-    let mut result = BTreeSet::new();
-    for path in stack_path::stack_paths_in(typedefs, type_) {
-        let already_moved = moves_for_local
-            .map(|moves| moves.contains(&path))
-            .unwrap_or(false);
-        if !already_moved {
-            result.insert(path);
+fn parameterize_custom_scc(
+    interner: &Interner,
+    customs: &guard::CustomTypes,
+    parameterized: &IdMap<CustomTypeId, CustomTypeDefFo>,
+    scc: (CustomTypeSccId, Scc<'_, CustomTypeId>),
+) -> BTreeMap<CustomTypeId, CustomTypeDefFo> {
+    let (scc_id, scc) = scc;
+
+    let scc_num_slots = scc
+        .nodes
+        .iter()
+        .map(|&id| count_num_slots(parameterized, &customs.types[id].content))
+        .sum();
+
+    let mut parameterizer = SccParameterizer {
+        interner,
+        customs,
+        parameterized,
+        scc_id,
+        scc_num_slots,
+        // Because each custom in the SCC is parameterized by the total set of modes and lifetimes
+        // for the SCC, we use a single counter as we traverse.
+        next_slot: Count::new(),
+    };
+
+    let result = scc
+        .nodes
+        .iter()
+        .map(|&id| {
+            let custom = &customs.types[id];
+            let (content, subst_helper) = parameterizer.parameterize(scc.kind, &custom.content);
+            (
+                id,
+                CustomTypeDefFo {
+                    content,
+                    subst_helper,
+                    num_slots: scc_num_slots,
+                    scc: custom.scc,
+                    can_guard: custom.can_guard,
+                },
+            )
+        })
+        .collect();
+
+    debug_assert_eq!(parameterizer.next_slot.to_value(), scc_num_slots);
+    result
+}
+
+fn parameterize_customs(
+    interner: &Interner,
+    customs: &guard::CustomTypes,
+) -> IdVec<CustomTypeId, CustomTypeDefFo> {
+    let mut parameterized = IdMap::new();
+    for scc in &customs.sccs {
+        let to_populate = parameterize_custom_scc(interner, &customs, &parameterized, scc);
+        for (id, typedef) in to_populate {
+            parameterized.insert_vacant(id, typedef);
         }
+    }
+    parameterized.to_id_vec(customs.types.count())
+}
+
+fn parameterize_type<'a>(
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    ty: &guard::Type,
+) -> TypeFo<Res<ModeParam, LtParam>> {
+    // All the machinery we use here is *very* similar to the machinery above for parameterizing
+    // customs, but just different enough that it's hard to merge them.
+    let shape = ShapeFo::from_guarded(interner, customs, ty);
+    let mut mode_count = Count::new();
+    let mut lt_count = Count::new();
+    let res = shape.gen_resources(customs, sccs, || mode_count.inc(), || lt_count.inc());
+    TypeFo::new(shape, res)
+}
+
+// ---------------------
+// Step 2: Instantiation
+// ---------------------
+// After we are done with parameterization, we are ready to solve for modes and lifetimes. For each
+// SCC of functions, we create a graph of mode constraints and lift each function body from the
+// previous pass into the current pass by annotating it with fresh mode variables (not to be
+// confused with mode parameters) from the constraint graph, emitting the constraints incident on
+// these variables as we go. If we encounter a custom type, we can take the "template" we produced
+// during parameterization and replace the mode parameters with fresh mode variables.
+//
+// Once all the constraints have been generated, we can solve them for the set of signature
+// variables of the functions in the SCC. Yes, every function in the SCC is parameterized by all the
+// signature variables of all the functions in the SCC! It is always OK to over-parameterize a
+// function and doing things this way will help us deduplicated specializations when we monomorphize
+// in the next pass.
+//
+// Note that we have yet to discuss how we handle lifetimes. Since the constraints on lifetimes are
+// much simpler than the constraints on modes, we take lifetime meets (i.e. greatest lower bounds)
+// as needed as we go.
+
+type ConstrGraph = in_eq::ConstrGraph<ModeVar, Mode>;
+
+fn require_owned(constrs: &mut ConstrGraph, modes: ResModes<ModeVar>) {
+    match modes {
+        ResModes::Stack(stack) => {
+            constrs.require_le_const(&Mode::Owned, stack);
+        }
+        ResModes::Heap(heap) => {
+            constrs.require_le_const(&Mode::Owned, heap.access);
+            constrs.require_le_const(&Mode::Owned, heap.storage);
+        }
+    }
+}
+
+fn require_eq(constrs: &mut ConstrGraph, modes1: &ResModes<ModeVar>, modes2: &ResModes<ModeVar>) {
+    match (modes1, modes2) {
+        (ResModes::Stack(stack1), ResModes::Stack(stack2)) => {
+            constrs.require_eq(*stack1, *stack2);
+        }
+        (ResModes::Heap(heap1), ResModes::Heap(heap2)) => {
+            constrs.require_eq(heap1.access, heap2.access);
+            constrs.require_eq(heap1.storage, heap2.storage);
+        }
+        _ => panic!("mismatched modes"),
+    }
+}
+
+fn bind_modes<L1, L2>(
+    constrs: &mut ConstrGraph,
+    ty1: &TypeFo<Res<ModeVar, L1>>,
+    ty2: &TypeFo<Res<ModeVar, L2>>,
+) {
+    debug_assert_eq!(ty1.shape(), ty2.shape());
+    for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
+        require_eq(constrs, &res1.modes, &res2.modes);
+    }
+}
+
+// Unfortunately, we can't quite use `MapRef` as the type of `subst` here because, for the callers
+// of this function to be efficient, `subst` must return values (not references).
+fn subst_modes<M1: Clone, M2, L: Clone>(
+    ty: &TypeFo<Res<M1, L>>,
+    subst: impl Fn(M1) -> M2,
+) -> TypeFo<Res<M2, L>> {
+    let f = |res: &Res<M1, L>| {
+        let modes = match &res.modes {
+            ResModes::Stack(stack) => ResModes::Stack(subst(stack.clone())),
+            ResModes::Heap(heap) => ResModes::Heap(HeapModes {
+                access: subst(heap.access.clone()),
+                storage: subst(heap.storage.clone()),
+            }),
+        };
+        let lt = res.lt.clone();
+        Res { modes, lt }
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+fn emit_occur_constr(
+    constrs: &mut ConstrGraph,
+    scope: &annot::Path,
+    binding_modes: &ResModes<ModeVar>,
+    use_modes: &ResModes<ModeVar>,
+    use_lt: &Lt,
+) {
+    if use_lt.cmp_path(scope).leq() {
+        // Case: this is a non-escaping ("opportunistic" or "borrow") occurrence.
+        match (binding_modes, use_modes) {
+            (ResModes::Stack(binding_stack), ResModes::Stack(use_stack)) => {
+                constrs.require_le(*use_stack, *binding_stack);
+            }
+            (ResModes::Heap(binding_heap), ResModes::Heap(use_heap)) => {
+                constrs.require_le(use_heap.access, binding_heap.access);
+                constrs.require_eq(use_heap.storage, binding_heap.storage);
+            }
+            _ => panic!("mismatched modes"),
+        }
+    } else {
+        // Case: this is an escaping ("move" or "dup") occurrence.
+        require_eq(constrs, binding_modes, use_modes);
+    }
+}
+
+fn emit_occur_constrs(
+    constrs: &mut ConstrGraph,
+    scope: &annot::Path,
+    binding_ty: &TypeFo<Res<ModeVar, Lt>>,
+    use_ty: &TypeFo<Res<ModeVar, Lt>>,
+) {
+    debug_assert_eq!(binding_ty.shape(), use_ty.shape());
+    for (binding_res, use_res) in binding_ty.iter().zip_eq(use_ty.iter()) {
+        emit_occur_constr(
+            constrs,
+            scope,
+            &binding_res.modes,
+            &use_res.modes,
+            &use_res.lt,
+        );
+    }
+}
+
+/// This meet is left-biased in that the modes of `ty1` are preserved. Note that types are
+/// contravariant in their lifetimes (unlike in Rust).
+fn left_meet(
+    interner: &Interner,
+    ty1: &TypeFo<Res<ModeVar, Lt>>,
+    ty2: &TypeFo<Res<ModeVar, Lt>>,
+) -> TypeFo<Res<ModeVar, Lt>> {
+    debug_assert_eq!(ty1.shape(), ty2.shape());
+    let f = |(res1, res2): (&Res<_, Lt>, &Res<_, Lt>)| Res {
+        modes: res1.modes.clone(),
+        lt: res1.lt.join(interner, &res2.lt),
+    };
+    TypeFo::new(
+        ty1.shape().clone(),
+        IdVec::from_vec(ty1.iter().zip_eq(ty2.iter()).map(f).collect()),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IgnorePerceus {
+    Yes,
+    No,
+}
+
+fn fresh_var(strategy: RcStrategy, ignore: IgnorePerceus, constrs: &mut ConstrGraph) -> ModeVar {
+    let var = constrs.fresh_var();
+    if strategy == RcStrategy::Perceus && ignore == IgnorePerceus::No {
+        constrs.require_le_const(&Mode::Owned, var);
+    }
+    var
+}
+
+/// Replaces parameters with fresh variables from the constraint graph.
+fn freshen_type<M, L1, L2>(
+    strategy: RcStrategy,
+    ignore: IgnorePerceus,
+    constrs: &mut ConstrGraph,
+    mut fresh_lt: impl FnMut() -> L2,
+    ty: &TypeFo<Res<M, L1>>,
+) -> TypeFo<Res<ModeVar, L2>> {
+    let f = |res: &Res<_, _>| {
+        let modes = match res.modes {
+            ResModes::Stack(_) => ResModes::Stack(fresh_var(strategy, ignore, constrs)),
+            ResModes::Heap(_) => ResModes::Heap(HeapModes {
+                access: fresh_var(strategy, ignore, constrs),
+                storage: fresh_var(strategy, ignore, constrs),
+            }),
+        };
+        let lt = fresh_lt();
+        Res { modes, lt }
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+fn freshen_type_unused<M, L>(
+    strategy: RcStrategy,
+    ignore: IgnorePerceus,
+    constrs: &mut ConstrGraph,
+    ty: &TypeFo<Res<M, L>>,
+) -> TypeFo<Res<ModeVar, Lt>> {
+    freshen_type(strategy, ignore, constrs, || Lt::Empty, ty)
+}
+
+fn erase_lts(ty: &TypeFo<Res<ModeVar, Lt>>) -> TypeFo<Res<ModeVar, Lt>> {
+    let f = |res: &Res<ModeVar, Lt>| Res {
+        modes: res.modes.clone(),
+        lt: Lt::Empty,
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+fn instantiate_occur_in_position(
+    interner: &Interner,
+    pos: IsTail,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
+    constrs: &mut ConstrGraph,
+    id: LocalId,
+    use_ty: &TypeFo<Res<ModeVar, Lt>>,
+) -> OccurFo<Res<ModeVar, Lt>> {
+    let binding = ctx.local_binding_mut(id);
+
+    let use_ty = if pos == IsTail::Tail {
+        join_everywhere(
+            interner,
+            use_ty,
+            &annot::Path::root().seq(3).as_lt(interner),
+        )
+    } else {
+        use_ty.clone()
+    };
+
+    emit_occur_constrs(constrs, &binding.scope, &binding.ty, &use_ty);
+
+    binding.ty = left_meet(interner, &binding.ty, &use_ty);
+
+    annot::Occur { id, ty: use_ty }
+}
+
+fn join_everywhere<M: Clone>(
+    interner: &Interner,
+    ty: &TypeFo<Res<M, Lt>>,
+    new_lt: &Lt,
+) -> TypeFo<Res<M, Lt>> {
+    let f = |res: &Res<M, Lt>| Res {
+        modes: res.modes.clone(),
+        lt: res.lt.join(interner, new_lt),
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
+
+fn lt_equiv<M>(ty1: &TypeFo<Res<M, Lt>>, ty2: &TypeFo<Res<M, Lt>>) -> bool {
+    debug_assert!(ty1.shape() == ty2.shape());
+    ty1.iter()
+        .zip_eq(ty2.iter())
+        .all(|(res1, res2)| res1.lt == res2.lt)
+}
+
+fn bind_lts<M>(
+    interner: &Interner,
+    ty1: &TypeFo<Res<M, LtParam>>,
+    ty2: &TypeFo<Res<M, Lt>>,
+) -> BTreeMap<LtParam, Lt> {
+    debug_assert!(ty1.shape() == ty2.shape());
+    let mut result = BTreeMap::new();
+    for (res1, res2) in ty1.iter().zip_eq(ty2.iter()) {
+        result
+            .entry(res1.lt)
+            .and_modify(|old: &mut Lt| *old = old.join(interner, &res2.lt))
+            .or_insert_with(|| res2.lt.clone());
     }
     result
 }
 
-fn repair_expr_drops<'a>(
-    typedefs: &flat::CustomTypes,
-    num_locals: usize,
-    occur_kinds: &IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
-    drop_prologues: &mut IdVec<fate::ExprId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
-    let_drop_epilogues: &mut IdVec<
-        fate::LetBlockId,
-        Option<BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
-    >,
-    branch_drop_epilogues: &mut IdVec<
-        fate::BranchBlockId,
-        Option<BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
-    >,
-    past_moves: &PastMoves,
-    expr: &fate::Expr,
-) -> ExprMoves {
-    debug_assert!(past_moves
-        .moves
-        .get_max()
-        .map(|(max_local, _)| max_local.0 < num_locals)
-        .unwrap_or(true));
-
-    let mut expr_moves = ExprMoves {
-        moves: OrdMap::new(),
-    };
-
-    for (local, drops) in &mut drop_prologues[expr.id] {
-        let mut to_remove = Vec::new();
-        for path in drops.iter() {
-            if past_moves
-                .moves
-                .get(local)
-                .map(|local_moves| local_moves.contains(path))
-                .unwrap_or(false)
-            {
-                to_remove.push(path.clone());
-            } else {
-                expr_moves
-                    .moves
-                    .entry(*local)
-                    .or_insert_with(OrdSet::new)
-                    .insert(path.clone());
-            }
-        }
-
-        for path in to_remove {
-            drops.remove(&path);
-        }
-    }
-
-    match &expr.kind {
-        fate::ExprKind::Local(local) => {
-            add_move(occur_kinds, &mut expr_moves, *local);
-        }
-
-        fate::ExprKind::Call(_, _, _, _, _, local) => {
-            add_move(occur_kinds, &mut expr_moves, *local);
-        }
-
-        fate::ExprKind::Branch(discrim, cases, _) => {
-            add_move(occur_kinds, &mut expr_moves, *discrim);
-            debug_assert!(expr_moves.moves.is_empty());
-
-            let block_moves = cases
+fn subst_lts<M: Clone>(
+    interner: &Interner,
+    ty: &TypeFo<Res<M, Lt>>,
+    subst: &BTreeMap<LtParam, Lt>,
+) -> TypeFo<Res<M, Lt>> {
+    let f = |res: &Res<M, Lt>| {
+        let modes = res.modes.clone();
+        let lt = match &res.lt {
+            Lt::Empty => Lt::Empty,
+            Lt::Local(lt) => Lt::Local(lt.clone()),
+            Lt::Join(params) => params
                 .iter()
-                .map(|(block_id, _, body, _final_ctx)| {
-                    (
-                        *block_id,
-                        repair_expr_drops(
-                            typedefs,
-                            num_locals,
-                            occur_kinds,
-                            drop_prologues,
-                            let_drop_epilogues,
-                            branch_drop_epilogues,
-                            past_moves,
-                            body,
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            // Collect the union of moves across all arms
-            for (_, moves) in &block_moves {
-                merge_moves(&mut expr_moves.moves, &moves.moves);
-            }
-
-            // We compare each arm's individual moves to the union of all moves across all arms, and
-            // add drop epilogues as necessary to ensure all arms have the same set of moves.
-            for (block_id, this_block_moves) in &block_moves {
-                let mut block_drop_epilogue = BTreeMap::new();
-
-                for (local, all_block_local_moves) in &expr_moves.moves {
-                    for path in all_block_local_moves {
-                        let moved_by_block = this_block_moves
-                            .moves
-                            .get(local)
-                            .map(|this_block_local_moves| this_block_local_moves.contains(path))
-                            .unwrap_or(false);
-
-                        if !moved_by_block {
-                            block_drop_epilogue
-                                .entry(*local)
-                                .or_insert_with(BTreeSet::new)
-                                .insert(path.clone());
-                        }
-                    }
-                }
-
-                debug_assert!(branch_drop_epilogues[block_id].is_none());
-                branch_drop_epilogues[block_id] = Some(block_drop_epilogue.into_iter().collect());
-            }
-        }
-
-        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
-            let mut internal_past_moves = past_moves.clone();
-
-            for (offset, (_type, rhs)) in bindings.iter().enumerate() {
-                let rhs_moves = repair_expr_drops(
-                    typedefs,
-                    num_locals + offset,
-                    occur_kinds,
-                    drop_prologues,
-                    let_drop_epilogues,
-                    branch_drop_epilogues,
-                    &internal_past_moves,
-                    rhs,
-                );
-
-                merge_moves(&mut internal_past_moves.moves, &rhs_moves.moves);
-                merge_moves(&mut expr_moves.moves, &rhs_moves.moves);
-            }
-
-            add_move(occur_kinds, &mut expr_moves, *final_local);
-
-            let mut drop_epilogue = BTreeMap::new();
-            for (offset, (type_, _)) in bindings.iter().enumerate() {
-                let local_id = flat::LocalId(num_locals + offset);
-                drop_epilogue.insert(
-                    local_id,
-                    get_missing_drops(typedefs, expr_moves.moves.get(&local_id), type_),
-                );
-            }
-
-            debug_assert!(let_drop_epilogues[block_id].is_none());
-            let_drop_epilogues[block_id] = Some(drop_epilogue.into_iter().collect());
-
-            for local_id in (num_locals..num_locals + bindings.len()).map(flat::LocalId) {
-                expr_moves.moves.remove(&local_id);
-            }
-        }
-
-        fate::ExprKind::Tuple(items) => {
-            for item in items {
-                add_move(occur_kinds, &mut expr_moves, *item);
-            }
-        }
-
-        fate::ExprKind::TupleField(tuple, _index) => {
-            add_move(occur_kinds, &mut expr_moves, *tuple);
-        }
-
-        fate::ExprKind::WrapVariant(_variant_types, _variant_id, content) => {
-            add_move(occur_kinds, &mut expr_moves, *content);
-        }
-
-        fate::ExprKind::UnwrapVariant(_variant_id, wrapped) => {
-            add_move(occur_kinds, &mut expr_moves, *wrapped);
-        }
-
-        fate::ExprKind::WrapBoxed(content, _item_type) => {
-            add_move(occur_kinds, &mut expr_moves, *content);
-        }
-
-        fate::ExprKind::UnwrapBoxed(wrapped, _item_type, _, _) => {
-            add_move(occur_kinds, &mut expr_moves, *wrapped);
-        }
-
-        fate::ExprKind::WrapCustom(_custom_id, content) => {
-            add_move(occur_kinds, &mut expr_moves, *content);
-        }
-
-        fate::ExprKind::UnwrapCustom(_custom_id, wrapped) => {
-            add_move(occur_kinds, &mut expr_moves, *wrapped);
-        }
-
-        fate::ExprKind::Intrinsic(_intr, arg) => {
-            add_move(occur_kinds, &mut expr_moves, *arg);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, array, index, _, _)) => {
-            add_move(occur_kinds, &mut expr_moves, *array);
-            add_move(occur_kinds, &mut expr_moves, *index);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(_, _, array, index)) => {
-            add_move(occur_kinds, &mut expr_moves, *array);
-            add_move(occur_kinds, &mut expr_moves, *index);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, array)) => {
-            add_move(occur_kinds, &mut expr_moves, *array);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_, _, array, item)) => {
-            add_move(occur_kinds, &mut expr_moves, *array);
-            add_move(occur_kinds, &mut expr_moves, *item);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_, _, array)) => {
-            add_move(occur_kinds, &mut expr_moves, *array);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, hole_array, item)) => {
-            add_move(occur_kinds, &mut expr_moves, *hole_array);
-            add_move(occur_kinds, &mut expr_moves, *item);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(_, _, array, capacity)) => {
-            add_move(occur_kinds, &mut expr_moves, *array);
-            add_move(occur_kinds, &mut expr_moves, *capacity);
-        }
-
-        fate::ExprKind::IoOp(fate::IoOp::Input) => {}
-
-        fate::ExprKind::IoOp(fate::IoOp::Output(_, byte_array)) => {
-            add_move(occur_kinds, &mut expr_moves, *byte_array);
-        }
-
-        fate::ExprKind::Panic(_, message) => {
-            add_move(occur_kinds, &mut expr_moves, *message);
-        }
-
-        fate::ExprKind::ArrayLit(_, items) => {
-            for item in items {
-                add_move(occur_kinds, &mut expr_moves, *item);
-            }
-        }
-
-        fate::ExprKind::BoolLit(_) => {}
-        fate::ExprKind::ByteLit(_) => {}
-        fate::ExprKind::IntLit(_) => {}
-        fate::ExprKind::FloatLit(_) => {}
-    }
-
-    debug_assert!(expr_moves
-        .moves
-        .get_max()
-        .map(|(max_local, _)| max_local.0 < num_locals)
-        .unwrap_or(true));
-
-    expr_moves
-}
-
-#[derive(Clone, Debug)]
-struct MarkedDrops {
-    occur_kinds: IdVec<fate::OccurId, BTreeMap<mode::StackPath, OccurKind>>,
-    drop_prologues: IdVec<fate::ExprId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
-    let_drop_epilogues: IdVec<fate::LetBlockId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
-    branch_drop_epilogues:
-        IdVec<fate::BranchBlockId, BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>>,
-    arg_drop_epilogue: BTreeSet<mode::StackPath>,
-}
-
-fn repair_func_drops(
-    typedefs: &flat::CustomTypes,
-    func_def: &spec::FuncDef,
-    marked_occurs: MarkedOccurs,
-) -> MarkedDrops {
-    let mut drop_prologues = marked_occurs.tentative_drop_prologues;
-    let mut let_drop_epilogues = IdVec::from_items(vec![None; func_def.let_block_end_events.len()]);
-    let mut branch_drop_epilogues =
-        IdVec::from_items(vec![None; func_def.branch_block_end_events.len()]);
-
-    let body_moves = repair_expr_drops(
-        typedefs,
-        1,
-        &marked_occurs.occur_kinds,
-        &mut drop_prologues,
-        &mut let_drop_epilogues,
-        &mut branch_drop_epilogues,
-        &PastMoves {
-            moves: OrdMap::new(),
-        },
-        &func_def.body,
-    );
-
-    let arg_drop_epilogue = get_missing_drops(
-        typedefs,
-        body_moves.moves.get(&flat::ARG_LOCAL),
-        &func_def.arg_type,
-    );
-
-    MarkedDrops {
-        occur_kinds: marked_occurs.occur_kinds,
-        drop_prologues,
-        let_drop_epilogues: let_drop_epilogues.into_mapped(|_, epilogue| epilogue.unwrap()),
-        branch_drop_epilogues: branch_drop_epilogues.into_mapped(|_, epilogue| epilogue.unwrap()),
-        arg_drop_epilogue,
-    }
-}
-
-#[derive(Clone, Debug)]
-struct VarMoveHorizon {
-    path_move_horizons: BTreeMap<mode::StackPath, event::Horizon>,
-}
-
-#[derive(Clone, Debug)]
-struct MoveHorizons {
-    binding_moves: IdVec<fate::LetBlockId, Vec<VarMoveHorizon>>,
-    arg_moves: VarMoveHorizon,
-}
-
-fn collect_drop_events(
-    var_moves: &mut IdVec<flat::LocalId, VarMoveHorizon>,
-    drop_event: &event::Horizon,
-    drops: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
-) {
-    for (local, dropped_paths) in drops {
-        for path in dropped_paths {
-            var_moves[local]
-                .path_move_horizons
-                .entry(path.clone())
-                .or_insert_with(event::Horizon::new)
-                .disjoint_union(drop_event);
-        }
-    }
-}
-
-fn collect_expr_moves(
-    marked_drops: &MarkedDrops,
-    expr_annots: &IdVec<fate::ExprId, fate::ExprAnnot>,
-    let_block_end_events: &IdVec<fate::LetBlockId, event::Horizon>,
-    branch_block_end_events: &IdVec<fate::BranchBlockId, event::Horizon>,
-    expr: &fate::Expr,
-    var_moves: &mut IdVec<flat::LocalId, VarMoveHorizon>,
-    binding_moves: &mut IdVec<fate::LetBlockId, Option<Vec<VarMoveHorizon>>>,
-) {
-    let expr_event = &expr_annots[expr.id].event;
-
-    let collect_occur_events = |var_moves: &mut IdVec<flat::LocalId, VarMoveHorizon>,
-                                occur: fate::Local| {
-        for (path, kind) in &marked_drops.occur_kinds[occur.0] {
-            match kind {
-                OccurKind::Unused | OccurKind::Intermediate => {}
-                OccurKind::Final => {
-                    var_moves[occur.1]
-                        .path_move_horizons
-                        .entry(path.clone())
-                        .or_insert_with(event::Horizon::new)
-                        .disjoint_union(expr_event);
-                }
-            }
-        }
+                .map(|p| &subst[p])
+                .fold(Lt::Empty, |lt1, lt2| lt1.join(interner, lt2)),
+        };
+        Res { modes, lt }
     };
-
-    collect_drop_events(var_moves, expr_event, &marked_drops.drop_prologues[expr.id]);
-
-    match &expr.kind {
-        fate::ExprKind::Local(local) => {
-            collect_occur_events(var_moves, *local);
-        }
-
-        fate::ExprKind::Call(_, _, _, _, _, arg_local) => {
-            collect_occur_events(var_moves, *arg_local);
-        }
-
-        fate::ExprKind::Branch(discrim, cases, _) => {
-            collect_occur_events(var_moves, *discrim);
-            for (block_id, _, body, _final_ctx) in cases {
-                collect_expr_moves(
-                    marked_drops,
-                    expr_annots,
-                    let_block_end_events,
-                    branch_block_end_events,
-                    body,
-                    var_moves,
-                    binding_moves,
-                );
-                collect_drop_events(
-                    var_moves,
-                    &branch_block_end_events[block_id],
-                    &marked_drops.branch_drop_epilogues[block_id],
-                );
-            }
-        }
-
-        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
-            let orig_locals = var_moves.len();
-
-            for (offset, (_type, rhs)) in bindings.iter().enumerate() {
-                collect_expr_moves(
-                    marked_drops,
-                    expr_annots,
-                    let_block_end_events,
-                    branch_block_end_events,
-                    rhs,
-                    var_moves,
-                    binding_moves,
-                );
-                let local_id = var_moves.push(VarMoveHorizon {
-                    path_move_horizons: BTreeMap::new(),
-                });
-                debug_assert_eq!(local_id.0, orig_locals + offset);
-            }
-
-            collect_occur_events(var_moves, *final_local);
-
-            collect_drop_events(
-                var_moves,
-                &let_block_end_events[block_id],
-                &marked_drops.let_drop_epilogues[block_id],
-            );
-
-            let block_binding_moves = var_moves.items.drain(orig_locals..).collect::<Vec<_>>();
-            debug_assert_eq!(block_binding_moves.len(), bindings.len());
-            debug_assert!(binding_moves[block_id].is_none());
-            binding_moves[block_id] = Some(block_binding_moves);
-        }
-
-        fate::ExprKind::Tuple(items) => {
-            for item in items {
-                collect_occur_events(var_moves, *item);
-            }
-        }
-
-        fate::ExprKind::TupleField(tuple, _index) => {
-            collect_occur_events(var_moves, *tuple);
-        }
-
-        fate::ExprKind::WrapVariant(_variant_types, _variant_id, content) => {
-            collect_occur_events(var_moves, *content);
-        }
-
-        fate::ExprKind::UnwrapVariant(_variant_id, wrapped) => {
-            collect_occur_events(var_moves, *wrapped);
-        }
-
-        fate::ExprKind::WrapBoxed(content, _item_type) => {
-            collect_occur_events(var_moves, *content);
-        }
-
-        fate::ExprKind::UnwrapBoxed(wrapped, _item_type, _, _) => {
-            collect_occur_events(var_moves, *wrapped);
-        }
-
-        fate::ExprKind::WrapCustom(_custom_id, content) => {
-            collect_occur_events(var_moves, *content);
-        }
-
-        fate::ExprKind::UnwrapCustom(_custom_id, wrapped) => {
-            collect_occur_events(var_moves, *wrapped);
-        }
-
-        fate::ExprKind::Intrinsic(_intr, arg) => {
-            collect_occur_events(var_moves, *arg);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(_, _, array, index, _, _)) => {
-            collect_occur_events(var_moves, *array);
-            collect_occur_events(var_moves, *index);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(_, _, array, index)) => {
-            collect_occur_events(var_moves, *array);
-            collect_occur_events(var_moves, *index);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, array)) => {
-            collect_occur_events(var_moves, *array);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(_, _, array, item)) => {
-            collect_occur_events(var_moves, *array);
-            collect_occur_events(var_moves, *item);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(_, _, array)) => {
-            collect_occur_events(var_moves, *array);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(_, _, hole_array, item)) => {
-            collect_occur_events(var_moves, *hole_array);
-            collect_occur_events(var_moves, *item);
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(_, _, array, capacity)) => {
-            collect_occur_events(var_moves, *array);
-            collect_occur_events(var_moves, *capacity);
-        }
-
-        fate::ExprKind::IoOp(fate::IoOp::Input) => {}
-
-        fate::ExprKind::IoOp(fate::IoOp::Output(_, byte_array)) => {
-            collect_occur_events(var_moves, *byte_array);
-        }
-
-        fate::ExprKind::Panic(_, message) => {
-            collect_occur_events(var_moves, *message);
-        }
-
-        fate::ExprKind::ArrayLit(_, items) => {
-            for item in items {
-                collect_occur_events(var_moves, *item);
-            }
-        }
-
-        fate::ExprKind::BoolLit(_) => {}
-        fate::ExprKind::ByteLit(_) => {}
-        fate::ExprKind::IntLit(_) => {}
-        fate::ExprKind::FloatLit(_) => {}
-    }
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
 }
 
-fn collect_func_moves(func_def: &spec::FuncDef, marked_drops: &MarkedDrops) -> MoveHorizons {
-    let mut var_moves = IdVec::new();
-    let _ = var_moves.push(VarMoveHorizon {
-        path_move_horizons: BTreeMap::new(),
-    });
-
-    let mut binding_moves = IdVec::from_items(vec![None; func_def.let_block_end_events.len()]);
-
-    collect_expr_moves(
-        marked_drops,
-        &func_def.expr_annots,
-        &func_def.let_block_end_events,
-        &func_def.branch_block_end_events,
-        &func_def.body,
-        &mut var_moves,
-        &mut binding_moves,
-    );
-
-    debug_assert_eq!(var_moves.len(), 1);
-    let mut arg_moves = var_moves.items.into_iter().next().unwrap();
-
-    // The argument drop epilogue occurs after all other events in the function, so we don't need to
-    // explicitly track move horizons associated with the argument drop epilogue for the purpose of
-    // lifetime analysis.  It's safe to just mark every path in the argument which is dropped in the
-    // epilogue as having an empty move horizon, which will give `false` for any `can_occur_before`
-    // check.
-    for arg_path in &marked_drops.arg_drop_epilogue {
-        let existing = arg_moves
-            .path_move_horizons
-            .insert(arg_path.clone(), event::Horizon::new());
-        debug_assert!(existing.is_none());
-    }
-
-    MoveHorizons {
-        binding_moves: binding_moves.into_mapped(|_, moves| moves.unwrap()),
-        arg_moves,
-    }
+/// Our analysis makes the following approximation: from the perspective of a function's caller all
+/// accesses the callee makes to its arguments happen at the same time. To implement this behavior,
+/// we use `prepare_arg_type` to replace all local lifetimes in the argument with the caller's
+/// current path. Even if we didn't make this approximation, we would have to somehow relativize the
+/// local lifetimes in the argument since they are not meaningful in the caller's scope.
+fn prepare_arg_type<M: Clone>(
+    interner: &Interner,
+    path: &Path,
+    ty: &TypeFo<Res<M, Lt>>,
+) -> TypeFo<Res<M, Lt>> {
+    let f = |res: &Res<M, Lt>| {
+        let modes = res.modes.clone();
+        let lt = match &res.lt {
+            Lt::Empty => Lt::Empty,
+            Lt::Local(_) => path.as_lt(interner),
+            Lt::Join(vars) => Lt::Join(vars.clone()),
+        };
+        Res { modes, lt }
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
 }
 
-fn find_sccs(
-    funcs: &IdVec<first_ord::CustomFuncId, spec::FuncDef>,
-) -> Vec<Vec<(first_ord::CustomFuncId, spec::FuncVersionId)>> {
-    // To find SCCs, we need all functions in the program to be associated with concrete ids in a
-    // single "address space".  This means we can't use '(function id, version id)' pairs to refer
-    // to specialized function versions in these algorithms.  To work around this, we build an
-    // internal table mapping those pairs to `GlobalFuncVersionId`s which are suitable for use with
-    // the SCC algorithm.
-    id_type!(GlobalFuncVersionId);
+fn wrap_lts<M: Clone>(ty: &TypeFo<Res<M, LtParam>>) -> TypeFo<Res<M, Lt>> {
+    let f = |res: &Res<M, LtParam>| Res {
+        modes: res.modes.clone(),
+        lt: Lt::Join(NonEmptySet::new(res.lt)),
+    };
+    TypeFo::new(
+        ty.shape().clone(),
+        IdVec::from_vec(ty.iter().map(f).collect()),
+    )
+}
 
-    let mut global_to_version: IdVec<GlobalFuncVersionId, _> = IdVec::new();
-    let version_to_global = funcs.map(|func_id, func_def| {
-        func_def
-            .versions
-            .map(|version_id, _| global_to_version.push((func_id, version_id)))
-    });
+/// Generate occurrence constraints and merge `use_ty` into the typing context. Corresponds to the
+/// I-Occur rule.
+fn instantiate_occur(
+    interner: &Interner,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
+    constrs: &mut ConstrGraph,
+    id: LocalId,
+    use_ty: &TypeFo<Res<ModeVar, Lt>>,
+) -> OccurFo<Res<ModeVar, Lt>> {
+    instantiate_occur_in_position(interner, IsTail::NotTail, ctx, constrs, id, use_ty)
+}
 
-    let dep_graph = Graph {
-        edges_out: global_to_version.map(|_, (func_id, version_id)| {
-            funcs[func_id].versions[version_id]
-                .calls
-                .iter()
-                .map(|(_, (dep_func_id, dep_version_id))| {
-                    version_to_global[dep_func_id][dep_version_id]
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>()
+fn create_occurs_from_model(
+    sig: &model::Signature,
+    strategy: RcStrategy,
+    ignore: IgnorePerceus,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    constrs: &mut ConstrGraph,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
+    path: &annot::Path,
+    args: &[LocalId],
+    ret: &TypeFo<Res<ModeVar, Lt>>,
+) -> Vec<OccurFo<Res<ModeVar, Lt>>> {
+    assert!(args.len() >= sig.args.fixed.len());
+
+    // Create a fresh occurrence for each function argument.
+    let mut arg_occurs = args
+        .iter()
+        .map(|&id| {
+            let ty = freshen_type_unused(strategy, ignore, constrs, &ctx.local_binding(id).ty);
+            annot::Occur { id, ty }
+        })
+        .collect::<Vec<_>>();
+
+    ///////////////////////////////////////
+    // Step 1: Handle constraints which arise from model mode and lifetime variables.
+    ///////////////////////////////////////
+
+    // Set up a mapping from model modes to mode variables.
+    let get_mode = IdVec::from_count_with(sig.mode_count, |_| fresh_var(strategy, ignore, constrs));
+
+    let get_modes = |modes| match modes {
+        ResModes::Stack(stack) => ResModes::Stack(get_mode[stack]),
+        ResModes::Heap(heap) => ResModes::Heap(HeapModes {
+            access: get_mode[heap.access],
+            storage: get_mode[heap.storage],
         }),
     };
 
-    strongly_connected(&dep_graph)
-        .into_iter()
-        .map(|global_ids| {
-            global_ids
-                .into_iter()
-                .map(|global_id| global_to_version[global_id])
-                .collect()
-        })
-        .collect()
-}
+    // Set up a mapping from model lifetimes to lifetimes.
+    let mut get_lt = IdVec::from_count_with(sig.lt_count, |_| None);
 
-#[derive(Clone, Debug)]
-enum SolverPathOccurMode {
-    Intermediate {
-        src: ineq::SolverVarId,
-        dest: ineq::SolverVarId,
-    },
-    Final,
-    Unused,
-}
+    // Impose any explicit 'owned' constraints.
+    for param in &sig.owned_modes {
+        constrs.require_le_const(&Mode::Owned, get_mode[param]);
+    }
 
-#[derive(Clone, Debug)]
-struct SolverOccurModes {
-    path_modes: BTreeMap<mode::StackPath, SolverPathOccurMode>,
-}
+    for (slot, model_res) in sig.ret.get_res(&ret.shape()) {
+        // Impose mode constraints on the return.
+        let res = &ret.res()[slot];
+        require_eq(constrs, &get_modes(model_res.modes), &res.modes);
 
-#[derive(Clone, Debug)]
-struct SolverDropModes {
-    dropped_paths: BTreeMap<mode::StackPath, ineq::SolverVarId>,
-}
+        if sig.unused_lts.contains(&model_res.lt) {
+            panic!("unused model lifetimes cannot be supplied in return position");
+        }
 
-#[derive(Clone, Debug)]
-struct SolverRetainModes {
-    retained_paths: BTreeMap<mode::StackPath, ineq::SolverVarId>,
-}
-
-#[derive(Clone, Debug)]
-struct SolverModeAnnots {
-    occur_modes: IdVec<fate::OccurId, Option<SolverOccurModes>>,
-    call_modes: IdVec<fate::CallId, Option<IdVec<ineq::ExternalVarId, ineq::SolverVarId>>>,
-    let_drop_epilogues: IdVec<fate::LetBlockId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
-    branch_drop_epilogues:
-        IdVec<fate::BranchBlockId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
-    drop_prologues: IdVec<fate::ExprId, Option<BTreeMap<flat::LocalId, SolverDropModes>>>,
-    retain_epilogues: IdVec<fate::RetainPointId, Option<SolverRetainModes>>,
-}
-
-#[derive(Clone, Debug)]
-struct SolverValModes {
-    path_modes: OrdMap<alias::FieldPath, ineq::SolverVarId>,
-}
-
-impl SolverValModes {
-    fn new() -> Self {
-        SolverValModes {
-            path_modes: OrdMap::new(),
+        // Update the lifetime mapping based on the return.
+        match &mut get_lt[model_res.lt] {
+            entry @ None => *entry = Some(res.lt.clone()),
+            Some(_) => {
+                panic!("a lifetime variable cannot appear more than once in a model return type");
+            }
         }
     }
-}
 
-#[derive(Clone, Debug)]
-struct SolverLocalInfo<'a> {
-    val_modes: SolverValModes,
-    move_horizon: &'a VarMoveHorizon,
-    type_: &'a anon::Type,
-}
+    let get_lt = get_lt;
 
-#[derive(Clone, Debug)]
-struct SolverSccFuncSig {
-    arg_modes: BTreeMap<alias::FieldPath, ineq::ExternalVarId>,
-    ret_modes: BTreeMap<alias::FieldPath, ineq::ExternalVarId>,
-}
+    for (i, (arg, occur)) in sig.args.iter().zip(&mut arg_occurs).enumerate() {
+        for (slot, model_res) in arg.get_res(&occur.ty.shape()) {
+            // Impose mode constraints on the argument.
+            let res = &mut occur.ty.res_mut()[slot];
+            require_eq(constrs, &get_modes(model_res.modes), &res.modes);
 
-#[derive(Clone, Debug)]
-struct SolverSccSigs<'a> {
-    extern_vars: &'a IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
-    func_sigs: BTreeMap<(first_ord::CustomFuncId, spec::FuncVersionId), SolverSccFuncSig>,
-}
-
-fn instantiate_sig_type(
-    typedefs: &flat::CustomTypes,
-    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-    extern_vars: &mut IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
-    type_: &anon::Type,
-) -> BTreeMap<alias::FieldPath, ineq::ExternalVarId> {
-    field_path::get_refs_in(typedefs, type_)
-        .into_iter()
-        .map(|(path, _)| {
-            let solver_var = constraints.new_var();
-            (path, extern_vars.push(solver_var))
-        })
-        .collect()
-}
-
-fn instantiate_type(
-    typedefs: &flat::CustomTypes,
-    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-    type_: &anon::Type,
-) -> SolverValModes {
-    SolverValModes {
-        path_modes: field_path::get_refs_in(typedefs, type_)
-            .into_iter()
-            .map(|(path, _)| (path, constraints.new_var()))
-            .collect(),
+            // Substitute for model lifetimes using the mapping constructed from the return.
+            res.lt = if let Some(lt) = &get_lt[model_res.lt] {
+                lt.clone()
+            } else if sig.unused_lts.contains(&model_res.lt) {
+                Lt::Empty
+            } else {
+                annot::arg_path(path, i, args.len()).as_lt(interner)
+            };
+        }
     }
-}
 
-fn equate_modes(
-    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-    modes1: &SolverValModes,
-    modes2: &SolverValModes,
-) {
-    debug_assert_eq!(
-        modes1.path_modes.keys().collect::<BTreeSet<_>>(),
-        modes2.path_modes.keys().collect::<BTreeSet<_>>()
+    ///////////////////////////////////////
+    // Step 2: Handle constraints which arise from repeated uses of the same model type variable.
+    ///////////////////////////////////////
+
+    // Accumulate the resources for each occurrence of each type variable.
+    let mut vars = IdMap::new();
+    for ((i, model), occur) in sig.args.iter().enumerate().zip(&arg_occurs) {
+        model.extract_vars(
+            |shape, res| TypeFo::new(shape.clone(), IdVec::from_vec(res.to_vec())),
+            model::VarOccurKind::Arg(i),
+            &occur.ty.shape(),
+            occur.ty.res().as_slice(),
+            &mut vars,
+        );
+    }
+    sig.ret.extract_vars(
+        |shape, res| TypeFo::new(shape.clone(), IdVec::from_vec(res.to_vec())),
+        model::VarOccurKind::Ret,
+        &ret.shape(),
+        ret.res().as_slice(),
+        &mut vars,
     );
 
-    for (path, mode1) in &modes1.path_modes {
-        let mode2 = modes2.path_modes[path];
-        constraints.require_eq(*mode1, mode2);
-    }
-}
+    // At this point, it would seem natural to convert `vars` from an `IdMap` to an `IdVec`.
+    // However, if the model signature has an empty variadic argument, then the `IdMap` will not
+    // contain entries for any type variables which appear only in the type of that argument.
 
-fn substitute_sig_modes(
-    sig_vars: &IdVec<ineq::ExternalVarId, ineq::SolverVarId>,
-    sig_modes: &BTreeMap<alias::FieldPath, ineq::ExternalVarId>,
-) -> SolverValModes {
-    SolverValModes {
-        path_modes: sig_modes
-            .iter()
-            .map(|(path, sig_var)| (path.clone(), sig_vars[sig_var]))
-            .collect(),
-    }
-}
+    for var_occurs in vars.values_mut() {
+        if let Some(rep) = var_occurs.rep() {
+            // Impose equality constraints between all occurrences of the same type variable.
+            // TODO: Avoid unnecessarily generating reflexive constraints.
+            for occur in var_occurs.all() {
+                bind_modes(constrs, rep, occur);
+            }
 
-fn annot_local_drops(
-    local_modes: &SolverValModes,
-    dropped_paths: &BTreeSet<mode::StackPath>,
-) -> SolverDropModes {
-    SolverDropModes {
-        dropped_paths: dropped_paths
-            .iter()
-            .map(|path| {
-                (
-                    path.clone(),
-                    local_modes.path_modes[&stack_path::to_field_path(path)],
-                )
-            })
-            .collect(),
-    }
-}
+            // Propagate lifetimes from return occurrences of variables to argument occurrences of
+            // variables.
+            for ret in var_occurs.rets.iter() {
+                for arg in var_occurs.args.iter_mut() {
+                    let loc = arg.loc;
+                    let arg_res = &mut arg_occurs[loc.occur_idx].ty.res_mut().as_mut_slice()
+                        [loc.start..loc.end];
 
-fn annot_drops(
-    locals: &LocalContext<flat::LocalId, SolverLocalInfo>,
-    drops: &BTreeMap<flat::LocalId, BTreeSet<mode::StackPath>>,
-) -> BTreeMap<flat::LocalId, SolverDropModes> {
-    drops
-        .iter()
-        .map(|(dropped_local, dropped_paths)| {
-            let local_modes = &locals.local_binding(*dropped_local).val_modes;
-            (
-                *dropped_local,
-                annot_local_drops(local_modes, dropped_paths),
-            )
-        })
-        .collect::<BTreeMap<_, _>>()
-}
-
-// TODO: This type signature *really* needs to not be like this
-fn annot_expr<'a>(
-    elision_mode: cli::RcMode,
-    typedefs: &flat::CustomTypes,
-    known_annots: &IdVec<
-        first_ord::CustomFuncId,
-        IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
-    >,
-    occur_fates: &IdVec<fate::OccurId, fate::Fate>, // Used only for access horizons
-    call_versions: &IdVec<fate::CallId, (first_ord::CustomFuncId, spec::FuncVersionId)>,
-    ret_fates: &BTreeMap<alias::RetName, spec::RetFate>,
-    marked_drops: &MarkedDrops,
-    move_horizons: &'a MoveHorizons,
-    constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-    scc_sigs: &SolverSccSigs,
-    locals: &mut LocalContext<flat::LocalId, SolverLocalInfo<'a>>,
-    expr: &'a fate::Expr,
-    solver_annots: &mut SolverModeAnnots,
-) -> SolverValModes {
-    let drop_prologue_modes = annot_drops(locals, &marked_drops.drop_prologues[expr.id]);
-    debug_assert!(solver_annots.drop_prologues[expr.id].is_none());
-    solver_annots.drop_prologues[expr.id] = Some(drop_prologue_modes);
-
-    let annot_occur = |constraints: &mut ineq::ConstraintGraph<mode::Mode>,
-                       locals: &LocalContext<flat::LocalId, SolverLocalInfo>,
-                       solver_annots: &mut SolverModeAnnots,
-                       occur: fate::Local|
-     -> SolverValModes {
-        let mut occur_modes = BTreeMap::new();
-        let mut occur_val_modes = OrdMap::new();
-
-        let binding = locals.local_binding(occur.1);
-        let occur_kinds = &marked_drops.occur_kinds[occur.0];
-
-        for (path, src_mode_var) in &binding.val_modes.path_modes {
-            let truncation = stack_path::split_stack_heap_3(typedefs, path.clone());
-
-            for stack in truncation.clone().stack_paths() {
-                let (dest_mode, dest_mode_var) = match &occur_kinds[&stack] {
-                    OccurKind::Unused => {
-                        // TODO: When we monomorphize, `dest_mode_var` should always be `Borrowed`. Is
-                        // there some way to add an assertion for this invariant?
-                        //
-                        // TODO [critical]: It may actually be possible to break this.  We should
-                        // definintely implement the assertion defined above, and try hard to either
-                        // rigorously prove that it will always succeed, or find a counterexample that
-                        // causes it to fail.
-                        let dest_mode_var = constraints.new_var();
-                        (SolverPathOccurMode::Unused, dest_mode_var)
+                    for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.iter()) {
+                        arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
                     }
-                    OccurKind::Final => (SolverPathOccurMode::Final, *src_mode_var),
-                    OccurKind::Intermediate => {
-                        let occur_fate = &occur_fates[occur.0].fates[path];
-
-                        let escapes_to_used_ret_path = occur_fate
-                            .ret_destinations
-                            .iter()
-                            .any(|ret_path| ret_fates[ret_path] == spec::RetFate::MaybeUsed);
-
-                        let path_move_horizon = &binding.move_horizon.path_move_horizons[&stack];
-                        let path_access_horizon =
-                            &occur_fates[occur.0].fates[path].last_internal_use;
-
-                        let borrow_would_outlive_src = escapes_to_used_ret_path
-                            || path_move_horizon.can_occur_before(path_access_horizon);
-
-                        // This is where the magic happens.
-                        //
-                        // The entire horizon-based borrow checking system exists to support this
-                        // conditional right here.  When an occurrence of a variable path will not be
-                        // accessed beyond the end of its source's lifetime, we allow the occurrence to
-                        // have mode `Borrowed` even if the source has mode `Owned` (although the
-                        // destination may still end up having the mode `Owned` if something else about
-                        // the way it's used later forces it to be owned, such as unifying with an
-                        // unconditionally owned variable).  On the other hand, when an occurrence of a
-                        // variable may outlive its source, the destination needs to have the same mode
-                        // as the source (which may still end up being `Borrowed` if the source is
-                        // itself borrowed from another variable).
-                        let dest_mode_var =
-                            if elision_mode == cli::RcMode::Trivial || borrow_would_outlive_src {
-                                *src_mode_var
-                            } else {
-                                let var = constraints.new_var();
-                                constraints.require_lte(*src_mode_var, var);
-                                var
-                            };
-
-                        (
-                            SolverPathOccurMode::Intermediate {
-                                src: *src_mode_var,
-                                dest: dest_mode_var,
-                            },
-                            dest_mode_var,
-                        )
-                    }
-                };
-
-                if !matches!(&truncation, stack_path::PathTruncation::Heap(_)) {
-                    let existing = occur_modes.insert(stack, dest_mode);
-                    debug_assert!(existing.is_none());
-                }
-
-                occur_val_modes.insert(path.clone(), dest_mode_var);
-            }
-        }
-
-        debug_assert!(solver_annots.occur_modes[occur.0].is_none());
-        solver_annots.occur_modes[occur.0] = Some(SolverOccurModes {
-            path_modes: occur_modes,
-        });
-
-        SolverValModes {
-            path_modes: occur_val_modes,
-        }
-    };
-
-    let result_modes = match &expr.kind {
-        fate::ExprKind::Local(local) => annot_occur(constraints, locals, solver_annots, *local),
-
-        fate::ExprKind::Call(call_id, _, _, _, _, local) => {
-            let arg_val_modes = annot_occur(constraints, locals, solver_annots, *local);
-
-            let (callee_id, callee_version_id) = call_versions[call_id];
-
-            let (callee_extern_vars, callee_sig_arg_modes, callee_sig_ret_modes) =
-                match scc_sigs.func_sigs.get(&(callee_id, callee_version_id)) {
-                    Some(scc_sig) => (
-                        scc_sigs.extern_vars.clone(),
-                        &scc_sig.arg_modes,
-                        &scc_sig.ret_modes,
-                    ),
-
-                    None => {
-                        let callee_annots =
-                            known_annots[callee_id][callee_version_id].as_ref().unwrap();
-
-                        let callee_extern_vars =
-                            constraints.instantiate_subgraph(&callee_annots.extern_constraints);
-
-                        (
-                            callee_extern_vars,
-                            &callee_annots.arg_modes,
-                            &callee_annots.ret_modes,
-                        )
-                    }
-                };
-
-            let callee_arg_modes = substitute_sig_modes(&callee_extern_vars, callee_sig_arg_modes);
-            let callee_ret_modes = substitute_sig_modes(&callee_extern_vars, callee_sig_ret_modes);
-
-            equate_modes(constraints, &arg_val_modes, &callee_arg_modes);
-
-            debug_assert!(solver_annots.call_modes[call_id].is_none());
-            solver_annots.call_modes[call_id] = Some(callee_extern_vars);
-
-            callee_ret_modes
-        }
-
-        fate::ExprKind::Branch(discrim, cases, result_type) => {
-            annot_occur(constraints, locals, solver_annots, *discrim);
-
-            let result_modes = instantiate_type(typedefs, constraints, result_type);
-
-            for (block_id, _cond, body, _final_ctx) in cases {
-                let body_modes = annot_expr(
-                    elision_mode,
-                    typedefs,
-                    known_annots,
-                    occur_fates,
-                    call_versions,
-                    ret_fates,
-                    marked_drops,
-                    move_horizons,
-                    constraints,
-                    scc_sigs,
-                    locals,
-                    body,
-                    solver_annots,
-                );
-
-                equate_modes(constraints, &body_modes, &result_modes);
-
-                let drop_epilogue_annot =
-                    annot_drops(locals, &marked_drops.branch_drop_epilogues[block_id]);
-
-                debug_assert!(solver_annots.branch_drop_epilogues[block_id].is_none());
-                solver_annots.branch_drop_epilogues[block_id] = Some(drop_epilogue_annot);
-            }
-
-            result_modes
-        }
-
-        fate::ExprKind::LetMany(block_id, bindings, _final_ctx, final_local) => {
-            locals.with_scope(|sub_locals| {
-                let binding_horizons = &move_horizons.binding_moves[block_id];
-                debug_assert_eq!(binding_horizons.len(), bindings.len());
-                for ((type_, rhs), move_horizon) in bindings.iter().zip(binding_horizons.iter()) {
-                    let binding_modes = annot_expr(
-                        elision_mode,
-                        typedefs,
-                        known_annots,
-                        occur_fates,
-                        call_versions,
-                        ret_fates,
-                        marked_drops,
-                        move_horizons,
-                        constraints,
-                        scc_sigs,
-                        sub_locals,
-                        rhs,
-                        solver_annots,
-                    );
-
-                    sub_locals.add_local(SolverLocalInfo {
-                        val_modes: binding_modes,
-                        move_horizon,
-                        type_,
-                    });
-                }
-
-                let drop_epilogue_annot =
-                    annot_drops(sub_locals, &marked_drops.let_drop_epilogues[block_id]);
-
-                debug_assert!(solver_annots.let_drop_epilogues[block_id].is_none());
-                solver_annots.let_drop_epilogues[block_id] = Some(drop_epilogue_annot);
-
-                annot_occur(constraints, sub_locals, solver_annots, *final_local)
-            })
-        }
-
-        fate::ExprKind::Tuple(items) => {
-            let mut result_modes = SolverValModes::new();
-            for (i, item) in items.iter().enumerate() {
-                let item_modes = annot_occur(constraints, locals, solver_annots, *item);
-                for (path, mode) in item_modes.path_modes {
-                    result_modes
-                        .path_modes
-                        .insert(path.add_front(alias::Field::Field(i)), mode);
                 }
             }
-            result_modes
         }
-
-        fate::ExprKind::TupleField(tuple, idx) => {
-            let mut result_modes = SolverValModes::new();
-
-            let tuple_modes = annot_occur(constraints, locals, solver_annots, *tuple);
-
-            let tuple_info = locals.local_binding(tuple.1);
-            let item_type = if let anon::Type::Tuple(item_types) = &tuple_info.type_ {
-                &item_types[*idx]
-            } else {
-                unreachable!()
-            };
-
-            for (item_path, _) in field_path::get_refs_in(typedefs, item_type) {
-                result_modes.path_modes.insert(
-                    item_path.clone(),
-                    tuple_modes.path_modes[&item_path.add_front(alias::Field::Field(*idx))],
-                );
-            }
-            result_modes
-        }
-
-        fate::ExprKind::WrapVariant(variant_types, variant_id, content) => {
-            let result_modes = instantiate_type(
-                typedefs,
-                constraints,
-                &anon::Type::Variants(variant_types.clone()),
-            );
-
-            let content_modes = annot_occur(constraints, locals, solver_annots, *content);
-
-            for (content_path, content_mode) in content_modes.path_modes {
-                constraints.require_eq(
-                    result_modes.path_modes
-                        [&content_path.add_front(alias::Field::Variant(*variant_id))],
-                    content_mode,
-                );
-            }
-            result_modes
-        }
-
-        fate::ExprKind::UnwrapVariant(variant_id, wrapped) => {
-            let mut result_modes = SolverValModes::new();
-
-            let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
-
-            let wrapped_info = locals.local_binding(wrapped.1);
-            let content_type = if let anon::Type::Variants(variant_types) = &wrapped_info.type_ {
-                &variant_types[variant_id]
-            } else {
-                unreachable!()
-            };
-
-            for (content_path, _) in field_path::get_refs_in(typedefs, content_type) {
-                result_modes.path_modes.insert(
-                    content_path.clone(),
-                    wrapped_modes.path_modes
-                        [&content_path.add_front(alias::Field::Variant(*variant_id))],
-                );
-            }
-            result_modes
-        }
-
-        fate::ExprKind::WrapBoxed(content, item_type) => {
-            let content_modes = annot_occur(constraints, locals, solver_annots, *content);
-
-            for (_, content_mode) in content_modes.path_modes {
-                constraints.require_lte_const(content_mode, &mode::Mode::Owned);
-            }
-
-            let result_modes = instantiate_type(
-                typedefs,
-                constraints,
-                &anon::Type::Boxed(Box::new(item_type.clone())),
-            );
-
-            for (_, result_mode) in &result_modes.path_modes {
-                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
-            }
-            result_modes
-        }
-
-        fate::ExprKind::UnwrapBoxed(wrapped, item_type, _, retain_point) => {
-            let mut result_modes = SolverValModes::new();
-
-            let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
-
-            for (content_path, _) in field_path::get_refs_in(typedefs, item_type) {
-                result_modes.path_modes.insert(
-                    content_path.clone(),
-                    wrapped_modes.path_modes[&content_path.add_front(alias::Field::Boxed)],
-                );
-            }
-
-            let mut retain_epilogue = SolverRetainModes {
-                retained_paths: BTreeMap::new(),
-            };
-            for content_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
-                let content_path = stack_path::to_field_path(&content_stack_path);
-                retain_epilogue
-                    .retained_paths
-                    .insert(content_stack_path, result_modes.path_modes[&content_path]);
-            }
-            debug_assert!(solver_annots.retain_epilogues[retain_point].is_none());
-            solver_annots.retain_epilogues[retain_point] = Some(retain_epilogue);
-
-            result_modes
-        }
-
-        fate::ExprKind::WrapCustom(custom_id, content) => {
-            let result_modes =
-                instantiate_type(typedefs, constraints, &anon::Type::Custom(*custom_id));
-
-            let content_modes = annot_occur(constraints, locals, solver_annots, *content);
-
-            let scc_id = typedefs.types[custom_id].scc;
-            for (content_path, content_mode) in content_modes.path_modes {
-                let (_, in_custom, alias::SubPath(sub_path)) =
-                    field_path::split_at_fold(scc_id, *custom_id, content_path);
-
-                constraints.require_eq(
-                    result_modes.path_modes[&sub_path
-                        .add_front(alias::Field::Custom(in_custom))
-                        .add_front(alias::Field::CustomScc(scc_id, *custom_id))],
-                    content_mode,
-                );
-            }
-            result_modes
-        }
-
-        fate::ExprKind::UnwrapCustom(custom_id, wrapped) => {
-            let result_modes =
-                instantiate_type(typedefs, constraints, &typedefs.types[custom_id].content);
-
-            let wrapped_modes = annot_occur(constraints, locals, solver_annots, *wrapped);
-
-            let scc_id = typedefs.types[custom_id].scc;
-            for (content_path, content_mode) in &result_modes.path_modes {
-                let (_, in_custom, alias::SubPath(sub_path)) =
-                    field_path::split_at_fold(scc_id, *custom_id, content_path.clone());
-
-                constraints.require_eq(
-                    *content_mode,
-                    wrapped_modes.path_modes[&sub_path
-                        .clone()
-                        .add_front(alias::Field::Custom(in_custom))
-                        .add_front(alias::Field::CustomScc(scc_id, *custom_id))],
-                );
-            }
-            result_modes
-        }
-
-        // TODO [intrinsics]: If we ever add array intrinsics, we will need to modify this.
-        fate::ExprKind::Intrinsic(_intr, arg) => {
-            let arg_modes = annot_occur(constraints, locals, solver_annots, *arg);
-            debug_assert!(arg_modes.path_modes.is_empty());
-            SolverValModes::new()
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Get(
-            item_type,
-            _,
-            array,
-            index,
-            _,
-            retain_point,
-        )) => {
-            let mut result_modes = SolverValModes::new();
-
-            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
-            let index_modes = annot_occur(constraints, locals, solver_annots, *index);
-            debug_assert!(index_modes.path_modes.is_empty());
-
-            for (item_path, _) in field_path::get_refs_in(typedefs, item_type) {
-                result_modes.path_modes.insert(
-                    item_path.clone(),
-                    array_modes.path_modes
-                        [&item_path.clone().add_front(alias::Field::ArrayMembers)],
-                );
-            }
-
-            let mut retain_epilogue = SolverRetainModes {
-                retained_paths: BTreeMap::new(),
-            };
-
-            for item_stack_path in stack_path::stack_paths_in(typedefs, item_type) {
-                let item_mode =
-                    array_modes.path_modes[&stack_path::to_field_path(&item_stack_path)
-                        .add_front(alias::Field::ArrayMembers)];
-
-                retain_epilogue
-                    .retained_paths
-                    .insert(item_stack_path, item_mode);
-            }
-
-            debug_assert!(solver_annots.retain_epilogues[retain_point].is_none());
-            solver_annots.retain_epilogues[retain_point] = Some(retain_epilogue);
-
-            result_modes
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Extract(item_type, _, array, index)) => {
-            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
-            let index_modes = annot_occur(constraints, locals, solver_annots, *index);
-            debug_assert!(index_modes.path_modes.is_empty());
-
-            for (_, array_mode) in array_modes.path_modes {
-                constraints.require_lte_const(array_mode, &mode::Mode::Owned);
-            }
-
-            let result_modes = instantiate_type(
-                typedefs,
-                constraints,
-                &anon::Type::Tuple(vec![
-                    item_type.clone(),
-                    anon::Type::HoleArray(Box::new(item_type.clone())),
-                ]),
-            );
-
-            for (_, result_mode) in &result_modes.path_modes {
-                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
-            }
-
-            result_modes
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Len(_, _, array)) => {
-            annot_occur(constraints, locals, solver_annots, *array);
-            SolverValModes::new()
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Push(item_type, _, array, item)) => {
-            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
-            let item_modes = annot_occur(constraints, locals, solver_annots, *item);
-
-            for (_, array_mode) in array_modes.path_modes {
-                constraints.require_lte_const(array_mode, &mode::Mode::Owned);
-            }
-
-            for (_, item_mode) in item_modes.path_modes {
-                constraints.require_lte_const(item_mode, &mode::Mode::Owned);
-            }
-
-            let result_modes = instantiate_type(
-                typedefs,
-                constraints,
-                &anon::Type::Array(Box::new(item_type.clone())),
-            );
-
-            for (_, result_mode) in &result_modes.path_modes {
-                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
-            }
-
-            result_modes
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Pop(item_type, _, array)) => {
-            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
-
-            for (_, array_mode) in array_modes.path_modes {
-                constraints.require_lte_const(array_mode, &mode::Mode::Owned);
-            }
-
-            let result_modes = instantiate_type(
-                typedefs,
-                constraints,
-                &anon::Type::Tuple(vec![
-                    anon::Type::Array(Box::new(item_type.clone())),
-                    item_type.clone(),
-                ]),
-            );
-
-            for (_, result_mode) in &result_modes.path_modes {
-                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
-            }
-
-            result_modes
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Replace(item_type, _, hole_array, item)) => {
-            let hole_array_modes = annot_occur(constraints, locals, solver_annots, *hole_array);
-            let item_modes = annot_occur(constraints, locals, solver_annots, *item);
-
-            for (_, hole_array_mode) in hole_array_modes.path_modes {
-                constraints.require_lte_const(hole_array_mode, &mode::Mode::Owned);
-            }
-
-            for (_, item_mode) in item_modes.path_modes {
-                constraints.require_lte_const(item_mode, &mode::Mode::Owned);
-            }
-
-            let result_modes = instantiate_type(
-                typedefs,
-                constraints,
-                &anon::Type::Array(Box::new(item_type.clone())),
-            );
-
-            for (_, result_mode) in &result_modes.path_modes {
-                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
-            }
-
-            result_modes
-        }
-
-        fate::ExprKind::ArrayOp(fate::ArrayOp::Reserve(item_type, _, array, capacity)) => {
-            let array_modes = annot_occur(constraints, locals, solver_annots, *array);
-            let capacity_modes = annot_occur(constraints, locals, solver_annots, *capacity);
-
-            debug_assert!(capacity_modes.path_modes.is_empty());
-
-            for (_, array_mode) in array_modes.path_modes {
-                constraints.require_lte_const(array_mode, &mode::Mode::Owned);
-            }
-
-            let result_modes = instantiate_type(
-                typedefs,
-                constraints,
-                &anon::Type::Array(Box::new(item_type.clone())),
-            );
-
-            for (_, result_mode) in &result_modes.path_modes {
-                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
-            }
-
-            result_modes
-        }
-
-        fate::ExprKind::IoOp(fate::IoOp::Input) => {
-            let mut result_modes = SolverValModes::new();
-            let array_mode = constraints.new_var();
-            constraints.require_lte_const(array_mode, &mode::Mode::Owned);
-            result_modes.path_modes.insert(Vector::new(), array_mode);
-            result_modes
-        }
-
-        fate::ExprKind::IoOp(fate::IoOp::Output(_, byte_array)) => {
-            annot_occur(constraints, locals, solver_annots, *byte_array);
-            SolverValModes::new()
-        }
-
-        fate::ExprKind::Panic(result_type, message) => {
-            annot_occur(constraints, locals, solver_annots, *message);
-            instantiate_type(typedefs, constraints, result_type)
-        }
-
-        fate::ExprKind::ArrayLit(item_type, items) => {
-            for item in items {
-                let item_modes = annot_occur(constraints, locals, solver_annots, *item);
-                for (_, item_mode) in item_modes.path_modes {
-                    constraints.require_lte_const(item_mode, &mode::Mode::Owned);
-                }
-            }
-
-            let result_modes = instantiate_type(
-                typedefs,
-                constraints,
-                &anon::Type::Array(Box::new(item_type.clone())),
-            );
-
-            for (_, result_mode) in &result_modes.path_modes {
-                constraints.require_lte_const(*result_mode, &mode::Mode::Owned);
-            }
-
-            result_modes
-        }
-
-        fate::ExprKind::BoolLit(_)
-        | fate::ExprKind::ByteLit(_)
-        | fate::ExprKind::IntLit(_)
-        | fate::ExprKind::FloatLit(_) => SolverValModes::new(),
-    };
-
-    result_modes
-}
-
-fn extract_drop_modes(
-    solutions: &IdVec<ineq::SolverVarId, ineq::UpperBound<mode::Mode>>,
-    modes: SolverDropModes,
-) -> mode::DropModes {
-    mode::DropModes {
-        dropped_paths: modes
-            .dropped_paths
-            .into_iter()
-            .map(|(path, var)| (path, solutions[var].clone()))
-            .collect(),
     }
-}
 
-fn extract_drops(
-    solutions: &IdVec<ineq::SolverVarId, ineq::UpperBound<mode::Mode>>,
-    drops: BTreeMap<flat::LocalId, SolverDropModes>,
-) -> Vec<(flat::LocalId, mode::DropModes)> {
-    drops
-        .into_iter()
-        .map(|(path, drop_modes)| (path, extract_drop_modes(solutions, drop_modes)))
-        .collect()
-}
+    ///////////////////////////////////////
+    // Step 3: Handle any explicit constraints (as given in the 'where' clause of the model).
+    ///////////////////////////////////////
 
-fn extract_retains(
-    solutions: &IdVec<ineq::SolverVarId, ineq::UpperBound<mode::Mode>>,
-    modes: SolverRetainModes,
-) -> mode::RetainModes {
-    mode::RetainModes {
-        retained_paths: modes
-            .retained_paths
-            .into_iter()
-            .map(|(path, var)| (path, solutions[var].clone()))
-            .collect(),
-    }
-}
+    for constr in &sig.constrs {
+        match constr {
+            model::Constr::Mode { lhs, rhs } => {
+                // We check when we construct a signature that any type variables that appear in
+                // constraints also appear in the signature. This can only happen if there is an
+                // empty variadic argument.
+                if !vars.contains_key(lhs.type_var) || !vars.contains_key(rhs.type_var) {
+                    continue;
+                }
 
-fn extract_occur_modes(
-    solutions: &IdVec<ineq::SolverVarId, ineq::UpperBound<mode::Mode>>,
-    occur_modes: SolverOccurModes,
-) -> mode::OccurModes {
-    mode::OccurModes {
-        path_modes: occur_modes
-            .path_modes
-            .into_iter()
-            .map(|(path, mode)| {
-                (
-                    path,
-                    match mode {
-                        SolverPathOccurMode::Unused => mode::PathOccurMode::Unused,
-                        SolverPathOccurMode::Final => mode::PathOccurMode::Final,
-                        SolverPathOccurMode::Intermediate { src, dest } => {
-                            mode::PathOccurMode::Intermediate {
-                                src: solutions[src].clone(),
-                                dest: solutions[dest].clone(),
-                            }
+                let rep1 = &vars[lhs.type_var].rep().unwrap();
+                let rep2 = &vars[rhs.type_var].rep().unwrap();
+                debug_assert_eq!(rep1.shape(), rep2.shape());
+
+                let prop1 = lhs.prop;
+                let prop2 = rhs.prop;
+                let pos = rep1.shape().positions(customs, sccs);
+
+                for (pos, (res1, res2)) in pos.iter().zip_eq(rep1.iter().zip_eq(rep2.iter())) {
+                    match pos {
+                        Position::Stack => {
+                            let mode1 = prop1.extract(&res1.modes);
+                            let mode2 = prop2.extract(&res2.modes);
+                            constrs.require_eq(mode1, mode2);
                         }
-                    },
+                        Position::Heap => {
+                            require_eq(constrs, &res1.modes, &res2.modes);
+                        }
+                    }
+                }
+            }
+            model::Constr::Lt { lhs, rhs } => {
+                // See the comment in the `Constr::Mode` case above.
+                if !vars.contains_key(lhs.type_var) || !vars.contains_key(rhs.type_var) {
+                    continue;
+                }
+
+                let (lhs_vars, rhs_vars) = vars.get_pair_mut(lhs.type_var, rhs.type_var).unwrap();
+
+                for ret in rhs_vars.rets.iter() {
+                    for arg in lhs_vars.args.iter_mut() {
+                        let loc = arg.loc;
+                        let arg_res = &mut arg_occurs[loc.occur_idx].ty.res_mut().as_mut_slice()
+                            [loc.start..loc.end];
+
+                        for (arg_res, ret_res) in arg_res.iter_mut().zip_eq(ret.iter()) {
+                            arg_res.lt = arg_res.lt.join(interner, &ret_res.lt);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    arg_occurs
+}
+
+fn instantiate_model(
+    sig: &model::Signature,
+    strategy: RcStrategy,
+    ignore: IgnorePerceus,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    constrs: &mut ConstrGraph,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
+    path: &annot::Path,
+    args: &[LocalId],
+    ret: &TypeFo<Res<ModeVar, Lt>>,
+) -> Vec<OccurFo<Res<ModeVar, Lt>>> {
+    let occurs = create_occurs_from_model(
+        sig, strategy, ignore, interner, customs, sccs, constrs, ctx, path, args, ret,
+    );
+
+    for occur in &occurs {
+        instantiate_occur(interner, ctx, constrs, occur.id, &occur.ty);
+    }
+
+    occurs
+}
+
+/// Used during lifetime fixed point iteration. `know_defs` contains the definitions of all
+/// functions from previous SCCs. `pending_args` and `pending_rets` contain the signatures of types
+/// from the current SCC as of the previous iteration.
+#[derive(Clone, Copy, Debug)]
+struct SignatureAssumptions<'a> {
+    known_defs: &'a IdMap<CustomFuncId, annot::FuncDef>,
+    pending_args: &'a BTreeMap<CustomFuncId, TypeFo<Res<ModeVar, Lt>>>,
+    pending_rets: &'a BTreeMap<CustomFuncId, TypeFo<Res<ModeVar, LtParam>>>,
+}
+
+impl<'a> SignatureAssumptions<'a> {
+    fn sig_of(
+        &self,
+        constrs: &mut ConstrGraph,
+        id: CustomFuncId,
+    ) -> (TypeFo<Res<ModeVar, Lt>>, TypeFo<Res<ModeVar, LtParam>>) {
+        self.known_defs.get(id).map_or_else(
+            || {
+                (
+                    self.pending_args[&id].clone(),
+                    self.pending_rets[&id].clone(),
                 )
-            })
-            .collect(),
+            },
+            |def| {
+                let subst = constrs.instantiate_subgraph(&def.constrs.sig);
+                (
+                    subst_modes(&def.arg_ty, |p| subst[p]),
+                    subst_modes(&def.ret_ty, |p| subst[p]),
+                )
+            },
+        )
     }
 }
 
-fn annot_scc(
-    elision_mode: cli::RcMode,
-    orig: &spec::Program,
-    func_annots: &mut IdVec<
-        first_ord::CustomFuncId,
-        IdVec<spec::FuncVersionId, Option<mode::ModeAnnots>>,
-    >,
-    scc: &[(first_ord::CustomFuncId, spec::FuncVersionId)],
-) {
-    let mut constraints = ineq::ConstraintGraph::<mode::Mode>::new();
+struct LocalInfo {
+    scope: annot::Path,
+    ty: TypeFo<Res<ModeVar, Lt>>,
+}
 
-    let mut extern_vars = IdVec::new();
-    let func_sigs = scc
-        .iter()
-        .map(|&(func_id, version_id)| {
-            let func_def = &orig.funcs[func_id];
-            let arg_modes = instantiate_sig_type(
-                &orig.custom_types,
-                &mut constraints,
-                &mut extern_vars,
-                &func_def.arg_type,
-            );
-            let ret_modes = instantiate_sig_type(
-                &orig.custom_types,
-                &mut constraints,
-                &mut extern_vars,
-                &func_def.ret_type,
-            );
-            (
-                (func_id, version_id),
-                SolverSccFuncSig {
-                    arg_modes,
-                    ret_modes,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+// This function is the core logic for this pass. It implements the judgment from the paper:
+// Δ ; Γ ; S ; q ⊢ e : t ⇝ e ; Q ; Γ'
+//
+// Note that we must return a set of updates rather than mutating Γ because I-Match requires that we
+// check all branches in the initial Γ.
+fn instantiate_expr(
+    strategy: RcStrategy,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    sigs: SignatureAssumptions,
+    constrs: &mut ConstrGraph,
+    ctx: &mut LocalContext<LocalId, LocalInfo>,
+    path: annot::Path,
+    fut_ty: &TypeFo<Res<ModeVar, Lt>>,
+    expr: &TailExpr,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    func_renderer: &FuncRenderer<CustomFuncId>,
+) -> ExprFo<Res<ModeVar, Lt>> {
+    match expr {
+        TailExpr::Local(local) => {
+            let occur = instantiate_occur(interner, ctx, constrs, *local, fut_ty);
+            annot::Expr::Local(occur)
+        }
 
-    let scc_sigs = SolverSccSigs {
-        extern_vars: &extern_vars,
-        func_sigs,
-    };
+        TailExpr::Call(purity, pos, func, arg) => {
+            let (arg_ty, ret_ty) = sigs.sig_of(constrs, *func);
 
-    #[derive(Clone, Debug)]
-    struct SolverFullModeAnnots {
-        occur_modes: IdVec<fate::OccurId, SolverOccurModes>,
-        call_modes: IdVec<fate::CallId, IdVec<ineq::ExternalVarId, ineq::SolverVarId>>,
-        let_drop_epilogues: IdVec<fate::LetBlockId, BTreeMap<flat::LocalId, SolverDropModes>>,
-        branch_drop_epilogues: IdVec<fate::BranchBlockId, BTreeMap<flat::LocalId, SolverDropModes>>,
-        drop_prologues: IdVec<fate::ExprId, BTreeMap<flat::LocalId, SolverDropModes>>,
-        retain_epilogues: IdVec<fate::RetainPointId, SolverRetainModes>,
-        arg_drop_epilogue: SolverDropModes,
-    }
+            bind_modes(constrs, &ret_ty, fut_ty);
+            let lt_subst = bind_lts(interner, &ret_ty, fut_ty);
+            let arg_ty = prepare_arg_type(interner, &path, &arg_ty);
+            let path = path.as_lt(interner);
 
-    let scc_set = scc.iter().cloned().collect::<BTreeSet<_>>();
+            // This `join_everywhere` reflects the fact that we assume that functions access all of
+            // their arguments. We could be more precise here.
+            let arg_ty = join_everywhere(interner, &subst_lts(interner, &arg_ty, &lt_subst), &path);
+            let arg = instantiate_occur_in_position(interner, *pos, ctx, constrs, *arg, &arg_ty);
 
-    let func_solver_annots = scc
-        .iter()
-        .map(|&(func_id, version_id)| {
-            let func_def = &orig.funcs[func_id];
-            let version = &func_def.versions[version_id];
-            let func_scc_sig = &scc_sigs.func_sigs[&(func_id, version_id)];
+            annot::Expr::Call(*purity, *func, arg)
+        }
 
-            let marked_occurs = mark_func_occurs(orig, &scc_set, func_def, version);
-            let marked_drops = repair_func_drops(&orig.custom_types, func_def, marked_occurs);
-            let move_horizons = collect_func_moves(func_def, &marked_drops);
+        // We're only using `with_scope` here for its debug assertion, and to signal intent; by the
+        // time the passed closure returns, we've manually truncated away all the variables which it
+        // would usually be `with_scope`'s responsibility to remove.
+        TailExpr::LetMany(bindings, result_id) => ctx.with_scope(|ctx| {
+            let locals_offset = ctx.len();
 
-            let mut locals = LocalContext::new();
-            locals.add_local(SolverLocalInfo {
-                val_modes: substitute_sig_modes(&extern_vars, &func_scc_sig.arg_modes),
-                move_horizon: &move_horizons.arg_moves,
-                type_: &func_def.arg_type,
-            });
+            // Leave space for the result, which happens after all the bindings. During this pass we
+            // only care about paths where borrows are accessed, so nothing relevant can happen at
+            // this path. But, we will care about it when we compute obligations.
+            let end_of_scope = path.seq(bindings.len() + 1);
 
-            let mut solver_annots = SolverModeAnnots {
-                occur_modes: func_def.occur_fates.map(|_, _| None),
-                call_modes: version.calls.map(|_, _| None),
-                let_drop_epilogues: marked_drops.let_drop_epilogues.map(|_, _| None),
-                branch_drop_epilogues: marked_drops.branch_drop_epilogues.map(|_, _| None),
-                drop_prologues: marked_drops.drop_prologues.map(|_, _| None),
-                // `retain_epilogues` is indexed by `ExprId`, so we can obtain an empty `IdVec` of
-                // the right shape from `drop_prologues`.
-                retain_epilogues: IdVec::from_items(vec![None; func_def.num_retain_points]),
+            for (binding_ty, _, _) in bindings {
+                let annot_ty = freshen_type_unused(
+                    strategy,
+                    IgnorePerceus::No,
+                    constrs,
+                    &parameterize_type(interner, customs, sccs, binding_ty),
+                );
+                let _ = ctx.add_local(LocalInfo {
+                    scope: end_of_scope.clone(),
+                    ty: annot_ty,
+                });
+            }
+
+            let result_occur = instantiate_occur(interner, ctx, constrs, *result_id, fut_ty);
+
+            let mut bindings_annot_rev = Vec::new();
+            for (i, (_, binding_expr, metadata)) in bindings.iter().enumerate().rev() {
+                let local = LocalId(locals_offset + i);
+                let fut_ty = ctx.local_binding(local).ty.clone();
+
+                // Only retain the locals *strictly* before this binding.
+                ctx.truncate(Count::from_value(local.0));
+
+                let expr_annot = instantiate_expr(
+                    strategy,
+                    interner,
+                    customs,
+                    sccs,
+                    sigs,
+                    constrs,
+                    ctx,
+                    path.seq(i),
+                    &fut_ty,
+                    binding_expr,
+                    type_renderer,
+                    func_renderer,
+                );
+
+                bindings_annot_rev.push((fut_ty, expr_annot, metadata.clone()));
+            }
+
+            let bindings_annot = {
+                bindings_annot_rev.reverse();
+                bindings_annot_rev
             };
 
-            let ret_val_modes = annot_expr(
-                elision_mode,
-                &orig.custom_types,
-                func_annots,
-                &func_def.occur_fates,
-                &version.calls,
-                &version.ret_fate,
-                &marked_drops,
-                &move_horizons,
-                &mut constraints,
-                &scc_sigs,
-                &mut locals,
-                &func_def.body,
-                &mut solver_annots,
-            );
+            annot::Expr::LetMany(bindings_annot, result_occur)
+        }),
 
-            equate_modes(
-                &mut constraints,
-                &ret_val_modes,
-                &substitute_sig_modes(&extern_vars, &func_scc_sig.ret_modes),
+        TailExpr::If(discrim, then_expr, else_expr) => {
+            // We update `ctx` in place on each iteration despite the fact that the branch arms
+            // happen "in parallel". This is fine: only the lifetimes of bindings are updated, these
+            // lifetimes are only used for the purpose of generating occurrence constraints, and the
+            // relevant lifetime comparisons are unaffected by joining the bindings' lifetimes with
+            // parallel arms.
+            let else_case = instantiate_expr(
+                strategy,
+                interner,
+                customs,
+                sccs,
+                sigs,
+                constrs,
+                ctx,
+                path.seq(1).alt(1, 2),
+                fut_ty,
+                else_expr,
+                type_renderer,
+                func_renderer,
             );
-
-            let arg_drop_epilogue_annot = annot_local_drops(
-                &locals.local_binding(flat::ARG_LOCAL).val_modes,
-                &marked_drops.arg_drop_epilogue,
+            let then_case = instantiate_expr(
+                strategy,
+                interner,
+                customs,
+                sccs,
+                sigs,
+                constrs,
+                ctx,
+                path.seq(1).alt(0, 2),
+                fut_ty,
+                then_expr,
+                type_renderer,
+                func_renderer,
             );
+            let discrim =
+                instantiate_occur(interner, ctx, constrs, *discrim, &TypeFo::bool_(interner));
+            annot::Expr::If(discrim, Box::new(then_case), Box::new(else_case))
+        }
 
-            (
-                (func_id, version_id),
-                SolverFullModeAnnots {
-                    occur_modes: solver_annots
-                        .occur_modes
-                        .into_mapped(|_, modes| modes.unwrap()),
-                    call_modes: solver_annots
-                        .call_modes
-                        .into_mapped(|_, modes| modes.unwrap()),
-                    let_drop_epilogues: solver_annots
-                        .let_drop_epilogues
-                        .into_mapped(|_, modes| modes.unwrap()),
-                    branch_drop_epilogues: solver_annots
-                        .branch_drop_epilogues
-                        .into_mapped(|_, modes| modes.unwrap()),
-                    drop_prologues: solver_annots
-                        .drop_prologues
-                        .into_mapped(|_, modes| modes.unwrap()),
-                    retain_epilogues: solver_annots
-                        .retain_epilogues
-                        .into_mapped(|_, modes| modes.unwrap()),
-                    arg_drop_epilogue: arg_drop_epilogue_annot,
-                },
+        TailExpr::CheckVariant(variant_id, variant) => {
+            assert!(fut_ty.shape() == &ShapeFo::bool_(interner));
+            // You can match on something whose fields are dead!
+            let variants_ty = freshen_type_unused(
+                strategy,
+                IgnorePerceus::Yes,
+                constrs,
+                &ctx.local_binding(*variant).ty,
+            );
+            annot::Expr::CheckVariant(
+                *variant_id,
+                instantiate_occur(interner, ctx, constrs, *variant, &variants_ty),
             )
+        }
+
+        TailExpr::Unreachable(_) => annot::Expr::Unreachable(fut_ty.clone()),
+
+        TailExpr::Tuple(item_ids) => {
+            let fut_item_tys = annot::elim_tuple(fut_ty);
+            // We must process the items in reverse order to ensure `instantiate_occur` (which
+            // updates the lifetimes in `ctx`) generates the correct constraints.
+            let mut occurs_rev = item_ids
+                .iter()
+                .zip_eq(fut_item_tys)
+                .rev()
+                .map(|(item_id, item_ty)| {
+                    instantiate_occur(interner, ctx, constrs, *item_id, &item_ty)
+                })
+                .collect::<Vec<_>>();
+            let occurs = {
+                occurs_rev.reverse();
+                occurs_rev
+            };
+            annot::Expr::Tuple(occurs)
+        }
+
+        TailExpr::TupleField(tuple_id, idx) => {
+            let mut tuple_ty = freshen_type_unused(
+                strategy,
+                IgnorePerceus::Yes,
+                constrs,
+                &ctx.local_binding(*tuple_id).ty,
+            );
+            let ShapeInner::Tuple(shapes) = &*tuple_ty.shape().inner else {
+                panic!("expected `Tuple` type");
+            };
+
+            let (start, end) = annot::nth_res_bounds(shapes, *idx);
+            tuple_ty.res_mut().as_mut_slice()[start..end].clone_from_slice(fut_ty.res().as_slice());
+
+            let occur = instantiate_occur(interner, ctx, constrs, *tuple_id, &tuple_ty);
+            annot::Expr::TupleField(occur, *idx)
+        }
+
+        TailExpr::WrapVariant(_variant_tys, variant_id, content) => {
+            let fut_variant_tys = annot::elim_variants(fut_ty);
+            let occur = instantiate_occur(
+                interner,
+                ctx,
+                constrs,
+                *content,
+                &fut_variant_tys[*variant_id],
+            );
+            annot::Expr::WrapVariant(fut_variant_tys, *variant_id, occur)
+        }
+
+        TailExpr::UnwrapVariant(_variant_tys, variant_id, wrapped) => {
+            let mut variants_ty = freshen_type_unused(
+                strategy,
+                IgnorePerceus::No,
+                constrs,
+                &ctx.local_binding(*wrapped).ty,
+            );
+            let ShapeInner::Variants(shapes) = &*variants_ty.shape().inner else {
+                panic!("expected `Variants` type");
+            };
+
+            let (start, end) = annot::nth_res_bounds(shapes.as_slice(), variant_id.to_index());
+            variants_ty.res_mut().as_mut_slice()[start..end]
+                .clone_from_slice(fut_ty.res().as_slice());
+
+            let occur = instantiate_occur(interner, ctx, constrs, *wrapped, &variants_ty);
+            annot::Expr::UnwrapVariant(*variant_id, occur)
+        }
+
+        TailExpr::WrapBoxed(content, _item_ty) => {
+            let mut occurs = instantiate_model(
+                &*model::box_new,
+                strategy,
+                IgnorePerceus::No,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*content],
+                fut_ty,
+            );
+            annot::Expr::WrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
+        }
+
+        TailExpr::UnwrapBoxed(wrapped, _item_ty) => {
+            let mut occurs = instantiate_model(
+                &*model::box_get,
+                strategy,
+                IgnorePerceus::Yes,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*wrapped],
+                fut_ty,
+            );
+            annot::Expr::UnwrapBoxed(occurs.pop().unwrap(), fut_ty.clone())
+        }
+
+        TailExpr::WrapCustom(custom_id, recipe, unfolded) => {
+            let fut_unfolded = annot::unfold(interner, customs, sccs, recipe, fut_ty);
+            let occur = instantiate_occur(interner, ctx, constrs, *unfolded, &fut_unfolded);
+            annot::Expr::WrapCustom(*custom_id, recipe.clone(), occur)
+        }
+
+        TailExpr::UnwrapCustom(custom_id, recipe, folded) => {
+            let fresh_folded = {
+                let mut lt_count = Count::new();
+                freshen_type(
+                    strategy,
+                    IgnorePerceus::No,
+                    constrs,
+                    || lt_count.inc(),
+                    &ctx.local_binding(*folded).ty,
+                )
+            };
+
+            let fresh_folded = {
+                // Instead of folding `fut_ty`, we unfold a fresh type, duplicating the modes and
+                // lifetimes which would be identified under folding into the proper positions.
+                // Imposing constraints between this unfolded type and `fut_ty` yields the same
+                // constraint system as folding `fut_ty`.
+                let fresh_unfolded = annot::unfold(interner, customs, sccs, recipe, &fresh_folded);
+
+                // Equate the modes in `fut_ty` which are identified under folding.
+                bind_modes(constrs, &fresh_unfolded, fut_ty);
+
+                // Join the lifetimes in `fut_ty` which are identified under folding.
+                let lt_subst = bind_lts(interner, &fresh_unfolded, fut_ty);
+                subst_lts(interner, &wrap_lts(&fresh_folded), &lt_subst)
+            };
+
+            let occur = instantiate_occur(interner, ctx, constrs, *folded, &fresh_folded);
+            annot::Expr::UnwrapCustom(*custom_id, recipe.clone(), occur)
+        }
+
+        // Right now, all intrinsics are trivial from a mode inference perspective because they
+        // operate on arithmetic types. If this changes, we will have to update this.
+        TailExpr::Intrinsic(intr, arg) => {
+            let sig = intrinsic_sig(*intr);
+            let ty = TypeFo::from_intr(interner, &sig.arg);
+            annot::Expr::Intrinsic(*intr, Occur { id: *arg, ty })
+        }
+
+        TailExpr::ArrayOp(guard::ArrayOp::Get(_, arr_id, idx_id)) => {
+            let occurs = instantiate_model(
+                &*model::array_get,
+                strategy,
+                IgnorePerceus::Yes,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*arr_id, *idx_id],
+                fut_ty,
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Get(
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
+                fut_ty.clone(),
+            ))
+        }
+
+        TailExpr::ArrayOp(guard::ArrayOp::Extract(_item_ty, arr_id, idx_id)) => {
+            let occurs = instantiate_model(
+                &*model::array_extract,
+                strategy,
+                IgnorePerceus::No,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*arr_id, *idx_id],
+                fut_ty,
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Extract(
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
+            ))
+        }
+
+        TailExpr::ArrayOp(guard::ArrayOp::Len(_item_ty, arr_id)) => {
+            let occurs = instantiate_model(
+                &*model::array_len,
+                strategy,
+                IgnorePerceus::Yes,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*arr_id],
+                fut_ty,
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Len(occurs.next().unwrap()))
+        }
+
+        TailExpr::ArrayOp(guard::ArrayOp::Push(_item_ty, arr_id, item_id)) => {
+            let occurs = instantiate_model(
+                &*model::array_push,
+                strategy,
+                IgnorePerceus::No,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*arr_id, *item_id],
+                fut_ty,
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Push(
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
+            ))
+        }
+
+        TailExpr::ArrayOp(guard::ArrayOp::Pop(_item_ty, arr_id)) => {
+            let occurs = instantiate_model(
+                &*model::array_pop,
+                strategy,
+                IgnorePerceus::No,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*arr_id],
+                fut_ty,
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Pop(occurs.next().unwrap()))
+        }
+
+        TailExpr::ArrayOp(guard::ArrayOp::Replace(_item_ty, hole_id, item_id)) => {
+            let occurs = instantiate_model(
+                &*model::array_replace,
+                strategy,
+                IgnorePerceus::No,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*hole_id, *item_id],
+                fut_ty,
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Replace(
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
+            ))
+        }
+
+        TailExpr::ArrayOp(guard::ArrayOp::Reserve(_item_ty, arr_id, cap_id)) => {
+            let occurs = instantiate_model(
+                &*model::array_reserve,
+                strategy,
+                IgnorePerceus::No,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*arr_id, *cap_id],
+                fut_ty,
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::ArrayOp(annot::ArrayOp::Reserve(
+                occurs.next().unwrap(),
+                occurs.next().unwrap(),
+            ))
+        }
+
+        TailExpr::IoOp(guard::IoOp::Input) => {
+            let _ = instantiate_model(
+                &*model::io_input,
+                strategy,
+                IgnorePerceus::No,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[],
+                fut_ty,
+            );
+            annot::Expr::IoOp(annot::IoOp::Input)
+        }
+
+        TailExpr::IoOp(guard::IoOp::Output(arr_id)) => {
+            let occurs = instantiate_model(
+                &*model::io_output,
+                strategy,
+                IgnorePerceus::Yes,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*arr_id],
+                fut_ty,
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::IoOp(annot::IoOp::Output(occurs.next().unwrap()))
+        }
+
+        TailExpr::Panic(_ret_ty, msg_id) => {
+            let occurs = instantiate_model(
+                &*model::panic,
+                strategy,
+                IgnorePerceus::Yes,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                &[*msg_id],
+                &TypeFo::unit(interner),
+            );
+            let mut occurs = occurs.into_iter();
+            annot::Expr::Panic(fut_ty.clone(), occurs.next().unwrap())
+        }
+
+        TailExpr::ArrayLit(_item_ty, item_ids) => {
+            let occurs = instantiate_model(
+                &*model::array_new,
+                strategy,
+                IgnorePerceus::No,
+                interner,
+                customs,
+                sccs,
+                constrs,
+                ctx,
+                &path,
+                item_ids,
+                fut_ty,
+            );
+            let (_, fut_item_ty) = annot::elim_array(fut_ty);
+            annot::Expr::ArrayLit(fut_item_ty, occurs)
+        }
+
+        TailExpr::BoolLit(val) => annot::Expr::BoolLit(*val),
+
+        TailExpr::ByteLit(val) => annot::Expr::ByteLit(*val),
+
+        TailExpr::IntLit(val) => annot::Expr::IntLit(*val),
+
+        TailExpr::FloatLit(val) => annot::Expr::FloatLit(*val),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SolverScc {
+    func_args: BTreeMap<CustomFuncId, TypeFo<Res<ModeVar, Lt>>>,
+    func_rets: BTreeMap<CustomFuncId, TypeFo<Res<ModeVar, LtParam>>>,
+    func_bodies: BTreeMap<CustomFuncId, ExprFo<Res<ModeVar, Lt>>>,
+    scc_constrs: ConstrGraph,
+}
+
+fn add_fresh_modes<L: Clone>(
+    strategy: RcStrategy,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    constrs: &mut ConstrGraph,
+    ty: &TypeFo<L>,
+) -> TypeFo<Res<ModeVar, L>> {
+    let pos = ty.shape().positions(customs, sccs);
+    let res = pos
+        .iter()
+        .zip_eq(ty.iter())
+        .map(|(pos, lt)| {
+            let modes = match pos {
+                Position::Stack => ResModes::Stack(fresh_var(strategy, IgnorePerceus::No, constrs)),
+                Position::Heap => ResModes::Heap(HeapModes {
+                    access: fresh_var(strategy, IgnorePerceus::No, constrs),
+                    storage: fresh_var(strategy, IgnorePerceus::No, constrs),
+                }),
+            };
+            Res {
+                modes,
+                lt: lt.clone(),
+            }
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect();
+    annot::Type::new(ty.shape().clone(), IdVec::from_vec(res))
+}
 
-    let solutions = constraints.solve(&extern_vars);
+fn instantiate_scc(
+    strategy: RcStrategy,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    funcs: &IdVec<CustomFuncId, TailFuncDef>,
+    funcs_annot: &IdMap<CustomFuncId, annot::FuncDef>,
+    scc: Scc<CustomFuncId>,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    func_renderer: &FuncRenderer<CustomFuncId>,
+) -> SolverScc {
+    let ret_tys: BTreeMap<_, annot::Type<LtParam, _>> = {
+        let mut count = Count::new();
+        scc.nodes
+            .iter()
+            .map(|id| {
+                let ret_shape = annot::Shape::from_guarded(interner, customs, &funcs[id].ret_ty);
+                let ret_res = (0..ret_shape.num_slots).map(|_| count.inc()).collect();
+                let ret_ty = annot::Type::new(ret_shape, IdVec::from_vec(ret_res));
+                (*id, ret_ty)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
 
-    let extern_constraints = extern_vars.map(|_, var| solutions[var].clone());
+    let mut arg_tys: BTreeMap<_, annot::Type<Lt, _>> = {
+        scc.nodes
+            .iter()
+            .map(|id| {
+                let arg_shape = annot::Shape::from_guarded(interner, customs, &funcs[id].arg_ty);
+                let arg_res = (0..arg_shape.num_slots).map(|_| Lt::Empty).collect();
+                let arg_ty = annot::Type::new(arg_shape, IdVec::from_vec(arg_res));
+                (*id, arg_ty)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
 
-    let mut remaining_func_sigs = scc_sigs.func_sigs;
-    for ((func_id, version_id), solver_annots) in func_solver_annots {
-        let scc_sig = remaining_func_sigs.remove(&(func_id, version_id)).unwrap();
+    // let mut iter = 0;
+    let (arg_tys, ret_tys, bodies, constrs) = loop {
+        let mut constrs = ConstrGraph::new();
+        let pending_args =
+            arg_tys.map_refs(|_, ty| add_fresh_modes(strategy, customs, sccs, &mut constrs, ty));
+        let pending_rets =
+            ret_tys.map_refs(|_, ty| add_fresh_modes(strategy, customs, sccs, &mut constrs, ty));
 
-        let extracted_annots = mode::ModeAnnots {
-            extern_constraints: extern_constraints.clone(),
-            arg_modes: scc_sig.arg_modes,
-            ret_modes: scc_sig.ret_modes,
-            occur_modes: solver_annots
-                .occur_modes
-                .into_mapped(|_, modes| extract_occur_modes(&solutions, modes)),
-            call_modes: solver_annots
-                .call_modes
-                .into_mapped(|_, modes| modes.into_mapped(|_, var| solutions[var].clone())),
-            let_drop_epilogues: solver_annots
-                .let_drop_epilogues
-                .into_mapped(|_, drops| extract_drops(&solutions, drops)),
-            branch_drop_epilogues: solver_annots
-                .branch_drop_epilogues
-                .into_mapped(|_, drops| extract_drops(&solutions, drops)),
-            arg_drop_epilogue: extract_drop_modes(&solutions, solver_annots.arg_drop_epilogue),
-            drop_prologues: solver_annots
-                .drop_prologues
-                .into_mapped(|_, modes| extract_drops(&solutions, modes)),
-            retain_epilogues: solver_annots
-                .retain_epilogues
-                .into_mapped(|_, modes| extract_retains(&solutions, modes)),
+        if strategy == RcStrategy::ImmutableBeans {
+            for var in pending_rets
+                .values()
+                .flat_map(|ty| ty.iter_flat())
+                .map(|(m, _)| *m)
+            {
+                constrs.require_le_const(&Mode::Owned, var);
+            }
+        }
+
+        let assumptions = SignatureAssumptions {
+            known_defs: funcs_annot,
+            pending_args: &pending_args,
+            pending_rets: &pending_rets,
         };
 
-        debug_assert!(func_annots[func_id][version_id].is_none());
-        func_annots[func_id][version_id] = Some(extracted_annots);
+        let mut new_args = BTreeMap::new();
+        let mut bodies = BTreeMap::new();
+
+        for id in scc.nodes {
+            let func = &funcs[id];
+            let mut ctx = LocalContext::new();
+
+            let arg_id = ctx.add_local(LocalInfo {
+                scope: annot::ARG_SCOPE(),
+                ty: pending_args[id].clone(),
+            });
+            debug_assert_eq!(arg_id, guard::ARG_LOCAL);
+
+            let ret_ty = wrap_lts(&pending_rets[id]);
+            let expr = instantiate_expr(
+                strategy,
+                interner,
+                customs,
+                sccs,
+                assumptions,
+                &mut constrs,
+                &mut ctx,
+                annot::FUNC_BODY_PATH(),
+                &ret_ty,
+                &func.body,
+                type_renderer,
+                func_renderer,
+            );
+            bodies.insert_vacant(*id, expr);
+            new_args.insert_vacant(*id, (ctx.local_binding(guard::ARG_LOCAL).ty).clone());
+        }
+
+        if scc.kind == SccKind::Acyclic
+            || new_args
+                .values()
+                .zip_eq(pending_args.values())
+                .all(|(new, old)| lt_equiv(new, old))
+        {
+            break (new_args, pending_rets, bodies, constrs);
+        }
+
+        for (arg_ty, new_arg_ty) in arg_tys.values_mut().zip_eq(new_args.values()) {
+            for (arg_res, new_arg_res) in arg_ty
+                .res_mut()
+                .values_mut()
+                .zip_eq(new_arg_ty.res().values())
+            {
+                *arg_res = new_arg_res.lt.clone();
+            }
+        }
+    };
+
+    SolverScc {
+        func_args: arg_tys,
+        func_rets: ret_tys,
+        func_bodies: bodies,
+        scc_constrs: constrs,
+    }
+}
+
+// -------------------
+// Step 3: Extraction
+// -------------------
+// The final step of the algorithm is to extract the annotated program from the solution to the mode
+// contraints.
+
+type Solution = in_eq::Solution<ModeVar, ModeParam, Mode>;
+
+fn extract_type(
+    solution: &Solution,
+    ty: &TypeFo<Res<ModeVar, Lt>>,
+) -> TypeFo<Res<ModeSolution, Lt>> {
+    subst_modes(ty, |m| ModeSolution {
+        lb: solution.lower_bounds[m].clone(),
+        solver_var: m,
+    })
+}
+
+fn extract_occur(
+    solution: &Solution,
+    occur: &OccurFo<Res<ModeVar, Lt>>,
+) -> OccurFo<Res<ModeSolution, Lt>> {
+    OccurFo {
+        id: occur.id,
+        ty: extract_type(solution, &occur.ty),
+    }
+}
+
+fn extract_expr(
+    solution: &Solution,
+    expr: &ExprFo<Res<ModeVar, Lt>>,
+) -> ExprFo<Res<ModeSolution, Lt>> {
+    use annot::Expr as E;
+    match expr {
+        E::Local(occur) => E::Local(extract_occur(solution, occur)),
+        E::Call(purity, func, arg) => E::Call(*purity, *func, extract_occur(solution, arg)),
+        E::LetMany(bindings, result) => E::LetMany(
+            bindings
+                .iter()
+                .map(|(ty, expr, metadata)| {
+                    (
+                        extract_type(solution, ty),
+                        extract_expr(solution, expr),
+                        metadata.clone(),
+                    )
+                })
+                .collect(),
+            extract_occur(solution, result),
+        ),
+        E::If(discrim, then_case, else_case) => E::If(
+            extract_occur(solution, discrim),
+            Box::new(extract_expr(solution, then_case)),
+            Box::new(extract_expr(solution, else_case)),
+        ),
+        E::CheckVariant(variant_id, variant) => {
+            E::CheckVariant(*variant_id, extract_occur(solution, variant))
+        }
+        E::Unreachable(ret_ty) => E::Unreachable(extract_type(solution, ret_ty)),
+        E::Tuple(items) => E::Tuple(
+            items
+                .iter()
+                .map(|occur| extract_occur(solution, occur))
+                .collect(),
+        ),
+        E::TupleField(tup, idx) => E::TupleField(extract_occur(solution, tup), *idx),
+        E::WrapVariant(variant_tys, id, content) => E::WrapVariant(
+            variant_tys.map_refs(|_, ty| extract_type(solution, ty)),
+            *id,
+            extract_occur(solution, content),
+        ),
+        E::UnwrapVariant(id, wrapped) => E::UnwrapVariant(*id, extract_occur(solution, wrapped)),
+        E::WrapBoxed(content, output_ty) => E::WrapBoxed(
+            extract_occur(solution, content),
+            extract_type(solution, output_ty),
+        ),
+        E::UnwrapBoxed(wrapped, output_ty) => E::UnwrapBoxed(
+            extract_occur(solution, wrapped),
+            extract_type(solution, output_ty),
+        ),
+        E::WrapCustom(id, recipe, content) => {
+            E::WrapCustom(*id, recipe.clone(), extract_occur(solution, content))
+        }
+        E::UnwrapCustom(id, recipe, wrapped) => {
+            E::UnwrapCustom(*id, recipe.clone(), extract_occur(solution, wrapped))
+        }
+        E::Intrinsic(intr, arg) => E::Intrinsic(*intr, extract_occur(solution, arg)),
+        E::ArrayOp(annot::ArrayOp::Get(arr, idx, out_ty)) => E::ArrayOp(annot::ArrayOp::Get(
+            extract_occur(solution, arr),
+            extract_occur(solution, idx),
+            extract_type(solution, out_ty),
+        )),
+        E::ArrayOp(annot::ArrayOp::Extract(arr, idx)) => E::ArrayOp(annot::ArrayOp::Extract(
+            extract_occur(solution, arr),
+            extract_occur(solution, idx),
+        )),
+        E::ArrayOp(annot::ArrayOp::Len(arr)) => {
+            E::ArrayOp(annot::ArrayOp::Len(extract_occur(solution, arr)))
+        }
+        E::ArrayOp(annot::ArrayOp::Push(arr, item)) => E::ArrayOp(annot::ArrayOp::Push(
+            extract_occur(solution, arr),
+            extract_occur(solution, item),
+        )),
+        E::ArrayOp(annot::ArrayOp::Pop(arr)) => {
+            E::ArrayOp(annot::ArrayOp::Pop(extract_occur(solution, arr)))
+        }
+        E::ArrayOp(annot::ArrayOp::Replace(hole, item)) => E::ArrayOp(annot::ArrayOp::Replace(
+            extract_occur(solution, hole),
+            extract_occur(solution, item),
+        )),
+        E::ArrayOp(annot::ArrayOp::Reserve(arr, cap)) => E::ArrayOp(annot::ArrayOp::Reserve(
+            extract_occur(solution, arr),
+            extract_occur(solution, cap),
+        )),
+        E::IoOp(annot::IoOp::Input) => E::IoOp(annot::IoOp::Input),
+        E::IoOp(annot::IoOp::Output(arr)) => {
+            E::IoOp(annot::IoOp::Output(extract_occur(solution, arr)))
+        }
+        E::Panic(ret_ty, msg) => {
+            E::Panic(extract_type(solution, ret_ty), extract_occur(solution, msg))
+        }
+        E::ArrayLit(item_ty, items) => E::ArrayLit(
+            extract_type(solution, item_ty),
+            items
+                .iter()
+                .map(|occur| extract_occur(solution, occur))
+                .collect(),
+        ),
+        E::BoolLit(v) => E::BoolLit(*v),
+        E::ByteLit(v) => E::ByteLit(*v),
+        E::IntLit(v) => E::IntLit(*v),
+        E::FloatLit(v) => E::FloatLit(*v),
+    }
+}
+
+// ---------
+// Main Loop
+// ---------
+// The main loop of the algorithm which performs parameterization, instantiation, and extraction for
+// each SCC of functions.
+
+fn solve_scc(
+    strategy: RcStrategy,
+    interner: &Interner,
+    customs: &IdVec<CustomTypeId, CustomTypeDefFo>,
+    sccs: &Sccs<CustomTypeSccId, CustomTypeId>,
+    funcs: &IdVec<CustomFuncId, TailFuncDef>,
+    funcs_annot: &mut IdMap<CustomFuncId, annot::FuncDef>,
+    scc: Scc<CustomFuncId>,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    func_renderer: &FuncRenderer<CustomFuncId>,
+) {
+    let instantiated = instantiate_scc(
+        strategy,
+        interner,
+        customs,
+        sccs,
+        funcs,
+        funcs_annot,
+        scc,
+        type_renderer,
+        func_renderer,
+    );
+
+    let mut sig_vars = BTreeSet::new();
+    for func_id in scc.nodes {
+        sig_vars.extend(instantiated.func_args[&func_id].iter_flat().map(|(m, _)| m));
+        sig_vars.extend(instantiated.func_rets[&func_id].iter_flat().map(|(m, _)| m));
+    }
+
+    let solution: Solution = instantiated.scc_constrs.solve(&sig_vars);
+
+    // Extract the subset of the constraints relevant to the signature
+    let mut sig_constrs = IdMap::new();
+    for (var, lb) in &solution.lower_bounds {
+        if sig_vars.contains(&var) {
+            // `solution.lower_bounds` contains duplicate information if two internal variables get
+            // mapped to the same external variable (are in the same SCC). This is convenient some
+            // places, but maybe it would be cleaner to avoid doing this.
+            let external = solution.internal_to_external[&var];
+            if let Some(old_lb) = sig_constrs.get(external) {
+                debug_assert_eq!(old_lb, lb);
+            } else {
+                sig_constrs.insert(external, lb.clone());
+            }
+        }
+    }
+
+    let sig_constrs = sig_constrs.to_id_vec(solution.num_external);
+
+    for func_id in scc.nodes {
+        let arg_ty = &instantiated.func_args[&func_id];
+        let ret_ty = &instantiated.func_rets[&func_id];
+
+        let func = &funcs[func_id];
+        funcs_annot.insert_vacant(
+            *func_id,
+            annot::FuncDef {
+                purity: func.purity,
+                arg_ty: subst_modes(arg_ty, |m| solution.internal_to_external[&m]),
+                ret_ty: subst_modes(ret_ty, |m| solution.internal_to_external[&m]),
+                constrs: annot::Constrs {
+                    sig: sig_constrs.clone(),
+                    all: instantiated.scc_constrs.clone(),
+                },
+                body: extract_expr(&solution, &instantiated.func_bodies[&func_id]),
+                profile_point: func.profile_point.clone(),
+            },
+        );
+    }
+}
+
+fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &TailExpr) {
+    match expr {
+        TailExpr::Call(_, _, other, _) => {
+            deps.insert(*other);
+        }
+        TailExpr::If(_, then_case, else_case) => {
+            add_func_deps(deps, then_case);
+            add_func_deps(deps, else_case);
+        }
+        TailExpr::LetMany(bindings, _) => {
+            for (_, rhs, _) in bindings {
+                add_func_deps(deps, rhs);
+            }
+        }
+        _ => {}
     }
 }
 
 pub fn annot_modes(
-    program: spec::Program,
-    elision_mode: cli::RcMode,
+    strategy: RcStrategy,
+    interner: &Interner,
+    program: guard::Program,
     progress: impl ProgressLogger,
-) -> mode::Program {
+) -> annot::Program {
+    let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
+    let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
+
+    let customs = parameterize_customs(interner, &program.custom_types);
+
+    let funcs = compute_tail_calls(&program.funcs);
+
+    let func_sccs: Sccs<usize, _> = find_components(funcs.count(), |id| {
+        let mut deps = BTreeSet::new();
+        add_func_deps(&mut deps, &funcs[id].body);
+        deps
+    });
+
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
-    let sccs = find_sccs(&program.funcs);
-
-    let mut func_annots = program
-        .funcs
-        .map(|_, func_def| func_def.versions.map(|_, _| None));
-
-    for scc in sccs {
-        annot_scc(elision_mode, &program, &mut func_annots, &scc);
-        progress.update(scc.len());
+    let mut funcs_annot = IdMap::new();
+    for (_, scc) in &func_sccs {
+        solve_scc(
+            strategy,
+            interner,
+            &customs,
+            &program.custom_types.sccs,
+            &funcs,
+            &mut funcs_annot,
+            scc,
+            &type_renderer,
+            &func_renderer,
+        );
+        progress.update(scc.nodes.len());
     }
+
+    let funcs = funcs_annot.to_id_vec(funcs.count());
 
     progress.finish();
 
-    mode::Program {
+    annot::Program {
         mod_symbols: program.mod_symbols,
-        custom_types: program.custom_types,
+        custom_types: annot::CustomTypes {
+            types: customs,
+            sccs: program.custom_types.sccs,
+        },
         custom_type_symbols: program.custom_type_symbols,
-        funcs: IdVec::from_items(
-            program
-                .funcs
-                .into_iter()
-                .zip(func_annots.into_iter())
-                .map(|((_, func_def), (_, modes))| {
-                    debug_assert_eq!(func_def.versions.len(), modes.len());
-
-                    mode::FuncDef {
-                        purity: func_def.purity,
-                        arg_type: func_def.arg_type,
-                        ret_type: func_def.ret_type,
-                        alias_sig: func_def.alias_sig,
-                        mutation_sig: func_def.mutation_sig,
-                        arg_fate: func_def.arg_fate,
-                        body: func_def.body,
-                        occur_fates: func_def.occur_fates,
-                        expr_annots: func_def.expr_annots,
-                        versions: func_def.versions,
-                        modes: modes.into_mapped(|_, version_annots| version_annots.unwrap()),
-                        profile_point: func_def.profile_point,
-                    }
-                })
-                .collect(),
-        ),
+        funcs,
         func_symbols: program.func_symbols,
         profile_points: program.profile_points,
         main: program.main,
-        main_version: program.main_version,
     }
 }

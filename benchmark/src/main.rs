@@ -6,7 +6,7 @@ use morphic::cli::ArtifactDir;
 use morphic::cli::LlvmConfig;
 use morphic::cli::MlConfig;
 use morphic::cli::PassOptions;
-use morphic::cli::RcMode;
+use morphic::cli::RcStrategy;
 use morphic::cli::SpecializationMode;
 use morphic::file_cache::FileCache;
 use morphic::progress_ui::ProgressMode;
@@ -14,6 +14,7 @@ use morphic::progress_ui::ProgressMode;
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use serde::Deserialize;
+use serde::Serialize;
 use std::fs::File;
 use std::io::{BufReader, Write};
 use std::path::Path;
@@ -40,17 +41,14 @@ fn drive_subprocess(
     let output = child.wait_with_output().expect("Waiting on child failed");
 
     assert!(
-        output.status.success(),
-        "Child process did not exit successfully: exit status {:?}, stderr:\n{}",
+        output.status.success() && &output.stdout as &[u8] == expected_stdout.as_bytes(),
+        "Child process failed:\n\
+         Exit status: {:?}\n\
+         Stderr:\n{}\n\
+         Expected stdout: {:?}\n\
+         Actual stdout: {:?}",
         output.status.code(),
         String::from_utf8(output.stderr).unwrap(),
-    );
-    assert!(
-        &output.stdout as &[u8] == expected_stdout.as_bytes(),
-        "Sample stdout did not match expected stdout.\
-                 \n  Expected: {:?}\
-                 \n    Actual: {:?}\
-                 \n",
         expected_stdout,
         String::from_utf8_lossy(&output.stdout),
     );
@@ -115,7 +113,19 @@ fn write_run_time(benchmark_name: &str, data: Vec<Duration>) {
     let nanoseconds: Vec<u128> = data.iter().map(|d| d.as_nanos()).collect();
 
     writeln!(file, "{}", serde_json::to_string(&nanoseconds).unwrap())
-        .expect("Could not write binary size to file");
+        .expect("Could not write run time to file");
+}
+
+const RC_COUNT_DIR: &str = "target/rc_count";
+
+fn write_rc_counts(benchmark_name: &str, data: Vec<RcCounts>) {
+    std::fs::create_dir_all(RC_COUNT_DIR).expect("Could not create rc_count directory");
+
+    let mut file = File::create(format!("{}/{}.txt", RC_COUNT_DIR, benchmark_name))
+        .expect("Could not create rc counts file");
+
+    writeln!(file, "{}", serde_json::to_string(&data).unwrap())
+        .expect("Could not write rc counts to file");
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -148,6 +158,9 @@ struct ProfSpecialization {
     low_func_id: u64,
     total_calls: u64,
     total_clock_nanos: u64,
+    total_retain_count: Option<u64>,
+    total_release_count: Option<u64>,
+    total_rc1_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -160,16 +173,8 @@ struct ProfSkippedTail {
 #[derive(Copy, Clone, Debug)]
 struct SampleOptions {
     is_native: bool,
-    rc_mode: RcMode,
-}
-
-impl Default for SampleOptions {
-    fn default() -> Self {
-        Self {
-            is_native: true,
-            rc_mode: RcMode::Elide,
-        }
-    }
+    rc_strat: RcStrategy,
+    profile_record_rc: bool,
 }
 
 const OUT_DIR: &str = "out2";
@@ -204,16 +209,10 @@ fn build_exe(
         filename_prefix: binary_path.file_name().unwrap().into(),
     };
 
-    if options.is_native {
-        if binary_path.exists() {
-            return (binary_path, artifact_dir);
-        }
+    if artifact_dir.dir_path.exists() {
+        return (binary_path, artifact_dir);
     } else {
-        if artifact_dir.dir_path.exists() {
-            return (binary_path, artifact_dir);
-        } else {
-            std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
-        }
+        std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
     }
 
     let mut files = FileCache::new();
@@ -221,6 +220,7 @@ fn build_exe(
     build(
         cli::BuildConfig {
             src_path: src_path.as_ref().to_path_buf(),
+            purity_mode: cli::PurityMode::Checked,
             profile_syms: vec![cli::SymbolName(format!(
                 "{mod_}{func}",
                 mod_ = profile_mod
@@ -230,6 +230,7 @@ fn build_exe(
                     .concat(),
                 func = profile_func,
             ))],
+            profile_record_rc: options.profile_record_rc,
             target: {
                 if options.is_native {
                     cli::TargetConfig::Llvm(LlvmConfig::Native)
@@ -240,14 +241,14 @@ fn build_exe(
             llvm_opt_level: cli::default_llvm_opt_level(),
             output_path: binary_path.to_owned(),
             artifact_dir: if options.is_native {
-                None
+                Some(artifact_dir.clone())
             } else {
                 Some(artifact_dir.clone())
             },
-            progress: ProgressMode::Hidden,
+            progress: ProgressMode::Visible,
             pass_options: PassOptions {
                 defunc_mode,
-                rc_mode: options.rc_mode,
+                rc_strat: options.rc_strat,
                 ..Default::default()
             },
         },
@@ -258,6 +259,48 @@ fn build_exe(
     (binary_path, artifact_dir)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Variant {
+    rc_strat: RcStrategy,
+    record_rc: bool,
+}
+
+impl Variant {
+    fn tag(&self) -> String {
+        let rc_strat_str = match self.rc_strat {
+            RcStrategy::Default => "default",
+            RcStrategy::Perceus => "perceus",
+            RcStrategy::ImmutableBeans => "immutable_beans",
+        };
+        let record_rc_str = if self.record_rc { "rc" } else { "time" };
+        format!("{}_{}", rc_strat_str, record_rc_str)
+    }
+}
+
+fn variants() -> Vec<Variant> {
+    let mut variants = Vec::new();
+    for rc_strat in [
+        RcStrategy::Default,
+        RcStrategy::Perceus,
+        // RcStrategy::ImmutableBeans,
+    ] {
+        for record_rc in [true, false] {
+            variants.push(Variant {
+                rc_strat,
+                record_rc,
+            });
+        }
+    }
+    variants
+}
+
+#[derive(Clone, Copy, Serialize)]
+struct RcCounts {
+    total_retain_count: u64,
+    total_release_count: u64,
+    total_rc1_count: u64,
+}
+
 fn bench_sample(
     iters: (u64, u64),
     bench_name: &str,
@@ -266,54 +309,24 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-        let tag = match ml_variant {
-            MlConfig::Sml => "sml",
-            MlConfig::Ocaml => "ocaml",
-        };
-
-        let artifact_path = std::env::current_dir()
-            .unwrap()
-            .join("out2")
-            .join(format!("{bench_name}-ml-artifacts"));
-
-        let artifact_dir = ArtifactDir {
-            dir_path: artifact_path.clone(),
-            filename_prefix: Path::new(bench_name).to_path_buf(),
-        };
-
-        for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
-            let ast_str = match ast {
-                MlAst::Typed => "typed",
-                MlAst::Mono => "mono",
-                MlAst::FirstOrder => "first_order",
-            };
-            println!("benchmarking ml {bench_name} {tag} {ast_str}");
-            bench_ml_sample(
-                iters,
-                bench_name,
-                ml_variant,
-                ast,
-                &artifact_dir,
-                extra_stdin,
-                expected_stdout,
-            );
-        }
-    }
-
-    let variants = ["native_single", "native_specialize"];
-
-    for tag in variants {
-        let variant_name = format!("{bench_name}_{tag}");
+    for variant in variants() {
+        let variant_name = format!("{bench_name}_{tag}", tag = variant.tag());
+        println!("benchmarking {}", variant_name);
 
         let exe_path = std::env::current_dir()
             .unwrap()
             .join("out2")
             .join(variant_name.clone());
 
+        let needs_repeat = !variant.record_rc;
+        let needed_iters_0 = if needs_repeat { iters.0 } else { 1 };
+        let needed_iters_1 = if needs_repeat { iters.1 } else { 1 };
+
         let mut results = Vec::new();
-        for _ in 0..iters.0 {
-            let report: ProfReport = run_exe(&exe_path, iters.1, extra_stdin, expected_stdout);
+        let mut counts: Option<Vec<RcCounts>> = None;
+        for _ in 0..needed_iters_0 {
+            let report: ProfReport =
+                run_exe(&exe_path, needed_iters_1, extra_stdin, expected_stdout);
 
             let timing = &report.timings[0];
 
@@ -324,14 +337,37 @@ fn bench_sample(
 
             let specialization = &timing.specializations[0];
 
-            assert_eq!(specialization.total_calls, iters.1);
+            assert_eq!(specialization.total_calls, needed_iters_1);
 
             let total_nanos = specialization.total_clock_nanos;
 
             results.push(Duration::from_nanos(total_nanos));
+
+            match (
+                specialization.total_retain_count,
+                specialization.total_release_count,
+                specialization.total_rc1_count,
+            ) {
+                (Some(total_retain_count), Some(total_release_count), Some(total_rc1_count)) => {
+                    let counts = counts.get_or_insert_with(|| Vec::new());
+                    counts.push(RcCounts {
+                        total_retain_count: total_retain_count * iters.1,
+                        total_release_count: total_release_count * iters.1,
+                        total_rc1_count: total_rc1_count * iters.1,
+                    });
+                }
+                (None, None, None) => {}
+                _ => {
+                    panic!("Expected both retain and release counts to be present, or neither");
+                }
+            }
         }
 
         write_run_time(&variant_name, results);
+
+        if let Some(counts) = counts {
+            write_rc_counts(&variant_name, counts);
+        }
     }
 }
 
@@ -340,161 +376,26 @@ fn compile_sample(
     src_path: impl AsRef<Path> + Clone,
     profile_mod: &[&str],
     profile_func: &str,
-    rc_mode: RcMode,
 ) {
-    let variants = [
-        ("native_single", SpecializationMode::Single),
-        ("native_specialize", SpecializationMode::Specialize),
-    ];
-
-    for (tag, defunc_mode) in variants {
+    for variant in variants() {
+        let tag = variant.tag();
         println!("compiling {bench_name}_{tag}");
         let (exe_path, _artifact_dir) = build_exe(
             bench_name,
-            tag,
+            &tag,
             src_path.clone(),
             profile_mod,
             profile_func,
-            defunc_mode,
+            SpecializationMode::Specialize,
             SampleOptions {
                 is_native: true,
-                rc_mode,
+                rc_strat: variant.rc_strat,
+                profile_record_rc: variant.record_rc,
             },
         );
 
-        write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
+        // write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
     }
-
-    println!("compiling ml artifacts for {bench_name}",);
-
-    let (_exe_path, artifact_dir) = build_exe(
-        bench_name,
-        "ml",
-        src_path.clone(),
-        profile_mod,
-        profile_func,
-        SpecializationMode::Specialize,
-        SampleOptions {
-            is_native: false,
-            rc_mode,
-        },
-    );
-
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-        for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
-            compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
-        }
-    }
-}
-
-fn bench_ml_sample(
-    iters: (u64, u64),
-    bench_name: &str,
-    ml_variant: cli::MlConfig,
-    ast: MlAst,
-    artifacts: &ArtifactDir,
-    extra_stdin: &str,
-    expected_stdout: &str,
-) {
-    let ml_variant_str = match ml_variant {
-        cli::MlConfig::Sml => "sml",
-        cli::MlConfig::Ocaml => "ocaml",
-    };
-
-    let ast = match ast {
-        MlAst::Typed => "typed",
-        MlAst::Mono => "mono",
-        MlAst::FirstOrder => "first_order",
-    };
-
-    let variant_name = format!("{bench_name}_{ml_variant_str}_{ast}");
-
-    let output_path = artifacts.artifact_path(&format!("{ast}-{ml_variant_str}"));
-
-    let mut results = Vec::new();
-    for _ in 0..iters.0 {
-        let report: Vec<MlProfReport> =
-            run_exe(&output_path, iters.1, extra_stdin, expected_stdout);
-
-        assert_eq!(report.len(), 1);
-
-        assert_eq!(report[0].total_calls, iters.1);
-        let total_nanos = report[0].total_clock_nanos;
-
-        results.push(Duration::from_nanos(total_nanos));
-    }
-
-    write_run_time(&variant_name, results);
-}
-
-#[derive(Copy, Clone, Debug)]
-enum MlAst {
-    Typed,
-    Mono,
-    FirstOrder,
-}
-
-fn compile_ml_sample(
-    bench_name: &str,
-    ml_variant: cli::MlConfig,
-    ast: MlAst,
-    artifacts: &ArtifactDir,
-) {
-    let ml_variant_str = match ml_variant {
-        cli::MlConfig::Sml => "sml",
-        cli::MlConfig::Ocaml => "ocaml",
-    };
-
-    let ast_str = match ast {
-        MlAst::Typed => "typed",
-        MlAst::Mono => "mono",
-        MlAst::FirstOrder => "first_order",
-    };
-
-    let variant_name = format!("{bench_name}_{ml_variant_str}_{ast_str}");
-
-    let output_path = artifacts.artifact_path(&format!("{ast_str}-{ml_variant_str}"));
-
-    if output_path.exists() {
-        return;
-    }
-
-    match ml_variant {
-        cli::MlConfig::Sml => {
-            let mlton_output = process::Command::new("mlton")
-                .arg("-default-type")
-                .arg("int64")
-                .arg("-output")
-                .arg(&output_path)
-                .arg(artifacts.artifact_path(&format!("{ast_str}.sml")))
-                .output()
-                .expect("Compilation failed");
-
-            assert!(
-                mlton_output.status.success(),
-                "Compilation failed:\n{}",
-                String::from_utf8_lossy(&mlton_output.stderr)
-            );
-        }
-        cli::MlConfig::Ocaml => {
-            let ocaml_output = process::Command::new("ocamlopt")
-                .arg("unix.cmxa")
-                .arg("-O3")
-                .arg(artifacts.artifact_path(&format!("{ast_str}.ml")))
-                .arg("-o")
-                .arg(&output_path)
-                .output()
-                .expect("Compilation failed");
-
-            assert!(
-                ocaml_output.status.success(),
-                "Compilation failed:\n{}",
-                String::from_utf8_lossy(&ocaml_output.stderr)
-            );
-        }
-    }
-
-    write_binary_size(&variant_name, &output_path);
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -516,7 +417,6 @@ fn sample_primes() {
         "samples/bench_primes_iter.mor",
         &[],
         "count_primes",
-        RcMode::default(),
     );
 
     bench_sample(
@@ -562,7 +462,6 @@ fn sample_quicksort() {
         "samples/bench_quicksort.mor",
         &[],
         "quicksort",
-        RcMode::default(),
     );
 
     bench_sample(
@@ -587,7 +486,6 @@ fn sample_primes_sieve() {
         "samples/bench_primes_sieve.mor",
         &[],
         "sieve",
-        RcMode::default(),
     );
 
     bench_sample(iters, "bench_primes_sieve.mor", &[], "sieve", stdin, stdout);
@@ -608,7 +506,6 @@ fn sample_parse_json() {
         "samples/bench_parse_json.mor",
         &[],
         "parse_json",
-        RcMode::default(),
     );
 
     bench_sample(
@@ -639,7 +536,6 @@ fn sample_calc() {
         "samples/bench_calc.mor",
         &[],
         "eval_exprs",
-        RcMode::default(),
     );
 
     bench_sample(iters, "bench_calc.mor", &[], "eval_exprs", stdin, stdout);
@@ -659,7 +555,6 @@ fn sample_unify() {
         "samples/bench_unify.mor",
         &[],
         "solve_problems",
-        RcMode::Trivial,
     );
 
     bench_sample(
@@ -667,6 +562,193 @@ fn sample_unify() {
         "bench_unify.mor",
         &[],
         "solve_problems",
+        stdin,
+        stdout,
+    );
+}
+
+fn sample_words_trie() {
+    let iters = (10, 10);
+
+    let stdin = concat!(
+        include_str!("../../samples/sample-input/udhr.txt"),
+        "\n",
+        include_str!("../../samples/sample-input/udhr_queries.txt"),
+        "\n",
+    );
+
+    let stdout = include_str!("../../samples/expected-output/udhr_query_counts.txt");
+
+    compile_sample(
+        "bench_words_trie.mor",
+        "samples/bench_words_trie.mor",
+        &[],
+        "count_words",
+    );
+
+    bench_sample(
+        iters,
+        "bench_words_trie.mor",
+        &[],
+        "count_words",
+        stdin,
+        stdout,
+    );
+}
+
+fn sample_text_stats() {
+    let iters = (10, 30);
+
+    let stdin = include_str!("../../samples/sample-input/shakespeare.txt");
+
+    let stdout = "317\n";
+
+    compile_sample(
+        "bench_text_stats.mor",
+        "samples/bench_text_stats.mor",
+        &[],
+        "compute_stats",
+    );
+
+    bench_sample(
+        iters,
+        "bench_text_stats.mor",
+        &[],
+        "compute_stats",
+        stdin,
+        stdout,
+    );
+}
+
+fn sample_lisp() {
+    let iters = (10, 30);
+
+    let stdin = include_str!("../../samples/sample-input/lisp-interpreter.lisp");
+
+    let stdout = "((O . ()) . ((O . (O . ())) . ((O . (O . (O . ()))) . ((O . (O . (O . (O . ())))) . ((O . (O . (O . (O . (O . ()))))) . ())))))\n";
+
+    compile_sample(
+        "bench_lisp.mor",
+        "samples/bench_lisp.mor",
+        &[],
+        "run_program",
+    );
+
+    bench_sample(iters, "bench_lisp.mor", &[], "run_program", stdin, stdout);
+}
+
+fn sample_cfold() {
+    let iters = (10, 10);
+
+    let stdin = "16\n";
+    let stdout = "192457\n";
+
+    compile_sample(
+        "bench_cfold.mor",
+        "samples/bench_cfold.mor",
+        &[],
+        "test_cfold",
+    );
+
+    bench_sample(iters, "bench_cfold.mor", &[], "test_cfold", stdin, stdout);
+}
+
+fn sample_deriv() {
+    let iters = (10, 10);
+
+    let stdin = "8\n";
+    let stdout = "598592\n";
+
+    compile_sample(
+        "bench_deriv.mor",
+        "samples/bench_deriv.mor",
+        &[],
+        "run_deriv",
+    );
+
+    bench_sample(iters, "bench_deriv.mor", &[], "run_deriv", stdin, stdout);
+}
+
+fn sample_nqueens_functional() {
+    let iters = (10, 5);
+
+    let stdin = "nqueens-functional\n13\n";
+    let stdout = "73712\n";
+
+    compile_sample(
+        "bench_nqueens_functional.mor",
+        "samples/bench_nqueens.mor",
+        &[],
+        "nqueens",
+    );
+
+    bench_sample(
+        iters,
+        "bench_nqueens_functional.mor",
+        &[],
+        "nqueens",
+        stdin,
+        stdout,
+    );
+}
+
+fn sample_nqueens_iterative() {
+    let iters = (10, 5);
+
+    let stdin = "nqueens-iterative\n13\n";
+    let stdout = "73712\n";
+
+    compile_sample(
+        "bench_nqueens_iterative.mor",
+        "samples/bench_nqueens.mor",
+        &[],
+        "nqueens2",
+    );
+
+    bench_sample(
+        iters,
+        "bench_nqueens_iterative.mor",
+        &[],
+        "nqueens2",
+        stdin,
+        stdout,
+    );
+}
+
+fn sample_rbtree() {
+    let iters = (10, 10);
+
+    let stdin = "rbtree\n420000";
+    let stdout = "42000\n";
+
+    compile_sample(
+        "bench_rbtree.mor",
+        "samples/bench_rbtree.mor",
+        &[],
+        "test_rbtree",
+    );
+
+    bench_sample(iters, "bench_rbtree.mor", &[], "test_rbtree", stdin, stdout);
+}
+
+fn sample_rbtreeck() {
+    let iters = (10, 10);
+
+    let stdin = "rbtree-ck\n420000";
+    let stdout = "42000\n";
+
+    compile_sample(
+        "bench_rbtree_ck.mor",
+        "samples/bench_rbtree.mor",
+        &[],
+        "test_rbtreeck",
+    );
+
+    bench_sample(
+        iters,
+        "bench_rbtree_ck.mor",
+        &[],
+        "test_rbtreeck",
         stdin,
         stdout,
     );
@@ -684,15 +766,28 @@ fn main() {
         std::process::exit(1);
     }
 
-    sample_quicksort();
-
-    sample_primes();
-
+    // these have 0 retains omitted, we don't run them
+    // sample_quicksort();
+    // sample_primes();
     sample_primes_sieve();
+    sample_nqueens_iterative();
+    sample_nqueens_functional();
 
     sample_parse_json();
 
     sample_calc();
 
     sample_unify();
+
+    sample_words_trie();
+
+    sample_text_stats();
+
+    sample_lisp();
+
+    sample_cfold();
+    sample_deriv();
+    sample_rbtree();
+
+    sample_rbtreeck();
 }

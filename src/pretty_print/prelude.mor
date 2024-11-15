@@ -1,0 +1,41 @@
+intrinsic_AddByte(x : Byte, y : Byte): Byte = x +& y
+intrinsic_SubByte(x : Byte, y : Byte): Byte = x -& y
+intrinsic_MulByte(x : Byte, y : Byte): Byte = x *& y
+intrinsic_DivByte(x : Byte, y : Byte): Byte = x /& y
+intrinsic_NegByte(x : Byte): Byte = -&x
+intrinsic_EqByte(x : Byte, y : Byte): Bool = x =& y
+intrinsic_LtByte(x : Byte, y : Byte): Bool = x <& y
+intrinsic_LteByte(x : Byte, y : Byte): Bool = x <=& y
+intrinsic_GtByte(x : Byte, y : Byte): Bool = x >& y
+intrinsic_GteByte(x : Byte, y : Byte): Bool = x >=& y
+intrinsic_AddInt(x : Int, y : Int): Int = x + y
+intrinsic_SubInt(x : Int, y : Int): Int = x - y
+intrinsic_MulInt(x : Int, y : Int): Int = x * y
+intrinsic_DivInt(x : Int, y : Int): Int = x / y
+intrinsic_NegInt(x : Int): Int = -x
+intrinsic_EqInt(x : Int, y : Int): Bool = x = y
+intrinsic_LtInt(x : Int, y : Int): Bool = x < y
+intrinsic_LteInt(x : Int, y : Int): Bool = x <= y
+intrinsic_GtInt(x : Int, y : Int): Bool = x > y
+intrinsic_GteInt(x : Int, y : Int): Bool = x >= y
+intrinsic_AddFloat(x : Float, y : Float): Float = x +. y
+intrinsic_SubFloat(x : Float, y : Float): Float = x -. y
+intrinsic_MulFloat(x : Float, y : Float): Float = x *. y
+intrinsic_DivFloat(x : Float, y : Float): Float = x /. y
+intrinsic_NegFloat(x : Float): Float = -.x
+intrinsic_EqFloat(x : Float, y : Float): Bool = x =. y
+intrinsic_LtFloat(x : Float, y : Float): Bool = x <. y
+intrinsic_LteFloat(x : Float, y : Float): Bool = x <=. y
+intrinsic_GtFloat(x : Float, y : Float): Bool = x >. y
+intrinsic_GteFloat(x : Float, y : Float): Bool = x >=. y
+
+intrinsic_Not(x : Bool): Bool = !x
+
+intrinsic_ByteToInt(x : Byte): Int = byte_to_int(x)
+intrinsic_ByteToIntSigned(x : Byte): Int = byte_to_int_signed(x)
+intrinsic_IntToByte(x : Int): Byte = int_to_byte(x)
+intrinsic_IntShiftLeft(x : Int, y : Int): Int = int_shift_left(x, y)
+intrinsic_IntShiftRight(x : Int, y : Int): Int = int_shift_right(x, y)
+intrinsic_IntBitAnd(x : Int, y : Int): Int = int_bit_and(x, y)
+intrinsic_IntBitOr(x : Int, y : Int): Int = int_bit_or(x, y)
+intrinsic_IntBitXor(x : Int, y : Int): Int = int_bit_xor(x, y)

@@ -6,9 +6,10 @@ use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub CustomTypeId);
+#[id_type]
+pub struct CustomTypeId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
@@ -30,9 +31,11 @@ pub enum Type {
     Custom(CustomTypeId),
 }
 
-id_type!(pub OpaqueFuncRepId);
+#[id_type]
+pub struct OpaqueFuncRepId(pub usize);
 
-id_type!(pub LamId);
+#[id_type]
+pub struct LamId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FuncCase {
@@ -77,7 +80,8 @@ pub enum Expr {
     FloatLit(f64),
 }
 
-id_type!(pub CustomGlobalId);
+#[id_type]
+pub struct CustomGlobalId(pub usize);
 
 #[derive(Clone, Debug)]
 pub enum Pattern {

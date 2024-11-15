@@ -1,0 +1,71 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Option expose { Option { Some, None } },
+    module Array,
+    module Iter expose { Iter },
+    module Func expose { const },
+    module String,
+  }
+
+module Test = file "lib/test.mor"
+  with { Core }
+  expose { test }
+
+module HashMap = file "lib/hashmap.mor" with { Core } expose { HashMap }
+
+for(start: Int, stop: Int, init: a, func: ((a, Int) -> a)): a =
+  Iter.range(start, stop) |> Iter.foldl(init, func)
+
+int_mod(x: Int, y: Int): Int =
+  x - ((x / y) * y)
+
+proc main(): () =
+  let map = HashMap.string_hashmap in
+  // Insert numbers 0 to 9 with keys "key0" to "key9"
+  let map_filled = for(0, 100, map, \(m, i) -> 
+    HashMap.insert(m, String.concat("key", String.int_to_string(i)), i)
+  ) in
+  
+  // Test some lookups
+  let val0 = HashMap.get(map_filled, "key5") in
+  do test("Value at key5 should be Some(5)", String.equal(Option.str(val0, String.int_to_string), "Some(5)")) then
+  let val1 = HashMap.get(map_filled, "key9") in
+  do test("Value at key9 should be Some(9)", String.equal(Option.str(val1, String.int_to_string), "Some(9)")) then
+  // Remove even numbered keys
+  let map_odds = for(0, 100, map_filled, \(m, i) ->
+    if int_mod(i, 2) = 0 {
+      HashMap.remove(m, String.concat("key", String.int_to_string(i)))
+    } else {
+      m
+    }
+  ) in
+
+  // Test that even keys are gone and odd keys remain
+  let test_even = HashMap.get(map_odds, "key4") in
+  let test_odd = HashMap.get(map_odds, "key5") in
+  do test("Key4 should be None", String.equal(Option.str(test_even, String.int_to_string), "None")) then
+  do test("Key5 should be Some(5)", String.equal(Option.str(test_odd, String.int_to_string), "Some(5)")) then
+
+  // Remove all remaining keys
+  let map_empty = for(1, 100, map_odds, \(m, i) ->
+    if int_mod(i, 2) = 1 {
+      HashMap.remove(m, String.concat("key", String.int_to_string(i)))
+    } else {
+      m
+    }
+  ) in
+
+  // Test overriding a value
+  let map_override = HashMap.insert(map_empty, "testkey", 1) in
+  let map_override2 = HashMap.insert(map_override, "testkey", 2) in
+  let override_val = HashMap.get(map_override2, "testkey") in
+  do test("Override value should be Some(2)", String.equal(Option.str(override_val, String.int_to_string), "Some(2)")) then
+
+  let map_override3 = HashMap.remove(map_override2, "testkey") in
+  let override_val2 = HashMap.get(map_override3, "testkey") in
+  do test("Value should be None after removal", String.equal(Option.str(override_val2, String.int_to_string), "None")) then
+
+  // Check if it's empty
+  let empty = HashMap.is_empty(map_empty) in
+  do test("Map should be empty", empty) then
+  do output("completed tests")

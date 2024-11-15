@@ -78,7 +78,7 @@ pub fn report(
             )?;
         }
 
-        UnrecognizedEOF {
+        UnrecognizedEof {
             location: _,
             expected,
         } => {

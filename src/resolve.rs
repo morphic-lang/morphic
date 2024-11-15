@@ -1,7 +1,7 @@
 use crate::data::purity::Purity;
 use crate::data::visibility::Visibility;
 use lalrpop_util::ParseError;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -19,7 +19,7 @@ use crate::lex;
 use crate::parse;
 use crate::parse_error;
 use crate::report_error::{locate_path, locate_span, Locate};
-use crate::util::id_vec::IdVec;
+use id_collections::IdVec;
 
 #[derive(Debug)]
 pub enum ErrorKind {
@@ -237,19 +237,19 @@ impl Error {
     }
 }
 
-lazy_static! {
-    static ref BUILTIN_TYPES: BTreeMap<raw::TypeName, res::TypeId> = {
-        let mut type_map = BTreeMap::new();
+static BUILTIN_TYPES: Lazy<BTreeMap<raw::TypeName, res::TypeId>> = Lazy::new(|| {
+    let mut type_map = BTreeMap::new();
 
-        type_map.insert(raw::TypeName("Bool".to_owned()), res::TypeId::Bool);
-        type_map.insert(raw::TypeName("Byte".to_owned()), res::TypeId::Byte);
-        type_map.insert(raw::TypeName("Int".to_owned()), res::TypeId::Int);
-        type_map.insert(raw::TypeName("Float".to_owned()), res::TypeId::Float);
-        type_map.insert(raw::TypeName("Array".to_owned()), res::TypeId::Array);
+    type_map.insert(raw::TypeName("Bool".to_owned()), res::TypeId::Bool);
+    type_map.insert(raw::TypeName("Byte".to_owned()), res::TypeId::Byte);
+    type_map.insert(raw::TypeName("Int".to_owned()), res::TypeId::Int);
+    type_map.insert(raw::TypeName("Float".to_owned()), res::TypeId::Float);
+    type_map.insert(raw::TypeName("Array".to_owned()), res::TypeId::Array);
 
-        type_map
-    };
-    static ref BUILTIN_CTORS: BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)> = {
+    type_map
+});
+static BUILTIN_CTORS: Lazy<BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)>> =
+    Lazy::new(|| {
         let mut ctor_map = BTreeMap::new();
 
         ctor_map.insert(
@@ -262,59 +262,58 @@ lazy_static! {
         );
 
         ctor_map
-    };
-    static ref BUILTIN_GLOBALS: BTreeMap<raw::ValName, res::GlobalId> = {
-        let mut global_map = BTreeMap::new();
+    });
+static BUILTIN_GLOBALS: Lazy<BTreeMap<raw::ValName, res::GlobalId>> = Lazy::new(|| {
+    let mut global_map = BTreeMap::new();
 
-        global_map.insert(
-            raw::ValName("get".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Get),
-        );
-        global_map.insert(
-            raw::ValName("extract".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Extract),
-        );
-        global_map.insert(
-            raw::ValName("len".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Len),
-        );
-        global_map.insert(
-            raw::ValName("push".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Push),
-        );
-        global_map.insert(
-            raw::ValName("pop".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Pop),
-        );
-        global_map.insert(
-            raw::ValName("reserve".to_owned()),
-            res::GlobalId::ArrayOp(res::ArrayOp::Reserve),
-        );
-        global_map.insert(
-            raw::ValName("input".to_owned()),
-            res::GlobalId::IoOp(res::IoOp::Input),
-        );
-        global_map.insert(
-            raw::ValName("output".to_owned()),
-            res::GlobalId::IoOp(res::IoOp::Output),
-        );
-        global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
+    global_map.insert(
+        raw::ValName("get".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Get),
+    );
+    global_map.insert(
+        raw::ValName("extract".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Extract),
+    );
+    global_map.insert(
+        raw::ValName("len".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Len),
+    );
+    global_map.insert(
+        raw::ValName("push".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Push),
+    );
+    global_map.insert(
+        raw::ValName("pop".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Pop),
+    );
+    global_map.insert(
+        raw::ValName("reserve".to_owned()),
+        res::GlobalId::ArrayOp(res::ArrayOp::Reserve),
+    );
+    global_map.insert(
+        raw::ValName("input".to_owned()),
+        res::GlobalId::IoOp(res::IoOp::Input),
+    );
+    global_map.insert(
+        raw::ValName("output".to_owned()),
+        res::GlobalId::IoOp(res::IoOp::Output),
+    );
+    global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
 
-        for &(intrinsic, name) in INTRINSIC_NAMES {
-            match name {
-                intrs::Name::Op { debug_name: _ } => {}
-                intrs::Name::Func { source_name } => {
-                    global_map.insert(
-                        raw::ValName(source_name.to_owned()),
-                        res::GlobalId::Intrinsic(intrinsic),
-                    );
-                }
+    for &(intrinsic, name) in INTRINSIC_NAMES {
+        match name {
+            intrs::Name::Op { debug_name: _ } => {}
+            intrs::Name::Func { source_name } => {
+                global_map.insert(
+                    raw::ValName(source_name.to_owned()),
+                    res::GlobalId::Intrinsic(intrinsic),
+                );
             }
         }
+    }
 
-        global_map
-    };
-}
+    global_map
+});
 
 #[derive(Clone, Debug)]
 struct ModMap {
@@ -380,7 +379,7 @@ impl LocalContext {
     }
 
     fn insert_anon(&mut self) -> res::LocalId {
-        let mut scope = self.scopes.last_mut().unwrap();
+        let scope = self.scopes.last_mut().unwrap();
         let id = scope.next_id;
         scope.next_id.0 += 1;
         id
@@ -410,6 +409,7 @@ pub fn resolve_program(
     files: &mut FileCache,
     file_path: &Path,
     profile_syms: &[cli::SymbolName],
+    profile_record_rc: bool,
 ) -> Result<res::Program, Error> {
     let mut ctx = GlobalContext {
         mods: IdVec::new(),
@@ -437,11 +437,9 @@ pub fn resolve_program(
         return Err(locate_path(file_path)(ErrorKind::MainNotFound.into()));
     };
 
-    let val_symbols = ctx
-        .val_symbols
-        .into_mapped(|_id, val_syms| val_syms.unwrap());
+    let val_symbols = ctx.val_symbols.map(|_id, val_syms| val_syms.unwrap());
 
-    let mut vals = ctx.vals.into_mapped(|_id, val_def| val_def.unwrap());
+    let mut vals = ctx.vals.map(|_id, val_def| val_def.unwrap());
 
     let profile_points = resolve_profile_points(
         &ctx.mod_symbols,
@@ -450,11 +448,12 @@ pub fn resolve_program(
         main_mod,
         &mut vals,
         profile_syms,
+        profile_record_rc,
     )?;
 
     Ok(res::Program {
         mod_symbols: ctx.mod_symbols,
-        custom_types: ctx.types.into_mapped(|_id, typedef| typedef.unwrap()),
+        custom_types: ctx.types.map(|_id, typedef| typedef.unwrap()),
         custom_type_symbols: ctx.type_symbols,
         profile_points,
         vals,
@@ -518,7 +517,7 @@ fn resolve_mod(
                         let type_symbols_id = ctx.type_symbols.push(res::TypeSymbols {
                             mod_: self_mod_id,
                             type_name: name.clone(),
-                            variant_symbols: IdVec::from_items(
+                            variant_symbols: IdVec::from_vec(
                                 variants
                                     .iter()
                                     .map(|(_, variant_name, _)| res::VariantSymbols {
@@ -544,7 +543,7 @@ fn resolve_mod(
                             ctor_name.clone(),
                             (*ctor_visibility, type_id, res::VariantId(idx)),
                         )
-                        .map_err(|()| ErrorKind::DuplicateCtorName(name.0.clone()).into())
+                        .map_err(|()| ErrorKind::DuplicateCtorName(ctor_name.0.clone()).into())
                         .map_err(locate_path(file_path))?;
                     }
 
@@ -644,7 +643,7 @@ fn resolve_mod(
                 .map_err(locate_path(file_path))?;
         }
 
-        let resolved_variants = IdVec::from_items(
+        let resolved_variants = IdVec::from_vec(
             variants
                 .iter()
                 .map(|(_, _, variant_type)| match variant_type {
@@ -1361,6 +1360,7 @@ fn resolve_profile_points(
     main_mod: res::ModId,
     vals: &mut IdVec<res::CustomGlobalId, res::ValDef>,
     profile_syms: &[cli::SymbolName],
+    record_rc: bool,
 ) -> Result<IdVec<prof::ProfilePointId, prof::ProfilePoint>, Error> {
     let mut profile_points = IdVec::new();
 
@@ -1394,6 +1394,7 @@ fn resolve_profile_points(
             &mut vals[sym_val_id].body,
             path,
             val_name,
+            record_rc,
         )
         .map_err(locate_path(&mod_symbols[val_symbols[sym_val_id].mod_].file))?;
     }
@@ -1406,10 +1407,11 @@ fn annotate_profile_point(
     body: &mut res::Expr,
     path: raw::ModPath,
     val_name: raw::ValName,
+    record_rc: bool,
 ) -> Result<(), Error> {
     match body {
         res::Expr::Span(lo, hi, content) => {
-            annotate_profile_point(profile_points, content, path, val_name)
+            annotate_profile_point(profile_points, content, path, val_name, record_rc)
                 .map_err(locate_span(*lo, *hi))
         }
 
@@ -1417,6 +1419,7 @@ fn annotate_profile_point(
             let prof_id = opt_prof_id.get_or_insert_with(|| {
                 profile_points.push(prof::ProfilePoint {
                     reporting_names: BTreeSet::new(),
+                    record_rc,
                 })
             });
 

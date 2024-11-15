@@ -1,14 +1,11 @@
 #[macro_use]
 pub mod lines;
 
-#[macro_use]
-pub mod id_type;
-
-pub mod id_vec;
-
 pub mod id_gen;
 
 pub mod local_context;
+
+pub mod immut_context;
 
 pub mod graph;
 
@@ -23,10 +20,27 @@ pub mod instance_queue;
 pub mod im_rc_ext;
 
 pub mod inequality_graph;
+pub mod inequality_graph2;
+
+pub mod fixed_point;
 
 pub mod event_set;
 
 pub mod progress_logger;
+
+pub mod iter;
+
+pub mod collection_ext;
+
+pub mod intern;
+
+pub mod memoize;
+
+pub mod non_empty_set;
+
+pub mod let_builder;
+
+pub mod drop_bomb;
 
 pub fn with_scope<T, R, F: for<'a> FnOnce(&'a mut Vec<T>) -> R>(vec: &mut Vec<T>, func: F) -> R {
     let old_len = vec.len();

@@ -5,11 +5,13 @@ pub use crate::data::num_type::NumType;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub CustomTypeId);
+#[id_type]
+pub struct CustomTypeId(pub usize);
 
-id_type!(pub CustomFuncId);
+#[id_type]
+pub struct CustomFuncId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
@@ -27,7 +29,8 @@ pub enum CustomTypeSymbols {
     ClosureType,
 }
 
-id_type!(pub VariantId);
+#[id_type]
+pub struct VariantId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
@@ -77,7 +80,8 @@ pub enum ArrayOp {
     ), // Returns new array
 }
 
-id_type!(pub LocalId);
+#[id_type]
+pub struct LocalId(pub usize);
 
 impl LocalId {
     pub const ARG: Self = LocalId(0);

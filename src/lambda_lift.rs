@@ -5,7 +5,7 @@ use crate::data::mono_ast as mono;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::IdVec;
 
 #[derive(Clone, Debug)]
 struct CaptureMap {
@@ -46,9 +46,9 @@ impl<'a> TypeContext<'a> {
     }
 
     fn with_scope<R, F: for<'b> FnOnce(&'b mut TypeContext<'a>) -> R>(&mut self, body: F) -> R {
-        let old_len = self.types.len();
+        let old_count = self.types.count();
         let result = body(self);
-        self.types.truncate(old_len);
+        self.types.truncate(old_count);
         result
     }
 }
@@ -131,7 +131,7 @@ fn lift_expr<'a>(
                 lifted_from,
             );
             let captures_translated =
-                captured.map(|_capture_id, &local_id| captures.translate(local_id));
+                captured.map(|_capture_id, local_id| captures.translate(local_id));
             lifted::Expr::Lam(id, captures_translated)
         }
 
@@ -267,8 +267,8 @@ fn lift_lam<'a>(
         )
     });
 
-    let mut captured_locals = IdVec::from_items(vec![None; sub_captures.captures.len()]);
-    let mut capture_types = IdVec::from_items(vec![None; sub_captures.captures.len()]);
+    let mut captured_locals = IdVec::from_vec(vec![None; sub_captures.captures.len()]);
+    let mut capture_types = IdVec::from_vec(vec![None; sub_captures.captures.len()]);
 
     for (outer_local, capture_id) in &sub_captures.captures {
         captured_locals[capture_id] = Some(*outer_local);
@@ -277,7 +277,7 @@ fn lift_lam<'a>(
 
     let lam_def = lifted::LamDef {
         purity,
-        captures: capture_types.into_mapped(|_capture_id, type_| type_.unwrap()),
+        captures: capture_types.map(|_capture_id, type_| type_.unwrap()),
         arg_type: arg_type.clone(),
         ret_type: ret_type.clone(),
         arg: arg.clone(),
@@ -293,7 +293,7 @@ fn lift_lam<'a>(
 
     (
         lam_id,
-        captured_locals.into_mapped(|_capture_id, local| local.unwrap()),
+        captured_locals.map(|_capture_id, local| local.unwrap()),
     )
 }
 
@@ -333,13 +333,13 @@ pub fn lambda_lift(program: mono::Program) -> lifted::Program {
 
     let defs_lifted = program
         .vals
-        .into_mapped(|id, def| lift_def(&mut lambdas, &mut lam_symbol_sources, def, id));
+        .map(|id, def| lift_def(&mut lambdas, &mut lam_symbol_sources, def, id));
 
     // Placate the borrow checker by moving this field *outside* the closure that uses it.
     // Otherwise borrowck can't tell that only this field is captured.
     let val_symbols = program.val_symbols;
 
-    let lam_symbols = lam_symbol_sources.into_mapped(|_, lifted_from| lifted::LamSymbols {
+    let lam_symbols = lam_symbol_sources.map(|_, lifted_from| lifted::LamSymbols {
         lifted_from: val_symbols[lifted_from].clone(),
     });
 

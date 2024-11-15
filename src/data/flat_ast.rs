@@ -4,11 +4,14 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
+use id_graph_sccs::Sccs;
 
-id_type!(pub LocalId);
+#[id_type]
+pub struct LocalId(pub usize);
 
-id_type!(pub CustomTypeSccId);
+#[id_type]
+pub struct CustomTypeSccId(pub usize);
 
 #[derive(Clone, Debug)]
 pub enum ArrayOp {
@@ -59,7 +62,7 @@ pub enum Expr {
     Call(Purity, first_ord::CustomFuncId, LocalId),
     Branch(LocalId, Vec<(Condition, Expr)>, anon::Type),
     LetMany(
-        Vec<(anon::Type, Expr)>, // bound values.  Each is assigned a new sequential LocalId
+        Vec<(anon::Type, Expr)>, // bound values. Each is assigned a new sequential LocalId
         LocalId,                 // body
     ),
 
@@ -136,7 +139,7 @@ pub struct CustomTypeDef {
 #[derive(Clone, Debug)]
 pub struct CustomTypes {
     pub types: IdVec<first_ord::CustomTypeId, CustomTypeDef>,
-    pub sccs: IdVec<CustomTypeSccId, Vec<first_ord::CustomTypeId>>,
+    pub sccs: Sccs<CustomTypeSccId, first_ord::CustomTypeId>,
 }
 
 #[derive(Clone, Debug)]

@@ -7,7 +7,7 @@ use crate::data::typed_ast as typed;
 use crate::file_cache::FileCache;
 use crate::report_error::{locate_path, locate_span, Locate};
 use crate::report_pattern;
-use crate::util::id_vec::IdVec;
+use id_collections::IdVec;
 
 #[derive(Clone, Debug)]
 struct RawErrorKind {
@@ -22,12 +22,6 @@ pub struct ErrorKind {
 }
 
 pub type Error = Locate<ErrorKind>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Precedence {
-    Root,
-    CtorArg,
-}
 
 impl RawErrorKind {
     fn render(

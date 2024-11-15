@@ -1,0 +1,105 @@
+module Core = file "lib/core/core.mor"
+  expose {
+    module Io expose { writeln },
+    module Option expose { Option { Some, None } },
+    module Array,
+    module String expose { int_to_string, string_to_nat },
+    module Iter expose { Iter },
+  }
+
+module Bench = file "lib/bench_common.mor"
+  with { Core }
+  expose { repeat }
+
+type String {
+    String(Array Byte)
+}
+
+// Split on 
+get_words(x : String): Array String =
+  let String(bytes) = x in
+  get_words_rec(bytes, 0, [], [])
+  
+
+get_words_rec(x : Array Byte, index: Int, acc: Array String, current_word: Array Byte): Array String =
+  if(index = Array.len(x)) {
+    if(Array.len(current_word) > 0) {
+      Array.push(acc, String(current_word))
+    } else {
+      acc
+    }
+  } else {
+    let char = Array.get(x, index) in
+    if((char >=& 65b && char <=& 90b) || (char >=& 97b && char <=& 122b)) {
+      // Character is A-Z or a-z, add to current word
+      get_words_rec(x, index + 1, acc, Array.push(current_word, char))
+    } else {
+      // Non-letter character, start new word if current_word has content
+      if(Array.len(current_word) > 0) {
+        get_words_rec(x, index + 1, Array.push(acc, String(current_word)), [])
+      } else {
+        get_words_rec(x, index + 1, acc, [])
+      }
+    }
+  }
+
+start_text: Array Byte = String.concat("*** START OF THE PROJECT GUTENBERG EBOOK THE COMPLETE WORKS OF WILLIAM SHAKESPEARE ***", "\r")
+end_text: Array Byte = String.concat("*** END OF THE PROJECT GUTENBERG EBOOK THE COMPLETE WORKS OF WILLIAM SHAKESPEARE ***", "\r")
+
+proc read_preamble(): () =
+  let next_line = do input() in
+  if String.equal(next_line, start_text) {
+    ()
+  } else {
+    do read_preamble()
+  }
+
+proc read_text(): String =
+  do read_preamble() then
+
+  String(do read_text_rec([]))
+
+proc read_text_rec(acc: Array Byte): Array Byte=
+  let next_line = do input() in
+  if String.equal(next_line, end_text) {
+    acc
+  } else {
+    do read_text_rec(String.concat(String.concat(acc, "\n"), next_line))
+  }
+
+
+compute_stats(words : Array String): Array String =
+  let xROMEO = "ROMEO" in
+  let xRomeo = "Romeo" in
+  let romeo_foldl_fn = \(count, String(word)) ->
+    if (String.equal(word, xROMEO) || String.equal(word, xRomeo)) {
+      count + 1
+    } else {
+      count
+    } in
+  let romeo_count = Array.foldl(words, 0, romeo_foldl_fn) in
+  
+  [String(int_to_string(romeo_count))]
+  
+  
+
+
+proc main(): () = 
+  match (string_to_nat(do input())) {
+    Some(iters) ->
+      let text = do read_text() in
+      let words = get_words(text) in
+      match repeat(iters, \() -> compute_stats(words)) {
+        Some(data) ->
+          data
+          |> Iter.items()
+          |> do Iter.for_each(proc \String(count) ->
+            do writeln(count)
+          ),
+
+        None -> (),
+      },
+
+    None ->
+      do writeln("Please enter an iteration count"),
+  }

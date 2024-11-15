@@ -1,17 +1,20 @@
 use crate::data::first_order_ast::{NumType, VariantId};
 use crate::data::intrinsics::Intrinsic;
-use crate::data::low_ast::{
-    ArrayOp, CustomFuncId, CustomTypeId, Expr, IoOp, LocalId, Program, Type,
-};
-use crate::data::repr_constrained_ast::RepChoice;
+use crate::data::low_ast::{ArrayOp, CustomFuncId, Expr, IoOp, LocalId, Program, Type};
+use crate::data::mode_annot_ast::Mode;
+use crate::data::rc_specialized_ast::{ModeScheme, ModeSchemeId, RcOp};
 use crate::data::tail_rec_ast as tail;
+use crate::pretty_print::utils::{FuncRenderer, TailFuncRenderer};
 use crate::pseudoprocess::{spawn_thread, Child, ExitStatus, Stdio};
+use crate::util::iter::IterExt;
+use id_collections::IdVec;
 use im_rc::Vector;
 use stacker;
 use std::borrow::Borrow;
+use std::collections::BTreeSet;
 use std::convert::TryFrom;
-use std::io::BufRead;
-use std::io::Write;
+use std::fmt::Display;
+use std::io::{BufRead, Write};
 use std::num::Wrapping;
 use std::ops::{Index, IndexMut};
 use std::rc::Rc;
@@ -25,52 +28,51 @@ enum NumValue {
     Float(f64),
 }
 
-// only meaningful for flat arrays
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ArrayStatus {
-    Invalid,
-    Valid,
-}
-
 #[derive(Debug, Clone)]
 enum Value {
     Bool(bool),
     Num(NumValue),
-    Array(RepChoice, ArrayStatus, RefCount, Vec<HeapId>),
-    HoleArray(RepChoice, ArrayStatus, RefCount, i64, Vec<HeapId>),
+    Array(usize, Option<HeapId>),
+    HoleArray(usize, i64, HeapId),
+    ArrayContent(RefCount, Vec<HeapId>),
     Tuple(Vec<HeapId>),
     Variant(VariantId, HeapId),
     Box(RefCount, HeapId),
-    Custom(CustomTypeId, HeapId),
+    // Because of our type 'guarding' pass, customs must be treated transparently in the dynamics
+    // Custom(CustomTypeId, HeapId),
 }
 
-impl Value {
-    fn assert_live(&self, stacktrace: StackTrace) -> &Value {
-        match self {
-            Value::Array(_, _, rc, _) | Value::HoleArray(_, _, rc, _, _) | Value::Box(rc, _) => {
-                if *rc == 0 {
-                    stacktrace.panic(format!["accessing rc 0 value {:?}", &self]);
-                }
+fn assert_live<'a>(heap: &'a Heap, id: HeapId, stacktrace: StackTrace) -> &'a Value {
+    match &heap[id] {
+        Value::Box(rc, _) | Value::ArrayContent(rc, _) => {
+            if *rc == 0 {
+                stacktrace.panic(format!["accessing rc 0 value {:?}", &heap[id]]);
             }
-            _ => {}
-        };
-
-        match &self {
-            Value::Array(RepChoice::OptimizedMut, status, _rc, _values)
-            | Value::HoleArray(RepChoice::OptimizedMut, status, _rc, _, _values) => {
-                if *status != ArrayStatus::Valid {
-                    stacktrace.panic(format!["accessing invalid flat array {:?}", self]);
-                }
-            }
-            _ => {}
+            &heap[id]
         }
-
-        self
+        Value::Array(_, None) => &heap[id],
+        Value::Array(_, Some(ptr)) | Value::HoleArray(_, _, ptr) => {
+            assert_live(heap, *ptr, stacktrace);
+            &heap[id]
+        }
+        _ => &heap[id],
     }
 }
 
 #[derive(Debug, Clone)]
 struct StackTrace(Vector<Rc<String>>);
+
+impl Display for StackTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, line) in self.0.iter().enumerate() {
+            write![f, "{}", line.as_str()]?;
+            if i != self.0.len() - 1 {
+                write![f, "\n"]?
+            }
+        }
+        Ok(())
+    }
+}
 
 impl StackTrace {
     fn new() -> StackTrace {
@@ -81,23 +83,16 @@ impl StackTrace {
         })
     }
 
-    fn add_frame(&self, s: String) -> StackTrace {
+    fn add_frame(&self, s: impl AsRef<str>) -> StackTrace {
         StackTrace({
             let mut v = self.0.clone();
-            v.push_back(Rc::new(s.lines().collect::<Vec<&str>>().join(" ")));
+            v.push_back(Rc::new(s.as_ref().lines().collect::<Vec<&str>>().join(" ")));
             v
         })
     }
 
-    fn panic(&self, s: String) -> ! {
-        println![
-            "{}",
-            self.0
-                .iter()
-                .map(|x| (**x).clone())
-                .collect::<Vec<String>>()
-                .join("\n")
-        ];
+    fn panic(&self, s: impl Display) -> ! {
+        println!["{}", self];
         println!["{}", s];
         panic![];
     }
@@ -133,7 +128,7 @@ impl<T: Borrow<LocalId>> Index<T> for Locals {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy)]
 struct HeapId(usize);
 
 #[derive(Clone, Debug)]
@@ -184,36 +179,34 @@ impl Heap<'_> {
     fn value_to_str(&self, kind: HeapId) -> String {
         match &self[kind] {
             Value::Bool(val) => val.to_string(),
-            Value::Num(NumValue::Byte(Wrapping(val))) => (*val as char).to_string(),
+            Value::Num(NumValue::Byte(Wrapping(val))) => format!("{:?}", *val as char),
             Value::Num(NumValue::Int(Wrapping(val))) => val.to_string(),
             Value::Num(NumValue::Float(val)) => val.to_string(),
-            Value::Array(rep, status, rc, contents) => {
-                let rep_str = match rep {
-                    RepChoice::OptimizedMut => "flat",
-                    RepChoice::FallbackImmut => "persistent",
-                };
-                let status_str = match status {
-                    ArrayStatus::Valid => "",
-                    ArrayStatus::Invalid => "invalid ",
+            Value::ArrayContent(rc, contents) => {
+                let contents_str = contents
+                    .iter()
+                    .map(|heap_id| self.value_to_str(*heap_id))
+                    .collect::<Vec<String>>()
+                    .join(",");
+                format!["rc:{} [{}]", rc, contents_str]
+            }
+            Value::Array(_len, None) => {
+                format!["empty array on stack"]
+            }
+            Value::Array(_len, Some(ptr)) => {
+                let Value::ArrayContent(rc, contents) = &self[*ptr] else {
+                    panic!("expected array content")
                 };
                 let contents_str = contents
                     .iter()
                     .map(|heap_id| self.value_to_str(*heap_id))
                     .collect::<Vec<String>>()
                     .join(",");
-                format![
-                    "{}{} rc:{} array [{}]",
-                    status_str, rep_str, rc, contents_str
-                ]
+                format!["array rc:{} [{}]", rc, contents_str]
             }
-            Value::HoleArray(rep, status, rc, hole, contents) => {
-                let rep_str = match rep {
-                    RepChoice::OptimizedMut => "flat",
-                    RepChoice::FallbackImmut => "persistent",
-                };
-                let status_str = match status {
-                    ArrayStatus::Valid => "",
-                    ArrayStatus::Invalid => "invalid ",
+            Value::HoleArray(_len, hole, ptr) => {
+                let Value::ArrayContent(rc, contents) = &self[*ptr] else {
+                    panic!("expected array content")
                 };
                 let contents_str = contents
                     .iter()
@@ -227,10 +220,7 @@ impl Heap<'_> {
                     })
                     .collect::<Vec<String>>()
                     .join(",");
-                format![
-                    "{}{} hole array rc:{} [{}]",
-                    status_str, rep_str, rc, contents_str
-                ]
+                format!["hole array rc:{} [{}]", rc, contents_str]
             }
             Value::Tuple(contents) => {
                 let contents_str = contents
@@ -245,20 +235,30 @@ impl Heap<'_> {
                 variant_id.0,
                 self.value_to_str(*heap_id)
             ],
-            Value::Box(rc, heap_id) => format!["box rc:{} ({})", rc, self.value_to_str(*heap_id)],
-            Value::Custom(type_id, heap_id) => {
-                format!["custom #{} ({})", type_id.0, self.value_to_str(*heap_id)]
+            Value::Box(rc, heap_id) => {
+                format!["box rc:{} ({})", rc, self.value_to_str(*heap_id)]
             }
         }
+    }
+
+    fn to_str(&self) -> String {
+        (0..self.values.len())
+            .filter(|i| {
+                matches!(
+                    self.values[*i],
+                    Value::Array(_, _) | Value::HoleArray(_, _, _) | Value::Box(_, _)
+                )
+            })
+            .map(|i| format!["{}", self.value_to_str(HeapId(i))])
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn assert_everything_else_deallocated(&self) {
         let mut not_freed_values = vec![];
         for (index, value) in self.values.iter().enumerate() {
             match value {
-                Value::Box(rc, _)
-                | Value::Array(_, _, rc, _)
-                | Value::HoleArray(_, _, rc, _, _) => {
+                Value::Box(rc, _) | Value::ArrayContent(rc, _) => {
                     if *rc != 0 {
                         not_freed_values.push(index);
                     }
@@ -267,128 +267,285 @@ impl Heap<'_> {
             }
         }
         for value in &not_freed_values {
-            println!["{}", self.value_to_str(HeapId(*value))]
+            println![
+                "NONZERO RC: HeapId({}), {}",
+                value,
+                self.value_to_str(HeapId(*value))
+            ]
         }
 
         if not_freed_values.len() != 0 {
             panic!["rc != 0 at end of main"];
         }
     }
-
-    fn maybe_invalidate(&mut self, heap_id: HeapId) {
-        let kind = &mut self[heap_id];
-        if let Value::Array(rep, status, _rc, _values)
-        | Value::HoleArray(rep, status, _rc, _, _values) = kind
-        {
-            if *rep == RepChoice::OptimizedMut {
-                *status = ArrayStatus::Invalid;
-            }
-        } else {
-            unreachable![];
-        }
-    }
 }
 
-fn retain(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
+fn retain(heap: &mut Heap, scheme: &ModeScheme, heap_id: HeapId, stacktrace: StackTrace) {
     let kind = &mut heap[heap_id];
-
-    kind.assert_live(stacktrace.add_frame("retain assert live".into()));
 
     match kind {
         Value::Bool(_) | Value::Num(_) => {}
-        Value::Tuple(contents) => {
-            for sub_heap_id in contents.clone() {
+        Value::Tuple(content) => {
+            let content = content.clone();
+            for sub_heap_id in content {
                 retain(
                     heap,
+                    scheme,
                     sub_heap_id,
-                    stacktrace.add_frame("retaining subtuple".into()),
+                    stacktrace.add_frame("retain subtuple"),
                 );
             }
         }
-        Value::Array(_, _, rc, _) | Value::HoleArray(_, _, rc, _, _) | Value::Box(rc, _) => {
-            *rc += 1;
-        }
-        Value::Variant(_, content) | Value::Custom(_, content) => {
+        Value::Variant(_idx, content) => {
             let content = content.clone();
             retain(
                 heap,
+                scheme,
                 content,
-                stacktrace.add_frame("retaining subthing".into()),
+                stacktrace.add_frame("retain subthing"),
             );
+        }
+        Value::Array(_, None) => {}
+        Value::Array(_, Some(ptr)) | Value::HoleArray(_, _, ptr) => {
+            let ptr = *ptr;
+            retain(heap, scheme, ptr, stacktrace);
+        }
+        Value::ArrayContent(rc, _) | Value::Box(rc, _) => {
+            *rc += 1;
         }
     }
 }
 
-fn release(heap: &mut Heap, heap_id: HeapId, stacktrace: StackTrace) {
+fn derived_retain(
+    custom_schemes: &IdVec<ModeSchemeId, ModeScheme>,
+    heap: &mut Heap,
+    heap_id: HeapId,
+    scheme: &ModeScheme,
+    stacktrace: StackTrace,
+) {
     let kind = &mut heap[heap_id];
 
-    kind.assert_live(stacktrace.add_frame("release assert live".into()));
-
-    match kind {
-        Value::Bool(_) | Value::Num(_) => {}
-        Value::Tuple(contents) => {
-            for sub_heap_id in contents.clone() {
-                release(
+    match (kind, scheme) {
+        (Value::Bool(_), ModeScheme::Bool) => {}
+        (Value::Num(_), ModeScheme::Num(_)) => {}
+        (Value::Tuple(content), ModeScheme::Tuple(schemes)) => {
+            let content = content.clone();
+            for (sub_heap_id, scheme) in content.iter().zip_eq(schemes) {
+                derived_retain(
+                    custom_schemes,
                     heap,
-                    sub_heap_id,
-                    stacktrace.add_frame("releasing subtuple".into()),
+                    *sub_heap_id,
+                    scheme,
+                    stacktrace.add_frame("derived retain subtuple"),
                 );
             }
         }
-        Value::Array(_, _, rc, contents) | Value::HoleArray(_, _, rc, _, contents) => {
-            if *rc == 0 {
-                stacktrace.panic(format!("releasing with rc 0, {:?}", kind));
+        (Value::Variant(idx, content), ModeScheme::Variants(schemes)) => {
+            let idx = *idx;
+            let content = content.clone();
+            derived_retain(
+                custom_schemes,
+                heap,
+                content,
+                &schemes[idx],
+                stacktrace.add_frame("derived retain subthing"),
+            );
+        }
+        (_, ModeScheme::Custom(scheme_id, _)) => {
+            derived_retain(
+                custom_schemes,
+                heap,
+                heap_id,
+                &custom_schemes[*scheme_id],
+                stacktrace.add_frame("derived retain subthing"),
+            );
+        }
+        (Value::Array(_, None), ModeScheme::Array(_, _)) => {}
+        (Value::Array(_, Some(ptr)), ModeScheme::Array(_, _))
+        | (Value::HoleArray(_, _, ptr), ModeScheme::HoleArray(_, _)) => {
+            let ptr = *ptr;
+            derived_retain(custom_schemes, heap, ptr, scheme, stacktrace)
+        }
+
+        (Value::ArrayContent(rc, _), ModeScheme::Array(mode, _))
+        | (Value::ArrayContent(rc, _), ModeScheme::HoleArray(mode, _))
+        | (Value::Box(rc, _), ModeScheme::Boxed(mode, _)) => {
+            if *mode == Mode::Owned {
+                *rc += 1;
             }
-            *rc -= 1;
-            if *rc == 0 {
-                for sub_heap_id in contents.clone() {
+        }
+        _ => stacktrace.panic("mismatched value and scheme"),
+    }
+}
+
+fn release(
+    custom_schemes: &IdVec<ModeSchemeId, ModeScheme>,
+    heap: &mut Heap,
+    heap_id: HeapId,
+    scheme: &ModeScheme,
+    stacktrace: StackTrace,
+) {
+    let kind = &mut heap[heap_id];
+    match (kind, scheme) {
+        (Value::Bool(_), ModeScheme::Bool) => {}
+        (Value::Num(_), ModeScheme::Num(_)) => {}
+        (Value::Tuple(content), ModeScheme::Tuple(schemes)) => {
+            let content = content.clone();
+            for (sub_heap_id, scheme) in content.iter().zip_eq(schemes) {
+                release(
+                    custom_schemes,
+                    heap,
+                    *sub_heap_id,
+                    scheme,
+                    stacktrace.add_frame("releasing subtuple"),
+                );
+            }
+        }
+        (Value::Variant(idx, content), ModeScheme::Variants(schemes)) => {
+            let idx = *idx;
+            let content = content.clone();
+            release(
+                custom_schemes,
+                heap,
+                content,
+                &schemes[idx],
+                stacktrace.add_frame("release subthing"),
+            );
+        }
+        (_, ModeScheme::Custom(scheme_id, _)) => {
+            release(
+                custom_schemes,
+                heap,
+                heap_id,
+                &custom_schemes[*scheme_id],
+                stacktrace.add_frame("release subthing"),
+            );
+        }
+        (Value::Array(_, None), ModeScheme::Array(_, _)) => {}
+
+        (Value::Array(_, Some(ptr)), ModeScheme::Array(mode, item_scheme)) => {
+            let ptr = *ptr;
+            let Value::ArrayContent(rc, content) = &mut heap[ptr] else {
+                panic!()
+            };
+            if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
+                }
+                *rc -= 1;
+
+                if *rc == 0 {
+                    for sub_heap_id in content.clone() {
+                        release(
+                            custom_schemes,
+                            heap,
+                            sub_heap_id,
+                            item_scheme,
+                            stacktrace.add_frame("releasing subthings"),
+                        );
+                    }
+                }
+            }
+        }
+        (Value::HoleArray(_, hole_idx, ptr), ModeScheme::HoleArray(mode, item_scheme)) => {
+            let hole_idx = *hole_idx;
+            let ptr = *ptr;
+            let Value::ArrayContent(rc, content) = &mut heap[ptr] else {
+                panic!();
+            };
+            if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format!["releasing with rc 0, array {:?}", content]);
+                }
+                *rc -= 1;
+
+                if *rc == 0 {
+                    for (i, sub_heap_id) in content.clone().iter().enumerate() {
+                        if i as i64 != hole_idx {
+                            release(
+                                custom_schemes,
+                                heap,
+                                *sub_heap_id,
+                                item_scheme,
+                                stacktrace.add_frame("releasing subthings"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        (Value::ArrayContent(_rc, _content), ModeScheme::Array(_mode, _scheme))
+        | (Value::ArrayContent(_rc, _content), ModeScheme::HoleArray(_mode, _scheme)) => {
+            panic!()
+        }
+        (Value::Box(rc, content), ModeScheme::Boxed(mode, scheme)) => {
+            if *mode == Mode::Owned {
+                if *rc == 0 {
+                    stacktrace.panic(format![
+                        "releasing with rc 0, box {:?} {}",
+                        content, heap_id.0
+                    ]);
+                }
+                *rc -= 1;
+                let content = *content;
+                if *rc == 0 {
                     release(
+                        custom_schemes,
                         heap,
-                        sub_heap_id,
-                        stacktrace.add_frame("releasing subthings".into()),
+                        content,
+                        scheme,
+                        stacktrace.add_frame("releasing subthing"),
                     );
                 }
             }
         }
-        Value::Box(rc, content) => {
-            let content = content.clone();
-            if *rc == 0 {
-                stacktrace.panic(format!("releasing with rc 0, {:?}", kind));
-            }
-            *rc -= 1;
-            if *rc == 0 {
-                release(
-                    heap,
-                    content,
-                    stacktrace.add_frame("releasing subthing".into()),
-                );
-            }
-        }
-        Value::Variant(_, content) | Value::Custom(_, content) => {
-            let content2 = content.clone();
-            release(
-                heap,
-                content2,
-                stacktrace.add_frame("release subthing".into()),
-            );
+        (kind, scheme) => {
+            stacktrace.panic(format![
+                "value is not compatible with scheme:\n  - value: {:?}\n  - scheme: {:?}",
+                kind, scheme
+            ]);
         }
     }
 }
 
-fn typecheck_many(heap: &Heap, heap_ids: &[HeapId], type_: &Type, stacktrace: StackTrace) {
+fn typecheck_many(
+    heap: &Heap,
+    heap_ids: &[HeapId],
+    type_: &Type,
+    seen: &BTreeSet<HeapId>,
+    stacktrace: StackTrace,
+) {
     for heap_id in heap_ids {
-        typecheck(
+        typecheck_rec(
             heap,
             *heap_id,
             type_,
-            stacktrace.add_frame("checking array contents".into()),
+            &seen,
+            stacktrace.add_frame("checking array contents"),
         );
     }
 }
 
 fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace) {
-    let val = &heap[heap_id];
-    let kind = &val;
+    typecheck_rec(heap, heap_id, type_, &BTreeSet::new(), stacktrace)
+}
+
+fn typecheck_rec(
+    heap: &Heap,
+    heap_id: HeapId,
+    type_: &Type,
+    seen: &BTreeSet<HeapId>,
+    stacktrace: StackTrace,
+) {
+    if seen.contains(&heap_id) {
+        stacktrace.panic("encountered recursive data structure")
+    }
+
+    let original_seen = seen.clone();
+    let mut seen = seen.clone();
+
+    seen.insert(heap_id);
+    let kind = &heap[heap_id];
 
     match type_ {
         Type::Bool => {
@@ -419,39 +576,47 @@ fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace)
             };
         }
 
-        Type::Array(rep, item_type) => {
-            let array_type = match rep {
-                RepChoice::OptimizedMut => "flat array",
-                RepChoice::FallbackImmut => "persistent array",
-            };
-
-            if let Value::Array(_rep, _status, _rc, values) = kind {
-                typecheck_many(
-                    heap,
-                    &values,
-                    item_type,
-                    stacktrace.add_frame("typechecking array interior".into()),
-                );
+        Type::Array(item_type) => {
+            if let Value::Array(_, ptr) = kind {
+                match ptr {
+                    Some(ptr) => {
+                        if let Value::ArrayContent(_, values) = &heap[*ptr] {
+                            typecheck_many(
+                                heap,
+                                &values,
+                                item_type,
+                                &seen,
+                                stacktrace.add_frame("typechecking array interior"),
+                            );
+                        } else {
+                            stacktrace
+                                .panic(format!["expected array content received {:?}", heap[*ptr]]);
+                        }
+                    }
+                    None => {
+                        // pass
+                    }
+                }
             } else {
-                stacktrace.panic(format!["expected a {} received {:?}", array_type, kind]);
+                stacktrace.panic(format!["expected an array received {:?}", kind]);
             }
         }
 
-        Type::HoleArray(rep, item_type) => {
-            let array_type = match rep {
-                RepChoice::OptimizedMut => "flat hole array",
-                RepChoice::FallbackImmut => "persistent hole array",
-            };
-
-            if let Value::HoleArray(_rep, _status, _index, _rc, values) = kind {
-                typecheck_many(
-                    heap,
-                    &values,
-                    item_type,
-                    stacktrace.add_frame("typechecking array interior".into()),
-                );
+        Type::HoleArray(item_type) => {
+            if let Value::HoleArray(_, _, ptr) = kind {
+                if let Value::ArrayContent(_, values) = &heap[*ptr] {
+                    typecheck_many(
+                        heap,
+                        &values,
+                        item_type,
+                        &seen,
+                        stacktrace.add_frame("typechecking array interior"),
+                    );
+                } else {
+                    stacktrace.panic(format!["expected array content received {:?}", heap[*ptr]]);
+                }
             } else {
-                stacktrace.panic(format!["expected a {} received {:?}", array_type, kind]);
+                stacktrace.panic(format!["expected an array received {:?}", kind]);
             }
         }
 
@@ -466,11 +631,12 @@ fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace)
                 }
 
                 for (item_type, value) in item_types.iter().zip(values.iter()) {
-                    typecheck(
+                    typecheck_rec(
                         heap,
                         *value,
                         &*item_type,
-                        stacktrace.add_frame("typechecking tuple interior".into()),
+                        &seen,
+                        stacktrace.add_frame("typechecking tuple interior"),
                     );
                 }
             } else {
@@ -488,11 +654,12 @@ fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace)
                     ])
                 }
 
-                typecheck(
+                typecheck_rec(
                     heap,
                     *heap_id,
                     &variants[variant_id],
-                    stacktrace.add_frame("typechecking variant interior".into()),
+                    &seen,
+                    stacktrace.add_frame("typechecking variant interior"),
                 );
             } else {
                 stacktrace.panic(format!["expected a variant received {:?}", kind]);
@@ -501,11 +668,12 @@ fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace)
 
         Type::Boxed(boxed_type) => {
             if let Value::Box(_rc, heap_id) = kind {
-                typecheck(
+                typecheck_rec(
                     heap,
                     *heap_id,
                     &*boxed_type,
-                    stacktrace.add_frame("typechecking box interior".into()),
+                    &seen,
+                    stacktrace.add_frame("typechecking box interior"),
                 );
             } else {
                 stacktrace.panic(format!["expected a box received {:?}", kind]);
@@ -513,29 +681,20 @@ fn typecheck(heap: &Heap, heap_id: HeapId, type_: &Type, stacktrace: StackTrace)
         }
 
         Type::Custom(custom_type_id) => {
-            if let Value::Custom(type_id, heap_id) = kind {
-                if *custom_type_id != *type_id {
-                    stacktrace.panic(format![
-                        "differing custom type ids {:?} != {:?}",
-                        *custom_type_id, *type_id
-                    ]);
-                }
-
-                typecheck(
-                    heap,
-                    *heap_id,
-                    &heap.program.custom_types[custom_type_id],
-                    stacktrace,
-                );
-            } else {
-                stacktrace.panic(format!["expected a custom received {:?}", kind]);
-            }
+            let customs = &heap.program.custom_types.types;
+            typecheck_rec(
+                heap,
+                heap_id,
+                &customs[*custom_type_id],
+                &original_seen,
+                stacktrace.add_frame("typechecking custom interior"),
+            );
         }
     }
 }
 
 fn unwrap_bool(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> bool {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap bool".into()));
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap bool"));
     if let Value::Bool(val) = kind {
         *val
     } else {
@@ -544,7 +703,7 @@ fn unwrap_bool(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> bool {
 }
 
 fn unwrap_byte(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<u8> {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap byte".into()));
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap byte"));
     if let Value::Num(NumValue::Byte(val)) = kind {
         *val
     } else {
@@ -553,7 +712,7 @@ fn unwrap_byte(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping
 }
 
 fn unwrap_int(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<i64> {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap int".into()));
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap int"));
     if let Value::Num(NumValue::Int(val)) = kind {
         *val
     } else {
@@ -562,7 +721,7 @@ fn unwrap_int(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<
 }
 
 fn unwrap_float(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> f64 {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap float".into()));
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap float"));
     if let Value::Num(NumValue::Float(val)) = kind {
         *val
     } else {
@@ -571,7 +730,7 @@ fn unwrap_float(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> f64 {
 }
 
 fn unwrap_pair(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (HeapId, HeapId) {
-    let pair = unwrap_tuple(heap, heap_id, stacktrace.add_frame("unwrap pair".into()));
+    let pair = unwrap_tuple(heap, heap_id, stacktrace.add_frame("unwrap pair"));
     if pair.len() != 2 {
         stacktrace.panic(format!["expected a pair, received {:?}", pair]);
     }
@@ -583,22 +742,10 @@ fn unwrap_binop_bytes(
     heap_id: HeapId,
     stacktrace: StackTrace,
 ) -> (Wrapping<u8>, Wrapping<u8>) {
-    let (lhs_id, rhs_id) = unwrap_pair(
-        heap,
-        heap_id,
-        stacktrace.add_frame("unwrap binop bytes".into()),
-    );
+    let (lhs_id, rhs_id) = unwrap_pair(heap, heap_id, stacktrace.add_frame("unwrap binop bytes"));
     (
-        unwrap_byte(
-            heap,
-            lhs_id,
-            stacktrace.add_frame("unwrap binop bytes".into()),
-        ),
-        unwrap_byte(
-            heap,
-            rhs_id,
-            stacktrace.add_frame("unwrap binop bytes".into()),
-        ),
+        unwrap_byte(heap, lhs_id, stacktrace.add_frame("unwrap binop bytes")),
+        unwrap_byte(heap, rhs_id, stacktrace.add_frame("unwrap binop bytes")),
     )
 }
 
@@ -607,121 +754,42 @@ fn unwrap_binop_ints(
     heap_id: HeapId,
     stacktrace: StackTrace,
 ) -> (Wrapping<i64>, Wrapping<i64>) {
-    let (lhs_id, rhs_id) = unwrap_pair(
-        heap,
-        heap_id,
-        stacktrace.add_frame("unwrap binop ints".into()),
-    );
+    let (lhs_id, rhs_id) = unwrap_pair(heap, heap_id, stacktrace.add_frame("unwrap binop ints"));
     (
-        unwrap_int(
-            heap,
-            lhs_id,
-            stacktrace.add_frame("unwrap binop ints".into()),
-        ),
-        unwrap_int(
-            heap,
-            rhs_id,
-            stacktrace.add_frame("unwrap binop ints".into()),
-        ),
+        unwrap_int(heap, lhs_id, stacktrace.add_frame("unwrap binop ints")),
+        unwrap_int(heap, rhs_id, stacktrace.add_frame("unwrap binop ints")),
     )
 }
 
 fn unwrap_binop_floats(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (f64, f64) {
-    let (lhs_id, rhs_id) = unwrap_pair(
-        heap,
-        heap_id,
-        stacktrace.add_frame("unwrap binop floats".into()),
-    );
+    let (lhs_id, rhs_id) = unwrap_pair(heap, heap_id, stacktrace.add_frame("unwrap binop floats"));
     (
-        unwrap_float(
-            heap,
-            lhs_id,
-            stacktrace.add_frame("unwrap binop floats".into()),
-        ),
-        unwrap_float(
-            heap,
-            rhs_id,
-            stacktrace.add_frame("unwrap binop floats".into()),
-        ),
+        unwrap_float(heap, lhs_id, stacktrace.add_frame("unwrap binop floats")),
+        unwrap_float(heap, rhs_id, stacktrace.add_frame("unwrap binop floats")),
     )
 }
 
-fn unwrap_array(
-    heap: &Heap,
-    heap_id: HeapId,
-    rep: RepChoice,
+fn unwrap_array_content<'a>(
+    heap: &'a mut Heap,
+    ptr: HeapId,
     stacktrace: StackTrace,
-) -> Vec<HeapId> {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap array".into()));
-    if let Value::Array(runtime_rep, _status, _rc, values) = kind {
-        if *runtime_rep != rep {
-            stacktrace.panic(format![
-                "expceted an array of different type, received {:?}",
-                *kind
-            ]);
+) -> &'a mut Vec<HeapId> {
+    match &mut heap[ptr] {
+        Value::ArrayContent(rc, content) => {
+            if *rc <= 0 {
+                stacktrace.panic(format!["accessing rc {rc} array"]);
+            } else {
+                content
+            }
         }
-        values.clone()
-    } else {
-        stacktrace.panic(format!["expected an array received {:?}", kind]);
-    }
-}
-
-fn unwrap_array_retain(
-    heap: &mut Heap,
-    heap_id: HeapId,
-    rep: RepChoice,
-    stacktrace: StackTrace,
-) -> Vec<HeapId> {
-    let result = unwrap_array(heap, heap_id, rep, stacktrace.clone());
-    for &item_id in &result {
-        retain(
-            heap,
-            item_id,
-            stacktrace.add_frame("unwrap array retain".into()),
-        );
-    }
-    result
-}
-
-fn unwrap_hole_array(
-    heap: &Heap,
-    heap_id: HeapId,
-    rep: RepChoice,
-    stacktrace: StackTrace,
-) -> (i64, Vec<HeapId>) {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap hole array".into()));
-    if let Value::HoleArray(runtime_rep, _status, _rc, index, values) = kind {
-        if *runtime_rep != rep {
-            stacktrace.panic(format![
-                "expceted an array of different type, received {:?}",
-                *kind
-            ]);
+        kind => {
+            stacktrace.panic(format!["expected array content received {:?}", kind]);
         }
-        (*index, values.clone())
-    } else {
-        stacktrace.panic(format!["expected a hole array received {:?}", kind]);
     }
-}
-
-fn unwrap_hole_array_retain(
-    heap: &mut Heap,
-    heap_id: HeapId,
-    rep: RepChoice,
-    stacktrace: StackTrace,
-) -> (i64, Vec<HeapId>) {
-    let (idx, result) = unwrap_hole_array(heap, heap_id, rep, stacktrace.clone());
-    for &item_id in &result {
-        retain(
-            heap,
-            item_id,
-            stacktrace.add_frame("unwrap hole array retain".into()),
-        );
-    }
-    (idx, result)
 }
 
 fn unwrap_tuple(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<HeapId> {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap tuple".into()));
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap tuple"));
     if let Value::Tuple(values) = kind {
         values.clone()
     } else {
@@ -730,7 +798,7 @@ fn unwrap_tuple(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Vec<Hea
 }
 
 fn unwrap_variant(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (VariantId, HeapId) {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap variant".into()));
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap variant"));
     if let Value::Variant(variant_id, heap_id) = kind {
         (*variant_id, *heap_id)
     } else {
@@ -739,20 +807,11 @@ fn unwrap_variant(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (Vari
 }
 
 fn unwrap_boxed(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> HeapId {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap boxed".into()));
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap boxed"));
     if let Value::Box(_rc, heap_id) = kind {
         *heap_id
     } else {
         stacktrace.panic(format!["expected a box received {:?}", kind]);
-    }
-}
-
-fn unwrap_custom(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (CustomTypeId, HeapId) {
-    let kind = &heap[heap_id].assert_live(stacktrace.add_frame("unwrap custom".into()));
-    if let Value::Custom(type_id, heap_id) = kind {
-        (*type_id, *heap_id)
-    } else {
-        stacktrace.panic(format!["expected a custom received {:?}", kind]);
     }
 }
 
@@ -770,6 +829,53 @@ fn bounds_check(stderr: &mut dyn Write, len: usize, index: i64) -> Result<(), Ex
             Err(ExitStatus::Failure(Some(1)))
         }
     }
+}
+
+fn obtain_unique<'a>(
+    custom_schemes: &IdVec<ModeSchemeId, ModeScheme>,
+    ptr: HeapId,
+    scheme: &ModeScheme,
+    heap: &'a mut Heap,
+    stacktrace: StackTrace,
+) -> HeapId {
+    assert_live(&heap, ptr, stacktrace.add_frame("obtain unique"));
+
+    let Value::ArrayContent(rc, values) = &mut heap[ptr] else {
+        stacktrace.panic(format!["expected array content received {:?}", heap[ptr]]);
+    };
+
+    if *rc == 1 {
+        return ptr;
+    } else {
+        let values = values.clone();
+        *rc -= 1;
+
+        let (ModeScheme::Array(mode, item_scheme) | ModeScheme::HoleArray(mode, item_scheme)) =
+            scheme
+        else {
+            stacktrace.panic(format!["expected an array scheme, got {:?}", scheme]);
+        };
+        if *mode != Mode::Owned {
+            stacktrace.panic(format!["expected an owned array"]);
+        }
+        for &item_id in &values {
+            derived_retain(
+                custom_schemes,
+                heap,
+                item_id,
+                item_scheme,
+                stacktrace.add_frame("obtain unique"),
+            );
+        }
+
+        heap.add(Value::ArrayContent(1, values.clone()))
+    }
+}
+
+fn new_array(heap: &mut Heap, values: Vec<HeapId>) -> HeapId {
+    let content_id = heap.add(Value::ArrayContent(1, values.clone()));
+    let heap_id = heap.add(Value::Array(values.len(), Some(content_id)));
+    heap_id
 }
 
 // This "red zone" value depends on the maximum stack space required by `interpret_expr`, which is
@@ -791,6 +897,7 @@ impl From<ExitStatus> for Interruption {
 }
 
 fn interpret_call(
+    tail_renderer: &TailFuncRenderer<CustomFuncId>,
     func_id: CustomFuncId,
     arg_id: HeapId,
     stdin: &mut dyn BufRead,
@@ -801,15 +908,20 @@ fn interpret_call(
     stacktrace: StackTrace,
 ) -> Result<HeapId, ExitStatus> {
     let func = &program.funcs[func_id];
+    let func_renderer = FuncRenderer::from_symbols(&func.tail_func_symbols);
 
     typecheck(
         heap,
         arg_id,
         &func.arg_type,
-        stacktrace.add_frame(format!["typecheck function argument {:?}", func_id]),
+        stacktrace.add_frame(format![
+            "typecheck function argument {}",
+            tail_renderer.render(func_id)
+        ]),
     );
 
     let mut result = interpret_expr(
+        tail_renderer,
         &func.body,
         stdin,
         stdout,
@@ -817,7 +929,11 @@ fn interpret_call(
         program,
         &Locals::new(arg_id),
         heap,
-        stacktrace.add_frame(format!["func: {:?} arg: {:?}", func_id, arg_id]),
+        stacktrace.add_frame(format![
+            "func: {} arg: {:?}",
+            tail_renderer.render(func_id),
+            arg_id
+        ]),
     );
 
     while let Err(Interruption::TailCall(tail_id, tail_arg)) = result {
@@ -828,12 +944,14 @@ fn interpret_call(
             tail_arg,
             &tail_func.arg_type,
             stacktrace.add_frame(format![
-                "typecheck tail function argument {:?} {:?}",
-                func_id, tail_id
+                "typecheck tail function argument {} {}",
+                tail_renderer.render(func_id),
+                func_renderer.render(tail_id)
             ]),
         );
 
         result = interpret_expr(
+            tail_renderer,
             &tail_func.body,
             stdin,
             stdout,
@@ -842,8 +960,10 @@ fn interpret_call(
             &Locals::new(tail_arg),
             heap,
             stacktrace.add_frame(format![
-                "tail func: {:?} {:?} arg: {:?}",
-                func_id, tail_id, arg_id
+                "tail func: {} {} arg: {:?}",
+                tail_renderer.render(func_id),
+                func_renderer.render(tail_id),
+                arg_id
             ]),
         );
     }
@@ -854,7 +974,10 @@ fn interpret_call(
                 heap,
                 ret_id,
                 &func.ret_type,
-                stacktrace.add_frame(format!["typecheck function return: {:?}", func_id]),
+                stacktrace.add_frame(format![
+                    "typecheck function return: {}",
+                    tail_renderer.render(func_id)
+                ]),
             );
 
             Ok(ret_id)
@@ -864,7 +987,26 @@ fn interpret_call(
     }
 }
 
+// We call this function when implementing built-ins that always take borrowed arguments under the
+// normal rc elision, but owned arguments under Perceus. This is equivalent to calling `release`,
+// but better expresses the intent of the caller.
+fn discard_owned_input(
+    custom_schemes: &IdVec<ModeSchemeId, ModeScheme>,
+    heap: &mut Heap,
+    heap_id: HeapId,
+    scheme: &ModeScheme,
+    stacktrace: StackTrace,
+) {
+    match scheme {
+        ModeScheme::Array(_, _) | ModeScheme::HoleArray(_, _) | ModeScheme::Boxed(_, _) => {}
+        _ => stacktrace.panic("expected an array or box type"),
+    };
+    // println!["RELEASING {}", heap.value_to_str(heap_id)];
+    release(custom_schemes, heap, heap_id, scheme, stacktrace);
+}
+
 fn interpret_expr(
+    func_renderer: &TailFuncRenderer<CustomFuncId>,
     expr: &Expr,
     stdin: &mut dyn BufRead,
     stdout: &mut dyn Write,
@@ -879,6 +1021,7 @@ fn interpret_expr(
             Expr::Local(local_id) => locals[local_id],
 
             Expr::Call(func_id, arg_id) => interpret_call(
+                func_renderer,
                 *func_id,
                 locals[arg_id],
                 stdin,
@@ -897,11 +1040,12 @@ fn interpret_expr(
                 let discrim_value = unwrap_bool(
                     heap,
                     locals[discrim_id],
-                    stacktrace.add_frame("computing discriminant of if".into()),
+                    stacktrace.add_frame("computing discriminant of if"),
                 );
 
                 if discrim_value {
                     interpret_expr(
+                        func_renderer,
                         then_branch,
                         stdin,
                         stdout,
@@ -909,10 +1053,11 @@ fn interpret_expr(
                         program,
                         locals,
                         heap,
-                        stacktrace.add_frame("going into if branch".into()),
+                        stacktrace.add_frame("going into if branch"),
                     )?
                 } else {
                     interpret_expr(
+                        func_renderer,
                         else_branch,
                         stdin,
                         stdout,
@@ -920,7 +1065,7 @@ fn interpret_expr(
                         program,
                         locals,
                         heap,
-                        stacktrace.add_frame("going into else branch".into()),
+                        stacktrace.add_frame("going into else branch"),
                     )?
                 }
             }
@@ -928,8 +1073,9 @@ fn interpret_expr(
             Expr::LetMany(bindings, final_local_id) => {
                 let mut new_locals = locals.clone();
 
-                for (expected_type, let_expr) in bindings {
+                for (expected_type, let_expr, _) in bindings {
                     let local_heap_id = interpret_expr(
+                        func_renderer,
                         let_expr,
                         stdin,
                         stdout,
@@ -957,19 +1103,15 @@ fn interpret_expr(
                 new_locals[final_local_id]
             }
 
-            // I hope I don't regret this
-            Expr::Unreachable(_) => panic!["Segmentation fault (core dumped)"],
+            Expr::Unreachable(_) => stacktrace.panic("encountered unreachable code"),
 
             Expr::Tuple(elem_ids) => heap.add(Value::Tuple(
                 elem_ids.iter().map(|elem_id| locals[*elem_id]).collect(),
             )),
 
             Expr::TupleField(tuple_id, index) => {
-                let tuple = unwrap_tuple(
-                    heap,
-                    locals[tuple_id],
-                    stacktrace.add_frame("tuple_field".into()),
-                );
+                let tuple =
+                    unwrap_tuple(heap, locals[tuple_id], stacktrace.add_frame("tuple_field"));
                 match tuple.get(*index) {
                     Some(heap_id) => *heap_id,
                     None => {
@@ -987,7 +1129,7 @@ fn interpret_expr(
                     heap,
                     heap_id,
                     &variants[variant_id],
-                    stacktrace.add_frame("wrap variant".into()),
+                    stacktrace.add_frame("wrap variant"),
                 );
 
                 heap.add(Value::Variant(*variant_id, heap_id))
@@ -999,10 +1141,10 @@ fn interpret_expr(
                     heap,
                     heap_id,
                     &Type::Variants(variants.clone()),
-                    stacktrace.add_frame("unwrap variant".into()),
+                    stacktrace.add_frame("unwrap variant"),
                 );
                 let (runtime_variant_id, local_variant_id) =
-                    unwrap_variant(heap, heap_id, stacktrace.add_frame("unwrap variant".into()));
+                    unwrap_variant(heap, heap_id, stacktrace.add_frame("unwrap variant"));
 
                 if *variant_id != runtime_variant_id {
                     stacktrace.panic(format![
@@ -1014,74 +1156,62 @@ fn interpret_expr(
                 local_variant_id
             }
 
-            Expr::WrapCustom(type_id, local_id) => {
-                let heap_id = locals[local_id];
+            // Customs don't exist in the dynamics; there is nothing to do operationally
+            Expr::WrapCustom(_, local_id) => locals[local_id],
+            Expr::UnwrapCustom(_, local_id) => locals[local_id],
 
-                heap.add(Value::Custom(*type_id, heap_id))
-            }
-
-            Expr::UnwrapCustom(custom_id, local_id) => {
-                let heap_id = locals[local_id];
-                let (runtime_custom_id, local_custom_id) =
-                    unwrap_custom(heap, heap_id, stacktrace.add_frame("unwrap custom".into()));
-
-                if runtime_custom_id != *custom_id {
-                    stacktrace.panic(format![
-                        "unwrap custom ids not equal, expected {:?} got {:?}",
-                        custom_id, runtime_custom_id
-                    ]);
-                }
-
-                local_custom_id
-            }
-
-            Expr::WrapBoxed(local_id, type_) => {
+            Expr::WrapBoxed(local_id, output_scheme) => {
+                let Type::Boxed(item_type) = output_scheme.as_type() else {
+                    stacktrace.panic(format!["expected a boxed type, got {:?}", output_scheme]);
+                };
                 typecheck(
                     heap,
                     locals[local_id],
-                    &type_,
-                    stacktrace.add_frame("wrap boxed typecheck".into()),
+                    &item_type,
+                    stacktrace.add_frame("wrap boxed typecheck"),
                 );
-                let heap_id = locals[local_id];
 
+                let heap_id = locals[local_id];
                 heap.add(Value::Box(1, heap_id))
             }
 
-            Expr::UnwrapBoxed(local_id, type_) => {
+            Expr::UnwrapBoxed(local_id, input_scheme, output_scheme) => {
                 let heap_id = locals[local_id];
                 let local_heap_id =
-                    unwrap_boxed(heap, heap_id, stacktrace.add_frame("unwrap boxed".into()));
+                    unwrap_boxed(heap, heap_id, stacktrace.add_frame("unwrap boxed"));
 
                 typecheck(
                     heap,
                     local_heap_id,
-                    &type_,
-                    stacktrace.add_frame("unwrap boxed typecheck".into()),
+                    &output_scheme.as_type(),
+                    stacktrace.add_frame("unwrap boxed typecheck"),
                 );
 
+                discard_owned_input(&program.schemes, heap, heap_id, input_scheme, stacktrace);
                 local_heap_id
             }
 
-            Expr::Retain(local_id, type_) => {
+            Expr::RcOp(scheme, RcOp::Retain, local_id) => {
                 typecheck(
                     heap,
                     locals[local_id],
-                    &type_,
-                    stacktrace.add_frame("retain typecheck".into()),
+                    &scheme.as_type(),
+                    stacktrace.add_frame("retain typecheck"),
                 );
-                retain(heap, locals[local_id], stacktrace);
+
+                retain(heap, scheme, locals[local_id], stacktrace);
 
                 HeapId(0)
             }
 
-            Expr::Release(local_id, type_) => {
+            Expr::RcOp(scheme, RcOp::Release, local_id) => {
                 typecheck(
                     heap,
                     locals[local_id],
-                    &type_,
-                    stacktrace.add_frame("retain typecheck".into()),
+                    &scheme.as_type(),
+                    stacktrace.add_frame("retain typecheck"),
                 );
-                release(heap, locals[local_id], stacktrace);
+                release(&program.schemes, heap, locals[local_id], scheme, stacktrace);
 
                 HeapId(0)
             }
@@ -1090,7 +1220,7 @@ fn interpret_expr(
                 let heap_id = locals[local_id];
 
                 let (local_variant_id, _local_heap_id) =
-                    unwrap_variant(heap, heap_id, stacktrace.add_frame("check variant".into()));
+                    unwrap_variant(heap, heap_id, stacktrace.add_frame("check variant"));
 
                 heap.add(Value::Bool(*variant_id == local_variant_id))
             }
@@ -1098,89 +1228,68 @@ fn interpret_expr(
             Expr::Intrinsic(Intrinsic::Not, local_id) => {
                 let heap_id = locals[local_id];
 
-                let value = !unwrap_bool(heap, heap_id, stacktrace.add_frame("check bool".into()));
+                let value = !unwrap_bool(heap, heap_id, stacktrace.add_frame("check bool"));
 
                 heap.add(Value::Bool(value))
             }
 
             Expr::Intrinsic(Intrinsic::AddByte, local_id) => {
-                let (lhs, rhs) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Byte(lhs + rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::AddInt, local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Int(lhs + rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::AddFloat, local_id) => {
-                let (lhs, rhs) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Float(lhs + rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::SubByte, local_id) => {
-                let (lhs, rhs) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Byte(lhs - rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::SubInt, local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Int(lhs - rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::SubFloat, local_id) => {
-                let (lhs, rhs) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Float(lhs - rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::MulByte, local_id) => {
-                let (lhs, rhs) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Byte(lhs * rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::MulInt, local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Int(lhs * rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::MulFloat, local_id) => {
-                let (lhs, rhs) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Num(NumValue::Float(lhs * rhs)))
             }
 
             Expr::Intrinsic(Intrinsic::DivByte, local_id) => {
-                let (numerator, divisor) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (numerator, divisor) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
 
                 if divisor.0 == 0 {
                     writeln!(stderr, "panicked due to division by zero").unwrap();
@@ -1192,7 +1301,7 @@ fn interpret_expr(
 
             Expr::Intrinsic(Intrinsic::DivInt, local_id) => {
                 let (numerator, divisor) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
 
                 if divisor.0 == 0 {
                     writeln!(stderr, "panicked due to division by zero").unwrap();
@@ -1203,182 +1312,136 @@ fn interpret_expr(
             }
 
             Expr::Intrinsic(Intrinsic::DivFloat, local_id) => {
-                let (numerator, divisor) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (numerator, divisor) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
 
                 heap.add(Value::Num(NumValue::Float(numerator / divisor)))
             }
 
             Expr::Intrinsic(Intrinsic::LtByte, local_id) => {
-                let (lhs, rhs) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs < rhs))
             }
 
             Expr::Intrinsic(Intrinsic::LtInt, local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs < rhs))
             }
 
             Expr::Intrinsic(Intrinsic::LtFloat, local_id) => {
-                let (lhs, rhs) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs < rhs))
             }
 
             Expr::Intrinsic(Intrinsic::LteByte, local_id) => {
-                let (lhs, rhs) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs <= rhs))
             }
 
             Expr::Intrinsic(Intrinsic::LteInt, local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs <= rhs))
             }
 
             Expr::Intrinsic(Intrinsic::LteFloat, local_id) => {
-                let (lhs, rhs) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs <= rhs))
             }
 
             Expr::Intrinsic(Intrinsic::GtByte, local_id) => {
-                let (lhs, rhs) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs > rhs))
             }
 
             Expr::Intrinsic(Intrinsic::GtInt, local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs > rhs))
             }
 
             Expr::Intrinsic(Intrinsic::GtFloat, local_id) => {
-                let (lhs, rhs) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs > rhs))
             }
 
             Expr::Intrinsic(Intrinsic::GteByte, local_id) => {
-                let (lhs, rhs) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs >= rhs))
             }
 
             Expr::Intrinsic(Intrinsic::GteInt, local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs >= rhs))
             }
 
             Expr::Intrinsic(Intrinsic::GteFloat, local_id) => {
-                let (lhs, rhs) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs >= rhs))
             }
 
             Expr::Intrinsic(Intrinsic::EqByte, local_id) => {
-                let (lhs, rhs) = unwrap_binop_bytes(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs == rhs))
             }
 
             Expr::Intrinsic(Intrinsic::EqInt, local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith".into()));
+                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs == rhs))
             }
 
             Expr::Intrinsic(Intrinsic::EqFloat, local_id) => {
-                let (lhs, rhs) = unwrap_binop_floats(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith".into()),
-                );
+                let (lhs, rhs) =
+                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
                 heap.add(Value::Bool(lhs == rhs))
             }
 
             // Don't negate a byte u dummy
             Expr::Intrinsic(Intrinsic::NegByte, local_id) => heap.add(Value::Num(NumValue::Byte(
-                -unwrap_byte(heap, locals[local_id], stacktrace.add_frame("arith".into())),
+                -unwrap_byte(heap, locals[local_id], stacktrace.add_frame("arith")),
             ))),
 
             Expr::Intrinsic(Intrinsic::NegInt, local_id) => heap.add(Value::Num(NumValue::Int(
-                -unwrap_int(heap, locals[local_id], stacktrace.add_frame("arith".into())),
+                -unwrap_int(heap, locals[local_id], stacktrace.add_frame("arith")),
             ))),
 
             Expr::Intrinsic(Intrinsic::NegFloat, local_id) => {
                 heap.add(Value::Num(NumValue::Float(-unwrap_float(
                     heap,
                     locals[local_id],
-                    stacktrace.add_frame("arith".into()),
+                    stacktrace.add_frame("arith"),
                 ))))
             }
 
             Expr::Intrinsic(Intrinsic::ByteToInt, local_id) => {
                 heap.add(Value::Num(NumValue::Int(Wrapping(
-                    unwrap_byte(
-                        heap,
-                        locals[local_id],
-                        stacktrace.add_frame("byte_to_int".into()),
-                    )
-                    .0 as i64,
+                    unwrap_byte(heap, locals[local_id], stacktrace.add_frame("byte_to_int")).0
+                        as i64,
                 ))))
             }
 
             Expr::Intrinsic(Intrinsic::ByteToIntSigned, local_id) => {
                 heap.add(Value::Num(NumValue::Int(Wrapping(
-                    unwrap_byte(
-                        heap,
-                        locals[local_id],
-                        stacktrace.add_frame("byte_to_int".into()),
-                    )
-                    .0 as i8 as i64,
+                    unwrap_byte(heap, locals[local_id], stacktrace.add_frame("byte_to_int")).0 as i8
+                        as i64,
                 ))))
             }
 
             Expr::Intrinsic(Intrinsic::IntToByte, local_id) => {
                 heap.add(Value::Num(NumValue::Byte(Wrapping(
-                    unwrap_int(
-                        heap,
-                        locals[local_id],
-                        stacktrace.add_frame("int_to_byte".into()),
-                    )
-                    .0 as u8,
+                    unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_to_byte")).0 as u8,
                 ))))
             }
 
@@ -1386,12 +1449,11 @@ fn interpret_expr(
                 let args = unwrap_tuple(
                     heap,
                     locals[local_id],
-                    stacktrace.add_frame("int_shift_left".into()),
+                    stacktrace.add_frame("int_shift_left"),
                 );
                 assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_shift_left".into()));
-                let right =
-                    unwrap_int(heap, args[1], stacktrace.add_frame("int_shift_left".into()));
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_shift_left"));
+                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_shift_left"));
                 heap.add(Value::Num(NumValue::Int(Wrapping(
                     left.0 << (right.0 as u64 % 64),
                 ))))
@@ -1401,250 +1463,260 @@ fn interpret_expr(
                 let args = unwrap_tuple(
                     heap,
                     locals[local_id],
-                    stacktrace.add_frame("int_shift_right".into()),
+                    stacktrace.add_frame("int_shift_right"),
                 );
                 assert_eq!(args.len(), 2);
-                let left = unwrap_int(
-                    heap,
-                    args[0],
-                    stacktrace.add_frame("int_shift_right".into()),
-                );
-                let right = unwrap_int(
-                    heap,
-                    args[1],
-                    stacktrace.add_frame("int_shift_right".into()),
-                );
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_shift_right"));
+                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_shift_right"));
                 heap.add(Value::Num(NumValue::Int(Wrapping(
                     ((left.0 as u64) >> (right.0 as u64 % 64)) as i64,
                 ))))
             }
 
             Expr::Intrinsic(Intrinsic::IntBitAnd, local_id) => {
-                let args = unwrap_tuple(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("int_bit_and".into()),
-                );
+                let args =
+                    unwrap_tuple(heap, locals[local_id], stacktrace.add_frame("int_bit_and"));
                 assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_and".into()));
-                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_and".into()));
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_and"));
+                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_and"));
                 heap.add(Value::Num(NumValue::Int(left & right)))
             }
 
             Expr::Intrinsic(Intrinsic::IntBitOr, local_id) => {
-                let args = unwrap_tuple(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("int_bit_or".into()),
-                );
+                let args = unwrap_tuple(heap, locals[local_id], stacktrace.add_frame("int_bit_or"));
                 assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_or".into()));
-                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_or".into()));
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_or"));
+                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_or"));
                 heap.add(Value::Num(NumValue::Int(left | right)))
             }
 
             Expr::Intrinsic(Intrinsic::IntBitXor, local_id) => {
-                let args = unwrap_tuple(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("int_bit_xor".into()),
-                );
+                let args =
+                    unwrap_tuple(heap, locals[local_id], stacktrace.add_frame("int_bit_xor"));
                 assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_xor".into()));
-                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_xor".into()));
+                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_xor"));
+                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_xor"));
                 heap.add(Value::Num(NumValue::Int(left ^ right)))
             }
 
-            Expr::ArrayOp(rep, _item_type, ArrayOp::New()) => {
-                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, vec![]))
+            Expr::Intrinsic(Intrinsic::IntCtpop, local_id) => {
+                let value = unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_ctpop"));
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    value.0.count_ones() as i64
+                ))))
             }
 
-            Expr::ArrayOp(rep, _item_type, ArrayOp::Len(array_id)) => {
-                let array_heap_id = locals[array_id];
-
-                let array = unwrap_array(
-                    heap,
-                    array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("len".into()),
-                );
-
-                heap.add(Value::Num(NumValue::Int(Wrapping(array.len() as i64))))
+            Expr::Intrinsic(Intrinsic::IntCtlz, local_id) => {
+                let value = unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_ctlz"));
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    value.0.leading_zeros() as i64
+                ))))
             }
 
-            Expr::ArrayOp(rep, _item_type, ArrayOp::Push(array_id, item_id)) => {
-                let array_heap_id = locals[array_id];
+            Expr::Intrinsic(Intrinsic::IntCttz, local_id) => {
+                let value = unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_cttz"));
+                heap.add(Value::Num(NumValue::Int(Wrapping(
+                    value.0.trailing_zeros() as i64,
+                ))))
+            }
+
+            Expr::ArrayOp(_scheme, ArrayOp::New) => heap.add(Value::Array(0, None)),
+
+            Expr::ArrayOp(scheme, ArrayOp::Len(array_id)) => {
+                let array_id = locals[array_id];
+
+                // We *intentionally* avoid asserting that the array is live here. It needn't be
+                // since `len` does not access the heap under the LLVM backend.
+                let kind = &heap[array_id];
+                let result = match kind {
+                    Value::Array(len, _) => {
+                        heap.add(Value::Num(NumValue::Int(Wrapping(*len as i64))))
+                    }
+                    _ => {
+                        stacktrace.panic(format!["expected an array received {:?}", kind]);
+                    }
+                };
+
+                discard_owned_input(&program.schemes, heap, array_id, scheme, stacktrace);
+                result
+            }
+
+            Expr::ArrayOp(scheme, ArrayOp::Push(array_id, item_id)) => {
+                let array_id = locals[array_id];
                 let item_heap_id = locals[item_id];
-
-                let mut array = unwrap_array_retain(
-                    heap,
-                    array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("push".into()),
-                );
-
-                release(
-                    heap,
-                    array_heap_id,
-                    stacktrace.add_frame("release push".into()),
-                );
-
-                heap.maybe_invalidate(array_heap_id);
-
-                array.push(item_heap_id);
-
-                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array))
+                match &heap[array_id] {
+                    Value::Array(_, None) => new_array(heap, vec![item_heap_id]),
+                    Value::Array(len, Some(ptr)) => {
+                        let len = *len;
+                        let ptr = obtain_unique(
+                            &program.schemes,
+                            *ptr,
+                            scheme,
+                            heap,
+                            stacktrace.add_frame("array push"),
+                        );
+                        let array =
+                            unwrap_array_content(heap, ptr, stacktrace.add_frame("array push"));
+                        array.push(item_heap_id);
+                        heap.add(Value::Array(len + 1, Some(ptr)))
+                    }
+                    kind => {
+                        stacktrace.panic(format!["expected an array received {:?}", kind]);
+                    }
+                }
             }
 
-            Expr::ArrayOp(rep, _item_type, ArrayOp::Pop(array_id)) => {
-                let array_heap_id = locals[array_id];
+            Expr::ArrayOp(scheme, ArrayOp::Pop(array_id)) => {
+                let array_id = locals[array_id];
 
-                let mut array = unwrap_array_retain(
-                    heap,
-                    array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("pop".into()),
-                );
-
-                release(
-                    heap,
-                    array_heap_id,
-                    stacktrace.add_frame("release pop".into()),
-                );
-
-                heap.maybe_invalidate(array_heap_id);
-
-                let item_heap_id = match array.pop() {
-                    None => {
+                match &heap[array_id] {
+                    Value::Array(_len, None) => {
                         writeln!(stderr, "pop: empty array").unwrap();
                         return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
                     }
-                    Some(id) => id,
+                    Value::Array(len, Some(ptr)) => {
+                        let len = *len;
+                        if len == 0 {
+                            writeln!(stderr, "pop: empty array").unwrap();
+                            return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
+                        } else {
+                            let ptr = obtain_unique(
+                                &program.schemes,
+                                *ptr,
+                                scheme,
+                                heap,
+                                stacktrace.add_frame("array pop"),
+                            );
+
+                            let array =
+                                unwrap_array_content(heap, ptr, stacktrace.add_frame("array pop"));
+                            let item_heap_id = array.pop().unwrap();
+                            let array_id = heap.add(Value::Array(len - 1, Some(ptr)));
+                            heap.add(Value::Tuple(vec![array_id, item_heap_id]))
+                        }
+                    }
+                    kind => {
+                        stacktrace.panic(format!["expected an array received {:?}", kind]);
+                    }
+                }
+            }
+
+            Expr::ArrayOp(scheme, ArrayOp::Get(array_id, index_id)) => {
+                let array_heap_id = locals[array_id];
+                let index_heap_id = locals[index_id];
+
+                let index = unwrap_int(heap, index_heap_id, stacktrace.add_frame("get index"));
+
+                let result = match &heap[array_heap_id] {
+                    Value::Array(_, None) => {
+                        bounds_check(stderr, 0, index.0)?;
+                        unreachable!()
+                    }
+                    Value::Array(_, Some(ptr)) => {
+                        let array = unwrap_array_content(heap, *ptr, stacktrace.add_frame("get"));
+                        bounds_check(stderr, array.len(), index.0)?;
+
+                        array[index.0 as usize]
+                    }
+                    kind => {
+                        stacktrace.panic(format!["expected an array received {:?}", kind]);
+                    }
                 };
 
-                let new_array = heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array));
-                heap.add(Value::Tuple(vec![new_array, item_heap_id]))
+                discard_owned_input(&program.schemes, heap, array_heap_id, scheme, stacktrace);
+                result
             }
 
-            Expr::ArrayOp(rep, _item_type, ArrayOp::Get(array_id, index_id)) => {
-                let array_heap_id = locals[array_id];
+            Expr::ArrayOp(scheme, ArrayOp::Extract(array_id, index_id)) => {
+                let array_id = locals[array_id];
                 let index_heap_id = locals[index_id];
 
-                let array = unwrap_array(
-                    heap,
-                    array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("get array".into()),
-                );
-                let index = unwrap_int(
-                    heap,
-                    index_heap_id,
-                    stacktrace.add_frame("get index".into()),
-                );
+                let index = unwrap_int(heap, index_heap_id, stacktrace.add_frame("extract index"));
 
-                bounds_check(stderr, array.len(), index.0)?;
+                match &heap[array_id] {
+                    Value::Array(_, None) => {
+                        bounds_check(stderr, 0, index.0)?;
+                        unreachable!()
+                    }
+                    Value::Array(len, Some(ptr)) => {
+                        let len = *len;
+                        let ptr = obtain_unique(
+                            &program.schemes,
+                            *ptr,
+                            scheme,
+                            heap,
+                            stacktrace.add_frame("array pop"),
+                        );
 
-                array[index.0 as usize]
+                        let array =
+                            unwrap_array_content(heap, ptr, stacktrace.add_frame("array pop"));
+
+                        bounds_check(stderr, array.len(), index.0)?;
+
+                        let get_item = array[index.0 as usize];
+
+                        let hole_array_id = heap.add(Value::HoleArray(len, index.0, ptr));
+                        heap.add(Value::Tuple(vec![get_item, hole_array_id]))
+                    }
+                    kind => {
+                        stacktrace.panic(format!["expected an array received {:?}", kind]);
+                    }
+                }
             }
 
-            Expr::ArrayOp(rep, _item_type, ArrayOp::Extract(array_id, index_id)) => {
-                let array_heap_id = locals[array_id];
-                let index_heap_id = locals[index_id];
-
-                let array = unwrap_array_retain(
-                    heap,
-                    array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("extract array".into()),
-                );
-
-                release(
-                    heap,
-                    array_heap_id,
-                    stacktrace.add_frame("release extract".into()),
-                );
-
-                heap.maybe_invalidate(array_heap_id);
-
-                let index = unwrap_int(
-                    heap,
-                    index_heap_id,
-                    stacktrace.add_frame("extract index".into()),
-                );
-
-                let hole_array_id = heap.add(Value::HoleArray(
-                    *rep,
-                    ArrayStatus::Valid,
-                    1,
-                    index.0,
-                    array.clone(),
-                ));
-
-                bounds_check(stderr, array.len(), index.0)?;
-
-                let get_item = array[index.0 as usize];
-                retain(heap, get_item, stacktrace.add_frame("item retain".into()));
-                heap.add(Value::Tuple(vec![get_item, hole_array_id]))
-            }
-
-            Expr::ArrayOp(rep, _item_type, ArrayOp::Replace(array_id, item_id)) => {
+            Expr::ArrayOp(scheme, ArrayOp::Replace(array_id, item_id)) => {
                 let array_heap_id = locals[array_id];
                 let item_heap_id = locals[item_id];
+                match &heap[array_heap_id] {
+                    Value::HoleArray(len, idx, ptr) => {
+                        let len = *len;
+                        let idx = *idx;
+                        let ptr = obtain_unique(
+                            &program.schemes,
+                            *ptr,
+                            scheme,
+                            heap,
+                            stacktrace.add_frame("array replace"),
+                        );
 
-                let (index, mut array) = unwrap_hole_array_retain(
-                    heap,
-                    array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("replace array".into()),
-                );
+                        let array =
+                            unwrap_array_content(heap, ptr, stacktrace.add_frame("array replace"));
 
-                release(
-                    heap,
-                    array_heap_id,
-                    stacktrace.add_frame("release replace".into()),
-                );
+                        array[idx as usize] = item_heap_id;
 
-                heap.maybe_invalidate(array_heap_id);
+                        heap.add(Value::Array(len, Some(ptr)))
+                    }
 
-                bounds_check(stderr, array.len(), index)?;
-
-                let old_item_id = array[index as usize];
-                release(
-                    heap,
-                    old_item_id,
-                    stacktrace.add_frame("replace release item".into()),
-                );
-                array[index as usize] = item_heap_id;
-                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array))
+                    kind => {
+                        stacktrace.panic(format!["expected a hole array received {:?}", kind]);
+                    }
+                }
             }
 
-            Expr::ArrayOp(rep, _item_type, ArrayOp::Reserve(array_id, capacity_id)) => {
+            Expr::ArrayOp(_scheme, ArrayOp::Reserve(array_id, capacity_id)) => {
                 let array_heap_id = locals[array_id];
-                unwrap_int(
+                let index = unwrap_int(
                     heap,
                     locals[capacity_id],
-                    stacktrace.add_frame("reserve capacity".into()),
+                    stacktrace.add_frame("reserve capacity"),
                 );
 
-                let array = unwrap_array_retain(
-                    heap,
-                    array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("push".into()),
-                );
-
-                release(
-                    heap,
-                    array_heap_id,
-                    stacktrace.add_frame("release push".into()),
-                );
-
-                heap.maybe_invalidate(array_heap_id);
-
-                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, array))
+                match &mut heap[array_heap_id] {
+                    Value::Array(_len, None) => {
+                        if index.0 > 0 {
+                            new_array(heap, vec![])
+                        } else {
+                            array_heap_id
+                        }
+                    }
+                    Value::Array(_rc, _array) => array_heap_id,
+                    kind => {
+                        stacktrace.panic(format!["expected an array received {:?}", kind]);
+                    }
+                }
             }
 
-            Expr::IoOp(rep, IoOp::Input) => {
+            Expr::IoOp(IoOp::Input) => {
                 let mut input = String::new();
                 stdin
                     .read_line(&mut input)
@@ -1659,67 +1731,105 @@ fn interpret_expr(
                     heap_ids.push(heap.add(Value::Num(NumValue::Byte(Wrapping(byte)))));
                 }
 
-                heap.add(Value::Array(*rep, ArrayStatus::Valid, 1, heap_ids))
+                new_array(heap, heap_ids)
             }
 
-            Expr::IoOp(rep, IoOp::Output(array_id)) => {
+            Expr::IoOp(IoOp::Output(input_scheme, array_id)) => {
                 let array_heap_id = locals[array_id];
 
-                let array = unwrap_array(
+                let Value::Array(_, ptr) = heap[array_heap_id] else {
+                    stacktrace.add_frame("output").panic(format!(
+                        "expected an array received {:?}",
+                        heap[array_heap_id]
+                    ));
+                };
+
+                let result = match ptr {
+                    None => HeapId(0),
+
+                    Some(ptr) => {
+                        let array =
+                            unwrap_array_content(heap, ptr, stacktrace.add_frame("output")).clone();
+
+                        let mut bytes = vec![];
+                        for heap_id in array {
+                            bytes.push(unwrap_byte(
+                                heap,
+                                heap_id,
+                                stacktrace.add_frame("output byte"),
+                            ));
+                        }
+
+                        write!(
+                            stdout,
+                            "{}",
+                            String::from_utf8(bytes.iter().map(|&Wrapping(byte)| byte).collect())
+                                .expect("UTF-8 output error")
+                        )
+                        .expect("write failed");
+
+                        HeapId(0)
+                    }
+                };
+
+                // println!["DISCARDING {:?}", heap.value_to_str(array_heap_id)];
+                // println!["scheme {:?}", input_scheme];
+                discard_owned_input(
+                    &program.schemes,
                     heap,
                     array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("output".into()),
+                    input_scheme,
+                    stacktrace,
                 );
-
-                let mut bytes = vec![];
-                for heap_id in array {
-                    bytes.push(unwrap_byte(
-                        heap,
-                        heap_id,
-                        stacktrace.add_frame("output byte".into()),
-                    ));
-                }
-
-                write!(
-                    stdout,
-                    "{}",
-                    String::from_utf8(bytes.iter().map(|&Wrapping(byte)| byte).collect())
-                        .expect("UTF-8 output error")
-                )
-                .expect("write failed");
-
-                HeapId(0)
+                result
             }
 
-            Expr::Panic(_ret_type, rep, array_id) => {
+            Expr::Panic(_ret_type, input_scheme, array_id) => {
                 let array_heap_id = locals[array_id];
 
-                let array = unwrap_array(
+                let Value::Array(_, ptr) = heap[array_heap_id] else {
+                    stacktrace.add_frame("panic").panic(format!(
+                        "expected an array received {:?}",
+                        heap[array_heap_id]
+                    ));
+                };
+
+                let result = match ptr {
+                    None => HeapId(0),
+
+                    Some(ptr) => {
+                        let array =
+                            unwrap_array_content(heap, ptr, stacktrace.add_frame("panic")).clone();
+
+                        let mut bytes = vec![];
+                        for heap_id in array {
+                            bytes.push(unwrap_byte(
+                                heap,
+                                heap_id,
+                                stacktrace.add_frame("panic byte"),
+                            ));
+                        }
+
+                        write!(
+                            stderr,
+                            "{}",
+                            String::from_utf8(bytes.iter().map(|&Wrapping(byte)| byte).collect())
+                                .expect("UTF-8 output error")
+                        )
+                        .expect("write failed");
+
+                        return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
+                    }
+                };
+
+                discard_owned_input(
+                    &program.schemes,
                     heap,
                     array_heap_id,
-                    *rep,
-                    stacktrace.add_frame("panic".into()),
+                    input_scheme,
+                    stacktrace,
                 );
-
-                let mut bytes = vec![];
-                for heap_id in array {
-                    bytes.push(unwrap_byte(
-                        heap,
-                        heap_id,
-                        stacktrace.add_frame("panic byte".into()),
-                    ));
-                }
-
-                write!(
-                    stderr,
-                    "{}",
-                    String::from_utf8(bytes.iter().map(|&Wrapping(byte)| byte).collect())
-                        .expect("UTF-8 output error")
-                )
-                .expect("write failed");
-
-                return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
+                result
             }
 
             Expr::BoolLit(val) => heap.add(Value::Bool(*val)),
@@ -1735,8 +1845,10 @@ fn interpret_expr(
 
 pub fn interpret(stdio: Stdio, program: Program) -> Child {
     spawn_thread(stdio, move |stdin, stdout, stderr| {
+        let func_renderer = TailFuncRenderer::from_symbols(&program.func_symbols);
         let mut heap = Heap::new(&program);
         match interpret_call(
+            &func_renderer,
             program.main,
             HeapId(0),
             stdin,

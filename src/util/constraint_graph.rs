@@ -1,8 +1,9 @@
 use crate::util::graph;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 use std::collections::BTreeSet;
 
-id_type!(pub SolverVarId);
+#[id_type]
+pub struct SolverVarId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct VarConstraints<Requirement> {
@@ -47,16 +48,16 @@ impl<Requirement: Ord> ConstraintGraph<Requirement> {
 
     pub fn find_equiv_classes(&self) -> EquivClasses {
         let equality_graph = graph::Undirected::from_directed_unchecked(graph::Graph {
-            edges_out: self
-                .var_constraints
-                .map(|_, var_constraints| var_constraints.equalities.iter().cloned().collect()),
+            edges_out: self.var_constraints.map_refs(|_, var_constraints| {
+                var_constraints.equalities.iter().cloned().collect()
+            }),
         });
 
         let components = graph::connected_components(&equality_graph);
 
         let mut reverse_mapping: IdVec<EquivClass, _> = IdVec::new();
         let equiv_classes = {
-            let mut equiv_classes = IdVec::from_items(vec![None; self.var_constraints.len()]);
+            let mut equiv_classes = IdVec::from_vec(vec![None; self.var_constraints.len()]);
 
             for (equiv_class_idx, solver_vars) in components.iter().enumerate() {
                 {
@@ -70,7 +71,7 @@ impl<Requirement: Ord> ConstraintGraph<Requirement> {
                 }
             }
 
-            equiv_classes.into_mapped(|_, vars| vars.unwrap())
+            equiv_classes.map(|_, vars| vars.unwrap())
         };
 
         EquivClasses {
@@ -80,7 +81,8 @@ impl<Requirement: Ord> ConstraintGraph<Requirement> {
     }
 }
 
-id_type!(pub EquivClass);
+#[id_type]
+pub struct EquivClass(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct EquivClasses {

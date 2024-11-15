@@ -1,62 +1,65 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
+use crate::data::metadata::Metadata;
+use crate::data::obligation_annot_ast::CustomTypeId;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
-use crate::data::rc_specialized_ast as rc;
-use crate::data::repr_constrained_ast as constrain;
-use crate::data::repr_specialized_ast as special;
-use crate::data::repr_unified_ast as unif;
+use crate::data::rc_specialized_ast::{self as rc, ModeScheme, ModeSchemeId, RcOp};
 use crate::data::resolved_ast as res;
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub CustomFuncId);
+#[id_type]
+pub struct CustomFuncId(pub usize);
 
-id_type!(pub TailFuncId);
+#[id_type]
+pub struct TailFuncId(pub usize);
 
 #[derive(Clone, Debug)]
 pub enum Expr {
     Local(rc::LocalId),
     Call(Purity, CustomFuncId, rc::LocalId),
     TailCall(TailFuncId, rc::LocalId),
-    Branch(rc::LocalId, Vec<(special::Condition, Expr)>, special::Type),
-    LetMany(Vec<(special::Type, Expr)>, rc::LocalId),
+    LetMany(Vec<(rc::Type, Expr, Metadata)>, rc::LocalId),
+
+    If(rc::LocalId, Box<Expr>, Box<Expr>),
+    CheckVariant(first_ord::VariantId, rc::LocalId), // Returns a bool
+    Unreachable(rc::Type),
 
     Tuple(Vec<rc::LocalId>),
     TupleField(rc::LocalId, usize),
     WrapVariant(
-        IdVec<first_ord::VariantId, special::Type>,
+        IdVec<first_ord::VariantId, rc::Type>,
         first_ord::VariantId,
         rc::LocalId,
     ),
     UnwrapVariant(first_ord::VariantId, rc::LocalId),
     WrapBoxed(
         rc::LocalId,
-        special::Type, // Inner type
+        ModeScheme, // Output type
     ),
     UnwrapBoxed(
         rc::LocalId,
-        special::Type, // Inner type
+        ModeScheme, // Input type
+        ModeScheme, // Output type
     ),
-    WrapCustom(special::CustomTypeId, rc::LocalId),
-    UnwrapCustom(special::CustomTypeId, rc::LocalId),
+    WrapCustom(CustomTypeId, rc::LocalId),
+    UnwrapCustom(CustomTypeId, rc::LocalId),
 
-    RcOp(
-        rc::RcOp,
-        unif::ContainerType<constrain::RepChoice>,
-        special::Type,
+    RcOp(ModeScheme, RcOp, rc::LocalId),
+
+    Intrinsic(Intrinsic, rc::LocalId),
+    ArrayOp(ModeScheme, rc::ArrayOp),
+    IoOp(rc::IoOp),
+    Panic(
+        rc::Type,   // Output type
+        ModeScheme, // Input type
         rc::LocalId,
     ),
 
-    Intrinsic(Intrinsic, rc::LocalId),
-    ArrayOp(
-        constrain::RepChoice,
-        special::Type, // Item type
-        unif::ArrayOp,
+    ArrayLit(
+        ModeScheme,       // Scheme of *item*
+        Vec<rc::LocalId>, // Elements
     ),
-    IoOp(constrain::RepChoice, special::IoOp),
-    Panic(special::Type, constrain::RepChoice, rc::LocalId),
-
-    ArrayLit(constrain::RepChoice, special::Type, Vec<rc::LocalId>),
     BoolLit(bool),
     ByteLit(u8),
     IntLit(i64),
@@ -65,9 +68,15 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub struct TailFunc {
-    pub arg_type: special::Type,
+    pub arg_type: rc::Type,
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
+}
+
+#[derive(Clone, Debug)]
+pub enum TailFuncSymbols {
+    Acyclic(first_ord::FuncSymbols),
+    Cyclic,
 }
 
 #[derive(Clone, Debug)]
@@ -81,10 +90,11 @@ pub struct FuncDef {
     //
     // For functions which are not tail-recursive, the 'tail_funcs' vector should be empty.
     pub tail_funcs: IdVec<TailFuncId, TailFunc>,
+    pub tail_func_symbols: IdVec<TailFuncId, first_ord::FuncSymbols>,
 
     pub purity: Purity,
-    pub arg_type: special::Type,
-    pub ret_type: special::Type,
+    pub arg_type: rc::Type,
+    pub ret_type: rc::Type,
     pub body: Expr,
     pub profile_point: Option<prof::ProfilePointId>,
 }
@@ -92,8 +102,11 @@ pub struct FuncDef {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: IdVec<special::CustomTypeId, special::Type>,
+    pub custom_types: rc::CustomTypes,
+    pub custom_type_symbols: IdVec<CustomTypeId, first_ord::CustomTypeSymbols>,
     pub funcs: IdVec<CustomFuncId, FuncDef>,
+    pub func_symbols: IdVec<CustomFuncId, TailFuncSymbols>,
+    pub schemes: IdVec<ModeSchemeId, ModeScheme>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub main: CustomFuncId,
 }

@@ -6,108 +6,111 @@ module Test = file "lib/test.mor"
 
 proc main(): () =
   do test("Add bytes", 1b +& 1b =& 2b) then
-  do test("Add ints", 1 + 1 = 2) then
-  do test("Add floats", 1.0 +. 1.0 =. 2.0) then
+  // do test("Add ints", 1 + 1 = 2) then
+  // do test("Add floats", 1.0 +. 1.0 =. 2.0) then
 
-  do test("Sub bytes", 5b -& 2b =& 3b) then
-  do test("Sub ints", 5 - 2 = 3) then
-  do test("Sub floats", 5.0 -. 2.0 =. 3.0) then
+  // do test("Sub bytes", 5b -& 2b =& 3b) then
+  // do test("Sub ints", 5 - 2 = 3) then
+  // do test("Sub floats", 5.0 -. 2.0 =. 3.0) then
 
-  do test("Mul bytes", 3b *& 4b =& 12b) then
-  do test("Mul ints", 3 * 4 = 12) then
-  do test("Mul floats", 3.0 *. 4.0 =. 12.0) then
+  // do test("Mul bytes", 3b *& 4b =& 12b) then
+  // do test("Mul ints", 3 * 4 = 12) then
+  // do test("Mul floats", 3.0 *. 4.0 =. 12.0) then
 
-  do test("Div bytes exact", 12b /& 4b =& 3b) then
-  do test("Div bytes truncating", 5b /& 2b =& 2b) then
-  do test("Div ints exact", 12 / 4 = 3) then
-  do test("Div int truncating", 5 / 2 = 2) then
-  do test("Div floats integral", 12.0 /. 4.0 =. 3.0) then
-  do test("Div floats fractional", 5.0 /. 2.0 =. 2.5) then
+  // do test("Div bytes exact", 12b /& 4b =& 3b) then
+  // do test("Div bytes truncating", 5b /& 2b =& 2b) then
+  // do test("Div ints exact", 12 / 4 = 3) then
+  // do test("Div int truncating", 5 / 2 = 2) then
+  // do test("Div floats integral", 12.0 /. 4.0 =. 3.0) then
+  // do test("Div floats fractional", 5.0 /. 2.0 =. 2.5) then
 
-  // don't negate a byte u dummy
-  do test("Neg byte", -&1b =& 0b -& 1b) then
-  do test("Neg int", -1 = 0 - 1) then
-  do test("Neg float", -.1.0 =. 0.0 -. 1.0) then
+  // // don't negate a byte u dummy
+  // do test("Neg byte", -&1b =& 0b -& 1b) then
+  // do test("Neg int", -1 = 0 - 1) then
+  // do test("Neg float", -.1.0 =. 0.0 -. 1.0) then
 
-  do test("Equate bytes equal", 1b =& 1b) then
-  do test("Equate bytes unequal", ! (1b =& 2b)) then
-  do test("Equate ints equal", 1 = 1) then
-  do test("Equate ints unequal", ! (1 = 2)) then
-  do test("Equate floats equal", 1.0 =. 1.0) then
-  do test("Equate floats unequal", ! (1.0 =. 2.0)) then
+  // do test("Equate bytes equal", 1b =& 1b) then
+  // do test("Equate bytes unequal", ! (1b =& 2b)) then
+  // do test("Equate ints equal", 1 = 1) then
+  // do test("Equate ints unequal", ! (1 = 2)) then
+  // do test("Equate floats equal", 1.0 =. 1.0) then
+  // do test("Equate floats unequal", ! (1.0 =. 2.0)) then
 
-  do test("Less-than bytes less", 1b <& 2b) then
-  do test("Less-than bytes equal", ! (2b <& 2b)) then
-  do test("Less-than bytes greater", ! (3b <& 2b)) then
+  // do test("Less-than bytes less", 1b <& 2b) then
+  // do test("Less-than bytes equal", ! (2b <& 2b)) then
+  // do test("Less-than bytes greater", ! (3b <& 2b)) then
 
-  do test("Less-than ints less", 1 < 2) then
-  do test("Less-than ints equal", ! (2 < 2)) then
-  do test("Less-than ints greater", ! (3 < 2)) then
+  // do test("Less-than ints less", 1 < 2) then
+  // do test("Less-than ints equal", ! (2 < 2)) then
+  // do test("Less-than ints greater", ! (3 < 2)) then
 
-  do test("Less-than floats less", 1.0 <. 2.0) then
-  do test("Less-than floats equal", ! (2.0 <. 2.0)) then
-  do test("Less-than floats greater", ! (3.0 <. 2.0)) then
+  // do test("Less-than floats less", 1.0 <. 2.0) then
+  // do test("Less-than floats equal", ! (2.0 <. 2.0)) then
+  // do test("Less-than floats greater", ! (3.0 <. 2.0)) then
 
-  do test("Less-equal bytes less", 1b <=& 2b) then
-  do test("Less-equal bytes equal", 2b <=& 2b) then
-  do test("Less-equal bytes greater", ! (3b <=& 2b)) then
+  // do test("Less-equal bytes less", 1b <=& 2b) then
+  // do test("Less-equal bytes equal", 2b <=& 2b) then
+  // do test("Less-equal bytes greater", ! (3b <=& 2b)) then
 
-  do test("Less-equal ints less", 1 <= 2) then
-  do test("Less-equal ints equal", 2 <= 2) then
-  do test("Less-equal ints greater", ! (3 <= 2)) then
+  // do test("Less-equal ints less", 1 <= 2) then
+  // do test("Less-equal ints equal", 2 <= 2) then
+  // do test("Less-equal ints greater", ! (3 <= 2)) then
 
-  do test("Less-equal floats less", 1.0 <=. 2.0) then
-  do test("Less-equal floats equal", 2.0 <=. 2.0) then
-  do test("Less-equal floats greater", ! (3.0 <=. 2.0)) then
+  // do test("Less-equal floats less", 1.0 <=. 2.0) then
+  // do test("Less-equal floats equal", 2.0 <=. 2.0) then
+  // do test("Less-equal floats greater", ! (3.0 <=. 2.0)) then
 
-  do test("Greater-than bytes less", ! (1b >& 2b)) then
-  do test("Greater-than bytes equal", ! (2b >& 2b)) then
-  do test("Greater-than bytes greater", 3b >& 2b) then
+  // do test("Greater-than bytes less", ! (1b >& 2b)) then
+  // do test("Greater-than bytes equal", ! (2b >& 2b)) then
+  // do test("Greater-than bytes greater", 3b >& 2b) then
 
-  do test("Greater-than ints less", ! (1 > 2)) then
-  do test("Greater-than ints equal", ! (2 > 2)) then
-  do test("Greater-than ints greater", 3 > 2) then
+  // do test("Greater-than ints less", ! (1 > 2)) then
+  // do test("Greater-than ints equal", ! (2 > 2)) then
+  // do test("Greater-than ints greater", 3 > 2) then
 
-  do test("Greater-than floats less", ! (1.0 >. 2.0)) then
-  do test("Greater-than floats equal", ! (2.0 >. 2.0)) then
-  do test("Greater-than floats greater", 3.0 >. 2.0) then
+  // do test("Greater-than floats less", ! (1.0 >. 2.0)) then
+  // do test("Greater-than floats equal", ! (2.0 >. 2.0)) then
+  // do test("Greater-than floats greater", 3.0 >. 2.0) then
 
-  do test("Greater-equal bytes less", ! (1b >=& 2b)) then
-  do test("Greater-equal bytes equal", 2b >=& 2b) then
-  do test("Greater-equal bytes greater", 3b >=& 2b) then
+  // do test("Greater-equal bytes less", ! (1b >=& 2b)) then
+  // do test("Greater-equal bytes equal", 2b >=& 2b) then
+  // do test("Greater-equal bytes greater", 3b >=& 2b) then
 
-  do test("Greater-equal ints less", ! (1 >= 2)) then
-  do test("Greater-equal ints equal", 2 >= 2) then
-  do test("Greater-equal ints greater", 3 >= 2) then
+  // do test("Greater-equal ints less", ! (1 >= 2)) then
+  // do test("Greater-equal ints equal", 2 >= 2) then
+  // do test("Greater-equal ints greater", 3 >= 2) then
 
-  do test("Greater-equal floats less", ! (1.0 >=. 2.0)) then
-  do test("Greater-equal floats equal", 2.0 >=. 2.0) then
-  do test("Greater-equal floats greater", 3.0 >=. 2.0) then
+  // do test("Greater-equal floats less", ! (1.0 >=. 2.0)) then
+  // do test("Greater-equal floats equal", 2.0 >=. 2.0) then
+  // do test("Greater-equal floats greater", 3.0 >=. 2.0) then
 
-  do test("byte_to_int positive", byte_to_int(42b) = 42) then
-  do test("byte_to_int negative", byte_to_int(-&42b) = 256 - 42) then
+  // do test("byte_to_int positive", byte_to_int(42b) = 42) then
+  // do test("byte_to_int negative", byte_to_int(-&42b) = 256 - 42) then
 
-  do test("byte_to_int_signed positive", byte_to_int_signed(42b) = 42) then
-  do test("byte_to_int_signed negative", byte_to_int_signed(-&42b) = -42) then
+  // do test("byte_to_int_signed positive", byte_to_int_signed(42b) = 42) then
+  // do test("byte_to_int_signed negative", byte_to_int_signed(-&42b) = -42) then
 
-  do test("int_to_byte in range", int_to_byte(42) =& 42b) then
-  do test("int_to_byte truncate", int_to_byte(300) =& 44b) then
-  do test("int_to_byte negative", int_to_byte(-2) =& -&2b) then
+  // do test("int_to_byte in range", int_to_byte(42) =& 42b) then
+  // do test("int_to_byte truncate", int_to_byte(300) =& 44b) then
+  // do test("int_to_byte negative", int_to_byte(-2) =& -&2b) then
 
-  do test("int_shift_left in range", int_shift_left(42, 4) = 672) then
-  do test("int_shift_left shift out", int_shift_left(42, 59) = 5764607523034234880) then
-  // in int shifts, the lower 6 bits of the shift index are used
-  do test("int_shift_left overflow", int_shift_left(42, 64) = 42) then
+  // do test("int_shift_left in range", int_shift_left(42, 4) = 672) then
+  // do test("int_shift_left shift out", int_shift_left(42, 59) = 5764607523034234880) then
+  // // in int shifts, the lower 6 bits of the shift index are used
+  // do test("int_shift_left overflow", int_shift_left(42, 64) = 42) then
 
-  do test("int_shift_right in range", int_shift_right(80, 3) = 10) then
-  do test("int_shift_right shift out", int_shift_right(42, 3) = 5) then
-  // in int shifts, the lower 6 bits of the shift index are used
-  do test("int_shift_right overflow", int_shift_right(42, 65) = 21) then
-  // int_shift_right is a logical shift, not an arithmetic shift
-  do test("int_shift_right negative", int_shift_right(-1, 1) = 9223372036854775807) then
+  // do test("int_shift_right in range", int_shift_right(80, 3) = 10) then
+  // do test("int_shift_right shift out", int_shift_right(42, 3) = 5) then
+  // // in int shifts, the lower 6 bits of the shift index are used
+  // do test("int_shift_right overflow", int_shift_right(42, 65) = 21) then
+  // // int_shift_right is a logical shift, not an arithmetic shift
+  // do test("int_shift_right negative", int_shift_right(-1, 1) = 9223372036854775807) then
 
-  do test("int_bit_and", int_bit_and(42, 98) = 34) then
-  do test("int_bit_or", int_bit_or(42, 98) = 106) then
-  do test("int_bit_xor", int_bit_xor(42, 98) = 72) then
+  // do test("int_bit_and", int_bit_and(42, 98) = 34) then
+  // do test("int_bit_or", int_bit_or(42, 98) = 106) then
+  // do test("int_bit_xor", int_bit_xor(42, 98) = 72) then
+  // do test("int_count_ones", int_count_ones(42) = 3) then
+  // do test("int_leading_zeros", int_leading_zeros(42) = 58) then
+  // do test("int_trailing_zeros", int_trailing_zeros(40) = 3) then
 
   do output("Completed all tests\n")

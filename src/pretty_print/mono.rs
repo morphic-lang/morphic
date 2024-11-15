@@ -626,7 +626,7 @@ impl<'a, 'b> Context<'a, 'b> {
         self.writeln()?;
 
         let type_sccs = graph::strongly_connected(&Graph {
-            edges_out: prog.custom_types.map(|_, type_def| {
+            edges_out: prog.custom_types.map_refs(|_, type_def| {
                 let mut deps = BTreeSet::new();
                 for variant in &type_def.variants {
                     match variant.1 {
@@ -653,7 +653,7 @@ impl<'a, 'b> Context<'a, 'b> {
         }
 
         let val_graph = Graph {
-            edges_out: prog.vals.map(|_, val_def| {
+            edges_out: prog.vals.map_refs(|_, val_def| {
                 let mut deps = BTreeSet::new();
                 add_func_deps(&mut deps, &val_def.body);
                 deps.into_iter().collect()
@@ -683,7 +683,7 @@ impl<'a, 'b> Context<'a, 'b> {
         let mut profile_points: BTreeMap<ProfilePointId, CustomGlobalId> = BTreeMap::new();
 
         for scc in val_sccs {
-            for (i, id) in scc.iter().enumerate() {
+            for id in &scc {
                 if !reachable.contains(id) {
                     continue;
                 }

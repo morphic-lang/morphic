@@ -7,11 +7,13 @@ use im_rc::OrdSet;
 use std::collections::BTreeMap;
 
 use crate::util::graph::{strongly_connected, Graph};
-use crate::util::id_vec::IdVec;
+use id_collections::{id_type, IdVec};
 
-id_type!(pub SolverVarId);
+#[id_type]
+pub struct SolverVarId(pub usize);
 
-id_type!(pub ExternalVarId);
+#[id_type]
+pub struct ExternalVarId(pub usize);
 
 /// Types for which you can take the infimum (i.e., minimum) of two elements, and which have a
 /// greatest element.
@@ -99,7 +101,7 @@ impl<T: Ord + Infimum + Clone> ConstraintGraph<T> {
             .map(|(external, &var)| (var, external))
             .collect::<BTreeMap<_, _>>();
 
-        let mut upper_bounds = self.vars.map(|_, _| UpperBound {
+        let mut upper_bounds = self.vars.map_refs(|_, _| UpperBound {
             lte_vars: OrdSet::new(),
             lte_const: T::greatest(),
         });
@@ -107,7 +109,7 @@ impl<T: Ord + Infimum + Clone> ConstraintGraph<T> {
         // We iterate through all variables in topological order of greatest to least
 
         let sccs = strongly_connected(&Graph {
-            edges_out: self.vars.map(|_, constr| constr.lte_vars.clone()),
+            edges_out: self.vars.map_refs(|_, constr| constr.lte_vars.clone()),
         });
 
         for scc in sccs {
@@ -144,7 +146,7 @@ impl<T: Ord + Infimum + Clone> ConstraintGraph<T> {
         &mut self,
         subgraph: &IdVec<ExternalVarId, UpperBound<T>>,
     ) -> IdVec<ExternalVarId, SolverVarId> {
-        let vars = subgraph.map(|_, _| self.new_var());
+        let vars = subgraph.map_refs(|_, _| self.new_var());
 
         for (external, upper_bound) in subgraph {
             for other_external in &upper_bound.lte_vars {
