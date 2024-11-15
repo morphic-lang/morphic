@@ -394,7 +394,7 @@ fn compile_sample(
             },
         );
 
-        // write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
+        write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
     }
 }
 
