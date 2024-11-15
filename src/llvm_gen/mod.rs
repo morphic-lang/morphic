@@ -1683,7 +1683,7 @@ fn gen_function<'a, 'b>(
 
     let i64_t = context.i64_type();
 
-    let (start_clock_nanos, start_retain_count, start_release_count, start_rc1_count) =
+    let (start_clock_nanos, start_retain_count, start_release_count, _start_rc1_count) =
         if let Some(prof_id) = func.profile_point {
             let start_clock_nanos = builder
                 .build_call(globals.tal.prof_clock_nanos, &[], "start_clock_nanos")
