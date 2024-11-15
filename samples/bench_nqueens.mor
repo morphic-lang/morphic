@@ -3,7 +3,7 @@
  module Core = file "lib/core/core.mor"
    expose {
      module Io expose { writeln },
-     module String expose { int_to_string, string_to_nat },
+     module String expose { int_to_string, string_to_nat, equal },
      module Option expose { Option { Some, None } },
    }
 
@@ -56,9 +56,18 @@ module Bench = file "lib/bench_common.mor" with { Core }
  nqueens(n : Int) : Int = len(find_solutions(n, n))
 
  proc main(): () =
-   match (string_to_nat(do input()), string_to_nat(do input())) {
+  let iter_str = do input() in
+  let benchmark_name = do input() in
+  let test_fn = if equal(benchmark_name, "nqueens-functional") {
+    nqueens
+  } else if equal(benchmark_name, "nqueens-iterative") {
+    nqueens2
+  } else {
+    panic("hello")
+  } in
+   match (string_to_nat(iter_str), string_to_nat(do input())) {
      (Some(iters), Some(n_queens)) ->
-       match repeat(iters, \() -> nqueens2(n_queens)) {
+       match repeat(iters, \() -> test_fn(n_queens)) {
          Some(n) -> do writeln(int_to_string(n)),
          None -> (),
        },

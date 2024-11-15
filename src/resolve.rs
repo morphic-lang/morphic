@@ -543,7 +543,7 @@ fn resolve_mod(
                             ctor_name.clone(),
                             (*ctor_visibility, type_id, res::VariantId(idx)),
                         )
-                        .map_err(|()| ErrorKind::DuplicateCtorName(name.0.clone()).into())
+                        .map_err(|()| ErrorKind::DuplicateCtorName(ctor_name.0.clone()).into())
                         .map_err(locate_path(file_path))?;
                     }
 

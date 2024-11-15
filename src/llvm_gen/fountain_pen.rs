@@ -58,6 +58,10 @@ impl<'a, 'b> Scope<'a, 'b> {
         self.func
     }
 
+    pub fn context(&self) -> &'a Context {
+        self.context
+    }
+
     pub fn str(&self, s: &str) -> BasicValueEnum<'a> {
         self.builder
             .build_global_string_ptr(s, "global_str")

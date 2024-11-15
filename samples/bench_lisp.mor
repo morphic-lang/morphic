@@ -18,6 +18,20 @@ type Token {
   TOpenParen,
   TCloseParen,
   TDot,
+  TCar,
+  TCdr,
+  TCons,
+  TPlus,
+  TTrue,
+  TElse,
+  TFalse,
+  TEq,
+  TPair,
+  TLambda,
+  TQuote,
+  TIf,
+  TCond,
+  TLet,
   TSymbol(Array Byte),
   TNumber(Int),
 }
@@ -44,6 +58,34 @@ parse_token(bytes: Array Byte): Token =
     TOpenParen
   } else if String.equal(bytes, ")") {
     TCloseParen
+  } else if String.equal(bytes, "car") {
+    TCar
+  } else if String.equal(bytes, "cdr") {
+    TCdr
+  } else if String.equal(bytes, "cons") {
+    TCons
+  } else if String.equal(bytes, "plus") {
+    TPlus
+  } else if String.equal(bytes, "true") {
+    TTrue
+  } else if String.equal(bytes, "else") {
+    TElse
+  } else if String.equal(bytes, "false") {
+    TFalse
+  } else if String.equal(bytes, "eq?") {
+    TEq
+  } else if String.equal(bytes, "pair?") {
+    TPair
+  } else if String.equal(bytes, "lambda") {
+    TLambda
+  } else if String.equal(bytes, "quote") {
+    TQuote
+  } else if String.equal(bytes, "if") {
+    TIf
+  } else if String.equal(bytes, "cond") {
+    TCond
+  } else if String.equal(bytes, "let") {
+    TLet
   } else {
     match String.string_to_nat(bytes) {
       Some(x) -> TNumber(x),
@@ -107,13 +149,49 @@ tokenize_rec(x : Array Byte, index: Int, acc: Array Token, current_word: Array B
   }
 
 type SpecialForm {
+  SCar,
+  SCdr,
+  SCons,
+  SPlus,
+  STrue,
+  SElse,
+  SFalse,
+  SEq,
+  SPair,
+  SLambda,
+  SQuote,
+  SIf,
+  SCond,
+  SLet,
   SSymbol(Array Byte),
   SNumber(Int),
 }
+
+special_form_equal(x: SpecialForm, y: SpecialForm): Bool =
+  match (x, y) {
+    (SCar, SCar) -> True,
+    (SCdr, SCdr) -> True,
+    (SCons, SCons) -> True,
+    (SPlus, SPlus) -> True,
+    (STrue, STrue) -> True,
+    (SElse, SElse) -> True,
+    (SFalse, SFalse) -> True,
+    (SEq, SEq) -> True,
+    (SPair, SPair) -> True,
+    (SLambda, SLambda) -> True,
+    (SQuote, SQuote) -> True,
+    (SIf, SIf) -> True,
+    (SCond, SCond) -> True,
+    (SLet, SLet) -> True,
+    (SNumber(n1), SNumber(n2)) -> n1 = n2,
+    (SSymbol(s1), SSymbol(s2)) -> String.equal(s1, s2),
+    _ -> False,
+  }
+
       
 
 type SExp {
-  SCons(SExp, SExp),
+  SExpCons(SExp, SExp),
   Paren(Array SExp),
   Special(SpecialForm)
 }
@@ -122,6 +200,20 @@ parse_form(token: Token): SpecialForm =
   match token {
     TSymbol(s) -> SSymbol(s),
     TNumber(n) -> SNumber(n),
+    TCar -> SCar,
+    TCdr -> SCdr,
+    TCons -> SCons,
+    TPlus -> SPlus,
+    TTrue -> STrue,
+    TElse -> SElse,
+    TFalse -> SFalse,
+    TEq -> SEq,
+    TPair -> SPair,
+    TLambda -> SLambda,
+    TQuote -> SQuote,
+    TIf -> SIf,
+    TCond -> SCond,
+    TLet -> SLet,
     _ -> panic("Invalid token for parsing"),
   }
 
@@ -155,7 +247,7 @@ parse_list(tokens: Array Token, parsed: Array SExp, pos: Int): Result (SExp, Int
               } else {
                 match Array.get(tokens, new_pos) {
                   TCloseParen ->
-                    Ok((SCons(Array.get(parsed, 0), expr), new_pos + 1)),
+                    Ok((SExpCons(Array.get(parsed, 0), expr), new_pos + 1)),
                   _ -> 
                     Err(UnexpectedToken)
                 }
@@ -176,6 +268,20 @@ token_to_string(x : Token): Array Byte =
   match x {
     TOpenParen -> "(",
     TDot -> ".",
+    TCar -> "car",
+    TCdr -> "cdr",
+    TCons -> "cons",
+    TPlus -> "plus",
+    TTrue -> "true", 
+    TElse -> "else",
+    TFalse -> "false",
+    TEq -> "eq?",
+    TPair -> "pair?",
+    TLambda -> "lambda",
+    TQuote -> "quote",
+    TIf -> "if",
+    TCond -> "cond",
+    TLet -> "let",
     TCloseParen -> ")",
     TSymbol(s) -> s,
     TNumber(n) -> String.int_to_string(n),
@@ -184,10 +290,9 @@ token_to_string(x : Token): Array Byte =
 tokens_to_string(x : Array Token): Array Byte = 
   Array.str(x, token_to_string)
 
-
 sexp_to_string(x : SExp): Array Byte =
     match x {
-SCons(left, right) ->
+      SExpCons(left, right) ->
             Array.concat(
               Array.concat(
                 Array.concat("(", sexp_to_string(left)), 
@@ -204,16 +309,31 @@ SCons(left, right) ->
                     Array.concat(Array.push(acc, Array.get(" ", 0)), sexp_to_string(expr))
                 }
             ), Array.get(")", 0)),
-        Special(form) -> 
-            match form {
-              SNumber(n) -> String.int_to_string(n),
-              SSymbol(n) -> n,
-            },
+        Special(form) -> special_form_to_string(form)
     }
 
+special_form_to_string(x : SpecialForm): Array Byte =
+  match x {
+    SCar -> "'car",
+    SCdr -> "'cdr",
+    SCons -> "'cons",
+    SPlus -> "'plus",
+    STrue -> "'true",
+    SElse -> "'else",
+    SFalse -> "'false",
+    SEq -> "'eq?",
+    SPair -> "'pair?",
+    SLambda -> "'lambda",
+    SQuote -> "'quote",
+    SIf -> "'if",
+    SCond -> "'cond",
+    SLet -> "'let",
+    SNumber(n) -> String.int_to_string(n),
+    SSymbol(s) -> s,
+  }
+  
 value_to_string(x: Value): Array Byte =
   match x {
-    VVar(name) -> name,
     VNull -> "null?",
     VCar -> "car",
     VCdr -> "cdr",
@@ -221,6 +341,9 @@ value_to_string(x: Value): Array Byte =
     VPlus -> "plus",
     VEq -> "eq?",
     VPair -> "pair?",
+   VSymbol(special) ->
+     special_form_to_string(special),
+
     VLambda(_, params, body) -> 
       Array.concat(
         Array.concat(
@@ -246,9 +369,9 @@ value_to_string(x: Value): Array Byte =
 
 env_to_string(env: HashMap (Array Byte) Value): Array Byte =
   HashMap.to_string(env, \k -> k, value_to_string)
-        
+
 type Value {
-  VVar(Array Byte),
+  VSymbol(SpecialForm),
   VLambda(HashMap (Array Byte) Value, Array (Array Byte), SExp),
   VNull,
   VCar,
@@ -266,25 +389,15 @@ type Value {
 
 quote(x : SExp): Value =
 match x {
-    Special(form) -> 
-      match form {
-        SNumber(n) -> VNumber(n),
-        SSymbol(name) -> VVar(name),
-      },
-SCons(left, right) -> VList(quote(left), quote(right)),
+    Special(form) -> VSymbol(form),
+    SExpCons(left, right) -> VList(quote(left), quote(right)),
     
     Paren(exprs) -> 
       Array.foldl(Array.reverse(exprs), VListNil, \(acc, expr) -> 
-        match expr {
-          Special(SSymbol(name)) -> VList(VVar(name), acc),
-          Special(SNumber(n)) -> VList(VNumber(n), acc), 
-          SCons(left2, right2) -> VList(VList(quote(left2), quote(right2)), acc),
-          Paren(subexprs) -> VList(quote(expr), acc),
-        }
+        VList(quote(expr), acc)
       ),
   }
   
-
 eval_cond(env: HashMap (Array Byte) Value, cond_clauses: Array SExp): Result Value EvalError =
   if Array.len(cond_clauses) = 0 {
     Ok(VListNil)
@@ -305,6 +418,37 @@ eval_cond(env: HashMap (Array Byte) Value, cond_clauses: Array SExp): Result Val
     }
   }
 
+eval_let(env: HashMap (Array Byte) Value, bindings_: Array SExp, body: SExp): Result Value EvalError =
+  match Array.get(bindings_, 0) {
+    Paren(bindings) -> 
+      let process_binding = \(acc, binding) ->
+        match acc {
+        Err(e) -> Err(e),
+          Ok(current_env) ->
+            match binding {
+              Paren(pair) ->
+                if Array.len(pair) = 2 {
+                  match Array.get(pair, 0) {
+                    Special(SSymbol(name)) ->
+                      match eval(current_env, Array.get(pair, 1)) {
+                        Ok(value) -> Ok(HashMap.insert(current_env, name, value)),
+                        Err(e) -> Err(e),
+                      },
+                    _ -> Err(TypeError("Let binding name must be a symbol")),
+                  }
+                   } else {
+                  Err(TypeError("Let binding must be a pair"))
+              },
+              _ -> Err(TypeError("Let binding must be a list")),
+            },
+        } in
+      match Array.foldl(bindings, Ok(env), process_binding) {
+        Ok(new_env) -> eval(new_env, body),
+        Err(e) -> Err(e),
+      },
+    _ -> Err(TypeError("Let bindings must be a list")),
+  }
+
 
 eval(env: HashMap (Array Byte) Value, expr: SExp): Result Value EvalError =
 //  do output("running eval on ") then
@@ -313,36 +457,29 @@ eval(env: HashMap (Array Byte) Value, expr: SExp): Result Value EvalError =
 //  do output(env_to_string(env)) then
 //  do output("\n") then
   let result = match expr {
-    SCons(_, _) -> Err(InvalidExpression("SCons not valid for eval")),
+    SExpCons(_, _) -> Err(InvalidExpression("SCons not valid for eval")),
     Special(form) -> 
       match form {
+        SCar -> Ok(VCar),
+        SCdr -> Ok(VCdr),
+        SCons -> Ok(VCons),
+        SPlus -> Ok(VPlus),
+        STrue -> Ok(VTrue),
+        SElse -> Ok(VTrue),
+        SFalse -> Ok(VFalse), 
+        SEq -> Ok(VEq),
+        SPair -> Ok(VPair),
+        SLambda -> Err(TypeError("lambda cannot be used as a value")),
+        SQuote -> Err(TypeError("quote cannot be used as a value")),
+        SIf -> Err(TypeError("if cannot be used as a value")),
+        SCond -> Err(TypeError("cond cannot be used as a value")), 
+        SLet -> Err(TypeError("let cannot be used as a value")),
+
         SNumber(n) -> Ok(VNumber(n)),
         SSymbol(name) -> match HashMap.get(env, name) {
           Some(value) -> Ok(value),
           None -> 
-            if String.equal(name, "null?") {
-              Ok(VNull)
-            } else if String.equal(name, "car") {
-              Ok(VCar)
-            } else if String.equal(name, "cdr") {
-              Ok(VCdr)
-            } else if String.equal(name, "cons") {
-              Ok(VCons)
-            } else if String.equal(name, "plus") {
-              Ok(VPlus)
-            } else if String.equal(name, "true") {
-              Ok(VTrue)
-            } else if String.equal(name, "else") {
-              Ok(VTrue)
-            } else if String.equal(name, "false") {
-              Ok(VFalse)
-            } else if String.equal(name, "eq?") {
-              Ok(VEq)
-            } else if String.equal(name, "pair?") {
-              Ok(VPair)
-            } else {
               Err(UndefinedVariable(name))
-            },
         },
       },
     Paren(items) ->
@@ -351,14 +488,13 @@ eval(env: HashMap (Array Byte) Value, expr: SExp): Result Value EvalError =
       } else {
         let first = Array.get(items, 0) in
         match first {
-          Special(SSymbol(fn_name)) ->
-            if String.equal(fn_name, "lambda") {
+          Special(SLambda) ->
             if Array.len(items) >= 3 {
               match Array.get(items, 1) {
                 Paren(params) -> 
                   let param_names = Array.map(params, \param ->
                     match param {
-                      Special(SSymbol(name)) -> Ok(name),
+                      Special(SSymbol(name)) -> Ok(name), 
                       _ -> Err(TypeError("Lambda parameters must be symbols")),
                     }
                   ) in
@@ -370,19 +506,20 @@ eval(env: HashMap (Array Byte) Value, expr: SExp): Result Value EvalError =
               }
             } else {
               Err(InvalidArguments("Lambda requires 3 arguments"))
-              }
-            } else if String.equal(fn_name, "quote") {
+            },
+
+          Special(SQuote) ->
             if Array.len(items) >= 2 {
               match Array.get(items, 1) {
-                Special(SSymbol(name)) -> Ok(VVar(name)),
-                Special(SNumber(n)) -> Ok(VNumber(n)),
+                Special(form) -> Ok(VSymbol(form)),
                   Paren(exprs) -> Ok(quote(Array.get(items, 1))),
                 _ -> Err(TypeError("Quote expects symbol or list")),
               }
             } else {
               Err(InvalidArguments("Quote requires 1 argument"))
-              }
-            } else if String.equal(fn_name, "if") {
+            },
+
+          Special(SIf) ->
             if Array.len(items) >= 4 {
               match eval(env, Array.get(items, 1)) {
                 Ok(VTrue) -> eval(env, Array.get(items, 2)),
@@ -392,64 +529,23 @@ eval(env: HashMap (Array Byte) Value, expr: SExp): Result Value EvalError =
               }
             } else {
               Err(InvalidArguments("If requires 3 arguments"))
-              }
-            } else if String.equal(fn_name, "cond") {
+            },
+
+          Special(SCond) ->
               if Array.len(items) >= 2 {
               let clauses = Array.slice(items, 1, Array.len(items)) in
               eval_cond(env, clauses)
             } else {
               Err(InvalidArguments("Cond requires at least 1 clause"))
-              }
+            },
 
-              
-            } else if String.equal(fn_name, "let") {
+          Special(SLet) ->
             if Array.len(items) >= 3 {
-              match Array.get(items, 1) {
-                Paren(bindings) -> 
-                  let process_binding = \(acc, binding) ->
-                    match acc {
-                    Err(e) -> Err(e),
-                      Ok(current_env) ->
-                        match binding {
-                          Paren(pair) ->
-                            if Array.len(pair) = 2 {
-                              match Array.get(pair, 0) {
-                                Special(SSymbol(name)) ->
-                                  match eval(current_env, Array.get(pair, 1)) {
-                                    Ok(value) -> Ok(HashMap.insert(current_env, name, value)),
-                                    Err(e) -> Err(e),
-                                  },
-                                _ -> Err(TypeError("Let binding name must be a symbol")),
-                              }
-                               } else {
-                              Err(TypeError("Let binding must be a pair"))
-                          },
-                          _ -> Err(TypeError("Let binding must be a list")),
-                        },
-                    } in
-                  match Array.foldl(bindings, Ok(env), process_binding) {
-                    Ok(new_env) -> eval(new_env, Array.get(items, 2)),
-                    Err(e) -> Err(e),
-                  },
-                _ -> Err(TypeError("Let bindings must be a list")),
-              }
+              eval_let(env, [Array.get(items, 1)], Array.get(items, 2))
             } else {
               Err(InvalidArguments("Let requires at least 2 arguments"))
-              }
-            } else {
-              let head = eval(env, Array.get(items, 0)) in
-              let args = Array.slice(items, 1, Array.len(items)) in
-              let evaluated_args = Array.map(args, \arg -> eval(env, arg)) in
-              match Result.all_ok(evaluated_args) {
-                Ok(arg_values) -> 
-                  match head {
-                    Ok(fn) -> eval_fn(env, fn, arg_values),
-                    Err(e) -> Err(e),
-                  },
-                Err(e) -> Err(e),
-              }
             },
-            rest_ -> 
+          _ -> 
               let head = eval(env, Array.get(items, 0)) in
               let args = Array.slice(items, 1, Array.len(items)) in
               let evaluated_args = Array.map(args, \arg -> eval(env, arg)) in
@@ -460,7 +556,7 @@ eval(env: HashMap (Array Byte) Value, expr: SExp): Result Value EvalError =
                     Err(e) -> Err(e),
                   },
                 Err(e) -> Err(e),
-              }
+        }
         }
       }
   } in
@@ -494,7 +590,16 @@ let result = match fn {
         (VTrue, VTrue) -> Ok(VTrue),
         (VFalse, VFalse) -> Ok(VTrue), 
         (VListNil, VListNil) -> Ok(VTrue),
-        (VVar(s1), VVar(s2)) -> if String.equal(s1, s2) { Ok(VTrue) } else { Ok(VFalse) },
+        (VNull, VNull) -> Ok(VTrue),
+        (VCar, VCar) -> Ok(VTrue),
+        (VCdr, VCdr) -> Ok(VTrue),
+        (VCons, VCons) -> Ok(VTrue),
+        (VEq, VEq) -> Ok(VTrue),
+        (VPair, VPair) -> Ok(VTrue),
+        (VPlus, VPlus) -> Ok(VTrue),
+        (VTrue, VTrue) -> Ok(VTrue),
+        (VFalse, VFalse) -> Ok(VTrue),
+        (VSymbol(s1), VSymbol(s2)) -> if special_form_equal(s1, s2) { Ok(VTrue) } else { Ok(VFalse) },
         _ -> Ok(VFalse),
       }
     } else {
