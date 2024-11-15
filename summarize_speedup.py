@@ -53,88 +53,96 @@ def get_speedups(bench_name, all_times):
     return speedups
 
 def plot_speedups(name, speedups):
+    plt.style.use('seaborn-v0_8-whitegrid')  # Use a clean, modern style
     names = sorted(speedups.keys())
-    plt.figure(figsize=(8, 4))
+    plt.figure(figsize=(10, 5))
     
     x = np.arange(len(names))
-    width = 0.6
+    width = 0.5
     
-    # Create bars for median speedup (using index 1 for median from speedups)
+    # Create bars for median speedup with improved color
     medians = [speedups[benchmark][1] for benchmark in names]
-    bars = plt.bar(x, medians, width, color='blue')
+    bars = plt.bar(x, medians, width, color='#1a85ff', alpha=0.8)
     
-    # Add error bars for Q1 and Q3
+    # Add error bars for Q1 and Q3 with improved styling
     q1s = [speedups[benchmark][0] for benchmark in names]
     q3s = [speedups[benchmark][2] for benchmark in names]
-    yerr = np.array([(m-q1, q3-m) for m, q1, q3 in zip(medians, q1s, q3s)]).T
-    # Ensure yerr values are non-negative
     yerr_low = np.maximum(0, np.array(medians) - np.array(q1s))
     yerr_high = np.maximum(0, np.array(q3s) - np.array(medians))
     yerr = np.array([yerr_low, yerr_high])
-    plt.errorbar(x, medians, yerr=yerr, fmt='none', color='black', capsize=5, capthick=1, elinewidth=2)
-    plt.ylabel("Speedup")
-    plt.xticks(x, names, rotation=45, ha="right")
+    plt.errorbar(x, medians, yerr=yerr, fmt='none', color='#404040', 
+                capsize=4, capthick=1.5, elinewidth=1.5)
+
+    plt.ylabel("Speedup", fontsize=14, fontweight='bold')
+    plt.xticks(x, names, rotation=45, ha="right", fontsize=12)
+    plt.yticks(fontsize=12)
     
-    # Add labels for median values
+    # Add labels for median values with improved positioning and style
     for i, v in enumerate(medians):
-        plt.text(i, v + 0.05, f"{v:.2f}", ha="center", va="bottom")
+        plt.text(i, v + 0.05, f"{v:.2f}x", ha="center", va="bottom", 
+                fontsize=11, color='#404040')
     
-    plt.ylim(0, 8.5)
-    # Add a horizontal line at y=1
-    plt.axhline(1, color="black", linewidth=1, linestyle="--")
-    plt.title(f"Speedup due to full borrow inference vs {name}")
+    plt.ylim(0, 4)
+    # Add a horizontal line at y=1 with improved style
+    plt.axhline(1, color="#404040", linewidth=1, linestyle="--", alpha=0.5)
+    plt.title(f"Speedup due to full borrow inference vs {name}", 
+             fontsize=14, fontweight='bold', pad=15)
     
+    # Improve overall layout
     plt.tight_layout()
     os.makedirs("figure_out", exist_ok=True)
-    plt.savefig(f"figure_out/speedups_{name}.png")
+    plt.savefig(f"figure_out/speedups_{name}.png", dpi=300, bbox_inches='tight')
     plt.show()
 
 def plot_rcs(rcs):
+    plt.style.use('seaborn-v0_8-whitegrid')  # Use a clean, modern style
     retain_counts, release_counts = rcs
     names = sorted(retain_counts.keys())
     
-    # Create a single figure
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 6))
     
     configs = ["default", "perceus"]
     
-    # Calculate percentage of retains omitted for each benchmark
+    # Calculate percentage of retains omitted
     percentages = []
     for name in names:
-        baseline_retains = retain_counts[name]["perceus"]  # perceus is the baseline
-        optimized_retains = retain_counts[name]["default"]  # default is the optimized version
+        baseline_retains = retain_counts[name]["perceus"]
+        optimized_retains = retain_counts[name]["default"]
         if baseline_retains == 0:
-            percent_omitted = 0  # If there are no retains in baseline, we consider 0% omitted
+            percent_omitted = 0
         else:
             percent_omitted = ((baseline_retains - optimized_retains) / baseline_retains) * 100
         percentages.append(percent_omitted)
         
-    # Create bars
+    # Create bars with improved styling
     x = np.arange(len(names))
-    width = 0.6
-    bars = plt.bar(x, percentages, width, color='blue')
+    width = 0.5
+    bars = plt.bar(x, percentages, width, color='#1a85ff', alpha=0.8)
     
-    # Customize the plot
-    plt.ylabel("Percent of Retains Omitted")
-    plt.title("RC Retains Eliminated by Benchmark")
-    plt.xticks(x, names, rotation=45, ha="right")
+    # Customize the plot with improved typography
+    plt.ylabel("Percent of Retains Omitted", fontsize=14, fontweight='bold')
+    plt.title("RC Retains Eliminated by Benchmark", 
+             fontsize=14, fontweight='bold', pad=15)
+    plt.xticks(x, names, rotation=45, ha="right", fontsize=12)
+    plt.yticks(fontsize=12)
     
-    # Set y-axis to go from 0 to 100%
     plt.ylim(0, 100)
     
-    # Add value labels on top of bars
+    # Add value labels with improved styling
     for i, bar in enumerate(bars):
         height = bar.get_height()
         plt.text(bar.get_x() + bar.get_width()/2., height,
                 f'{percentages[i]:.1f}%',
-                ha='center', va='bottom')
+                ha='center', va='bottom',
+                fontsize=11, color='#404040')
     
-    # Add horizontal line at 0%
-    plt.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+    # Add horizontal line with improved style
+    plt.axhline(y=0, color='#404040', linestyle='-', linewidth=0.5, alpha=0.5)
     
+    # Improve overall layout
     plt.tight_layout()
     os.makedirs("figure_out", exist_ok=True)
-    plt.savefig(f"figure_out/rcs.png")
+    plt.savefig(f"figure_out/rcs.png", dpi=300, bbox_inches='tight')
     plt.show()
 
 def main():
