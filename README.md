@@ -55,3 +55,5 @@ sieve(limit: Int): Array Primality =
 ## Getting Started
 
 To build Morphic you will need an up-to-date [Rust](https://rustup.rs/) compiler and a development copy of LLVM 16. Appropriate LLVM packages are available on Debian and Ubuntu from the [LLVM repository](https://apt.llvm.org/). On other platforms, you may need to build LLVM from scratch. See the [LLVM docs](https://llvm.org/docs/GettingStarted.html#getting-the-source-code-and-building-llvm) for details. Once you have installed Rust and LLVM 16, simply run `cargo build`.
+
+Syntax highlighting is available via the Morphic [VSCode Extension](https://marketplace.visualstudio.com/items?itemName=morphic-lang.morphic).
