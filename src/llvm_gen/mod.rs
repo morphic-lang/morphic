@@ -2244,7 +2244,11 @@ fn run_cc(target: cli::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
                 .arg("-ffunction-sections")
                 .arg("-fdata-sections")
                 .arg("-fPIC")
-                .arg("-Wl,--gc-sections")
+                .arg(if cfg!(target_os = "macos") {
+                    "-Wl,-dead_strip"
+                } else {
+                    "-Wl,--gc-sections"
+                })
                 .arg("-o")
                 .arg(exe_path)
                 .arg(obj_path)
