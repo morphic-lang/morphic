@@ -525,7 +525,16 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                                 s.ptr_get(self.item_type, s.buf_addr(self.item_type, data, i)),
                             );
                         });
-                        s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
+
+                        if let Some(ProfileRc { memory_free, .. }) = tal.prof_rc {
+                            let alloc_size = s.add(
+                                s.size(s.i64_t()), // Refcount
+                                s.mul(s.size(self.item_type), s.field(me, F_ARR_CAP)),
+                            );
+                            s.call_void(memory_free, &[s.int_cast(s.usize_t(), alloc_size)]);
+                        }
+
+                        s.free(s.ptr_cast(s.i8_t(), refcount_ptr), tal);
                     });
                 });
             }
@@ -588,7 +597,7 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                                 );
                             });
                         });
-                        s.call_void(tal.free, &[s.ptr_cast(s.i8_t(), refcount_ptr)]);
+                        s.free(s.ptr_cast(s.i8_t(), refcount_ptr), tal);
                     });
                 });
             }
@@ -617,6 +626,15 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                 );
 
                 let old_buf = data_to_buf(&s, s.field(me, F_ARR_DATA));
+
+                if let Some(ProfileRc { memory_alloc, .. }) = tal.prof_rc {
+                    // Number of new things we're allocating
+                    let size_diff = s.sub(new_cap, curr_cap);
+                    s.call_void(
+                        memory_alloc,
+                        &[s.int_cast(s.usize_t(), s.mul(s.size(self.item_type), size_diff))],
+                    );
+                }
 
                 let new_buf = s.ptr_cast(
                     s.i64_t(), // Type of leading refcount
@@ -712,6 +730,10 @@ impl<'a> ArrayImpl<'a> for CowArrayImpl<'a> {
                 s.size(s.i64_t()), // Refcount
                 s.mul(s.size(self.item_type), cap),
             );
+
+            if let Some(ProfileRc { memory_alloc, .. }) = tal.prof_rc {
+                s.call_void(memory_alloc, &[s.int_cast(s.usize_t(), alloc_size)]);
+            }
 
             let new_buf = s.ptr_cast(
                 s.i64_t(), // Type of leading refcount

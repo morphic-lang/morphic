@@ -1,6 +1,6 @@
 use std::convert::TryInto;
 
-use crate::llvm_gen::tal::Tal;
+use crate::llvm_gen::tal::{ProfileRc, Tal};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -588,6 +588,10 @@ impl<'a, 'b> Scope<'a, 'b> {
             );
         });
 
+        if let Some(ProfileRc { memory_alloc, .. }) = tal.prof_rc {
+            self.call_void(memory_alloc, &[self.field(alloc_size_umul_result, 0)]);
+        }
+
         // TODO: Check for truncation overflow on 32-bit platforms
         let ptr = self.call(tal.malloc, &[self.field(alloc_size_umul_result, 0)]);
         self.if_(self.is_null(ptr), |s| {
@@ -603,6 +607,13 @@ impl<'a, 'b> Scope<'a, 'b> {
         ty: BasicTypeEnum<'a>,
         tal: &Tal<'a>,
     ) -> BasicValueEnum<'a> {
+        if let Some(ProfileRc { memory_alloc, .. }) = tal.prof_rc {
+            self.call_void(
+                memory_alloc,
+                &[self.mul(num, self.int_cast(self.usize_t(), self.size(ty)))],
+            );
+        }
+
         let ptr = self.call(
             tal.calloc,
             &[

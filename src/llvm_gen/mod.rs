@@ -561,7 +561,7 @@ fn declare_profile_points<'a>(
             );
             total_clock_nanos.set_initializer(&context.i64_type().const_zero());
 
-            let (total_retain_count, total_release_count, total_rc1_count) =
+            let (total_retain_count, total_release_count, total_rc1_count, memory_peak) =
                 if program.profile_points[prof_id].record_rc {
                     let total_retain_count = module.add_global(
                         context.i64_type(),
@@ -584,13 +584,25 @@ fn declare_profile_points<'a>(
                     );
                     total_rc1_count.set_initializer(&context.i64_type().const_zero());
 
+                    let memory_peak = module.add_global(
+                        context.i64_type(),
+                        None, // TODO: Is this the correct address space annotation?
+                        &format!(
+                            "memory_peak
+_{}",
+                            func_id.0
+                        ),
+                    );
+                    memory_peak.set_initializer(&context.i64_type().const_zero());
+
                     (
                         Some(total_retain_count),
                         Some(total_release_count),
                         Some(total_rc1_count),
+                        Some(memory_peak),
                     )
                 } else {
-                    (None, None, None)
+                    (None, None, None, None)
                 };
 
             let existing = decls[prof_id].counters.insert(
@@ -601,6 +613,7 @@ fn declare_profile_points<'a>(
                     total_retain_count,
                     total_release_count,
                     total_rc1_count,
+                    memory_peak,
                 },
             );
             debug_assert!(existing.is_none());
@@ -1684,63 +1697,90 @@ fn gen_function<'a, 'b>(
 
     let i64_t = context.i64_type();
 
-    let (start_clock_nanos, start_retain_count, start_release_count, _start_rc1_count) =
-        if let Some(prof_id) = func.profile_point {
-            let start_clock_nanos = builder
-                .build_call(globals.tal.prof_clock_nanos, &[], "start_clock_nanos")
-                .unwrap()
-                .try_as_basic_value()
-                .left()
-                .unwrap()
-                .into_int_value();
+    let (
+        start_clock_nanos,
+        start_retain_count,
+        start_release_count,
+        start_rc1_count,
+        start_memory_usage,
+    ) = if let Some(prof_id) = func.profile_point {
+        let start_clock_nanos = builder
+            .build_call(globals.tal.prof_clock_nanos, &[], "start_clock_nanos")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_int_value();
 
-            let counters = &globals.profile_points[prof_id].counters[&func_id];
-            let start_retain_count = if counters.total_retain_count.is_some() {
-                let start_retain_count = builder
-                    .build_call(
-                        globals.tal.prof_rc.unwrap().get_retain_count,
-                        &[],
-                        "start_retain_count",
-                    )
-                    .unwrap();
-                Some(start_retain_count)
-            } else {
-                None
-            };
-            let start_release_count = if counters.total_release_count.is_some() {
-                let start_release_count = builder
-                    .build_call(
-                        globals.tal.prof_rc.unwrap().get_release_count,
-                        &[],
-                        "start_release_count",
-                    )
-                    .unwrap();
-                Some(start_release_count)
-            } else {
-                None
-            };
-            let start_rc1_count = if counters.total_rc1_count.is_some() {
-                let start_rc1_count = builder
-                    .build_call(
-                        globals.tal.prof_rc.unwrap().get_rc1_count,
-                        &[],
-                        "start_rc1_count",
-                    )
-                    .unwrap();
-                Some(start_rc1_count)
-            } else {
-                None
-            };
-
-            (
-                Some(start_clock_nanos),
-                start_retain_count,
-                start_release_count,
-                start_rc1_count,
-            )
+        let counters = &globals.profile_points[prof_id].counters[&func_id];
+        let start_retain_count = if counters.total_retain_count.is_some() {
+            let start_retain_count = builder
+                .build_call(
+                    globals.tal.prof_rc.unwrap().get_retain_count,
+                    &[],
+                    "start_retain_count",
+                )
+                .unwrap();
+            Some(start_retain_count)
         } else {
-            (None, None, None, None)
+            None
         };
+        let start_release_count = if counters.total_release_count.is_some() {
+            let start_release_count = builder
+                .build_call(
+                    globals.tal.prof_rc.unwrap().get_release_count,
+                    &[],
+                    "start_release_count",
+                )
+                .unwrap();
+            Some(start_release_count)
+        } else {
+            None
+        };
+        let start_rc1_count = if counters.total_rc1_count.is_some() {
+            let start_rc1_count = builder
+                .build_call(
+                    globals.tal.prof_rc.unwrap().get_rc1_count,
+                    &[],
+                    "start_rc1_count",
+                )
+                .unwrap();
+            Some(start_rc1_count)
+        } else {
+            None
+        };
+
+        let start_memory_usage = if counters.memory_peak.is_some() {
+            let profile_rc = &globals.tal.prof_rc.unwrap();
+            builder
+                .build_call(
+                    profile_rc.set_should_profile_memory,
+                    &[context.bool_type().const_int(1, false).into()], // set it to true
+                    "set_should_profile_memory",
+                )
+                .unwrap();
+            let start_memory_usage = builder
+                .build_call(
+                    globals.tal.prof_rc.unwrap().get_memory_peak,
+                    &[],
+                    "start_memory_usage",
+                )
+                .unwrap();
+            Some(start_memory_usage)
+        } else {
+            None
+        };
+
+        (
+            Some(start_clock_nanos),
+            start_retain_count,
+            start_release_count,
+            start_rc1_count,
+            start_memory_usage,
+        )
+    } else {
+        (None, None, None, None, None)
+    };
 
     // Declare tail call targets, but don't populate their bodies yet. Tail functions are
     // implemented via blocks which may be jumped to, and their arguments are implemented as mutable
@@ -1855,6 +1895,9 @@ fn gen_function<'a, 'b>(
             );
             gen_rc_count_update(start_rc1_count, counters.total_rc1_count, |prof_rc| {
                 prof_rc.get_rc1_count
+            });
+            gen_rc_count_update(start_memory_usage, counters.memory_peak, |prof_rc| {
+                prof_rc.get_memory_peak
             });
 
             let old_calls = builder

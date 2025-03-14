@@ -161,6 +161,7 @@ struct ProfSpecialization {
     total_retain_count: Option<u64>,
     total_release_count: Option<u64>,
     total_rc1_count: Option<u64>,
+    memory_peak: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -299,6 +300,7 @@ struct RcCounts {
     total_retain_count: u64,
     total_release_count: u64,
     total_rc1_count: u64,
+    memory_peak: i64,
 }
 
 fn bench_sample(
@@ -347,16 +349,23 @@ fn bench_sample(
                 specialization.total_retain_count,
                 specialization.total_release_count,
                 specialization.total_rc1_count,
+                specialization.memory_peak,
             ) {
-                (Some(total_retain_count), Some(total_release_count), Some(total_rc1_count)) => {
+                (
+                    Some(total_retain_count),
+                    Some(total_release_count),
+                    Some(total_rc1_count),
+                    Some(memory_peak),
+                ) => {
                     let counts = counts.get_or_insert_with(|| Vec::new());
                     counts.push(RcCounts {
                         total_retain_count: total_retain_count * iters.1,
                         total_release_count: total_release_count * iters.1,
                         total_rc1_count: total_rc1_count * iters.1,
+                        memory_peak: memory_peak * (iters.1 as i64),
                     });
                 }
-                (None, None, None) => {}
+                (None, None, None, None) => {}
                 _ => {
                     panic!("Expected both retain and release counts to be present, or neither");
                 }
@@ -380,7 +389,7 @@ fn compile_sample(
     for variant in variants() {
         let tag = variant.tag();
         println!("compiling {bench_name}_{tag}");
-        let (exe_path, _artifact_dir) = build_exe(
+        let (_exe_path, _artifact_dir) = build_exe(
             bench_name,
             &tag,
             src_path.clone(),

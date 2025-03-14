@@ -32,6 +32,10 @@ pub struct ProfileRc<'a> {
     pub get_retain_count: FunctionValue<'a>,
     pub get_release_count: FunctionValue<'a>,
     pub get_rc1_count: FunctionValue<'a>,
+    pub memory_alloc: FunctionValue<'a>,
+    pub memory_free: FunctionValue<'a>,
+    pub set_should_profile_memory: FunctionValue<'a>,
+    pub get_memory_peak: FunctionValue<'a>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -243,6 +247,26 @@ impl<'a> Tal<'a> {
                 i64_t.fn_type(&[], false),
                 Some(Linkage::External),
             );
+            let memory_alloc = module.add_function(
+                "prof_memory_alloc",
+                void_t.fn_type(&[i64_t.into()], false),
+                Some(Linkage::External),
+            );
+            let memory_free = module.add_function(
+                "prof_memory_free",
+                void_t.fn_type(&[i64_t.into()], false),
+                Some(Linkage::External),
+            );
+            let set_should_profile_memory = module.add_function(
+                "prof_set_should_profile_memory",
+                void_t.fn_type(&[context.bool_type().into()], false),
+                Some(Linkage::External),
+            );
+            let get_memory_peak = module.add_function(
+                "prof_get_memory_peak",
+                i64_t.fn_type(&[], false),
+                Some(Linkage::External),
+            );
             Some(ProfileRc {
                 record_retain,
                 record_release,
@@ -250,6 +274,10 @@ impl<'a> Tal<'a> {
                 get_retain_count,
                 get_release_count,
                 get_rc1_count,
+                memory_alloc,
+                memory_free,
+                set_should_profile_memory,
+                get_memory_peak,
             })
         } else {
             None

@@ -25,6 +25,7 @@ pub struct ProfilePointCounters<'a> {
     pub total_retain_count: Option<GlobalValue<'a>>,
     pub total_release_count: Option<GlobalValue<'a>>,
     pub total_rc1_count: Option<GlobalValue<'a>>,
+    pub memory_peak: Option<GlobalValue<'a>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -282,14 +283,28 @@ pub fn define_prof_report_fn<'a>(
                                                                         counters.total_rc1_count
                                                                     {
                                                                         entries.push((
-                                                                        "total_rc1_count",
-                                                                        DynU64(s.ptr_get(
-                                                                            s.i64_t(),
-                                                                            total_rc1_count
-                                                                                .as_pointer_value()
-                                                                                .into(),
-                                                                        )),
-                                                                    ));
+                                                                            "total_rc1_count",
+                                                                            DynU64(s.ptr_get(
+                                                                                s.i64_t(),
+                                                                                total_rc1_count
+                                                                                    .as_pointer_value()
+                                                                                    .into(),
+                                                                            )),
+                                                                        ));
+                                                                    }
+
+                                                                    if let Some(memory_peak) =
+                                                                        counters.memory_peak
+                                                                    {
+                                                                        entries.push((
+                                                                                "memory_peak",
+                                                                                DynU64(s.ptr_get(
+                                                                                    s.i64_t(),
+                                                                                    memory_peak
+                                                                                        .as_pointer_value()
+                                                                                        .into(),
+                                                                            )),
+                                                                        ));
                                                                     }
                                                                 }
 

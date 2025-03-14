@@ -25,6 +25,7 @@ def parse_rcs(results_dir):
     retain_counts = defaultdict(dict)
     release_counts = defaultdict(dict)
     rc1_counts = defaultdict(dict)
+    memory_counts = defaultdict(dict)
     for fname in os.listdir(results_dir):
         # parse a filename of the form "bench_{name}.mor_native_{tag}_time.txt" into a tuple
         # (name, tag) using regular expressions
@@ -37,7 +38,8 @@ def parse_rcs(results_dir):
         retain_counts[match.group("name")][match.group("tag")] = rcs[0]["total_retain_count"]
         release_counts[match.group("name")][match.group("tag")] = rcs[0]["total_release_count"]
         rc1_counts[match.group("name")][match.group("tag")] = rcs[0]["total_rc1_count"]
-    return (retain_counts, release_counts)
+        memory_counts[match.group("name")][match.group("tag")] = rcs[0]["memory_peak"]
+    return (retain_counts, release_counts, memory_counts)
 
 def get_speedups(bench_name, all_times):
     speedups = dict()
@@ -57,7 +59,7 @@ def plot_speedups_and_rcs(name, speedups, rcs):
     
     # Create a figure with two subplots side by side
     # Letter size in inches is 8.5 x 11
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.5, 4.25))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(8.5, 4.25))
     
     # First subplot: Speedups
     names = sorted(speedups.keys())
@@ -89,7 +91,7 @@ def plot_speedups_and_rcs(name, speedups, rcs):
     ax1.set_title("Speedup vs Perceus", fontsize=10, fontweight='bold', pad=10)
     
     # Second subplot: RC counts
-    retain_counts, release_counts = rcs
+    retain_counts, release_counts, memory_counts = rcs
     names = sorted(retain_counts.keys())
     
     percentages = []
@@ -118,6 +120,38 @@ def plot_speedups_and_rcs(name, speedups, rcs):
                 fontsize=8, color='#404040')
     
     ax2.axhline(y=0, color='#404040', linestyle='-', linewidth=0.5, alpha=0.5)
+
+    # Third subplot: Memory usage
+    memory_peak = memory_counts
+    names = sorted(memory_peak.keys())
+    
+    memory_reduction = []
+    for name in names:
+        baseline_memory = memory_peak[name]["perceus"]
+        optimized_memory = memory_peak[name]["default"]
+        percent_reduction = ((baseline_memory - optimized_memory) / baseline_memory) * 100 if baseline_memory != 0 else 0
+        memory_reduction.append(percent_reduction)
+        
+    x = np.arange(len(names))
+    bars3 = ax3.bar(x, memory_reduction, width, color='#34a853', alpha=0.8)
+    
+    ax3.set_ylabel("Memory Reduction (%)", fontsize=10, fontweight='bold')
+    ax3.set_title("Peak Memory Usage Reduction", fontsize=10, fontweight='bold', pad=10)
+    ax3.set_xticks(x)
+    ax3.set_xticklabels(names, rotation=45, ha="right", fontsize=8)
+    ax3.tick_params(axis='y', labelsize=8)
+    
+    ax3.set_ylim(0, 100)
+    
+    for i, bar in enumerate(bars3):
+        height = bar.get_height()
+        ax3.text(bar.get_x() + bar.get_width()/2., height,
+                f'{memory_reduction[i]:.1f}%',
+                ha='center', va='bottom',
+                fontsize=8, color='#404040')
+    
+    ax3.axhline(y=0, color='#404040', linestyle='-', linewidth=0.5, alpha=0.5)
+
     
     # Adjust layout and save
     plt.tight_layout()
@@ -129,7 +163,7 @@ def plot_time_per_rc(name, all_times, rcs):
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(8.5, 4.25))
     
-    retain_counts, release_counts = rcs
+    retain_counts, release_counts, memory_counts = rcs
     names = sorted(retain_counts.keys())
     
     time_per_rc = []

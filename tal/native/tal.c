@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdbool.h>
 
 void print(const char *str, ...) {
     va_list arg;
@@ -132,4 +133,35 @@ uint64_t prof_rc_get_release_count(void) {
 
 uint64_t prof_rc_get_rc1_count(void) {
     return prof_rc_rc1_count;
+}
+
+static bool prof_should_profile_memory = false;
+static int64_t prof_memory_allocated = 0;
+static int64_t prof_memory_peak = 0;
+
+void prof_set_should_profile_memory(bool should_profile) {
+    prof_should_profile_memory = should_profile;
+}
+
+void prof_memory_alloc(int64_t size) {
+    if (!prof_should_profile_memory) {
+        return;
+    }
+
+    prof_memory_allocated += size;
+    if (prof_memory_allocated > prof_memory_peak) {
+        prof_memory_peak = prof_memory_allocated;
+    }
+}
+
+void prof_memory_free(int64_t size) {
+    if (!prof_should_profile_memory) {
+        return;
+    }
+
+    prof_memory_allocated -= size;
+}
+
+int64_t prof_get_memory_peak(void) {
+    return prof_memory_peak;
 }

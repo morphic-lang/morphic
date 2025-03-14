@@ -178,6 +178,10 @@ impl<'a> RcBoxBuiltin<'a> {
                         s.ptr_get(self.item_type, s.gep(self.rc_type, rc, F_ITEM)),
                     );
 
+                    if let Some(ProfileRc { memory_free, .. }) = tal.prof_rc {
+                        s.call_void(memory_free, &[s.size(self.rc_type)]);
+                    }
+
                     s.free(s.ptr_cast(s.i8_t(), rc), tal);
                 });
             }
