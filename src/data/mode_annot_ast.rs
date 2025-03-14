@@ -1184,12 +1184,13 @@ pub enum Expr<R, I, J> {
     FloatLit(f64),
 }
 
-/// `sig` stores all the constraints on the mode parameters of the function signature. We also keep
-/// around a copy of all constraints generated during inference in `all` for debugging.
+/// `sig` stores all the constraints on the mode parameters of a function (more accurately SCC)
+/// signature. We used to also keep around a copy of all constraints generated during inference for
+/// debugging purposes, but there are sometimes millions of mode variables in an SCC and we were
+/// copying this datastructure around, leading the OOMs.
 #[derive(Clone)]
 pub struct Constrs {
     pub sig: IdVec<ModeParam, in_eq::LowerBound<ModeParam, Mode>>,
-    pub all: in_eq::ConstrGraph<ModeVar, Mode>,
 }
 
 impl fmt::Debug for Constrs {

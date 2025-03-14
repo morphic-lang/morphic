@@ -74,8 +74,12 @@ where
         &self.vars
     }
 
-    pub fn var_count(&self) -> Count<SolverVar> {
-        self.vars.count()
+    pub fn num_vars(&self) -> usize {
+        self.vars.len()
+    }
+
+    pub fn num_constrs(&self) -> usize {
+        self.vars.values().map(|v| v.lb_vars.len()).sum()
     }
 
     pub fn fresh_var(&mut self) -> SolverVar {

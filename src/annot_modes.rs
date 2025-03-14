@@ -1657,7 +1657,6 @@ fn instantiate_scc(
             .collect::<BTreeMap<_, _>>()
     };
 
-    // let mut iter = 0;
     let (arg_tys, ret_tys, bodies, constrs) = loop {
         let mut constrs = ConstrGraph::new();
         let pending_args =
@@ -1934,18 +1933,22 @@ fn solve_scc(
         let arg_ty = &instantiated.func_args[&func_id];
         let ret_ty = &instantiated.func_rets[&func_id];
 
+        let arg_ty = subst_modes(arg_ty, |m| solution.internal_to_external[&m]);
+        let ret_ty = subst_modes(ret_ty, |m| solution.internal_to_external[&m]);
+        let body = extract_expr(&solution, &instantiated.func_bodies[&func_id]);
+        let constrs = annot::Constrs {
+            sig: sig_constrs.clone(),
+        };
+
         let func = &funcs[func_id];
         funcs_annot.insert_vacant(
             *func_id,
             annot::FuncDef {
                 purity: func.purity,
-                arg_ty: subst_modes(arg_ty, |m| solution.internal_to_external[&m]),
-                ret_ty: subst_modes(ret_ty, |m| solution.internal_to_external[&m]),
-                constrs: annot::Constrs {
-                    sig: sig_constrs.clone(),
-                    all: instantiated.scc_constrs.clone(),
-                },
-                body: extract_expr(&solution, &instantiated.func_bodies[&func_id]),
+                arg_ty,
+                ret_ty,
+                constrs,
+                body,
                 profile_point: func.profile_point.clone(),
             },
         );

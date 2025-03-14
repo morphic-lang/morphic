@@ -665,22 +665,6 @@ pub fn guard_types(prog: flat::Program) -> guard::Program {
         can_guard: &can_guard,
     };
 
-    // for (_, scc) in &prog.custom_types.sccs {
-    //     if scc.nodes.contains(&CustomTypeId(10)) || scc.nodes.contains(&CustomTypeId(11)) {
-    //         for node in scc.nodes {
-    //             print!("{}, ", node.0);
-    //         }
-    //         println!();
-    //     }
-    // }
-
-    // println!(
-    //     "unfold Custom#10 = {}",
-    //     trans
-    //         .guard(&prog.custom_types.types[CustomTypeId(10)].content)
-    //         .display()
-    // );
-
     let funcs = prog.funcs.map(|_func_id, func| {
         let mut builder = Builder::new(Count::from_value(1));
         let mut ctx = Context::new();
