@@ -76,8 +76,7 @@ impl Default for SpecializationMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RcStrategy {
     Default,
-    Perceus,        // similar to "Perceus"
-    ImmutableBeans, // similar to "Immutable Beans"
+    Perceus, // Linear type inference. Everything is inferred as owned.
 }
 
 impl Default for RcStrategy {
@@ -86,14 +85,13 @@ impl Default for RcStrategy {
     }
 }
 
-const RC_STRATS: &[&str] = &["default", "perceus", "immutable-beans"];
+const RC_STRATS: &[&str] = &["default", "perceus"];
 const DEFAULT_RC_STRATS: &str = "default";
 
 fn parse_rc_strat(s: &str) -> RcStrategy {
     match s {
         "default" => RcStrategy::Default,
         "perceus" => RcStrategy::Perceus,
-        "immutable-beans" => RcStrategy::ImmutableBeans,
         _ => unreachable!(),
     }
 }

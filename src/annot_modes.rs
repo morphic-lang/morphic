@@ -1058,11 +1058,7 @@ struct LocalInfo {
     ty: TypeFo<Res<ModeVar, Lt>>,
 }
 
-// This function is the core logic for this pass. It implements the judgment from the paper:
-// Δ ; Γ ; S ; q ⊢ e : t ⇝ e ; Q ; Γ'
-//
-// Note that we must return a set of updates rather than mutating Γ because I-Match requires that we
-// check all branches in the initial Γ.
+// This function is the core logic for this pass.
 fn instantiate_expr(
     strategy: RcStrategy,
     interner: &Interner,
@@ -1664,16 +1660,6 @@ fn instantiate_scc(
         let pending_rets =
             ret_tys.map_refs(|_, ty| add_fresh_modes(strategy, customs, sccs, &mut constrs, ty));
 
-        if strategy == RcStrategy::ImmutableBeans {
-            for var in pending_rets
-                .values()
-                .flat_map(|ty| ty.iter_flat())
-                .map(|(m, _)| *m)
-            {
-                constrs.require_le_const(&Mode::Owned, var);
-            }
-        }
-
         let assumptions = SignatureAssumptions {
             known_defs: funcs_annot,
             pending_args: &pending_args,
@@ -1979,6 +1965,8 @@ pub fn annot_modes(
     program: guard::Program,
     progress: impl ProgressLogger,
 ) -> annot::Program {
+    let specialize = false;
+
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
@@ -1986,11 +1974,17 @@ pub fn annot_modes(
 
     let funcs = compute_tail_calls(&program.funcs);
 
-    let func_sccs: Sccs<usize, _> = find_components(funcs.count(), |id| {
-        let mut deps = BTreeSet::new();
-        add_func_deps(&mut deps, &funcs[id].body);
-        deps
-    });
+    let func_sccs: Sccs<usize, _> = if specialize {
+        find_components(funcs.count(), |id| {
+            let mut deps = BTreeSet::new();
+            add_func_deps(&mut deps, &funcs[id].body);
+            deps
+        })
+    } else {
+        let mut func_sccs = Sccs::new();
+        func_sccs.push_cyclic_component(&funcs.count().into_iter().collect::<Vec<_>>());
+        func_sccs
+    };
 
     let mut progress = progress.start_session(Some(program.funcs.len()));
 

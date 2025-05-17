@@ -270,7 +270,6 @@ impl Variant {
         let rc_strat_str = match self.rc_strat {
             RcStrategy::Default => "default",
             RcStrategy::Perceus => "perceus",
-            RcStrategy::ImmutableBeans => "immutable_beans",
         };
         let record_rc_str = if self.record_rc { "rc" } else { "time" };
         format!("{}_{}", rc_strat_str, record_rc_str)
@@ -279,11 +278,7 @@ impl Variant {
 
 fn variants() -> Vec<Variant> {
     let mut variants = Vec::new();
-    for rc_strat in [
-        RcStrategy::Default,
-        RcStrategy::Perceus,
-        // RcStrategy::ImmutableBeans,
-    ] {
+    for rc_strat in [RcStrategy::Default, RcStrategy::Perceus] {
         for record_rc in [true, false] {
             variants.push(Variant {
                 rc_strat,
