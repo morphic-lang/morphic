@@ -54,6 +54,69 @@ fn drive_subprocess(
     );
 }
 
+fn compile_ml_sample(
+    bench_name: &str,
+    ml_variant: cli::MlConfig,
+    ast: MlAst,
+    artifacts: &ArtifactDir,
+) {
+    let ml_variant_str = match ml_variant {
+        cli::MlConfig::Sml => "sml",
+        cli::MlConfig::Ocaml => "ocaml",
+    };
+
+    let ast_str = match ast {
+        MlAst::Typed => "typed",
+        MlAst::Mono => "mono",
+        MlAst::FirstOrder => "first_order",
+    };
+
+    let variant_name = format!("{bench_name}_{ml_variant_str}_{ast_str}");
+
+    let output_path = artifacts.artifact_path(&format!("{ast_str}-{ml_variant_str}"));
+
+    if output_path.exists() {
+        return;
+    }
+
+    match ml_variant {
+        cli::MlConfig::Sml => {
+            let mlton_output = process::Command::new("mlton")
+                .arg("-default-type")
+                .arg("int64")
+                .arg("-output")
+                .arg(&output_path)
+                .arg(artifacts.artifact_path(&format!("{ast_str}.sml")))
+                .output()
+                .expect("Compilation failed");
+
+            assert!(
+                mlton_output.status.success(),
+                "Compilation failed:\n{}",
+                String::from_utf8_lossy(&mlton_output.stderr)
+            );
+        }
+        cli::MlConfig::Ocaml => {
+            let ocaml_output = process::Command::new("ocamlopt")
+                .arg("unix.cmxa")
+                .arg("-O3")
+                .arg(artifacts.artifact_path(&format!("{ast_str}.ml")))
+                .arg("-o")
+                .arg(&output_path)
+                .output()
+                .expect("Compilation failed");
+
+            assert!(
+                ocaml_output.status.success(),
+                "Compilation failed:\n{}",
+                String::from_utf8_lossy(&ocaml_output.stderr)
+            );
+        }
+    }
+
+    write_binary_size(&variant_name, &output_path);
+}
+
 fn run_exe<Report: for<'a> Deserialize<'a>>(
     exe_path: impl AsRef<Path>,
     iters: u64,
@@ -179,6 +242,57 @@ struct SampleOptions {
 
 const OUT_DIR: &str = "out2";
 
+#[derive(Copy, Clone, Debug)]
+enum MlAst {
+    Typed,
+    Mono,
+    FirstOrder,
+}
+
+fn bench_ml_sample(
+    iters: (u64, u64),
+    bench_name: &str,
+    ml_variant: cli::MlConfig,
+    ast: MlAst,
+    artifacts: &ArtifactDir,
+    extra_stdin: &str,
+    expected_stdout: &str,
+) {
+    let ml_variant_str = match ml_variant {
+        cli::MlConfig::Sml => "sml",
+        cli::MlConfig::Ocaml => "ocaml",
+    };
+
+    let ast = match ast {
+        MlAst::Typed => "typed",
+        MlAst::Mono => "mono",
+        MlAst::FirstOrder => "first_order",
+    };
+
+    let variant_name = format!("{bench_name}_{ml_variant_str}_{ast}_time");
+
+    let output_path = artifacts.artifact_path(&format!("{ast}-{ml_variant_str}"));
+
+    if Path::new(&format!("{}/{}.txt", RUN_TIME_DIR, variant_name)).exists() {
+        return;
+    }
+
+    let mut results = Vec::new();
+    for _ in 0..iters.0 {
+        let report: Vec<MlProfReport> =
+            run_exe(&output_path, iters.1, extra_stdin, expected_stdout);
+
+        assert_eq!(report.len(), 1);
+
+        assert_eq!(report[0].total_calls, iters.1);
+        let total_nanos = report[0].total_clock_nanos;
+
+        results.push(Duration::from_nanos(total_nanos));
+    }
+
+    write_run_time(&variant_name, results);
+}
+
 fn build_exe(
     bench_name: &str,
     tag: &str,
@@ -278,7 +392,7 @@ impl Variant {
 
 fn variants() -> Vec<Variant> {
     let mut variants = Vec::new();
-    for rc_strat in [RcStrategy::Default, RcStrategy::Perceus] {
+    for rc_strat in [RcStrategy::Default] {
         for record_rc in [true, false] {
             variants.push(Variant {
                 rc_strat,
@@ -304,9 +418,48 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
+    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+        let tag = match ml_variant {
+            MlConfig::Sml => "sml",
+            MlConfig::Ocaml => "ocaml",
+        };
+
+        let artifact_path = std::env::current_dir()
+            .unwrap()
+            .join("out2")
+            .join(format!("{bench_name}-default_time-artifacts"));
+
+        let artifact_dir = ArtifactDir {
+            dir_path: artifact_path.clone(),
+            filename_prefix: Path::new(bench_name).to_path_buf(),
+        };
+
+        for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
+            let ast_str = match ast {
+                MlAst::Typed => "typed",
+                MlAst::Mono => "mono",
+                MlAst::FirstOrder => "first_order",
+            };
+            println!("benchmarking ml {bench_name} {tag} {ast_str}");
+            bench_ml_sample(
+                iters,
+                bench_name,
+                ml_variant,
+                ast,
+                &artifact_dir,
+                extra_stdin,
+                expected_stdout,
+            );
+        }
+    }
+
     for variant in variants() {
         let variant_name = format!("{bench_name}_{tag}", tag = variant.tag());
         println!("benchmarking {}", variant_name);
+
+        if Path::new(&format!("{}/{}.txt", RUN_TIME_DIR, variant_name)).exists() {
+            return;
+        }
 
         let exe_path = std::env::current_dir()
             .unwrap()
@@ -375,7 +528,7 @@ fn compile_sample(
     for variant in variants() {
         let tag = variant.tag();
         println!("compiling {bench_name}_{tag}");
-        let (exe_path, _artifact_dir) = build_exe(
+        let (exe_path, artifact_dir) = build_exe(
             bench_name,
             &tag,
             src_path.clone(),
@@ -389,7 +542,13 @@ fn compile_sample(
             },
         );
 
-        write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
+        // write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
+
+        for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+            for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
+                compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
+            }
+        }
     }
 }
 
@@ -764,25 +923,25 @@ fn main() {
     // these have 0 retains omitted, we don't run them
     // sample_quicksort();
     // sample_primes();
-    sample_primes_sieve();
-    sample_nqueens_iterative();
+    // sample_primes_sieve();
+    // sample_nqueens_iterative();
     sample_nqueens_functional();
 
-    sample_parse_json();
+    // sample_parse_json();
 
-    sample_calc();
+    // sample_calc();
 
-    sample_unify();
+    // sample_unify();
 
-    sample_words_trie();
+    // sample_words_trie();
 
-    sample_text_stats();
+    // sample_text_stats();
 
     sample_lisp();
 
-    sample_cfold();
-    sample_deriv();
-    sample_rbtree();
+    // sample_cfold();
+    // sample_deriv();
+    // sample_rbtree();
 
-    sample_rbtreeck();
+    // sample_rbtreeck();
 }

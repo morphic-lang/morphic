@@ -150,24 +150,28 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write("_")?;
                 Ok(0)
             }
-
             Pattern::Var(var_type) => {
-                self.write("l")?;
-                self.write(self.num_locals)?;
                 match self.variant {
                     MlVariant::OCAML => {
+                        self.write("(")?;
+                        self.write("l")?;
+                        self.write(self.num_locals)?;
                         if write_type {
                             self.write(" : ")?;
                             self.write_type(var_type, Precedence::Top)?;
                         }
+                        self.write(")")?;
                     }
                     MlVariant::SML => {
+                        self.write("l")?;
+                        self.write(self.num_locals)?;
                         self.write(" : ")?;
                         self.write_type(var_type, Precedence::Top)?;
                     }
                 }
                 Ok(1)
             }
+
             Pattern::Tuple(pats) => {
                 if pats.len() == 1 {
                     panic!("length 1 tuple");
@@ -758,7 +762,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     if let Some(_) = prof {
                         match self.variant {
                             MlVariant::OCAML => {
-                                self.write("in let stop = Unix.gettimeofday () in let _ = incr total_calls_")?;
+                                self.write(" in let stop = Unix.gettimeofday () in let _ = incr total_calls_")?;
                                 self.write(id.0)?;
                                 self.write(" in let _ = total_clock_nanos_")?;
                                 self.write(id.0)?;
@@ -906,8 +910,8 @@ const PRELUDE_OCAML: &str = include_str!("prelude.ml");
 
 // TODO: Add a flag to control whether we use immutable/mutable arrays in the generated SML code.
 // We hard-code mutable for now because it's sufficient for the benchmarks we're interested in.
-const PRELUDE_PERSISTENT_SML: &str = include_str!("mut.sml");
-const PRELUDE_PERSISTENT_OCAML: &str = include_str!("mut.ml");
+const PRELUDE_PERSISTENT_SML: &str = include_str!("persistent.sml");
+const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");
 
 fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
     match expr {

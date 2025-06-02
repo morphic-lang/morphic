@@ -251,24 +251,22 @@ impl<'a, 'b> Context<'a, 'b> {
             }
 
             Pattern::Var(var_type) => {
-                self.write("l")?;
-                self.write(self.num_locals)?;
                 match self.variant {
                     Variant::OCAML => {
+                        self.write("(")?;
+                        self.write("l")?;
+                        self.write(self.num_locals)?;
                         if write_type {
                             self.write(" : ")?;
                             self.write_type(var_type, Precedence::Top)?;
                         }
+                        self.write(")")?;
                     }
-                    Variant::SML => {
+                    Variant::SML | Variant::MORPHIC => {
+                        self.write("l")?;
+                        self.write(self.num_locals)?;
                         self.write(" : ")?;
                         self.write_type(var_type, Precedence::Top)?;
-                    }
-                    Variant::MORPHIC => {
-                        if write_type {
-                            self.write(" : ")?;
-                            self.write_type(var_type, Precedence::Top)?;
-                        }
                     }
                 }
                 Ok(1)
@@ -588,7 +586,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 } else {
                     self.write("(")?;
                     for (i, expr) in exprs.iter().enumerate() {
-                        self.write_expr(expr, Precedence::Top)?;
+                        self.write_expr(expr, Precedence::App)?;
                         if i != exprs.len() - 1 {
                             self.write(", ")?;
                         }
@@ -1199,7 +1197,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     match self.variant {
                         Variant::OCAML => {
                             self.write(
-                                "in let stop = Unix.gettimeofday () in let _ = incr total_calls_",
+                                " in let stop = Unix.gettimeofday () in let _ = incr total_calls_",
                             )?;
                             self.write(id.0)?;
                             self.write(" in let _ = total_clock_nanos_")?;
@@ -1335,8 +1333,8 @@ const PRELUDE_MOR: &str = include_str!("prelude.mor");
 
 // TODO: Add a flag to control whether we use immutable/mutable arrays in the generated SML code.
 // We hard-code mutable for now because it's sufficient for the benchmarks we're interested in.
-const PRELUDE_PERSISTENT_SML: &str = include_str!("mut.sml");
-const PRELUDE_PERSISTENT_OCAML: &str = include_str!("mut.ml");
+const PRELUDE_PERSISTENT_SML: &str = include_str!("persistent.sml");
+const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");
 
 fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
     match type_ {
