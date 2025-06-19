@@ -1,15 +1,15 @@
 #![allow(dead_code)]
 
-use morphic::build;
-use morphic::cli;
-use morphic::cli::ArtifactDir;
-use morphic::cli::LlvmConfig;
-use morphic::cli::MlConfig;
-use morphic::cli::PassOptions;
-use morphic::cli::RcStrategy;
-use morphic::cli::SpecializationMode;
-use morphic::file_cache::FileCache;
-use morphic::progress_ui::ProgressMode;
+use morphic_compiler::build;
+use morphic_compiler::cli;
+use morphic_compiler::cli::ArtifactDir;
+use morphic_compiler::cli::LlvmConfig;
+use morphic_compiler::cli::MlConfig;
+use morphic_compiler::cli::PassOptions;
+use morphic_compiler::cli::RcStrategy;
+use morphic_compiler::cli::SpecializationMode;
+use morphic_compiler::file_cache::FileCache;
+use morphic_compiler::progress_ui::ProgressMode;
 
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
@@ -528,7 +528,7 @@ fn compile_sample(
     for variant in variants() {
         let tag = variant.tag();
         println!("compiling {bench_name}_{tag}");
-        let (exe_path, artifact_dir) = build_exe(
+        let (_exe_path, artifact_dir) = build_exe(
             bench_name,
             &tag,
             src_path.clone(),
@@ -633,7 +633,7 @@ fn sample_primes_sieve() {
     let iters = (10, 100);
 
     let stdin = "10000\n";
-    let stdout = include_str!("../../samples/expected-output/primes_10000.txt");
+    let stdout = include_str!("../../../samples/expected-output/primes_10000.txt");
 
     compile_sample(
         "bench_primes_sieve.mor",
@@ -650,7 +650,7 @@ fn sample_parse_json() {
     let iters = (10, 10);
 
     let stdin = concat!(
-        include_str!("../../samples/sample-input/citm_catalog.json"),
+        include_str!("../../../samples/sample-input/citm_catalog.json"),
         "\n"
     );
     let stdout = "-7199371743916571250\n";
@@ -677,11 +677,11 @@ fn sample_calc() {
     let iters = (10, 200);
 
     let stdin = concat!(
-        include_str!("../../samples/sample-input/calc_exprs.txt"),
+        include_str!("../../../samples/sample-input/calc_exprs.txt"),
         "\n"
     );
     let stdout = concat!(
-        include_str!("../../samples/expected-output/calc_values.txt"),
+        include_str!("../../../samples/expected-output/calc_values.txt"),
         "\n"
     );
 
@@ -699,10 +699,10 @@ fn sample_unify() {
     let iters = (10, 1);
 
     let stdin = concat!(
-        include_str!("../../samples/sample-input/unify_problems.txt"),
+        include_str!("../../../samples/sample-input/unify_problems.txt"),
         "\n"
     );
-    let stdout = include_str!("../../samples/expected-output/unify_solutions.txt");
+    let stdout = include_str!("../../../samples/expected-output/unify_solutions.txt");
 
     compile_sample(
         "bench_unify.mor",
@@ -725,13 +725,13 @@ fn sample_words_trie() {
     let iters = (10, 10);
 
     let stdin = concat!(
-        include_str!("../../samples/sample-input/udhr.txt"),
+        include_str!("../../../samples/sample-input/udhr.txt"),
         "\n",
-        include_str!("../../samples/sample-input/udhr_queries.txt"),
+        include_str!("../../../samples/sample-input/udhr_queries.txt"),
         "\n",
     );
 
-    let stdout = include_str!("../../samples/expected-output/udhr_query_counts.txt");
+    let stdout = include_str!("../../../samples/expected-output/udhr_query_counts.txt");
 
     compile_sample(
         "bench_words_trie.mor",
@@ -753,7 +753,7 @@ fn sample_words_trie() {
 fn sample_text_stats() {
     let iters = (10, 30);
 
-    let stdin = include_str!("../../samples/sample-input/shakespeare.txt");
+    let stdin = include_str!("../../../samples/sample-input/shakespeare.txt");
 
     let stdout = "317\n";
 
@@ -777,7 +777,7 @@ fn sample_text_stats() {
 fn sample_lisp() {
     let iters = (10, 30);
 
-    let stdin = include_str!("../../samples/sample-input/lisp-interpreter.lisp");
+    let stdin = include_str!("../../../samples/sample-input/lisp-interpreter.lisp");
 
     let stdout = "((O . ()) . ((O . (O . ())) . ((O . (O . (O . ()))) . ((O . (O . (O . (O . ())))) . ((O . (O . (O . (O . (O . ()))))) . ())))))\n";
 

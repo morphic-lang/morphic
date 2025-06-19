@@ -312,27 +312,27 @@ sample! { bench_primes_sieve "samples/bench_primes_sieve.mor";
     compile_only = true;
     // first number is iteration count
     stdin = "5\n10000\n";
-    stdout = include_str!("../../samples/expected-output/primes_10000.txt");
+    stdout = include_str!("../../../../samples/expected-output/primes_10000.txt");
 }
 
 sample! { bench_words_trie "samples/bench_words_trie.mor";
     compile_only = true;
     stdin = concat!(
         "2\n", // first number is iteration count
-        include_str!("../../samples/sample-input/word_count_doc_tiny.txt"),
+        include_str!("../../../../samples/sample-input/word_count_doc_tiny.txt"),
         "\n",
-        include_str!("../../samples/sample-input/word_count_queries_tiny.txt"),
+        include_str!("../../../../samples/sample-input/word_count_queries_tiny.txt"),
         "\n",
     );
-    stdout = include_str!("../../samples/expected-output/word_count_answers_tiny.txt");
+    stdout = include_str!("../../../../samples/expected-output/word_count_answers_tiny.txt");
 }
 
 sample! { bench_unify "samples/bench_unify.mor";
     compile_only = true;
     stdin = concat!(
         "2\n", // first number is iteration count
-        include_str!("../../samples/sample-input/unify_problems_short.txt"),
+        include_str!("../../../../samples/sample-input/unify_problems_short.txt"),
         "\n",
     );
-    stdout = include_str!("../../samples/expected-output/unify_solutions_short.txt");
+    stdout = include_str!("../../../../samples/expected-output/unify_solutions_short.txt");
 }

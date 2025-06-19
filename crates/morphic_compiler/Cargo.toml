@@ -1,0 +1,43 @@
+[package]
+name = "morphic_compiler"
+version = "0.1.0"
+build = "build.rs"
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+find_clang.workspace = true
+anyhow.workspace = true
+lalrpop.workspace = true
+walkdir.workspace = true
+
+[dependencies]
+find_clang.workspace = true
+morphic_macros.workspace = true
+lalrpop-util.workspace = true
+im-rc.workspace = true
+stacker.workspace = true
+better-panic.workspace = true
+clap.workspace = true
+cc.workspace = true
+tempfile.workspace = true
+crossbeam-channel.workspace = true
+inkwell.workspace = true
+ansi_term.workspace = true
+textwrap.workspace = true
+json.workspace = true
+indicatif.workspace = true
+id_collections.workspace = true
+id_graph_sccs.workspace = true
+once_cell.workspace = true
+num-traits.workspace = true
+hashbrown.workspace = true
+rustc-hash.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+
+rand.workspace = true
+rand_distr.workspace = true
+rand_pcg.workspace = true
