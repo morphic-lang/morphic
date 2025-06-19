@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
-use std::io;
 use std::ops::{Deref, DerefMut};
 
 use crate::data::intrinsics as intrs;
@@ -10,36 +9,33 @@ use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
-use crate::file_cache::FileCache;
 use crate::intrinsic_config::intrinsic_sig;
-use crate::report_error::{locate_path, locate_span, Locate};
-use crate::report_type;
+use crate::util::lines::lines;
+use crate::{report_type, ErrorId};
 use id_collections::{id_type, IdVec};
 
 #[id_type]
 struct TypeVar(usize);
 
 #[derive(Clone, Copy, Debug)]
-enum RawErrorKind {
+enum RawError {
     Recursive,
     Mismatch {
         expected: TypeVar,
         actual: TypeVar,
     },
     ExpectedCtorArg {
-        id: res::TypeId,
+        id: res::NominalType,
         variant: res::VariantId,
     },
     UnexpectedCtorArg {
-        id: res::TypeId,
+        id: res::NominalType,
         variant: res::VariantId,
     },
 }
 
-type RawError = Locate<RawErrorKind>;
-
 #[derive(Clone, Debug)]
-pub enum ErrorKind {
+pub enum Error {
     Recursive,
     Mismatch {
         expected: String,
@@ -57,26 +53,24 @@ pub enum ErrorKind {
     },
 }
 
-pub type Error = Locate<ErrorKind>;
-
-impl RawErrorKind {
-    fn render(
-        &self,
+impl Error {
+    fn new(
         program: &res::Program,
         params: &IdVec<res::TypeParamId, raw::TypeParam>,
         ctx: &Context,
-    ) -> ErrorKind {
-        match self {
-            RawErrorKind::Recursive => ErrorKind::Recursive,
+        raw_error: RawError,
+    ) -> Error {
+        match raw_error {
+            RawError::Recursive => Error::Recursive,
 
-            RawErrorKind::Mismatch {
+            RawError::Mismatch {
                 expected: expected_var,
                 actual: actual_var,
             } => {
                 let renderer = report_type::TypeRenderer::new(program);
 
-                let expected_type = ctx.extract_report(*expected_var);
-                let actual_type = ctx.extract_report(*actual_var);
+                let expected_type = ctx.extract_report(expected_var);
+                let actual_type = ctx.extract_report(actual_var);
 
                 let expected = renderer.render(params, &expected_type);
                 let actual = renderer.render(params, &actual_type);
@@ -84,7 +78,7 @@ impl RawErrorKind {
                 let expected_is_concrete = report_type::is_concrete(&expected_type);
                 let actual_is_concrete = report_type::is_concrete(&actual_type);
 
-                ErrorKind::Mismatch {
+                Error::Mismatch {
                     expected,
                     expected_is_concrete,
                     actual,
@@ -92,54 +86,51 @@ impl RawErrorKind {
                 }
             }
 
-            RawErrorKind::ExpectedCtorArg { id, variant } => {
+            RawError::ExpectedCtorArg { id, variant } => {
                 let renderer = report_type::TypeRenderer::new(program);
 
-                let (id_rendered, variant_rendered) = renderer.render_ctor(*id, *variant);
+                let (id_rendered, variant_rendered) = renderer.render_ctor(id, variant);
 
-                ErrorKind::ExpectedCtorArg {
+                Error::ExpectedCtorArg {
                     id: id_rendered,
                     variant: variant_rendered,
                 }
             }
 
-            RawErrorKind::UnexpectedCtorArg { id, variant } => {
+            RawError::UnexpectedCtorArg { id, variant } => {
                 let renderer = report_type::TypeRenderer::new(program);
 
-                let (id_rendered, variant_rendered) = renderer.render_ctor(*id, *variant);
+                let (id_rendered, variant_rendered) = renderer.render_ctor(id, variant);
 
-                ErrorKind::UnexpectedCtorArg {
+                Error::UnexpectedCtorArg {
                     id: id_rendered,
                     variant: variant_rendered,
                 }
             }
         }
     }
-}
 
-impl Error {
-    pub fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        self.report_with(dest, files, |err| match err {
-            ErrorKind::Recursive => (
-                "Cyclic Type",
-                lines![
+    pub fn report(&self) -> Report {
+        match self {
+            Error::Recursive => Report {
+                title: "Cyclic Type".to_string(),
+                message: Some(lines![
                     "I couldn't infer a type for this expression.",
                     "",
                     "Any type you could try to give this expression would need to mention itself \
                      cyclically in order to type-check.  So a hypothetical type that could make \
                      this expression type-check would need to be infinitely big!"
-                ]
-                .to_owned(),
-            ),
+                ]),
+            },
 
-            ErrorKind::Mismatch {
+            Error::Mismatch {
                 expected,
                 expected_is_concrete,
                 actual,
                 actual_is_concrete,
-            } => (
-                "Type Mismatch",
-                format!(
+            } => Report {
+                title: "Type Mismatch".to_string(),
+                message: Some(format!(
                     lines![
                         "I expected to find an expression here with {expected_intro}:",
                         "",
@@ -161,25 +152,25 @@ impl Error {
                         "a type that looks like"
                     },
                     actual = actual,
-                ),
-            ),
+                )),
+            },
 
-            ErrorKind::ExpectedCtorArg { id, variant } => (
-                "Missing Constructor Argument",
-                format!(
+            Error::ExpectedCtorArg { id, variant } => Report {
+                title: "Missing Constructor Argument".to_string(),
+                message: Some(format!(
                     "The constructor '{}' for the type '{}' is supposed to take an argument.",
                     variant, id,
-                ),
-            ),
+                )),
+            },
 
-            ErrorKind::UnexpectedCtorArg { id, variant } => (
-                "Unexpected Constructor Argument",
-                format!(
+            Error::UnexpectedCtorArg { id, variant } => Report {
+                title: "Unexpected Constructor Argument".to_string(),
+                message: Some(format!(
                     "The constructor '{}' for the type '{}' is not supposed to take an argument.",
                     variant, id,
-                ),
-            ),
-        })
+                )),
+            },
+        }
     }
 }
 
@@ -188,9 +179,10 @@ enum Assign {
     Unknown,
     Equal(TypeVar),
     Param(res::TypeParamId),
-    App(res::TypeId, Vec<TypeVar>),
+    App(res::NominalType, Vec<TypeVar>),
     Tuple(Vec<TypeVar>),
     Func(Purity, TypeVar, TypeVar),
+    Error(ErrorId),
 }
 
 #[derive(Clone, Debug)]
@@ -439,7 +431,7 @@ impl Scope {
 
 #[derive(Clone, Debug)]
 enum AnnotExpr {
-    Global(res::GlobalId, IdVec<res::TypeParamId, TypeVar>),
+    Global(res::Global, IdVec<res::TypeParamId, TypeVar>),
     Local(res::LocalId),
     Tuple(Vec<AnnotExpr>),
     Lam(
@@ -459,7 +451,7 @@ enum AnnotExpr {
     IntLit(i64),
     FloatLit(f64),
 
-    Span(usize, usize, Box<AnnotExpr>),
+    Error(ErrorId),
 }
 
 #[derive(Clone, Debug)]
@@ -468,7 +460,7 @@ enum AnnotPattern {
     Var(TypeVar),
     Tuple(Vec<AnnotPattern>),
     Ctor(
-        res::TypeId,
+        res::NominalType,
         Vec<TypeVar>,
         res::VariantId,
         Option<Box<AnnotPattern>>,
@@ -478,16 +470,16 @@ enum AnnotPattern {
     IntConst(i64),
     FloatConst(f64),
 
-    Span(usize, usize, Box<AnnotPattern>),
+    Error(ErrorId),
 }
 
 fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> res::TypeScheme {
     fn trans_type(type_: &intrs::Type) -> res::Type {
         match type_ {
-            intrs::Type::Bool => res::Type::App(res::TypeId::Bool, vec![]),
-            intrs::Type::Num(NumType::Byte) => res::Type::App(res::TypeId::Byte, vec![]),
-            intrs::Type::Num(NumType::Int) => res::Type::App(res::TypeId::Int, vec![]),
-            intrs::Type::Num(NumType::Float) => res::Type::App(res::TypeId::Float, vec![]),
+            intrs::Type::Bool => res::Type::App(res::NominalType::Bool, vec![]),
+            intrs::Type::Num(NumType::Byte) => res::Type::App(res::NominalType::Byte, vec![]),
+            intrs::Type::Num(NumType::Int) => res::Type::App(res::NominalType::Int, vec![]),
+            intrs::Type::Num(NumType::Float) => res::Type::App(res::NominalType::Float, vec![]),
             intrs::Type::Tuple(items) => res::Type::Tuple(items.iter().map(trans_type).collect()),
         }
     }
@@ -503,9 +495,9 @@ fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> res::TypeScheme {
 }
 
 // Sounds ominous...
-pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::TypeScheme> {
+pub fn global_scheme(program: &res::Program, global: res::Global) -> Cow<res::TypeScheme> {
+    use crate::data::resolved_ast::NominalType::*;
     use crate::data::resolved_ast::Type::*;
-    use crate::data::resolved_ast::TypeId::*;
 
     fn bool_() -> res::Type {
         App(Bool, vec![])
@@ -544,9 +536,9 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
     }
 
     match global {
-        res::GlobalId::Intrinsic(intr) => Cow::Owned(intrinsic_sig_to_scheme(&intrinsic_sig(intr))),
+        res::Global::Intrinsic(intr) => Cow::Owned(intrinsic_sig_to_scheme(&intrinsic_sig(intr))),
 
-        res::GlobalId::ArrayOp(op) => {
+        res::Global::ArrayOp(op) => {
             use crate::data::resolved_ast::ArrayOp::*;
             let result = match op {
                 Get => scheme(1, func(pair(array(param(0)), int()), param(0))),
@@ -565,14 +557,14 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
             Cow::Owned(result)
         }
 
-        res::GlobalId::IoOp(op) => match op {
+        res::Global::IoOp(op) => match op {
             res::IoOp::Input => Cow::Owned(scheme(0, impure_func(Tuple(vec![]), array(byte())))),
             res::IoOp::Output => Cow::Owned(scheme(0, impure_func(array(byte()), Tuple(vec![])))),
         },
 
-        res::GlobalId::Panic => Cow::Owned(scheme(1, func(array(byte()), param(0)))),
+        res::Global::Panic => Cow::Owned(scheme(1, func(array(byte()), param(0)))),
 
-        res::GlobalId::Ctor(Custom(custom), variant) => {
+        res::Global::Ctor(Custom(custom), variant) => {
             let typedef = &program.custom_types[custom];
             let ret = App(Custom(custom), (0..typedef.num_params).map(param).collect());
             if let Some(arg) = typedef.variants[variant].clone() {
@@ -582,14 +574,14 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::
             }
         }
 
-        res::GlobalId::Ctor(Bool, variant) => {
+        res::Global::Ctor(Bool, variant) => {
             debug_assert!(variant == res::VariantId(0) || variant == res::VariantId(1));
             Cow::Owned(scheme(0, bool_()))
         }
 
-        res::GlobalId::Ctor(_, _) => unreachable!(),
+        res::Global::Ctor(_, _) => unreachable!(),
 
-        res::GlobalId::Custom(custom) => Cow::Borrowed(&program.vals[custom].scheme),
+        res::Global::Custom(custom) => Cow::Borrowed(&program.vals[custom].scheme),
     }
 }
 
@@ -598,10 +590,10 @@ fn instantiate_with(
     param_vars: &IdVec<res::TypeParamId, TypeVar>,
     body: &res::Type,
 ) -> TypeVar {
-    match body {
-        res::Type::Var(param) => param_vars[param],
+    match &*body.data {
+        res::TypeData::Var(param) => param_vars[param],
 
-        res::Type::App(id, args) => {
+        res::TypeData::App(id, args) => {
             let arg_vars = args
                 .iter()
                 .map(|arg| instantiate_with(ctx, param_vars, arg))
@@ -610,7 +602,7 @@ fn instantiate_with(
             ctx.new_var(Assign::App(*id, arg_vars))
         }
 
-        res::Type::Tuple(items) => {
+        res::TypeData::Tuple(items) => {
             let item_vars = items
                 .iter()
                 .map(|item| instantiate_with(ctx, param_vars, item))
@@ -619,12 +611,14 @@ fn instantiate_with(
             ctx.new_var(Assign::Tuple(item_vars))
         }
 
-        res::Type::Func(purity, arg, ret) => {
+        res::TypeData::Func(purity, arg, ret) => {
             let arg_var = instantiate_with(ctx, param_vars, arg);
             let ret_var = instantiate_with(ctx, param_vars, ret);
 
             ctx.new_var(Assign::Func(*purity, arg_var, ret_var))
         }
+
+        res::TypeData::Error(id) => ctx.new_var(Assign::Error(*id)),
     }
 }
 
@@ -650,15 +644,15 @@ fn infer_pat(
     expected: TypeVar,
     pat: &res::Pattern,
 ) -> Result<AnnotPattern, RawError> {
-    match pat {
-        res::Pattern::Any => Ok(AnnotPattern::Any(expected)),
+    match &*pat.data {
+        res::PatternData::Any => Ok(AnnotPattern::Any(expected)),
 
-        res::Pattern::Var => {
+        res::PatternData::Var => {
             scope.add_local(expected);
             Ok(AnnotPattern::Var(expected))
         }
 
-        res::Pattern::Tuple(items) => {
+        res::PatternData::Tuple(items) => {
             let item_vars: Vec<TypeVar> = (0..items.len())
                 .map(|_| ctx.new_var(Assign::Unknown))
                 .collect();
@@ -675,15 +669,15 @@ fn infer_pat(
             Ok(AnnotPattern::Tuple(items_annot))
         }
 
-        res::Pattern::Ctor(id, variant, content) => {
+        res::PatternData::Ctor(id, variant, content) => {
             let (num_params, expected_content) = match id {
-                res::TypeId::Custom(custom) => {
+                res::NominalType::Custom(custom) => {
                     let typedef = &program.custom_types[custom];
                     let expected_content = typedef.variants[variant].clone();
                     (typedef.num_params, expected_content)
                 }
 
-                res::TypeId::Bool => (0, None),
+                res::NominalType::Bool => (0, None),
 
                 _ => unreachable!(),
             };
@@ -730,31 +724,25 @@ fn infer_pat(
             Ok(ctor_annot)
         }
 
-        &res::Pattern::ByteConst(val) => {
-            let const_var = ctx.new_var(Assign::App(res::TypeId::Byte, vec![]));
+        &res::PatternData::ByteConst(val) => {
+            let const_var = ctx.new_var(Assign::App(res::NominalType::Byte, vec![]));
             ctx.unify(expected, const_var)?;
             Ok(AnnotPattern::ByteConst(val))
         }
 
-        &res::Pattern::IntConst(val) => {
-            let const_var = ctx.new_var(Assign::App(res::TypeId::Int, vec![]));
+        &res::PatternData::IntConst(val) => {
+            let const_var = ctx.new_var(Assign::App(res::NominalType::Int, vec![]));
             ctx.unify(expected, const_var)?;
             Ok(AnnotPattern::IntConst(val))
         }
 
-        &res::Pattern::FloatConst(val) => {
-            let const_var = ctx.new_var(Assign::App(res::TypeId::Float, vec![]));
+        &res::PatternData::FloatConst(val) => {
+            let const_var = ctx.new_var(Assign::App(res::NominalType::Float, vec![]));
             ctx.unify(expected, const_var)?;
             Ok(AnnotPattern::FloatConst(val))
         }
 
-        res::Pattern::Span(lo, hi, content) => Ok(AnnotPattern::Span(
-            *lo,
-            *hi,
-            Box::new(
-                infer_pat(program, ctx, scope, expected, content).map_err(locate_span(*lo, *hi))?,
-            ),
-        )),
+        &res::PatternData::Error(id) => Ok(AnnotPattern::Error(id)),
     }
 }
 
@@ -765,20 +753,20 @@ fn infer_expr(
     expected: TypeVar,
     expr: &res::Expr,
 ) -> Result<AnnotExpr, RawError> {
-    match expr {
-        &res::Expr::Global(id) => {
+    match &*expr.data {
+        &res::ExprData::Global(id) => {
             let scheme = global_scheme(program, id);
             let (param_vars, var) = instantiate_scheme(ctx, &scheme);
             ctx.unify(expected, var)?;
             Ok(AnnotExpr::Global(id, param_vars))
         }
 
-        &res::Expr::Local(id) => {
+        &res::ExprData::Local(id) => {
             ctx.unify(expected, scope.local(id))?;
             Ok(AnnotExpr::Local(id))
         }
 
-        res::Expr::Tuple(items) => {
+        res::ExprData::Tuple(items) => {
             let item_vars: Vec<TypeVar> = (0..items.len())
                 .map(|_| ctx.new_var(Assign::Unknown))
                 .collect();
@@ -795,7 +783,7 @@ fn infer_expr(
             Ok(AnnotExpr::Tuple(items_annot))
         }
 
-        res::Expr::Lam(purity, pat, body, prof_id) => scope.with_subscope(|subscope| {
+        res::ExprData::Lam(purity, pat, body, prof_id) => scope.with_subscope(|subscope| {
             let arg_var = ctx.new_var(Assign::Unknown);
             let ret_var = ctx.new_var(Assign::Unknown);
             let lam_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
@@ -818,7 +806,7 @@ fn infer_expr(
             Ok(lam_annot)
         }),
 
-        res::Expr::App(purity, func, arg) => {
+        res::ExprData::App(purity, func, arg) => {
             let arg_var = ctx.new_var(Assign::Unknown);
             let ret_var = ctx.new_var(Assign::Unknown);
             let func_var = ctx.new_var(Assign::Func(*purity, arg_var, ret_var));
@@ -834,7 +822,7 @@ fn infer_expr(
             Ok(app_annot)
         }
 
-        res::Expr::Match(discrim, cases) => {
+        res::ExprData::Match(discrim, cases) => {
             let discrim_var = ctx.new_var(Assign::Unknown);
 
             let discrim_annot = infer_expr(program, ctx, scope, discrim_var, discrim)?;
@@ -859,7 +847,7 @@ fn infer_expr(
             ))
         }
 
-        res::Expr::LetMany(bindings, body) => scope.with_subscope(|subscope| {
+        res::ExprData::LetMany(bindings, body) => scope.with_subscope(|subscope| {
             let mut new_bindings = Vec::new();
 
             for (lhs, rhs) in bindings {
@@ -876,9 +864,9 @@ fn infer_expr(
             Ok(AnnotExpr::LetMany(new_bindings, Box::new(body_annot)))
         }),
 
-        res::Expr::ArrayLit(items) => {
+        res::ExprData::ArrayLit(items) => {
             let param_var = ctx.new_var(Assign::Unknown);
-            let array_var = ctx.new_var(Assign::App(res::TypeId::Array, vec![param_var]));
+            let array_var = ctx.new_var(Assign::App(res::NominalType::Array, vec![param_var]));
 
             ctx.unify(expected, array_var)?;
 
@@ -891,31 +879,25 @@ fn infer_expr(
             Ok(array_annot)
         }
 
-        &res::Expr::ByteLit(val) => {
-            let lit_var = ctx.new_var(Assign::App(res::TypeId::Byte, vec![]));
+        &res::ExprData::ByteLit(val) => {
+            let lit_var = ctx.new_var(Assign::App(res::NominalType::Byte, vec![]));
             ctx.unify(expected, lit_var)?;
             Ok(AnnotExpr::ByteLit(val))
         }
 
-        &res::Expr::IntLit(val) => {
-            let lit_var = ctx.new_var(Assign::App(res::TypeId::Int, vec![]));
+        &res::ExprData::IntLit(val) => {
+            let lit_var = ctx.new_var(Assign::App(res::NominalType::Int, vec![]));
             ctx.unify(expected, lit_var)?;
             Ok(AnnotExpr::IntLit(val))
         }
 
-        &res::Expr::FloatLit(val) => {
-            let lit_var = ctx.new_var(Assign::App(res::TypeId::Float, vec![]));
+        &res::ExprData::FloatLit(val) => {
+            let lit_var = ctx.new_var(Assign::App(res::NominalType::Float, vec![]));
             ctx.unify(expected, lit_var)?;
             Ok(AnnotExpr::FloatLit(val))
         }
 
-        res::Expr::Span(lo, hi, body) => Ok(AnnotExpr::Span(
-            *lo,
-            *hi,
-            Box::new(
-                infer_expr(program, ctx, scope, expected, body).map_err(locate_span(*lo, *hi))?,
-            ),
-        )),
+        &res::ExprData::Error(id) => Ok(AnnotExpr::Error(id)),
     }
 }
 
@@ -959,11 +941,7 @@ fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> Result<typed::Patt
         AnnotPattern::IntConst(val) => Ok(typed::Pattern::IntConst(val)),
         AnnotPattern::FloatConst(val) => Ok(typed::Pattern::FloatConst(val)),
 
-        AnnotPattern::Span(lo, hi, content) => Ok(typed::Pattern::Span(
-            lo,
-            hi,
-            Box::new(extract_pat_solution(ctx, *content).map_err(locate_span(lo, hi))?),
-        )),
+        AnnotPattern::Error(id) => Ok(typed::Pattern::Error(id)),
     }
 }
 
@@ -1036,11 +1014,7 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawEr
 
         AnnotExpr::FloatLit(val) => Ok(typed::Expr::FloatLit(val)),
 
-        AnnotExpr::Span(lo, hi, body) => Ok(typed::Expr::Span(
-            lo,
-            hi,
-            Box::new(extract_solution(ctx, *body).map_err(locate_span(lo, hi))?),
-        )),
+        AnnotExpr::Error(id) => Ok(typed::Expr::Error(id)),
     }
 }
 

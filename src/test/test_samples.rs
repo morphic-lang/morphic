@@ -1,4 +1,5 @@
 use crate::pseudoprocess::ExitStatus::Failure;
+use crate::util::lines::lines;
 
 sample! { io "samples/io.mor";
     stdin = "hello\n";

@@ -11,3 +11,5 @@ macro_rules! lines {
         concat!(concat!($line, "\n"), lines!($($tail),*))
     };
 }
+
+pub(crate) use lines;

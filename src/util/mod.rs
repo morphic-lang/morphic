@@ -1,4 +1,3 @@
-#[macro_use]
 pub mod lines;
 
 pub mod id_gen;
@@ -40,7 +39,7 @@ pub mod non_empty_set;
 
 pub mod let_builder;
 
-pub mod drop_bomb;
+pub mod interval_map;
 
 pub fn with_scope<T, R, F: for<'a> FnOnce(&'a mut Vec<T>) -> R>(vec: &mut Vec<T>, func: F) -> R {
     let old_len = vec.len();

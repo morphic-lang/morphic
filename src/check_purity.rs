@@ -1,9 +1,6 @@
-use std::io;
-
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::file_cache::FileCache;
-use crate::report_error::{locate_path, locate_span, Locate};
+use crate::util::lines::lines;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PurityError;
@@ -11,42 +8,40 @@ pub struct PurityError;
 pub type Error = Locate<PurityError>;
 
 impl Error {
-    pub fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        self.report_with(dest, files, |PurityError| {
-            (
-                "Purity Mismatch",
-                lines![
-                    "You cannot call a function with side effects from inside a pure function.",
-                    "",
-                    "Maybe you didn't mean to mark the calling function as pure?  All function \
-                     definitions are considered pure by default.  You can mark the calling \
-                     function as having side effects by adding the keyword 'proc' before the \
-                     function's definition.",
-                ],
-            )
-        })
+    pub fn report(&self) -> Report {
+        Report {
+            title: "Purity Mismatch".to_string(),
+            message: Some(lines![
+                "You cannot call a function with side effects from inside a pure function.",
+                "",
+                "Maybe you didn't mean to mark the calling function as pure?  All function \
+                 definitions are considered pure by default.  You can mark the calling \
+                 function as having side effects by adding the keyword 'proc' before the \
+                 function's definition.",
+            ]),
+        }
     }
 }
 
 fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), Error> {
-    match expr {
-        res::Expr::Global(_) => Ok(()),
+    match &*expr.data {
+        res::ExprData::Global(_) => Ok(()),
 
-        res::Expr::Local(_) => Ok(()),
+        res::ExprData::Local(_) => Ok(()),
 
-        res::Expr::Tuple(items) => {
+        res::ExprData::Tuple(items) => {
             for item in items {
                 check_expr(ctx, item)?;
             }
             Ok(())
         }
 
-        res::Expr::Lam(purity, _, body, _) => {
+        res::ExprData::Lam(purity, _, body, _) => {
             check_expr(*purity, body)?;
             Ok(())
         }
 
-        res::Expr::App(purity, func, arg) => {
+        res::ExprData::App(purity, func, arg) => {
             if ctx == Purity::Pure && *purity == Purity::Impure {
                 return Err(PurityError.into());
             }
@@ -56,7 +51,7 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), Error> {
             Ok(())
         }
 
-        res::Expr::Match(discrim, cases) => {
+        res::ExprData::Match(discrim, cases) => {
             check_expr(ctx, discrim)?;
             for (_, body) in cases {
                 check_expr(ctx, body)?;
@@ -64,7 +59,7 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), Error> {
             Ok(())
         }
 
-        res::Expr::LetMany(bindings, body) => {
+        res::ExprData::LetMany(bindings, body) => {
             for (_lhs, rhs) in bindings {
                 check_expr(ctx, rhs)?;
             }
@@ -73,20 +68,20 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), Error> {
             Ok(())
         }
 
-        res::Expr::ArrayLit(items) => {
+        res::ExprData::ArrayLit(items) => {
             for item in items {
                 check_expr(ctx, item)?;
             }
             Ok(())
         }
 
-        res::Expr::ByteLit(_) => Ok(()),
+        res::ExprData::ByteLit(_) => Ok(()),
 
-        res::Expr::IntLit(_) => Ok(()),
+        res::ExprData::IntLit(_) => Ok(()),
 
-        res::Expr::FloatLit(_) => Ok(()),
+        res::ExprData::FloatLit(_) => Ok(()),
 
-        res::Expr::Span(lo, hi, body) => check_expr(ctx, body).map_err(locate_span(*lo, *hi)),
+        res::ExprData::Error(_) => Ok(()),
     }
 }
 

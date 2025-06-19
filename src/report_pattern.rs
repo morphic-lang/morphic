@@ -7,7 +7,7 @@ use id_collections::IdVec;
 pub enum Pattern {
     Any,
     Tuple(Vec<Pattern>),
-    Ctor(res::TypeId, res::VariantId, Option<Box<Pattern>>),
+    Ctor(res::NominalType, res::VariantId, Option<Box<Pattern>>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -46,11 +46,11 @@ fn render_to(
 
         Pattern::Ctor(id, variant, content) => {
             match id {
-                res::TypeId::Custom(custom) => {
+                res::NominalType::Custom(custom) => {
                     dest.push_str(&type_symbols[custom].variant_symbols[variant].variant_name.0);
                 }
 
-                res::TypeId::Bool => match variant {
+                res::NominalType::Bool => match variant {
                     res::VariantId(0) => {
                         dest.push_str("False");
                     }
@@ -60,7 +60,10 @@ fn render_to(
                     _ => unreachable!(),
                 },
 
-                res::TypeId::Array | res::TypeId::Byte | res::TypeId::Float | res::TypeId::Int => {
+                res::NominalType::Array
+                | res::NominalType::Byte
+                | res::NominalType::Float
+                | res::NominalType::Int => {
                     unreachable!()
                 }
             }

@@ -1,30 +1,29 @@
-use crate::data::purity::Purity;
-use crate::data::visibility::Visibility;
-use lalrpop_util::ParseError;
-use once_cell::sync::Lazy;
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
-use std::io;
-use std::iter;
-use std::path::{Path, PathBuf};
-
 use crate::cli;
 use crate::data::intrinsics as intrs;
 use crate::data::profile as prof;
-use crate::data::raw_ast as raw;
+use crate::data::purity::Purity;
+use crate::data::raw_ast::{self as raw, AnyId};
 use crate::data::resolved_ast as res;
+use crate::data::visibility::Visibility;
 use crate::file_cache::FileCache;
 use crate::intrinsic_config::INTRINSIC_NAMES;
 use crate::lex;
 use crate::parse;
-use crate::parse_error;
-use crate::report_error::{locate_path, locate_span, Locate};
-use id_collections::IdVec;
+use crate::util::lines::lines;
 
-#[derive(Debug)]
-pub enum ErrorKind {
-    ReadFailed(PathBuf, io::Error),
-    ParseFailed(ParseError<usize, lex::Token, lex::Error>),
+use id_collections::IdVec;
+use lalrpop_util::ParseError;
+use once_cell::sync::Lazy;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::{io, iter};
+
+#[derive(Debug, Clone)]
+pub enum Error {
+    ReadFailed(PathBuf, Rc<io::Error>),
+    ParseFailed(ParseError<usize, lex::Token, ()>),
     PipeNotAppLeft,
     PipeNotAppRight,
     ParseProfileSymFailed(cli::SymbolName),
@@ -46,28 +45,9 @@ pub enum ErrorKind {
     MainNotFound,
 }
 
-pub type Error = Locate<ErrorKind>;
-
 impl Error {
-    pub fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        use ErrorKind::*;
-
-        match &self.error {
-            ReadFailed(path, err) if err.kind() != io::ErrorKind::NotFound => {
-                writeln!(dest, "Could not read {}: {}", path.display(), err)?;
-                return Ok(());
-            }
-            ParseFailed(err) => {
-                parse_error::report(
-                    dest,
-                    files,
-                    self.path.as_ref().map(|path| path.as_ref()),
-                    err,
-                )?;
-                return Ok(());
-            }
-            _ => {}
-        }
+    pub fn report(&self) -> Report {
+        use Error::*;
 
         // This is repeated in two different error messages, so we factor it out.
         let profile_explanation =
@@ -76,27 +56,30 @@ impl Error {
              module by just passing '--profile foo', or you could profile a function \
              'bar' in the module 'Baz' by passing '--profile Baz.bar'.";
 
-        self.report_with(dest, files, |kind| match kind {
-            ReadFailed(path, err) => {
-                // Other cases are handled above
-                assert!(err.kind() == io::ErrorKind::NotFound);
-                (
-                    "File Not Found",
-                    format!(
-                        lines!["I couldn't find a file at this path:", "", "    {}",],
-                        path.display()
-                    ),
-                )
-            }
-            ParseFailed(_) => {
-                // Handled above
-                unreachable!()
-            }
-            PipeNotAppLeft => ("Invalid Left Pipe Syntax", "".to_owned()),
-            PipeNotAppRight => ("Invalid Right Pipe Syntax", "".to_owned()),
-            ParseProfileSymFailed(sym_name) => (
-                "Incorrect Syntax in '--profile' Argument",
-                format!(
+        match self {
+            ReadFailed(path, err) if err.kind() != io::ErrorKind::NotFound => Report {
+                title: "Could Not Read File".to_string(),
+                message: Some(format!("Could not read {}: {}", path.display(), err)),
+            },
+            ReadFailed(path, err) => Report {
+                title: "File Not Found".to_string(),
+                message: Some(format!(
+                    lines!["I couldn't find a file at this path:", "", "    {}",],
+                    path.display()
+                )),
+            },
+            ParseFailed(err) => parse_error::report(err),
+            PipeNotAppLeft => Report {
+                title: "Invalid Left Pipe Syntax".to_string(),
+                message: None,
+            },
+            PipeNotAppRight => Report {
+                title: "Invalid Right Pipe Syntax".to_string(),
+                message: None,
+            },
+            ParseProfileSymFailed(sym_name) => Report {
+                title: "Incorrect Syntax in '--profile' Argument".to_string(),
+                message: Some(format!(
                     lines![
                         "I couldn't parse this '--profile' argument:",
                         "",
@@ -106,11 +89,11 @@ impl Error {
                     ],
                     sym = sym_name.0,
                     explanation = profile_explanation,
-                ),
-            ),
-            ResolveProfileSymFailed(sym_name) => (
-                "Function Not Found in '--profile' Argument",
-                format!(
+                )),
+            },
+            ResolveProfileSymFailed(sym_name) => Report {
+                title: "Function Not Found in '--profile' Argument".to_string(),
+                message: Some(format!(
                     lines![
                         "I couldn't find the function mentioned in this '--profile' argument:",
                         "",
@@ -120,17 +103,19 @@ impl Error {
                     ],
                     sym = sym_name.0,
                     explanation = profile_explanation,
+                )),
+            },
+            ProfileSymNotFunction => Report {
+                title: "Unsupported '--profile' Argument".to_string(),
+                message: Some(
+                    "I can't add profiling instrumentation to this expression. I can only \
+                     profile top-level function definitions."
+                        .to_string(),
                 ),
-            ),
-            ProfileSymNotFunction => (
-                "Unsupported '--profile' Argument",
-                "I can't add profiling instrumentation to this expression. I can only \
-                 profile top-level function definitions."
-                    .to_owned(),
-            ),
-            IllegalFilePath(path) => (
-                "Invalid File Path",
-                format!(
+            },
+            IllegalFilePath(path) => Report {
+                title: "Invalid File Path".to_string(),
+                message: Some(format!(
                     lines![
                         "You cannot access a module using the path",
                         "",
@@ -141,164 +126,165 @@ impl Error {
                          (that is, module paths may not use the \"parent directory\" symbol '..').",
                     ],
                     path
-                ),
-            ),
-            DuplicateModName(name) => (
-                "Duplicate Module Name",
-                format!(
+                )),
+            },
+            DuplicateModName(name) => Report {
+                title: "Duplicate Module Name".to_string(),
+                message: Some(format!(
                     "You have already declared a module named '{}' in this scope.",
                     name
-                ),
-            ),
-            DuplicateTypeName(name) => (
-                "Duplicate Type Name",
-                format!(
+                )),
+            },
+            DuplicateTypeName(name) => Report {
+                title: "Duplicate Type Name".to_string(),
+                message: Some(format!(
                     "You have already declared a type named '{}' in this scope.",
                     name
-                ),
-            ),
-            DuplicateCtorName(name) => (
-                "Duplicate Constructor Name",
-                format!(
+                )),
+            },
+            DuplicateCtorName(name) => Report {
+                title: "Duplicate Constructor Name".to_string(),
+                message: Some(format!(
                     "You have already declared a constructor named '{}' in this scope.",
                     name
-                ),
-            ),
-            DuplicateVarName(name) => (
-                "Duplicate Variable Name",
-                format!(
+                )),
+            },
+            DuplicateVarName(name) => Report {
+                title: "Duplicate Variable Name".to_string(),
+                message: Some(format!(
                     "You have already declared a variable named '{}' in this scope.",
                     name
-                ),
-            ),
-            TypeNotFound(name) => (
-                "Type Not Found",
-                format!(
+                )),
+            },
+            TypeNotFound(name) => Report {
+                title: "Type Not Found".to_string(),
+                message: Some(format!(
                     "There is no type named '{}' available in the current scope.",
                     name
-                ),
-            ),
-            VarNotFound(name) => (
-                "Variable Not Found",
-                format!(
+                )),
+            },
+            VarNotFound(name) => Report {
+                title: "Variable Not Found".to_string(),
+                message: Some(format!(
                     "There is no variable named '{}' available in the current scope.",
                     name
-                ),
-            ),
-            CtorNotFound(name) => (
-                "Constructor Not Found",
-                format!(
+                )),
+            },
+            CtorNotFound(name) => Report {
+                title: "Constructor Not Found".to_string(),
+                message: Some(format!(
                     "There is no constructor named '{}' available in the current scope.",
                     name
-                ),
-            ),
-            ModNotFound(name) => (
-                "Module Not Found",
-                format!(
+                )),
+            },
+            ModNotFound(name) => Report {
+                title: "Module Not Found".to_string(),
+                message: Some(format!(
                     "There is no module named '{}' available in the current scope.",
                     name
-                ),
-            ),
-            TypeNotVisible(name) => (
-                "Type Not Visible",
-                format!(
+                )),
+            },
+            TypeNotVisible(name) => Report {
+                title: "Type Not Visible".to_string(),
+                message: Some(format!(
                     "Type '{}' is private and therefore not available in the current scope.",
                     name
-                ),
-            ),
-            VarNotVisible(name) => (
-                "Variable Not Visible",
-                format!(
+                )),
+            },
+            VarNotVisible(name) => Report {
+                title: "Variable Not Visible".to_string(),
+                message: Some(format!(
                     "Variable '{}' is private and therefore not available in the current scope.",
                     name
-                ),
-            ),
-            CtorNotVisible(name) => (
-                "Constructor Not Visible",
-                format!(
+                )),
+            },
+            CtorNotVisible(name) => Report {
+                title: "Constructor Not Visible".to_string(),
+                message: Some(format!(
                     "Constructor '{}' is private and therefore not available in the current scope.",
                     name
-                ),
-            ),
-            ModNotVisible(name) => (
-                "Module Not Visible",
-                format!(
+                )),
+            },
+            ModNotVisible(name) => Report {
+                title: "Module Not Visible".to_string(),
+                message: Some(format!(
                     "Module '{}' is private and therefore not available in the current scope.",
                     name
-                ),
-            ),
-            MainNotFound => (
-                "Main Not Found",
-                format!(
+                )),
+            },
+            MainNotFound => Report {
+                title: "Main Not Found".to_string(),
+                message: Some(
                     "Your program does not have a 'main' function declared in its root module."
+                        .to_string(),
                 ),
-            ),
-        })
+            },
+        }
     }
 }
 
-static BUILTIN_TYPES: Lazy<BTreeMap<raw::TypeName, res::TypeId>> = Lazy::new(|| {
+static BUILTIN_TYPES: Lazy<BTreeMap<raw::TypeName, res::NominalType>> = Lazy::new(|| {
     let mut type_map = BTreeMap::new();
 
-    type_map.insert(raw::TypeName("Bool".to_owned()), res::TypeId::Bool);
-    type_map.insert(raw::TypeName("Byte".to_owned()), res::TypeId::Byte);
-    type_map.insert(raw::TypeName("Int".to_owned()), res::TypeId::Int);
-    type_map.insert(raw::TypeName("Float".to_owned()), res::TypeId::Float);
-    type_map.insert(raw::TypeName("Array".to_owned()), res::TypeId::Array);
+    type_map.insert(raw::TypeName("Bool".to_owned()), res::NominalType::Bool);
+    type_map.insert(raw::TypeName("Byte".to_owned()), res::NominalType::Byte);
+    type_map.insert(raw::TypeName("Int".to_owned()), res::NominalType::Int);
+    type_map.insert(raw::TypeName("Float".to_owned()), res::NominalType::Float);
+    type_map.insert(raw::TypeName("Array".to_owned()), res::NominalType::Array);
 
     type_map
 });
-static BUILTIN_CTORS: Lazy<BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)>> =
+static BUILTIN_CTORS: Lazy<BTreeMap<raw::CtorName, (res::NominalType, res::VariantId)>> =
     Lazy::new(|| {
         let mut ctor_map = BTreeMap::new();
 
         ctor_map.insert(
             raw::CtorName("False".to_owned()),
-            (res::TypeId::Bool, res::VariantId(0)),
+            (res::NominalType::Bool, res::VariantId(0)),
         );
         ctor_map.insert(
             raw::CtorName("True".to_owned()),
-            (res::TypeId::Bool, res::VariantId(1)),
+            (res::NominalType::Bool, res::VariantId(1)),
         );
 
         ctor_map
     });
-static BUILTIN_GLOBALS: Lazy<BTreeMap<raw::ValName, res::GlobalId>> = Lazy::new(|| {
+static BUILTIN_GLOBALS: Lazy<BTreeMap<raw::ValName, res::Global>> = Lazy::new(|| {
     let mut global_map = BTreeMap::new();
 
     global_map.insert(
         raw::ValName("get".to_owned()),
-        res::GlobalId::ArrayOp(res::ArrayOp::Get),
+        res::Global::ArrayOp(res::ArrayOp::Get),
     );
     global_map.insert(
         raw::ValName("extract".to_owned()),
-        res::GlobalId::ArrayOp(res::ArrayOp::Extract),
+        res::Global::ArrayOp(res::ArrayOp::Extract),
     );
     global_map.insert(
         raw::ValName("len".to_owned()),
-        res::GlobalId::ArrayOp(res::ArrayOp::Len),
+        res::Global::ArrayOp(res::ArrayOp::Len),
     );
     global_map.insert(
         raw::ValName("push".to_owned()),
-        res::GlobalId::ArrayOp(res::ArrayOp::Push),
+        res::Global::ArrayOp(res::ArrayOp::Push),
     );
     global_map.insert(
         raw::ValName("pop".to_owned()),
-        res::GlobalId::ArrayOp(res::ArrayOp::Pop),
+        res::Global::ArrayOp(res::ArrayOp::Pop),
     );
     global_map.insert(
         raw::ValName("reserve".to_owned()),
-        res::GlobalId::ArrayOp(res::ArrayOp::Reserve),
+        res::Global::ArrayOp(res::ArrayOp::Reserve),
     );
     global_map.insert(
         raw::ValName("input".to_owned()),
-        res::GlobalId::IoOp(res::IoOp::Input),
+        res::Global::IoOp(res::IoOp::Input),
     );
     global_map.insert(
         raw::ValName("output".to_owned()),
-        res::GlobalId::IoOp(res::IoOp::Output),
+        res::Global::IoOp(res::IoOp::Output),
     );
-    global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
+    global_map.insert(raw::ValName("panic".to_owned()), res::Global::Panic);
 
     for &(intrinsic, name) in INTRINSIC_NAMES {
         match name {
@@ -306,7 +292,7 @@ static BUILTIN_GLOBALS: Lazy<BTreeMap<raw::ValName, res::GlobalId>> = Lazy::new(
             intrs::Name::Func { source_name } => {
                 global_map.insert(
                     raw::ValName(source_name.to_owned()),
-                    res::GlobalId::Intrinsic(intrinsic),
+                    res::Global::Intrinsic(intrinsic),
                 );
             }
         }
@@ -318,9 +304,9 @@ static BUILTIN_GLOBALS: Lazy<BTreeMap<raw::ValName, res::GlobalId>> = Lazy::new(
 #[derive(Clone, Debug)]
 struct ModMap {
     mods: BTreeMap<raw::ModName, (Visibility, res::ModId)>,
-    types: BTreeMap<raw::TypeName, (Visibility, res::TypeId)>,
+    types: BTreeMap<raw::TypeName, (Visibility, res::NominalType)>,
     ctors: BTreeMap<raw::CtorName, (Visibility, res::CustomTypeId, res::VariantId)>,
-    vals: BTreeMap<raw::ValName, (Visibility, res::GlobalId)>,
+    vals: BTreeMap<raw::ValName, (Visibility, res::Global)>,
 }
 
 #[derive(Clone, Debug)]
@@ -331,6 +317,9 @@ pub struct GlobalContext {
     type_symbols: IdVec<res::CustomTypeId, res::TypeSymbols>,
     vals: IdVec<res::CustomGlobalId, Option<res::ValDef>>,
     val_symbols: IdVec<res::CustomGlobalId, Option<res::ValSymbols>>,
+    res_table: res::Store,
+    raw_table: raw::Store,
+    errors: Errors,
 }
 
 #[derive(Clone, Debug)]
@@ -418,6 +407,9 @@ pub fn resolve_program(
         type_symbols: IdVec::new(),
         vals: IdVec::new(),
         val_symbols: IdVec::new(),
+        raw_table: raw::Store::new(),
+        res_table: res::Store::new(),
+        errors: IdVec::new(),
     };
 
     let main_mod = resolve_mod_from_file(
@@ -428,7 +420,7 @@ pub fn resolve_program(
         res::ModDeclLoc::Root,
     )?;
 
-    let main_proc = if let Some(&(_, res::GlobalId::Custom(id))) = ctx.mods[main_mod]
+    let main_proc = if let Some(&(_, res::Global::Custom(id))) = ctx.mods[main_mod]
         .vals
         .get(&raw::ValName("main".to_owned()))
     {
@@ -452,23 +444,26 @@ pub fn resolve_program(
     )?;
 
     Ok(res::Program {
-        mod_symbols: ctx.mod_symbols,
-        custom_types: ctx.types.map(|_id, typedef| typedef.unwrap()),
-        custom_type_symbols: ctx.type_symbols,
-        profile_points,
-        vals,
-        val_symbols,
         main: main_proc,
+        custom_types: ctx.types.map(|_id, typedef| typedef.unwrap()),
+        vals,
+        profile_points,
+        mod_symbols: ctx.mod_symbols,
+        custom_type_symbols: ctx.type_symbols,
+        val_symbols,
+        spans: ctx.raw_table.spans,
+        store: ctx.res_table,
     })
 }
 
 fn resolve_mod(
+    store: &mut raw::Store,
     files: &mut FileCache,
     ctx: &mut GlobalContext,
     file_path: &Path,
     decl_loc: res::ModDeclLoc,
     bindings: BTreeMap<raw::ModName, res::ModId>,
-    content: raw::Program,
+    content: raw::Mod,
 ) -> Result<res::ModId, Error> {
     // Pre-"allocate" a module id initially populated with a dummy 'ModMap'.  We populate this
     // module id with the actual 'ModMap' at the end of this function.
@@ -509,9 +504,10 @@ fn resolve_mod(
         let mut pending_type_defs = Vec::new();
         let mut pending_val_defs = Vec::new();
 
-        for item in content.0 {
-            match item {
-                raw::Item::TypeDef(visibility, name, params, variants) => {
+        for item in &content.data.items {
+            let Ok(item) = item else { continue };
+            match &*item.data {
+                raw::ItemData::TypeDef(visibility, name, params, variants) => {
                     let type_id = ctx.types.push(None);
                     {
                         let type_symbols_id = ctx.type_symbols.push(res::TypeSymbols {
@@ -532,7 +528,7 @@ fn resolve_mod(
                     insert_unique(
                         &mut mod_map.types,
                         name.clone(),
-                        (visibility, res::TypeId::Custom(type_id)),
+                        (visibility, res::NominalType::Custom(type_id)),
                     )
                     .map_err(|()| ErrorKind::DuplicateTypeName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
@@ -550,7 +546,7 @@ fn resolve_mod(
                     pending_type_defs.push((type_id, params, variants));
                 }
 
-                raw::Item::ValDef(visibility, name, type_, body) => {
+                raw::ItemData::ValDef(visibility, name, type_, body) => {
                     let val_id = ctx.vals.push(None);
                     {
                         let val_symbols_id = ctx.val_symbols.push(None);
@@ -560,7 +556,7 @@ fn resolve_mod(
                     insert_unique(
                         &mut mod_map.vals,
                         name.clone(),
-                        (visibility, res::GlobalId::Custom(val_id)),
+                        (visibility, res::Global::Custom(val_id)),
                     )
                     .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
@@ -568,7 +564,7 @@ fn resolve_mod(
                     pending_val_defs.push((name, val_id, type_, body));
                 }
 
-                raw::Item::ModDef(visibility, name, spec, bindings, expose) => {
+                raw::ItemData::ModDef(visibility, name, spec, bindings, expose) => {
                     let sub_mod_bindings: BTreeMap<_, _> = bindings
                         .into_iter()
                         .map(|binding| {
@@ -602,7 +598,7 @@ fn resolve_mod(
                         .map_err(locate_path(file_path))?;
                 }
 
-                raw::Item::ModImport(name, expose) => {
+                raw::ItemData::ModImport(name, expose) => {
                     let bound_mod_id = *bindings
                         .get(&name)
                         .ok_or_else(|| ErrorKind::ModNotFound(name.0.clone()).into())
@@ -620,7 +616,7 @@ fn resolve_mod(
                         .map_err(locate_path(file_path))?;
                 }
 
-                raw::Item::ModExpose(local_mod_path, expose) => {
+                raw::ItemData::ModExpose(local_mod_path, expose) => {
                     let exposed_id = resolve_mod_path(&ctx.mods, &mod_map.mods, &local_mod_path)
                         .map_err(locate_path(file_path))?;
 
@@ -701,7 +697,7 @@ fn resolve_mod_spec(
     bindings: BTreeMap<raw::ModName, res::ModId>,
     spec: raw::ModSpec,
 ) -> Result<res::ModId, Error> {
-    match spec {
+    match spec.data {
         raw::ModSpec::File(sibling_path_components) => resolve_mod_from_file(
             files,
             ctx,
@@ -723,16 +719,20 @@ fn resolve_mod_from_file(
     file_path: &Path,
     decl_loc: res::ModDeclLoc,
 ) -> Result<res::ModId, Error> {
-    let src = files.read(file_path).map_err(|err| Error {
-        error: ErrorKind::ReadFailed(file_path.to_owned(), err),
+    let (file_id, src) = files.read(file_path).map_err(|err| Error {
+        error: ErrorKind::ReadFailed(file_path.to_owned(), std::rc::Rc::new(err)),
         span: None,
         path: None,
     })?;
 
     let content = parse::ProgramParser::new()
-        .parse(lex::Lexer::new(&src))
-        .map_err(|err| ErrorKind::ParseFailed(err).into())
-        .map_err(locate_path(file_path))?;
+        .parse(
+            file_id,
+            &mut ctx.raw_table,
+            &mut ctx.errors,
+            lex::Lexer::new(&src),
+        )
+        .unwrap();
 
     resolve_mod(files, ctx, file_path, decl_loc, bindings, content)
 }
@@ -774,7 +774,7 @@ fn resolve_mod_val(
     global_mods: &IdVec<res::ModId, ModMap>,
     mod_id: res::ModId,
     val_name: &raw::ValName,
-) -> Result<res::GlobalId, Error> {
+) -> Result<res::Global, Error> {
     let (visibility, id) = *global_mods[mod_id]
         .vals
         .get(val_name)
@@ -789,7 +789,7 @@ fn resolve_mod_type(
     global_mods: &IdVec<res::ModId, ModMap>,
     mod_id: res::ModId,
     type_name: &raw::TypeName,
-) -> Result<res::TypeId, Error> {
+) -> Result<res::NominalType, Error> {
     let (visibility, id) = *global_mods[mod_id]
         .types
         .get(type_name)
@@ -816,64 +816,74 @@ fn resolve_mod_ctor(
 }
 
 fn resolve_exposures(
+    errors: &mut Errors,
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &mut ModMap,
     exposed_id: res::ModId,
     spec: raw::ExposeSpec,
-) -> Result<(), Error> {
-    match spec {
-        raw::ExposeSpec::Specific(items) => {
+) {
+    match &*spec.data {
+        raw::ExposeSpecData::Specific(items) => {
             for item in items {
-                match item {
-                    raw::ExposeItem::Val(visibility, name) => {
+                let Ok(item) = item else { continue };
+                match &*item.data {
+                    raw::ExposeItemData::Val(visibility, name) => {
                         let resolved_val = resolve_mod_val(global_mods, exposed_id, &name)?;
 
-                        insert_unique(
+                        if let Err(()) = insert_unique(
                             &mut local_mod_map.vals,
                             name.clone(),
-                            (visibility, resolved_val),
-                        )
-                        .map_err(|()| ErrorKind::DuplicateVarName(name.0))?;
+                            (*visibility, resolved_val),
+                        ) {
+                            errors.push(ErrorKind::DuplicateVarName(name.0).into());
+                        }
                     }
 
-                    raw::ExposeItem::Type(visibility, name, variants) => {
-                        let resolved_type = resolve_mod_type(global_mods, exposed_id, &name)?;
-
-                        insert_unique(
-                            &mut local_mod_map.types,
-                            name.clone(),
-                            (visibility, resolved_type),
-                        )
-                        .map_err(|()| ErrorKind::DuplicateTypeName(name.0))?;
+                    raw::ExposeItemData::Type(visibility, name, variants) => {
+                        match resolve_mod_type(global_mods, exposed_id, &name) {
+                            Ok(resolved_type) => {
+                                if let Err(()) = insert_unique(
+                                    &mut local_mod_map.types,
+                                    name.clone(),
+                                    (*visibility, resolved_type),
+                                ) {
+                                    errors.push(ErrorKind::DuplicateTypeName(name.0).into());
+                                }
+                            }
+                            Err(error) => {
+                                errors.push(error);
+                            }
+                        }
 
                         for (ctor_visibility, ctor_name) in variants {
                             let (ctor_type, resolved_ctor) =
                                 resolve_mod_ctor(global_mods, exposed_id, &ctor_name)?;
 
-                            if res::TypeId::Custom(ctor_type) != resolved_type {
-                                return Err(ErrorKind::CtorNotFound(ctor_name.0).into());
+                            if res::NominalType::Custom(ctor_type) != resolved_type {
+                                errors.push(ErrorKind::CtorNotFound(ctor_name.0).into());
                             }
 
                             insert_unique(
                                 &mut local_mod_map.ctors,
                                 ctor_name.clone(),
-                                (ctor_visibility, ctor_type, resolved_ctor),
+                                (*ctor_visibility, ctor_type, resolved_ctor),
                             )
                             .map_err(|()| ErrorKind::DuplicateCtorName(ctor_name.0))?;
                         }
                     }
 
-                    raw::ExposeItem::Mod(visibility, name, sub_expose) => {
+                    raw::ExposeItemData::Mod(visibility, name, sub_expose) => {
                         let resolved_sub_mod = resolve_sub_mod(global_mods, exposed_id, &name)?;
 
                         insert_unique(
                             &mut local_mod_map.mods,
                             name.clone(),
-                            (visibility, resolved_sub_mod),
+                            (*visibility, resolved_sub_mod),
                         )
                         .map_err(|()| ErrorKind::DuplicateModName(name.0))?;
 
                         resolve_exposures(
+                            raw_arena,
                             global_mods,
                             local_mod_map,
                             resolved_sub_mod,
@@ -893,7 +903,7 @@ fn resolve_type_with_builtins(
     local_mod_map: &ModMap,
     path: &raw::ModPath,
     name: &raw::TypeName,
-) -> Result<res::TypeId, Error> {
+) -> Result<res::NominalType, Error> {
     if path.0.is_empty() {
         local_mod_map
             .types
@@ -915,43 +925,59 @@ fn resolve_type_with_builtins(
 }
 
 fn resolve_type(
+    errors: &mut Errors,
+    store: &mut res::Store,
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
     param_map: &BTreeMap<raw::TypeParam, res::TypeParamId>,
     type_: &raw::Type,
-) -> Result<res::Type, Error> {
-    match type_ {
-        raw::Type::Var(param_name) => {
+) -> res::Type {
+    match &*type_.data {
+        raw::TypeData::Var(param_name) => {
             if let Some(&id) = param_map.get(param_name) {
-                Ok(res::Type::Var(id))
+                res::Type::new(store, res::TypeData::Var(id))
             } else {
-                Err(ErrorKind::TypeNotFound(param_name.0.clone()).into())
+                let error_id = errors.push(ErrorKind::TypeNotFound(param_name.0.clone()).into());
+                res::Type::new(store, res::TypeData::Error(error_id))
             }
         }
 
-        raw::Type::App(path, name, args) => {
-            let type_id = resolve_type_with_builtins(global_mods, local_mod_map, path, name)?;
+        raw::TypeData::App(path, name, args) => {
+            match resolve_type_with_builtins(global_mods, local_mod_map, path, name) {
+                Ok(type_id) => {
+                    let resolved_args = args
+                        .iter()
+                        .map(|arg| {
+                            resolve_type(errors, store, global_mods, local_mod_map, param_map, arg)
+                        })
+                        .collect::<Vec<_>>();
 
-            let resolved_args = args
-                .iter()
-                .map(|arg| resolve_type(global_mods, local_mod_map, param_map, arg))
-                .collect::<Result<_, _>>()?;
-
-            Ok(res::Type::App(type_id, resolved_args))
+                    res::Type::new(store, res::TypeData::App(type_id, resolved_args))
+                }
+                Err(error) => {
+                    let error_id = errors.push(error);
+                    res::Type::new(store, res::TypeData::Error(error_id))
+                }
+            }
         }
 
-        raw::Type::Tuple(items) => Ok(res::Type::Tuple(
-            items
+        raw::TypeData::Tuple(items) => {
+            let items = items
                 .iter()
-                .map(|item| resolve_type(global_mods, local_mod_map, param_map, item))
-                .collect::<Result<_, _>>()?,
-        )),
+                .map(|item| {
+                    resolve_type(errors, store, global_mods, local_mod_map, param_map, item)
+                })
+                .collect::<Vec<_>>();
+            res::Type::new(store, res::TypeData::Tuple(items))
+        }
 
-        raw::Type::Func(purity, arg, ret) => Ok(res::Type::Func(
-            *purity,
-            Box::new(resolve_type(global_mods, local_mod_map, param_map, &*arg)?),
-            Box::new(resolve_type(global_mods, local_mod_map, param_map, &*ret)?),
-        )),
+        raw::TypeData::Func(purity, arg, ret) => {
+            let arg = resolve_type(errors, store, global_mods, local_mod_map, param_map, &*arg);
+            let ret = resolve_type(errors, store, global_mods, local_mod_map, param_map, &*ret);
+            res::Type::new(store, res::TypeData::Func(*purity, arg, ret))
+        }
+
+        raw::TypeData::Error(error_id) => res::Type::new(store, res::TypeData::Error(*error_id)),
     }
 }
 
@@ -960,12 +986,12 @@ fn resolve_ctor_with_builtins(
     local_mod_map: &ModMap,
     path: &raw::ModPath,
     name: &raw::CtorName,
-) -> Result<(res::TypeId, res::VariantId), Error> {
+) -> Result<(res::NominalType, res::VariantId), Error> {
     if path.0.is_empty() {
         local_mod_map
             .ctors
             .get(name)
-            .map(|(_, custom_id, variant_id)| (res::TypeId::Custom(*custom_id), *variant_id))
+            .map(|(_, custom_id, variant_id)| (res::NominalType::Custom(*custom_id), *variant_id))
             .or_else(|| BUILTIN_CTORS.get(name).cloned())
             .ok_or_else(|| ErrorKind::CtorNotFound(name.0.clone()).into())
     } else {
@@ -974,7 +1000,7 @@ fn resolve_ctor_with_builtins(
             .get(name)
             .ok_or_else(|| ErrorKind::CtorNotFound(name.0.clone()).into())
             .and_then(|(visibility, custom_id, variant_id)| match visibility {
-                Visibility::Public => Ok((res::TypeId::Custom(*custom_id), *variant_id)),
+                Visibility::Public => Ok((res::NominalType::Custom(*custom_id), *variant_id)),
                 Visibility::Private => Err(ErrorKind::CtorNotVisible(name.0.clone()).into()),
             })
     }
@@ -991,53 +1017,79 @@ fn args_to_expr(args_lo: usize, args_hi: usize, args: Vec<res::Expr>) -> res::Ex
 
 // Invariant: always leaves `local_ctx` exactly how it found it!
 fn resolve_expr(
+    errors: &mut Errors,
+    store: &mut res::Store,
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
     local_ctx: &mut LocalContext,
     expr: &raw::Expr,
-) -> Result<res::Expr, Error> {
-    match expr {
-        raw::Expr::Var(name) => {
+) -> res::Expr {
+    match &*expr.data {
+        raw::ExprData::Var(name) => {
             if let Some(local_id) = local_ctx.get(name) {
-                Ok(res::Expr::Local(local_id))
+                res::Expr::new(store, res::ExprData::Local(local_id))
             } else if let Some(&(_, global_id)) = local_mod_map.vals.get(name) {
-                Ok(res::Expr::Global(global_id))
+                res::Expr::new(store, res::ExprData::Global(global_id))
             } else if let Some(&global_id) = BUILTIN_GLOBALS.get(name) {
-                Ok(res::Expr::Global(global_id))
+                res::Expr::new(store, res::ExprData::Global(global_id))
             } else {
-                Err(ErrorKind::VarNotFound(name.0.clone()).into())
+                let error_id = errors.push(ErrorKind::VarNotFound(name.0.clone()).into());
+                res::Expr::new(store, res::ExprData::Error(error_id))
             }
         }
 
-        raw::Expr::QualName(path, name) => {
-            let mod_id = resolve_mod_path(global_mods, &local_mod_map.mods, path)?;
-            let global_id = resolve_mod_val(global_mods, mod_id, name)?;
-            Ok(res::Expr::Global(global_id))
+        raw::ExprData::QualName(path, name) => {
+            let mod_id = match resolve_mod_path(global_mods, &local_mod_map.mods, path) {
+                Ok(mod_id) => mod_id,
+                Err(error) => {
+                    let error_id = errors.push(error);
+                    return res::Expr::new(store, res::ExprData::Error(error_id));
+                }
+            };
+
+            let global_id = match resolve_mod_val(global_mods, mod_id, name) {
+                Ok(global_id) => global_id,
+                Err(error) => {
+                    let error_id = errors.push(error);
+                    return res::Expr::new(store, res::ExprData::Error(error_id));
+                }
+            };
+
+            res::Expr::new(store, res::ExprData::Global(global_id))
         }
 
-        raw::Expr::Ctor(path, name) => {
-            let (type_, variant) =
-                resolve_ctor_with_builtins(global_mods, local_mod_map, path, name)?;
-
-            Ok(res::Expr::Global(res::GlobalId::Ctor(type_, variant)))
+        raw::ExprData::Ctor(path, name) => {
+            match resolve_ctor_with_builtins(global_mods, local_mod_map, path, name) {
+                Ok((type_, variant)) => res::Expr::new(
+                    store,
+                    res::ExprData::Global(res::Global::Ctor(type_, variant)),
+                ),
+                Err(error) => {
+                    let error_id = errors.push(error);
+                    res::Expr::new(store, res::ExprData::Error(error_id))
+                }
+            }
         }
 
-        raw::Expr::Tuple(items) => Ok(res::Expr::Tuple(
-            items
+        raw::ExprData::Tuple(items) => {
+            let items = items
                 .iter()
-                .map(|item| resolve_expr(global_mods, local_mod_map, local_ctx, item))
-                .collect::<Result<_, _>>()?,
-        )),
+                .map(|item| {
+                    resolve_expr(errors, store, global_mods, local_mod_map, local_ctx, *item)
+                })
+                .collect::<Vec<_>>();
+            res::Expr::new(store, res::ExprData::Tuple(items))
+        }
 
-        raw::Expr::Lam(purity, pattern, body) => local_ctx.new_scope(|local_ctx| {
+        raw::ExprData::Lam(purity, pattern, body) => local_ctx.new_scope(|local_ctx| {
             let mut vars = Vec::new();
-            let res_pattern = resolve_pattern(global_mods, local_mod_map, pattern, &mut vars)?;
+            let res_pattern = resolve_pattern(global_mods, local_mod_map, *pattern, &mut vars)?;
             for var in vars {
                 local_ctx.insert(var.clone())?;
             }
 
-            let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, body)?;
-            Ok(res::Expr::Lam(
+            let res_body = resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *body)?;
+            Ok(res::ExprData::Lam(
                 *purity,
                 res_pattern,
                 Box::new(res_body),
@@ -1045,33 +1097,34 @@ fn resolve_expr(
             ))
         }),
 
-        raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
-            let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, &*func)?;
+        raw::ExprData::App(purity, func, (args_lo, args_hi, args)) => {
+            let res_func = resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *func)?;
             let res_arg = args_to_expr(
                 *args_lo,
                 *args_hi,
                 args.iter()
-                    .map(|arg| resolve_expr(global_mods, local_mod_map, local_ctx, arg))
+                    .map(|arg| resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *arg))
                     .collect::<Result<_, _>>()?,
             );
-            Ok(res::Expr::App(
+            Ok(res::ExprData::App(
                 *purity,
                 Box::new(res_func),
                 Box::new(res_arg),
             ))
         }
 
-        raw::Expr::OpApp(op, arg) => {
-            let res_arg = resolve_expr(global_mods, local_mod_map, local_ctx, arg)?;
-            Ok(res::Expr::App(
+        raw::ExprData::OpApp(op, arg) => {
+            let res_arg = resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, arg)?;
+            Ok(res::ExprData::App(
                 Purity::Pure,
-                Box::new(res::Expr::Global(res::GlobalId::Intrinsic(*op))),
+                Box::new(res::ExprData::Global(res::Global::Intrinsic(*op))),
                 Box::new(res_arg),
             ))
         }
 
-        raw::Expr::Match(discrim, cases) => {
-            let res_discrim = resolve_expr(global_mods, local_mod_map, local_ctx, discrim)?;
+        raw::ExprData::Match(discrim, cases) => {
+            let res_discrim =
+                resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, discrim)?;
 
             let res_cases = cases
                 .iter()
@@ -1084,25 +1137,27 @@ fn resolve_expr(
                             local_ctx.insert(var.clone())?;
                         }
 
-                        let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, body)?;
+                        let res_body =
+                            resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, body)?;
                         Ok((res_pattern, res_body))
                     })
                 })
                 .collect::<Result<_, Error>>()?;
 
-            Ok(res::Expr::Match(Box::new(res_discrim), res_cases))
+            Ok(res::ExprData::Match(Box::new(res_discrim), res_cases))
         }
 
-        raw::Expr::LetMany(bindings, body) => local_ctx.new_scope(|local_ctx| {
+        raw::ExprData::LetMany(bindings, body) => local_ctx.new_scope(|local_ctx| {
             let mut vars = Vec::new();
             let mut new_bindings = Vec::new();
 
             for (pattern, expr) in bindings {
-                let res_expr = resolve_expr(global_mods, local_mod_map, local_ctx, expr)?;
+                let res_expr =
+                    resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *expr)?;
 
                 let mut current_vars = Vec::new();
                 let res_pattern =
-                    resolve_pattern(global_mods, local_mod_map, pattern, &mut current_vars)?;
+                    resolve_pattern(global_mods, local_mod_map, *pattern, &mut current_vars)?;
                 vars.extend(current_vars.clone());
 
                 for var in &current_vars {
@@ -1111,57 +1166,59 @@ fn resolve_expr(
                 new_bindings.push((res_pattern, res_expr));
             }
 
-            let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, &*body)?;
+            let res_body = resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *body)?;
 
-            Ok(res::Expr::LetMany(new_bindings, Box::new(res_body)))
+            Ok(res::ExprData::LetMany(new_bindings, Box::new(res_body)))
         }),
 
-        raw::Expr::And(left, right) => {
-            let res_left = resolve_expr(global_mods, local_mod_map, local_ctx, left)?;
-            let res_right = resolve_expr(global_mods, local_mod_map, local_ctx, right)?;
+        raw::ExprData::And(left, right) => {
+            let res_left = resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *left)?;
+            let res_right = resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *right)?;
 
-            let false_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(0), None);
+            let false_pattern = res::Pattern::Ctor(res::NominalType::Bool, res::VariantId(0), None);
             let false_expr =
-                res::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, res::VariantId(0)));
-            let true_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(1), None);
+                res::ExprData::Global(res::Global::Ctor(res::NominalType::Bool, res::VariantId(0)));
+            let true_pattern = res::Pattern::Ctor(res::NominalType::Bool, res::VariantId(1), None);
 
-            Ok(res::Expr::Match(
+            Ok(res::ExprData::Match(
                 Box::new(res_left),
                 vec![(false_pattern, false_expr), (true_pattern, res_right)],
             ))
         }
 
-        raw::Expr::Or(left, right) => {
-            let res_left = resolve_expr(global_mods, local_mod_map, local_ctx, left)?;
-            let res_right = resolve_expr(global_mods, local_mod_map, local_ctx, right)?;
+        raw::ExprData::Or(left, right) => {
+            let res_left = resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *left)?;
+            let res_right = resolve_expr(raw_arena, global_mods, local_mod_map, local_ctx, *right)?;
 
-            let true_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(1), None);
+            let true_pattern = res::Pattern::Ctor(res::NominalType::Bool, res::VariantId(1), None);
             let true_expr =
-                res::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, res::VariantId(1)));
-            let false_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(0), None);
+                res::ExprData::Global(res::Global::Ctor(res::NominalType::Bool, res::VariantId(1)));
+            let false_pattern = res::Pattern::Ctor(res::NominalType::Bool, res::VariantId(0), None);
 
-            Ok(res::Expr::Match(
+            Ok(res::ExprData::Match(
                 Box::new(res_left),
                 vec![(true_pattern, true_expr), (false_pattern, res_right)],
             ))
         }
 
-        raw::Expr::PipeLeft(left, right) => {
+        raw::ExprData::PipeLeft(left, right) => {
             // `f(a) <| b` gets converted to `f(a, b)`
 
-            let (app, respan_app) = unspan(&**left);
-            match app {
-                raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
-                    let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, func)?;
+            let respan_app = unspan(meta, &**left);
+            match &left.data {
+                raw::ExprData::App(purity, func, (args_lo, args_hi, args)) => {
+                    let res_func = resolve_expr(meta, global_mods, local_mod_map, local_ctx, func)?;
                     let res_arg = args_to_expr(
                         *args_lo,
                         *args_hi,
                         args.iter()
                             .chain(iter::once(&**right))
-                            .map(|arg| resolve_expr(global_mods, local_mod_map, local_ctx, arg))
+                            .map(|arg| {
+                                resolve_expr(meta, global_mods, local_mod_map, local_ctx, arg)
+                            })
                             .collect::<Result<_, _>>()?,
                     );
-                    Ok(respan_app(res::Expr::App(
+                    Ok(respan_app(res::ExprData::App(
                         *purity,
                         Box::new(res_func),
                         Box::new(res_arg),
@@ -1171,142 +1228,170 @@ fn resolve_expr(
             }
         }
 
-        raw::Expr::PipeRight(left, right) => {
+        raw::ExprData::PipeRight(left, right) => {
             // `a |> f(b)` gets converted to `let tmp = a in f(tmp, b)`
 
-            let (app, respan_app) = unspan(&**right);
-            match app {
-                raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
+            let respan_app = unspan(meta, &**right);
+            match &right.data {
+                raw::ExprData::App(purity, func, (args_lo, args_hi, args)) => {
                     local_ctx.new_scope(|local_ctx| {
-                        let (left_unspanned, respan_left) = unspan(&**left);
-                        let res_left =
-                            resolve_expr(global_mods, local_mod_map, local_ctx, left_unspanned)?;
+                        let respan_left = unspan(meta, &**left);
+                        let res_left = resolve_expr(
+                            errors,
+                            store,
+                            global_mods,
+                            local_mod_map,
+                            local_ctx,
+                            left_unspanned,
+                        );
 
-                        let anon_var = res::Expr::Local(local_ctx.insert_anon());
+                        let anon_var = res::ExprData::Local(local_ctx.insert_anon());
                         let binding = vec![(res::Pattern::Var, respan_left(res_left))];
 
-                        let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, func)?;
+                        let res_func = resolve_expr(
+                            errors,
+                            store,
+                            global_mods,
+                            local_mod_map,
+                            local_ctx,
+                            func,
+                        );
 
                         let mut res_args = vec![respan_left(anon_var)];
                         for arg in args {
                             res_args.push(resolve_expr(
+                                errors,
+                                store,
                                 global_mods,
                                 local_mod_map,
                                 local_ctx,
                                 arg,
-                            )?);
+                            ));
                         }
 
                         let res_app_arg = args_to_expr(*args_lo, *args_hi, res_args);
 
-                        Ok(res::Expr::LetMany(
-                            binding,
-                            Box::new(respan_app(res::Expr::App(
-                                *purity,
-                                Box::new(res_func),
-                                Box::new(res_app_arg),
-                            ))),
-                        ))
+                        res::Expr::new(
+                            store,
+                            res::ExprData::LetMany(
+                                binding,
+                                Box::new(respan_app(res::ExprData::App(
+                                    *purity,
+                                    Box::new(res_func),
+                                    Box::new(res_app_arg),
+                                ))),
+                            ),
+                        )
                     })
                 }
                 _ => Err(ErrorKind::PipeNotAppRight.into()),
             }
         }
 
-        raw::Expr::ArrayLit(items) => Ok(res::Expr::ArrayLit(
-            items
-                .iter()
-                .map(|item| resolve_expr(global_mods, local_mod_map, local_ctx, item))
-                .collect::<Result<_, _>>()?,
-        )),
-
-        &raw::Expr::ByteLit(val) => Ok(res::Expr::ByteLit(val)),
-
-        &raw::Expr::IntLit(val) => Ok(res::Expr::IntLit(val)),
-
-        &raw::Expr::FloatLit(val) => Ok(res::Expr::FloatLit(val)),
-
-        raw::Expr::TextLit(text) => Ok(res::Expr::ArrayLit(
-            text.clone()
-                .into_bytes()
-                .iter()
-                .map(|byte| res::Expr::ByteLit(*byte))
-                .collect(),
-        )),
-
-        raw::Expr::Span(lo, hi, body) => Ok(res::Expr::Span(
-            *lo,
-            *hi,
-            Box::new(
-                resolve_expr(global_mods, local_mod_map, local_ctx, body)
-                    .map_err(locate_span(*lo, *hi))?,
+        raw::ExprData::ArrayLit(items) => res::Expr::new(
+            store,
+            res::ExprData::ArrayLit(
+                items
+                    .iter()
+                    .map(|item| {
+                        resolve_expr(errors, store, global_mods, local_mod_map, local_ctx, *item)
+                    })
+                    .collect::<Vec<_>>(),
             ),
-        )),
+        ),
+
+        raw::ExprData::ByteLit(val) => res::Expr::new(store, res::ExprData::ByteLit(*val)),
+
+        raw::ExprData::IntLit(val) => res::Expr::new(store, res::ExprData::IntLit(*val)),
+
+        raw::ExprData::FloatLit(val) => res::Expr::new(store, res::ExprData::FloatLit(*val)),
+
+        raw::ExprData::TextLit(text) => res::Expr::new(
+            store,
+            res::ExprData::ArrayLit(
+                text.clone()
+                    .into_bytes()
+                    .iter()
+                    .map(|byte| res::Expr::new(store, res::ExprData::ByteLit(*byte)))
+                    .collect(),
+            ),
+        ),
+
+        raw::ExprData::Error(error_id) => res::Expr::new(store, res::ExprData::Error(*error_id)),
     }
 }
 
 fn resolve_pattern(
+    errors: &mut Errors,
+    store: &mut res::Store,
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
     pattern: &raw::Pattern,
     vars: &mut Vec<raw::ValName>,
-) -> Result<res::Pattern, Error> {
-    match pattern {
-        raw::Pattern::Any => Ok(res::Pattern::Any),
+) -> res::Pattern {
+    match &*pattern.data {
+        raw::PatternData::Any => res::Pattern::new(store, res::PatternData::Any),
 
-        raw::Pattern::Var(name) => {
+        raw::PatternData::Var(name) => {
             vars.push(name.clone());
-            Ok(res::Pattern::Var)
+            res::Pattern::new(store, res::PatternData::Var)
         }
 
-        raw::Pattern::Tuple(items) => Ok(res::Pattern::Tuple(
-            items
-                .iter()
-                .map(|item| resolve_pattern(global_mods, local_mod_map, item, vars))
-                .collect::<Result<_, _>>()?,
-        )),
+        raw::PatternData::Tuple(items) => res::Pattern::new(
+            store,
+            res::PatternData::Tuple(
+                items
+                    .iter()
+                    .map(|item| {
+                        resolve_pattern(errors, store, global_mods, local_mod_map, *item, vars)
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        ),
 
-        raw::Pattern::Ctor(path, ctor_name, content) => {
+        raw::PatternData::Ctor(path, ctor_name, content) => {
             let (type_, variant) =
-                resolve_ctor_with_builtins(global_mods, local_mod_map, path, ctor_name)?;
+                resolve_ctor_with_builtins(global_mods, local_mod_map, path, ctor_name);
 
             let res_content = if let Some(content) = content {
-                Some(Box::new(resolve_pattern(
+                Some(resolve_pattern(
+                    errors,
+                    store,
                     global_mods,
                     local_mod_map,
-                    content,
+                    *content,
                     vars,
-                )?))
+                ))
             } else {
                 None
             };
 
-            Ok(res::Pattern::Ctor(type_, variant, res_content))
+            res::Pattern::new(store, res::PatternData::Ctor(type_, variant, res_content))
         }
 
-        &raw::Pattern::ByteConst(val) => Ok(res::Pattern::ByteConst(val)),
+        raw::PatternData::ByteConst(val) => {
+            res::Pattern::new(store, res::PatternData::ByteConst(*val))
+        }
 
-        &raw::Pattern::IntConst(val) => Ok(res::Pattern::IntConst(val)),
+        raw::PatternData::IntConst(val) => {
+            res::Pattern::new(store, res::PatternData::IntConst(*val))
+        }
 
-        &raw::Pattern::FloatConst(val) => Ok(res::Pattern::FloatConst(val)),
+        raw::PatternData::FloatConst(val) => {
+            res::Pattern::new(store, res::PatternData::FloatConst(*val))
+        }
 
-        raw::Pattern::Span(lo, hi, content) => Ok(res::Pattern::Span(
-            *lo,
-            *hi,
-            Box::new(
-                resolve_pattern(global_mods, local_mod_map, content, vars)
-                    .map_err(locate_span(*lo, *hi))?,
-            ),
-        )),
+        raw::PatternData::Error(id) => res::Pattern::new(store, res::PatternData::Error(*id)),
     }
 }
 
 fn find_scheme_params(
-    scheme: &raw::Type,
+    raw_arena: &mut raw::Arena,
+    scheme: raw::TypeId,
     param_names: &mut IdVec<res::TypeParamId, raw::TypeParam>,
     params: &mut BTreeMap<raw::TypeParam, res::TypeParamId>,
 ) {
-    match scheme {
+    match &raw_arena[scheme] {
         raw::Type::Var(param) => {
             debug_assert_eq!(param_names.len(), params.len());
             if let Entry::Vacant(entry) = params.entry(param.clone()) {
@@ -1317,20 +1402,22 @@ fn find_scheme_params(
 
         raw::Type::App(_, _, args) => {
             for arg in args {
-                find_scheme_params(arg, param_names, params);
+                find_scheme_params(raw_arena, *arg, param_names, params);
             }
         }
 
         raw::Type::Tuple(items) => {
             for item in items {
-                find_scheme_params(item, param_names, params);
+                find_scheme_params(raw_arena, *item, param_names, params);
             }
         }
 
         raw::Type::Func(_, arg, ret) => {
-            find_scheme_params(&*arg, param_names, params);
-            find_scheme_params(&*ret, param_names, params);
+            find_scheme_params(raw_arena, *arg, param_names, params);
+            find_scheme_params(raw_arena, *ret, param_names, params);
         }
+
+        raw::Type::Error(_) => {}
     }
 }
 
@@ -1384,7 +1471,7 @@ fn resolve_profile_points(
             .vals
             .get(&val_name)
             .and_then(|(_visibility, global_id)| match global_id {
-                &res::GlobalId::Custom(custom) => Some(custom),
+                &res::Global::Custom(custom) => Some(custom),
                 _ => None,
             })
             .ok_or_else(|| ErrorKind::ResolveProfileSymFailed(sym_name.clone()))?;
@@ -1466,15 +1553,13 @@ fn sibling_path_from(self_path: &Path, components: Vec<String>) -> Result<PathBu
     Ok(result)
 }
 
-fn unspan<'a>(expr: &'a raw::Expr) -> (&'a raw::Expr, Box<dyn Fn(res::Expr) -> res::Expr>) {
-    if let raw::Expr::Span(lo, hi, inner_expr) = expr {
-        let lo = *lo;
-        let hi = *hi;
-        (
-            inner_expr,
-            Box::new(move |x| res::Expr::Span(lo, hi, Box::new(x))),
-        )
-    } else {
-        (expr, Box::new(|x| x))
-    }
+fn unspan(
+    meta: &mut IdVec<AnyId, MetaData>,
+    expr: &raw::Expr,
+) -> Box<dyn Fn(&mut IdVec<AnyId, MetaData>, raw::ExprData) -> raw::Expr> {
+    let expr_meta = meta[expr.id].clone();
+    Box::new(move |meta, data| {
+        let id = meta.push(expr_meta.clone());
+        raw::Expr { id, data }
+    })
 }

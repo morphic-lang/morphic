@@ -2,11 +2,12 @@ use std::fmt;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Error)]
-#[error("Unrecognized token at position {0}")]
-pub struct Error(pub usize);
+pub enum Error {}
 
 #[derive(Clone, Debug)]
 pub enum Token {
+    Error(char),
+
     UpperName(String),
     LowerName(String),
     FloatLit(f64),
@@ -84,6 +85,7 @@ pub enum Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Token::Error(c) => write!(f, "{}", c),
             Token::UpperName(name) => write!(f, "{}", name),
             Token::LowerName(name) => write!(f, "{}", name),
             Token::FloatLit(val) => write!(f, "{}", val),
@@ -341,7 +343,7 @@ fn consume_one_of<'a, T>(pos: usize, src: &str, cases: &'a [(&str, T)]) -> Optio
 }
 
 impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<(usize, Token, usize), Error>;
+    type Item = (usize, Token, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.pos = skip_invisibles(self.pos, self.src);
@@ -355,36 +357,28 @@ impl<'a> Iterator for Lexer<'a> {
             self.pos = name_end;
 
             return match &self.src[name_start..name_end] {
-                "type" => Some(Ok((name_start, Token::Type, name_end))),
-                "match" => Some(Ok((name_start, Token::Match, name_end))),
-                "if" => Some(Ok((name_start, Token::If, name_end))),
-                "else" => Some(Ok((name_start, Token::Else, name_end))),
-                "let" => Some(Ok((name_start, Token::Let, name_end))),
-                "in" => Some(Ok((name_start, Token::In, name_end))),
-                "proc" => Some(Ok((name_start, Token::Proc, name_end))),
-                "do" => Some(Ok((name_start, Token::Do, name_end))),
-                "then" => Some(Ok((name_start, Token::Then, name_end))),
-                "module" => Some(Ok((name_start, Token::Module, name_end))),
-                "import" => Some(Ok((name_start, Token::Import, name_end))),
-                "file" => Some(Ok((name_start, Token::File, name_end))),
-                "from" => Some(Ok((name_start, Token::From, name_end))),
-                "expose" => Some(Ok((name_start, Token::Expose, name_end))),
-                "with" => Some(Ok((name_start, Token::With, name_end))),
-                "as" => Some(Ok((name_start, Token::As, name_end))),
-                "pub" => Some(Ok((name_start, Token::Pub, name_end))),
+                "type" => Some((name_start, Token::Type, name_end)),
+                "match" => Some((name_start, Token::Match, name_end)),
+                "if" => Some((name_start, Token::If, name_end)),
+                "else" => Some((name_start, Token::Else, name_end)),
+                "let" => Some((name_start, Token::Let, name_end)),
+                "in" => Some((name_start, Token::In, name_end)),
+                "proc" => Some((name_start, Token::Proc, name_end)),
+                "do" => Some((name_start, Token::Do, name_end)),
+                "then" => Some((name_start, Token::Then, name_end)),
+                "module" => Some((name_start, Token::Module, name_end)),
+                "import" => Some((name_start, Token::Import, name_end)),
+                "file" => Some((name_start, Token::File, name_end)),
+                "from" => Some((name_start, Token::From, name_end)),
+                "expose" => Some((name_start, Token::Expose, name_end)),
+                "with" => Some((name_start, Token::With, name_end)),
+                "as" => Some((name_start, Token::As, name_end)),
+                "pub" => Some((name_start, Token::Pub, name_end)),
                 name => {
                     if char_at(name, 0).unwrap().is_uppercase() {
-                        Some(Ok((
-                            name_start,
-                            Token::UpperName(name.to_owned()),
-                            name_end,
-                        )))
+                        Some((name_start, Token::UpperName(name.to_owned()), name_end))
                     } else {
-                        Some(Ok((
-                            name_start,
-                            Token::LowerName(name.to_owned()),
-                            name_end,
-                        )))
+                        Some((name_start, Token::LowerName(name.to_owned()), name_end))
                     }
                 }
             };
@@ -394,11 +388,11 @@ impl<'a> Iterator for Lexer<'a> {
             let float_start = self.pos;
             self.pos = float_end;
 
-            return Some(Ok((
+            return Some((
                 float_start,
                 Token::FloatLit(self.src[float_start..float_end].parse().unwrap()),
                 float_end,
-            )));
+            ));
         }
 
         if let Some(byte_end) = consume_byte(self.pos, self.src) {
@@ -407,30 +401,30 @@ impl<'a> Iterator for Lexer<'a> {
 
             debug_assert!(byte_start < byte_end);
 
-            return Some(Ok((
+            return Some((
                 byte_start,
                 // `- 1` strips trailing 'b'
                 Token::ByteLit(self.src[byte_start..byte_end - 1].parse().unwrap()),
                 byte_end,
-            )));
+            ));
         }
 
         if let Some(int_end) = consume_int(self.pos, self.src) {
             let int_start = self.pos;
             self.pos = int_end;
 
-            return Some(Ok((
+            return Some((
                 int_start,
                 Token::IntLit(self.src[int_start..int_end].parse().unwrap()),
                 int_end,
-            )));
+            ));
         }
 
         if let Some((string_end, string)) = consume_string_lit(self.pos, self.src) {
             let string_start = self.pos;
             self.pos = string_end;
 
-            return Some(Ok((string_start, Token::StringLit(string), string_end)));
+            return Some((string_start, Token::StringLit(string), string_end));
         }
 
         if let Some((sym_end, sym)) = consume_one_of(
@@ -491,10 +485,12 @@ impl<'a> Iterator for Lexer<'a> {
         ) {
             let sym_start = self.pos;
             self.pos = sym_end;
-
-            return Some(Ok((sym_start, sym.clone(), sym_end)));
+            return Some((sym_start, sym.clone(), sym_end));
         }
 
-        return Some(Err(Error(self.pos)));
+        let err_start = self.pos;
+        let err_char = char_at(self.src, err_start).unwrap();
+        self.pos = next_pos(err_start, self.src);
+        return Some((err_start, Token::Error(err_char), self.pos));
     }
 }

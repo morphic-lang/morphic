@@ -17,12 +17,12 @@ fn resolve_expr(
     expr: &typed::Expr,
 ) -> mono::Expr {
     match expr {
-        typed::Expr::Global(res::GlobalId::Intrinsic(intr), args) => {
+        typed::Expr::Global(res::Global::Intrinsic(intr), args) => {
             debug_assert!(args.is_empty());
             mono::Expr::Intrinsic(*intr)
         }
 
-        typed::Expr::Global(res::GlobalId::ArrayOp(op), args) => {
+        typed::Expr::Global(res::Global::ArrayOp(op), args) => {
             debug_assert_eq!(args.len(), 1);
             mono::Expr::ArrayOp(
                 *op,
@@ -30,12 +30,12 @@ fn resolve_expr(
             )
         }
 
-        typed::Expr::Global(res::GlobalId::IoOp(op), args) => {
+        typed::Expr::Global(res::Global::IoOp(op), args) => {
             debug_assert!(args.is_empty());
             mono::Expr::IoOp(*op)
         }
 
-        typed::Expr::Global(res::GlobalId::Panic, args) => {
+        typed::Expr::Global(res::Global::Panic, args) => {
             debug_assert_eq!(args.len(), 1);
             mono::Expr::Panic(resolve_type(
                 type_insts,
@@ -44,7 +44,7 @@ fn resolve_expr(
             ))
         }
 
-        typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, variant), args) => {
+        typed::Expr::Global(res::Global::Ctor(res::NominalType::Bool, variant), args) => {
             debug_assert!(args.is_empty());
 
             let val = match variant {
@@ -56,7 +56,7 @@ fn resolve_expr(
             mono::Expr::BoolLit(val)
         }
 
-        typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Custom(id), variant), args) => {
+        typed::Expr::Global(res::Global::Ctor(res::NominalType::Custom(id), variant), args) => {
             let args_resolved =
                 args.map_refs(|_param_id, arg| resolve_type(type_insts, inst_args, &arg));
 
@@ -64,9 +64,9 @@ fn resolve_expr(
             mono::Expr::Ctor(new_id, *variant)
         }
 
-        typed::Expr::Global(res::GlobalId::Ctor(_, _), _) => unreachable!(),
+        typed::Expr::Global(res::Global::Ctor(_, _), _) => unreachable!(),
 
-        typed::Expr::Global(res::GlobalId::Custom(id), args) => {
+        typed::Expr::Global(res::Global::Custom(id), args) => {
             let args_resolved =
                 args.map_refs(|_param_id, arg| resolve_type(type_insts, inst_args, &arg));
             let new_id = val_insts.resolve((*id, args_resolved));
@@ -162,32 +162,32 @@ fn resolve_type(
     match type_ {
         res::Type::Var(arg) => inst_args[arg].clone(),
 
-        res::Type::App(res::TypeId::Bool, args) => {
+        res::Type::App(res::NominalType::Bool, args) => {
             debug_assert!(args.is_empty());
             mono::Type::Bool
         }
 
-        res::Type::App(res::TypeId::Byte, args) => {
+        res::Type::App(res::NominalType::Byte, args) => {
             debug_assert!(args.is_empty());
             mono::Type::Byte
         }
 
-        res::Type::App(res::TypeId::Int, args) => {
+        res::Type::App(res::NominalType::Int, args) => {
             debug_assert!(args.is_empty());
             mono::Type::Int
         }
 
-        res::Type::App(res::TypeId::Float, args) => {
+        res::Type::App(res::NominalType::Float, args) => {
             debug_assert!(args.is_empty());
             mono::Type::Float
         }
 
-        res::Type::App(res::TypeId::Array, args) => {
+        res::Type::App(res::NominalType::Array, args) => {
             debug_assert_eq!(args.len(), 1);
             mono::Type::Array(Box::new(resolve_type(type_insts, inst_args, &args[0])))
         }
 
-        res::Type::App(res::TypeId::Custom(id), args) => {
+        res::Type::App(res::NominalType::Custom(id), args) => {
             let args_resolved = IdVec::from_vec(
                 args.iter()
                     .map(|arg| resolve_type(type_insts, inst_args, arg))
@@ -239,7 +239,7 @@ fn resolve_pattern(
             mono::Pattern::Tuple(items_resolved)
         }
 
-        typed::Pattern::Ctor(res::TypeId::Bool, args, variant, None) => {
+        typed::Pattern::Ctor(res::NominalType::Bool, args, variant, None) => {
             debug_assert!(args.is_empty());
 
             let val = match variant {
@@ -251,7 +251,7 @@ fn resolve_pattern(
             mono::Pattern::BoolConst(val)
         }
 
-        typed::Pattern::Ctor(res::TypeId::Custom(id), args, variant, content) => {
+        typed::Pattern::Ctor(res::NominalType::Custom(id), args, variant, content) => {
             let args_resolved = IdVec::from_vec(
                 args.iter()
                     .map(|arg| resolve_type(type_insts, inst_args, arg))

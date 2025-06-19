@@ -1,6 +1,6 @@
 use crate::data::profile::ProfilePointId;
 use crate::data::resolved_ast::{
-    ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeDef, TypeId, TypeParamId,
+    ArrayOp, CustomGlobalId, CustomTypeId, Global, IoOp, Type, TypeDef, NominalType, TypeParamId,
     VariantId,
 };
 use crate::data::typed_ast::*;
@@ -75,20 +75,20 @@ impl<'a, 'b> Context<'a, 'b> {
         Ok(())
     }
 
-    fn write_type_id(&mut self, type_id: &TypeId) -> io::Result<()> {
+    fn write_type_id(&mut self, type_id: &NominalType) -> io::Result<()> {
         match type_id {
-            TypeId::Bool => self.write("bool")?,
-            TypeId::Byte => self.write("char")?,
-            TypeId::Int => match self.variant {
+            NominalType::Bool => self.write("bool")?,
+            NominalType::Byte => self.write("char")?,
+            NominalType::Int => match self.variant {
                 MlVariant::OCAML => self.write("int64")?,
                 MlVariant::SML => self.write("int")?,
             },
-            TypeId::Float => match self.variant {
+            NominalType::Float => match self.variant {
                 MlVariant::OCAML => self.write("float")?,
                 MlVariant::SML => self.write("real")?,
             },
-            TypeId::Array => self.write("PersistentArray.array")?,
-            TypeId::Custom(type_id) => self.write(
+            NominalType::Array => self.write("PersistentArray.array")?,
+            NominalType::Custom(type_id) => self.write(
                 &self.prog.custom_type_symbols[type_id]
                     .type_name
                     .0
@@ -237,9 +237,9 @@ impl<'a, 'b> Context<'a, 'b> {
                                 Pattern::Ctor(type_id, type_args, _, _) => {
                                     Type::App(type_id.clone(), type_args.to_vec())
                                 }
-                                Pattern::ByteConst(_) => Type::App(TypeId::Byte, Vec::new()),
-                                Pattern::IntConst(_) => Type::App(TypeId::Int, Vec::new()),
-                                Pattern::FloatConst(_) => Type::App(TypeId::Float, Vec::new()),
+                                Pattern::ByteConst(_) => Type::App(NominalType::Byte, Vec::new()),
+                                Pattern::IntConst(_) => Type::App(NominalType::Int, Vec::new()),
+                                Pattern::FloatConst(_) => Type::App(NominalType::Float, Vec::new()),
                                 Pattern::Span(_, _, p) => pat_to_type(p),
                             }
                         }
@@ -262,16 +262,16 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             Pattern::Ctor(type_id, _type_args, variant_id, maybe_pattern) => {
                 match type_id {
-                    TypeId::Bool => match variant_id.0 {
+                    NominalType::Bool => match variant_id.0 {
                         0 => self.write("false")?,
                         1 => self.write("true")?,
                         _ => unreachable!(),
                     },
-                    TypeId::Byte => todo!(),
-                    TypeId::Int => todo!(),
-                    TypeId::Float => todo!(),
-                    TypeId::Array => todo!(),
-                    TypeId::Custom(type_id) => {
+                    NominalType::Byte => todo!(),
+                    NominalType::Int => todo!(),
+                    NominalType::Float => todo!(),
+                    NominalType::Array => todo!(),
+                    NominalType::Custom(type_id) => {
                         self.write_variant(*type_id, *variant_id)?;
                     }
                 }
@@ -299,13 +299,13 @@ impl<'a, 'b> Context<'a, 'b> {
         }
     }
 
-    fn write_global_id(&mut self, global_id: &GlobalId) -> io::Result<()> {
+    fn write_global_id(&mut self, global_id: &Global) -> io::Result<()> {
         match global_id {
-            GlobalId::Intrinsic(intrinsic) => {
+            Global::Intrinsic(intrinsic) => {
                 self.write("intrinsic_")?;
                 self.write(&format!("{:?}", intrinsic))?;
             }
-            GlobalId::ArrayOp(array_op) => match array_op {
+            Global::ArrayOp(array_op) => match array_op {
                 ArrayOp::Get => self.write("intrinsic_get")?,
                 ArrayOp::Extract => self.write("intrinsic_extract")?,
                 ArrayOp::Len => self.write("intrinsic_len")?,
@@ -313,13 +313,13 @@ impl<'a, 'b> Context<'a, 'b> {
                 ArrayOp::Pop => self.write("intrinsic_pop")?,
                 ArrayOp::Reserve => self.write("intrinsic_reserve")?,
             },
-            GlobalId::IoOp(io_op) => match io_op {
+            Global::IoOp(io_op) => match io_op {
                 IoOp::Input => self.write("input")?,
                 IoOp::Output => self.write("output")?,
             },
-            GlobalId::Panic => self.write("panic")?,
-            GlobalId::Ctor(type_id, variant_id) => match type_id {
-                TypeId::Bool => {
+            Global::Panic => self.write("panic")?,
+            Global::Ctor(type_id, variant_id) => match type_id {
+                NominalType::Bool => {
                     let bool_name = match variant_id.0 {
                         0 => "false",
                         1 => "true",
@@ -327,15 +327,15 @@ impl<'a, 'b> Context<'a, 'b> {
                     };
                     self.write(bool_name)?;
                 }
-                TypeId::Byte => todo!(),
-                TypeId::Int => todo!(),
-                TypeId::Float => todo!(),
-                TypeId::Array => todo!(),
-                TypeId::Custom(custom_type_id) => {
+                NominalType::Byte => todo!(),
+                NominalType::Int => todo!(),
+                NominalType::Float => todo!(),
+                NominalType::Array => todo!(),
+                NominalType::Custom(custom_type_id) => {
                     self.write_variant(*custom_type_id, *variant_id)?;
                 }
             },
-            GlobalId::Custom(custom_global_id) => {
+            Global::Custom(custom_global_id) => {
                 if let Expr::Lam(_, _, _, _, _, _) = self.prog.vals[custom_global_id].body {
                     self.write_identifier(*custom_global_id)?;
                 } else {
@@ -351,7 +351,7 @@ impl<'a, 'b> Context<'a, 'b> {
     fn write_expr(&mut self, expr: &Expr, precedence: Precedence) -> io::Result<()> {
         let my_precedence = match expr {
             Expr::Global(global, _) => match global {
-                GlobalId::Custom(custom_global_id) => {
+                Global::Custom(custom_global_id) => {
                     if let Expr::Lam(_, _, _, _, _, _) = self.prog.vals[custom_global_id].body {
                         Precedence::Var
                     } else {
@@ -973,12 +973,12 @@ const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");
 fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
     match expr {
         Expr::Global(global_id, _) => match global_id {
-            GlobalId::Intrinsic(_) => {}
-            GlobalId::ArrayOp(_) => {}
-            GlobalId::IoOp(_) => {}
-            GlobalId::Panic => {}
-            GlobalId::Ctor(_, _) => {}
-            GlobalId::Custom(custom_id) => {
+            Global::Intrinsic(_) => {}
+            Global::ArrayOp(_) => {}
+            Global::IoOp(_) => {}
+            Global::Panic => {}
+            Global::Ctor(_, _) => {}
+            Global::Custom(custom_id) => {
                 deps.insert(*custom_id);
             }
         },
@@ -1024,12 +1024,12 @@ fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
         Type::Var(_) => {}
         Type::App(type_id, types) => {
             match type_id {
-                TypeId::Bool => {}
-                TypeId::Byte => {}
-                TypeId::Int => {}
-                TypeId::Float => {}
-                TypeId::Array => {}
-                TypeId::Custom(custom_type) => {
+                NominalType::Bool => {}
+                NominalType::Byte => {}
+                NominalType::Int => {}
+                NominalType::Float => {}
+                NominalType::Array => {}
+                NominalType::Custom(custom_type) => {
                     deps.insert(*custom_type);
                 }
             }

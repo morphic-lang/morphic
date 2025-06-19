@@ -1,54 +1,40 @@
 use im_rc::{vector, Vector};
 use std::collections::BTreeMap;
-use std::io;
 
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
-use crate::file_cache::FileCache;
-use crate::report_error::{locate_path, locate_span, Locate};
-use crate::report_pattern;
+use crate::report_error::Report;
+use crate::util::lines::lines;
+use crate::{report_pattern, Errors};
 use id_collections::IdVec;
 
 #[derive(Clone, Debug)]
-struct RawErrorKind {
-    not_covered: report_pattern::Pattern,
-}
-
-type RawError = Locate<RawErrorKind>;
-
-#[derive(Clone, Debug)]
-pub struct ErrorKind {
+pub struct Error {
     not_covered: String,
 }
 
-pub type Error = Locate<ErrorKind>;
-
-impl RawErrorKind {
-    fn render(
-        &self,
+impl Error {
+    pub fn new(
         custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
-    ) -> ErrorKind {
-        ErrorKind {
-            not_covered: report_pattern::render(custom_type_symbols, &self.not_covered),
+        not_covered: report_pattern::Pattern,
+    ) -> Self {
+        Error {
+            not_covered: report_pattern::render(custom_type_symbols, &not_covered),
         }
     }
-}
 
-impl Error {
-    pub fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        self.report_with(dest, files, |err| {
-            (
-                "Non-Exhaustive Pattern Match",
-                format!(
-                    lines![
-                        "This pattern match doesn't cover the following case:",
-                        "",
-                        "    {}",
-                    ],
-                    &err.not_covered
-                ),
-            )
-        })
+    pub fn report(&self) -> Report {
+        Report {
+            title: "Non-Exhaustive Pattern Match".to_string(),
+            message: Some(format!(
+                lines![
+                    "This pattern match doesn't cover the following case:",
+                    "",
+                    "    {}",
+                ],
+                &self.not_covered
+            )),
+        }
     }
 }
 
@@ -59,28 +45,28 @@ enum Relevance {
 }
 
 fn relevance(pat: &typed::Pattern) -> Relevance {
-    match pat {
-        typed::Pattern::Any(_) => Relevance::Relevant,
-        typed::Pattern::Var(_) => Relevance::Relevant,
+    match &*pat.data {
+        typed::PatternData::Any(_) => Relevance::Relevant,
+        typed::PatternData::Var(_) => Relevance::Relevant,
 
-        typed::Pattern::Tuple(items) => {
+        typed::PatternData::Tuple(items) => {
             for item in items {
-                if relevance(item) == Relevance::Irrelevant {
+                if relevance(&item) == Relevance::Irrelevant {
                     return Relevance::Irrelevant;
                 }
             }
             Relevance::Relevant
         }
 
-        typed::Pattern::Ctor(_, _, _, Some(content)) => relevance(content),
+        typed::PatternData::Ctor(_, _, _, Some(content)) => relevance(&content),
 
-        typed::Pattern::Ctor(_, _, _, None) => Relevance::Relevant,
+        typed::PatternData::Ctor(_, _, _, None) => Relevance::Relevant,
 
-        typed::Pattern::ByteConst(_) => Relevance::Irrelevant,
-        typed::Pattern::IntConst(_) => Relevance::Irrelevant,
-        typed::Pattern::FloatConst(_) => Relevance::Irrelevant,
+        typed::PatternData::ByteConst(_) => Relevance::Irrelevant,
+        typed::PatternData::IntConst(_) => Relevance::Irrelevant,
+        typed::PatternData::FloatConst(_) => Relevance::Irrelevant,
 
-        typed::Pattern::Span(_, _, content) => relevance(content),
+        typed::PatternData::Error(_) => Relevance::Irrelevant,
     }
 }
 
@@ -89,7 +75,7 @@ enum Decision {
     Any,
     PushTuple(usize),
     Ctor {
-        id: res::TypeId,
+        id: res::NominalType,
         variant: res::VariantId,
         push_content: bool,
     },
@@ -97,19 +83,19 @@ enum Decision {
 }
 
 fn flatten_to(pat: &typed::Pattern, target: &mut Vec<Decision>) {
-    match pat {
-        typed::Pattern::Any(_) => target.push(Decision::Any),
-        typed::Pattern::Var(_) => target.push(Decision::Any),
+    match &*pat.data {
+        typed::PatternData::Any(_) => target.push(Decision::Any),
+        typed::PatternData::Var(_) => target.push(Decision::Any),
 
-        typed::Pattern::Tuple(items) => {
+        typed::PatternData::Tuple(items) => {
             target.push(Decision::PushTuple(items.len()));
             for item in items {
-                flatten_to(item, target);
+                flatten_to(&item, target);
             }
             target.push(Decision::Pop);
         }
 
-        &typed::Pattern::Ctor(id, _, variant, None) => {
+        &typed::PatternData::Ctor(id, _, variant, None) => {
             target.push(Decision::Ctor {
                 id,
                 variant,
@@ -117,7 +103,7 @@ fn flatten_to(pat: &typed::Pattern, target: &mut Vec<Decision>) {
             });
         }
 
-        &typed::Pattern::Ctor(id, _, variant, Some(ref content)) => {
+        &typed::PatternData::Ctor(id, _, variant, Some(ref content)) => {
             target.push(Decision::Ctor {
                 id,
                 variant,
@@ -127,11 +113,10 @@ fn flatten_to(pat: &typed::Pattern, target: &mut Vec<Decision>) {
             target.push(Decision::Pop);
         }
 
-        typed::Pattern::IntConst(_)
-        | typed::Pattern::ByteConst(_)
-        | typed::Pattern::FloatConst(_) => panic!("Irrelevant patterns should have been skipped"),
-
-        typed::Pattern::Span(_, _, content) => flatten_to(content, target),
+        typed::PatternData::IntConst(_)
+        | typed::PatternData::ByteConst(_)
+        | typed::PatternData::FloatConst(_)
+        | typed::PatternData::Error(_) => panic!("Irrelevant patterns should have been skipped"),
     }
 }
 
@@ -210,7 +195,7 @@ pub enum DecisionTree {
     AnyThen(Box<DecisionTree>),
     PushTuple(usize, Box<DecisionTree>),
     Ctor {
-        id: res::TypeId,
+        id: res::NominalType,
         cases: BTreeMap<res::VariantId, Case>,
         default: Box<DecisionTree>,
     },
@@ -435,21 +420,31 @@ impl DecisionTree {
 
     fn check_exhaustive_rec(
         &self,
+        errors: &mut Errors,
+        custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
         custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
         path: Vector<Decision>,
-    ) -> Result<(), Vector<Decision>> {
+    ) {
         match self {
-            DecisionTree::End => Ok(()),
+            DecisionTree::End => {}
 
-            DecisionTree::Empty => Err(path),
-
-            DecisionTree::AnyThen(rest) => {
-                rest.check_exhaustive_rec(custom_types, path + vector![Decision::Any])
+            DecisionTree::Empty => {
+                errors.push(Error::new(custom_type_symbols, unflatten_decisions(&path)))
             }
 
-            DecisionTree::PushTuple(size, inner) => {
-                inner.check_exhaustive_rec(custom_types, path + vector![Decision::PushTuple(*size)])
-            }
+            DecisionTree::AnyThen(rest) => rest.check_exhaustive_rec(
+                errors,
+                custom_type_symbols,
+                custom_types,
+                path + vector![Decision::Any],
+            ),
+
+            DecisionTree::PushTuple(size, inner) => inner.check_exhaustive_rec(
+                errors,
+                custom_type_symbols,
+                custom_types,
+                path + vector![Decision::PushTuple(*size)],
+            ),
 
             DecisionTree::Ctor { id, cases, default } => {
                 let id_num_variants = num_variants(custom_types, *id);
@@ -460,10 +455,10 @@ impl DecisionTree {
                         .unwrap();
 
                     let has_content = match id {
-                        res::TypeId::Custom(custom) => {
+                        res::NominalType::Custom(custom) => {
                             custom_types[custom].variants[first_unhandled].is_some()
                         }
-                        res::TypeId::Bool => false,
+                        res::NominalType::Bool => false,
                         _ => unreachable!(),
                     };
 
@@ -525,121 +520,102 @@ impl DecisionTree {
 
     fn check_exhaustive(
         &self,
+        errors: &mut Errors,
+        custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
         custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
-    ) -> Result<(), RawError> {
-        self.check_exhaustive_rec(custom_types, vector![])
-            .map_err(|decisions| {
-                RawErrorKind {
-                    not_covered: unflatten_decisions(&decisions),
-                }
-                .into()
-            })
+    ) {
+        self.check_exhaustive_rec(errors, custom_type_symbols, custom_types, vector![]);
     }
 }
 
-fn num_variants(custom_types: &IdVec<res::CustomTypeId, res::TypeDef>, id: res::TypeId) -> usize {
+fn num_variants(
+    custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
+    id: res::NominalType,
+) -> usize {
     match id {
-        res::TypeId::Bool => 2,
-        res::TypeId::Custom(custom_id) => custom_types[custom_id].variants.len(),
+        res::NominalType::Bool => 2,
+        res::NominalType::Custom(custom_id) => custom_types[custom_id].variants.len(),
         _ => unreachable!(),
     }
 }
 
 fn check_irrefutable_pattern(
+    errors: &mut Errors,
     custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
     pat: &typed::Pattern,
-) -> Result<(), RawError> {
+) {
     let mut tree = DecisionTree::new();
     tree.add(pat);
-    tree.check_exhaustive(custom_types).map_err(|err| {
-        if let typed::Pattern::Span(lo, hi, _) = pat {
-            locate_span(*lo, *hi)(err)
-        } else {
-            err
-        }
-    })
+    tree.check_exhaustive(errors, custom_types);
 }
 
 fn check_expr(
+    errors: &mut Errors,
     custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
     expr: &typed::Expr,
-) -> Result<(), RawError> {
-    match expr {
-        typed::Expr::Global(_, _) => Ok(()),
+) {
+    match &*expr.data {
+        typed::ExprData::Global(_, _) => {}
 
-        typed::Expr::Local(_) => Ok(()),
+        typed::ExprData::Local(_) => {}
 
-        typed::Expr::Tuple(items) => {
+        typed::ExprData::Tuple(items) => {
             for item in items {
-                check_expr(custom_types, item)?;
+                check_expr(errors, custom_types, &item);
             }
-            Ok(())
         }
 
-        typed::Expr::Lam(_purity, _arg_type, _ret_type, lhs, body, _prof_id) => {
-            check_irrefutable_pattern(custom_types, lhs)?;
-            check_expr(custom_types, body)?;
-            Ok(())
+        typed::ExprData::Lam(_purity, _arg_type, _ret_type, lhs, body, _prof_id) => {
+            check_irrefutable_pattern(errors, custom_types, &lhs);
+            check_expr(errors, custom_types, &body);
         }
 
-        typed::Expr::App(_, func, arg) => {
-            check_expr(custom_types, func)?;
-            check_expr(custom_types, arg)?;
-            Ok(())
+        typed::ExprData::App(_, func, arg) => {
+            check_expr(errors, custom_types, &func);
+            check_expr(errors, custom_types, &arg);
         }
 
-        typed::Expr::Match(discrim, cases, _) => {
-            check_expr(custom_types, discrim)?;
+        typed::ExprData::Match(discrim, cases, _) => {
+            check_expr(errors, custom_types, &discrim);
 
             let mut tree = DecisionTree::new();
             for (pat, _) in cases {
-                tree.add(pat);
+                tree.add(&pat);
             }
-            tree.check_exhaustive(custom_types)?;
+            tree.check_exhaustive(errors, custom_types);
 
             for (_, body) in cases {
-                check_expr(custom_types, body)?;
+                check_expr(errors, custom_types, &body);
             }
-
-            Ok(())
         }
 
-        typed::Expr::LetMany(bindings, body) => {
+        typed::ExprData::LetMany(bindings, body) => {
             for (lhs, rhs) in bindings {
-                check_irrefutable_pattern(custom_types, lhs)?;
-                check_expr(custom_types, rhs)?;
+                check_irrefutable_pattern(errors, custom_types, &lhs);
+                check_expr(errors, custom_types, &rhs);
             }
 
-            check_expr(custom_types, body)?;
-            Ok(())
+            check_expr(errors, custom_types, &body);
         }
 
-        typed::Expr::ArrayLit(_, items) => {
+        typed::ExprData::ArrayLit(_, items) => {
             for item in items {
-                check_expr(custom_types, item)?;
+                check_expr(errors, custom_types, &item);
             }
-            Ok(())
         }
 
-        typed::Expr::ByteLit(_) => Ok(()),
+        typed::ExprData::ByteLit(_) => {}
 
-        typed::Expr::IntLit(_) => Ok(()),
+        typed::ExprData::IntLit(_) => {}
 
-        typed::Expr::FloatLit(_) => Ok(()),
+        typed::ExprData::FloatLit(_) => {}
 
-        typed::Expr::Span(lo, hi, content) => {
-            check_expr(custom_types, content).map_err(locate_span(*lo, *hi))
-        }
+        typed::ExprData::Error(_) => {}
     }
 }
 
-pub fn check_exhaustive(program: &typed::Program) -> Result<(), Error> {
+pub fn check_exhaustive(program: &typed::Program, errors: &mut Errors) {
     for (id, def) in &program.vals {
-        check_expr(&program.custom_types, &def.body)
-            .map_err(locate_path(
-                &program.mod_symbols[program.val_symbols[id].mod_].file,
-            ))
-            .map_err(|err| err.map(|raw_error| raw_error.render(&program.custom_type_symbols)))?;
+        check_expr(errors, &program.custom_types, &def.body);
     }
-    Ok(())
 }

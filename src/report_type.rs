@@ -9,7 +9,7 @@ use id_collections::IdVec;
 #[derive(Clone, Debug)]
 pub enum Type {
     Var(res::TypeParamId),
-    App(res::TypeId, Vec<Type>),
+    App(res::NominalType, Vec<Type>),
     Tuple(Vec<Type>),
     Func(Purity, Box<Type>, Box<Type>),
     Unknown,
@@ -60,15 +60,15 @@ enum CategorizedTypeId {
     Custom(res::CustomTypeId),
 }
 
-fn categorize(type_id: res::TypeId) -> CategorizedTypeId {
+fn categorize(type_id: res::NominalType) -> CategorizedTypeId {
     match type_id {
-        res::TypeId::Bool => CategorizedTypeId::Builtin(BuiltinType::Bool),
-        res::TypeId::Byte => CategorizedTypeId::Builtin(BuiltinType::Byte),
-        res::TypeId::Int => CategorizedTypeId::Builtin(BuiltinType::Int),
-        res::TypeId::Float => CategorizedTypeId::Builtin(BuiltinType::Float),
-        res::TypeId::Array => CategorizedTypeId::Builtin(BuiltinType::Array),
+        res::NominalType::Bool => CategorizedTypeId::Builtin(BuiltinType::Bool),
+        res::NominalType::Byte => CategorizedTypeId::Builtin(BuiltinType::Byte),
+        res::NominalType::Int => CategorizedTypeId::Builtin(BuiltinType::Int),
+        res::NominalType::Float => CategorizedTypeId::Builtin(BuiltinType::Float),
+        res::NominalType::Array => CategorizedTypeId::Builtin(BuiltinType::Array),
 
-        res::TypeId::Custom(custom) => CategorizedTypeId::Custom(custom),
+        res::NominalType::Custom(custom) => CategorizedTypeId::Custom(custom),
     }
 }
 
@@ -170,7 +170,7 @@ impl<'a> TypeRenderer<'a> {
         }
     }
 
-    fn render_id_to(&self, id: res::TypeId, dest: &mut String) {
+    fn render_id_to(&self, id: res::NominalType, dest: &mut String) {
         match categorize(id) {
             CategorizedTypeId::Builtin(builtin) => {
                 match self.builtin_quals[&builtin] {
@@ -277,15 +277,15 @@ impl<'a> TypeRenderer<'a> {
         result
     }
 
-    pub fn render_ctor(&self, id: res::TypeId, variant: res::VariantId) -> (String, String) {
+    pub fn render_ctor(&self, id: res::NominalType, variant: res::VariantId) -> (String, String) {
         let mut id_rendered = String::new();
         self.render_id_to(id, &mut id_rendered);
 
         let ctor_rendered = match (id, variant) {
-            (res::TypeId::Bool, res::VariantId(0)) => "False".to_owned(),
-            (res::TypeId::Bool, res::VariantId(1)) => "True".to_owned(),
+            (res::NominalType::Bool, res::VariantId(0)) => "False".to_owned(),
+            (res::NominalType::Bool, res::VariantId(1)) => "True".to_owned(),
 
-            (res::TypeId::Custom(custom), _) => self.program.custom_type_symbols[custom]
+            (res::NominalType::Custom(custom), _) => self.program.custom_type_symbols[custom]
                 .variant_symbols[variant]
                 .variant_name
                 .0

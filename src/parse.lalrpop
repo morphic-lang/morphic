@@ -1,10 +1,18 @@
 use crate::data::intrinsics::Intrinsic as Intr;
 use crate::data::purity::Purity;
-use crate::data::raw_ast as syntax;
+use crate::data::raw_ast as raw;
 use crate::data::visibility::Visibility;
-use crate::lex;
+use crate::file_cache::FileId;
+use crate::report_error::Span;
+use crate::{ErrorId, lex};
+use id_collections::IdVec;
+use lalrpop_util::ErrorRecovery;
 
-grammar;
+grammar<'a, 'b>(
+  file: FileId,
+  store: &'a mut raw::Store,
+  errors: &'b mut IdVec<ErrorId, ErrorRecovery<usize, lex::Token, lex::Error>>,
+);
 
 // Lexer Integration
 
@@ -13,6 +21,8 @@ extern {
   type Error = lex::Error;
 
   enum lex::Token {
+    "error" => lex::Token::Error(<char>),
+
     "UpperName" => lex::Token::UpperName(<String>),
     "LowerName" => lex::Token::LowerName(<String>),
     "FloatLit" => lex::Token::FloatLit(<f64>),
@@ -101,41 +111,55 @@ CommaSep<T>: Vec<T> = {
   }
 };
 
-Spanned<T>: syntax::Expr = {
-  <lo: @L> <expr:T> <hi: @R> => {
-    if let syntax::Expr::Span(_, _, _) = &expr {
-      expr
-    } else {
-      syntax::Expr::Span(lo, hi, Box::new(expr))
-    }
+SpannedItem<T>: raw::Item = {
+  <lo: @L> <data: T> <hi: @R> => {
+    raw::Item::new(store, Span::new(file, lo, hi), data)
+  },
+};
+
+SpannedType<T>: raw::Type = {
+  <lo: @L> <data: T> <hi: @R> => {
+    raw::Type::new(store, Span::new(file, lo, hi), data)
+  },
+};
+
+SpannedExpr<T>: raw::Expr = {
+  <lo: @L> <data: T> <hi: @R> => {
+    raw::Expr::new(store, Span::new(file, lo, hi), data)
+  },
+};
+
+SpannedPattern<T>: raw::Pattern = {
+  <lo: @L> <data: T> <hi: @R> => {
+    raw::Pattern::new(store, Span::new(file, lo, hi), data)
   },
 };
 
 // Names and Strings
 
 #[inline]
-TypeName: syntax::TypeName = {
-  <"UpperName"> => syntax::TypeName(<>),
+TypeName: raw::TypeName = {
+  <"UpperName"> => raw::TypeName(<>),
 };
 
 #[inline]
-CtorName: syntax::CtorName = {
-  <"UpperName"> => syntax::CtorName(<>),
+CtorName: raw::CtorName = {
+  <"UpperName"> => raw::CtorName(<>),
 };
 
 #[inline]
-TypeParam: syntax::TypeParam = {
-  <"LowerName"> => syntax::TypeParam(<>),
+TypeParam: raw::TypeParam = {
+  <"LowerName"> => raw::TypeParam(<>),
 };
 
 #[inline]
-ValName: syntax::ValName = {
-  <"LowerName"> => syntax::ValName(<>),
+ValName: raw::ValName = {
+  <"LowerName"> => raw::ValName(<>),
 };
 
 #[inline]
-ModName: syntax::ModName = {
-  <"UpperName"> => syntax::ModName(<>),
+ModName: raw::ModName = {
+  <"UpperName"> => raw::ModName(<>),
 };
 
 #[inline]
@@ -152,508 +176,537 @@ OptPub: Visibility = {
 
 // Top-Level Items
 
-pub Program: syntax::Program = {
-  <Item*> => syntax::Program(<>),
+pub Program: raw::Program = {
+  <Item*> => raw::Program(<>),
 };
 
-Item: syntax::Item = {
-  <TypeDef>,
-  <ValDef>,
-  <ModDef>,
-  <ModImport>,
-  <ModExpose>,
+Item: raw::RawResult<raw::Item> = {
+  <item: TypeDef> => Ok(<>),
+  <item: ValDef> => Ok(<>),
+  <item: ModDef> => Ok(<>),
+  <item: ModImport> => Ok(<>),
+  <item: ModExpose> => Ok(<>),
 };
 
 // Type Definitions
 
-TypeDef: syntax::Item = {
+TypeDef_: raw::ItemData = {
   <visibility: OptPub> "type" <name: TypeName> <params: TypeParam*>
     "{" <cases: CommaSep<TypeCase>> "}" =>
-      syntax::Item::TypeDef(visibility, name, params, cases),
+      raw::ItemData::TypeDef(visibility, name, params, cases),
 };
 
-TypeCase: (Visibility, syntax::CtorName, Option<syntax::Type>) = {
+TypeDef: raw::Item = {
+  <SpannedItem<TypeDef_>>,
+};
+
+TypeCase: raw::RawResult<(Visibility, raw::CtorName, Option<raw::Type>)> = {
   <visibility: OptPub> <name: CtorName> <content: ("(" <Types> ")")?> =>
-    (visibility, name, content),
+    Ok((visibility, name, content)),
 };
 
 // Value Definitions
 
-ValDef: syntax::Item = {
+ValDef_: raw::ItemData = {
   <visibility: OptPub>
   <purity: OptProc>
   <name: ValName>
-  "(" <args: CommaSep<(<ValName> ":" <Type>)>> ")"
+  <args_lo: @L> "(" <args: CommaSep<(<@L> <ValName> <@R> ":" <Type>)>> ")" <args_hi: @R>
   ":" <ret_type: Type>
   "=" <body: Expr> => {
     let (arg_pat, arg_type) = if args.len() == 1 {
-      let (arg_name, arg_type) = args.into_iter().next().unwrap();
-      (syntax::Pattern::Var(arg_name), arg_type)
+      let (lo, arg_name, hi, arg_type) = args.into_iter().next().unwrap();
+      let pat = raw::PatternData::Var(arg_name);
+      let pat = raw::Pattern::new(store, Span::new(file, lo, hi), pat);
+      (pat, arg_type)
     } else {
       let mut pat_items = Vec::new();
       let mut type_items = Vec::new();
 
-      for (pat_item, type_item) in args {
-        pat_items.push(syntax::Pattern::Var(pat_item));
+      for (lo, pat_item, hi, type_item) in args {
+        let pat = raw::PatternData::Var(pat_item);
+        let pat = raw::Pattern::new(store, Span::new(file, lo, hi), pat);
+        pat_items.push(pat);
         type_items.push(type_item);
       }
 
-      (syntax::Pattern::Tuple(pat_items), syntax::Type::Tuple(type_items))
+      let pat = raw::Pattern::new_unspanned(store, raw::PatternData::Tuple(pat_items));
+      let type_ = raw::Pattern::new_unspanned(store, raw::PatternData::Tuple(type_items));
+      (pat, type_)
     };
 
-    let def_type = syntax::Type::Func(purity, Box::new(arg_type), Box::new(ret_type));
-    let def_body = syntax::Expr::Lam(purity, arg_pat, Box::new(body));
+    let def_type = raw::Type::Func(purity, arg_type, ret_type);
+    let def_body = raw::Expr::Lam(purity, arg_pat, body);
 
-    syntax::Item::ValDef(visibility, name, def_type, def_body)
+    raw::ItemData::ValDef(visibility, name, def_type, def_body)
   },
-
   <visibility: OptPub> <name: ValName> ":" <def_type: Type> "=" <val: Expr> => {
-    syntax::Item::ValDef(visibility, name, def_type, val)
+    raw::ItemData::ValDef(visibility, name, def_type, val)
   },
 }
 
+ValDef: raw::Item = {
+  <SpannedItem<ValDef_>>,
+};
+
 // Module Defintions
 
-ModDef: syntax::Item = {
+ModDef_: raw::ItemData = {
   <visibility: OptPub> "module" <name: ModName> "=" <spec: ModSpec>
   <bindings: ("with" "{" <CommaSep<ModBinding>> "}")?>
   <expose: OptExposeSpec> =>
-    syntax::Item::ModDef(visibility, name, spec, bindings.unwrap_or_default(), expose),
+    raw::ItemData::ModDef(visibility, name, spec, bindings.unwrap_or_default(), expose),
 };
 
-ModImport: syntax::Item = {
+ModDef: raw::Item = {
+  <SpannedItem<ModDef_>>,
+};
+
+ModImport_: raw::ItemData = {
   "import" <name: ModName> <expose: OptExposeSpec> =>
-    syntax::Item::ModImport(name, expose),
+    raw::ItemData::ModImport(name, expose),
 };
 
-ModExpose: syntax::Item = {
+ModImport: raw::Item = {
+  <SpannedItem<ModImport_>>,
+};
+
+ModExpose_: raw::ItemData = {
   "from" <path: ModPath> <expose: ExposeSpec> =>
-    syntax::Item::ModExpose(path, expose),
+    raw::ItemData::ModExpose(path, expose),
 };
 
-ModSpec: syntax::ModSpec = {
+ModExpose: raw::Item = {
+  <SpannedItem<ModExpose_>>,
+};
+
+ModSpec_: raw::ModSpecData = {
   "file" <path: "StringLit"> =>
-    syntax::ModSpec::File(path.split('/').map(|s| s.to_owned()).collect()),
+    raw::ModSpecData::File(path.split('/').map(|s| s.to_owned()).collect()),
 
-  "{" <Program> "}" => syntax::ModSpec::Inline(<>),
+  "{" <Program> "}" => raw::ModSpecData::Inline(<>),
 };
 
-ModBinding: syntax::ModBinding = {
-  <name: ModName> =>
-    syntax::ModBinding {
+ModSpec: raw::ModSpec = {
+  <SpannedItem<ModSpec_>>,
+};
+
+ModBinding: raw::RawResult<raw::ModBinding> = {
+  <lo: @L> <name: ModName> <hi: @R> => {
+    let span = Span { lo: ByteIdx(lo), hi: ByteIdx(hi), file };
+    let id = meta.push(raw::MetaData { span: Some(span) });
+    Ok(raw::ModBinding {
+      id,
       name: name.clone(),
-      binding: syntax::ModPath(vec![name]),
-    },
-
-  <name: ModName> "=" <binding: ModPath> =>
-    syntax::ModBinding { name, binding },
-};
-
-#[inline]
-ModPath: syntax::ModPath = {
-  <path: (<ModName> ".")*> <last: ModName> => {
-    let mut result = path;
-    result.push(last);
-    syntax::ModPath(result)
+      binding: raw::ModPath(id, vec![name]),
+    })
+  },
+  <name: ModName> "=" <binding: ModPath> => {
+    let span = Span { lo: ByteIdx(lo), hi: ByteIdx(hi), file };
+    let id = meta.push(raw::MetaData { span: Some(span) });
+    Ok(raw::ModBinding { id, name, binding }),
   }
 };
 
 #[inline]
-QualPath: syntax::ModPath = {
+ModPath: raw::ModPath = {
+  <path: (<ModName> ".")*> <last: ModName> => {
+    let mut result = path;
+    result.push(last);
+    raw::ModPath(result)
+  }
+};
+
+#[inline]
+QualPath: raw::ModPath = {
   <(<ModName> ".")*> =>
-    syntax::ModPath(<>),
+    raw::ModPath(<>),
 };
 
 // Public for use in parsing '--profile' arguments
-pub QualName: (syntax::ModPath, syntax::ValName) = {
+pub QualName: (raw::ModPath, raw::ValName) = {
   <path: QualPath> <name: ValName> =>
     (path, name),
 };
 
-ExposeSpec: syntax::ExposeSpec = {
+ExposeSpec: raw::ExposeSpec = {
   // TODO: Add support for glob imports
 
   "expose" "{" <CommaSep<ExposeItem>> "}" =>
-    syntax::ExposeSpec::Specific(<>),
+    raw::ExposeSpec::Specific(<>),
 };
 
-OptExposeSpec: syntax::ExposeSpec = {
+OptExposeSpec: raw::ExposeSpec = {
   <spec: ExposeSpec?> =>
-    spec.unwrap_or_else(|| syntax::ExposeSpec::Specific(vec![])),
+    spec.unwrap_or_else(|| raw::ExposeSpec::Specific(vec![])),
 };
 
-ExposeItem: syntax::ExposeItem = {
-  <visibility: OptPub> <name: ValName> => syntax::ExposeItem::Val(visibility, name),
+ExposeItem: raw::RawResult<raw::ExposeItem> = {
+  <visibility: OptPub> <name: ValName> => Ok(raw::ExposeItem::Val(visibility, name)),
 
   <visibility: OptPub> <name: TypeName> <ctors: ("{" <CommaSep<(OptPub CtorName)>> "}")?> =>
-    syntax::ExposeItem::Type(visibility, name, ctors.unwrap_or_default()),
+    Ok(raw::ExposeItem::Type(visibility, name, ctors.unwrap_or_default())),
 
   <visibility: OptPub> "module" <name: ModName> <expose: OptExposeSpec> =>
-    syntax::ExposeItem::Mod(visibility, name, Box::new(expose)),
+    Ok(raw::ExposeItem::Mod(visibility, name, expose)),
 };
 
 // Types
 
-QualTypeName: (syntax::ModPath, syntax::TypeName) = {
+QualTypeName: (raw::ModPath, raw::TypeName) = {
   <path: QualPath> <name: TypeName> =>
     (path, name)
 };
 
-AtomicType: syntax::Type = {
+AtomicType_: raw::TypeData = {
   "(" <Types> ")",
-  <TypeParam> => syntax::Type::Var(<>),
-  <QualTypeName> => syntax::Type::App(<>.0, <>.1, Vec::new()),
+  <TypeParam> => raw::TypeData::Var(<>),
+  <QualTypeName> => raw::TypeData::App(<>.0, <>.1, Vec::new()),
 };
 
-AppType: syntax::Type = {
+AtomicType: raw::Type = {
+  <SpannedType<AtomicType_>>,
+};
+
+AppType_: raw::TypeData = {
   <AtomicType>,
   <name: QualTypeName> <args: AtomicType+> =>
-    syntax::Type::App(name.0, name.1, args),
+    raw::TypeData::App(name.0, name.1, args),
 };
 
-FuncType: syntax::Type = {
+AppType: raw::Type = {
+  <SpannedType<AppType_>>,
+};
+
+FuncType_: raw::TypeData = {
   <AppType>,
   <purity: OptProc> <arg: AppType> "->" <ret: FuncType> =>
-    syntax::Type::Func(purity, Box::new(arg), Box::new(ret)),
+    raw::TypeData::Func(purity, arg, ret),
 };
 
-Type: syntax::Type = {
+FuncType: raw::Type = {
+  <SpannedType<FuncType_>>,
+};
+
+Type: raw::Type = {
   <FuncType>,
 };
 
-Types: syntax::Type = {
+Types_: raw::TypeData = {
   <types: CommaSep<Type>> => {
     if types.len() == 1 {
       types.into_iter().next().unwrap()
     } else {
-      syntax::Type::Tuple(types)
+      synax::TypeData::Tuple(types)
     }
   },
 };
 
+Types: raw::Type = {
+  <SpannedType<Types_>>,
+};
+
 // Expressions
 
-AtomicExpr_: syntax::Expr = {
+AtomicExpr_: raw::ExprData = {
   "(" <Exprs> ")",
 
   <qual_name: QualName> => {
     let (path, name) = qual_name;
     if path.0.is_empty() {
-      syntax::Expr::Var(name)
+      raw::ExprData::Var(name)
     } else {
-      syntax::Expr::QualName(path, name)
+      raw::ExprData::QualName(path, name)
     }
   },
 
-  <path: QualPath> <name: CtorName> => syntax::Expr::Ctor(path, name),
+  <path: QualPath> <name: CtorName> => raw::ExprData::Ctor(path, name),
 
-  "[" <CommaSep<Expr>> "]" => syntax::Expr::ArrayLit(<>),
+  "[" <CommaSep<Expr>> "]" => raw::ExprData::ArrayLit(<>),
 
-  <"IntLit"> => syntax::Expr::IntLit(<>),
+  <"IntLit"> => raw::ExprData::IntLit(<>),
 
-  <"ByteLit"> => syntax::Expr::ByteLit(<>),
+  <"ByteLit"> => raw::ExprData::ByteLit(<>),
 
-  <"FloatLit"> => syntax::Expr::FloatLit(<>),
+  <"FloatLit"> => raw::ExprData::FloatLit(<>),
 
-  <"StringLit"> => syntax::Expr::TextLit(<>),
+  <"StringLit"> => raw::ExprData::TextLit(<>),
 
   <MatchExpr>,
 
   <IfExpr>,
 };
 
-AtomicExpr: syntax::Expr = {
-  <Spanned<AtomicExpr_>>,
+AtomicExpr: raw::Expr = {
+  <SpannedExpr<AtomicExpr_>>,
 };
 
-MatchExpr_: syntax::Expr = {
+MatchExpr_: raw::ExprData = {
   "match" <expr: Expr> "{" <cases: CommaSep<(<Pattern> "->" <Expr>)>> "}" =>
-    syntax::Expr::Match(Box::new(expr), cases),
+    raw::ExprData::Match(expr, cases),
 };
 
-MatchExpr: syntax::Expr = {
-  <Spanned<MatchExpr_>>,
+MatchExpr: raw::Expr = {
+  <SpannedExpr<MatchExpr_>>,
 };
 
-IfExpr_: syntax::Expr = {
-  "if" <expr: Expr> "{" <if_block: Expr> "}" "else" <else_if_block: IfExpr> =>
-    syntax::Expr::Match(
-      Box::new(expr),
+IfExpr_: raw::ExprData = {
+  "if" <expr: Expr> "{" <if_block: Expr> "}" "else" <else_if_block: IfExpr> => {
+    raw::ExprData::Match(
+      expr,
       vec![
         (
-          syntax::Pattern::Ctor(syntax::ModPath(vec![]), syntax::CtorName("True".to_string()), None),
+          raw::pat(meta, raw::PatternData::Ctor(raw::ModPath(vec![]), raw::CtorName("True".to_string()), None)),
           if_block
         ),
         (
-          syntax::Pattern::Ctor(syntax::ModPath(vec![]), syntax::CtorName("False".to_string()), None),
+          raw::pat(meta, raw::PatternData::Ctor(raw::ModPath(vec![]), raw::CtorName("False".to_string()), None)),
           else_if_block
         )
       ]
-    ),
-  "if" <expr: Expr> "{" <if_block: Expr> "}" "else" "{" <else_block: Expr> "}" =>
-    syntax::Expr::Match(
-      Box::new(expr),
+    )
+  }
+  "if" <expr: Expr> "{" <if_block: Expr> "}" "else" "{" <else_block: Expr> "}" => {
+    raw::ExprData::Match(
+      expr,
       vec![
         (
-          syntax::Pattern::Ctor(syntax::ModPath(vec![]), syntax::CtorName("True".to_string()), None),
+          raw::pat(meta, raw::PatternData::Ctor(raw::ModPath(vec![]), raw::CtorName("True".to_string()), None)),
           if_block
         ),
         (
-          syntax::Pattern::Ctor(syntax::ModPath(vec![]), syntax::CtorName("False".to_string()), None),
+          raw::pat(meta, raw::PatternData::Ctor(raw::ModPath(vec![]), raw::CtorName("False".to_string()), None)),
           else_block
         )
       ]
-    ),
+    )
+  }
 };
 
-IfExpr: syntax::Expr = {
-  <Spanned<IfExpr_>>,
+IfExpr: raw::Expr = {
+  <SpannedExpr<IfExpr_>>,
 };
 
-PureAppExpr_: syntax::Expr = {
+PureAppExpr_: raw::ExprData = {
   <AtomicExpr>,
 
   <func: PureAppExpr> <lo: @L> "(" <args: CommaSep<Expr>> ")" <hi: @R> =>
-    syntax::Expr::App(Purity::Pure, Box::new(func), (lo, hi, args)),
+    raw::ExprData::App(Purity::Pure, func, (lo, hi, args)),
 };
 
-PureAppExpr: syntax::Expr = {
-  <Spanned<PureAppExpr_>>,
+PureAppExpr: raw::Expr = {
+  <SpannedExpr<PureAppExpr_>>,
 };
 
-AppExpr_: syntax::Expr = {
+AppExpr_: raw::ExprData = {
   <PureAppExpr>,
 
   "do" <func: AtomicExpr> <lo: @L> "(" <args: CommaSep<Expr>> ")" <hi: @R> =>
-    syntax::Expr::App(Purity::Impure, Box::new(func), (lo, hi, args)),
+    raw::ExprData::App(Purity::Impure, func, (lo, hi, args)),
 };
 
-AppExpr: syntax::Expr = {
-  <Spanned<AppExpr_>>,
+AppExpr: raw::Expr = {
+  <SpannedExpr<AppExpr_>>,
 };
 
-PrefixExpr_: syntax::Expr = {
+PrefixExpr_: raw::ExprData = {
   <AppExpr>,
 
-  "-&" <PrefixExpr> => syntax::unop(Intr::NegByte, <>),
-  "-" <PrefixExpr> => syntax::unop(Intr::NegInt, <>),
-  "-." <PrefixExpr> => syntax::unop(Intr::NegFloat, <>),
-  "!" <PrefixExpr> => syntax::unop(Intr::Not, <>),
+  "-&" <PrefixExpr> => raw::unop(meta, Intr::NegByte, <>),
+  "-" <PrefixExpr> => raw::unop(meta, Intr::NegInt, <>),
+  "-." <PrefixExpr> => raw::unop(meta, Intr::NegFloat, <>),
+  "!" <PrefixExpr> => raw::unop(meta, Intr::Not, <>),
 };
 
-PrefixExpr: syntax::Expr = {
-  <Spanned<PrefixExpr_>>,
+PrefixExpr: raw::Expr = {
+  <SpannedExpr<PrefixExpr_>>,
 };
 
-ArithProdExpr_: syntax::Expr = {
+ArithProdExpr_: raw::ExprData = {
   <PrefixExpr>,
 
-  <left: ArithProdExpr> "*&" <right: AppExpr> => syntax::binop(Intr::MulByte, left, right),
-  <left: ArithProdExpr> "/&" <right: AppExpr> => syntax::binop(Intr::DivByte, left, right),
+  <left: ArithProdExpr> "*&" <right: AppExpr> => raw::binop(meta, Intr::MulByte, left, right),
+  <left: ArithProdExpr> "/&" <right: AppExpr> => raw::binop(meta, Intr::DivByte, left, right),
 
-  <left: ArithProdExpr> "*" <right: AppExpr> => syntax::binop(Intr::MulInt, left, right),
-  <left: ArithProdExpr> "/" <right: AppExpr> => syntax::binop(Intr::DivInt, left, right),
+  <left: ArithProdExpr> "*" <right: AppExpr> => raw::binop(meta, Intr::MulInt, left, right),
+  <left: ArithProdExpr> "/" <right: AppExpr> => raw::binop(meta, Intr::DivInt, left, right),
 
-  <left: ArithProdExpr> "*." <right: AppExpr> => syntax::binop(Intr::MulFloat, left, right),
-  <left: ArithProdExpr> "/." <right: AppExpr> => syntax::binop(Intr::DivFloat, left, right),
+  <left: ArithProdExpr> "*." <right: AppExpr> => raw::binop(meta, Intr::MulFloat, left, right),
+  <left: ArithProdExpr> "/." <right: AppExpr> => raw::binop(meta, Intr::DivFloat, left, right),
 };
 
-ArithProdExpr: syntax::Expr = {
-  <Spanned<ArithProdExpr_>>,
+ArithProdExpr: raw::Expr = {
+  <SpannedExpr<ArithProdExpr_>>,
 };
 
-ArithSumExpr_: syntax::Expr = {
+ArithSumExpr_: raw::ExprData = {
   <ArithProdExpr>,
 
-  <left: ArithSumExpr> "+&" <right: ArithProdExpr> => syntax::binop(Intr::AddByte, left, right),
-  <left: ArithSumExpr> "-&" <right: ArithProdExpr> => syntax::binop(Intr::SubByte, left, right),
+  <left: ArithSumExpr> "+&" <right: ArithProdExpr> => raw::binop(meta, Intr::AddByte, left, right),
+  <left: ArithSumExpr> "-&" <right: ArithProdExpr> => raw::binop(meta, Intr::SubByte, left, right),
 
-  <left: ArithSumExpr> "+" <right: ArithProdExpr> => syntax::binop(Intr::AddInt, left, right),
-  <left: ArithSumExpr> "-" <right: ArithProdExpr> => syntax::binop(Intr::SubInt, left, right),
+  <left: ArithSumExpr> "+" <right: ArithProdExpr> => raw::binop(meta, Intr::AddInt, left, right),
+  <left: ArithSumExpr> "-" <right: ArithProdExpr> => raw::binop(meta, Intr::SubInt, left, right),
 
-  <left: ArithSumExpr> "+." <right: ArithProdExpr> => syntax::binop(Intr::AddFloat, left, right),
-  <left: ArithSumExpr> "-." <right: ArithProdExpr> => syntax::binop(Intr::SubFloat, left, right),
+  <left: ArithSumExpr> "+." <right: ArithProdExpr> => raw::binop(meta, Intr::AddFloat, left, right),
+  <left: ArithSumExpr> "-." <right: ArithProdExpr> => raw::binop(meta, Intr::SubFloat, left, right),
 };
 
-ArithSumExpr: syntax::Expr = {
-  <Spanned<ArithSumExpr_>>,
+ArithSumExpr: raw::Expr = {
+  <SpannedExpr<ArithSumExpr_>>,
 };
 
-// TODO: Translating greater-than to less-than reverses the evaluation order of the operands.
-// If the operands have side effects, this can alter the program's semantics!
-ArithCompExpr_: syntax::Expr = {
+ArithCompExpr_: raw::ExprData = {
   <ArithSumExpr>,
 
-  <left: ArithSumExpr> "=&" <right: ArithSumExpr> => syntax::binop(Intr::EqByte, left, right),
-  <left: ArithSumExpr> "<&" <right: ArithSumExpr> => syntax::binop(Intr::LtByte, left, right),
-  <left: ArithSumExpr> "<=&" <right: ArithSumExpr> => syntax::binop(Intr::LteByte, left, right),
-  <left: ArithSumExpr> ">&" <right: ArithSumExpr> => syntax::binop(Intr::GtByte, left, right),
-  <left: ArithSumExpr> ">=&" <right: ArithSumExpr> => syntax::binop(Intr::GteByte, left, right),
+  <left: ArithSumExpr> "=&" <right: ArithSumExpr> => raw::binop(meta, Intr::EqByte, left, right),
+  <left: ArithSumExpr> "<&" <right: ArithSumExpr> => raw::binop(meta, Intr::LtByte, left, right),
+  <left: ArithSumExpr> "<=&" <right: ArithSumExpr> => raw::binop(meta, Intr::LteByte, left, right),
+  <left: ArithSumExpr> ">&" <right: ArithSumExpr> => raw::binop(meta, Intr::GtByte, left, right),
+  <left: ArithSumExpr> ">=&" <right: ArithSumExpr> => raw::binop(meta, Intr::GteByte, left, right),
 
-  <left: ArithSumExpr> "=" <right: ArithSumExpr> => syntax::binop(Intr::EqInt, left, right),
-  <left: ArithSumExpr> "<" <right: ArithSumExpr> => syntax::binop(Intr::LtInt, left, right),
-  <left: ArithSumExpr> "<=" <right: ArithSumExpr> => syntax::binop(Intr::LteInt, left, right),
-  <left: ArithSumExpr> ">" <right: ArithSumExpr> => syntax::binop(Intr::GtInt, left, right),
-  <left: ArithSumExpr> ">=" <right: ArithSumExpr> => syntax::binop(Intr::GteInt, left, right),
+  <left: ArithSumExpr> "=" <right: ArithSumExpr> => raw::binop(meta, Intr::EqInt, left, right),
+  <left: ArithSumExpr> "<" <right: ArithSumExpr> => raw::binop(meta, Intr::LtInt, left, right),
+  <left: ArithSumExpr> "<=" <right: ArithSumExpr> => raw::binop(meta, Intr::LteInt, left, right),
+  <left: ArithSumExpr> ">" <right: ArithSumExpr> => raw::binop(meta, Intr::GtInt, left, right),
+  <left: ArithSumExpr> ">=" <right: ArithSumExpr> => raw::binop(meta, Intr::GteInt, left, right),
 
-  <left: ArithSumExpr> "=." <right: ArithSumExpr> => syntax::binop(Intr::EqFloat, left, right),
-  <left: ArithSumExpr> "<." <right: ArithSumExpr> => syntax::binop(Intr::LtFloat, left, right),
-  <left: ArithSumExpr> "<=." <right: ArithSumExpr> => syntax::binop(Intr::LteFloat, left, right),
-  <left: ArithSumExpr> ">." <right: ArithSumExpr> => syntax::binop(Intr::GtFloat, left, right),
-  <left: ArithSumExpr> ">=." <right: ArithSumExpr> => syntax::binop(Intr::GteFloat, left, right),
+  <left: ArithSumExpr> "=." <right: ArithSumExpr> => raw::binop(meta, Intr::EqFloat, left, right),
+  <left: ArithSumExpr> "<." <right: ArithSumExpr> => raw::binop(meta, Intr::LtFloat, left, right),
+  <left: ArithSumExpr> "<=." <right: ArithSumExpr> => raw::binop(meta, Intr::LteFloat, left, right),
+  <left: ArithSumExpr> ">." <right: ArithSumExpr> => raw::binop(meta, Intr::GtFloat, left, right),
+  <left: ArithSumExpr> ">=." <right: ArithSumExpr> => raw::binop(meta, Intr::GteFloat, left, right),
 };
 
-ArithCompExpr: syntax::Expr = {
-  <Spanned<ArithCompExpr_>>,
+ArithCompExpr: raw::Expr = {
+  <SpannedExpr<ArithCompExpr_>>,
 };
 
-ArithExpr: syntax::Expr = {
+ArithExpr: raw::Expr = {
   <ArithCompExpr>,
 };
 
-AndExpr_: syntax::Expr = {
+AndExpr_: raw::ExprData = {
   <ArithExpr>,
 
-  <left: AndExpr> "&&" <right: ArithExpr> => syntax::Expr::And(Box::new(left), Box::new(right)),
+  <left: AndExpr> "&&" <right: ArithExpr> => raw::ExprData::And(left, right),
 }
 
-AndExpr: syntax::Expr = {
-  <Spanned<AndExpr_>>,
+AndExpr: raw::Expr = {
+  <SpannedExpr<AndExpr_>>,
 }
 
-OrExpr_: syntax::Expr = {
+OrExpr_: raw::ExprData = {
   <AndExpr>,
 
-  <left: OrExpr> "||" <right: AndExpr> => syntax::Expr::Or(Box::new(left), Box::new(right)),
+  <left: OrExpr> "||" <right: AndExpr> => raw::ExprData::Or(left, right),
 }
 
-OrExpr: syntax::Expr = {
-  <Spanned<OrExpr_>>,
+OrExpr: raw::Expr = {
+  <SpannedExpr<OrExpr_>>,
 }
 
-PipeRightExpr_: syntax::Expr = {
+PipeRightExpr_: raw::ExprData = {
   <OrExpr>,
 
-  <left: PipeRightExpr> "|>" <right: AppExpr> => syntax::Expr::PipeRight(Box::new(left), Box::new(right)),
+  <left: PipeRightExpr> "|>" <right: AppExpr> => raw::ExprData::PipeRight(left, right),
 }
 
-PipeRightExpr: syntax::Expr = {
-  <Spanned<PipeRightExpr_>>,
+PipeRightExpr: raw::Expr = {
+  <SpannedExpr<PipeRightExpr_>>,
 }
 
-BlockExpr_: syntax::Expr = {
+BlockExpr_: raw::ExprData = {
   <PipeRightExpr>,
 
-  <left: PipeRightExpr> "<|" <right: BlockExpr> => syntax::Expr::PipeLeft(Box::new(left), Box::new(right)),
+  <left: PipeRightExpr> "<|" <right: BlockExpr> => raw::ExprData::PipeLeft(left, right),
 
   "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
-    if let syntax::Expr::Span(left, right, body) = body {
-      let new_let_expr = match *body {
-        // if we already have a LetMany, prepend `lhs = rhs` onto bindings
-        syntax::Expr::LetMany(mut bindings, expr) => {
-          bindings.push_front((lhs, rhs));
-          syntax::Expr::LetMany(bindings, expr)
-        },
-        // otherwise create a new LetMany
-        _ => syntax::Expr::LetMany(vec![(lhs, rhs)].into(), body),
-      };
-      syntax::Expr::Span(left, right, Box::new(new_let_expr))
-    } else {
-      unreachable!();
+    match body.data {
+      // if we already have a LetMany, prepend `lhs = rhs` onto bindings
+      raw::ExprData::LetMany(mut bindings, expr) => {
+        bindings.push_front((lhs, rhs));
+        raw::ExprData::LetMany(bindings, expr)
+      },
+      // otherwise create a new LetMany
+      _ => raw::ExprData::LetMany(vec![(lhs, rhs)].into(), body),
     }
   },
 
   <rhs: ArithExpr> "then" <body: BlockExpr> => {
-    if let syntax::Expr::Span(left, right, body) = body {
-      let new_let_expr = match *body {
-        // if we already have a LetMany, prepend `_ = rhs` onto bindings
-        syntax::Expr::LetMany(mut bindings, expr) => {
-          bindings.push_front((syntax::Pattern::Any, rhs));
-          syntax::Expr::LetMany(bindings, expr)
+    match body.data {
+      // if we already have a LetMany, prepend `_ = rhs` onto bindings
+      raw::ExprData::LetMany(mut bindings, expr) => {
+          bindings.push_front((raw::pat(meta, raw::PatternData::Any), rhs));
+          raw::ExprData::LetMany(bindings, expr)
         },
         // otherwise create a new LetMany
-        _ => syntax::Expr::LetMany(vec![(syntax::Pattern::Any, rhs)].into(), body),
-      };
-      syntax::Expr::Span(left, right, Box::new(new_let_expr))
-    } else {
-      unreachable!();
+      _ => raw::ExprData::LetMany(vec![(raw::pat(meta, raw::PatternData::Any), rhs)].into(), body),
     }
   },
 
   <purity: OptProc> "\\" <param: Pattern> "->" <body: BlockExpr> =>
-    syntax::Expr::Lam(purity, param, Box::new(body)),
+    raw::ExprData::Lam(purity, param, body),
 };
 
-BlockExpr: syntax::Expr = {
-  <Spanned<BlockExpr_>>,
+BlockExpr: raw::Expr = {
+  <SpannedExpr<BlockExpr_>>,
 };
 
-Expr: syntax::Expr = {
+Expr: raw::Expr = {
   <BlockExpr>,
 };
 
-Exprs_: syntax::Expr = {
+Exprs_: raw::ExprData = {
   <exprs: CommaSep<Expr>> => {
     if exprs.len() == 1 {
       exprs.into_iter().next().unwrap()
     } else {
-      syntax::Expr::Tuple(exprs)
+      raw::ExprData::Tuple(exprs)
     }
   },
 };
 
-Exprs: syntax::Expr = {
-  <Spanned<Exprs_>>,
-};
+Exprs: synax::ExprData = {
+  <SpannedExpr<Exprs_>>,
+}
 
 // Patterns
 
-Pattern_: syntax::Pattern = {
+Pattern_: raw::PatternData = {
   "(" <Patterns> ")",
 
-  "_" => syntax::Pattern::Any,
+  "_" => raw::PatternData::Any,
 
-  <ValName> => syntax::Pattern::Var(<>),
+  <ValName> => raw::PatternData::Var(<>),
 
   <path: QualPath> <ctor: CtorName> =>
-    syntax::Pattern::Ctor(path, ctor, None),
+    raw::PatternData::Ctor(path, ctor, None),
 
   <path: QualPath> <ctor: CtorName> "(" <args: Patterns> ")" =>
-    syntax::Pattern::Ctor(path, ctor, Some(Box::new(args))),
+    raw::PatternData::Ctor(path, ctor, Some(args)),
 
-  <"IntLit"> => syntax::Pattern::IntConst(<>),
+  <"IntLit"> => raw::PatternData::IntConst(<>),
 
-  <"ByteLit"> => syntax::Pattern::ByteConst(<>),
+  <"ByteLit"> => raw::PatternData::ByteConst(<>),
 
-  <"FloatLit"> => syntax::Pattern::FloatConst(<>),
+  <"FloatLit"> => raw::PatternData::FloatConst(<>),
 };
 
-Pattern: syntax::Pattern = {
-  <lo: @L> <pat: Pattern_> <hi: @R> => {
-    if let syntax::Pattern::Span(_, _, _) = &pat {
-      pat
-    } else {
-      syntax::Pattern::Span(lo, hi, Box::new(pat))
-    }
-  },
+Pattern: raw::Pattern = {
+  <SpannedPattern<Pattern_>>,
 };
 
-Patterns_: syntax::Pattern = {
+Patterns_: raw::PatternData = {
   <patterns: CommaSep<Pattern>> => {
     if patterns.len() == 1 {
       patterns.into_iter().next().unwrap()
     } else {
-      syntax::Pattern::Tuple(patterns)
+      raw::PatternData::Tuple(patterns)
     }
   }
 };
 
-Patterns: syntax::Pattern = {
-  <lo: @L> <pat: Patterns_> <hi: @R> => {
-    if let syntax::Pattern::Span(_, _, _) = &pat {
-      pat
-    } else {
-      syntax::Pattern::Span(lo, hi, Box::new(pat))
-    }
-  },
+Patterns: raw::Pattern = {
+  <SpannedPattern<Patterns_>>,
 };
