@@ -6,6 +6,8 @@ description.workspace = true
 edition.workspace = true
 
 [dependencies]
+morphic_common.workspace = true
+morphic_backend.workspace = true
 morphic_compiler.workspace = true
 find_clang.workspace = true
 tempfile.workspace = true

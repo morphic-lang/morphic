@@ -1,8 +1,19 @@
 [package]
 name = "morphic_frontend"
 version = "0.1.0"
+build = "build.rs"
 authors.workspace = true
 description.workspace = true
 edition.workspace = true
 
+[build-dependencies]
+anyhow.workspace = true
+lalrpop.workspace = true
+
 [dependencies]
+lalrpop-util.workspace = true
+morphic_common.workspace = true
+im-rc.workspace = true
+id_collections.workspace = true
+once_cell.workspace = true
+thiserror.workspace = true

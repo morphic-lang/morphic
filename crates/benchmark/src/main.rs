@@ -1,15 +1,15 @@
 #![allow(dead_code)]
 
+use morphic_common::config as cfg;
+use morphic_common::config::ArtifactDir;
+use morphic_common::config::LlvmConfig;
+use morphic_common::config::MlConfig;
+use morphic_common::config::PassOptions;
+use morphic_common::config::RcStrategy;
+use morphic_common::config::SpecializationMode;
+use morphic_common::file_cache::FileCache;
+use morphic_common::progress_ui::ProgressMode;
 use morphic_compiler::build;
-use morphic_compiler::cli;
-use morphic_compiler::cli::ArtifactDir;
-use morphic_compiler::cli::LlvmConfig;
-use morphic_compiler::cli::MlConfig;
-use morphic_compiler::cli::PassOptions;
-use morphic_compiler::cli::RcStrategy;
-use morphic_compiler::cli::SpecializationMode;
-use morphic_compiler::file_cache::FileCache;
-use morphic_compiler::progress_ui::ProgressMode;
 
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
@@ -56,13 +56,13 @@ fn drive_subprocess(
 
 fn compile_ml_sample(
     bench_name: &str,
-    ml_variant: cli::MlConfig,
+    ml_variant: cfg::MlConfig,
     ast: MlAst,
     artifacts: &ArtifactDir,
 ) {
     let ml_variant_str = match ml_variant {
-        cli::MlConfig::Sml => "sml",
-        cli::MlConfig::Ocaml => "ocaml",
+        cfg::MlConfig::Sml => "sml",
+        cfg::MlConfig::Ocaml => "ocaml",
     };
 
     let ast_str = match ast {
@@ -80,7 +80,7 @@ fn compile_ml_sample(
     }
 
     match ml_variant {
-        cli::MlConfig::Sml => {
+        cfg::MlConfig::Sml => {
             let mlton_output = process::Command::new("mlton")
                 .arg("-default-type")
                 .arg("int64")
@@ -96,7 +96,7 @@ fn compile_ml_sample(
                 String::from_utf8_lossy(&mlton_output.stderr)
             );
         }
-        cli::MlConfig::Ocaml => {
+        cfg::MlConfig::Ocaml => {
             let ocaml_output = process::Command::new("ocamlopt")
                 .arg("unix.cmxa")
                 .arg("-O3")
@@ -252,15 +252,15 @@ enum MlAst {
 fn bench_ml_sample(
     iters: (u64, u64),
     bench_name: &str,
-    ml_variant: cli::MlConfig,
+    ml_variant: cfg::MlConfig,
     ast: MlAst,
     artifacts: &ArtifactDir,
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
     let ml_variant_str = match ml_variant {
-        cli::MlConfig::Sml => "sml",
-        cli::MlConfig::Ocaml => "ocaml",
+        cfg::MlConfig::Sml => "sml",
+        cfg::MlConfig::Ocaml => "ocaml",
     };
 
     let ast = match ast {
@@ -332,10 +332,10 @@ fn build_exe(
     let mut files = FileCache::new();
 
     build(
-        cli::BuildConfig {
+        morphic_backend::BuildConfig {
             src_path: src_path.as_ref().to_path_buf(),
-            purity_mode: cli::PurityMode::Checked,
-            profile_syms: vec![cli::SymbolName(format!(
+            purity_mode: cfg::PurityMode::Checked,
+            profile_syms: vec![cfg::SymbolName(format!(
                 "{mod_}{func}",
                 mod_ = profile_mod
                     .iter()
@@ -347,12 +347,12 @@ fn build_exe(
             profile_record_rc: options.profile_record_rc,
             target: {
                 if options.is_native {
-                    cli::TargetConfig::Llvm(LlvmConfig::Native)
+                    cfg::TargetConfig::Llvm(LlvmConfig::Native)
                 } else {
-                    cli::TargetConfig::Ml(MlConfig::Ocaml) // both do the same thing
+                    cfg::TargetConfig::Ml(MlConfig::Ocaml) // both do the same thing
                 }
             },
-            llvm_opt_level: cli::default_llvm_opt_level(),
+            llvm_opt_level: cfg::default_llvm_opt_level(),
             output_path: binary_path.to_owned(),
             artifact_dir: if options.is_native {
                 Some(artifact_dir.clone())

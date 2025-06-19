@@ -1,6 +1,7 @@
-use crate::cli;
-use crate::file_cache::FileCache;
+use crate::cli::{RunConfig, RunMode};
 use crate::pseudoprocess::{ExitStatus, Stdio};
+use morphic_common::config as cfg;
+use morphic_common::file_cache::FileCache;
 use std::path::Path;
 
 // TODO: Add support for testing input/output sequences with "synchronization points," such as
@@ -8,17 +9,17 @@ use std::path::Path;
 // requiring that the program conusmes certain input before the test harness expects output.
 
 pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: AsRef<[u8]>>(
-    mode: cli::RunMode,
-    rc_strat: cli::RcStrategy,
+    mode: RunMode,
+    rc_strat: cfg::RcStrategy,
     path: SrcPath,
     given_in: In,
     expected_out: Out,
     expected_err: Err,
     expected_status: ExitStatus,
 ) {
-    let config = cli::RunConfig {
+    let config = RunConfig {
         src_path: path.as_ref().to_owned(),
-        purity_mode: cli::PurityMode::Checked,
+        purity_mode: cfg::PurityMode::Checked,
         mode,
         rc_strat: rc_strat,
         stdio: Stdio::Piped,
@@ -93,7 +94,7 @@ macro_rules! sample_interpret {
         #[test]
         fn interpret() {
             #[allow(unused_mut, unused_assignments)]
-            let mut rc_strat = crate::cli::RcStrategy::default();
+            let mut rc_strat = crate::cfg::RcStrategy::default();
             #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
@@ -137,7 +138,7 @@ macro_rules! sample_compile {
         #[test]
         fn compile() {
             #[allow(unused_mut, unused_assignments)]
-            let mut rc_strat = crate::cli::RcStrategy::default();
+            let mut rc_strat = crate::cfg::RcStrategy::default();
             #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
@@ -246,7 +247,7 @@ macro_rules! sample {
                 use super::*;
                 sample_rc_strat! {
                     $name $path ;
-                    rc_strat = crate::cli::RcStrategy::Default;
+                    rc_strat = crate::cfg::RcStrategy::Default;
                     $( compile_only = $compile_only ; )?
                     stdin = $stdin ;
                     stdout = $stdout ;
@@ -261,7 +262,7 @@ macro_rules! sample {
                 use super::*;
                 sample_rc_strat! {
                     $name $path ;
-                    rc_strat = crate::cli::RcStrategy::Perceus;
+                    rc_strat = crate::cfg::RcStrategy::Perceus;
                     $( compile_only = $compile_only ; )?
                     stdin = $stdin ;
                     stdout = $stdout ;

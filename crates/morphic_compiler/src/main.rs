@@ -1,6 +1,7 @@
 // When 'lib.rs' exists, cargo treats 'main.rs' as a separate crate
+use morphic_common::file_cache::FileCache;
+use morphic_common::report_error::Reportable;
 use morphic_compiler::cli::Config;
-use morphic_compiler::file_cache::FileCache;
 use morphic_compiler::handle_config;
 
 use std::io;

@@ -1,4 +1,5 @@
 use crate::pseudoprocess::ExitStatus::Failure;
+use morphic_common::lines;
 
 sample! { io "samples/io.mor";
     stdin = "hello\n";

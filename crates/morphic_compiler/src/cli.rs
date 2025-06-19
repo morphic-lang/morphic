@@ -1,28 +1,20 @@
 use clap::builder::{styling, PossibleValuesParser};
 use clap::{Arg, ArgAction, Command};
 use inkwell::OptimizationLevel;
-use std::ffi::{OsStr, OsString};
+use morphic_backend::BuildConfig;
+use morphic_common::config::{
+    default_llvm_opt_level, ArtifactDir, LlvmConfig, MlConfig, PassOptions, PurityMode, RcStrategy,
+    SpecializationMode, SymbolName, TargetConfig,
+};
+use morphic_common::progress_ui::ProgressMode;
+use morphic_common::pseudoprocess::{Stdio, ValgrindConfig};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-
-use crate::progress_ui::ProgressMode;
-use crate::pseudoprocess::{Stdio, ValgrindConfig};
-
-#[derive(Clone, Debug)]
-pub struct ArtifactDir {
-    pub dir_path: PathBuf,
-    pub filename_prefix: PathBuf,
-}
 
 #[derive(Clone, Debug)]
 pub enum RunMode {
     Compile { valgrind: Option<ValgrindConfig> },
     Interpret,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum PurityMode {
-    Checked,
-    Unchecked,
 }
 
 #[derive(Clone, Debug)]
@@ -40,49 +32,10 @@ pub struct RunConfig {
     pub stdio: Stdio,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum LlvmConfig {
-    Native,
-    Wasm,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum MlConfig {
-    Sml,
-    Ocaml,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum TargetConfig {
-    Llvm(LlvmConfig),
-    Ml(MlConfig),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SymbolName(pub String);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SpecializationMode {
-    Specialize,
-    Single,
-}
-
-impl Default for SpecializationMode {
-    fn default() -> Self {
-        SpecializationMode::Specialize
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RcStrategy {
-    Default,
-    Perceus, // Linear type inference. Everything is inferred as owned.
-}
-
-impl Default for RcStrategy {
-    fn default() -> Self {
-        RcStrategy::Default
-    }
+#[derive(Debug)]
+pub enum Config {
+    RunConfig(RunConfig),
+    BuildConfig(BuildConfig),
 }
 
 const RC_STRATS: &[&str] = &["default", "perceus"];
@@ -94,49 +47,6 @@ fn parse_rc_strat(s: &str) -> RcStrategy {
         "perceus" => RcStrategy::Perceus,
         _ => unreachable!(),
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct PassOptions {
-    pub defunc_mode: SpecializationMode,
-    pub rc_strat: RcStrategy,
-}
-
-impl Default for PassOptions {
-    fn default() -> Self {
-        Self {
-            defunc_mode: SpecializationMode::default(),
-            rc_strat: RcStrategy::default(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct BuildConfig {
-    pub src_path: PathBuf,
-    pub purity_mode: PurityMode,
-
-    pub profile_syms: Vec<SymbolName>,
-    pub profile_record_rc: bool,
-
-    pub target: TargetConfig,
-    pub llvm_opt_level: OptimizationLevel,
-
-    pub output_path: PathBuf,
-    pub artifact_dir: Option<ArtifactDir>,
-    pub progress: ProgressMode,
-
-    pub pass_options: PassOptions,
-}
-
-#[derive(Debug)]
-pub enum Config {
-    RunConfig(RunConfig),
-    BuildConfig(BuildConfig),
-}
-
-pub fn default_llvm_opt_level() -> OptimizationLevel {
-    OptimizationLevel::Aggressive
 }
 
 impl Config {
@@ -463,12 +373,5 @@ impl Config {
             Self::RunConfig(_) => &[],
             Self::BuildConfig(build_config) => &build_config.profile_syms,
         }
-    }
-}
-
-impl ArtifactDir {
-    pub fn artifact_path(&self, extension: &(impl AsRef<OsStr> + ?Sized)) -> PathBuf {
-        self.dir_path
-            .join(self.filename_prefix.with_extension(extension))
     }
 }
