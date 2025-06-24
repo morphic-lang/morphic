@@ -1,17 +1,17 @@
 use crate::pseudoprocess::ExitStatus::Failure;
 use morphic_common::lines;
 
-sample! { io "samples/io.mor";
+sample! { io "../../samples/io.mor";
     stdin = "hello\n";
     stdout = "hello\n";
 }
 
-sample! { zero_sized_array "samples/zero_sized_array.mor";
+sample! { zero_sized_array "../../samples/zero_sized_array.mor";
     stdin = "";
     stdout = "Completed all tests\n";
 }
 
-sample! { iter "samples/iter.mor";
+sample! { iter "../../samples/iter.mor";
     stdin = "";
     stdout = lines! [
         "it worked",
@@ -19,12 +19,12 @@ sample! { iter "samples/iter.mor";
     ];
 }
 
-sample! { difference_lists "samples/difference_lists.mor";
+sample! { difference_lists "../../samples/difference_lists.mor";
     stdin = "";
     stdout = "123";
 }
 
-sample! { increment "samples/increment.mor";
+sample! { increment "../../samples/increment.mor";
     stdin = "";
     stdout = lines! [
         "The following should both be 5:",
@@ -33,12 +33,12 @@ sample! { increment "samples/increment.mor";
     ];
 }
 
-sample! { arith "samples/arith.mor";
+sample! { arith "../../samples/arith.mor";
     stdin = "";
     stdout = "Completed all tests\n";
 }
 
-sample! { bool_ops "samples/bool_ops.mor";
+sample! { bool_ops "../../samples/bool_ops.mor";
     stdin = "";
     stdout = lines! [
         "launch_missles",
@@ -61,7 +61,7 @@ sample! { bool_ops "samples/bool_ops.mor";
     ];
 }
 
-sample! { concat_persistent "samples/concat_persistent.mor";
+sample! { concat_persistent "../../samples/concat_persistent.mor";
     stdin = "";
     stdout = lines! [
         "hello",
@@ -69,7 +69,7 @@ sample! { concat_persistent "samples/concat_persistent.mor";
     ];
 }
 
-sample! { index_tree "samples/index_tree.mor";
+sample! { index_tree "../../samples/index_tree.mor";
     stdin = "";
     stdout = lines! [
         "Original tree:",
@@ -120,7 +120,7 @@ sample! { index_tree "samples/index_tree.mor";
     ];
 }
 
-sample! { nested "samples/nested.mor";
+sample! { nested "../../samples/nested.mor";
     stdin = "";
     stdout = lines! [
         "hello",
@@ -132,7 +132,7 @@ sample! { nested "samples/nested.mor";
     ];
 }
 
-sample! { order_of_eval "samples/order_of_eval.mor";
+sample! { order_of_eval "../../samples/order_of_eval.mor";
     stdin = "";
     stdout = lines! [
         // <&
@@ -178,12 +178,12 @@ sample! { order_of_eval "samples/order_of_eval.mor";
     ];
 }
 
-sample! { pipe "samples/pipe.mor";
+sample! { pipe "../../samples/pipe.mor";
     stdin = "";
     stdout = "Completed all tests\n";
 }
 
-sample! { mutual_tail_rec "samples/mutual_tail_rec.mor";
+sample! { mutual_tail_rec "../../samples/mutual_tail_rec.mor";
     stdin = "";
     stdout = lines! [
         "1000 is even",
@@ -191,7 +191,7 @@ sample! { mutual_tail_rec "samples/mutual_tail_rec.mor";
     ];
 }
 
-sample! { mutate "samples/mutate.mor";
+sample! { mutate "../../samples/mutate.mor";
     stdin = "";
     stdout = lines! [
         "vvvvvvv",
@@ -225,19 +225,19 @@ sample! { mutate "samples/mutate.mor";
     ];
 }
 
-sample! { recursive_array "samples/recursive_array.mor";
+sample! { recursive_array "../../samples/recursive_array.mor";
     stdin = "";
     stdout = "";
 }
 
-sample! { zero_case_variant "samples/zero_case_variant.mor";
+sample! { zero_case_variant "../../samples/zero_case_variant.mor";
     stdin = "";
     stdout = "";
 }
 
 // Samples expected to fail at runtime:
 
-sample! { item_oob1 "samples/run-fail/item_oob1.mor";
+sample! { item_oob1 "../../samples/run-fail/item_oob1.mor";
     stdin = "";
     stdout = "";
     stderr = "index out of bounds: attempt to access item 3 of array with length 3\n";
@@ -245,7 +245,7 @@ sample! { item_oob1 "samples/run-fail/item_oob1.mor";
     leak_check = false;
 }
 
-sample! { item_oob2 "samples/run-fail/item_oob2.mor";
+sample! { item_oob2 "../../samples/run-fail/item_oob2.mor";
     stdin = "";
     stdout = "";
     stderr = "index out of bounds: attempt to access item -1 of array with length 3\n";
@@ -253,7 +253,7 @@ sample! { item_oob2 "samples/run-fail/item_oob2.mor";
     leak_check = false;
 }
 
-sample! { pop_empty "samples/run-fail/pop_empty.mor";
+sample! { pop_empty "../../samples/run-fail/pop_empty.mor";
     stdin = "";
     stdout = "";
     stderr = "pop: empty array\n";
@@ -261,7 +261,7 @@ sample! { pop_empty "samples/run-fail/pop_empty.mor";
     leak_check = false;
 }
 
-sample! { div_zero_byte "samples/run-fail/div_zero_byte.mor";
+sample! { div_zero_byte "../../samples/run-fail/div_zero_byte.mor";
     stdin = "";
     stdout = "";
     stderr = "panicked due to division by zero\n";
@@ -269,7 +269,7 @@ sample! { div_zero_byte "samples/run-fail/div_zero_byte.mor";
     leak_check = false;
 }
 
-sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
+sample! { div_zero_int "../../samples/run-fail/div_zero_int.mor";
     stdin = "";
     stdout = "";
     stderr = "panicked due to division by zero\n";
@@ -277,7 +277,7 @@ sample! { div_zero_int "samples/run-fail/div_zero_int.mor";
     leak_check = false;
 }
 
-sample! { panic "samples/run-fail/panic.mor";
+sample! { panic "../../samples/run-fail/panic.mor";
     stdin = "";
     stdout = "";
     stderr = "Goodbye!\n";
@@ -285,7 +285,7 @@ sample! { panic "samples/run-fail/panic.mor";
     leak_check = false;
 }
 
-sample! { panic_persistent "samples/run-fail/panic_persistent.mor";
+sample! { panic_persistent "../../samples/run-fail/panic_persistent.mor";
     stdin = "";
     stdout = "";
     stderr = "Goodbye";
@@ -295,28 +295,28 @@ sample! { panic_persistent "samples/run-fail/panic_persistent.mor";
 
 // Test correctness of benchmarking samples
 
-sample! { bench_primes "samples/bench_primes.mor";
+sample! { bench_primes "../../samples/bench_primes.mor";
     compile_only = true;
     // first number is iteration count
     stdin = "5\n100\n";
     stdout = "There are 25 primes <= 100\n";
 }
 
-sample! { bench_primes_iter "samples/bench_primes_iter.mor";
+sample! { bench_primes_iter "../../samples/bench_primes_iter.mor";
     compile_only = true;
     // first number is iteration count
     stdin = "5\n100\n";
     stdout = "There are 25 primes <= 100\n";
 }
 
-sample! { bench_primes_sieve "samples/bench_primes_sieve.mor";
+sample! { bench_primes_sieve "../../samples/bench_primes_sieve.mor";
     compile_only = true;
     // first number is iteration count
     stdin = "5\n10000\n";
     stdout = include_str!("../../../../samples/expected-output/primes_10000.txt");
 }
 
-sample! { bench_words_trie "samples/bench_words_trie.mor";
+sample! { bench_words_trie "../../samples/bench_words_trie.mor";
     compile_only = true;
     stdin = concat!(
         "2\n", // first number is iteration count
@@ -328,7 +328,7 @@ sample! { bench_words_trie "samples/bench_words_trie.mor";
     stdout = include_str!("../../../../samples/expected-output/word_count_answers_tiny.txt");
 }
 
-sample! { bench_unify "samples/bench_unify.mor";
+sample! { bench_unify "../../samples/bench_unify.mor";
     compile_only = true;
     stdin = concat!(
         "2\n", // first number is iteration count

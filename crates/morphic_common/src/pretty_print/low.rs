@@ -32,7 +32,11 @@ impl Context {
     }
 }
 
-fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
+fn write_type(
+    w: &mut dyn Write,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    type_: &Type,
+) -> io::Result<()> {
     match type_ {
         Type::Bool => write![w, "Bool"],
         Type::Num(NumType::Byte) => write![w, "Byte"],
@@ -40,12 +44,12 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
         Type::Num(NumType::Float) => write![w, "Float"],
         Type::Array(item_type) => {
             write![w, "Array ("]?;
-            write_type(w, item_type)?;
+            write_type(w, type_renderer, item_type)?;
             write![w, ")"]
         }
         Type::HoleArray(item_type) => {
             write![w, "HoleArray ("]?;
-            write_type(w, item_type)?;
+            write_type(w, type_renderer, item_type)?;
             write![w, ")"]
         }
         Type::Tuple(types) => {
@@ -53,15 +57,15 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
                 write![w, "()"]?;
             } else if types.len() == 1 {
                 write![w, "("]?;
-                write_type(w, &types[0])?;
+                write_type(w, type_renderer, &types[0])?;
                 write![w, ",)"]?
             } else {
                 write![w, "("]?;
                 for item_type in &types[..types.len() - 1] {
-                    write_type(w, item_type)?;
+                    write_type(w, type_renderer, item_type)?;
                     write![w, ", "]?;
                 }
-                write_type(w, &types[types.len() - 1])?;
+                write_type(w, type_renderer, &types[types.len() - 1])?;
                 write![w, ")"]?;
             }
             Ok(())
@@ -72,25 +76,25 @@ fn write_type(w: &mut dyn Write, type_: &Type) -> io::Result<()> {
                 write![w, "{{}}"]?
             } else if types.len() == 1 {
                 write![w, "{{"]?;
-                write_type(w, &types[0])?;
+                write_type(w, type_renderer, &types[0])?;
                 write![w, ",}}"]?
             } else {
                 write![w, "{{"]?;
                 for item_type in &types[..types.len() - 1] {
-                    write_type(w, item_type)?;
+                    write_type(w, type_renderer, item_type)?;
                     write![w, ", "]?;
                 }
-                write_type(w, &types[types.len() - 1])?;
+                write_type(w, type_renderer, &types[types.len() - 1])?;
                 write![w, "}}"]?;
             }
             Ok(())
         }
         Type::Boxed(box_type) => {
             write![w, "Box ("]?;
-            write_type(w, box_type)?;
+            write_type(w, type_renderer, box_type)?;
             write![w, ")"]
         }
-        Type::Custom(type_id) => write![w, "~{}", type_id.0],
+        Type::Custom(type_id) => write![w, "{}", type_renderer.render(type_id)],
     }
 }
 
@@ -109,6 +113,7 @@ fn write_double(
 
 fn write_expr(
     w: &mut dyn Write,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
     tail_renderer: &TailFuncRenderer<CustomFuncId>,
     func_renderer: &FuncRenderer<TailFuncId>,
     expr: &Expr,
@@ -134,11 +139,25 @@ fn write_expr(
             write![w, "if %{} {{", local_id.0]?;
             let new_context = context.add_indent();
             new_context.writeln(w)?;
-            write_expr(w, tail_renderer, func_renderer, then_branch, new_context)?;
+            write_expr(
+                w,
+                type_renderer,
+                tail_renderer,
+                func_renderer,
+                then_branch,
+                new_context,
+            )?;
             context.writeln(w)?;
             write![w, "}} else {{"]?;
             new_context.writeln(w)?;
-            write_expr(w, tail_renderer, func_renderer, else_branch, new_context)?;
+            write_expr(
+                w,
+                type_renderer,
+                tail_renderer,
+                func_renderer,
+                else_branch,
+                new_context,
+            )?;
             context.writeln(w)?;
             write![w, "}}"]?;
             Ok(())
@@ -150,10 +169,11 @@ fn write_expr(
                 write_metadata(w, new_context.indentation, metadata)?;
                 new_context.writeln(w)?;
                 write![w, "%{}: ", context.num_locals + index]?;
-                write_type(w, binding_type)?;
+                write_type(w, type_renderer, binding_type)?;
                 write![w, " = "]?;
                 write_expr(
                     w,
+                    type_renderer,
                     tail_renderer,
                     func_renderer,
                     binding_expr,
@@ -247,6 +267,7 @@ fn write_expr(
 
 fn write_func(
     w: &mut dyn Write,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
     tail_renderer: &TailFuncRenderer<CustomFuncId>,
     func: &FuncDef,
     func_id: CustomFuncId,
@@ -254,9 +275,9 @@ fn write_func(
     let func_renderer = FuncRenderer::from_symbols(&func.tail_func_symbols);
 
     write![w, "func {} (%0: ", tail_renderer.render(func_id)]?;
-    write_type(w, &func.arg_type)?;
+    write_type(w, type_renderer, &func.arg_type)?;
     write![w, "): "]?;
-    write_type(w, &func.ret_type)?;
+    write_type(w, type_renderer, &func.ret_type)?;
     write![w, " ="]?;
 
     let context = Context {
@@ -266,7 +287,14 @@ fn write_func(
     let context = context.add_indent();
 
     context.writeln(w)?;
-    write_expr(w, tail_renderer, &func_renderer, &func.body, context)?;
+    write_expr(
+        w,
+        type_renderer,
+        tail_renderer,
+        &func_renderer,
+        &func.body,
+        context,
+    )?;
     writeln![w]?;
 
     if func.tail_funcs.len() > 0 {
@@ -274,12 +302,13 @@ fn write_func(
         for (tail_func_id, tail_func) in &func.tail_funcs {
             context.writeln(w)?;
             write![w, "tail func @{} (%0: ", func_renderer.render(tail_func_id)]?;
-            write_type(w, &tail_func.arg_type)?;
+            write_type(w, type_renderer, &tail_func.arg_type)?;
             write![w, ") ="]?;
             let sub_context = context.add_indent();
             sub_context.writeln(w)?;
             write_expr(
                 w,
+                type_renderer,
                 tail_renderer,
                 &func_renderer,
                 &tail_func.body,
@@ -300,7 +329,7 @@ fn write_typedef(
     type_id: CustomTypeId,
 ) -> io::Result<()> {
     write![w, "custom type {} = ", type_renderer.render(type_id)]?;
-    write_type(w, typedef)?;
+    write_type(w, type_renderer, typedef)?;
     writeln![w]?;
     Ok(())
 }
@@ -314,7 +343,7 @@ pub fn write_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
     }
     writeln![w]?;
     for (i, func) in &program.funcs {
-        write_func(w, &func_renderer, func, i)?;
+        write_func(w, &type_renderer, &func_renderer, func, i)?;
     }
     Ok(())
 }

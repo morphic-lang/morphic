@@ -1,36 +1,27 @@
-use crate::llvm_gen::tal::Tal;
+use crate::llvm_gen::fountain_pen::Context;
 use crate::llvm_gen::{Globals, Instances};
-use inkwell::targets::TargetData;
-use inkwell::types::BasicTypeEnum;
-use inkwell::values::FunctionValue;
 
-pub trait ArrayImpl<'a> {
-    fn define<'b>(
-        &self,
-        globals: &Globals<'a, 'b>,
-        instances: &mut Instances<'a>,
-        target: &'b TargetData,
-        tal: &Tal<'a>,
-    );
+pub trait ArrayImpl<T: Context> {
+    fn define(&self, globals: &Globals<T>, instances: &mut Instances<T>);
 
-    fn item_type(&self) -> BasicTypeEnum<'a>;
-    fn array_type(&self) -> BasicTypeEnum<'a>;
-    fn hole_array_type(&self) -> BasicTypeEnum<'a>;
+    fn item_type(&self) -> T::Type;
+    fn array_type(&self) -> T::Type;
+    fn hole_array_type(&self) -> T::Type;
 
-    fn new(&self) -> FunctionValue<'a>;
-    fn get(&self) -> FunctionValue<'a>;
-    fn extract(&self) -> FunctionValue<'a>;
-    fn len(&self) -> FunctionValue<'a>;
-    fn push(&self) -> FunctionValue<'a>;
-    fn pop(&self) -> FunctionValue<'a>;
-    fn replace(&self) -> FunctionValue<'a>;
-    fn reserve(&self) -> FunctionValue<'a>;
+    fn new(&self) -> T::FunctionValue;
+    fn get(&self) -> T::FunctionValue;
+    fn extract(&self) -> T::FunctionValue;
+    fn len(&self) -> T::FunctionValue;
+    fn push(&self) -> T::FunctionValue;
+    fn pop(&self) -> T::FunctionValue;
+    fn replace(&self) -> T::FunctionValue;
+    fn reserve(&self) -> T::FunctionValue;
 
-    fn retain_array(&self) -> FunctionValue<'a>;
-    fn derived_retain_array(&self) -> FunctionValue<'a>;
-    fn release_array(&self) -> FunctionValue<'a>;
+    fn retain_array(&self) -> T::FunctionValue;
+    fn derived_retain_array(&self) -> T::FunctionValue;
+    fn release_array(&self) -> T::FunctionValue;
 
-    fn retain_hole(&self) -> FunctionValue<'a>;
-    fn derived_retain_hole(&self) -> FunctionValue<'a>;
-    fn release_hole(&self) -> FunctionValue<'a>;
+    fn retain_hole(&self) -> T::FunctionValue;
+    fn derived_retain_hole(&self) -> T::FunctionValue;
+    fn release_hole(&self) -> T::FunctionValue;
 }

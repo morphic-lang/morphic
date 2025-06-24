@@ -1,30 +1,25 @@
 use crate::data::low_ast as low;
 use crate::data::profile as prof;
 use crate::data::tail_rec_ast as tail;
-use crate::llvm_gen::fountain_pen::{scope, Scope};
-use crate::llvm_gen::tal::Tal;
+use crate::llvm_gen::fountain_pen::{Context, Scope, Tal};
 use id_collections::IdVec;
-use inkwell::context::Context;
-use inkwell::module::{Linkage, Module};
-use inkwell::targets::TargetData;
-use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue};
 use morphic_common::util::iter::try_zip_eq;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug)]
-pub struct ProfilePointDecls<'a> {
-    pub counters: BTreeMap<low::CustomFuncId, ProfilePointCounters<'a>>,
+#[derive(Clone)]
+pub struct ProfilePointDecls<T: Context> {
+    pub counters: BTreeMap<low::CustomFuncId, ProfilePointCounters<T>>,
     pub skipped_tail_rec: BTreeSet<(low::CustomFuncId, tail::TailFuncId)>,
 }
 
-#[derive(Clone, Debug)]
-pub struct ProfilePointCounters<'a> {
+#[derive(Clone)]
+pub struct ProfilePointCounters<T: Context> {
     // All of these globals are of type i64
-    pub total_calls: GlobalValue<'a>,
-    pub total_clock_nanos: GlobalValue<'a>,
-    pub total_retain_count: Option<GlobalValue<'a>>,
-    pub total_release_count: Option<GlobalValue<'a>>,
-    pub total_rc1_count: Option<GlobalValue<'a>>,
+    pub total_calls: T::GlobalValue,
+    pub total_clock_nanos: T::GlobalValue,
+    pub total_retain_count: Option<T::GlobalValue>,
+    pub total_release_count: Option<T::GlobalValue>,
+    pub total_rc1_count: Option<T::GlobalValue>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -34,12 +29,12 @@ enum Format {
 }
 
 #[derive(Clone, Debug)]
-enum Json<'a> {
-    Array(Format, Vec<Json<'a>>),
-    Object(Format, Vec<(&'a str, Json<'a>)>),
+enum Json<'a, T: Context> {
+    Array(Format, Vec<Json<'a, T>>),
+    Object(Format, Vec<(&'a str, Json<'a, T>)>),
     ConstString(String),
     ConstU64(u64),
-    DynU64(BasicValueEnum<'a>),
+    DynU64(T::Value),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,12 +59,12 @@ impl FormatContext {
     }
 
     // generate a newline if we're in multiline mode.
-    fn gen_opt_newline<'a, 'b>(&self, tal: &Tal<'a>, s: &Scope<'a, 'b>) {
+    fn gen_opt_newline<T: Context>(&self, s: &T::Scope) {
         match self {
             FormatContext::Indent(level) => {
                 let mut sep = "\n".to_owned();
                 sep.push_str(&"  ".repeat(*level as usize));
-                s.call_void(tal.prof_report_write_string, &[s.str(&sep)]);
+                s.call_void(s.context().tal().prof_report_write_string(), &[s.str(&sep)]);
             }
 
             FormatContext::SingleLine => {}
@@ -78,106 +73,100 @@ impl FormatContext {
 
     // generate a whitespace separator.
     // either an indented newline, or a single space.
-    fn gen_ws_sep<'a, 'b>(&self, tal: &Tal<'a>, s: &Scope<'a, 'b>) {
+    fn gen_ws_sep<T: Context>(&self, s: &T::Scope) {
         match self {
             FormatContext::Indent(_) => {
-                self.gen_opt_newline(tal, s);
+                self.gen_opt_newline::<T>(s);
             }
 
             FormatContext::SingleLine => {
-                s.call_void(tal.prof_report_write_string, &[s.str(" ")]);
+                s.call_void(s.context().tal().prof_report_write_string(), &[s.str(" ")]);
             }
         }
     }
 }
 
-impl<'a> Json<'a> {
-    fn gen_serialize_rec<'b>(&self, tal: &Tal<'a>, s: &Scope<'a, 'b>, ctx: FormatContext) {
+impl<'a, T: Context> Json<'a, T> {
+    fn gen_serialize_rec(&self, s: &T::Scope, ctx: FormatContext) {
+        let prof_report_write_string = s.context().tal().prof_report_write_string();
         match self {
             Json::Array(format, items) => {
                 let this_ctx = ctx.apply(format);
                 let sub_ctx = this_ctx.indent();
-                s.call_void(tal.prof_report_write_string, &[s.str("[")]);
+                s.call_void(prof_report_write_string, &[s.str("[")]);
                 if items.len() > 0 {
-                    sub_ctx.gen_opt_newline(tal, s);
+                    sub_ctx.gen_opt_newline::<T>(s);
                 }
                 for (i, item) in items.iter().enumerate() {
-                    item.gen_serialize_rec(tal, s, sub_ctx);
+                    item.gen_serialize_rec(s, sub_ctx);
                     if i + 1 < items.len() {
-                        s.call_void(tal.prof_report_write_string, &[s.str(",")]);
-                        sub_ctx.gen_ws_sep(tal, s);
+                        s.call_void(prof_report_write_string, &[s.str(",")]);
+                        sub_ctx.gen_ws_sep::<T>(s);
                     } else {
-                        this_ctx.gen_opt_newline(tal, s);
+                        this_ctx.gen_opt_newline::<T>(s);
                     }
                 }
-                s.call_void(tal.prof_report_write_string, &[s.str("]")]);
+                s.call_void(prof_report_write_string, &[s.str("]")]);
             }
 
             Json::Object(format, items) => {
                 let this_ctx = ctx.apply(format);
                 let sub_ctx = this_ctx.indent();
-                s.call_void(tal.prof_report_write_string, &[s.str("{")]);
+                s.call_void(prof_report_write_string, &[s.str("{")]);
                 if items.len() > 0 {
-                    sub_ctx.gen_opt_newline(tal, s);
+                    sub_ctx.gen_opt_newline::<T>(s);
                 }
                 for (i, (key, val)) in items.iter().enumerate() {
                     s.call_void(
-                        tal.prof_report_write_string,
+                        prof_report_write_string,
                         &[s.str(&format!("{}: ", json::stringify(key as &str)))],
                     );
-                    val.gen_serialize_rec(tal, s, sub_ctx);
+                    val.gen_serialize_rec(s, sub_ctx);
                     if i + 1 < items.len() {
-                        s.call_void(tal.prof_report_write_string, &[s.str(",")]);
-                        sub_ctx.gen_ws_sep(tal, s);
+                        s.call_void(prof_report_write_string, &[s.str(",")]);
+                        sub_ctx.gen_ws_sep::<T>(s);
                     } else {
-                        this_ctx.gen_opt_newline(tal, s);
+                        this_ctx.gen_opt_newline::<T>(s);
                     }
                 }
-                s.call_void(tal.prof_report_write_string, &[s.str("}")]);
+                s.call_void(prof_report_write_string, &[s.str("}")]);
             }
 
             Json::ConstString(string) => {
                 s.call_void(
-                    tal.prof_report_write_string,
+                    prof_report_write_string,
                     &[s.str(&json::stringify(string as &str))],
                 );
             }
 
             Json::ConstU64(val) => {
-                s.call_void(tal.prof_report_write_string, &[s.str(&val.to_string())]);
+                s.call_void(prof_report_write_string, &[s.str(&val.to_string())]);
             }
 
             Json::DynU64(val) => {
-                s.call_void(tal.prof_report_write_u64, &[*val]);
+                s.call_void(s.context().tal().prof_report_write_u64(), &[*val]);
             }
         }
     }
 
-    fn gen_serialize<'b>(&self, tal: &Tal<'a>, s: &Scope<'a, 'b>) {
-        self.gen_serialize_rec(tal, s, FormatContext::Indent(0));
+    fn gen_serialize(&self, s: &T::Scope) {
+        self.gen_serialize_rec(s, FormatContext::Indent(0));
     }
 }
 
-pub fn define_prof_report_fn<'a>(
-    context: &'a Context,
-    target: &TargetData,
-    module: &Module<'a>,
-    tal: &Tal<'a>,
+pub fn define_prof_report_fn<T: Context>(
+    context: &T,
     profile_points: &IdVec<prof::ProfilePointId, prof::ProfilePoint>,
-    profile_point_decls: &IdVec<prof::ProfilePointId, ProfilePointDecls<'a>>,
-) -> FunctionValue<'a> {
-    let result = module.add_function(
-        "prof_report",
-        context.void_type().fn_type(&[], false),
-        Some(Linkage::Internal),
-    );
+    profile_point_decls: &IdVec<prof::ProfilePointId, ProfilePointDecls<T>>,
+) -> T::FunctionValue {
+    let result = context.declare_func("prof_report", &[], None);
 
     // load-bearing '&' due to closure shenanigans
-    let s = &scope(result, context, target);
+    let s = &context.scope(result);
 
-    s.call_void(tal.prof_report_init, &[]);
+    s.call_void(context.tal().prof_report_init(), &[]);
 
-    let to_write = {
+    let to_write: Json<'_, T> = {
         use Format::*;
         use Json::*;
 
@@ -186,7 +175,7 @@ pub fn define_prof_report_fn<'a>(
             vec![
                 (
                     "clock_res_nanos",
-                    DynU64(s.call(tal.prof_clock_res_nanos, &[])),
+                    DynU64(s.call(context.tal().prof_clock_res_nanos(), &[])),
                 ),
                 (
                     "timings",
@@ -233,20 +222,16 @@ pub fn define_prof_report_fn<'a>(
                                                                         "total_calls",
                                                                         DynU64(s.ptr_get(
                                                                             s.i64_t(),
-                                                                            counters
-                                                                                .total_calls
-                                                                                .as_pointer_value()
-                                                                                .into(),
+                                                                            context.global_value_as_pointer(counters
+                                                                                .total_calls)
                                                                         )),
                                                                     ),
                                                                     (
                                                                         "total_clock_nanos",
                                                                         DynU64(s.ptr_get(
                                                                             s.i64_t(),
-                                                                            counters
-                                                                                .total_clock_nanos
-                                                                                .as_pointer_value()
-                                                                                .into(),
+                                                                            context.global_value_as_pointer(counters
+                                                                                .total_clock_nanos)
                                                                         )),
                                                                     ),
                                                                 ];
@@ -258,9 +243,7 @@ pub fn define_prof_report_fn<'a>(
                                                                         "total_retain_count",
                                                                         DynU64(s.ptr_get(
                                                                             s.i64_t(),
-                                                                            total_retain_count
-                                                                                .as_pointer_value()
-                                                                                .into(),
+                                                                            context.global_value_as_pointer(total_retain_count)
                                                                         )),
                                                                     ));
                                                                 }
@@ -272,9 +255,7 @@ pub fn define_prof_report_fn<'a>(
                                                                         "total_release_count",
                                                                         DynU64(s.ptr_get(
                                                                             s.i64_t(),
-                                                                            total_release_count
-                                                                                .as_pointer_value()
-                                                                                .into(),
+                                                                            context.global_value_as_pointer(total_release_count)
                                                                         )),
                                                                     ));
 
@@ -285,9 +266,7 @@ pub fn define_prof_report_fn<'a>(
                                                                         "total_rc1_count",
                                                                         DynU64(s.ptr_get(
                                                                             s.i64_t(),
-                                                                            total_rc1_count
-                                                                                .as_pointer_value()
-                                                                                .into(),
+                                                                            context.global_value_as_pointer(total_rc1_count)
                                                                         )),
                                                                     ));
                                                                     }
@@ -347,9 +326,9 @@ pub fn define_prof_report_fn<'a>(
         )
     };
 
-    to_write.gen_serialize(tal, &s);
+    to_write.gen_serialize(&s);
 
-    s.call_void(tal.prof_report_done, &[]);
+    s.call_void(context.tal().prof_report_done(), &[]);
 
     s.ret_void();
 

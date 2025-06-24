@@ -28,7 +28,7 @@ clap = { version = "4.4.10", features = ["color", "string"] }
 cc = "1.0.83"
 tempfile = "3.8.1"
 crossbeam-channel = "0.5.8"
-inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "776d78712b6d8180d6bbad55467e6307cd58aeb8", features = [
+inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "b8d81bfe7224d1ee689a8b777d6f5ba9a869b98b", features = [
     "llvm16-0",
 ] }
 ansi_term = "0.12.1"
