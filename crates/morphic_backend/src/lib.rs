@@ -12,9 +12,9 @@ mod tail_call_elim;
 mod type_check_borrows;
 mod typecheck_guarded;
 
+pub mod code_gen;
 pub mod error;
 pub mod interpreter;
-pub mod llvm_gen;
 
 use crate::error::Error;
 use morphic_common::{config as cfg, data, pretty_print, progress_ui};

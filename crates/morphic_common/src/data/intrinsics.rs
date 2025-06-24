@@ -3,9 +3,9 @@ use crate::data::purity::Purity;
 
 // To add an arithmetic intrinsic:
 // 1. Add it to this file
-// 2. Add its user-facing name and type signature to src/intrinsic_config.rs
-// 3. Add support for it in src/interpreter.rs
-// 4. Add support for it in src/llvm_gen.rs (NOTE: to do this you may need to declare a new LLVM
+// 2. Add its user-facing name and type signature to intrinsic_config.rs
+// 3. Add support for it in interpreter.rs
+// 4. Add support for it in codegen (NOTE: to do this you may need to declare a new LLVM
 //    intrinsic in `src/builtins/tal.rs`)
 
 // Non-arithmetic intrinsics (that is, intrinsics which require nontrivial handling in alias

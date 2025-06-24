@@ -5,7 +5,7 @@ mod test;
 
 pub mod cli;
 
-use morphic_backend::{compile_to_low_ast, interpreter, llvm_gen, BuildConfig};
+use morphic_backend::{compile_to_low_ast, interpreter, code_gen, BuildConfig};
 use morphic_common::config as cfg;
 use morphic_common::report_error::Reportable;
 use morphic_common::{file_cache, progress_ui, pseudoprocess};
@@ -115,7 +115,7 @@ pub fn run(
 
     match config.mode {
         cli::RunMode::Compile { valgrind } => {
-            Ok(llvm_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::BackendError)?)
+            Ok(code_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::BackendError)?)
         }
         cli::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
     }
@@ -142,7 +142,7 @@ pub fn build(config: BuildConfig, files: &mut file_cache::FileCache) -> Result<(
                 &config.pass_options,
             )
             .map_err(ErrorKind::BackendError)?;
-            Ok(llvm_gen::build(lowered, &config).map_err(ErrorKind::BackendError)?)
+            Ok(code_gen::build(lowered, &config).map_err(ErrorKind::BackendError)?)
         }
         cfg::TargetConfig::Ml(_) => match config.artifact_dir {
             None => Err(Error {

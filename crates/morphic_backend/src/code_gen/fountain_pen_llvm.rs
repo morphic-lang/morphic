@@ -1,4 +1,4 @@
-use crate::llvm_gen::{fountain_pen, gen_program, Error};
+use crate::code_gen::{fountain_pen, gen_program, Error};
 use find_clang::find_default_clang;
 use id_collections::{id_type, IdVec};
 use inkwell::basic_block::BasicBlock;
@@ -1627,7 +1627,6 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         self.builder.position_at_end(unreachable_block);
     }
 
-    // TODO: Should we consolidate this with similar code in 'llvm_gen.rs'?
     fn alloca(&self, ty: Type<'a>) -> Value<'a> {
         let entry = self.func.0.get_first_basic_block().unwrap();
 

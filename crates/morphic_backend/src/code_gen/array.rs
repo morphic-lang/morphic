@@ -1,5 +1,5 @@
-use crate::llvm_gen::fountain_pen::Context;
-use crate::llvm_gen::{Globals, Instances};
+use crate::code_gen::fountain_pen::Context;
+use crate::code_gen::{Globals, Instances};
 
 pub trait ArrayImpl<T: Context> {
     fn define(&self, globals: &Globals<T>, instances: &mut Instances<T>);

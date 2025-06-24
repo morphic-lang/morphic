@@ -1,7 +1,7 @@
 use crate::data::mode_annot_ast::Mode;
 use crate::data::rc_specialized_ast::ModeScheme;
-use crate::llvm_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
-use crate::llvm_gen::{gen_rc_op, low_type_in_context, DerivedRcOp, Globals, Instances};
+use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
+use crate::code_gen::{gen_rc_op, low_type_in_context, DerivedRcOp, Globals, Instances};
 
 const F_REFCOUNT: u32 = 0; // has type u64
 const F_ITEM: u32 = 1; // has type T

@@ -11,16 +11,16 @@ mod zero_sized_array;
 #[cfg(test)]
 mod test;
 
-use crate::error::Error as CrateError;
-use crate::llvm_gen::array::ArrayImpl;
-use crate::llvm_gen::cow_array::{cow_array_t, cow_hole_array_t, CowArrayImpl, CowArrayIoImpl};
-use crate::llvm_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
-use crate::llvm_gen::fountain_pen_llvm::{compile_to_executable, ArtifactPaths};
-use crate::llvm_gen::prof_report::{
+use crate::code_gen::array::ArrayImpl;
+use crate::code_gen::cow_array::{cow_array_t, cow_hole_array_t, CowArrayImpl, CowArrayIoImpl};
+use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
+use crate::code_gen::fountain_pen_llvm::{compile_to_executable, ArtifactPaths};
+use crate::code_gen::prof_report::{
     define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
 };
-use crate::llvm_gen::rc::{rc_ptr_t, RcBoxBuiltin};
-use crate::llvm_gen::zero_sized_array::ZeroSizedArrayImpl;
+use crate::code_gen::rc::{rc_ptr_t, RcBoxBuiltin};
+use crate::code_gen::zero_sized_array::ZeroSizedArrayImpl;
+use crate::error::Error as CrateError;
 use crate::pretty_print::utils::TailFuncRenderer;
 use crate::BuildConfig;
 use id_collections::IdVec;
@@ -1044,13 +1044,13 @@ pub fn run(
     let obj_path = tempfile::Builder::new()
         .suffix(".o")
         .tempfile_in("")
-        .map_err(|err| CrateError::LlvmGenFailed(Error::CouldNotCreateTempFile(err)))?
+        .map_err(|err| CrateError::CodeGenFailed(Error::CouldNotCreateTempFile(err)))?
         .into_temp_path();
 
     let output_path = tempfile::Builder::new()
         .prefix(".tmp-exe-")
         .tempfile_in("")
-        .map_err(|err| CrateError::LlvmGenFailed(Error::CouldNotCreateTempFile(err)))?
+        .map_err(|err| CrateError::CodeGenFailed(Error::CouldNotCreateTempFile(err)))?
         .into_temp_path();
 
     compile_to_executable(
@@ -1066,12 +1066,12 @@ pub fn run(
         },
         progress_ui::ProgressMode::Hidden,
     )
-    .map_err(CrateError::LlvmGenFailed)?;
+    .map_err(CrateError::CodeGenFailed)?;
 
     std::mem::drop(obj_path);
 
     spawn_process(stdio, output_path, valgrind)
-        .map_err(|err| CrateError::LlvmGenFailed(Error::CouldNotSpawnChild(err)))
+        .map_err(|err| CrateError::CodeGenFailed(Error::CouldNotSpawnChild(err)))
 }
 
 pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result<(), CrateError> {
@@ -1095,12 +1095,12 @@ pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result
             },
             config.progress,
         )
-        .map_err(CrateError::LlvmGenFailed)
+        .map_err(CrateError::CodeGenFailed)
     } else {
         let obj_path = tempfile::Builder::new()
             .suffix(".o")
             .tempfile_in("")
-            .map_err(|err| CrateError::LlvmGenFailed(Error::CouldNotCreateTempFile(err)))?
+            .map_err(|err| CrateError::CodeGenFailed(Error::CouldNotCreateTempFile(err)))?
             .into_temp_path();
 
         compile_to_executable(
@@ -1116,6 +1116,6 @@ pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result
             },
             config.progress,
         )
-        .map_err(CrateError::LlvmGenFailed)
+        .map_err(CrateError::CodeGenFailed)
     }
 }

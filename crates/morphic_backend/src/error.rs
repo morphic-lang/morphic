@@ -1,4 +1,4 @@
-use crate::llvm_gen;
+use crate::code_gen;
 use morphic_common::file_cache;
 use morphic_common::report_error::Reportable;
 use std::io;
@@ -6,7 +6,7 @@ use std::io;
 #[derive(Debug)]
 pub enum Error {
     WriteIrFailed(io::Error),
-    LlvmGenFailed(llvm_gen::Error),
+    CodeGenFailed(code_gen::Error),
 }
 
 impl Reportable for Error {
@@ -19,7 +19,7 @@ impl Reportable for Error {
                 "Could not write intermediate representation artifacts: {}",
                 err
             ),
-            LlvmGenFailed(err) => writeln!(dest, "{}", err),
+            CodeGenFailed(err) => writeln!(dest, "{}", err),
         }
     }
 

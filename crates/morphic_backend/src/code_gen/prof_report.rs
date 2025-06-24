@@ -1,7 +1,7 @@
 use crate::data::low_ast as low;
 use crate::data::profile as prof;
 use crate::data::tail_rec_ast as tail;
-use crate::llvm_gen::fountain_pen::{Context, Scope, Tal};
+use crate::code_gen::fountain_pen::{Context, Scope, Tal};
 use id_collections::IdVec;
 use morphic_common::util::iter::try_zip_eq;
 use std::collections::{BTreeMap, BTreeSet};
