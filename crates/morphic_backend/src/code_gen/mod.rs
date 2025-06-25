@@ -3,7 +3,9 @@
 mod array;
 mod cow_array;
 mod fountain_pen;
+mod fountain_pen_java;
 mod fountain_pen_llvm;
+mod java_builder;
 mod prof_report;
 mod rc;
 mod zero_sized_array;
