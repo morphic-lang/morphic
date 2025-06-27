@@ -1,1 +1,0 @@
-docker build -t morphic --build-arg USERNAME=$(whoami) --build-arg UID=$(id -u) --build-arg GID=$(id -g) - < "$(dirname $0)/Dockerfile"
