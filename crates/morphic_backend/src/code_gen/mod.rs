@@ -862,9 +862,13 @@ fn gen_function<T: Context>(
             let gen_rc_count_update =
                 |start_rc_count: Option<T::Value>,
                  total_rc_count: Option<T::GlobalValue>,
-                 tal_fn: T::FunctionValue| match (start_rc_count, total_rc_count) {
+                 tal_fn: fn(&T::ProfileRc) -> T::FunctionValue| match (
+                    start_rc_count,
+                    total_rc_count,
+                ) {
                     (Some(start_rc_count), Some(total_rc_count)) => {
-                        let end_rc_count = s.call(tal_fn, &[]);
+                        let end_rc_count =
+                            s.call(tal_fn(globals.context.tal().prof_rc().unwrap()), &[]);
                         let old_rc_count = s.global_get(s.i64_t(), total_rc_count);
                         s.global_set(
                             total_rc_count,
@@ -875,25 +879,19 @@ fn gen_function<T: Context>(
                     _ => unreachable!(),
                 };
 
-            let prof_rc = globals.context.tal().prof_rc().unwrap();
-
-            gen_rc_count_update(
-                start_retain_count,
-                counters.total_retain_count,
-                prof_rc.get_retain_count(),
-            );
+            gen_rc_count_update(start_retain_count, counters.total_retain_count, |prof_rc| {
+                prof_rc.get_retain_count()
+            });
 
             gen_rc_count_update(
                 start_release_count,
                 counters.total_release_count,
-                prof_rc.get_release_count(),
+                |prof_rc| prof_rc.get_release_count(),
             );
 
-            gen_rc_count_update(
-                start_rc1_count,
-                counters.total_rc1_count,
-                prof_rc.get_rc1_count(),
-            );
+            gen_rc_count_update(start_rc1_count, counters.total_rc1_count, |prof_rc| {
+                prof_rc.get_rc1_count()
+            });
 
             let old_rc_count = s.global_get(s.i64_t(), counters.total_calls);
             s.global_set(counters.total_calls, s.add(old_rc_count, s.i64(1)))
@@ -1027,7 +1025,7 @@ pub fn gen_program<T: Context>(
         let prof_report_fn =
             define_prof_report_fn(context, &program.profile_points, &globals.profile_points);
 
-        s.call(prof_report_fn, &[]);
+        s.call_void(prof_report_fn, &[]);
     }
 
     s.ret(s.i32(0));

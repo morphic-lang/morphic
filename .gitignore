@@ -1,4 +1,5 @@
 **/*.rs.bk
+jdk*/
 
 /target
 

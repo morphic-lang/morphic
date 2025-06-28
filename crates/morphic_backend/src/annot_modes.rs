@@ -1965,8 +1965,6 @@ pub fn annot_modes(
     program: guard::Program,
     progress: impl ProgressLogger,
 ) -> annot::Program {
-    let specialize = false;
-
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
 
@@ -1974,17 +1972,11 @@ pub fn annot_modes(
 
     let funcs = compute_tail_calls(&program.funcs);
 
-    let func_sccs: Sccs<usize, _> = if specialize {
-        find_components(funcs.count(), |id| {
-            let mut deps = BTreeSet::new();
-            add_func_deps(&mut deps, &funcs[id].body);
-            deps
-        })
-    } else {
-        let mut func_sccs = Sccs::new();
-        func_sccs.push_cyclic_component(&funcs.count().into_iter().collect::<Vec<_>>());
-        func_sccs
-    };
+    let func_sccs: Sccs<usize, _> = find_components(funcs.count(), |id| {
+        let mut deps = BTreeSet::new();
+        add_func_deps(&mut deps, &funcs[id].body);
+        deps
+    });
 
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
