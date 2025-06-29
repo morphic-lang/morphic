@@ -1,59 +1,71 @@
-<div align="center">
-    <picture>
-        <img alt="The Morphic Research Language" src="./morphic-logo.png" width="150px">
-    </picture>
+# Borrow Inference: Experimental Evaluation
 
-[Website](https://morphic-lang.org)
-</div>
+## Changes for Major Revision
 
-This is the source code for the Morphic compiler.
+We plan to add some additional benchmarks in our major revision, but the benchmarking harness and the plotting code will not change significantly (at least in-so-far as the steps required to run them).
 
-## What is Morphic?
+## Introduction
 
-Morphic is an experimental pure functional programming language designed to achieve performance competitive with imperative systems languages like C++ and Rust.
+This artifact consists of the Morphic compiler and its benchmarking harness. It supports the empirical claims made in our paper, namely:
 
-Morphic features three automatic optimizations which turn functional programming constructs into zero-cost abstractions:
-- Lambdas: Morphic’s lambda set specialization makes lambdas unboxed and statically dispatched, and allows calls to lambdas to be inlined. You can find the details in our [paper](https://doi.org/10.1145/3591260) or [talk](https://www.youtube.com/watch?v=F3z39M0gdJU&t=3540s).
-- Immutable Data Structures: Morphic’s mutation optimization transforms updates to logically-immutable data structures into in-place mutations when doing so does not affect semantics.
-- Automatic Memory Management: Morphic uses a borrow-based reference counting scheme which is able to eliminate almost all reference count increments and decrements for a large class of programs.
+- Our novel "borrow inference" technique is able to eliminate reference count increments relative to a Perceus baseline (a state-of-the-art technique for static reference count elision).
+- This improves overall program performance.
 
-```rust
-type Primality {
-  Prime,
-  Composite,
-}
+In particular, this artifact reproduces Figure 10 from our paper.
 
-sieve(limit: Int): Array Primality =
-  // Array memory is automatically managed statically,
-  // without any refcounting overhead in this case.
-  let init_arr =
-    Array.fill(limit, Prime)
-    |> Array.set(0, Composite)
-    |> Array.set(1, Composite)
-  in
-  // Iterator logic compiles to a simple loop, with
-  // no heap allocations or virtual dispatch.
-  Iter.range(2, limit)
-  |> Iter.foldl(init_arr, \(arr, n) ->
-    match Array.get(arr, n) {
-      Prime ->
-        Iter.ints(2)
-        |> Iter.map(\i -> i * n)
-        |> Iter.take_while(\i -> i < limit)
-        |> Iter.foldl(
-          arr,
-          // Array updates logically copy the array,
-          // but are automatically performed in-place
-          // when safe.
-          \(new, i) -> Array.set(new, i, Composite)
-        ),
-      Composite -> arr,
-    }
-  )
+## Getting Started Guide
+
+To run the benchmark suite, run the following command in the root of the `morphic/` project directory:
+
+```bash
+$ cargo run --release -p benchmark
 ```
 
-## Getting Started
+After running the benchmarks, you can view a summary of the run time results by running the script `summarize_results.py`:
 
-To build Morphic you will need an up-to-date [Rust](https://rustup.rs/) compiler and a development copy of LLVM 16. Appropriate LLVM packages are available on Debian and Ubuntu from the [LLVM repository](https://apt.llvm.org/). On other platforms, you may need to build LLVM from scratch. See the [LLVM docs](https://llvm.org/docs/GettingStarted.html#getting-the-source-code-and-building-llvm) for details. Once you have installed Rust and LLVM 16, simply run `cargo build`.
+```bash
+$ python3 summarize_results.py
+```
 
-Syntax highlighting is available via the Morphic [VSCode Extension](https://marketplace.visualstudio.com/items?itemName=morphic-lang.morphic).
+This will produce Figure 10 from our paper in directory `figure_out`.
+
+## Step by Step Instructions
+
+### How do I run the benchmarks from the paper?
+
+The file `crates/benchmark/src/main.rs` contains the implementation of the evaluation harness which we use for all experiments. Running this harness via `cargo run --release -p benchmark` will automatically:
+
+1. Compile each benchmark under the Morphic compiler and produce:
+   - Pretty-printed program intermediate representations in
+     - `out2/<benchmark>.mor_default_rc-artifacts`
+     - `out2/<benchmark>.mor_default_time-artifacts`
+     - `out2/<benchmark>.mor_perceus_rc-artifacts`
+     - `out2/<benchmark>.mor_perceus_time-artifacts`
+   - Binaries
+     - `out2/<benchmark>.mor_default_rc`
+     - `out2/<benchmark>.mor_default_time`
+     - `out2/<benchmark>.mor_perceus_rc`
+     - `out2/<benchmark>.mor_perceus_time`
+2. Run each benchmark for a set number of iterations, check its output for correctness, and produce:
+   - The runtime under borrow inference in `target/run_time/<benchmark>.mor_default_time.txt`.
+   - The number of RC increments ("dups") under borrow inference in `target/run_time/<benchmark>.mor_default_rc.txt`.
+   - The runtime under our implementation of Perceus in `target/run_time/<benchmark>.mor_perceus_time.txt`.
+   - The number of RC increments ("dups") under our implementation of Perceus in `target/run_time/<benchmark>.mor_perceus_rc.txt`.
+
+Step 1 will be skipped for benchmarks whose binaries are already present in `out2`, so `out2` must be deleted to regenerate the binaries. In general, if you get into a weird state, deleting `out2` and `target` will probably fix it.
+
+After populating `target/run_time` with measurements, you can view a summary of the results by running the following script
+
+```bash
+$ python3 summarize_results.py
+```
+
+For each benchmark, this will calculate the mean run time of one iteration of the benchmark's inner loop under borrow inference and under Perceus, and plot the ratio of the latter to the former. It will also calculate and plot the percentage decrease in RC increments under borrow inference as compared to Perceus. This is intended to support the run time speedup and RC increment reduction claims in the evaluation section of our paper (Figure 10).
+
+### Where can I find the Morphic source for the benchmarks?
+
+The Morphic source code for all benchmarks can be found in the `samples/` directory, alongside a number of other sample Morphic programs used in the compiler's internal test suite for correctness testing. All Morphic programs participating in benchmarking have filenames beginning with the "`bench_`" prefix. Some of the code for these benchmarks is factored out into common libraries, which can be found in the `samples/lib` directory.
+
+## Reusability Guide
+
+The Morphic compiler as a whole should be evaluated for reusability. This project was built on top of an existing version of the Morphic compiler and it is suitable for further extension. Each compiler pass is written as a transformation between two ASTs expressing the pass invariants. These ASTs can be found in `morphic/crates/morphic_common/src/data`. The passes particular to borrow inference are invoked from `compile_to_low_ast` in `morphic/crates/morphic_backend/src/lib.rs` beginning with `guard_types` and ending with `rc_specialize`.

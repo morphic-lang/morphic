@@ -154,7 +154,10 @@ fn write_binary_size(benchmark_name: &str, exe_path: impl AsRef<Path>) {
     let size = exe_path
         .as_ref()
         .metadata()
-        .expect("Could not get metadata for binary")
+        .expect(&format!(
+            "Could not get metadata for binary {}",
+            exe_path.as_ref().display()
+        ))
         .len();
 
     std::fs::create_dir_all(BINARY_SIZES_DIR).expect("Could not create binary sizes directory");
@@ -392,7 +395,7 @@ impl Variant {
 
 fn variants() -> Vec<Variant> {
     let mut variants = Vec::new();
-    for rc_strat in [RcStrategy::Default] {
+    for rc_strat in [RcStrategy::Default, RcStrategy::Perceus] {
         for record_rc in [true, false] {
             variants.push(Variant {
                 rc_strat,
@@ -418,40 +421,40 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-        let tag = match ml_variant {
-            MlConfig::Sml => "sml",
-            MlConfig::Ocaml => "ocaml",
-        };
+    // for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+    //     let tag = match ml_variant {
+    //         MlConfig::Sml => "sml",
+    //         MlConfig::Ocaml => "ocaml",
+    //     };
 
-        let artifact_path = std::env::current_dir()
-            .unwrap()
-            .join("out2")
-            .join(format!("{bench_name}-default_time-artifacts"));
+    //     let artifact_path = std::env::current_dir()
+    //         .unwrap()
+    //         .join("out2")
+    //         .join(format!("{bench_name}-default_time-artifacts"));
 
-        let artifact_dir = ArtifactDir {
-            dir_path: artifact_path.clone(),
-            filename_prefix: Path::new(bench_name).to_path_buf(),
-        };
+    //     let artifact_dir = ArtifactDir {
+    //         dir_path: artifact_path.clone(),
+    //         filename_prefix: Path::new(bench_name).to_path_buf(),
+    //     };
 
-        for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
-            let ast_str = match ast {
-                MlAst::Typed => "typed",
-                MlAst::Mono => "mono",
-                MlAst::FirstOrder => "first_order",
-            };
-            println!("benchmarking ml {bench_name} {tag} {ast_str}");
-            bench_ml_sample(
-                iters,
-                bench_name,
-                ml_variant,
-                ast,
-                &artifact_dir,
-                extra_stdin,
-                expected_stdout,
-            );
-        }
-    }
+    //     for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
+    //         let ast_str = match ast {
+    //             MlAst::Typed => "typed",
+    //             MlAst::Mono => "mono",
+    //             MlAst::FirstOrder => "first_order",
+    //         };
+    //         println!("benchmarking ml {bench_name} {tag} {ast_str}");
+    //         bench_ml_sample(
+    //             iters,
+    //             bench_name,
+    //             ml_variant,
+    //             ast,
+    //             &artifact_dir,
+    //             extra_stdin,
+    //             expected_stdout,
+    //         );
+    //     }
+    // }
 
     for variant in variants() {
         let variant_name = format!("{bench_name}_{tag}", tag = variant.tag());
@@ -528,7 +531,7 @@ fn compile_sample(
     for variant in variants() {
         let tag = variant.tag();
         println!("compiling {bench_name}_{tag}");
-        let (_exe_path, artifact_dir) = build_exe(
+        let (exe_path, _artifact_dir) = build_exe(
             bench_name,
             &tag,
             src_path.clone(),
@@ -542,13 +545,13 @@ fn compile_sample(
             },
         );
 
-        // write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
+        write_binary_size(&format!("{bench_name}_{tag}"), &exe_path);
 
-        for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
-            for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
-                compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
-            }
-        }
+        // for ml_variant in [MlConfig::Ocaml, MlConfig::Sml] {
+        //     for ast in vec![MlAst::Typed, MlAst::Mono, MlAst::FirstOrder] {
+        //         compile_ml_sample(bench_name, ml_variant, ast, &artifact_dir);
+        //     }
+        // }
     }
 }
 
@@ -923,25 +926,25 @@ fn main() {
     // these have 0 retains omitted, we don't run them
     // sample_quicksort();
     // sample_primes();
-    // sample_primes_sieve();
-    // sample_nqueens_iterative();
+    sample_primes_sieve();
+    sample_nqueens_iterative();
     sample_nqueens_functional();
 
-    // sample_parse_json();
+    sample_parse_json();
 
-    // sample_calc();
+    sample_calc();
 
-    // sample_unify();
+    sample_unify();
 
-    // sample_words_trie();
+    sample_words_trie();
 
-    // sample_text_stats();
+    sample_text_stats();
 
     sample_lisp();
 
-    // sample_cfold();
-    // sample_deriv();
-    // sample_rbtree();
+    sample_cfold();
+    sample_deriv();
+    sample_rbtree();
 
-    // sample_rbtreeck();
+    sample_rbtreeck();
 }

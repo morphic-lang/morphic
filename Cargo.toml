@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/morphic_compiler"]
 
 [workspace.package]
-authors = ["William Brandon", "Wilson Berkow", "Frank Dai", "Benjamin Driscoll"]
+authors = ["Anonymized"]
 description = "Pure functional programming with whole-program memory management inference"
 edition = "2021"
 

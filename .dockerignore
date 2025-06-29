@@ -1,4 +1,8 @@
-figures_out/
-jdk-*/
-out2/
-target/
+**/*
+!crates/
+!samples/
+!Cargo.lock
+!Cargo.toml
+!Dockerfile
+!README.md
+!summarize_speedup.py
