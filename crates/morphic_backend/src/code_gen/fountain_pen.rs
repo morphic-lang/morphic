@@ -49,13 +49,13 @@ pub trait Tal: Clone {
     fn free(&self) -> Self::FunctionValue;
 
     ////////////////////////////////////
-    // Modified versions of libc functions for wasm portability.
+    // Modified versions of libc functions for portability
     ////////////////////////////////////
 
-    /// (i8*) -> ()
+    /// (i8*, ...) -> ()
     fn print(&self) -> Self::FunctionValue;
 
-    /// (i8*) -> ()
+    /// (i8*, ...) -> ()
     fn print_error(&self) -> Self::FunctionValue;
 
     /// The first argument is the array to be written to stdout, the second argument is the size of
@@ -98,7 +98,7 @@ pub trait Tal: Clone {
     fn prof_rc(&self) -> Option<&Self::ProfileRc>;
 
     ////////////////////////////////////
-    // LLVM Intrinsics
+    // Intrinsics
     ////////////////////////////////////
 
     /// Allows provision of an expected (most probable) value, which can be used by optimizers. The
@@ -112,19 +112,6 @@ pub trait Tal: Clone {
     ///
     /// (i64, i64) -> (i64, i1)
     fn umul_with_overflow_i64(&self) -> Self::FunctionValue;
-
-    /// (i64) -> i64
-    fn ctpop_i64(&self) -> Self::FunctionValue;
-
-    /// The second argument is a bool indicating whether the output is poison if the input is 0.
-    ///
-    /// (i64, i1) -> i64
-    fn ctlz_i64(&self) -> Self::FunctionValue;
-
-    /// The second argument is a bool indicating whether the output is poison if the input is 0.
-    ///
-    /// (i64, i1) -> i64
-    fn cttz_i64(&self) -> Self::FunctionValue;
 }
 
 pub trait Context: Clone {
@@ -196,8 +183,6 @@ pub trait Context: Clone {
 
     fn usize_t(&self) -> Self::Type;
 
-    fn f32_t(&self) -> Self::Type;
-
     fn f64_t(&self) -> Self::Type;
 
     fn ptr_t(&self) -> Self::Type;
@@ -205,8 +190,6 @@ pub trait Context: Clone {
     fn struct_t(&self, fields: &[Self::Type]) -> Self::Type;
 
     fn variants_t(&self, variants: &[Self::Type]) -> Self::VariantsType;
-
-    fn undef(&self, ty: Self::Type) -> Self::Value;
 
     fn i1(&self, val: bool) -> Self::Value;
 
@@ -217,8 +200,6 @@ pub trait Context: Clone {
     fn i64(&self, val: u64) -> Self::Value;
 
     fn usize(&self, val: u64) -> Self::Value;
-
-    fn f32(&self, val: f32) -> Self::Value;
 
     fn f64(&self, val: f64) -> Self::Value;
 
@@ -284,10 +265,6 @@ pub trait Scope {
         self.context().usize_t()
     }
 
-    fn f32_t(&self) -> Self::Type {
-        self.context().f32_t()
-    }
-
     fn f64_t(&self) -> Self::Type {
         self.context().f64_t()
     }
@@ -302,10 +279,6 @@ pub trait Scope {
 
     fn variants_t(&self, variants: &[Self::Type]) -> Self::VariantsType {
         self.context().variants_t(variants)
-    }
-
-    fn undef(&self, ty: Self::Type) -> Self::Value {
-        self.context().undef(ty)
     }
 
     fn i1(&self, val: bool) -> Self::Value {
@@ -328,10 +301,6 @@ pub trait Scope {
         self.context().usize(val)
     }
 
-    fn f32(&self, val: f32) -> Self::Value {
-        self.context().f32(val)
-    }
-
     fn f64(&self, val: f64) -> Self::Value {
         self.context().f64(val)
     }
@@ -339,6 +308,8 @@ pub trait Scope {
     fn null(&self) -> Self::Value {
         self.context().null()
     }
+
+    fn undef(&self, ty: Self::Type) -> Self::Value;
 
     fn str(&self, s: &str) -> Self::Value;
 
@@ -393,7 +364,7 @@ pub trait Scope {
 
     fn int_cast(&self, result_type: Self::Type, int: Self::Value) -> Self::Value;
 
-    fn make_struct(&self, fields: &[(u32, Self::Value)]) -> Self::Value {
+    fn make_struct2(&self, fields: &[(u32, Self::Value)]) -> Self::Value {
         let mut sorted = fields.to_vec();
         sorted.sort_by_key(|(idx, _)| *idx);
 
@@ -404,10 +375,10 @@ pub trait Scope {
         }
 
         let values: Vec<_> = sorted.into_iter().map(|(_, val)| val).collect();
-        self.make_tup(&values)
+        self.make_struct(&values)
     }
 
-    fn make_tup(&self, fields: &[Self::Value]) -> Self::Value;
+    fn make_struct(&self, fields: &[Self::Value]) -> Self::Value;
 
     fn buf_addr(&self, pointee_ty: Self::Type, arr: Self::Value, idx: Self::Value) -> Self::Value;
 
@@ -422,12 +393,6 @@ pub trait Scope {
     fn buf_set(&self, pointee_ty: Self::Type, arr: Self::Value, idx: Self::Value, val: Self::Value);
 
     fn buf_get(&self, pointee_ty: Self::Type, arr: Self::Value, idx: Self::Value) -> Self::Value;
-
-    fn arr_addr(&self, pointee_ty: Self::Type, arr: Self::Value, idx: Self::Value) -> Self::Value;
-
-    fn arr_set(&self, pointee_ty: Self::Type, arr: Self::Value, idx: Self::Value, val: Self::Value);
-
-    fn arr_get(&self, pointee_ty: Self::Type, arr: Self::Value, idx: Self::Value) -> Self::Value;
 
     fn for_(&self, bound: Self::Value, body: impl FnOnce(&Self, Self::Value));
 
@@ -531,9 +496,14 @@ pub trait Scope {
     fn not(&self, arg: Self::Value) -> Self::Value;
     fn xor(&self, arg1: Self::Value, arg2: Self::Value) -> Self::Value;
 
-    fn z_extend(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
-    fn s_extend(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
-    fn truncate(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
+    /// i8 -> i64
+    fn z_extend(&self, value: Self::Value) -> Self::Value;
+
+    /// i8 -> i64
+    fn s_extend(&self, value: Self::Value) -> Self::Value;
+
+    /// i64 -> i8
+    fn truncate(&self, value: Self::Value) -> Self::Value;
 
     fn ctpop(&self, arg: Self::Value) -> Self::Value;
     fn ctlz(&self, arg: Self::Value) -> Self::Value;

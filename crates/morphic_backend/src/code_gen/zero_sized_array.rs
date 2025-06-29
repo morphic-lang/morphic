@@ -1,8 +1,8 @@
-use crate::data::mode_annot_ast::Mode;
-use crate::data::rc_specialized_ast::ModeScheme;
 use crate::code_gen::array::ArrayImpl;
 use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
 use crate::code_gen::{low_type_in_context, Globals, Instances};
+use crate::data::mode_annot_ast::Mode;
+use crate::data::rc_specialized_ast::ModeScheme;
 
 #[derive(Clone, Debug)]
 pub struct ZeroSizedArrayImpl<T: Context> {
@@ -146,7 +146,7 @@ impl<T: Context> ArrayImpl<T> for ZeroSizedArrayImpl<T> {
                 )
             });
 
-            s.ret(s.make_tup(&[s.undef(self.item_type), array]));
+            s.ret(s.make_struct(&[s.undef(self.item_type), array]));
         }
 
         // define 'len'
@@ -172,7 +172,7 @@ impl<T: Context> ArrayImpl<T> for ZeroSizedArrayImpl<T> {
                 s.panic("cannot pop array of length 0", &[]);
             });
 
-            s.ret(s.make_tup(&[s.sub(array, s.i64(1)), s.undef(self.item_type)]));
+            s.ret(s.make_struct(&[s.sub(array, s.i64(1)), s.undef(self.item_type)]));
         }
 
         // define 'replace'

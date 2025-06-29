@@ -310,8 +310,18 @@ pub struct Tal<'a> {
 
     pub expect_i1: FunctionValue<'a>,
     pub umul_with_overflow_i64: FunctionValue<'a>,
+
+    /// (i64) -> i64
     pub ctpop_i64: FunctionValue<'a>,
+
+    /// The second argument is a bool indicating whether the output is poison if the input is 0.
+    ///
+    /// (i64, i1) -> i64
     pub ctlz_i64: FunctionValue<'a>,
+
+    /// The second argument is a bool indicating whether the output is poison if the input is 0.
+    ///
+    /// (i64, i1) -> i64
     pub cttz_i64: FunctionValue<'a>,
 }
 
@@ -401,18 +411,6 @@ impl<'a> fountain_pen::Tal for Tal<'a> {
 
     fn umul_with_overflow_i64(&self) -> Self::FunctionValue {
         self.umul_with_overflow_i64
-    }
-
-    fn ctpop_i64(&self) -> Self::FunctionValue {
-        self.ctpop_i64
-    }
-
-    fn ctlz_i64(&self) -> Self::FunctionValue {
-        self.ctlz_i64
-    }
-
-    fn cttz_i64(&self) -> Self::FunctionValue {
-        self.cttz_i64
     }
 }
 
@@ -905,10 +903,6 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
         Type(usize_t(self.context, self.target).into())
     }
 
-    fn f32_t(&self) -> Self::Type {
-        Type(self.context.f32_type().into())
-    }
-
     fn f64_t(&self) -> Self::Type {
         Type(self.context.f64_type().into())
     }
@@ -928,18 +922,6 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
             self.target,
             variants.iter().map(|ty| ty.0.into()).collect::<Vec<_>>(),
         )
-    }
-
-    fn undef(&self, ty: Self::Type) -> Self::Value {
-        Value(match ty.0 {
-            BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
-            BasicTypeEnum::FloatType(t) => t.get_undef().into(),
-            BasicTypeEnum::IntType(t) => t.get_undef().into(),
-            BasicTypeEnum::PointerType(t) => t.get_undef().into(),
-            BasicTypeEnum::StructType(t) => t.get_undef().into(),
-            BasicTypeEnum::VectorType(t) => t.get_undef().into(),
-            BasicTypeEnum::ScalableVectorType(t) => t.get_undef().into(),
-        })
     }
 
     fn i1(&self, val: bool) -> Value<'a> {
@@ -964,10 +946,6 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
                 .const_int(val as u64, false)
                 .into(),
         )
-    }
-
-    fn f32(&self, val: f32) -> Value<'a> {
-        Value(self.context.f32_type().const_float(val as f64).into())
     }
 
     fn f64(&self, val: f64) -> Value<'a> {
@@ -1000,6 +978,18 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
 
     fn func(&self) -> FunctionValue<'a> {
         self.func
+    }
+
+    fn undef(&self, ty: Self::Type) -> Self::Value {
+        Value(match ty.0 {
+            BasicTypeEnum::ArrayType(t) => t.get_undef().into(),
+            BasicTypeEnum::FloatType(t) => t.get_undef().into(),
+            BasicTypeEnum::IntType(t) => t.get_undef().into(),
+            BasicTypeEnum::PointerType(t) => t.get_undef().into(),
+            BasicTypeEnum::StructType(t) => t.get_undef().into(),
+            BasicTypeEnum::VectorType(t) => t.get_undef().into(),
+            BasicTypeEnum::ScalableVectorType(t) => t.get_undef().into(),
+        })
     }
 
     fn str(&self, s: &str) -> Value<'a> {
@@ -1280,7 +1270,7 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         )
     }
 
-    fn make_tup(&self, fields: &[Value<'a>]) -> Value<'a> {
+    fn make_struct(&self, fields: &[Value<'a>]) -> Value<'a> {
         let field_types: Vec<_> = fields.iter().map(|field| field.0.get_type()).collect();
         let tup_type = self.context.context.struct_type(&field_types[..], false);
 
@@ -1337,22 +1327,6 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
 
     fn buf_get(&self, pointee_ty: Type<'a>, arr: Value<'a>, idx: Value<'a>) -> Value<'a> {
         let addr = self.buf_addr(pointee_ty, arr, idx).0.into_pointer_value();
-
-        Value(self.builder.build_load(pointee_ty.0, addr, "get").unwrap())
-    }
-
-    fn arr_addr(&self, pointee_ty: Type<'a>, arr: Value<'a>, idx: Value<'a>) -> Value<'a> {
-        self.buf_addr(pointee_ty, arr, idx)
-    }
-
-    fn arr_set(&self, pointee_ty: Type<'a>, arr: Value<'a>, idx: Value<'a>, val: Value<'a>) {
-        let addr = self.arr_addr(pointee_ty, arr, idx).0.into_pointer_value();
-
-        self.builder.build_store(addr, val.0).unwrap();
-    }
-
-    fn arr_get(&self, pointee_ty: Type<'a>, arr: Value<'a>, idx: Value<'a>) -> Value<'a> {
-        let addr = self.arr_addr(pointee_ty, arr, idx).0.into_pointer_value();
 
         Value(self.builder.build_load(pointee_ty.0, addr, "get").unwrap())
     }
@@ -1876,12 +1850,12 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         )
     }
 
-    fn z_extend(&self, result_type: Type<'a>, value: Value<'a>) -> Value<'a> {
+    fn z_extend(&self, value: Value<'a>) -> Value<'a> {
         Value(
             self.builder
                 .build_int_z_extend(
                     value.0.into_int_value(),
-                    result_type.0.into_int_type(),
+                    self.context.context.i64_type(),
                     "z_extend",
                 )
                 .unwrap()
@@ -1889,12 +1863,12 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         )
     }
 
-    fn s_extend(&self, result_type: Type<'a>, value: Value<'a>) -> Value<'a> {
+    fn s_extend(&self, value: Value<'a>) -> Value<'a> {
         Value(
             self.builder
                 .build_int_s_extend(
                     value.0.into_int_value(),
-                    result_type.0.into_int_type(),
+                    self.context.context.i64_type(),
                     "s_extend",
                 )
                 .unwrap()
@@ -1902,12 +1876,12 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         )
     }
 
-    fn truncate(&self, result_type: Type<'a>, value: Value<'a>) -> Value<'a> {
+    fn truncate(&self, value: Value<'a>) -> Value<'a> {
         Value(
             self.builder
                 .build_int_truncate(
                     value.0.into_int_value(),
-                    result_type.0.into_int_type(),
+                    self.context.context.i8_type(),
                     "truncate",
                 )
                 .unwrap()

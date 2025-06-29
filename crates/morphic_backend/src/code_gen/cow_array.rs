@@ -181,7 +181,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
         {
             let s = context.scope(self.new);
 
-            let me = s.make_struct(&[
+            let me = s.make_struct2(&[
                 (F_ARR_DATA, buf_to_data(&s, s.null())),
                 (F_ARR_CAP, s.i64(0)),
                 (F_ARR_LEN, s.i64(0)),
@@ -211,9 +211,9 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
             s.call_void(self.bounds_check, &[me, idx]);
             let data = s.field(me, F_ARR_DATA);
 
-            s.ret(s.make_tup(&[
+            s.ret(s.make_struct(&[
                 s.buf_get(self.item_t, data, idx),
-                s.make_struct(&[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)]),
+                s.make_struct2(&[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)]),
             ]));
         }
 
@@ -236,7 +236,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
 
             s.buf_set(self.item_t, s.field(new_me, F_ARR_DATA), old_len, s.arg(1));
 
-            s.ret(s.make_struct(&[
+            s.ret(s.make_struct2(&[
                 (F_ARR_DATA, s.field(new_me, F_ARR_DATA)),
                 (F_ARR_CAP, s.field(new_me, F_ARR_CAP)),
                 (F_ARR_LEN, new_len),
@@ -254,7 +254,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
 
             let new_len = s.sub(s.field(me, F_ARR_LEN), s.i64(1));
 
-            let new_me = s.make_struct(&[
+            let new_me = s.make_struct2(&[
                 (F_ARR_DATA, s.field(me, F_ARR_DATA)),
                 (F_ARR_CAP, s.field(me, F_ARR_CAP)),
                 (F_ARR_LEN, new_len),
@@ -262,7 +262,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
 
             let item = s.buf_get(self.item_t, s.field(me, F_ARR_DATA), new_len);
 
-            s.ret(s.make_tup(&[new_me, item]))
+            s.ret(s.make_struct(&[new_me, item]))
         }
 
         // define 'replace'
@@ -326,7 +326,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
                     s.panic("reserve: failed to allocate %zu bytes\n", &[alloc_size]);
                 });
 
-                s.ret(s.make_struct(&[
+                s.ret(s.make_struct2(&[
                     (F_ARR_DATA, buf_to_data(&s, new_buf)),
                     (F_ARR_CAP, min_cap),
                     (F_ARR_LEN, s.field(me, F_ARR_LEN)),
@@ -523,7 +523,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
                 // The refcount is necessarily 1 immediately after a mutating operation.
                 s.ptr_set(new_buf, s.i64(1));
 
-                s.ret(s.make_struct(&[
+                s.ret(s.make_struct2(&[
                     (F_ARR_DATA, buf_to_data(&s, new_buf)),
                     (F_ARR_CAP, new_cap),
                     (F_ARR_LEN, s.field(me, F_ARR_LEN)),
@@ -559,7 +559,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
             let refcount: T::Value = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
             s.if_(s.is_null(refcount), |s| {
-                let me = s.make_struct(&[
+                let me = s.make_struct2(&[
                     (F_ARR_DATA, buf_to_data(&s, s.null())),
                     (F_ARR_CAP, s.i64(0)),
                     (F_ARR_LEN, s.i64(0)),
@@ -626,7 +626,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
             // The refcount is necessarily 1 immediately after a mutating operation.
             s.ptr_set(new_buf, s.i64(1));
 
-            s.ret(s.make_struct(&[
+            s.ret(s.make_struct2(&[
                 (F_ARR_DATA, buf_to_data(&s, new_buf)),
                 (F_ARR_CAP, cap),
                 (F_ARR_LEN, len),
@@ -765,7 +765,7 @@ impl<T: Context> CowArrayIoImpl<T> {
                     ))
                 },
                 |s| {
-                    let input_byte = s.truncate(s.i8_t(), s.ptr_get(s.i32_t(), getchar_result));
+                    let input_byte = s.truncate(s.ptr_get(s.i32_t(), getchar_result));
                     s.ptr_set(
                         array,
                         s.call(

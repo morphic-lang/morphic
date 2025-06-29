@@ -49,6 +49,7 @@ pub enum Error {
     GivenDirExpectedFile(PathBuf),
     #[error("expected a directory but was provided file {0:?} instead")]
     GivenFileExpectedDir(PathBuf),
+
     #[error("could not create directory, IO error: {0}")]
     CouldNotCreateOutputDir(std::io::Error),
     #[error("could not create temporary file, IO error: {0}")]
@@ -61,6 +62,7 @@ pub enum Error {
     CouldNotFindClang(String),
     #[error("clang exited unsuccessfully, IO error: {0}")]
     ClangFailed(std::io::Error),
+
     #[error("selected LLVM target triple is not supported on your system, {0}")]
     TargetTripleNotSupported(inkwell::support::LLVMString),
     #[error("could not configure LLVM for target")]
@@ -71,6 +73,11 @@ pub enum Error {
     CouldNotDumpIrFromLlvm(inkwell::support::LLVMString),
     #[error("could not spawn child process, IO error: {0}")]
     CouldNotSpawnChild(std::io::Error),
+
+    #[error("could not compile Java code: {0}")]
+    CouldNotCompileJava(String),
+    #[error("could not create Jar file: {0}")]
+    CouldNotCreateJar(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -543,7 +550,9 @@ fn gen_expr<T: Context>(
             s.unreachable();
             s.undef(low_type_in_context(globals, type_))
         }
-        E::Tuple(fields) => s.make_tup(&fields.into_iter().map(|x| locals[x]).collect::<Vec<_>>()),
+        E::Tuple(fields) => {
+            s.make_struct(&fields.into_iter().map(|x| locals[x]).collect::<Vec<_>>())
+        }
         E::TupleField(local_id, elem) => s.field(locals[local_id], (*elem).try_into().unwrap()),
         E::WrapVariant(variants, variant_id, local_id) => {
             let variants = variants
@@ -595,7 +604,7 @@ fn gen_expr<T: Context>(
                 mode_scheme,
                 locals[local_id],
             );
-            s.make_tup(&[])
+            s.make_struct(&[])
         }
         E::Intrinsic(intr, local_id) => match intr {
             Intrinsic::Not => s.not(locals[local_id]),
@@ -712,9 +721,9 @@ fn gen_expr<T: Context>(
             Intrinsic::NegByte => s.neg(locals[local_id]),
             Intrinsic::NegInt => s.neg(locals[local_id]),
             Intrinsic::NegFloat => s.fneg(locals[local_id]),
-            Intrinsic::ByteToInt => s.z_extend(s.i64_t(), locals[local_id]),
-            Intrinsic::ByteToIntSigned => s.s_extend(s.i64_t(), locals[local_id]),
-            Intrinsic::IntToByte => s.truncate(s.i8_t(), locals[local_id]),
+            Intrinsic::ByteToInt => s.z_extend(locals[local_id]),
+            Intrinsic::ByteToIntSigned => s.s_extend(locals[local_id]),
+            Intrinsic::IntToByte => s.truncate(locals[local_id]),
             Intrinsic::IntShiftLeft => {
                 let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
                 // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
