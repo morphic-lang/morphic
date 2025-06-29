@@ -8,11 +8,11 @@ edition.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true
-find_clang.workspace = true
+find_tool.workspace = true
 walkdir.workspace = true
 
 [dependencies]
-find_clang.workspace = true
+find_tool.workspace = true
 morphic_common.workspace = true
 inkwell.workspace = true
 json.workspace = true

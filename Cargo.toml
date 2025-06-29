@@ -10,7 +10,7 @@ edition = "2021"
 
 [workspace.dependencies]
 benchmark = { path = "./crates/benchmark" }
-find_clang = { path = "./crates/find_clang" }
+find_tool = { path = "./crates/find_tool" }
 morphic_backend = { path = "./crates/morphic_backend" }
 morphic_common = { path = "./crates/morphic_common" }
 morphic_compiler = { path = "./crates/morphic_compiler" }
@@ -19,6 +19,7 @@ morphic_macros = { path = "./crates/morphic_macros" }
 
 # Misc.
 walkdir = "2.4.0"
+which = "8.0.0"
 lalrpop = "0.20.0"
 lalrpop-util = "0.20.0"
 im-rc = "15.1.0"

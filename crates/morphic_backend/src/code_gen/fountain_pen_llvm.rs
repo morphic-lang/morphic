@@ -1,5 +1,5 @@
 use crate::code_gen::{fountain_pen, gen_program, Error};
-use find_clang::find_default_clang;
+use find_tool::finders::find_default_clang;
 use id_collections::{id_type, IdVec};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -2025,7 +2025,7 @@ fn run_cc(target: cfg::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
                 .map_err(Error::CouldNotWriteObjFile)?;
 
             let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
-            std::process::Command::new(clang.path)
+            std::process::Command::new(clang.path())
                 .arg("-O3")
                 .arg("-ffunction-sections")
                 .arg("-fdata-sections")
@@ -2079,7 +2079,7 @@ fn run_cc(target: cfg::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
                 .map_err(Error::CouldNotWriteOutputFile)?;
 
             let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
-            std::process::Command::new(clang.path)
+            std::process::Command::new(clang.path())
                 .arg("-O3")
                 .arg("-ffunction-sections")
                 .arg("-fdata-sections")

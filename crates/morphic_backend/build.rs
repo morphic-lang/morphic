@@ -1,4 +1,4 @@
-use find_clang::find_default_clang;
+use find_tool::finders::find_default_clang;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
@@ -38,7 +38,7 @@ fn compile_tal(paths: &Paths) -> anyhow::Result<()> {
 
     // Change the CWD so that clang outputs artifacts to the right location.
     env::set_current_dir(native_out_dir)?;
-    let status = Command::new(&clang.path)
+    let status = Command::new(clang.path())
         .arg("-c")
         .arg(native_tal_c)
         .status()?;
@@ -46,7 +46,7 @@ fn compile_tal(paths: &Paths) -> anyhow::Result<()> {
 
     // Change the CWD so that clang outputs artifacts to the right location.
     env::set_current_dir(wasm_out_dir)?;
-    let status = Command::new(&clang.path)
+    let status = Command::new(clang.path())
         .arg("-O3")
         .arg("-ffunction-sections")
         .arg("-fdata-sections")
