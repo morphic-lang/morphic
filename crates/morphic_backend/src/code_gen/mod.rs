@@ -18,7 +18,7 @@ use crate::code_gen::fountain_pen_llvm::{compile_to_executable, ArtifactPaths};
 use crate::code_gen::prof_report::{
     define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
 };
-use crate::code_gen::rc::{rc_ptr_t, RcBoxBuiltin};
+use crate::code_gen::rc::{rc_ptr_t, RcBuiltin, RcBuiltinImpl};
 use crate::code_gen::zero_sized_array::ZeroSizedArrayImpl;
 use crate::error::Error as CrateError;
 use crate::pretty_print::utils::TailFuncRenderer;
@@ -238,7 +238,7 @@ enum PendingDefine {
 
 struct Instances<'a, T: Context + 'a> {
     cow_array_io: CowArrayIoImpl<T>,
-    rcs: BTreeMap<ModeScheme, RcBoxBuiltin<T>>,
+    rcs: BTreeMap<ModeScheme, RcBuiltinImpl<T>>,
     cow_arrays: BTreeMap<ModeScheme, Rc<dyn ArrayImpl<T> + 'a>>,
     pending: Vec<PendingDefine>,
 }
@@ -314,12 +314,12 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
         new_builtin
     }
 
-    fn get_rc(&mut self, globals: &Globals<T>, mode_scheme: &ModeScheme) -> RcBoxBuiltin<T> {
+    fn get_rc(&mut self, globals: &Globals<T>, mode_scheme: &ModeScheme) -> RcBuiltinImpl<T> {
         if let Some(existing) = self.rcs.get(&mode_scheme) {
             return existing.clone();
         }
 
-        let new_builtin = RcBoxBuiltin::declare(globals, &mode_scheme);
+        let new_builtin = RcBuiltinImpl::declare(globals, &mode_scheme);
         self.rcs.insert(mode_scheme.clone(), new_builtin.clone());
         self.pending.push(PendingDefine::Rc(mode_scheme.clone()));
         return new_builtin;
@@ -430,15 +430,15 @@ fn gen_rc_op<T: Context>(
         },
         ModeScheme::Boxed(_, _) => match op {
             DerivedRcOp::Retain => {
-                let retain_func = instances.get_rc(globals, scheme).retain;
+                let retain_func = instances.get_rc(globals, scheme).retain();
                 s.call_void(retain_func, &[arg]);
             }
             DerivedRcOp::DerivedRetain => {
-                let derived_retain_func = instances.get_rc(globals, scheme).derived_retain;
+                let derived_retain_func = instances.get_rc(globals, scheme).derived_retain();
                 s.call_void(derived_retain_func, &[arg]);
             }
             DerivedRcOp::Release => {
-                let release_func = instances.get_rc(globals, scheme).release;
+                let release_func = instances.get_rc(globals, scheme).release();
                 s.call_void(release_func, &[arg]);
             }
         },
@@ -572,11 +572,11 @@ fn gen_expr<T: Context>(
         }
         E::WrapBoxed(local_id, inner_type) => {
             let builtin = instances.get_rc(globals, inner_type);
-            s.call(builtin.new, &[locals[local_id]])
+            s.call(builtin.new(), &[locals[local_id]])
         }
         E::UnwrapBoxed(local_id, input_scheme, output_scheme) => {
             let builtin = instances.get_rc(globals, input_scheme);
-            let ptr = s.call(builtin.get, &[locals[local_id]]);
+            let ptr = s.call(builtin.get(), &[locals[local_id]]);
             let result = s.ptr_get(low_type_in_context(globals, &output_scheme.as_type()), ptr);
             result
         }

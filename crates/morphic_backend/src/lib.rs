@@ -10,7 +10,6 @@ mod rc_specialize;
 mod split_custom_types;
 mod tail_call_elim;
 mod type_check_borrows;
-mod typecheck_guarded;
 
 pub mod code_gen;
 pub mod error;

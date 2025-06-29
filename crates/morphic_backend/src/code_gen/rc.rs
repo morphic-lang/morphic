@@ -1,7 +1,7 @@
-use crate::data::mode_annot_ast::Mode;
-use crate::data::rc_specialized_ast::ModeScheme;
 use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
 use crate::code_gen::{gen_rc_op, low_type_in_context, DerivedRcOp, Globals, Instances};
+use crate::data::mode_annot_ast::Mode;
+use crate::data::rc_specialized_ast::ModeScheme;
 
 const F_REFCOUNT: u32 = 0; // has type u64
 const F_ITEM: u32 = 1; // has type T
@@ -10,24 +10,40 @@ pub fn rc_ptr_t<T: Context>(context: &T) -> T::Type {
     context.ptr_t()
 }
 
-#[derive(Clone, Debug)]
-pub struct RcBoxBuiltin<T: Context> {
-    pub mode: Mode,
-    pub item_scheme: ModeScheme,
+pub trait RcBuiltin<T: Context>: Clone {
+    fn define(&self, globals: &Globals<T>, instances: &mut Instances<T>);
 
-    // related types
-    pub item_t: T::Type,
-    pub rc_t: T::Type,
+    fn mode(&self) -> Mode;
+    fn item_scheme(&self) -> &ModeScheme;
 
-    // public API
-    pub new: T::FunctionValue,
-    pub get: T::FunctionValue,
-    pub retain: T::FunctionValue,
-    pub derived_retain: T::FunctionValue,
-    pub release: T::FunctionValue,
+    fn item_t(&self) -> T::Type;
+    fn rc_t(&self) -> T::Type;
+
+    fn new(&self) -> T::FunctionValue;
+    fn get(&self) -> T::FunctionValue;
+    fn retain(&self) -> T::FunctionValue;
+    fn derived_retain(&self) -> T::FunctionValue;
+    fn release(&self) -> T::FunctionValue;
 }
 
-impl<T: Context> RcBoxBuiltin<T> {
+#[derive(Clone, Debug)]
+pub struct RcBuiltinImpl<T: Context> {
+    mode: Mode,
+    item_scheme: ModeScheme,
+
+    // related types
+    item_t: T::Type,
+    rc_t: T::Type,
+
+    // public API
+    new: T::FunctionValue,
+    get: T::FunctionValue,
+    retain: T::FunctionValue,
+    derived_retain: T::FunctionValue,
+    release: T::FunctionValue,
+}
+
+impl<T: Context> RcBuiltinImpl<T> {
     pub fn declare(globals: &Globals<T>, scheme: &ModeScheme) -> Self {
         let context = &globals.context;
 
@@ -65,8 +81,10 @@ impl<T: Context> RcBoxBuiltin<T> {
             release,
         }
     }
+}
 
-    pub fn define(&self, globals: &Globals<T>, instances: &mut Instances<T>) {
+impl<T: Context> RcBuiltin<T> for RcBuiltinImpl<T> {
+    fn define(&self, globals: &Globals<T>, instances: &mut Instances<T>) {
         let context = &globals.context;
         let i64_t = context.i64_t();
 
@@ -149,5 +167,41 @@ impl<T: Context> RcBoxBuiltin<T> {
 
             s.ret_void();
         }
+    }
+
+    fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    fn item_scheme(&self) -> &ModeScheme {
+        &self.item_scheme
+    }
+
+    fn item_t(&self) -> <T as Context>::Type {
+        self.item_t
+    }
+
+    fn rc_t(&self) -> <T as Context>::Type {
+        self.rc_t
+    }
+
+    fn new(&self) -> <T as Context>::FunctionValue {
+        self.new
+    }
+
+    fn get(&self) -> <T as Context>::FunctionValue {
+        self.get
+    }
+
+    fn retain(&self) -> <T as Context>::FunctionValue {
+        self.retain
+    }
+
+    fn derived_retain(&self) -> <T as Context>::FunctionValue {
+        self.derived_retain
+    }
+
+    fn release(&self) -> <T as Context>::FunctionValue {
+        self.release
     }
 }

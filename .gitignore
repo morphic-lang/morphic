@@ -1,7 +1,6 @@
 **/*.rs.bk
-jdk*/
-
 /target
+jdk*/
 
 # Compilation artifacts
 **/*.ll
