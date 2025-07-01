@@ -25,3 +25,11 @@ pub trait ArrayImpl<T: Context> {
     fn derived_retain_hole(&self) -> T::FunctionValue;
     fn release_hole(&self) -> T::FunctionValue;
 }
+
+pub trait ArrayIoImpl<T: Context> {
+    fn define(&self, globals: &Globals<T>);
+
+    fn input(&self) -> T::FunctionValue;
+    fn output(&self) -> T::FunctionValue;
+    fn output_error(&self) -> T::FunctionValue;
+}

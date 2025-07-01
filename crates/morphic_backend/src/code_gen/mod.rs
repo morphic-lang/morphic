@@ -4,6 +4,7 @@ mod array;
 mod cow_array;
 mod fountain_pen;
 mod fountain_pen_llvm;
+// mod persistent_array;
 mod prof_report;
 mod rc;
 mod zero_sized_array;
@@ -11,10 +12,10 @@ mod zero_sized_array;
 #[cfg(test)]
 mod test;
 
-use crate::code_gen::array::ArrayImpl;
+use crate::code_gen::array::{ArrayImpl, ArrayIoImpl};
 use crate::code_gen::cow_array::{cow_array_t, cow_hole_array_t, CowArrayImpl, CowArrayIoImpl};
 use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
-use crate::code_gen::fountain_pen_llvm::{compile_to_executable, ArtifactPaths};
+use crate::code_gen::fountain_pen_llvm::{compile_to_executable, ArtifactPaths, Gc};
 use crate::code_gen::prof_report::{
     define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
 };
@@ -237,9 +238,9 @@ enum PendingDefine {
 }
 
 struct Instances<'a, T: Context + 'a> {
-    cow_array_io: CowArrayIoImpl<T>,
+    array_io: Rc<dyn ArrayIoImpl<T> + 'a>,
     rcs: BTreeMap<ModeScheme, RcBuiltinImpl<T>>,
-    cow_arrays: BTreeMap<ModeScheme, Rc<dyn ArrayImpl<T> + 'a>>,
+    arrays: BTreeMap<ModeScheme, Rc<dyn ArrayImpl<T> + 'a>>,
     pending: Vec<PendingDefine>,
 }
 
@@ -270,15 +271,15 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
         );
 
         let cow_array_io: CowArrayIoImpl<T> = CowArrayIoImpl::declare(
-            &globals.context,
+            globals,
             owned_string_cow_builtin,
             borrowed_string_cow_builtin,
         );
 
         Self {
-            cow_array_io: cow_array_io,
+            array_io: Rc::new(cow_array_io),
             rcs: BTreeMap::new(),
-            cow_arrays: cow_arrays,
+            arrays: cow_arrays,
             pending: vec![
                 PendingDefine::CowArray(owned_string),
                 PendingDefine::CowArray(borrowed_string),
@@ -291,7 +292,7 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
         globals: &Globals<T>,
         mode_scheme: &ModeScheme,
     ) -> Rc<dyn ArrayImpl<T> + 'a> {
-        if let Some(existing) = self.cow_arrays.get(mode_scheme) {
+        if let Some(existing) = self.arrays.get(mode_scheme) {
             return existing.clone();
         }
 
@@ -305,8 +306,7 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
             Rc::new(CowArrayImpl::declare(globals, &mode_scheme))
         };
 
-        self.cow_arrays
-            .insert(mode_scheme.clone(), new_builtin.clone());
+        self.arrays.insert(mode_scheme.clone(), new_builtin.clone());
 
         self.pending
             .push(PendingDefine::CowArray(mode_scheme.clone()));
@@ -332,7 +332,7 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
         _rc_progress: impl ProgressLogger,
         _cow_progress: impl ProgressLogger,
     ) {
-        self.cow_array_io.define(&globals.context);
+        self.array_io.define(globals);
 
         while let Some(pending_op) = self.pending.pop() {
             match pending_op {
@@ -341,7 +341,7 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
                     rc_builtin.define(globals, self);
                 }
                 PendingDefine::CowArray(scheme) => {
-                    let cow_builtin = self.cow_arrays.get(&scheme).unwrap().clone();
+                    let cow_builtin = self.arrays.get(&scheme).unwrap().clone();
                     cow_builtin.define(globals, self);
                 }
             }
@@ -393,6 +393,11 @@ fn gen_rc_op<T: Context>(
     scheme: &ModeScheme,
     arg: T::Value,
 ) {
+    if s.is_gc_on() {
+        s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+        return;
+    }
+
     match scheme {
         ModeScheme::Bool => {}
         ModeScheme::Num(_) => {}
@@ -581,18 +586,19 @@ fn gen_expr<T: Context>(
             result
         }
         E::RcOp(mode_scheme, rc_op, local_id) => {
-            gen_rc_op(
-                match rc_op {
-                    RcOp::Retain => DerivedRcOp::Retain,
-                    RcOp::Release => DerivedRcOp::Release,
-                },
-                s,
-                // &builder,
-                instances,
-                globals,
-                mode_scheme,
-                locals[local_id],
-            );
+            if !s.is_gc_on() {
+                gen_rc_op(
+                    match rc_op {
+                        RcOp::Retain => DerivedRcOp::Retain,
+                        RcOp::Release => DerivedRcOp::Release,
+                    },
+                    s,
+                    instances,
+                    globals,
+                    mode_scheme,
+                    locals[local_id],
+                );
+            }
             s.make_tup(&[])
         }
         E::Intrinsic(intr, local_id) => match intr {
@@ -771,18 +777,18 @@ fn gen_expr<T: Context>(
             }
         }
         E::IoOp(io_op) => {
-            let builtin_io = &instances.cow_array_io;
+            let builtin_io = &instances.array_io;
             match io_op {
-                low::IoOp::Input => s.call(builtin_io.input, &[]),
+                low::IoOp::Input => s.call(builtin_io.input(), &[]),
                 low::IoOp::Output(_input_type, array_id) => {
-                    s.call_void(builtin_io.output, &[locals[array_id]]);
+                    s.call_void(builtin_io.output(), &[locals[array_id]]);
                     s.undef(s.struct_t(&[]))
                 }
             }
         }
         E::Panic(ret_type, _input_type, message_id) => {
-            let builtin_io = &instances.cow_array_io;
-            s.call_void(builtin_io.output_error, &[locals[message_id]]);
+            let builtin_io = &instances.array_io;
+            s.call_void(builtin_io.output_error(), &[locals[message_id]]);
             s.call_void(globals.context.tal().exit(), &[s.i32(1)]);
             s.unreachable();
             s.undef(low_type_in_context(globals, ret_type))
@@ -1052,6 +1058,7 @@ pub fn run(
         .into_temp_path();
 
     compile_to_executable(
+        Gc::None,
         program,
         target,
         opt_level,
@@ -1081,6 +1088,7 @@ pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result
 
     if let Some(artifact_dir) = &config.artifact_dir {
         compile_to_executable(
+            Gc::None,
             program,
             target,
             config.llvm_opt_level,
@@ -1102,6 +1110,7 @@ pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result
             .into_temp_path();
 
         compile_to_executable(
+            Gc::None,
             program,
             target,
             config.llvm_opt_level,

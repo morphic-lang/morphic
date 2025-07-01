@@ -4,6 +4,7 @@
     </picture>
 
 [Website](https://morphic-lang.org)
+
 </div>
 
 This is the source code for the Morphic compiler.
@@ -13,6 +14,7 @@ This is the source code for the Morphic compiler.
 Morphic is an experimental pure functional programming language designed to achieve performance competitive with imperative systems languages like C++ and Rust.
 
 Morphic features three automatic optimizations which turn functional programming constructs into zero-cost abstractions:
+
 - Lambdas: Morphic’s lambda set specialization makes lambdas unboxed and statically dispatched, and allows calls to lambdas to be inlined. You can find the details in our [paper](https://doi.org/10.1145/3591260) or [talk](https://www.youtube.com/watch?v=F3z39M0gdJU&t=3540s).
 - Immutable Data Structures: Morphic’s mutation optimization transforms updates to logically-immutable data structures into in-place mutations when doing so does not affect semantics.
 - Automatic Memory Management: Morphic uses a borrow-based reference counting scheme which is able to eliminate almost all reference count increments and decrements for a large class of programs.
@@ -57,3 +59,9 @@ sieve(limit: Int): Array Primality =
 To build Morphic you will need an up-to-date [Rust](https://rustup.rs/) compiler and a development copy of LLVM 16. Appropriate LLVM packages are available on Debian and Ubuntu from the [LLVM repository](https://apt.llvm.org/). On other platforms, you may need to build LLVM from scratch. See the [LLVM docs](https://llvm.org/docs/GettingStarted.html#getting-the-source-code-and-building-llvm) for details. Once you have installed Rust and LLVM 16, simply run `cargo build`.
 
 Syntax highlighting is available via the Morphic [VSCode Extension](https://marketplace.visualstudio.com/items?itemName=morphic-lang.morphic).
+
+## Extra build options
+
+Typically, you should not need any extra environment variables when building Morphic. However, Morphic's build process does depend on the presence of several command line tools, and we provide the option to explicitly specify their locations via:
+
+- `MORPHIC_CLANG_PATH`

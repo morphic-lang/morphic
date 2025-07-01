@@ -160,9 +160,9 @@ impl StrategyProvider {
 
 #[derive(Debug, Clone, Copy)]
 pub enum EnvVarKind {
-    /// If the env var is invalid, keep trying other strategies.
+    /// If the env var is defined but does not point to a valid tool, try further strategies.
     Soft,
-    /// If the env var is invalid, stop trying other strategies.
+    /// If the env var is defined but does not point to a valid tool, don't try further strategies.
     Hard,
 }
 

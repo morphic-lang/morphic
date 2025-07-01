@@ -1,4 +1,4 @@
-use crate::code_gen::array::ArrayImpl;
+use crate::code_gen::array::{ArrayImpl, ArrayIoImpl};
 use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
 use crate::code_gen::{gen_rc_op, low_type_in_context, DerivedRcOp, Globals, Instances};
 use crate::data::mode_annot_ast::Mode;
@@ -27,8 +27,8 @@ pub fn cow_hole_array_t<T: Context>(context: &T) -> T::Type {
 
 #[derive(Clone, Debug)]
 pub struct CowArrayImpl<T: Context> {
-    pub mode: Mode,
-    pub item_scheme: ModeScheme,
+    mode: Mode,
+    item_scheme: ModeScheme,
 
     // implementation details
     ensure_cap: T::FunctionValue,
@@ -163,7 +163,7 @@ impl<T: Context> CowArrayImpl<T> {
 }
 
 impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
-    fn define<'a, 'b>(&self, globals: &Globals<T>, instances: &mut Instances<T>) {
+    fn define(&self, globals: &Globals<T>, instances: &mut Instances<T>) {
         let context = &globals.context;
 
         // Offset a reference (an *i64) into the underlying heap buffer by sizeof(i64) to skip the leading
@@ -181,11 +181,14 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
         {
             let s = context.scope(self.new);
 
-            let me = s.make_struct(&[
-                (F_ARR_DATA, buf_to_data(&s, s.null())),
-                (F_ARR_CAP, s.i64(0)),
-                (F_ARR_LEN, s.i64(0)),
-            ]);
+            let me = s.make_struct(
+                self.array_t,
+                &[
+                    (F_ARR_DATA, buf_to_data(&s, s.null())),
+                    (F_ARR_CAP, s.i64(0)),
+                    (F_ARR_LEN, s.i64(0)),
+                ],
+            );
 
             s.ret(me);
         }
@@ -213,7 +216,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
 
             s.ret(s.make_tup(&[
                 s.buf_get(self.item_t, data, idx),
-                s.make_struct(&[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)]),
+                s.make_struct(self.hole_array_t, &[(F_HOLE_IDX, idx), (F_HOLE_ARR, me)]),
             ]));
         }
 
@@ -236,11 +239,14 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
 
             s.buf_set(self.item_t, s.field(new_me, F_ARR_DATA), old_len, s.arg(1));
 
-            s.ret(s.make_struct(&[
-                (F_ARR_DATA, s.field(new_me, F_ARR_DATA)),
-                (F_ARR_CAP, s.field(new_me, F_ARR_CAP)),
-                (F_ARR_LEN, new_len),
-            ]));
+            s.ret(s.make_struct(
+                self.array_t,
+                &[
+                    (F_ARR_DATA, s.field(new_me, F_ARR_DATA)),
+                    (F_ARR_CAP, s.field(new_me, F_ARR_CAP)),
+                    (F_ARR_LEN, new_len),
+                ],
+            ));
         }
 
         // define 'pop'
@@ -254,11 +260,14 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
 
             let new_len = s.sub(s.field(me, F_ARR_LEN), s.i64(1));
 
-            let new_me = s.make_struct(&[
-                (F_ARR_DATA, s.field(me, F_ARR_DATA)),
-                (F_ARR_CAP, s.field(me, F_ARR_CAP)),
-                (F_ARR_LEN, new_len),
-            ]);
+            let new_me = s.make_struct(
+                self.array_t,
+                &[
+                    (F_ARR_DATA, s.field(me, F_ARR_DATA)),
+                    (F_ARR_CAP, s.field(me, F_ARR_CAP)),
+                    (F_ARR_LEN, new_len),
+                ],
+            );
 
             let item = s.buf_get(self.item_t, s.field(me, F_ARR_DATA), new_len);
 
@@ -326,45 +335,40 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
                     s.panic("reserve: failed to allocate %zu bytes\n", &[alloc_size]);
                 });
 
-                s.ret(s.make_struct(&[
-                    (F_ARR_DATA, buf_to_data(&s, new_buf)),
-                    (F_ARR_CAP, min_cap),
-                    (F_ARR_LEN, s.field(me, F_ARR_LEN)),
-                ]));
+                s.ret(s.make_struct(
+                    self.array_t,
+                    &[
+                        (F_ARR_DATA, buf_to_data(&s, new_buf)),
+                        (F_ARR_CAP, min_cap),
+                        (F_ARR_LEN, s.field(me, F_ARR_LEN)),
+                    ],
+                ));
             });
 
             s.ret(me);
         }
 
-        // define 'retain_array'
-        {
-            let s = context.scope(self.retain_array);
-            let me = s.arg(0);
-
-            let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
-
-            if let Some(prof_rc) = context.tal().prof_rc() {
-                s.call_void(prof_rc.record_retain(), &[]);
+        if context.is_gc_on() {
+            for func in [
+                self.retain_array,
+                self.derived_retain_array,
+                self.release_array,
+                self.retain_hole,
+                self.derived_retain_hole,
+                self.release_hole,
+            ] {
+                let s = context.scope(func);
+                s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+                s.ret_void();
             }
+        } else {
+            // define 'retain_array'
+            {
+                let s = context.scope(self.retain_array);
+                let me = s.arg(0);
 
-            s.if_(s.not(s.is_null(refcount_ptr)), |s| {
-                s.ptr_set(
-                    refcount_ptr,
-                    s.add(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1)),
-                );
-            });
+                let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
-            s.ret_void();
-        }
-
-        // define 'derived_retain_array'
-        {
-            let s = context.scope(self.derived_retain_array);
-            let me = s.arg(0);
-
-            let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
-
-            if self.mode == Mode::Owned {
                 if let Some(prof_rc) = context.tal().prof_rc() {
                     s.call_void(prof_rc.record_retain(), &[]);
                 }
@@ -375,93 +379,54 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
                         s.add(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1)),
                     );
                 });
+
+                s.ret_void();
             }
 
-            s.ret_void();
-        }
+            // define 'derived_retain_array'
+            {
+                let s = context.scope(self.derived_retain_array);
+                let me = s.arg(0);
 
-        // define 'release_array'
-        {
-            let s = context.scope(self.release_array);
-            let me = s.arg(0);
+                let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
-            let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_retain(), &[]);
+                    }
 
-            if self.mode == Mode::Owned {
-                if let Some(prof_rc) = context.tal().prof_rc() {
-                    s.call_void(prof_rc.record_release(), &[]);
-                }
-
-                s.if_(s.not(s.is_null(refcount_ptr)), |s| {
-                    let new_refcount: T::Value =
-                        s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
-                    s.ptr_set(refcount_ptr, new_refcount);
-
-                    let data = s.field(me, F_ARR_DATA);
-
-                    s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                        s.for_(s.field(me, F_ARR_LEN), |s, i| {
-                            gen_rc_op(
-                                DerivedRcOp::Release,
-                                s,
-                                instances,
-                                globals,
-                                &self.item_scheme,
-                                s.ptr_get(self.item_t, s.buf_addr(self.item_t, data, i)),
-                            );
-                        });
-                        s.call_void(context.tal().free(), &[refcount_ptr]);
+                    s.if_(s.not(s.is_null(refcount_ptr)), |s| {
+                        s.ptr_set(
+                            refcount_ptr,
+                            s.add(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1)),
+                        );
                     });
-                });
-            }
-
-            s.ret_void();
-        }
-
-        // define 'retain_hole'
-        {
-            let s = context.scope(self.retain_hole);
-            let me = s.arg(0);
-
-            s.call_void(self.retain_array, &[s.field(me, F_HOLE_ARR)]);
-            s.ret_void();
-        }
-
-        // define 'derived_retain_hole'
-        {
-            let s = context.scope(self.derived_retain_hole);
-            let me = s.arg(0);
-
-            s.call_void(self.derived_retain_array, &[s.field(me, F_HOLE_ARR)]);
-            s.ret_void();
-        }
-
-        // define 'release_hole'
-        {
-            let s = context.scope(self.release_hole);
-            let me = s.arg(0);
-            let hole_idx = s.field(me, F_HOLE_IDX);
-
-            let me = s.field(me, F_HOLE_ARR);
-
-            let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
-
-            if self.mode == Mode::Owned {
-                if let Some(prof_rc) = context.tal().prof_rc() {
-                    s.call_void(prof_rc.record_release(), &[]);
                 }
 
-                s.if_(s.not(s.is_null(refcount_ptr)), |s| {
-                    let new_refcount: T::Value =
-                        s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
-                    s.ptr_set(refcount_ptr, new_refcount);
+                s.ret_void();
+            }
 
-                    let data = s.field(me, F_ARR_DATA);
+            // define 'release_array'
+            {
+                let s = context.scope(self.release_array);
+                let me = s.arg(0);
 
-                    s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                        s.for_(s.field(me, F_ARR_LEN), |s, i| {
-                            // TODO: investigate if using two for loops is faster than a for loop with a branch
-                            s.if_(s.ne(i, hole_idx), |s| {
+                let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
+
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_release(), &[]);
+                    }
+
+                    s.if_(s.not(s.is_null(refcount_ptr)), |s| {
+                        let new_refcount: T::Value =
+                            s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
+                        s.ptr_set(refcount_ptr, new_refcount);
+
+                        let data = s.field(me, F_ARR_DATA);
+
+                        s.if_(s.eq(new_refcount, s.i64(0)), |s| {
+                            s.for_(s.field(me, F_ARR_LEN), |s, i| {
                                 gen_rc_op(
                                     DerivedRcOp::Release,
                                     s,
@@ -471,12 +436,74 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
                                     s.ptr_get(self.item_t, s.buf_addr(self.item_t, data, i)),
                                 );
                             });
+                            s.call_void(context.tal().free(), &[refcount_ptr]);
                         });
-                        s.call_void(context.tal().free(), &[refcount_ptr]);
                     });
-                });
+                }
+
+                s.ret_void();
             }
-            s.ret_void();
+
+            // define 'retain_hole'
+            {
+                let s = context.scope(self.retain_hole);
+                let me = s.arg(0);
+
+                s.call_void(self.retain_array, &[s.field(me, F_HOLE_ARR)]);
+                s.ret_void();
+            }
+
+            // define 'derived_retain_hole'
+            {
+                let s = context.scope(self.derived_retain_hole);
+                let me = s.arg(0);
+
+                s.call_void(self.derived_retain_array, &[s.field(me, F_HOLE_ARR)]);
+                s.ret_void();
+            }
+
+            // define 'release_hole'
+            {
+                let s = context.scope(self.release_hole);
+                let me = s.arg(0);
+                let hole_idx = s.field(me, F_HOLE_IDX);
+
+                let me = s.field(me, F_HOLE_ARR);
+
+                let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
+
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_release(), &[]);
+                    }
+
+                    s.if_(s.not(s.is_null(refcount_ptr)), |s| {
+                        let new_refcount: T::Value =
+                            s.sub(s.ptr_get(s.i64_t(), refcount_ptr), s.i64(1));
+                        s.ptr_set(refcount_ptr, new_refcount);
+
+                        let data = s.field(me, F_ARR_DATA);
+
+                        s.if_(s.eq(new_refcount, s.i64(0)), |s| {
+                            s.for_(s.field(me, F_ARR_LEN), |s, i| {
+                                // TODO: investigate if using two for loops is faster than a for loop with a branch
+                                s.if_(s.ne(i, hole_idx), |s| {
+                                    gen_rc_op(
+                                        DerivedRcOp::Release,
+                                        s,
+                                        instances,
+                                        globals,
+                                        &self.item_scheme,
+                                        s.ptr_get(self.item_t, s.buf_addr(self.item_t, data, i)),
+                                    );
+                                });
+                            });
+                            s.call_void(context.tal().free(), &[refcount_ptr]);
+                        });
+                    });
+                }
+                s.ret_void();
+            }
         }
 
         // define 'ensure_cap'
@@ -523,11 +550,14 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
                 // The refcount is necessarily 1 immediately after a mutating operation.
                 s.ptr_set(new_buf, s.i64(1));
 
-                s.ret(s.make_struct(&[
-                    (F_ARR_DATA, buf_to_data(&s, new_buf)),
-                    (F_ARR_CAP, new_cap),
-                    (F_ARR_LEN, s.field(me, F_ARR_LEN)),
-                ]))
+                s.ret(s.make_struct(
+                    self.array_t,
+                    &[
+                        (F_ARR_DATA, buf_to_data(&s, new_buf)),
+                        (F_ARR_CAP, new_cap),
+                        (F_ARR_LEN, s.field(me, F_ARR_LEN)),
+                    ],
+                ))
             });
 
             s.ret(me);
@@ -555,82 +585,144 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
         {
             let s = context.scope(self.obtain_unique);
             let me = s.arg(0);
-
             let refcount: T::Value = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
-            s.if_(s.is_null(refcount), |s| {
-                let me = s.make_struct(&[
-                    (F_ARR_DATA, buf_to_data(&s, s.null())),
-                    (F_ARR_CAP, s.i64(0)),
-                    (F_ARR_LEN, s.i64(0)),
-                ]);
+            if context.is_gc_on() {
+                s.if_(s.is_null(refcount), |s| {
+                    let me = s.make_struct(
+                        self.array_t,
+                        &[
+                            (F_ARR_DATA, buf_to_data(&s, s.null())),
+                            (F_ARR_CAP, s.i64(0)),
+                            (F_ARR_LEN, s.i64(0)),
+                        ],
+                    );
 
-                s.ret(me);
-            });
+                    s.ret(me);
+                });
 
-            let len = s.field(me, F_ARR_LEN);
-            let cap = s.field(me, F_ARR_CAP);
+                let len = s.field(me, F_ARR_LEN);
+                let cap = s.field(me, F_ARR_CAP);
 
-            s.if_(s.eq(s.ptr_get(s.i64_t(), refcount), s.i64(1)), |s| {
-                if let Some(prof_rc) = context.tal().prof_rc() {
-                    s.call_void(prof_rc.record_rc1(), &[]);
-                }
-
-                s.ret(me);
-            });
-
-            let new_refcount = s.sub(s.ptr_get(s.i64_t(), refcount), s.i64(1));
-            s.ptr_set(refcount, new_refcount);
-
-            let alloc_size = s.add(
-                s.size(s.i64_t()), // Refcount
-                s.mul(s.size(self.item_t), cap),
-            );
-
-            let new_buf = s.call(
-                context.tal().malloc(),
-                &[s.int_cast(s.usize_t(), alloc_size)],
-            );
-
-            s.if_(s.is_null(new_buf), |s| {
-                s.panic(
-                    "obtain_unique: failed to allocate %zu bytes\n",
-                    &[alloc_size],
-                );
-            });
-
-            s.for_(len, |s, i| {
-                gen_rc_op(
-                    DerivedRcOp::DerivedRetain,
-                    s,
-                    instances,
-                    globals,
-                    &self.item_scheme,
-                    s.ptr_get(
-                        self.item_t,
-                        s.buf_addr(self.item_t, s.field(me, F_ARR_DATA), i),
-                    ),
-                );
-            });
-
-            s.call(
-                context.tal().memcpy(),
-                &[
-                    buf_to_data(&s, new_buf),
-                    s.field(me, F_ARR_DATA),
+                let alloc_size = s.add(
+                    s.size(s.i64_t()), // Refcount
                     s.mul(s.size(self.item_t), cap),
-                ],
-            );
+                );
 
-            // Initialize refcount if the allocation was 'null' before.
-            // The refcount is necessarily 1 immediately after a mutating operation.
-            s.ptr_set(new_buf, s.i64(1));
+                let new_buf = s.call(
+                    context.tal().malloc(),
+                    &[s.int_cast(s.usize_t(), alloc_size)],
+                );
 
-            s.ret(s.make_struct(&[
-                (F_ARR_DATA, buf_to_data(&s, new_buf)),
-                (F_ARR_CAP, cap),
-                (F_ARR_LEN, len),
-            ]))
+                s.if_(s.is_null(new_buf), |s| {
+                    s.panic(
+                        "obtain_unique: failed to allocate %zu bytes\n",
+                        &[alloc_size],
+                    );
+                });
+
+                s.call(
+                    context.tal().memcpy(),
+                    &[
+                        buf_to_data(&s, new_buf),
+                        s.field(me, F_ARR_DATA),
+                        s.mul(s.size(self.item_t), cap),
+                    ],
+                );
+
+                // Initialize refcount if the allocation was 'null' before.
+                // The refcount is necessarily 1 immediately after a mutating operation.
+                s.ptr_set(new_buf, s.i64(1));
+
+                s.ret(s.make_struct(
+                    self.array_t,
+                    &[
+                        (F_ARR_DATA, buf_to_data(&s, new_buf)),
+                        (F_ARR_CAP, cap),
+                        (F_ARR_LEN, len),
+                    ],
+                ))
+            } else {
+                s.if_(s.is_null(refcount), |s| {
+                    let me = s.make_struct(
+                        self.array_t,
+                        &[
+                            (F_ARR_DATA, buf_to_data(&s, s.null())),
+                            (F_ARR_CAP, s.i64(0)),
+                            (F_ARR_LEN, s.i64(0)),
+                        ],
+                    );
+
+                    s.ret(me);
+                });
+
+                let len = s.field(me, F_ARR_LEN);
+                let cap = s.field(me, F_ARR_CAP);
+
+                s.if_(s.eq(s.ptr_get(s.i64_t(), refcount), s.i64(1)), |s| {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_rc1(), &[]);
+                    }
+
+                    s.ret(me);
+                });
+
+                let new_refcount = s.sub(s.ptr_get(s.i64_t(), refcount), s.i64(1));
+                s.ptr_set(refcount, new_refcount);
+
+                let alloc_size = s.add(
+                    s.size(s.i64_t()), // Refcount
+                    s.mul(s.size(self.item_t), cap),
+                );
+
+                let new_buf = s.call(
+                    context.tal().malloc(),
+                    &[s.int_cast(s.usize_t(), alloc_size)],
+                );
+
+                s.if_(s.is_null(new_buf), |s| {
+                    s.panic(
+                        "obtain_unique: failed to allocate %zu bytes\n",
+                        &[alloc_size],
+                    );
+                });
+
+                s.for_(len, |s, i| {
+                    gen_rc_op(
+                        DerivedRcOp::DerivedRetain,
+                        s,
+                        instances,
+                        globals,
+                        &self.item_scheme,
+                        s.ptr_get(
+                            self.item_t,
+                            s.buf_addr(self.item_t, s.field(me, F_ARR_DATA), i),
+                        ),
+                    );
+                });
+
+                s.call(
+                    context.tal().memcpy(),
+                    &[
+                        buf_to_data(&s, new_buf),
+                        s.field(me, F_ARR_DATA),
+                        s.mul(s.size(self.item_t), cap),
+                    ],
+                );
+
+                // Initialize refcount if the allocation was 'null' before.
+                // The refcount is necessarily 1 immediately after a mutating operation.
+                s.ptr_set(new_buf, s.i64(1));
+
+                s.ret(s.make_struct(
+                    self.array_t,
+                    &[
+                        (F_ARR_DATA, buf_to_data(&s, new_buf)),
+                        (F_ARR_CAP, cap),
+                        (F_ARR_LEN, len),
+                    ],
+                ))
+            }
         }
     }
 
@@ -705,19 +797,21 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
 
 #[derive(Clone)]
 pub struct CowArrayIoImpl<T: Context> {
-    pub owned_byte_array: CowArrayImpl<T>,
-    pub borrowed_byte_array: CowArrayImpl<T>,
-    pub input: T::FunctionValue,
-    pub output: T::FunctionValue,
-    pub output_error: T::FunctionValue,
+    owned_byte_array: CowArrayImpl<T>,
+    borrowed_byte_array: CowArrayImpl<T>,
+    input: T::FunctionValue,
+    output: T::FunctionValue,
+    output_error: T::FunctionValue,
 }
 
 impl<T: Context> CowArrayIoImpl<T> {
     pub fn declare(
-        context: &T,
+        globals: &Globals<T>,
         owned_byte_array: CowArrayImpl<T>,
         borrowed_byte_array: CowArrayImpl<T>,
     ) -> Self {
+        let context = &globals.context;
+
         let input = context.declare_func(
             "builtin_cow_array_input",
             &[],
@@ -744,8 +838,12 @@ impl<T: Context> CowArrayIoImpl<T> {
             output_error,
         }
     }
+}
 
-    pub fn define(&self, context: &T) {
+impl<T: Context> ArrayIoImpl<T> for CowArrayIoImpl<T> {
+    fn define(&self, globals: &Globals<T>) {
+        let context = &globals.context;
+
         // define 'input'
         {
             let s = context.scope(self.input);
@@ -812,5 +910,17 @@ impl<T: Context> CowArrayIoImpl<T> {
             );
             s.ret_void();
         }
+    }
+
+    fn input(&self) -> <T as Context>::FunctionValue {
+        self.input
+    }
+
+    fn output(&self) -> <T as Context>::FunctionValue {
+        self.output
+    }
+
+    fn output_error(&self) -> <T as Context>::FunctionValue {
+        self.output_error
     }
 }

@@ -75,10 +75,6 @@ fn compile_ml_sample(
 
     let output_path = artifacts.artifact_path(&format!("{ast_str}-{ml_variant_str}"));
 
-    if output_path.exists() {
-        return;
-    }
-
     match ml_variant {
         cfg::MlConfig::Sml => {
             let mlton_output = process::Command::new("mlton")
@@ -276,10 +272,6 @@ fn bench_ml_sample(
 
     let output_path = artifacts.artifact_path(&format!("{ast}-{ml_variant_str}"));
 
-    if Path::new(&format!("{}/{}.txt", RUN_TIME_DIR, variant_name)).exists() {
-        return;
-    }
-
     let mut results = Vec::new();
     for _ in 0..iters.0 {
         let report: Vec<MlProfReport> =
@@ -326,9 +318,7 @@ fn build_exe(
         filename_prefix: binary_path.file_name().unwrap().into(),
     };
 
-    if artifact_dir.dir_path.exists() {
-        return (binary_path, artifact_dir);
-    } else {
+    if !artifact_dir.dir_path.exists() {
         std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
     }
 
@@ -459,10 +449,6 @@ fn bench_sample(
     for variant in variants() {
         let variant_name = format!("{bench_name}_{tag}", tag = variant.tag());
         println!("benchmarking {}", variant_name);
-
-        if Path::new(&format!("{}/{}.txt", RUN_TIME_DIR, variant_name)).exists() {
-            return;
-        }
 
         let exe_path = std::env::current_dir()
             .unwrap()

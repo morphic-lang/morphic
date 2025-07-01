@@ -106,66 +106,74 @@ impl<T: Context> RcBuiltin<T> for RcBuiltinImpl<T> {
             s.ret(s.gep(self.rc_t, rc, F_ITEM));
         }
 
-        // define 'retain'
-        {
-            let s = context.scope(self.retain);
-            let rc = s.arg(0);
-
-            if let Some(prof_rc) = context.tal().prof_rc() {
-                s.call_void(prof_rc.record_retain(), &[]);
+        if context.is_gc_on() {
+            for func in [self.retain, self.derived_retain, self.release] {
+                let s = context.scope(func);
+                s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+                s.ret_void();
             }
+        } else {
+            // define 'retain'
+            {
+                let s = context.scope(self.retain);
+                let rc = s.arg(0);
 
-            let new_refcount = s.add(s.arrow(self.rc_t, i64_t, rc, F_REFCOUNT), s.i64(1));
-            s.arrow_set(self.rc_t, rc, F_REFCOUNT, new_refcount);
-
-            s.ret_void();
-        }
-
-        // define 'derived_retain'
-        {
-            let s = context.scope(self.derived_retain);
-            let rc = s.arg(0);
-
-            if self.mode == Mode::Owned {
                 if let Some(prof_rc) = context.tal().prof_rc() {
                     s.call_void(prof_rc.record_retain(), &[]);
                 }
 
                 let new_refcount = s.add(s.arrow(self.rc_t, i64_t, rc, F_REFCOUNT), s.i64(1));
                 s.arrow_set(self.rc_t, rc, F_REFCOUNT, new_refcount);
+
+                s.ret_void();
             }
 
-            s.ret_void();
-        }
+            // define 'derived_retain'
+            {
+                let s = context.scope(self.derived_retain);
+                let rc = s.arg(0);
 
-        // define 'release'
-        {
-            let s = context.scope(self.release);
-            let rc = s.arg(0);
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_retain(), &[]);
+                    }
 
-            if self.mode == Mode::Owned {
-                if let Some(prof_rc) = context.tal().prof_rc() {
-                    s.call_void(prof_rc.record_release(), &[]);
+                    let new_refcount = s.add(s.arrow(self.rc_t, i64_t, rc, F_REFCOUNT), s.i64(1));
+                    s.arrow_set(self.rc_t, rc, F_REFCOUNT, new_refcount);
                 }
 
-                let new_refcount = s.sub(s.arrow(self.rc_t, i64_t, rc, F_REFCOUNT), s.i64(1));
-                s.arrow_set(self.rc_t, rc, F_REFCOUNT, new_refcount);
-
-                s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                    gen_rc_op(
-                        DerivedRcOp::Release,
-                        s,
-                        instances,
-                        globals,
-                        &self.item_scheme,
-                        s.ptr_get(self.item_t, s.gep(self.rc_t, rc, F_ITEM)),
-                    );
-
-                    s.free(rc);
-                });
+                s.ret_void();
             }
 
-            s.ret_void();
+            // define 'release'
+            {
+                let s = context.scope(self.release);
+                let rc = s.arg(0);
+
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_release(), &[]);
+                    }
+
+                    let new_refcount = s.sub(s.arrow(self.rc_t, i64_t, rc, F_REFCOUNT), s.i64(1));
+                    s.arrow_set(self.rc_t, rc, F_REFCOUNT, new_refcount);
+
+                    s.if_(s.eq(new_refcount, s.i64(0)), |s| {
+                        gen_rc_op(
+                            DerivedRcOp::Release,
+                            s,
+                            instances,
+                            globals,
+                            &self.item_scheme,
+                            s.ptr_get(self.item_t, s.gep(self.rc_t, rc, F_ITEM)),
+                        );
+
+                        s.free(rc);
+                    });
+                }
+
+                s.ret_void();
+            }
         }
     }
 

@@ -1,8 +1,8 @@
-use crate::data::mode_annot_ast::Mode;
-use crate::data::rc_specialized_ast::ModeScheme;
 use crate::code_gen::array::ArrayImpl;
 use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
 use crate::code_gen::{low_type_in_context, Globals, Instances};
+use crate::data::mode_annot_ast::Mode;
+use crate::data::rc_specialized_ast::ModeScheme;
 
 #[derive(Clone, Debug)]
 pub struct ZeroSizedArrayImpl<T: Context> {
@@ -191,80 +191,95 @@ impl<T: Context> ArrayImpl<T> for ZeroSizedArrayImpl<T> {
             s.ret(me);
         }
 
-        // define 'retain_array'
-        {
-            let s = context.scope(self.retain_array);
-            // let array = s.arg(0); UNUSED ARGUMENT
-
-            if let Some(prof_rc) = context.tal().prof_rc() {
-                s.call_void(prof_rc.record_retain(), &[]);
+        if context.is_gc_on() {
+            for func in [
+                self.retain_array,
+                self.derived_retain_array,
+                self.release_array,
+                self.retain_hole,
+                self.derived_retain_hole,
+                self.release_hole,
+            ] {
+                let s = context.scope(func);
+                s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+                s.ret_void();
             }
+        } else {
+            // define 'retain_array'
+            {
+                let s = context.scope(self.retain_array);
+                // let array = s.arg(0); UNUSED ARGUMENT
 
-            s.ret_void();
-        }
-
-        // define 'derived_retain_array'
-        {
-            let s = context.scope(self.derived_retain_array);
-            // let array = s.arg(0); UNUSED ARGUMENT
-
-            if self.mode == Mode::Owned {
                 if let Some(prof_rc) = context.tal().prof_rc() {
                     s.call_void(prof_rc.record_retain(), &[]);
                 }
+
+                s.ret_void();
             }
 
-            s.ret_void();
-        }
+            // define 'derived_retain_array'
+            {
+                let s = context.scope(self.derived_retain_array);
+                // let array = s.arg(0); UNUSED ARGUMENT
 
-        // define 'release_array'
-        {
-            let s = context.scope(self.release_array);
-            // let array = s.arg(0); UNUSED ARGUMENT
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_retain(), &[]);
+                    }
+                }
 
-            if let Some(prof_rc) = context.tal().prof_rc() {
-                s.call_void(prof_rc.record_release(), &[]);
+                s.ret_void();
             }
 
-            s.ret_void();
-        }
+            // define 'release_array'
+            {
+                let s = context.scope(self.release_array);
+                // let array = s.arg(0); UNUSED ARGUMENT
 
-        // define 'retain_hole'
-        {
-            let s = context.scope(self.retain_hole);
-            // let hole = s.arg(0); UNUSED ARGUMENT
+                if let Some(prof_rc) = context.tal().prof_rc() {
+                    s.call_void(prof_rc.record_release(), &[]);
+                }
 
-            if let Some(prof_rc) = context.tal().prof_rc() {
-                s.call_void(prof_rc.record_retain(), &[]);
+                s.ret_void();
             }
 
-            s.ret_void();
-        }
+            // define 'retain_hole'
+            {
+                let s = context.scope(self.retain_hole);
+                // let hole = s.arg(0); UNUSED ARGUMENT
 
-        // define 'derived_retain_hole_array'
-        {
-            let s = context.scope(self.derived_retain_hole);
-            // let array = s.arg(0); UNUSED ARGUMENT
-
-            if self.mode == Mode::Owned {
                 if let Some(prof_rc) = context.tal().prof_rc() {
                     s.call_void(prof_rc.record_retain(), &[]);
                 }
+
+                s.ret_void();
             }
 
-            s.ret_void();
-        }
+            // define 'derived_retain_hole_array'
+            {
+                let s = context.scope(self.derived_retain_hole);
+                // let array = s.arg(0); UNUSED ARGUMENT
 
-        // define 'release_hole'
-        {
-            let s = context.scope(self.release_hole);
-            // let hole = s.arg(0); UNUSED ARGUMENT
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_retain(), &[]);
+                    }
+                }
 
-            if let Some(prof_rc) = context.tal().prof_rc() {
-                s.call_void(prof_rc.record_release(), &[]);
+                s.ret_void();
             }
 
-            s.ret_void();
+            // define 'release_hole'
+            {
+                let s = context.scope(self.release_hole);
+                // let hole = s.arg(0); UNUSED ARGUMENT
+
+                if let Some(prof_rc) = context.tal().prof_rc() {
+                    s.call_void(prof_rc.record_release(), &[]);
+                }
+
+                s.ret_void();
+            }
         }
     }
 

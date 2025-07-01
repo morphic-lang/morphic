@@ -36,8 +36,8 @@ pub trait Tal: Clone {
     /// (usize) -> i8*
     fn malloc(&self) -> Self::FunctionValue;
 
-    /// The first argument is the number of elements to allocate and the second argument is the size
-    /// of each element.
+    /// arg1: number of elements to allocate
+    /// arg2: size of each element
     ///
     /// (usize, usize) -> i8*
     fn calloc(&self) -> Self::FunctionValue;
@@ -48,24 +48,24 @@ pub trait Tal: Clone {
     /// (i8*) -> ()
     fn free(&self) -> Self::FunctionValue;
 
-    ////////////////////////////////////
     // Modified versions of libc functions for wasm portability.
-    ////////////////////////////////////
 
-    /// (i8*) -> ()
+    /// (i8*, ...) -> ()
     fn print(&self) -> Self::FunctionValue;
 
-    /// (i8*) -> ()
+    /// (i8*, ...) -> ()
     fn print_error(&self) -> Self::FunctionValue;
 
-    /// The first argument is the array to be written to stdout, the second argument is the size of
-    /// each object to be written, and the third argument is the number of objects.
+    /// arg1: array to be written to stdout
+    /// arg2: size of each object to be written
+    /// arg3: number of objects
     ///
     /// (i8*, usize, usize) -> ()
     fn write(&self) -> Self::FunctionValue;
 
-    /// The first argument is the array to be written to stderr, the second argument is the size of
-    /// each object to be written, and the third argument is the number of objects.
+    /// arg1: array to be written to stderr
+    /// arg2: size of each object to be written
+    /// arg3: number of objects
     ///
     /// (i8*, usize, usize) -> ()
     fn write_error(&self) -> Self::FunctionValue;
@@ -73,9 +73,7 @@ pub trait Tal: Clone {
     /// () -> i32
     fn flush(&self) -> Self::FunctionValue;
 
-    ////////////////////////////////////
     // Profiling primitives
-    ////////////////////////////////////
 
     /// () -> u64
     fn prof_clock_res_nanos(&self) -> Self::FunctionValue;
@@ -97,12 +95,12 @@ pub trait Tal: Clone {
 
     fn prof_rc(&self) -> Option<&Self::ProfileRc>;
 
-    ////////////////////////////////////
     // LLVM Intrinsics
-    ////////////////////////////////////
 
-    /// Allows provision of an expected (most probable) value, which can be used by optimizers. The
-    /// first argument is the value and the second argument is the expected value.
+    /// Allows provision of an expected (most probable) value, which can be used by optimizers.
+    ///
+    /// arg1: value
+    /// arg2: expected value
     ///
     /// (i1, i1) -> i1
     fn expect_i1(&self) -> Self::FunctionValue;
@@ -116,12 +114,14 @@ pub trait Tal: Clone {
     /// (i64) -> i64
     fn ctpop_i64(&self) -> Self::FunctionValue;
 
-    /// The second argument is a bool indicating whether the output is poison if the input is 0.
+    /// arg1: value to count zeros of
+    /// arg2: bool indicating whether the output is poison if the value is 0
     ///
     /// (i64, i1) -> i64
     fn ctlz_i64(&self) -> Self::FunctionValue;
 
-    /// The second argument is a bool indicating whether the output is poison if the input is 0.
+    /// arg1: value to count zeros of
+    /// arg2: bool indicating whether the output is poison if the value is 0
     ///
     /// (i64, i1) -> i64
     fn cttz_i64(&self) -> Self::FunctionValue;
@@ -147,6 +147,8 @@ pub trait Context: Clone {
 
     type ProfileRc: ProfileRc<FunctionValue = Self::FunctionValue>;
     type Tal: Tal<FunctionValue = Self::FunctionValue, ProfileRc = Self::ProfileRc>;
+
+    fn is_gc_on(&self) -> bool;
 
     fn tal(&self) -> &Self::Tal;
 
@@ -184,6 +186,10 @@ pub trait Context: Clone {
 
     fn get_type(&self, val: Self::Value) -> Self::Type;
 
+    // TODO: should we just have this instead of also having `size`? (The latter is implemented in
+    // LLVM as a GEP, but is, therefore, target independent.)
+    fn get_abi_size(&self, ty: Self::Type) -> u64;
+
     fn is_iso_to_unit(&self, ty: Self::Type) -> bool;
 
     fn i1_t(&self) -> Self::Type;
@@ -201,6 +207,8 @@ pub trait Context: Clone {
     fn f64_t(&self) -> Self::Type;
 
     fn ptr_t(&self) -> Self::Type;
+
+    fn array_t(&self, item_ty: Self::Type, len: u32) -> Self::Type;
 
     fn struct_t(&self, fields: &[Self::Type]) -> Self::Type;
 
@@ -248,6 +256,10 @@ pub trait Scope {
 
     fn func(&self) -> Self::FunctionValue;
 
+    fn is_gc_on(&self) -> bool {
+        self.context().is_gc_on()
+    }
+
     fn global_value_as_pointer(&self, global_value: Self::GlobalValue) -> Self::Value {
         self.context().global_value_as_pointer(global_value)
     }
@@ -258,6 +270,10 @@ pub trait Scope {
 
     fn get_type(&self, val: Self::Value) -> Self::Type {
         self.context().get_type(val)
+    }
+
+    fn get_abi_size(&self, ty: Self::Type) -> u64 {
+        self.context().get_abi_size(ty)
     }
 
     fn is_iso_to_unit(&self, ty: Self::Type) -> bool {
@@ -294,6 +310,10 @@ pub trait Scope {
 
     fn ptr_t(&self) -> Self::Type {
         self.context().ptr_t()
+    }
+
+    fn array_t(&self, item_ty: Self::Type, len: u32) -> Self::Type {
+        self.context().array_t(item_ty, len)
     }
 
     fn struct_t(&self, fields: &[Self::Type]) -> Self::Type {
@@ -384,6 +404,34 @@ pub trait Scope {
         body: impl FnMut(&Self, bool) -> Self::Value,
     ) -> Self::Value;
 
+    fn if_else2(
+        &self,
+        cond: Self::Value,
+        mut then_body: impl FnMut(&Self),
+        mut else_body: impl FnMut(&Self),
+    ) {
+        self.if_else(
+            cond,
+            |s, cond| if cond { then_body(s) } else { else_body(s) },
+        );
+    }
+
+    fn if_expr2(
+        &self,
+        cond: Self::Value,
+        mut then_body: impl FnMut(&Self) -> Self::Value,
+        mut else_body: impl FnMut(&Self) -> Self::Value,
+    ) -> Self::Value {
+        self.if_expr(
+            cond,
+            |s, cond| if cond { then_body(s) } else { else_body(s) },
+        )
+    }
+
+    fn and_lazy(&self, left: Self::Value, right: impl FnMut(&Self) -> Self::Value) -> Self::Value {
+        self.if_expr2(left, right, |s| s.i1(false))
+    }
+
     fn ternary(
         &self,
         cond: Self::Value,
@@ -393,19 +441,7 @@ pub trait Scope {
 
     fn int_cast(&self, result_type: Self::Type, int: Self::Value) -> Self::Value;
 
-    fn make_struct(&self, fields: &[(u32, Self::Value)]) -> Self::Value {
-        let mut sorted = fields.to_vec();
-        sorted.sort_by_key(|(idx, _)| *idx);
-
-        for (i, (j, _)) in sorted.iter().enumerate() {
-            if i as u32 != *j {
-                panic!("make_struct: fields must be consecutive numbers starting from 0, but field {} is missing", i);
-            }
-        }
-
-        let values: Vec<_> = sorted.into_iter().map(|(_, val)| val).collect();
-        self.make_tup(&values)
-    }
+    fn make_struct(&self, ty: Self::Type, fields: &[(u32, Self::Value)]) -> Self::Value;
 
     fn make_tup(&self, fields: &[Self::Value]) -> Self::Value;
 

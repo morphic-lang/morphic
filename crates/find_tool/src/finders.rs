@@ -1,4 +1,5 @@
 use crate::{get_cmd_out, EnvVarKind, Strategy, StrategyProvider, Tool, ToolFinder, Validator};
+use std::fmt;
 use std::path::Path;
 use std::process::Command as Cmd;
 
@@ -31,14 +32,30 @@ fn check_clang(clang: &Path, expected: u32) -> Result<(), String> {
     ))
 }
 
-pub fn find_clang(version: u32) -> Result<Tool, String> {
-    ToolFinder::new("clang")
+#[derive(Debug, Clone, Copy)]
+pub enum ClangKind {
+    C,
+    CXX,
+}
+
+impl ClangKind {
+    fn to_str(&self) -> &'static str {
+        match self {
+            ClangKind::C => "clang",
+            ClangKind::CXX => "clang++",
+        }
+    }
+}
+
+pub fn find_clang(version: u32, kind: ClangKind) -> Result<Tool, String> {
+    let name = kind.to_str();
+    ToolFinder::new(name)
         .with_strategy(Strategy::EnvVar(
             "MORPHIC_CLANG_PATH".into(),
             EnvVarKind::Hard,
         ))
-        .with_strategy(Strategy::Which(format!("clang-{version}").into()))
-        .with_strategy(Strategy::Which("clang".into()))
+        .with_strategy(Strategy::Which(format!("{name}-{version}").into()))
+        .with_strategy(Strategy::Which(name.into()))
         .with_strategy(Strategy::Tool(
             ToolFinder::new("llvm-config")
                 .with_strategy(Strategy::Which(format!("llvm-config-{version}").into()))
@@ -46,8 +63,8 @@ pub fn find_clang(version: u32) -> Result<Tool, String> {
             StrategyProvider::new(move |tool| {
                 get_cmd_out(&mut Cmd::new(tool.path()).arg("--bindir")).map(|bindir| {
                     Strategy::TryEach(vec![
-                        Strategy::Which(format!("{}/clang-{version}", bindir).into()),
-                        Strategy::Which(format!("{}/clang", bindir).into()),
+                        Strategy::Which(format!("{bindir}/{name}-{version}").into()),
+                        Strategy::Which(format!("{bindir}/{name}").into()),
                     ])
                 })
             }),
@@ -58,6 +75,90 @@ pub fn find_clang(version: u32) -> Result<Tool, String> {
         .find_tool()
 }
 
-pub fn find_default_clang() -> Result<Tool, String> {
-    find_clang(16)
+pub fn find_default_clang(kind: ClangKind) -> Result<Tool, String> {
+    find_clang(16, kind)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KitwareVersion {
+    // Field order is important for `PartialOrd` and `Ord`.
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
+
+impl fmt::Display for KitwareVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl KitwareVersion {
+    pub fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+fn check_kitware(name: &str, exe: &Path, min_version: KitwareVersion) -> Result<(), String> {
+    // Example 'cmake --version' output:
+    // ```
+    // cmake version 3.10.0
+    //
+    // CMake suite maintained and supported by Kitware (kitware.com/cmake).
+    // ```
+    let output = get_cmd_out(&mut Cmd::new(exe).arg("--version"))?;
+    let first_line = output.lines().next().ok_or("No output from --version")?;
+
+    let version_str = first_line
+        .strip_prefix(&format!("{name} version "))
+        .ok_or("Unexpected --version output format")?;
+
+    let parts: Vec<_> = version_str
+        .split('.')
+        .map(|s| s.parse::<u32>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| "Could not parse version number")?;
+
+    if parts.len() != 3 {
+        return Err("Unexpected version format".into());
+    }
+
+    let version = KitwareVersion::new(parts[0], parts[1], parts[2]);
+    if version < min_version {
+        return Err(format!(
+            "Version {version} is less than minimum required {min_version}"
+        ));
+    }
+
+    Ok(())
+}
+
+pub fn find_cmake(min_version: KitwareVersion) -> Result<Tool, String> {
+    ToolFinder::new("cmake")
+        .with_strategy(Strategy::EnvVar(
+            "MORPHIC_CMAKE_PATH".into(),
+            EnvVarKind::Hard,
+        ))
+        .with_strategy(Strategy::Which("cmake".into()))
+        .with_validator(Validator::new("check cmake version", move |tool| {
+            check_kitware("cmake", tool.path(), min_version)
+        }))
+        .find_tool()
+}
+
+pub fn find_ctest(min_version: KitwareVersion) -> Result<Tool, String> {
+    ToolFinder::new("ctest")
+        .with_strategy(Strategy::EnvVar(
+            "MORPHIC_CTEST_PATH".into(),
+            EnvVarKind::Hard,
+        ))
+        .with_strategy(Strategy::Which("ctest".into()))
+        .with_validator(Validator::new("check ctest version", move |tool| {
+            check_kitware("ctest", tool.path(), min_version)
+        }))
+        .find_tool()
 }

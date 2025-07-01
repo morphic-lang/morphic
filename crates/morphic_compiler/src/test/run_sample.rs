@@ -68,17 +68,25 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
             status:   {actual_status:?}
             expected: {expected_status:?}
             ---------------------------------------------
-            stdout:   {actual_stdout:?}
-            expected: {expected_stdout:?}
+            stdout (length = {actual_stdout_len} bytes):
+{actual_stdout}
+            expected stdout (length = {expected_stdout_len} bytes):
+{expected_stdout}
             ---------------------------------------------
-            stderr:  {actual_stderr:?}
-            expected {expected_stderr:?}"#,
+            stderr (length = {actual_stderr_len} bytes):
+{actual_stderr}
+            expected stderr (length = {expected_stderr_len} bytes):
+{expected_stderr}"#,
         actual_status = status,
         expected_status = expected_status,
         actual_stdout = String::from_utf8_lossy(&output),
         expected_stdout = String::from_utf8_lossy(expected_out.as_ref()),
         actual_stderr = String::from_utf8_lossy(&err_output),
-        expected_stderr = String::from_utf8_lossy(expected_err.as_ref())
+        expected_stderr = String::from_utf8_lossy(expected_err.as_ref()),
+        actual_stdout_len = output.len(),
+        expected_stdout_len = expected_out.as_ref().len(),
+        actual_stderr_len = err_output.len(),
+        expected_stderr_len = expected_err.as_ref().len(),
     );
 }
 

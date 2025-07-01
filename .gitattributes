@@ -1,4 +1,5 @@
-/tal/wasm/src/dlmalloc.inc linguist-vendored
-/samples/sample-input/* linguist-vendored
+/crates/morphic_backend/tal/wasm/src/dlmalloc.inc linguist-vendored
+/crates/morphic_common/src/pretty_print/persistent.sml linguist-vendored
 /samples/expected-output/* linguist-generated
-/src/pretty_print/persistent.sml linguist-vendored
+/samples/sample-input/* linguist-vendored
+/vendor/* linguist-vendored

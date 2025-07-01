@@ -2,9 +2,11 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
+#include <gc.h>
 
-void print(const char *str, ...) {
+void morphic_print(const char *str, ...) {
     va_list arg;
 
     va_start(arg, str);
@@ -12,7 +14,7 @@ void print(const char *str, ...) {
     va_end(arg);
 }
 
-void print_error(const char *str, ...) {
+void morphic_print_error(const char *str, ...) {
     va_list arg;
 
     va_start(arg, str);
@@ -20,15 +22,15 @@ void print_error(const char *str, ...) {
     va_end(arg);
 }
 
-void write(const void *ptr, size_t size, size_t count) {
+void morphic_write(const void *ptr, size_t size, size_t count) {
     fwrite(ptr, size, count, stdout);
 }
 
-void write_error(const void *ptr, size_t size, size_t count) {
+void morphic_write_error(const void *ptr, size_t size, size_t count) {
     fwrite(ptr, size, count, stderr);
 }
 
-int flush(void) {
+int morphic_flush(void) {
     return fflush(stdout);
 }
 
@@ -38,7 +40,7 @@ int flush(void) {
    with nanoseconds? */
 #define TIMESPEC_TO_NANOS(spec) (((uint64_t)(spec).tv_sec)*1000000000 + ((uint64_t)(spec).tv_nsec))
 
-uint64_t prof_clock_res_nanos(void) {
+uint64_t morphic_prof_clock_res_nanos(void) {
     struct timespec res;
     if (clock_getres(PROF_CLOCK_ID, &res)) {
         perror("Could not get clock resolution");
@@ -47,7 +49,7 @@ uint64_t prof_clock_res_nanos(void) {
     return TIMESPEC_TO_NANOS(res);
 }
 
-uint64_t prof_clock_nanos(void) {
+uint64_t morphic_prof_clock_nanos(void) {
     struct timespec tp;
     if (clock_gettime(PROF_CLOCK_ID, &tp)) {
         perror("Could not get clock");
@@ -58,7 +60,7 @@ uint64_t prof_clock_nanos(void) {
 
 static FILE *prof_report_file = NULL;
 
-void prof_report_init(void) {
+void morphic_prof_report_init(void) {
     const char *report_path = getenv("MORPHIC_PROFILE_PATH");
     if (report_path == NULL) {
         return;
@@ -71,7 +73,7 @@ void prof_report_init(void) {
     }
 }
 
-void prof_report_write_string(const char *str) {
+void morphic_prof_report_write_string(const char *str) {
     if (prof_report_file == NULL) {
         return;
     }
@@ -83,7 +85,7 @@ void prof_report_write_string(const char *str) {
     }
 }
 
-void prof_report_write_u64(uint64_t val) {
+void morphic_prof_report_write_u64(uint64_t val) {
     if (prof_report_file == NULL) {
         return;
     }
@@ -95,7 +97,7 @@ void prof_report_write_u64(uint64_t val) {
     }
 }
 
-void prof_report_done(void) {
+void morphic_prof_report_done(void) {
     if (prof_report_file == NULL) {
         return;
     }
@@ -110,26 +112,38 @@ static uint64_t prof_rc_retain_count = 0;
 static uint64_t prof_rc_release_count = 0;
 static uint64_t prof_rc_rc1_count = 0;
 
-void prof_rc_record_retain(void) {
+void morphic_prof_rc_record_retain(void) {
     prof_rc_retain_count++;
 }
 
-void prof_rc_record_release(void) {
+void morphic_prof_rc_record_release(void) {
     prof_rc_release_count++;
 }
 
-void prof_rc_record_rc1(void) {
+void morphic_prof_rc_record_rc1(void) {
     prof_rc_release_count++;
 }
 
-uint64_t prof_rc_get_retain_count(void) {
+uint64_t morphic_prof_rc_get_retain_count(void) {
     return prof_rc_retain_count;
 }
 
-uint64_t prof_rc_get_release_count(void) {
+uint64_t morphic_prof_rc_get_release_count(void) {
     return prof_rc_release_count;
 }
 
-uint64_t prof_rc_get_rc1_count(void) {
+uint64_t morphic_prof_rc_get_rc1_count(void) {
     return prof_rc_rc1_count;
+}
+
+void morphic_GC_init(void) {
+    GC_INIT();
+}
+
+void *morphic_GC_calloc(size_t num, size_t size) {
+    void *ptr = calloc(num, size);
+    if (ptr == NULL) {
+        return NULL;
+    }
+    return memset(ptr, 0, num * size);
 }

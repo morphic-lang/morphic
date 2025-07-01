@@ -1,5 +1,6 @@
-use crate::code_gen::{fountain_pen, gen_program, Error};
-use find_tool::finders::find_default_clang;
+use crate::code_gen::fountain_pen::{self, Scope as ScopeTrait};
+use crate::code_gen::{gen_program, Error};
+use find_tool::finders::{find_default_clang, ClangKind};
 use id_collections::{id_type, IdVec};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -25,6 +26,7 @@ use std::rc::Rc;
 
 mod native {
     pub const TAL_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native/tal.o"));
+    pub const GC_A: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native/gc/libgc.a"));
 }
 
 mod wasm {
@@ -242,17 +244,27 @@ pub struct GlobalValue<'a>(inkwell::values::GlobalValue<'a>);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FunctionValue<'a>(inkwell::values::FunctionValue<'a>);
 
+impl<'a> FunctionValue<'a> {
+    fn has_name(&self, name: &str) -> bool {
+        self.0
+            .get_name()
+            .to_str()
+            .map(|s| s == name)
+            .unwrap_or(false)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Value<'a>(BasicValueEnum<'a>);
 
 #[derive(Clone)]
 pub struct ProfileRc<'a> {
-    pub record_retain: FunctionValue<'a>,
-    pub record_release: FunctionValue<'a>,
-    pub record_rc1: FunctionValue<'a>,
-    pub get_retain_count: FunctionValue<'a>,
-    pub get_release_count: FunctionValue<'a>,
-    pub get_rc1_count: FunctionValue<'a>,
+    record_retain: FunctionValue<'a>,
+    record_release: FunctionValue<'a>,
+    record_rc1: FunctionValue<'a>,
+    get_retain_count: FunctionValue<'a>,
+    get_release_count: FunctionValue<'a>,
+    get_rc1_count: FunctionValue<'a>,
 }
 
 impl<'a> fountain_pen::ProfileRc for ProfileRc<'a> {
@@ -285,34 +297,45 @@ impl<'a> fountain_pen::ProfileRc for ProfileRc<'a> {
 
 #[derive(Clone)]
 pub struct Tal<'a> {
-    pub memcpy: FunctionValue<'a>,
-    pub exit: FunctionValue<'a>,
-    pub getchar: FunctionValue<'a>,
+    memcpy: FunctionValue<'a>,
+    exit: FunctionValue<'a>,
+    getchar: FunctionValue<'a>,
 
-    pub malloc: FunctionValue<'a>,
-    pub calloc: FunctionValue<'a>,
-    pub realloc: FunctionValue<'a>,
-    pub free: FunctionValue<'a>,
+    init_gc: Option<FunctionValue<'a>>,
+    malloc: FunctionValue<'a>,
+    calloc: FunctionValue<'a>,
+    realloc: FunctionValue<'a>,
+    free: FunctionValue<'a>,
 
-    pub print: FunctionValue<'a>,
-    pub print_error: FunctionValue<'a>,
-    pub write: FunctionValue<'a>,
-    pub write_error: FunctionValue<'a>,
-    pub flush: FunctionValue<'a>,
+    print: FunctionValue<'a>,
+    print_error: FunctionValue<'a>,
+    write: FunctionValue<'a>,
+    write_error: FunctionValue<'a>,
+    flush: FunctionValue<'a>,
 
-    pub prof_clock_res_nanos: FunctionValue<'a>,
-    pub prof_clock_nanos: FunctionValue<'a>,
-    pub prof_report_init: FunctionValue<'a>,
-    pub prof_report_write_string: FunctionValue<'a>,
-    pub prof_report_write_u64: FunctionValue<'a>,
-    pub prof_report_done: FunctionValue<'a>,
-    pub prof_rc: Option<ProfileRc<'a>>,
+    prof_clock_res_nanos: FunctionValue<'a>,
+    prof_clock_nanos: FunctionValue<'a>,
+    prof_report_init: FunctionValue<'a>,
+    prof_report_write_string: FunctionValue<'a>,
+    prof_report_write_u64: FunctionValue<'a>,
+    prof_report_done: FunctionValue<'a>,
+    prof_rc: Option<ProfileRc<'a>>,
 
-    pub expect_i1: FunctionValue<'a>,
-    pub umul_with_overflow_i64: FunctionValue<'a>,
-    pub ctpop_i64: FunctionValue<'a>,
-    pub ctlz_i64: FunctionValue<'a>,
-    pub cttz_i64: FunctionValue<'a>,
+    expect_i1: FunctionValue<'a>,
+    umul_with_overflow_i64: FunctionValue<'a>,
+
+    /// (i64) -> i64
+    ctpop_i64: FunctionValue<'a>,
+
+    /// The second argument is a bool indicating whether the output is poison if the input is 0.
+    ///
+    /// (i64, i1) -> i64
+    ctlz_i64: FunctionValue<'a>,
+
+    /// The second argument is a bool indicating whether the output is poison if the input is 0.
+    ///
+    /// (i64, i1) -> i64
+    cttz_i64: FunctionValue<'a>,
 }
 
 impl<'a> fountain_pen::Tal for Tal<'a> {
@@ -417,37 +440,37 @@ impl<'a> fountain_pen::Tal for Tal<'a> {
 }
 
 impl<'a> ProfileRc<'a> {
-    pub fn declare(context: &'a inkwell::context::Context, module: &Module<'a>) -> ProfileRc<'a> {
+    fn declare(context: &'a inkwell::context::Context, module: &Module<'a>) -> ProfileRc<'a> {
         let void_t = context.void_type();
         let i64_t = context.i64_type();
 
         let record_retain = module.add_function(
-            "prof_rc_record_retain",
+            "morphic_prof_rc_record_retain",
             void_t.fn_type(&[], false),
             Some(Linkage::External),
         );
         let record_release = module.add_function(
-            "prof_rc_record_release",
+            "morphic_prof_rc_record_release",
             void_t.fn_type(&[], false),
             Some(Linkage::External),
         );
         let record_rc1 = module.add_function(
-            "prof_rc_record_rc1",
+            "morphic_prof_rc_record_rc1",
             void_t.fn_type(&[], false),
             Some(Linkage::External),
         );
         let get_retain_count = module.add_function(
-            "prof_rc_get_retain_count",
+            "morphic_prof_rc_get_retain_count",
             i64_t.fn_type(&[], false),
             Some(Linkage::External),
         );
         let get_release_count = module.add_function(
-            "prof_rc_get_release_count",
+            "morphic_prof_rc_get_release_count",
             i64_t.fn_type(&[], false),
             Some(Linkage::External),
         );
         let get_rc1_count = module.add_function(
-            "prof_rc_get_rc1_count",
+            "morphic_prof_rc_get_rc1_count",
             i64_t.fn_type(&[], false),
             Some(Linkage::External),
         );
@@ -464,10 +487,11 @@ impl<'a> ProfileRc<'a> {
 }
 
 impl<'a> Tal<'a> {
-    pub fn declare(
+    fn declare(
         context: &'a inkwell::context::Context,
         module: &Module<'a>,
         target: &TargetData,
+        gc: Gc,
         profile_record_rc: bool,
     ) -> Tal<'a> {
         let usize_t = usize_t(context, target);
@@ -493,79 +517,102 @@ impl<'a> Tal<'a> {
             Some(Linkage::External),
         );
 
+        let init_gc = match gc {
+            Gc::Bdw => Some(module.add_function(
+                "morphic_GC_init",
+                void_t.fn_type(&[], false),
+                Some(Linkage::External),
+            )),
+            Gc::None => None,
+        };
         let malloc = module.add_function(
-            "malloc",
+            match gc {
+                Gc::Bdw => "GC_malloc",
+                Gc::None => "malloc",
+            },
             i8_ptr_t.fn_type(&[usize_t.into()], false),
             Some(Linkage::External),
         );
         let calloc = module.add_function(
-            "calloc",
+            match gc {
+                Gc::Bdw => "morphic_GC_calloc",
+                Gc::None => "calloc",
+            },
             i8_ptr_t.fn_type(&[usize_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let realloc = module.add_function(
-            "realloc",
+            match gc {
+                Gc::Bdw => "GC_realloc",
+                Gc::None => "realloc",
+            },
             i8_ptr_t.fn_type(&[i8_ptr_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let free = module.add_function(
-            "free",
+            match gc {
+                Gc::Bdw => "GC_free",
+                Gc::None => "free",
+            },
             void_t.fn_type(&[i8_ptr_t.into()], false),
             Some(Linkage::External),
         );
 
         let print = module.add_function(
-            "print",
+            "morphic_print",
             void_t.fn_type(&[i8_ptr_t.into()], true),
             Some(Linkage::External),
         );
         let print_error = module.add_function(
-            "print_error",
+            "morphic_print_error",
             void_t.fn_type(&[i8_ptr_t.into()], true),
             Some(Linkage::External),
         );
         let write = module.add_function(
-            "write",
+            "morphic_write",
             void_t.fn_type(&[i8_ptr_t.into(), usize_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let write_error = module.add_function(
-            "write_error",
+            "morphic_write_error",
             void_t.fn_type(&[i8_ptr_t.into(), usize_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
-        let flush =
-            module.add_function("flush", i32_t.fn_type(&[], false), Some(Linkage::External));
+        let flush = module.add_function(
+            "morphic_flush",
+            i32_t.fn_type(&[], false),
+            Some(Linkage::External),
+        );
 
         // Profiling primitives:
 
         let prof_clock_res_nanos = module.add_function(
-            "prof_clock_res_nanos",
+            "morphic_prof_clock_res_nanos",
             i64_t.fn_type(&[], false),
             Some(Linkage::External),
         );
         let prof_clock_nanos = module.add_function(
-            "prof_clock_nanos",
+            "morphic_prof_clock_nanos",
             i64_t.fn_type(&[], false),
             Some(Linkage::External),
         );
         let prof_report_init = module.add_function(
-            "prof_report_init",
+            "morphic_prof_report_init",
             void_t.fn_type(&[], false),
             Some(Linkage::External),
         );
         let prof_report_write_string = module.add_function(
-            "prof_report_write_string",
+            "morphic_prof_report_write_string",
             void_t.fn_type(&[i8_ptr_t.into()], false),
             Some(Linkage::External),
         );
         let prof_report_write_u64 = module.add_function(
-            "prof_report_write_u64",
+            "morphic_prof_report_write_u64",
             void_t.fn_type(&[i64_t.into()], false),
             Some(Linkage::External),
         );
         let prof_report_done = module.add_function(
-            "prof_report_done",
+            "morphic_prof_report_done",
             void_t.fn_type(&[], false),
             Some(Linkage::External),
         );
@@ -614,6 +661,7 @@ impl<'a> Tal<'a> {
             exit: FunctionValue(exit),
             getchar: FunctionValue(getchar),
 
+            init_gc: init_gc.map(FunctionValue),
             malloc: FunctionValue(malloc),
             calloc: FunctionValue(calloc),
             realloc: FunctionValue(realloc),
@@ -681,6 +729,7 @@ struct TailTargetData<'a> {
 
 #[derive(Clone)]
 pub struct Context<'a, 'b> {
+    gc: Gc,
     context: &'a inkwell::context::Context,
     module: &'b Module<'a>,
     target: &'b TargetData,
@@ -747,6 +796,10 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
 
     type ProfileRc = ProfileRc<'a>;
     type Tal = Tal<'a>;
+
+    fn is_gc_on(&self) -> bool {
+        self.gc != Gc::None
+    }
 
     fn tal(&self) -> &Self::Tal {
         &self.tal
@@ -836,16 +889,20 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
     }
 
     fn scope(&self, func: Self::FunctionValue) -> Self::Scope {
-        let tail_funcs = self.tail_funcs.borrow();
-
-        if let Some(&body_block) = tail_funcs.get(&func) {
+        if let Some(&body_block) = self.tail_funcs.borrow().get(&func) {
             assert_eq!(body_block.get_instructions().count(), 0);
             return Scope::new(self.clone(), func, body_block, None);
         }
 
         assert_eq!(func.0.count_basic_blocks(), 0);
         let entry_block = self.context.append_basic_block(func.0, "entry");
-        Scope::new(self.clone(), func, entry_block, None)
+        let scope = Scope::new(self.clone(), func, entry_block, None);
+
+        if self.gc == Gc::Bdw && func.has_name("main") {
+            scope.call_void(self.tal.init_gc.unwrap(), &[])
+        }
+
+        scope
     }
 
     fn tail_scope(&self, tail_target: Self::TailTarget) -> Self::Scope {
@@ -869,6 +926,10 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
 
     fn get_type(&self, val: Self::Value) -> Self::Type {
         Type(val.0.get_type().into())
+    }
+
+    fn get_abi_size(&self, ty: Self::Type) -> u64 {
+        self.target.get_abi_size(&ty.0)
     }
 
     fn is_iso_to_unit(&self, ty: Self::Type) -> bool {
@@ -915,6 +976,10 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
 
     fn ptr_t(&self) -> Self::Type {
         Type(self.context.ptr_type(AddressSpace::default()).into())
+    }
+
+    fn array_t(&self, item_ty: Self::Type, len: u32) -> Self::Type {
+        Type(item_ty.0.array_type(len).into())
     }
 
     fn struct_t(&self, fields: &[Self::Type]) -> Self::Type {
@@ -1280,6 +1345,39 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         )
     }
 
+    fn make_struct(&self, ty: Self::Type, fields: &[(u32, Self::Value)]) -> Self::Value {
+        let mut sorted = fields.to_vec();
+        sorted.sort_by_key(|(idx, _)| *idx);
+
+        let struct_ty = ty.0.into_struct_type();
+        let field_tys = struct_ty.get_field_types();
+        let expected_len = field_tys.len();
+        let actual_len = sorted.len();
+
+        if expected_len != actual_len {
+            panic!(
+                "make_struct: struct has {expected_len} fields, but {actual_len} fields were provided",
+            );
+        }
+
+        for (i, (j, value)) in sorted.iter().enumerate() {
+            if i as u32 != *j {
+                panic!("make_struct: fields must be consecutive numbers starting from 0, but field {i} is missing");
+            }
+
+            let field_ty = field_tys[i];
+            let value_ty = value.0.get_type();
+
+            if field_ty != value_ty {
+                panic!(
+                    "make_struct: field {i} has type {field_ty}, but provided value has type {value_ty}",
+                );
+            }
+        }
+
+        self.make_tup(&sorted.into_iter().map(|(_, val)| val).collect::<Vec<_>>())
+    }
+
     fn make_tup(&self, fields: &[Value<'a>]) -> Value<'a> {
         let field_types: Vec<_> = fields.iter().map(|field| field.0.get_type()).collect();
         let tup_type = self.context.context.struct_type(&field_types[..], false);
@@ -1430,6 +1528,12 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
             .unwrap();
 
         self.builder.build_unreachable().unwrap();
+
+        let unreachable_block = self
+            .context
+            .context
+            .append_basic_block(self.func.0, "after_unreachable");
+        self.builder.position_at_end(unreachable_block);
     }
 
     fn print(&self, message: &str, message_args: &[Value<'a>]) {
@@ -2009,13 +2113,14 @@ fn check_valid_dir_path(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_cc(target: cfg::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(), Error> {
+fn run_cc(_gc: Gc, target: cfg::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(), Error> {
+    check_valid_file_path(obj_path)?;
+    check_valid_file_path(exe_path)?;
+
     match target {
         cfg::LlvmConfig::Native => {
-            check_valid_file_path(obj_path)?;
-            check_valid_file_path(exe_path)?;
+            let clang = find_default_clang(ClangKind::C).map_err(Error::CouldNotFindClang)?;
 
-            // materialize files to link with
             let mut tal_file = tempfile::Builder::new()
                 .suffix(".o")
                 .tempfile_in("")
@@ -2023,10 +2128,16 @@ fn run_cc(target: cfg::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
             tal_file
                 .write_all(native::TAL_O)
                 .map_err(Error::CouldNotWriteObjFile)?;
+            let mut gc_file = tempfile::Builder::new()
+                .suffix(".a")
+                .tempfile_in("")
+                .map_err(Error::CouldNotCreateTempFile)?;
+            gc_file
+                .write_all(native::GC_A)
+                .map_err(Error::CouldNotWriteObjFile)?;
 
-            let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
-            std::process::Command::new(clang.path())
-                .arg("-O3")
+            let mut cmd = std::process::Command::new(clang.path());
+            cmd.arg("-O3")
                 .arg("-ffunction-sections")
                 .arg("-fdata-sections")
                 .arg("-fPIC")
@@ -2039,8 +2150,8 @@ fn run_cc(target: cfg::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
                 .arg(exe_path)
                 .arg(obj_path)
                 .arg(tal_file.path())
-                .status()
-                .map_err(Error::ClangFailed)?;
+                .arg(gc_file.path());
+            cmd.status().map_err(Error::ClangFailed)?;
         }
         cfg::LlvmConfig::Wasm => {
             // materialize files to link with
@@ -2078,7 +2189,7 @@ fn run_cc(target: cfg::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(
                 .write_all(wasm::WASM_LOADER_JS)
                 .map_err(Error::CouldNotWriteOutputFile)?;
 
-            let clang = find_default_clang().map_err(Error::CouldNotFindClang)?;
+            let clang = find_default_clang(ClangKind::C).map_err(Error::CouldNotFindClang)?;
             std::process::Command::new(clang.path())
                 .arg("-O3")
                 .arg("-ffunction-sections")
@@ -2120,7 +2231,14 @@ fn verify_llvm(module: &Module) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Gc {
+    Bdw,
+    None,
+}
+
 pub fn compile_to_executable(
+    gc: Gc,
     program: low::Program,
     target: cfg::LlvmConfig,
     opt_level: OptimizationLevel,
@@ -2140,9 +2258,10 @@ pub fn compile_to_executable(
     module.set_triple(&target_machine.get_triple());
     module.set_data_layout(&target_machine.get_target_data().get_data_layout());
 
-    let tal = Tal::declare(&llvm_context, &module, &target_data, profile_record_rc);
+    let tal = Tal::declare(&llvm_context, &module, &target_data, gc, profile_record_rc);
 
     let context = Context {
+        gc,
         context: &llvm_context,
         module: &module,
         target: &target_data,
@@ -2215,5 +2334,5 @@ pub fn compile_to_executable(
 
     codegen_progress.finish();
 
-    run_cc(target, artifact_paths.obj, artifact_paths.exe)
+    run_cc(gc, target, artifact_paths.obj, artifact_paths.exe)
 }
