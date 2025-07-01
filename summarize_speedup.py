@@ -14,7 +14,7 @@ def parse_times(results_dir):
         match = re.match(
             r"^bench_(?P<name>[^\.]+)\.mor_(?P<tag>[a-zA-Z0-9_]+)_time\.txt$", fname
         )
-        if not match or "first_order" in match.group("tag"):
+        if not match:  # or "first_order" in match.group("tag"):
             continue
         # the file contains a comma-separated list of integers, which we can parse as a JSON array
         with open(os.path.join(results_dir, fname), "r") as f:
@@ -231,7 +231,7 @@ def plot_speedups_and_rcs(name, speedups, rcs):
     # Adjust layout and save
     plt.tight_layout()
     os.makedirs("figure_out", exist_ok=True)
-    plt.savefig(f"figure_out/combined_{name}.png", dpi=300, bbox_inches="tight")
+    plt.savefig(f"figure_out/plot.png", dpi=300, bbox_inches="tight")
     plt.show()
 
 
@@ -291,17 +291,17 @@ def plot_time_per_rc(name, all_times, rcs):
 
 def plot_speedups(name, speedups):
     # Call the combined plotting function
-    all_times = parse_times("target/run_time/")
+    # all_times = parse_times("target/run_time/")
     rcs = parse_rcs("target/rc_count/")
-    plot_absolute_times(name, all_times)
+    # plot_absolute_times(name, all_times)
     plot_speedups_and_rcs(name, speedups, rcs)
 
 
 def main():
     all_times = parse_times("target/run_time/")
-    rcs = parse_rcs("target/rc_count/")
-    plot_absolute_times(all_times)
-    # plot_speedups("perceus", get_speedups("perceus", all_times))
+    # rcs = parse_rcs("target/rc_count/")
+    # plot_absolute_times(all_times)
+    plot_speedups("perceus", get_speedups("perceus", all_times))
     # plot_time_per_rc("perceus", all_times, rcs)
 
 
