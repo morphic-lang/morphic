@@ -4,12 +4,22 @@ use crate::code_gen::{low_type_in_context, Globals, Instances};
 use crate::data::mode_annot_ast::Mode;
 use crate::data::rc_specialized_ast::ModeScheme;
 
+pub fn zero_sized_array_t<T: Context>(context: &T) -> T::Type {
+    return context.i64_t();
+}
+
+pub fn zero_sized_hole_array_t<T: Context>(context: &T) -> T::Type {
+    return context.i64_t();
+}
+
 #[derive(Clone, Debug)]
 pub struct ZeroSizedArrayImpl<T: Context> {
     mode: Mode,
-    item_type: T::Type,
-    array_type: T::Type,
-    hole_array_type: T::Type,
+
+    item_t: T::Type,
+    array_t: T::Type,
+    hole_array_t: T::Type,
+
     new: T::FunctionValue,
     get: T::FunctionValue,
     extract: T::FunctionValue,
@@ -18,9 +28,11 @@ pub struct ZeroSizedArrayImpl<T: Context> {
     pop: T::FunctionValue,
     replace: T::FunctionValue,
     reserve: T::FunctionValue,
+
     retain_array: T::FunctionValue,
     derived_retain_array: T::FunctionValue,
     release_array: T::FunctionValue,
+
     retain_hole: T::FunctionValue,
     derived_retain_hole: T::FunctionValue,
     release_hole: T::FunctionValue,
@@ -36,8 +48,8 @@ impl<T: Context> ZeroSizedArrayImpl<T> {
             panic!();
         };
 
-        let item_type = low_type_in_context(globals, &item_scheme.as_type());
-        debug_assert!(context.is_iso_to_unit(item_type));
+        debug_assert!(globals.is_zero_sized(&item_scheme.as_type()));
+        let item_t = low_type_in_context(globals, &item_scheme.as_type());
 
         let i64_t = context.i64_t();
         let array_t = i64_t;
@@ -54,21 +66,21 @@ impl<T: Context> ZeroSizedArrayImpl<T> {
 
         let new = fun("new", array_t, &[]);
 
-        let get = fun("get", item_type, &[array_t, i64_t]);
+        let get = fun("get", item_t, &[array_t, i64_t]);
 
         let extract = fun(
             "extract",
-            context.struct_t(&[item_type, hole_array_t]),
+            context.struct_t(&[item_t, hole_array_t]),
             &[array_t, i64_t],
         );
 
         let len = fun("len", i64_t, &[array_t]);
 
-        let push = fun("push", array_t, &[array_t, item_type]);
+        let push = fun("push", array_t, &[array_t, item_t]);
 
-        let pop = fun("pop", context.struct_t(&[array_t, item_type]), &[array_t]);
+        let pop = fun("pop", context.struct_t(&[array_t, item_t]), &[array_t]);
 
-        let replace = fun("replace", array_t, &[hole_array_t, item_type]);
+        let replace = fun("replace", array_t, &[hole_array_t, item_t]);
 
         let reserve = fun("reserve", array_t, &[array_t, i64_t]);
 
@@ -86,9 +98,9 @@ impl<T: Context> ZeroSizedArrayImpl<T> {
 
         Self {
             mode: *mode,
-            item_type,
-            array_type: array_t,
-            hole_array_type: hole_array_t,
+            item_t,
+            array_t,
+            hole_array_t,
             new,
             get,
             extract,
@@ -130,7 +142,7 @@ impl<T: Context> ArrayImpl<T> for ZeroSizedArrayImpl<T> {
                 )
             });
 
-            s.ret(s.undef(self.item_type));
+            s.ret(s.undef(self.item_t));
         }
 
         // define 'extract'
@@ -146,7 +158,7 @@ impl<T: Context> ArrayImpl<T> for ZeroSizedArrayImpl<T> {
                 )
             });
 
-            s.ret(s.make_tup(&[s.undef(self.item_type), array]));
+            s.ret(s.make_tup(&[s.undef(self.item_t), array]));
         }
 
         // define 'len'
@@ -172,7 +184,7 @@ impl<T: Context> ArrayImpl<T> for ZeroSizedArrayImpl<T> {
                 s.panic("cannot pop array of length 0", &[]);
             });
 
-            s.ret(s.make_tup(&[s.sub(array, s.i64(1)), s.undef(self.item_type)]));
+            s.ret(s.make_tup(&[s.sub(array, s.i64(1)), s.undef(self.item_t)]));
         }
 
         // define 'replace'
@@ -284,15 +296,15 @@ impl<T: Context> ArrayImpl<T> for ZeroSizedArrayImpl<T> {
     }
 
     fn item_type(&self) -> T::Type {
-        self.item_type
+        self.item_t
     }
 
     fn array_type(&self) -> T::Type {
-        self.array_type
+        self.array_t
     }
 
     fn hole_array_type(&self) -> T::Type {
-        self.hole_array_type
+        self.hole_array_t
     }
 
     fn new(&self) -> T::FunctionValue {

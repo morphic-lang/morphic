@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Display};
+
 pub trait ProfileRc: Clone {
     type FunctionValue: Copy;
 
@@ -140,7 +142,7 @@ pub trait Context: Clone {
 
     type TailTarget: Copy;
     type VariantsType: Clone;
-    type Type: Copy;
+    type Type: Copy + Debug + Display;
     type GlobalValue: Copy;
     type FunctionValue: Copy;
     type Value: Copy;
@@ -189,8 +191,6 @@ pub trait Context: Clone {
     // TODO: should we just have this instead of also having `size`? (The latter is implemented in
     // LLVM as a GEP, but is, therefore, target independent.)
     fn get_abi_size(&self, ty: Self::Type) -> u64;
-
-    fn is_iso_to_unit(&self, ty: Self::Type) -> bool;
 
     fn i1_t(&self) -> Self::Type;
 
@@ -247,7 +247,7 @@ pub trait Scope {
 
     type TailTarget: Copy;
     type VariantsType: Clone;
-    type Type: Copy;
+    type Type: Copy + Debug + Display;
     type GlobalValue: Copy;
     type FunctionValue: Copy;
     type Value: Copy;
@@ -274,10 +274,6 @@ pub trait Scope {
 
     fn get_abi_size(&self, ty: Self::Type) -> u64 {
         self.context().get_abi_size(ty)
-    }
-
-    fn is_iso_to_unit(&self, ty: Self::Type) -> bool {
-        self.context().is_iso_to_unit(ty)
     }
 
     fn i1_t(&self) -> Self::Type {

@@ -4,7 +4,7 @@ mod array;
 mod cow_array;
 mod fountain_pen;
 mod fountain_pen_llvm;
-// mod persistent_array;
+mod persistent_array;
 mod prof_report;
 mod rc;
 mod zero_sized_array;
@@ -15,16 +15,23 @@ mod test;
 use crate::code_gen::array::{ArrayImpl, ArrayIoImpl};
 use crate::code_gen::cow_array::{cow_array_t, cow_hole_array_t, CowArrayImpl, CowArrayIoImpl};
 use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
-use crate::code_gen::fountain_pen_llvm::{compile_to_executable, ArtifactPaths, Gc};
+use crate::code_gen::fountain_pen_llvm::{compile_to_executable, ArtifactPaths};
+use crate::code_gen::persistent_array::{
+    persistent_array_t, persistent_hole_array_t, PersistentArrayImpl, PersistentArrayIoImpl,
+};
 use crate::code_gen::prof_report::{
     define_prof_report_fn, ProfilePointCounters, ProfilePointDecls,
 };
 use crate::code_gen::rc::{rc_ptr_t, RcBuiltin, RcBuiltinImpl};
-use crate::code_gen::zero_sized_array::ZeroSizedArrayImpl;
+use crate::code_gen::zero_sized_array::{
+    zero_sized_array_t, zero_sized_hole_array_t, ZeroSizedArrayImpl,
+};
 use crate::error::Error as CrateError;
 use crate::pretty_print::utils::TailFuncRenderer;
 use crate::BuildConfig;
-use id_collections::IdVec;
+use id_collections::{IdMap, IdVec};
+use id_graph_sccs::{SccKind, Sccs};
+use morphic_common::config::ArrayKind;
 use morphic_common::data::first_order_ast as first_ord;
 use morphic_common::data::intrinsics::Intrinsic;
 use morphic_common::data::low_ast as low;
@@ -80,10 +87,18 @@ enum IsZeroSized {
 
 #[derive(Clone)]
 struct Globals<T: Context> {
+    array_kind: ArrayKind,
     context: T,
     custom_raw_types: IdVec<low::CustomTypeId, low::Type>,
+    custom_sizes: IdVec<low::CustomTypeId, IsZeroSized>,
     custom_schemes: IdVec<ModeSchemeId, ModeScheme>,
     profile_points: IdVec<prof::ProfilePointId, ProfilePointDecls<T>>,
+}
+
+impl<T: Context> Globals<T> {
+    fn is_zero_sized(&self, type_: &low::Type) -> bool {
+        is_zero_sized(type_, &|custom| self.custom_sizes[custom])
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -234,7 +249,7 @@ fn declare_profile_points<T: Context>(
 #[derive(Clone, Debug)]
 enum PendingDefine {
     Rc(ModeScheme),
-    CowArray(ModeScheme),
+    Array(ModeScheme),
 }
 
 struct Instances<'a, T: Context + 'a> {
@@ -246,7 +261,7 @@ struct Instances<'a, T: Context + 'a> {
 
 impl<'a, T: Context + 'a> Instances<'a, T> {
     fn new(globals: &Globals<T>) -> Self {
-        let mut cow_arrays = BTreeMap::new();
+        let mut arrays = BTreeMap::new();
 
         let owned_string = ModeScheme::Array(
             Mode::Owned,
@@ -257,37 +272,53 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
             Box::new(ModeScheme::Num(first_ord::NumType::Byte)),
         );
 
-        let owned_string_cow_builtin = CowArrayImpl::declare(globals, &owned_string);
+        let (owned_string_builtin, borrowed_string_builtin, array_io) = match globals.array_kind {
+            ArrayKind::Cow => {
+                let owned_string_builtin = CowArrayImpl::declare(globals, &owned_string);
+                let borrowed_string_builtin = CowArrayImpl::declare(globals, &borrowed_string);
+                let array_io = CowArrayIoImpl::declare(
+                    globals,
+                    owned_string_builtin.clone(),
+                    borrowed_string_builtin.clone(),
+                );
+                (
+                    Rc::new(owned_string_builtin) as Rc<dyn ArrayImpl<T> + 'a>,
+                    Rc::new(borrowed_string_builtin) as Rc<dyn ArrayImpl<T> + 'a>,
+                    Rc::new(array_io) as Rc<dyn ArrayIoImpl<T> + 'a>,
+                )
+            }
+            ArrayKind::Persistent => {
+                let owned_string_builtin = PersistentArrayImpl::declare(globals, &owned_string);
+                let borrowed_string_builtin =
+                    PersistentArrayImpl::declare(globals, &borrowed_string);
+                let array_io = PersistentArrayIoImpl::declare(
+                    globals,
+                    owned_string_builtin.clone(),
+                    borrowed_string_builtin.clone(),
+                );
+                (
+                    Rc::new(owned_string_builtin) as Rc<dyn ArrayImpl<T> + 'a>,
+                    Rc::new(borrowed_string_builtin) as Rc<dyn ArrayImpl<T> + 'a>,
+                    Rc::new(array_io) as Rc<dyn ArrayIoImpl<T> + 'a>,
+                )
+            }
+        };
 
-        let borrowed_string_cow_builtin = CowArrayImpl::declare(globals, &borrowed_string);
-
-        cow_arrays.insert(
-            owned_string.clone(),
-            Rc::new(owned_string_cow_builtin.clone()) as Rc<dyn ArrayImpl<T> + 'a>,
-        );
-        cow_arrays.insert(
-            borrowed_string.clone(),
-            Rc::new(borrowed_string_cow_builtin.clone()) as Rc<dyn ArrayImpl<T> + 'a>,
-        );
-
-        let cow_array_io: CowArrayIoImpl<T> = CowArrayIoImpl::declare(
-            globals,
-            owned_string_cow_builtin,
-            borrowed_string_cow_builtin,
-        );
+        arrays.insert(owned_string.clone(), owned_string_builtin);
+        arrays.insert(borrowed_string.clone(), borrowed_string_builtin);
 
         Self {
-            array_io: Rc::new(cow_array_io),
+            array_io,
             rcs: BTreeMap::new(),
-            arrays: cow_arrays,
+            arrays,
             pending: vec![
-                PendingDefine::CowArray(owned_string),
-                PendingDefine::CowArray(borrowed_string),
+                PendingDefine::Array(owned_string),
+                PendingDefine::Array(borrowed_string),
             ],
         }
     }
 
-    fn get_cow_array(
+    fn get_array(
         &mut self,
         globals: &Globals<T>,
         mode_scheme: &ModeScheme,
@@ -296,20 +327,27 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
             return existing.clone();
         }
 
-        let trivial = globals
-            .context
-            .is_iso_to_unit(low_type_in_context(globals, &mode_scheme.as_type()));
+        let zst = match mode_scheme {
+            ModeScheme::Array(_, item_scheme) | ModeScheme::HoleArray(_, item_scheme) => {
+                globals.is_zero_sized(&item_scheme.as_type())
+            }
+            _ => unreachable!(),
+        };
 
-        let new_builtin: Rc<dyn ArrayImpl<T> + 'a> = if trivial {
+        let new_builtin: Rc<dyn ArrayImpl<T> + 'a> = if zst {
             Rc::new(ZeroSizedArrayImpl::declare(globals, self, &mode_scheme))
         } else {
-            Rc::new(CowArrayImpl::declare(globals, &mode_scheme))
+            match globals.array_kind {
+                ArrayKind::Cow => Rc::new(CowArrayImpl::declare(globals, &mode_scheme)),
+                ArrayKind::Persistent => {
+                    Rc::new(PersistentArrayImpl::declare(globals, &mode_scheme))
+                }
+            }
         };
 
         self.arrays.insert(mode_scheme.clone(), new_builtin.clone());
 
-        self.pending
-            .push(PendingDefine::CowArray(mode_scheme.clone()));
+        self.pending.push(PendingDefine::Array(mode_scheme.clone()));
 
         new_builtin
     }
@@ -330,7 +368,7 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
         globals: &Globals<T>,
         // TODO: fix progress tracker someday?
         _rc_progress: impl ProgressLogger,
-        _cow_progress: impl ProgressLogger,
+        _array_progress: impl ProgressLogger,
     ) {
         self.array_io.define(globals);
 
@@ -340,9 +378,9 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
                     let rc_builtin = self.rcs.get(&scheme).unwrap().clone();
                     rc_builtin.define(globals, self);
                 }
-                PendingDefine::CowArray(scheme) => {
-                    let cow_builtin = self.arrays.get(&scheme).unwrap().clone();
-                    cow_builtin.define(globals, self);
+                PendingDefine::Array(scheme) => {
+                    let array_builtin = self.arrays.get(&scheme).unwrap().clone();
+                    array_builtin.define(globals, self);
                 }
             }
         }
@@ -372,8 +410,26 @@ fn low_type_in_context<T: Context>(globals: &Globals<T>, type_: &low::Type) -> T
         low::Type::Custom(type_id) => {
             low_type_in_context(globals, &globals.custom_raw_types[type_id])
         }
-        low::Type::Array(_) => cow_array_t(&globals.context),
-        low::Type::HoleArray(_) => cow_hole_array_t(&globals.context),
+        low::Type::Array(item_type) => {
+            if globals.is_zero_sized(item_type) {
+                zero_sized_array_t(&globals.context)
+            } else {
+                match globals.array_kind {
+                    ArrayKind::Cow => cow_array_t(&globals.context),
+                    ArrayKind::Persistent => persistent_array_t(&globals.context),
+                }
+            }
+        }
+        low::Type::HoleArray(item_type) => {
+            if globals.is_zero_sized(item_type) {
+                zero_sized_hole_array_t(&globals.context)
+            } else {
+                match globals.array_kind {
+                    ArrayKind::Cow => cow_hole_array_t(&globals.context),
+                    ArrayKind::Persistent => persistent_hole_array_t(&globals.context),
+                }
+            }
+        }
         low::Type::Boxed(_) => rc_ptr_t(&globals.context),
     }
 }
@@ -403,33 +459,31 @@ fn gen_rc_op<T: Context>(
         ModeScheme::Num(_) => {}
         ModeScheme::Array(_, _) => match op {
             DerivedRcOp::Retain => {
-                let retain_func = instances.get_cow_array(globals, scheme).retain_array();
+                let retain_func = instances.get_array(globals, scheme).retain_array();
                 s.call_void(retain_func, &[arg]);
             }
             DerivedRcOp::DerivedRetain => {
-                let derived_retain_func = instances
-                    .get_cow_array(globals, scheme)
-                    .derived_retain_array();
+                let derived_retain_func =
+                    instances.get_array(globals, scheme).derived_retain_array();
                 s.call_void(derived_retain_func, &[arg]);
             }
             DerivedRcOp::Release => {
-                let release_func = instances.get_cow_array(globals, scheme).release_array();
+                let release_func = instances.get_array(globals, scheme).release_array();
                 s.call_void(release_func, &[arg]);
             }
         },
         ModeScheme::HoleArray(_, _) => match op {
             DerivedRcOp::Retain => {
-                let retain_func = instances.get_cow_array(globals, scheme).retain_hole();
+                let retain_func = instances.get_array(globals, scheme).retain_hole();
                 s.call_void(retain_func, &[arg]);
             }
             DerivedRcOp::DerivedRetain => {
-                let derived_retain_func = instances
-                    .get_cow_array(globals, scheme)
-                    .derived_retain_hole();
+                let derived_retain_func =
+                    instances.get_array(globals, scheme).derived_retain_hole();
                 s.call_void(derived_retain_func, &[arg]);
             }
             DerivedRcOp::Release => {
-                let release_func = instances.get_cow_array(globals, scheme).release_hole();
+                let release_func = instances.get_array(globals, scheme).release_hole();
                 s.call_void(release_func, &[arg]);
             }
         },
@@ -754,7 +808,7 @@ fn gen_expr<T: Context>(
             Intrinsic::IntCttz => s.cttz(locals[local_id]),
         },
         E::ArrayOp(mode_scheme, array_op) => {
-            let builtin = instances.get_cow_array(globals, mode_scheme);
+            let builtin = instances.get_array(globals, mode_scheme);
             match array_op {
                 low::ArrayOp::New => s.call(builtin.new(), &[]),
                 low::ArrayOp::Get(array_id, index_id) => {
@@ -946,19 +1000,96 @@ fn declare_customs<T: Context>(
     })
 }
 
+fn is_zero_sized(type_: &low::Type, zsts: &impl Fn(low::CustomTypeId) -> IsZeroSized) -> bool {
+    match type_ {
+        low::Type::Bool
+        | low::Type::Num(_)
+        | low::Type::Array(_)
+        | low::Type::HoleArray(_)
+        | low::Type::Boxed(_)
+        | low::Type::Variants(_) => false, // always has a (non-zero-sized) discriminant
+        low::Type::Tuple(items) => items.iter().all(|item| is_zero_sized(item, zsts)),
+        low::Type::Custom(custom) => zsts(*custom) == IsZeroSized::ZeroSized,
+    }
+}
+
+// We need to know zero-sizedness *before* we can decide on an appropriate backend representation
+// for a given type because we need to decide whether to use a `ZeroSizedArray`. We can't just rely
+// on e.g. LLVM's `get_abi_size`.
+fn find_zero_sized(
+    custom_types: &IdVec<low::CustomTypeId, low::Type>,
+) -> IdVec<low::CustomTypeId, IsZeroSized> {
+    fn add_size_deps(type_: &low::Type, deps: &mut BTreeSet<low::CustomTypeId>) {
+        match type_ {
+            low::Type::Bool | low::Type::Num(_) => {}
+            low::Type::Array(_) | low::Type::HoleArray(_) | low::Type::Boxed(_) => {}
+            low::Type::Tuple(items) => {
+                for item in items {
+                    add_size_deps(item, deps)
+                }
+            }
+            low::Type::Variants(variants) => {
+                for (_, variant) in variants {
+                    add_size_deps(variant, deps)
+                }
+            }
+            low::Type::Custom(custom) => {
+                deps.insert(*custom);
+            }
+        }
+    }
+
+    let sccs: Sccs<usize, _> = id_graph_sccs::find_components(custom_types.count(), |id| {
+        let mut deps = BTreeSet::new();
+        add_size_deps(&custom_types[id], &mut deps);
+        deps
+    });
+
+    let dep_order: Vec<_> = sccs
+        .into_iter()
+        .map(|(_, scc)| {
+            debug_assert_eq!(scc.kind, SccKind::Acyclic);
+            scc.nodes[0]
+        })
+        .collect();
+
+    let mut zsts: IdMap<low::CustomTypeId, IsZeroSized> = IdMap::new();
+    for &type_id in &dep_order {
+        let zero_sized = is_zero_sized(&custom_types[type_id], &|other| {
+            *zsts.get(other).expect(
+                "the zero-sizedness of custom types should be determined in dependency order",
+            )
+        });
+        zsts.insert(
+            type_id,
+            if zero_sized {
+                IsZeroSized::ZeroSized
+            } else {
+                IsZeroSized::NonZeroSized
+            },
+        );
+    }
+    zsts.to_id_vec(custom_types.count())
+}
+
 pub fn gen_program<T: Context>(
+    array_kind: ArrayKind,
     program: low::Program,
     context: T,
     func_progress: impl ProgressLogger,
     rc_progress: impl ProgressLogger,
-    cow_progress: impl ProgressLogger,
+    array_progress: impl ProgressLogger,
     type_progress: impl ProgressLogger,
 ) {
     let profile_points = declare_profile_points(&context, &program);
 
+    let custom_sizes = find_zero_sized(&program.custom_types.types);
+
     let globals = Globals {
+        array_kind,
         context,
         custom_schemes: program.schemes,
+        custom_sizes,
         custom_raw_types: program.custom_types.types,
         profile_points,
     };
@@ -1020,7 +1151,7 @@ pub fn gen_program<T: Context>(
     }
     type_progress.finish();
 
-    instances.define(&globals, rc_progress, cow_progress);
+    instances.define(&globals, rc_progress, array_progress);
 
     let main = context.declare_main_func();
     let s = context.scope(main);
@@ -1040,6 +1171,7 @@ pub fn gen_program<T: Context>(
 pub fn run(
     stdio: Stdio,
     program: low::Program,
+    config: &cfg::PassOptions,
     valgrind: Option<ValgrindConfig>,
 ) -> std::result::Result<Child, CrateError> {
     let target = cfg::LlvmConfig::Native;
@@ -1058,7 +1190,8 @@ pub fn run(
         .into_temp_path();
 
     compile_to_executable(
-        Gc::None,
+        config.gc_kind,
+        config.array_kind,
         program,
         target,
         opt_level,
@@ -1088,7 +1221,8 @@ pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result
 
     if let Some(artifact_dir) = &config.artifact_dir {
         compile_to_executable(
-            Gc::None,
+            config.pass_options.gc_kind,
+            config.pass_options.array_kind,
             program,
             target,
             config.llvm_opt_level,
@@ -1110,7 +1244,8 @@ pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result
             .into_temp_path();
 
         compile_to_executable(
-            Gc::None,
+            config.pass_options.gc_kind,
+            config.pass_options.array_kind,
             program,
             target,
             config.llvm_opt_level,

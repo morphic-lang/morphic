@@ -1,4 +1,4 @@
-use crate::code_gen::array::{ArrayImpl, ArrayIoImpl};
+use crate::code_gen::array::{panic, ArrayImpl, ArrayIoImpl};
 use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
 use crate::code_gen::{gen_rc_op, low_type_in_context, DerivedRcOp, Globals, Instances};
 use crate::data::mode_annot_ast::Mode;
@@ -255,7 +255,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
             let me = s.call(self.obtain_unique, &[s.arg(0)]);
 
             s.if_(s.eq(s.field(me, F_ARR_LEN), s.i64(0)), |s| {
-                s.panic("pop: empty array\n", &[]);
+                panic::pop_empty(s);
             });
 
             let new_len = s.sub(s.field(me, F_ARR_LEN), s.i64(1));
@@ -313,7 +313,10 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
 
                 let is_overflow = s.field(alloc_size_umul_result, 1);
                 s.if_(is_overflow, |s| {
-                    s.panic("reserve: requested size overflows 64-bit integer type", &[]);
+                    s.panic(
+                        "reserve: requested size overflows 64-bit integer type\n",
+                        &[],
+                    );
                 });
 
                 // TODO: Should we check for overflow in this addition?
@@ -466,13 +469,13 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
             {
                 let s = context.scope(self.release_hole);
                 let me = s.arg(0);
-                let hole_idx = s.field(me, F_HOLE_IDX);
-
-                let me = s.field(me, F_HOLE_ARR);
-
-                let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
 
                 if self.mode == Mode::Owned {
+                    let hole_idx = s.field(me, F_HOLE_IDX);
+                    let me = s.field(me, F_HOLE_ARR);
+
+                    let refcount_ptr = data_to_buf(&s, s.field(me, F_ARR_DATA));
+
                     if let Some(prof_rc) = context.tal().prof_rc() {
                         s.call_void(prof_rc.record_release(), &[]);
                     }
@@ -502,6 +505,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
                         });
                     });
                 }
+
                 s.ret_void();
             }
         }
@@ -573,9 +577,7 @@ impl<T: Context> ArrayImpl<T> for CowArrayImpl<T> {
             let out_of_bounds = s.uge(idx, len);
 
             s.if_(out_of_bounds, |s| {
-                let error_str =
-                    "index out of bounds: attempt to access item %lld of array with length %llu\n";
-                s.panic(error_str, &[idx, len]);
+                panic::index_out_of_bounds(s, idx, len);
             });
 
             s.ret_void();

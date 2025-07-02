@@ -21,7 +21,10 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
         src_path: path.as_ref().to_owned(),
         purity_mode: cfg::PurityMode::Checked,
         mode,
-        rc_strat: rc_strat,
+        pass_options: cfg::PassOptions {
+            rc_strat,
+            ..Default::default()
+        },
         stdio: Stdio::Piped,
     };
 
@@ -69,14 +72,14 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
             expected: {expected_status:?}
             ---------------------------------------------
             stdout (length = {actual_stdout_len} bytes):
-{actual_stdout}
+{actual_stdout:?}
             expected stdout (length = {expected_stdout_len} bytes):
-{expected_stdout}
+{expected_stdout:?}
             ---------------------------------------------
             stderr (length = {actual_stderr_len} bytes):
-{actual_stderr}
+{actual_stderr:?}
             expected stderr (length = {expected_stderr_len} bytes):
-{expected_stderr}"#,
+{expected_stderr:?}"#,
         actual_status = status,
         expected_status = expected_status,
         actual_stdout = String::from_utf8_lossy(&output),
@@ -102,7 +105,7 @@ macro_rules! sample_interpret {
         #[test]
         fn interpret() {
             #[allow(unused_mut, unused_assignments)]
-            let mut rc_strat = crate::cfg::RcStrategy::default();
+            let mut rc_strat = crate::cfg::RcStrategy::Default;
             #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
@@ -146,7 +149,7 @@ macro_rules! sample_compile {
         #[test]
         fn compile() {
             #[allow(unused_mut, unused_assignments)]
-            let mut rc_strat = crate::cfg::RcStrategy::default();
+            let mut rc_strat = crate::cfg::RcStrategy::Default;
             #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]

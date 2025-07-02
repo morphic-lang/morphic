@@ -1,5 +1,29 @@
-use crate::code_gen::fountain_pen::Context;
+use crate::code_gen::fountain_pen::{Context, Scope};
 use crate::code_gen::{Globals, Instances};
+
+// Some panics are part of the public API in the sense that the test suite expects them to occur
+// under well-defined circumstances and have a particular message. We define those here.
+pub mod panic {
+    use super::*;
+
+    pub fn pop_empty<S: Scope>(s: &S) {
+        s.panic("pop: empty array\n", &[]);
+    }
+
+    pub fn index_out_of_bounds<S: Scope>(s: &S, idx: S::Value, len: S::Value) {
+        s.panic(
+            "index out of bounds: attempt to access item %lld of array with length %llu\n",
+            &[idx, len],
+        );
+    }
+
+    pub fn obtain_unique_alloc_failed<S: Scope>(s: &S, alloc_size: S::Value) {
+        s.panic(
+            "obtain_unique: failed to allocate %zu bytes\n",
+            &[alloc_size],
+        );
+    }
+}
 
 pub trait ArrayImpl<T: Context> {
     fn define(&self, globals: &Globals<T>, instances: &mut Instances<T>);

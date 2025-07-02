@@ -262,11 +262,15 @@ impl<'a, 'b> Context<'a, 'b> {
                         }
                         self.write(")")?;
                     }
-                    Variant::SML | Variant::MORPHIC => {
+                    Variant::SML => {
                         self.write("l")?;
                         self.write(self.num_locals)?;
                         self.write(" : ")?;
                         self.write_type(var_type, Precedence::Top)?;
+                    }
+                    Variant::MORPHIC => {
+                        self.write("l")?;
+                        self.write(self.num_locals)?;
                     }
                 }
                 Ok(1)
@@ -529,7 +533,14 @@ impl<'a, 'b> Context<'a, 'b> {
                 },
             },
             Expr::IoOp(io_op) => match io_op {
-                IoOp::Input => self.write("input ()")?,
+                IoOp::Input => match self.variant {
+                    Variant::MORPHIC => {
+                        self.write("do input ()")?;
+                    }
+                    Variant::OCAML | Variant::SML => {
+                        self.write("input ()")?;
+                    }
+                },
                 IoOp::Output(a) => match self.variant {
                     Variant::MORPHIC => {
                         self.write("do output (")?;

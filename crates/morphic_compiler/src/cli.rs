@@ -1,10 +1,10 @@
 use clap::builder::{styling, PossibleValuesParser};
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use inkwell::OptimizationLevel;
 use morphic_backend::BuildConfig;
 use morphic_common::config::{
-    default_llvm_opt_level, ArtifactDir, LlvmConfig, MlConfig, PassOptions, PurityMode, RcStrategy,
-    SpecializationMode, SymbolName, TargetConfig,
+    default_llvm_opt_level, ArrayKind, ArtifactDir, GcKind, LlvmConfig, MlConfig, PassOptions,
+    PurityMode, RcStrategy, SpecializationMode, SymbolName, TargetConfig,
 };
 use morphic_common::progress_ui::ProgressMode;
 use morphic_common::pseudoprocess::{Stdio, ValgrindConfig};
@@ -21,7 +21,7 @@ pub enum RunMode {
 pub struct RunConfig {
     pub src_path: PathBuf,
     pub mode: RunMode,
-    pub rc_strat: RcStrategy,
+    pub pass_options: PassOptions,
     pub purity_mode: PurityMode,
 
     // This controls the stdio capture behavior of the *user* program.  Logging and error messages
@@ -38,14 +38,187 @@ pub enum Config {
     BuildConfig(BuildConfig),
 }
 
-const RC_STRATS: &[&str] = &["default", "perceus"];
-const DEFAULT_RC_STRATS: &str = "default";
+const DEFUNC_MODE_STRS: &[&str] = &["specialize", "single"];
+
+fn parse_defunc_mode(s: &str) -> SpecializationMode {
+    match s {
+        "specialize" => SpecializationMode::Specialize,
+        "single" => SpecializationMode::Single,
+        _ => unreachable!(),
+    }
+}
+
+fn defunc_mode_to_str(mode: SpecializationMode) -> &'static str {
+    match mode {
+        SpecializationMode::Specialize => "specialize",
+        SpecializationMode::Single => "single",
+    }
+}
+
+const RC_STRAT_STRS: &[&str] = &["default", "perceus"];
 
 fn parse_rc_strat(s: &str) -> RcStrategy {
     match s {
         "default" => RcStrategy::Default,
         "perceus" => RcStrategy::Perceus,
         _ => unreachable!(),
+    }
+}
+
+fn rc_strat_to_str(strat: RcStrategy) -> &'static str {
+    match strat {
+        RcStrategy::Default => "default",
+        RcStrategy::Perceus => "perceus",
+    }
+}
+
+const GC_KIND_STRS: &[&str] = &["none", "bdw"];
+
+fn parse_gc_kind(s: &str) -> GcKind {
+    match s {
+        "none" => GcKind::None,
+        "bdw" => GcKind::Bdw,
+        _ => unreachable!(),
+    }
+}
+
+fn gc_kind_to_str(kind: GcKind) -> &'static str {
+    match kind {
+        GcKind::None => "none",
+        GcKind::Bdw => "bdw",
+    }
+}
+
+const ARRAY_KIND_STRS: &[&str] = &["cow", "persistent"];
+
+fn parse_array_kind(s: &str) -> ArrayKind {
+    match s {
+        "cow" => ArrayKind::Cow,
+        "persistent" => ArrayKind::Persistent,
+        _ => unreachable!(),
+    }
+}
+
+fn array_kind_to_str(kind: ArrayKind) -> &'static str {
+    match kind {
+        ArrayKind::Cow => "cow",
+        ArrayKind::Persistent => "persistent",
+    }
+}
+
+trait RegisterCommonArgs {
+    fn register_common_args(self) -> Self;
+}
+
+impl RegisterCommonArgs for Command {
+    fn register_common_args(self) -> Self {
+        self.arg(
+            Arg::new("no-check-purity")
+                .long("no-check-purity")
+                .action(ArgAction::SetTrue)
+                .help("Do not enforce purity."),
+        )
+        .arg(
+            Arg::new("llvm-opt-level")
+                .long("llvm-opt-level")
+                .help("Set the optimization level used by the LLVM backend.")
+                .value_parser(0..=3)
+                .default_value((default_llvm_opt_level() as i64).to_string()),
+        )
+        .arg(
+            Arg::new("defunc-mode")
+                .long("defunc-mode")
+                .help("Set whether or not to specialize during defunctionalization")
+                .value_parser(PossibleValuesParser::new(DEFUNC_MODE_STRS))
+                .default_value(defunc_mode_to_str(SpecializationMode::default())),
+        )
+        .arg(
+            Arg::new("rc-strat")
+                .long("rc-strat")
+                .help(
+                    "Set whether or not to elide reference counting operations. This is \
+                    mostly useful for working around compiler bugs.",
+                )
+                .value_parser(PossibleValuesParser::new(RC_STRAT_STRS))
+                .default_value(rc_strat_to_str(RcStrategy::default())),
+        )
+        .arg(
+            Arg::new("gc-kind")
+                .long("gc-kind")
+                .help(
+                    "Set the garbage collector to use. This exists for experimental purposes. \
+                    The best choice is 'none' which does *not* leak memory but rather employs \
+                    reference counting with static, borrow-based reference count elision. \
+                    'bwd' is the Boehm-Demers-Weiser coservative collector.",
+                )
+                .value_parser(PossibleValuesParser::new(GC_KIND_STRS))
+                .default_value(gc_kind_to_str(GcKind::default())),
+        )
+        .arg(
+            Arg::new("array-kind")
+                .long("array-kind")
+                .help(
+                    "Set the kind of array to use. 'cow' is a copy-on-write array that takes \
+                    advantage of the RC-1 optimization when reference counting is turned on. \
+                    'persistent' is a Clojure-style persistent array that always has O(log n) \
+                    updates, but with a *large* constant factor.",
+                )
+                .value_parser(PossibleValuesParser::new(ARRAY_KIND_STRS))
+                .default_value(array_kind_to_str(ArrayKind::default())),
+        )
+        .arg(
+            Arg::new("progress")
+                .long("progress")
+                .action(ArgAction::SetTrue)
+                .help("Set whether or not to show progress"),
+        )
+    }
+}
+
+struct CommonArgs {
+    purity_mode: PurityMode,
+    llvm_opt_level: OptimizationLevel,
+    defunc_mode: SpecializationMode,
+    rc_strat: RcStrategy,
+    gc_kind: GcKind,
+    array_kind: ArrayKind,
+    progress: ProgressMode,
+}
+
+fn parse_common_args(matches: &ArgMatches) -> CommonArgs {
+    let purity_mode = if matches.get_flag("no-check-purity") {
+        PurityMode::Unchecked
+    } else {
+        PurityMode::Checked
+    };
+
+    let llvm_opt_level = match matches.get_one::<i64>("llvm-opt-level").unwrap() {
+        0 => OptimizationLevel::None,
+        1 => OptimizationLevel::Less,
+        2 => OptimizationLevel::Default,
+        3 => OptimizationLevel::Aggressive,
+        _ => unreachable!(),
+    };
+
+    let defunc_mode = parse_defunc_mode(matches.get_one::<String>("defunc-mode").unwrap());
+    let rc_strat = parse_rc_strat(matches.get_one::<String>("rc-strat").unwrap());
+    let gc_kind = parse_gc_kind(matches.get_one::<String>("gc-kind").unwrap());
+    let array_kind = parse_array_kind(matches.get_one::<String>("array-kind").unwrap());
+
+    let progress = if matches.get_flag("progress") {
+        ProgressMode::Visible
+    } else {
+        ProgressMode::Hidden
+    };
+
+    CommonArgs {
+        purity_mode,
+        llvm_opt_level,
+        defunc_mode,
+        rc_strat,
+        gc_kind,
+        array_kind,
+        progress,
     }
 }
 
@@ -74,12 +247,6 @@ impl Config {
                             .index(1),
                     )
                     .arg(
-                        Arg::new("no-check-purity")
-                            .long("no-check-purity")
-                            .action(ArgAction::SetTrue)
-                            .help("Do not enforce purity."),
-                    )
-                    .arg(
                         Arg::new("valgrind")
                             .long("valgrind")
                             .conflicts_with("interpret")
@@ -102,12 +269,7 @@ impl Config {
                                 generating LLVM and running a fully compiled executable.",
                             ),
                     )
-                    .arg(Arg::new("rc-strat")
-                        .long("rc-strat")
-                        .value_parser(PossibleValuesParser::new(RC_STRATS))
-                        .default_value(DEFAULT_RC_STRATS)
-                        .help("Same as '--rc-strat' for 'morphic build'."),
-                    )
+                    .register_common_args()
             )
             .subcommand(
                 Command::new("build")
@@ -119,10 +281,10 @@ impl Config {
                             .index(1),
                     )
                     .arg(
-                        Arg::new("no-check-purity")
-                            .long("no-check-purity")
-                            .action(ArgAction::SetTrue)
-                            .help("Do not enforce purity."),
+                        Arg::new("output-path")
+                            .short('o')
+                            .long("output-path")
+                            .help("Place the output executable at this path.")
                     )
                     .arg(
                         Arg::new("emit-artifacts")
@@ -134,13 +296,6 @@ impl Config {
                                 object file. Artifacts will be placed in a directory whose name is \
                                 derived from the generated executable's name.",
                             ),
-                    )
-                    .arg(
-                        Arg::new("llvm-opt-level")
-                            .long("llvm-opt-level")
-                            .help("Set the optimization level used by the LLVM backend.")
-                            .value_parser(0..=3)
-                            .default_value((default_llvm_opt_level() as i64).to_string()),
                     )
                     .arg(
                         Arg::new("wasm")
@@ -159,12 +314,6 @@ impl Config {
                             .long("ocaml")
                             .action(ArgAction::SetTrue)
                             .help("Compile to OCaml instead of a native binary."),
-                    )
-                    .arg(
-                        Arg::new("output-path")
-                            .short('o')
-                            .long("output-path")
-                            .help("Place the output executable at this path.")
                     )
                     .arg(
                         // If you ever change the CLI syntax for profiling, you need to grep for
@@ -192,29 +341,7 @@ impl Config {
                              '--profile'd function."
                         )
                     )
-                    .arg(
-                        Arg::new("defunc-mode")
-                            .long("defunc-mode")
-                            .help("Set whether or not to specialize during defunctionalization")
-                            .value_parser(PossibleValuesParser::new(&["specialize", "single"]))
-                            .default_value("specialize"),
-                    )
-                    .arg(
-                        Arg::new("rc-strat")
-                        .long("rc-strat")
-                        .help(
-                            "Set whether or not to elide reference counting operations. This is \
-                            mostly useful for working around compiler bugs."
-                        )
-                        .value_parser(PossibleValuesParser::new(RC_STRATS))
-                        .default_value(DEFAULT_RC_STRATS),
-                    )
-                    .arg(
-                        Arg::new("progress")
-                            .long("progress")
-                            .action(ArgAction::SetTrue)
-                            .help("Set whether or not to show progress"),
-                    ),
+                    .register_common_args()
             )
             .get_matches();
 
@@ -224,12 +351,6 @@ impl Config {
                 .unwrap()
                 .to_owned()
                 .into();
-
-            let purity_mode = if matches.get_flag("no-check-purity") {
-                PurityMode::Unchecked
-            } else {
-                PurityMode::Checked
-            };
 
             let mode = if matches.get_flag("interpret") {
                 RunMode::Interpret
@@ -245,13 +366,26 @@ impl Config {
                 }
             };
 
-            let rc_strat = parse_rc_strat(matches.get_one::<String>("rc-strat").unwrap());
+            let CommonArgs {
+                purity_mode,
+                llvm_opt_level,
+                defunc_mode,
+                rc_strat,
+                gc_kind,
+                array_kind,
+                progress,
+            } = parse_common_args(matches);
 
             let run_config = RunConfig {
                 src_path,
                 purity_mode,
                 mode,
-                rc_strat: rc_strat,
+                pass_options: PassOptions {
+                    defunc_mode,
+                    rc_strat,
+                    array_kind,
+                    gc_kind,
+                },
                 stdio: Stdio::Inherit,
             };
             return Self::RunConfig(run_config);
@@ -263,30 +397,6 @@ impl Config {
                 .unwrap()
                 .to_owned()
                 .into();
-
-            let purity_mode = if matches.get_flag("no-check-purity") {
-                PurityMode::Unchecked
-            } else {
-                PurityMode::Checked
-            };
-
-            let target = if matches.get_flag("wasm") {
-                TargetConfig::Llvm(LlvmConfig::Wasm)
-            } else if matches.get_flag("sml") {
-                TargetConfig::Ml(MlConfig::Sml)
-            } else if matches.get_flag("ocaml") {
-                TargetConfig::Ml(MlConfig::Ocaml)
-            } else {
-                TargetConfig::Llvm(LlvmConfig::Native)
-            };
-
-            let llvm_opt_level = match matches.get_one::<i64>("llvm-opt-level").unwrap() {
-                0 => OptimizationLevel::None,
-                1 => OptimizationLevel::Less,
-                2 => OptimizationLevel::Default,
-                3 => OptimizationLevel::Aggressive,
-                _ => unreachable!(),
-            };
 
             let output_path = matches
                 .get_one::<OsString>("output-path")
@@ -310,6 +420,16 @@ impl Config {
                 None
             };
 
+            let target = if matches.get_flag("wasm") {
+                TargetConfig::Llvm(LlvmConfig::Wasm)
+            } else if matches.get_flag("sml") {
+                TargetConfig::Ml(MlConfig::Sml)
+            } else if matches.get_flag("ocaml") {
+                TargetConfig::Ml(MlConfig::Ocaml)
+            } else {
+                TargetConfig::Llvm(LlvmConfig::Native)
+            };
+
             let profile_syms = match matches.get_many::<String>("profile") {
                 Some(values) => values.map(|val| SymbolName(val.to_owned())).collect(),
                 None => Vec::new(),
@@ -317,19 +437,15 @@ impl Config {
 
             let profile_record_rc = matches.get_flag("profile-record-rc");
 
-            let defunc_mode = match matches.get_one::<String>("defunc-mode").unwrap().as_str() {
-                "specialize" => SpecializationMode::Specialize,
-                "single" => SpecializationMode::Single,
-                _ => unreachable!(),
-            };
-
-            let rc_strat = parse_rc_strat(matches.get_one::<String>("rc-strat").unwrap());
-
-            let progress = if matches.get_flag("progress") {
-                ProgressMode::Visible
-            } else {
-                ProgressMode::Hidden
-            };
+            let CommonArgs {
+                purity_mode,
+                llvm_opt_level,
+                defunc_mode,
+                rc_strat,
+                gc_kind,
+                array_kind,
+                progress,
+            } = parse_common_args(matches);
 
             let build_config = BuildConfig {
                 src_path,
@@ -343,7 +459,9 @@ impl Config {
                 progress,
                 pass_options: PassOptions {
                     defunc_mode,
-                    rc_strat: rc_strat,
+                    rc_strat,
+                    array_kind,
+                    gc_kind,
                 },
             };
             return Self::BuildConfig(build_config);

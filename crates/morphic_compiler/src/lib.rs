@@ -5,7 +5,7 @@ mod test;
 
 pub mod cli;
 
-use morphic_backend::{compile_to_low_ast, interpreter, code_gen, BuildConfig};
+use morphic_backend::{code_gen, compile_to_low_ast, interpreter, BuildConfig};
 use morphic_common::config as cfg;
 use morphic_common::report_error::Reportable;
 use morphic_common::{file_cache, progress_ui, pseudoprocess};
@@ -89,11 +89,6 @@ pub fn run(
     config: cli::RunConfig,
     files: &mut file_cache::FileCache,
 ) -> Result<pseudoprocess::Child, Error> {
-    let pass_options = cfg::PassOptions {
-        defunc_mode: cfg::SpecializationMode::Specialize,
-        rc_strat: config.rc_strat,
-    };
-
     let first_order = compile_to_first_order_ast(
         &config.src_path,
         config.purity_mode,
@@ -102,20 +97,23 @@ pub fn run(
         None,
         files,
         progress_ui::ProgressMode::Hidden,
-        &pass_options,
+        &config.pass_options,
     )
     .map_err(ErrorKind::FrontendError)?;
     let lowered = compile_to_low_ast(
         first_order,
         None,
         progress_ui::ProgressMode::Hidden,
-        &pass_options,
+        &config.pass_options,
     )
     .map_err(ErrorKind::BackendError)?;
 
     match config.mode {
         cli::RunMode::Compile { valgrind } => {
-            Ok(code_gen::run(config.stdio, lowered, valgrind).map_err(ErrorKind::BackendError)?)
+            Ok(
+                code_gen::run(config.stdio, lowered, &config.pass_options, valgrind)
+                    .map_err(ErrorKind::BackendError)?,
+            )
         }
         cli::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
     }

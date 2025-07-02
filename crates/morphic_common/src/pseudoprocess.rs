@@ -179,11 +179,14 @@ pub fn spawn_process(
         } else {
             command.arg("--leak-check=no");
         }
+        // command.arg("--suppressions=/home/ben/code/morphic/bdwgc.supp");
         command.arg("--").arg(&path);
         command
     } else {
         process::Command::new(&path)
     };
+
+    // let mut command = process::Command::new(&path);
 
     match stdio {
         Stdio::Inherit => {

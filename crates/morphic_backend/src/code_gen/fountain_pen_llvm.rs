@@ -14,7 +14,7 @@ use inkwell::types::{BasicType, BasicTypeEnum, IntType};
 use inkwell::values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, IntValue};
 use inkwell::OptimizationLevel;
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
-use morphic_common::config as cfg;
+use morphic_common::config::{self as cfg, ArrayKind, GcKind};
 use morphic_common::data::low_ast as low;
 use morphic_common::progress_ui;
 use morphic_common::util::progress_logger::{ProgressLogger, ProgressSession};
@@ -42,8 +42,14 @@ mod wasm {
     ));
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Type<'a>(BasicTypeEnum<'a>);
+
+impl<'a> std::fmt::Display for Type<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Clone)]
 pub struct VariantsType<'a> {
@@ -491,7 +497,7 @@ impl<'a> Tal<'a> {
         context: &'a inkwell::context::Context,
         module: &Module<'a>,
         target: &TargetData,
-        gc: Gc,
+        gc: GcKind,
         profile_record_rc: bool,
     ) -> Tal<'a> {
         let usize_t = usize_t(context, target);
@@ -518,41 +524,41 @@ impl<'a> Tal<'a> {
         );
 
         let init_gc = match gc {
-            Gc::Bdw => Some(module.add_function(
+            GcKind::Bdw => Some(module.add_function(
                 "morphic_GC_init",
                 void_t.fn_type(&[], false),
                 Some(Linkage::External),
             )),
-            Gc::None => None,
+            GcKind::None => None,
         };
         let malloc = module.add_function(
             match gc {
-                Gc::Bdw => "GC_malloc",
-                Gc::None => "malloc",
+                GcKind::Bdw => "GC_malloc",
+                GcKind::None => "malloc",
             },
             i8_ptr_t.fn_type(&[usize_t.into()], false),
             Some(Linkage::External),
         );
         let calloc = module.add_function(
             match gc {
-                Gc::Bdw => "morphic_GC_calloc",
-                Gc::None => "calloc",
+                GcKind::Bdw => "morphic_GC_calloc",
+                GcKind::None => "calloc",
             },
             i8_ptr_t.fn_type(&[usize_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let realloc = module.add_function(
             match gc {
-                Gc::Bdw => "GC_realloc",
-                Gc::None => "realloc",
+                GcKind::Bdw => "GC_realloc",
+                GcKind::None => "realloc",
             },
             i8_ptr_t.fn_type(&[i8_ptr_t.into(), usize_t.into()], false),
             Some(Linkage::External),
         );
         let free = module.add_function(
             match gc {
-                Gc::Bdw => "GC_free",
-                Gc::None => "free",
+                GcKind::Bdw => "GC_free",
+                GcKind::None => "free",
             },
             void_t.fn_type(&[i8_ptr_t.into()], false),
             Some(Linkage::External),
@@ -729,7 +735,7 @@ struct TailTargetData<'a> {
 
 #[derive(Clone)]
 pub struct Context<'a, 'b> {
-    gc: Gc,
+    gc: GcKind,
     context: &'a inkwell::context::Context,
     module: &'b Module<'a>,
     target: &'b TargetData,
@@ -798,7 +804,7 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
     type Tal = Tal<'a>;
 
     fn is_gc_on(&self) -> bool {
-        self.gc != Gc::None
+        self.gc != GcKind::None
     }
 
     fn tal(&self) -> &Self::Tal {
@@ -898,7 +904,7 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
         let entry_block = self.context.append_basic_block(func.0, "entry");
         let scope = Scope::new(self.clone(), func, entry_block, None);
 
-        if self.gc == Gc::Bdw && func.has_name("main") {
+        if self.gc == GcKind::Bdw && func.has_name("main") {
             scope.call_void(self.tal.init_gc.unwrap(), &[])
         }
 
@@ -930,20 +936,6 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
 
     fn get_abi_size(&self, ty: Self::Type) -> u64 {
         self.target.get_abi_size(&ty.0)
-    }
-
-    fn is_iso_to_unit(&self, ty: Self::Type) -> bool {
-        match ty.0 {
-            BasicTypeEnum::ArrayType(_)
-            | BasicTypeEnum::FloatType(_)
-            | BasicTypeEnum::IntType(_)
-            | BasicTypeEnum::PointerType(_)
-            | BasicTypeEnum::VectorType(_)
-            | BasicTypeEnum::ScalableVectorType(_) => false,
-            BasicTypeEnum::StructType(struct_type) => struct_type
-                .get_field_types_iter()
-                .all(|ty| self.is_iso_to_unit(Type(ty))),
-        }
     }
 
     fn i1_t(&self) -> Self::Type {
@@ -2113,7 +2105,12 @@ fn check_valid_dir_path(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_cc(_gc: Gc, target: cfg::LlvmConfig, obj_path: &Path, exe_path: &Path) -> Result<(), Error> {
+fn run_cc(
+    _gc: GcKind,
+    target: cfg::LlvmConfig,
+    obj_path: &Path,
+    exe_path: &Path,
+) -> Result<(), Error> {
     check_valid_file_path(obj_path)?;
     check_valid_file_path(exe_path)?;
 
@@ -2231,14 +2228,9 @@ fn verify_llvm(module: &Module) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Gc {
-    Bdw,
-    None,
-}
-
 pub fn compile_to_executable(
-    gc: Gc,
+    gc: GcKind,
+    array_kind: ArrayKind,
     program: low::Program,
     target: cfg::LlvmConfig,
     opt_level: OptimizationLevel,
@@ -2271,6 +2263,7 @@ pub fn compile_to_executable(
     };
 
     gen_program(
+        array_kind,
         program,
         context,
         progress_ui::bar(progress, "gen_program: functions"),

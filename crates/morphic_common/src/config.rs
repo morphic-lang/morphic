@@ -49,7 +49,7 @@ pub enum SpecializationMode {
 
 impl Default for SpecializationMode {
     fn default() -> Self {
-        SpecializationMode::Specialize
+        Self::Specialize
     }
 }
 
@@ -61,23 +61,40 @@ pub enum RcStrategy {
 
 impl Default for RcStrategy {
     fn default() -> Self {
-        RcStrategy::Default
+        Self::Default
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ArrayKind {
+    Cow,
+    Persistent,
+}
+
+impl Default for ArrayKind {
+    fn default() -> Self {
+        Self::Persistent
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GcKind {
+    None,
+    Bdw,
+}
+
+impl Default for GcKind {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct PassOptions {
     pub defunc_mode: SpecializationMode,
     pub rc_strat: RcStrategy,
-}
-
-impl Default for PassOptions {
-    fn default() -> Self {
-        Self {
-            defunc_mode: SpecializationMode::default(),
-            rc_strat: RcStrategy::default(),
-        }
-    }
+    pub array_kind: ArrayKind,
+    pub gc_kind: GcKind,
 }
 
 pub fn default_llvm_opt_level() -> inkwell::OptimizationLevel {
