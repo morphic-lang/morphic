@@ -30,7 +30,7 @@ impl Paths {
 
         // Minimum version required by bdwgc.
         let version = finders::KitwareVersion::new(3, 10, 0);
-        let cmake = map_err(finders::find_cmake(version))?;
+        let cmake = map_err(finders::find_cmake(version.clone()))?;
         let ctest = map_err(finders::find_ctest(version))?;
 
         return Ok(Self {

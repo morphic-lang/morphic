@@ -79,17 +79,36 @@ pub fn find_default_clang(kind: ClangKind) -> Result<Tool, String> {
     find_clang(16, kind)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KitwareVersion {
-    // Field order is important for `PartialOrd` and `Ord`.
     major: u32,
     minor: u32,
     patch: u32,
+    extra: Option<String>,
+}
+
+impl PartialOrd for KitwareVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for KitwareVersion {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.major
+            .cmp(&other.major)
+            .then(self.minor.cmp(&other.minor))
+            .then(self.patch.cmp(&other.patch))
+    }
 }
 
 impl fmt::Display for KitwareVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+        if let Some(extra) = &self.extra {
+            write!(f, "{}.{}.{}-{}", self.major, self.minor, self.patch, extra)
+        } else {
+            write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+        }
     }
 }
 
@@ -99,11 +118,12 @@ impl KitwareVersion {
             major,
             minor,
             patch,
+            extra: None,
         }
     }
 }
 
-fn check_kitware(name: &str, exe: &Path, min_version: KitwareVersion) -> Result<(), String> {
+fn check_kitware(name: &str, exe: &Path, min_version: &KitwareVersion) -> Result<(), String> {
     // Example 'cmake --version' output:
     // ```
     // cmake version 3.10.0
@@ -117,6 +137,12 @@ fn check_kitware(name: &str, exe: &Path, min_version: KitwareVersion) -> Result<
         .strip_prefix(&format!("{name} version "))
         .ok_or("Unexpected --version output format")?;
 
+    let (version_str, extra) = if let Some((v, p)) = version_str.split_once('-') {
+        (v, Some(p.to_string()))
+    } else {
+        (version_str, None)
+    };
+
     let parts: Vec<_> = version_str
         .split('.')
         .map(|s| s.parse::<u32>())
@@ -127,8 +153,14 @@ fn check_kitware(name: &str, exe: &Path, min_version: KitwareVersion) -> Result<
         return Err("Unexpected version format".into());
     }
 
-    let version = KitwareVersion::new(parts[0], parts[1], parts[2]);
-    if version < min_version {
+    let version = KitwareVersion {
+        major: parts[0],
+        minor: parts[1],
+        patch: parts[2],
+        extra,
+    };
+
+    if &version < min_version {
         return Err(format!(
             "Version {version} is less than minimum required {min_version}"
         ));
@@ -145,7 +177,7 @@ pub fn find_cmake(min_version: KitwareVersion) -> Result<Tool, String> {
         ))
         .with_strategy(Strategy::Which("cmake".into()))
         .with_validator(Validator::new("check cmake version", move |tool| {
-            check_kitware("cmake", tool.path(), min_version)
+            check_kitware("cmake", tool.path(), &min_version)
         }))
         .find_tool()
 }
@@ -158,7 +190,7 @@ pub fn find_ctest(min_version: KitwareVersion) -> Result<Tool, String> {
         ))
         .with_strategy(Strategy::Which("ctest".into()))
         .with_validator(Validator::new("check ctest version", move |tool| {
-            check_kitware("ctest", tool.path(), min_version)
+            check_kitware("ctest", tool.path(), &min_version)
         }))
         .find_tool()
 }
