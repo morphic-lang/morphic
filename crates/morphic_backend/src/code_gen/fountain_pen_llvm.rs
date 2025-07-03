@@ -11,7 +11,7 @@ use inkwell::targets::{
     TargetTriple,
 };
 use inkwell::types::{BasicType, BasicTypeEnum, IntType};
-use inkwell::values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, IntValue};
+use inkwell::values::{self, BasicValue, InstructionOpcode};
 use inkwell::OptimizationLevel;
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use morphic_common::config::{self as cfg, ArrayKind, GcKind};
@@ -182,7 +182,7 @@ impl<'a> VariantsType<'a> {
     }
 
     // Can be called without knowing the full `VariantsType`
-    fn discrim_const(inner: &inkwell::types::StructType<'a>, idx: u32) -> IntValue<'a> {
+    fn discrim_const(inner: &inkwell::types::StructType<'a>, idx: u32) -> values::IntValue<'a> {
         Self::discrim_t(inner)
             .const_int(idx.try_into().unwrap(), false)
             .into()
@@ -192,8 +192,8 @@ impl<'a> VariantsType<'a> {
         &self,
         context: &'a inkwell::context::Context,
         builder: &Builder<'a>,
-        content: BasicValueEnum<'a>,
-    ) -> BasicValueEnum<'a> {
+        content: values::BasicValueEnum<'a>,
+    ) -> values::BasicValueEnum<'a> {
         let bytes_t = self.bytes_t();
         let bytes_ptr = gen_entry_alloca(context, builder, bytes_t, "bytes_ptr");
         builder.build_store(bytes_ptr, content).unwrap();
@@ -203,9 +203,9 @@ impl<'a> VariantsType<'a> {
     fn build_value(
         &self,
         builder: &Builder<'a>,
-        discrim: impl BasicValue<'a>,
-        bytes: impl BasicValue<'a>,
-    ) -> BasicValueEnum<'a> {
+        discrim: impl values::BasicValue<'a>,
+        bytes: impl values::BasicValue<'a>,
+    ) -> values::BasicValueEnum<'a> {
         let mut value = self.inner.get_undef();
         value = builder
             .build_insert_value(value, discrim, Self::DISCRIM_IDX, "insert")
@@ -218,7 +218,10 @@ impl<'a> VariantsType<'a> {
         value.into()
     }
 
-    fn build_get_discrim(builder: &Builder<'a>, val: BasicValueEnum<'a>) -> IntValue<'a> {
+    fn build_get_discrim(
+        builder: &Builder<'a>,
+        val: values::BasicValueEnum<'a>,
+    ) -> values::IntValue<'a> {
         builder
             .build_extract_value(val.into_struct_value(), Self::DISCRIM_IDX, "discrim")
             .unwrap()
@@ -229,9 +232,9 @@ impl<'a> VariantsType<'a> {
         &self,
         context: &'a inkwell::context::Context,
         builder: &Builder<'a>,
-        val: BasicValueEnum<'a>,
+        val: values::BasicValueEnum<'a>,
         idx: u32,
-    ) -> BasicValueEnum<'a> {
+    ) -> values::BasicValueEnum<'a> {
         let bytes_ptr = gen_entry_alloca(context, builder, self.bytes_t(), "bytes_ptr");
         let bytes = builder
             .build_extract_value(val.into_struct_value(), Self::BYTES_IDX, "bytes")
@@ -261,7 +264,7 @@ impl<'a> FunctionValue<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct Value<'a>(BasicValueEnum<'a>);
+pub struct Value<'a>(values::BasicValueEnum<'a>);
 
 #[derive(Clone)]
 pub struct ProfileRc<'a> {
@@ -1089,7 +1092,7 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
                     called.0,
                     &args
                         .iter()
-                        .map(|x| Into::<BasicMetadataValueEnum>::into(x.0))
+                        .map(|x| Into::<values::BasicMetadataValueEnum>::into(x.0))
                         .collect::<Vec<_>>(),
                     "call",
                 )
@@ -1107,7 +1110,7 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
                 called.0,
                 &args
                     .iter()
-                    .map(|x| Into::<BasicMetadataValueEnum>::into(x.0))
+                    .map(|x| Into::<values::BasicMetadataValueEnum>::into(x.0))
                     .collect::<Vec<_>>(),
                 "call",
             )
@@ -1137,7 +1140,7 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
     }
 
     fn gep(&self, struct_ty: Type<'a>, struct_ptr: Value<'a>, idx: u32) -> Value<'a> {
-        let x: BasicValueEnum<'a> = self
+        let x: values::BasicValueEnum<'a> = self
             .builder
             .build_struct_gep(struct_ty.0, struct_ptr.0.into_pointer_value(), idx, "gep")
             .unwrap()
@@ -1499,7 +1502,7 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         print_error_args.extend_from_slice(
             &panic_args
                 .iter()
-                .map(|x| Into::<BasicMetadataValueEnum>::into(x.0))
+                .map(|x| Into::<values::BasicMetadataValueEnum>::into(x.0))
                 .collect::<Vec<_>>(),
         );
 
@@ -1538,7 +1541,7 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         print_args.extend_from_slice(
             &message_args
                 .iter()
-                .map(|x| Into::<BasicMetadataValueEnum>::into(x.0))
+                .map(|x| Into::<values::BasicMetadataValueEnum>::into(x.0))
                 .collect::<Vec<_>>(),
         );
 
@@ -1557,7 +1560,7 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         print_error_args.extend_from_slice(
             &message_args
                 .iter()
-                .map(|x| Into::<BasicMetadataValueEnum>::into(x.0))
+                .map(|x| Into::<values::BasicMetadataValueEnum>::into(x.0))
                 .collect::<Vec<_>>(),
         );
 
@@ -1673,7 +1676,7 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         for _ in 0..ty.variants.len() {
             let _ = variant_blocks.push(context.append_basic_block(self.func.0, "variant"));
         }
-        let switch_blocks: Vec<(IntValue<'a>, BasicBlock<'a>)> = variant_blocks
+        let switch_blocks: Vec<(values::IntValue<'a>, BasicBlock<'a>)> = variant_blocks
             .iter()
             .enumerate()
             .map(|(i, variant_block)| {
@@ -2134,6 +2137,15 @@ fn run_cc(
                 .map_err(Error::CouldNotWriteObjFile)?;
 
             let mut cmd = std::process::Command::new(clang.path());
+            // cmd.arg("-g")
+            //     .arg("-O0")
+            //     .arg("-fno-omit-frame-pointer")
+            //     .arg("-fPIC")
+            //     .arg("-o")
+            //     .arg(exe_path)
+            //     .arg(obj_path)
+            //     .arg(tal_file.path())
+            //     .arg(gc_file.path());
             cmd.arg("-O3")
                 .arg("-ffunction-sections")
                 .arg("-fdata-sections")
@@ -2228,6 +2240,64 @@ fn verify_llvm(module: &Module) {
     }
 }
 
+struct FunctionValueIter<'a>(Option<values::FunctionValue<'a>>);
+
+impl<'a> Iterator for FunctionValueIter<'a> {
+    type Item = values::FunctionValue<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(fun) = self.0 {
+            self.0 = fun.get_next_function();
+            Some(fun)
+        } else {
+            None
+        }
+    }
+}
+
+trait ModuleExt<'a> {
+    fn get_functions(&self) -> FunctionValueIter<'a>;
+}
+
+impl<'a> ModuleExt<'a> for Module<'a> {
+    fn get_functions(&self) -> FunctionValueIter<'a> {
+        FunctionValueIter(self.get_first_function())
+    }
+}
+
+struct AllocaSizeReport {
+    sizes: Vec<(String, u64)>,
+}
+
+impl std::fmt::Display for AllocaSizeReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Stack frame sizes:")?;
+        writeln!(f, "----------------------------------------")?;
+        for (name, size) in &self.sizes {
+            writeln!(f, "{}:\n    {} bytes", name, size)?;
+        }
+        Ok(())
+    }
+}
+
+fn analyze_alloca_sizes<'a>(target: &TargetData, module: &Module<'a>) -> AllocaSizeReport {
+    let mut sizes = Vec::new();
+    for fun in module.get_functions() {
+        let mut size = 0;
+        for bb in fun.get_basic_block_iter() {
+            for instr in bb.get_instructions() {
+                if instr.get_opcode() == InstructionOpcode::Alloca {
+                    let type_ = instr.get_allocated_type().unwrap();
+                    size += target.get_abi_size(&type_);
+                }
+            }
+        }
+        sizes.push((fun.get_name().to_string_lossy().into_owned(), size));
+    }
+    sizes.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
+    AllocaSizeReport { sizes }
+}
+
 pub fn compile_to_executable(
     gc: GcKind,
     array_kind: ArrayKind,
@@ -2281,6 +2351,10 @@ pub fn compile_to_executable(
     }
 
     verify_llvm(&module);
+
+    // let alloca_sizes = analyze_alloca_sizes(&target_data, &module);
+    // let mut file = std::fs::File::create("alloca_sizes.txt").unwrap();
+    // writeln!(file, "{}", alloca_sizes).unwrap();
 
     let pass_manager_builder = PassManagerBuilder::create();
     pass_manager_builder.set_optimization_level(opt_level);

@@ -297,7 +297,9 @@ mod test {
 
                 for (_, node_edges) in graph.edges_out.iter_mut() {
                     for _ in 0..(Exp::new(mean_edges).unwrap().sample(&mut gen) as u32) {
-                        node_edges.push(TestNodeId(Uniform::new(0, NUM_NODES).sample(&mut gen)));
+                        node_edges.push(TestNodeId(
+                            Uniform::new(0, NUM_NODES).unwrap().sample(&mut gen),
+                        ));
                     }
                 }
 

@@ -126,6 +126,16 @@ fn run_exe<Report: for<'a> Deserialize<'a>>(
         .expect("Could not create temp file")
         .into_temp_path();
 
+    // let child = process::Command::new("valgrind")
+    //     .args(["--leak-check=full", "--error-exitcode=1"])
+    //     .arg(exe_path.as_ref().canonicalize().unwrap())
+    //     .env("MORPHIC_PROFILE_PATH", &report_path)
+    //     .stdin(process::Stdio::piped())
+    //     .stdout(process::Stdio::piped())
+    //     .stderr(process::Stdio::piped())
+    //     .spawn()
+    //     .expect("Could not spawn child process");
+
     let child = process::Command::new(exe_path.as_ref().canonicalize().unwrap())
         .env("MORPHIC_PROFILE_PATH", &report_path)
         .stdin(process::Stdio::piped())
@@ -456,8 +466,8 @@ fn bench_sample(
             .join(variant_name.clone());
 
         let needs_repeat = !variant.record_rc;
-        let needed_iters_0 = if needs_repeat { 3 } else { 1 };
-        let needed_iters_1 = if needs_repeat { 3 } else { 1 };
+        let needed_iters_0 = if needs_repeat { 1 } else { 1 };
+        let needed_iters_1 = if needs_repeat { 1 } else { 1 };
 
         let mut results = Vec::new();
         let mut counts: Option<Vec<RcCounts>> = None;
@@ -581,7 +591,7 @@ fn sample_quicksort() {
     let mut input_ints: Vec<i64> = Vec::new();
     let mut rng = Pcg64::seed_from_u64(7251862977019338101); // seed is arbitrary
     while input_ints.len() < length {
-        let next = rng.gen();
+        let next = rng.random();
         if next >= 0 {
             input_ints.push(next);
         }
@@ -909,21 +919,21 @@ fn main() {
         std::process::exit(1);
     }
 
-    // these have 0 retains omitted, we don't run them
+    // these have 0 retains omitted (there are 0 retains to begin with), so we don't run them
     // sample_quicksort();
     // sample_primes();
 
-    // sample_primes_sieve();
-    // sample_nqueens_iterative();
-    // sample_nqueens_functional();
-    // sample_parse_json();
-    // sample_calc();
-    // sample_unify();
-    // sample_words_trie();
-    // sample_text_stats();
-    sample_lisp();
-    // sample_cfold();
-    // sample_deriv();
-    // sample_rbtree();
-    // sample_rbtreeck();
+    sample_calc();
+    sample_cfold();
+    sample_deriv();
+    // sample_lisp();
+    sample_nqueens_functional();
+    sample_nqueens_iterative();
+    sample_parse_json();
+    sample_primes_sieve();
+    sample_rbtree();
+    sample_rbtreeck();
+    sample_text_stats();
+    sample_unify();
+    sample_words_trie();
 }
