@@ -50,9 +50,9 @@ anyhow = "1.0.75"
 thiserror = "1.0.50"
 
 # RNG used for procedurally (but deterministically) generating test inputs
-rand = "0.8.5"
-rand_distr = "0.4.3"
-rand_pcg = "0.3.1"
+rand = "0.9"
+rand_distr = "0.5"
+rand_pcg = "0.9"
 
 # Proc-macros
 proc-macro2 = "1.0.86"

@@ -328,12 +328,12 @@ sample! { bench_words_trie "../../samples/bench_words_trie.mor";
     stdout = include_str!("../../../../samples/expected-output/word_count_answers_tiny.txt");
 }
 
-// sample! { bench_unify "../../samples/bench_unify.mor";
-//     compile_only = true;
-//     stdin = concat!(
-//         "2\n", // first number is iteration count
-//         include_str!("../../../../samples/sample-input/unify_problems_short.txt"),
-//         "\n",
-//     );
-//     stdout = include_str!("../../../../samples/expected-output/unify_solutions_short.txt");
-// }
+sample! { bench_unify "../../samples/bench_unify.mor";
+    compile_only = true;
+    stdin = concat!(
+        "2\n", // first number is iteration count
+        include_str!("../../../../samples/sample-input/unify_problems_short.txt"),
+        "\n",
+    );
+    stdout = include_str!("../../../../samples/expected-output/unify_solutions_short.txt");
+}

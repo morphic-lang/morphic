@@ -3,6 +3,8 @@
 // TODO:
 // - Define 'obtain_unique' for array and implement 'extract' in terms of it so that we get the RC-1
 //   optimization for nested arrays
+// - We could optimize some memcpy calls by passing down the size of branches/leaves. Right now, we
+//   just copy the whole thing, even if some slots are empty.
 
 use crate::code_gen::array::{panic, ArrayImpl, ArrayIoImpl};
 use crate::code_gen::fountain_pen::{Context, ProfileRc, Scope, Tal};
@@ -81,6 +83,10 @@ pub struct PersistentArrayImpl<T: Context> {
     hole_array_t: T::Type,
 
     // helper functions
+    print_branch_ptr: T::FunctionValue,
+    print_leaf_ptr: T::FunctionValue,
+    print_array: T::FunctionValue,
+
     set_next_path: T::FunctionValue,
     retain_node: T::FunctionValue,
     release_node: T::FunctionValue,
@@ -163,6 +169,12 @@ impl<T: Context> PersistentArrayImpl<T> {
         };
 
         // Function declarations
+
+        let print_branch_ptr = void_fun("print_branch", &[branch_ptr_t]);
+
+        let print_leaf_ptr = void_fun("print_leaf", &[leaf_ptr_t]);
+
+        let print_array = void_fun("print_array", &[array_t]);
 
         let new = fun("new", &[], array_t);
 
@@ -286,6 +298,10 @@ impl<T: Context> PersistentArrayImpl<T> {
             array_t,
             hole_array_t,
 
+            print_branch_ptr,
+            print_leaf_ptr,
+            print_array,
+
             set_next_path,
             retain_node,
             release_node,
@@ -330,6 +346,92 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
         let node_ptr_t = context.ptr_t();
         let branch_ptr_t = context.ptr_t();
         let leaf_ptr_t = context.ptr_t();
+
+        // define 'print_branch_ptr'
+        {
+            let s = context.scope(self.print_branch_ptr);
+            let branch = s.arg(0);
+            s.if_else2(
+                s.is_null(branch),
+                |s| {
+                    s.print("branch is null\n", &[]);
+                },
+                |s| {
+                    s.print("branch %p:\n", &[branch]);
+                    s.print(
+                        "  refcount: %lld\n",
+                        &[s.arrow(self.branch_t, i64_t, branch, F_BRANCH_REFCOUNT)],
+                    );
+                    s.print("  children:\n", &[]);
+                    s.print("    [", &[]);
+                    for i in 0..BRANCHING_FACTOR {
+                        let child = s.arr_get(
+                            node_ptr_t,
+                            s.gep(self.branch_t, branch, F_BRANCH_CHILDREN),
+                            s.i64(i),
+                        );
+                        if i > 0 {
+                            s.print(", ", &[]);
+                        }
+                        s.print("%lld: %p", &[s.i64(i), child]);
+                    }
+                    s.print("]\n", &[]);
+                },
+            );
+            s.ret_void();
+        }
+
+        // define 'print_leaf_ptr'
+        {
+            let s = context.scope(self.print_leaf_ptr);
+            let leaf = s.arg(0);
+            s.if_else2(
+                s.is_null(leaf),
+                |s| {
+                    s.print("leaf is null\n", &[]);
+                },
+                |s| {
+                    s.print("leaf %p:\n", &[leaf]);
+                    s.print(
+                        "  refcount: %lld\n",
+                        &[s.arrow(self.leaf_t, i64_t, leaf, F_LEAF_REFCOUNT)],
+                    );
+                    s.print("  items: [", &[]);
+                    for i in 0..self.items_per_leaf {
+                        let item_ptr = s.gep(self.leaf_t, leaf, F_LEAF_ITEMS);
+
+                        if i > 0 {
+                            s.print(", ", &[]);
+                        }
+
+                        s.print("%lld: ", &[s.i64(i)]);
+
+                        let item_size = context.get_abi_size(self.item_t);
+                        for byte_idx in 0..item_size {
+                            let byte = s.buf_get(context.i8_t(), item_ptr, s.i64(byte_idx));
+                            if byte_idx > 0 && byte_idx % 8 == 0 {
+                                s.print("_", &[]);
+                            }
+                            s.print("%02x", &[byte]);
+                        }
+                    }
+                    s.print("]\n", &[]);
+                },
+            );
+            s.ret_void();
+        }
+
+        // define 'print_array'
+        {
+            let s = context.scope(self.print_array);
+            let array = s.arg(0);
+            s.print("array:\n", &[]);
+            s.print("  len: %lld\n", &[s.field(array, F_ARR_LEN)]);
+            s.print("  height: %lld\n", &[s.field(array, F_ARR_HEIGHT)]);
+            s.print("  tail: %p\n", &[s.field(array, F_ARR_TAIL)]);
+            s.print("  body: %p\n", &[s.field(array, F_ARR_BODY)]);
+            s.ret_void();
+        }
 
         // define 'new'
         {
@@ -1098,10 +1200,13 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
 
             let result = s.calloc(s.usize(1), self.leaf_t);
             s.arrow_set(self.leaf_t, result, F_LEAF_REFCOUNT, s.i64(1));
-
-            s.ptr_set(
-                s.gep(self.leaf_t, result, F_LEAF_ITEMS),
-                s.ptr_get(self.item_t, s.gep(self.leaf_t, leaf, F_LEAF_ITEMS)),
+            s.call(
+                context.tal().memcpy(),
+                &[
+                    s.gep(self.leaf_t, result, F_LEAF_ITEMS),
+                    s.gep(self.leaf_t, leaf, F_LEAF_ITEMS),
+                    s.mul(s.size(self.item_t), s.usize(self.items_per_leaf)),
+                ],
             );
 
             s.for_(s.i64(self.items_per_leaf), |s, i| {
@@ -1144,11 +1249,13 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
 
             let result = s.calloc(s.usize(1), self.branch_t);
             s.arrow_set(self.branch_t, result, F_BRANCH_REFCOUNT, s.i64(1));
-            s.arrow_set(
-                self.branch_t,
-                result,
-                F_BRANCH_CHILDREN,
-                s.arrow(self.branch_t, node_ptr_t, branch, F_BRANCH_CHILDREN),
+            s.call(
+                context.tal().memcpy(),
+                &[
+                    s.gep(self.branch_t, result, F_BRANCH_CHILDREN),
+                    s.gep(self.branch_t, branch, F_BRANCH_CHILDREN),
+                    s.mul(s.size(node_ptr_t), s.usize(BRANCHING_FACTOR)),
+                ],
             );
 
             let i = s.alloca(i64_t);
@@ -1211,7 +1318,7 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
                 &[
                     s.gep(self.leaf_t, result, F_LEAF_ITEMS),
                     s.gep(self.leaf_t, tail, F_LEAF_ITEMS),
-                    s.int_cast(s.usize_t(), s.mul(s.size(self.item_t), tail_len)),
+                    s.mul(s.size(self.item_t), tail_len),
                 ],
             );
 
