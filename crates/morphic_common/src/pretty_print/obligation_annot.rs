@@ -7,13 +7,14 @@ use crate::data::obligation_annot_ast::{
 };
 use crate::data::obligation_annot_ast::{BindRes, ValueRes};
 use crate::intrinsic_config::intrinsic_to_name;
-use crate::pretty_print::borrow_common;
 use crate::pretty_print::mode_annot::{self as annot_pp};
 use crate::pretty_print::utils::{
     write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
 };
 use std::io::{self, Write};
 use std::{fmt, str};
+
+pub use crate::pretty_print::borrow_common::*;
 
 const TAB_SIZE: usize = 2;
 
@@ -47,7 +48,7 @@ pub fn write_bind_type(
     annot_pp::write_type_raw(
         w,
         type_renderer,
-        &|w, res| write_bind_resource(w, &borrow_common::write_lifetime, res),
+        &|w, res| write_bind_resource(w, &write_lifetime, res),
         &type_.shape(),
         type_.res().as_slice(),
     )
@@ -61,7 +62,7 @@ pub fn write_ret_type(
     annot_pp::write_type_raw(
         w,
         type_renderer,
-        &|w, res| write_value_resource(w, &borrow_common::write_lifetime_param, res),
+        &|w, res| write_value_resource(w, &write_lifetime_param, res),
         &type_.shape(),
         type_.res().as_slice(),
     )
@@ -75,7 +76,7 @@ pub fn write_type(
     annot_pp::write_type_raw(
         w,
         type_renderer,
-        &|w, res| write_value_resource(w, &borrow_common::write_lifetime, res),
+        &|w, res| write_value_resource(w, &write_lifetime, res),
         &type_.shape(),
         type_.res().as_slice(),
     )

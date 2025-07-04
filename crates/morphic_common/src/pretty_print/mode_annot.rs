@@ -6,7 +6,6 @@ use crate::data::mode_annot_ast::{
 };
 use crate::data::num_type::NumType;
 use crate::intrinsic_config::intrinsic_to_name;
-use crate::pretty_print::borrow_common::*;
 use crate::pretty_print::utils::{
     write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
 };
@@ -14,6 +13,8 @@ use core::str;
 use id_collections::Id;
 use std::fmt;
 use std::io::{self, Write};
+
+pub use crate::pretty_print::borrow_common::*;
 
 const TAB_SIZE: usize = 2;
 const CONSTRS_PER_LINE: usize = 10;

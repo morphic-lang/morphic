@@ -268,7 +268,7 @@ impl fmt::Display for Mode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Mode::Borrowed => write!(f, "&"),
-            Mode::Owned => write!(f, "*"),
+            Mode::Owned => write!(f, "●"),
         }
     }
 }
