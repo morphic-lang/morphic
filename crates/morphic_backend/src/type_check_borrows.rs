@@ -371,8 +371,6 @@ pub fn type_check(interner: &Interner, program: &Program) {
     let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
     for (func_id, func) in &program.funcs {
-        // println!("-----------------------------");
-        // println!("type checking {}", func_renderer.render(func_id));
         let mut ctx = LocalContext::new();
         ctx.add_local(LocalInfo {
             ty: func.arg_ty.clone(),
@@ -390,6 +388,5 @@ pub fn type_check(interner: &Interner, program: &Program) {
             &func.body,
             &wrap_lts(&func.ret_ty),
         );
-        // println!("+++++++++++++++++++++++++++++");
     }
 }

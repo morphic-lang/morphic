@@ -1,13 +1,13 @@
 use crate::data::guarded_ast as guard;
 use crate::data::metadata::Metadata;
-use crate::data::mode_annot_ast::{self as annot, LocalLt, Lt, Path, Position, ShapeInner, SlotId};
+use crate::data::mode_annot_ast::{self as annot, LocalLt, Lt, Path, ShapeInner, SlotId};
 use crate::data::obligation_annot_ast::{
     self as ob, as_value_type, wrap_lts, BindRes, BindType, CustomTypeId, Shape, Type, ValueRes,
 };
 use crate::data::rc_annot_ast::{self as rc, Expr, LocalId, Occur, RcOp, Selector};
 use crate::pretty_print::utils::FuncRenderer;
 use id_collections::{Count, IdVec};
-use morphic_common::util::iter::IterExt;
+use morphic_common::pretty_print::utils::CustomTypeRenderer;
 use morphic_common::util::local_context::LocalContext;
 use morphic_common::util::progress_logger::{ProgressLogger, ProgressSession};
 use once_cell::sync::Lazy;
@@ -606,32 +606,21 @@ fn unwrap_item(ty: &Type) -> Type {
     )
 }
 
-// XXX: Anywhere we call this function is a bit of a hack.
-fn add_unused_stack_lts(customs: &ob::CustomTypes, ty: &Type) -> BindType {
-    let pos = ty.shape().positions(&customs.types, &customs.sccs);
-    let res = ty
-        .res()
-        .values()
-        .zip_eq(pos.iter())
-        .map(|(res, pos)| match res {
-            ValueRes::Owned => match pos {
-                Position::Stack => BindRes::StackOwned(Lt::Empty),
-                Position::Heap => BindRes::HeapOwned,
-            },
-            ValueRes::Borrowed(lt) => BindRes::Borrowed(lt.clone()),
-        })
-        .collect();
-    BindType::new(ty.shape().clone(), IdVec::from_vec(res))
-}
-
 fn annot_expr(
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
     func: ob::CustomFuncId,
     interner: &Interner,
     customs: &ob::CustomTypes,
     ctx: &mut Context,
     path: &Path,
     expr: ob::Expr,
-    ret_ty: &BindType,
+    // HACK: When we call `annot_expr` from `annot_func` we do not have a binding type (merely a
+    // value type), but that's OK because the last expression in a function is always a `LetMany`
+    // and a `LetMany` ends with a return of a local variable for which it itself knows the binding
+    // type. In an alternate universe we wouldn't need to pass `ret_ty` down at all because every
+    // expression would be annotated with all type information. Unfortunately, that's not how our
+    // AST works.
+    ret_ty: Option<&BindType>,
     metadata: Metadata,
     drops: Option<&BodyDrops>,
     builder: &mut Builder,
@@ -662,13 +651,14 @@ fn annot_expr(
             let final_local = ctx.with_scope(|ctx| {
                 for (i, (ty, body, metadata)) in bindings.into_iter().enumerate() {
                     let (final_local, rhs_moves) = annot_expr(
+                        type_renderer,
                         func,
                         interner,
                         customs,
                         ctx,
                         &path.seq(i),
                         body,
-                        &ty,
+                        Some(&ty),
                         metadata,
                         sub_drops[i].as_ref(),
                         builder,
@@ -741,6 +731,7 @@ fn annot_expr(
                 }
 
                 let (final_id, moves) = annot_expr(
+                    type_renderer,
                     func,
                     interner,
                     customs,
@@ -755,7 +746,7 @@ fn annot_expr(
 
                 let final_local = Occur {
                     id: final_id,
-                    ty: as_value_type(ret_ty),
+                    ty: as_value_type(ret_ty.unwrap()),
                 };
                 (case_builder.to_expr(final_local), moves)
             };
@@ -829,20 +820,21 @@ fn annot_expr(
         }
 
         ob::Expr::UnwrapBoxed(wrapped, output_ty) => {
+            let ret_ty_as_value = as_value_type(ret_ty.unwrap());
+            assert_eq!(ret_ty_as_value, output_ty);
+
             let item_retains = select_owned(customs, &output_ty);
 
             let (new_wrapped, moves) = annot_occur(interner, customs, ctx, path, wrapped, builder);
 
-            let binding_ty = add_unused_stack_lts(customs, &output_ty);
-            let binding_ty_as_value = as_value_type(&binding_ty);
             let unwrap_op = rc::Expr::UnwrapBoxed(new_wrapped, output_ty);
-            let unwrap_id = builder.add_binding(binding_ty, unwrap_op);
+            let unwrap_id = builder.add_binding(ret_ty.unwrap().clone(), unwrap_op);
 
             build_rc_op(
                 interner,
                 RcOp::Retain,
                 item_retains,
-                &binding_ty_as_value,
+                &ret_ty_as_value,
                 unwrap_id,
                 builder,
             );
@@ -864,8 +856,11 @@ fn annot_expr(
             (rc::Expr::Intrinsic(intr, new_arg), moves)
         }
 
-        ob::Expr::ArrayOp(ob::ArrayOp::Get(arr, idx, ret_ty)) => {
-            let item_retains = select_owned(customs, &ret_ty);
+        ob::Expr::ArrayOp(ob::ArrayOp::Get(arr, idx, output_ty)) => {
+            let ret_ty_as_value = as_value_type(ret_ty.unwrap());
+            assert_eq!(ret_ty_as_value, output_ty);
+
+            let item_retains = select_owned(customs, &ret_ty_as_value);
 
             let (new_arr, moves1) = annot_occur(interner, customs, ctx, &path.seq(0), arr, builder);
             let (new_idx, moves2) = annot_occur(interner, customs, ctx, &path.seq(1), idx, builder);
@@ -874,13 +869,13 @@ fn annot_expr(
             moves.merge(moves2);
 
             let get_op = rc::Expr::ArrayOp(rc::ArrayOp::Get(new_arr, new_idx));
-            let get_id = builder.add_binding(add_unused_stack_lts(customs, &ret_ty), get_op);
+            let get_id = builder.add_binding(ret_ty.unwrap().clone(), get_op);
 
             build_rc_op(
                 interner,
                 RcOp::Retain,
                 item_retains,
-                &ret_ty,
+                &ret_ty_as_value,
                 get_id,
                 builder,
             );
@@ -992,14 +987,15 @@ fn annot_expr(
     };
 
     (
-        builder.add_binding_with_metadata(ret_ty.clone(), new_expr, metadata),
+        builder.add_binding_with_metadata(ret_ty.unwrap().clone(), new_expr, metadata),
         moves,
     )
 }
 
 fn annot_func(
-    interner: &Interner,
     _func_renderer: &FuncRenderer<ob::CustomFuncId>,
+    type_renderer: &CustomTypeRenderer<CustomTypeId>,
+    interner: &Interner,
     customs: &ob::CustomTypes,
     func_id: ob::CustomFuncId,
     func: ob::FuncDef,
@@ -1025,13 +1021,14 @@ fn annot_func(
     let ret_ty = wrap_lts(&func.ret_ty);
 
     let (ret_id, _) = annot_expr(
+        &type_renderer,
         func_id,
         interner,
         customs,
         &mut ctx,
         &annot::FUNC_BODY_PATH(),
         func.body,
-        &add_unused_stack_lts(customs, &ret_ty),
+        None,
         Metadata::default(),
         drops.body_drops.as_ref(),
         &mut builder,
@@ -1059,14 +1056,16 @@ pub fn annot_rcs(
     let mut progress = progress.start_session(Some(program.funcs.len()));
 
     let func_renderer = FuncRenderer::from_symbols(&program.func_symbols);
+    let type_renderer = CustomTypeRenderer::from_symbols(&program.custom_type_symbols);
     let funcs = IdVec::from_vec(
         program
             .funcs
             .into_iter()
             .map(|(func_id, func)| {
                 let annot = annot_func(
-                    interner,
                     &func_renderer,
+                    &type_renderer,
+                    interner,
                     &program.custom_types,
                     func_id,
                     func,

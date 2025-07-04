@@ -1004,13 +1004,6 @@ fn annot_expr(
                 &path.as_lt(interner),
             );
 
-            // println!(
-            //     "calling {} with %{}\n\t{}\n\t{}",
-            //     func_renderer.render(func_id),
-            //     arg.id.0,
-            //     ctx.local_binding(arg.id).ty.display_with(type_renderer),
-            //     arg_ty.display_with(type_renderer)
-            // );
             let arg = handle_occur(interner, ctx, path, arg.id, &arg_ty);
             Expr::Call(*purity, *func_id, arg)
         }
