@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+// We don't actually use this implementation. It's just a reference for
+// `persistent_array.rs`.
+
 typedef uint32_t item;
 
 void retainitem(item _item) {}
@@ -283,11 +286,13 @@ union node_ref setnode(union node_ref node, uint64_t node_height,
 }
 
 // takes array by move
-struct array set(struct array array, uint64_t index, item item) {
+struct array set(struct array old_array, uint64_t index, item item) {
   if (index >= array.len) {
     fprintf(stderr, "set: array index out of bounds");
     exit(1);
   }
+
+  struct array array = obtainunique(old_array, index)
 
   uint64_t target_node_number = index / ITEMS_PER_LEAF;
 
@@ -552,10 +557,11 @@ struct pop_ret pop(struct array array) {
 
   // case: len 1
   if (array.len == 1) {
-    item item = array.tail->items[0];
-
     // moves array.tail
-    free(array.tail);
+    struct leaf *result_tail = obtainuniquetail(array.tail, 1);
+    item item = result_tail->items[0];
+
+    free(result_tail);
 
     struct array new_array = (struct array){
         .len = 0,
