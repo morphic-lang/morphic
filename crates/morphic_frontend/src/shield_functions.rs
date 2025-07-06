@@ -1,3 +1,11 @@
+// Internalization during lambda set specialization produces nominal solutions to recursive lambda
+// sets. Therefore, each time internalization happens, even if a recursive lambda set solution is
+// (structurally) identical to one we've seen before, we will get a fresh specialization. To avoid
+// this, we "shield" each function in each non-trivial function SCC by wrapping it in a new
+// function. When we call the wrapper, the recursive lambda set is solved *within* the wrapper. By
+// only calling our function via the wrapper we avoid pointless specializations. Credit to Wilson
+// Berkow for this insight.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::data::mono_ast as mono;

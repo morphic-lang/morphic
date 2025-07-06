@@ -711,7 +711,7 @@ declare_signatures! {
     // - u's access modes are t's access modes
     // - u's storage modes are t's storage modes
     // At the top-level:
-    // - u's stack mode is t's storage mode
+    // - u's stack mode = t's access mode = t's storage mode
     pub array_push: (Array a Own t, u) -> Array b Own t
         where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
@@ -723,6 +723,11 @@ declare_signatures! {
     pub array_pop: (Array a Own t) -> (Array b Own t, u)
         where t.lt <- u.lt, u.stack = t.storage;
 
+    // Below the top-level:
+    // - u's access modes are t's access modes
+    // - u's storage modes are t's storage modes
+    // At the top-level:
+    // - u's stack mode = t's access mode = t's storage mode
     pub array_replace: (HoleArray a Own t, u) -> Array b Own t
         where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
