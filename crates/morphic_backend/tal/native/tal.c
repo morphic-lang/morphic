@@ -2,9 +2,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
-#include <gc.h>
 
 void morphic_print(const char *str, ...) {
     va_list arg;
@@ -134,16 +132,4 @@ uint64_t morphic_prof_rc_get_release_count(void) {
 
 uint64_t morphic_prof_rc_get_rc1_count(void) {
     return prof_rc_rc1_count;
-}
-
-void morphic_GC_init(void) {
-    GC_INIT();
-}
-
-void *morphic_GC_calloc(size_t num, size_t size) {
-    void *ptr = calloc(num, size);
-    if (ptr == NULL) {
-        return NULL;
-    }
-    return memset(ptr, 0, num * size);
 }

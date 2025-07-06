@@ -9,7 +9,7 @@ use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
 use id_collections::{id_type, IdVec};
-use morphic_common::config::SpecializationMode;
+use morphic_common::config::DefuncMode;
 use morphic_common::intrinsic_config::intrinsic_sig;
 use morphic_common::util::constraint_graph::{
     ConstraintGraph, EquivClass, EquivClasses, SolverVarId,
@@ -2084,7 +2084,7 @@ fn item_sccs(program: &lifted::Program) -> Vec<ItemScc> {
 
 pub fn annot_closures(
     program: lifted::Program,
-    mode: SpecializationMode,
+    mode: DefuncMode,
     progress: impl ProgressLogger,
 ) -> annot::Program {
     let mut progress = progress.start_session(Some(program.vals.len() + program.lams.len()));
@@ -2097,8 +2097,8 @@ pub fn annot_closures(
     let mut templates = IdVec::new();
 
     let sccs = match mode {
-        SpecializationMode::Specialize => item_sccs(&program),
-        SpecializationMode::Single => {
+        DefuncMode::Specialize => item_sccs(&program),
+        DefuncMode::Single => {
             vec![ItemScc {
                 vals: (0..program.vals.len()).map(mono::CustomGlobalId).collect(),
                 lams: (0..program.lams.len()).map(lifted::LamId).collect(),

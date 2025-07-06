@@ -1,110 +1,19 @@
-use clap::builder::{styling, PossibleValuesParser};
+use clap::builder::{styling, EnumValueParser};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use inkwell::OptimizationLevel;
-use morphic_backend::BuildConfig;
-use morphic_common::config::{
-    default_llvm_opt_level, ArrayKind, ArtifactDir, GcKind, LlvmConfig, MlConfig, PassOptions,
-    PurityMode, RcStrategy, SpecializationMode, SymbolName, TargetConfig,
-};
+use morphic_common::config::{self as cfg, ValueEnumExt};
 use morphic_common::progress_ui::ProgressMode;
 use morphic_common::pseudoprocess::{Stdio, ValgrindConfig};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug)]
-pub enum RunMode {
-    Compile { valgrind: Option<ValgrindConfig> },
-    Interpret,
-}
-
-#[derive(Clone, Debug)]
-pub struct RunConfig {
-    pub src_path: PathBuf,
-    pub mode: RunMode,
-    pub pass_options: PassOptions,
-    pub purity_mode: PurityMode,
-
-    // This controls the stdio capture behavior of the *user* program.  Logging and error messages
-    // from the compiler itself are unaffected.
-    //
-    // When invoking the compiler from the command line this should always take the value 'Inherit'.
-    // The 'Piped' variant exists only for use within the internal testing framework.
-    pub stdio: Stdio,
-}
-
-#[derive(Debug)]
-pub enum Config {
-    RunConfig(RunConfig),
-    BuildConfig(BuildConfig),
-}
-
-const DEFUNC_MODE_STRS: &[&str] = &["specialize", "single"];
-
-fn parse_defunc_mode(s: &str) -> SpecializationMode {
-    match s {
-        "specialize" => SpecializationMode::Specialize,
-        "single" => SpecializationMode::Single,
-        _ => unreachable!(),
-    }
-}
-
-fn defunc_mode_to_str(mode: SpecializationMode) -> &'static str {
-    match mode {
-        SpecializationMode::Specialize => "specialize",
-        SpecializationMode::Single => "single",
-    }
-}
-
-const RC_STRAT_STRS: &[&str] = &["default", "perceus"];
-
-fn parse_rc_strat(s: &str) -> RcStrategy {
-    match s {
-        "default" => RcStrategy::Default,
-        "perceus" => RcStrategy::Perceus,
-        _ => unreachable!(),
-    }
-}
-
-fn rc_strat_to_str(strat: RcStrategy) -> &'static str {
-    match strat {
-        RcStrategy::Default => "default",
-        RcStrategy::Perceus => "perceus",
-    }
-}
-
-const GC_KIND_STRS: &[&str] = &["none", "bdw"];
-
-fn parse_gc_kind(s: &str) -> GcKind {
-    match s {
-        "none" => GcKind::None,
-        "bdw" => GcKind::Bdw,
-        _ => unreachable!(),
-    }
-}
-
-fn gc_kind_to_str(kind: GcKind) -> &'static str {
-    match kind {
-        GcKind::None => "none",
-        GcKind::Bdw => "bdw",
-    }
-}
-
-const ARRAY_KIND_STRS: &[&str] = &["cow", "persistent"];
-
-fn parse_array_kind(s: &str) -> ArrayKind {
-    match s {
-        "cow" => ArrayKind::Cow,
-        "persistent" => ArrayKind::Persistent,
-        _ => unreachable!(),
-    }
-}
-
-fn array_kind_to_str(kind: ArrayKind) -> &'static str {
-    match kind {
-        ArrayKind::Cow => "cow",
-        ArrayKind::Persistent => "persistent",
-    }
-}
+const LLVM_BACKEND_OPTS: &[&str] = &[
+    "rc-strat",
+    "gc-kind",
+    "array-kind",
+    "llvm-opt-level",
+    "wasm",
+];
 
 trait RegisterCommonArgs {
     fn register_common_args(self) -> Self;
@@ -119,40 +28,29 @@ impl RegisterCommonArgs for Command {
                 .help("Do not enforce purity."),
         )
         .arg(
-            Arg::new("llvm-opt-level")
-                .long("llvm-opt-level")
-                .help("Set the optimization level used by the LLVM backend.")
-                .value_parser(0..=3)
-                .default_value((default_llvm_opt_level() as i64).to_string()),
-        )
-        .arg(
             Arg::new("defunc-mode")
                 .long("defunc-mode")
-                .help("Set whether or not to specialize during defunctionalization")
-                .value_parser(PossibleValuesParser::new(DEFUNC_MODE_STRS))
-                .default_value(defunc_mode_to_str(SpecializationMode::default())),
+                .help("Set whether or not to specialize during defunctionalization.")
+                .value_parser(EnumValueParser::<cfg::DefuncMode>::new())
+                .default_value(cfg::DefuncMode::default_as_str()),
         )
         .arg(
             Arg::new("rc-strat")
                 .long("rc-strat")
-                .help(
-                    "Set whether or not to elide reference counting operations. This is \
-                    mostly useful for working around compiler bugs.",
-                )
-                .value_parser(PossibleValuesParser::new(RC_STRAT_STRS))
-                .default_value(rc_strat_to_str(RcStrategy::default())),
+                .help("Set the reference count elision algorithm to use.")
+                .value_parser(EnumValueParser::<cfg::RcStrategy>::new())
+                .default_value(cfg::RcStrategy::default_as_str()),
         )
         .arg(
             Arg::new("gc-kind")
                 .long("gc-kind")
                 .help(
-                    "Set the garbage collector to use. This exists for experimental purposes. \
-                    The best choice is 'none' which does *not* leak memory but rather employs \
-                    reference counting with static, borrow-based reference count elision. \
-                    'bwd' is the Boehm-Demers-Weiser coservative collector.",
+                    "Set the garbage collector to use. The best choice is 'rc', which performs \
+                    reference counting subject to '--rc-strat'. 'bwd' is the Boehm-Demers-Weiser \
+                    conservative collector.",
                 )
-                .value_parser(PossibleValuesParser::new(GC_KIND_STRS))
-                .default_value(gc_kind_to_str(GcKind::default())),
+                .value_parser(EnumValueParser::<cfg::GcKind>::new())
+                .default_value(cfg::GcKind::default_as_str()),
         )
         .arg(
             Arg::new("array-kind")
@@ -161,35 +59,42 @@ impl RegisterCommonArgs for Command {
                     "Set the kind of array to use. 'cow' is a copy-on-write array that takes \
                     advantage of the RC-1 optimization when reference counting is turned on. \
                     'persistent' is a Clojure-style persistent array that always has O(log n) \
-                    updates, but with a *large* constant factor.",
+                    updates, but with a large constant factor.",
                 )
-                .value_parser(PossibleValuesParser::new(ARRAY_KIND_STRS))
-                .default_value(array_kind_to_str(ArrayKind::default())),
+                .value_parser(EnumValueParser::<cfg::ArrayKind>::new())
+                .default_value(cfg::ArrayKind::default_as_str()),
+        )
+        .arg(
+            Arg::new("llvm-opt-level")
+                .long("llvm-opt-level")
+                .help("Set the optimization level used by the LLVM backend.")
+                .value_parser(0..=3)
+                .default_value((cfg::default_llvm_opt_level() as i64).to_string()),
         )
         .arg(
             Arg::new("progress")
                 .long("progress")
                 .action(ArgAction::SetTrue)
-                .help("Set whether or not to show progress"),
+                .help("Set whether or not to show progress."),
         )
     }
 }
 
 struct CommonArgs {
-    purity_mode: PurityMode,
+    purity_mode: cfg::PurityMode,
     llvm_opt_level: OptimizationLevel,
-    defunc_mode: SpecializationMode,
-    rc_strat: RcStrategy,
-    gc_kind: GcKind,
-    array_kind: ArrayKind,
+    defunc_mode: cfg::DefuncMode,
+    rc_strat: cfg::RcStrategy,
+    gc_kind: cfg::GcKind,
+    array_kind: cfg::ArrayKind,
     progress: ProgressMode,
 }
 
 fn parse_common_args(matches: &ArgMatches) -> CommonArgs {
     let purity_mode = if matches.get_flag("no-check-purity") {
-        PurityMode::Unchecked
+        cfg::PurityMode::Unchecked
     } else {
-        PurityMode::Checked
+        cfg::PurityMode::Checked
     };
 
     let llvm_opt_level = match matches.get_one::<i64>("llvm-opt-level").unwrap() {
@@ -200,10 +105,10 @@ fn parse_common_args(matches: &ArgMatches) -> CommonArgs {
         _ => unreachable!(),
     };
 
-    let defunc_mode = parse_defunc_mode(matches.get_one::<String>("defunc-mode").unwrap());
-    let rc_strat = parse_rc_strat(matches.get_one::<String>("rc-strat").unwrap());
-    let gc_kind = parse_gc_kind(matches.get_one::<String>("gc-kind").unwrap());
-    let array_kind = parse_array_kind(matches.get_one::<String>("array-kind").unwrap());
+    let defunc_mode = *matches.get_one::<cfg::DefuncMode>("defunc-mode").unwrap();
+    let rc_strat = *matches.get_one::<cfg::RcStrategy>("rc-strat").unwrap();
+    let gc_kind = *matches.get_one::<cfg::GcKind>("gc-kind").unwrap();
+    let array_kind = *matches.get_one::<cfg::ArrayKind>("array-kind").unwrap();
 
     let progress = if matches.get_flag("progress") {
         ProgressMode::Visible
@@ -220,6 +125,12 @@ fn parse_common_args(matches: &ArgMatches) -> CommonArgs {
         array_kind,
         progress,
     }
+}
+
+#[derive(Debug)]
+pub enum Config {
+    RunConfig(cfg::RunConfig),
+    BuildConfig(cfg::BuildConfig),
 }
 
 impl Config {
@@ -239,7 +150,7 @@ impl Config {
             .arg_required_else_help(true)
             .subcommand(
                 Command::new("run")
-                    .about("Compiles and runs a program from source")
+                    .about("Compile and run a program from source")
                     .arg(
                         Arg::new("src-path")
                             .help("Specify the source file for compilation.")
@@ -273,7 +184,7 @@ impl Config {
             )
             .subcommand(
                 Command::new("build")
-                    .about("Builds a program from source")
+                    .about("Build a program from source (provides more extensive options than 'run')")
                     .arg(
                         Arg::new("src-path")
                             .help("Specify the source file for compilation.")
@@ -306,14 +217,28 @@ impl Config {
                     .arg(
                         Arg::new("sml")
                             .long("sml")
+                            .conflicts_with_all(LLVM_BACKEND_OPTS)
                             .action(ArgAction::SetTrue)
                             .help("Compile to SML instead of a native binary."),
                     )
                     .arg(
                         Arg::new("ocaml")
                             .long("ocaml")
+                            .conflicts_with_all(LLVM_BACKEND_OPTS)
+                            .conflicts_with("sml")
                             .action(ArgAction::SetTrue)
                             .help("Compile to OCaml instead of a native binary."),
+                    )
+                    .arg(
+                        Arg::new("ml-stage")
+                            .long("ml-stage")
+                            .conflicts_with_all(LLVM_BACKEND_OPTS)
+                            .help(
+                                "The Morphic compilation stage at which to emit SML/OCaml code \
+                                if compiling with '--sml' or '--ocaml'."
+                            )
+                            .value_parser(EnumValueParser::<cfg::CompilationStage>::new())
+                            .default_value(cfg::CompilationStage::default_as_str()),
                     )
                     .arg(
                         // If you ever change the CLI syntax for profiling, you need to grep for
@@ -352,10 +277,10 @@ impl Config {
                 .to_owned()
                 .into();
 
-            let mode = if matches.get_flag("interpret") {
-                RunMode::Interpret
+            let run_mode = if matches.get_flag("interpret") {
+                cfg::RunMode::Interpret
             } else {
-                RunMode::Compile {
+                cfg::RunMode::Compile {
                     valgrind: if matches.get_flag("valgrind") {
                         Some(ValgrindConfig {
                             leak_check: !matches.get_flag("valgrind-ignore-leaks"),
@@ -376,18 +301,24 @@ impl Config {
                 progress,
             } = parse_common_args(matches);
 
-            let run_config = RunConfig {
+            let llvm_config = cfg::LlvmConfig {
+                rc_strat,
+                gc_kind,
+                array_kind,
+                opt_level: llvm_opt_level,
+                target: cfg::TargetConfig::Native,
+            };
+
+            let run_config = cfg::RunConfig {
                 src_path,
+                progress,
                 purity_mode,
-                mode,
-                pass_options: PassOptions {
-                    defunc_mode,
-                    rc_strat,
-                    array_kind,
-                    gc_kind,
-                },
+                defunc_mode,
+                llvm_config,
+                run_mode,
                 stdio: Stdio::Inherit,
             };
+
             return Self::RunConfig(run_config);
         }
 
@@ -412,30 +343,13 @@ impl Config {
                 let mut artifact_dir = output_path.clone().into_os_string();
                 artifact_dir.push("-artifacts");
                 std::fs::create_dir_all(&artifact_dir).unwrap();
-                Some(ArtifactDir {
+                Some(cfg::ArtifactDir {
                     dir_path: artifact_dir.into(),
                     filename_prefix: output_path.file_name().unwrap().into(),
                 })
             } else {
                 None
             };
-
-            let target = if matches.get_flag("wasm") {
-                TargetConfig::Llvm(LlvmConfig::Wasm)
-            } else if matches.get_flag("sml") {
-                TargetConfig::Ml(MlConfig::Sml)
-            } else if matches.get_flag("ocaml") {
-                TargetConfig::Ml(MlConfig::Ocaml)
-            } else {
-                TargetConfig::Llvm(LlvmConfig::Native)
-            };
-
-            let profile_syms = match matches.get_many::<String>("profile") {
-                Some(values) => values.map(|val| SymbolName(val.to_owned())).collect(),
-                None => Vec::new(),
-            };
-
-            let profile_record_rc = matches.get_flag("profile-record-rc");
 
             let CommonArgs {
                 purity_mode,
@@ -447,24 +361,88 @@ impl Config {
                 progress,
             } = parse_common_args(matches);
 
-            let build_config = BuildConfig {
-                src_path,
-                purity_mode,
-                profile_syms,
-                profile_record_rc,
-                target,
-                llvm_opt_level,
-                output_path: output_path.into(),
-                artifact_dir,
-                progress,
-                pass_options: PassOptions {
-                    defunc_mode,
-                    rc_strat,
-                    array_kind,
-                    gc_kind,
-                },
+            let profile_syms = match matches.get_many::<String>("profile") {
+                Some(values) => values.map(|val| cfg::SymbolName(val.to_owned())).collect(),
+                None => Vec::new(),
             };
-            return Self::BuildConfig(build_config);
+
+            let profile_mode = if matches.get_flag("profile-record-rc") {
+                cfg::ProfileMode::RecordRc
+            } else {
+                cfg::ProfileMode::NoRecordRc
+            };
+
+            if matches.get_flag("sml") {
+                let stage = *matches
+                    .get_one::<cfg::CompilationStage>("ml-stage")
+                    .unwrap();
+
+                let build_config = cfg::BuildConfig {
+                    src_path,
+                    progress,
+                    purity_mode,
+                    defunc_mode,
+                    backend_opts: cfg::BackendOptions::Ml(cfg::MlConfig {
+                        variant: cfg::MlVariant::Sml,
+                        stage,
+                    }),
+                    profile_syms,
+                    profile_mode,
+                    output_path,
+                    artifact_dir,
+                };
+
+                return Self::BuildConfig(build_config);
+            } else if matches.get_flag("ocaml") {
+                let stage = *matches
+                    .get_one::<cfg::CompilationStage>("ml-stage")
+                    .unwrap();
+
+                let build_config = cfg::BuildConfig {
+                    src_path,
+                    progress,
+                    purity_mode,
+                    defunc_mode,
+                    backend_opts: cfg::BackendOptions::Ml(cfg::MlConfig {
+                        variant: cfg::MlVariant::OCaml,
+                        stage,
+                    }),
+                    profile_syms,
+                    profile_mode,
+                    output_path,
+                    artifact_dir,
+                };
+
+                return Self::BuildConfig(build_config);
+            } else {
+                let target = if matches.get_flag("wasm") {
+                    cfg::TargetConfig::Wasm
+                } else {
+                    cfg::TargetConfig::Native
+                };
+
+                let backend_opts = cfg::BackendOptions::Llvm(cfg::LlvmConfig {
+                    rc_strat,
+                    gc_kind,
+                    array_kind,
+                    opt_level: llvm_opt_level,
+                    target,
+                });
+
+                let build_config = cfg::BuildConfig {
+                    src_path,
+                    progress,
+                    purity_mode,
+                    defunc_mode,
+                    backend_opts,
+                    profile_syms,
+                    profile_mode,
+                    output_path,
+                    artifact_dir,
+                };
+
+                return Self::BuildConfig(build_config);
+            }
         }
 
         // Clap will exit our program gracefully if no subcommand is provided.
@@ -479,14 +457,14 @@ impl Config {
         }
     }
 
-    pub fn artifact_dir(&self) -> Option<&ArtifactDir> {
+    pub fn artifact_dir(&self) -> Option<&cfg::ArtifactDir> {
         match self {
             Self::RunConfig(_) => None,
             Self::BuildConfig(build_config) => build_config.artifact_dir.as_ref(),
         }
     }
 
-    pub fn profile_syms(&self) -> &[SymbolName] {
+    pub fn profile_syms(&self) -> &[cfg::SymbolName] {
         match self {
             Self::RunConfig(_) => &[],
             Self::BuildConfig(build_config) => &build_config.profile_syms,

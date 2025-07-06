@@ -672,7 +672,9 @@ name = "morphic_common"
 version = "0.1.0"
 dependencies = [
  "ansi_term",
+ "clap",
  "crossbeam-channel",
+ "find_tool",
  "hashbrown 0.14.5",
  "id_collections",
  "id_graph_sccs",
@@ -701,6 +703,7 @@ dependencies = [
  "morphic_backend",
  "morphic_common",
  "morphic_frontend",
+ "tempfile",
 ]
 
 [[package]]
@@ -708,12 +711,14 @@ name = "morphic_frontend"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "find_tool",
  "id_collections",
  "im-rc",
  "lalrpop",
  "lalrpop-util",
  "morphic_common",
  "once_cell",
+ "tempfile",
  "thiserror",
 ]
 

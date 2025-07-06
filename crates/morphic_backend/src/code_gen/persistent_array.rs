@@ -790,38 +790,194 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
             s.ret(me);
         }
 
-        // define 'retain_array'
-        {
-            let s = context.scope(self.retain_array);
-            let array = s.arg(0);
+        if context.is_gc_on() {
+            for func in [
+                self.retain_node,
+                self.release_node,
+                self.retain_tail,
+                self.release_tail,
+                self.retain_array,
+                self.derived_retain_array,
+                self.release_array,
+                self.retain_hole,
+                self.derived_retain_hole,
+                self.release_hole,
+            ] {
+                let s = context.scope(func);
+                s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+                s.ret_void();
+            }
+        } else {
+            // define 'retain_node'
+            {
+                let s = context.scope(self.retain_node);
+                let leaf_or_branch_ptr = s.arg(0);
+                let height = s.arg(1);
 
-            if let Some(prof_rc) = context.tal().prof_rc() {
-                s.call_void(prof_rc.record_retain(), &[]);
+                s.if_else2(
+                    s.eq(height, s.i64(0)),
+                    |s| {
+                        let leaf_ptr = leaf_or_branch_ptr;
+                        let refcount = s.arrow(self.leaf_t, i64_t, leaf_ptr, F_LEAF_REFCOUNT);
+                        s.arrow_set(
+                            self.leaf_t,
+                            leaf_ptr,
+                            F_LEAF_REFCOUNT,
+                            s.add(refcount, s.i64(1)),
+                        );
+                    },
+                    |s| {
+                        let branch_ptr = leaf_or_branch_ptr;
+                        let refcount = s.arrow(self.branch_t, i64_t, branch_ptr, F_BRANCH_REFCOUNT);
+                        s.arrow_set(
+                            self.branch_t,
+                            branch_ptr,
+                            F_BRANCH_REFCOUNT,
+                            s.add(refcount, s.i64(1)),
+                        );
+                    },
+                );
+
+                s.ret_void();
             }
 
-            s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
-                s.call_void(self.retain_tail, &[s.field(array, F_ARR_TAIL)]);
-            });
+            // define 'release_node'
+            {
+                let s = context.scope(self.release_node);
+                let leaf_or_branch_ptr = s.arg(0);
+                let height = s.arg(1);
 
-            s.if_(
-                s.ugt(s.field(array, F_ARR_LEN), s.i64(self.items_per_leaf)),
-                |s| {
-                    s.call_void(
-                        self.retain_node,
-                        &[s.field(array, F_ARR_BODY), s.field(array, F_ARR_HEIGHT)],
-                    );
-                },
-            );
+                s.if_else2(
+                    s.eq(height, s.i64(0)),
+                    |s| {
+                        let leaf_ptr = leaf_or_branch_ptr;
+                        let new_refcount = s.sub(
+                            s.arrow(self.leaf_t, i64_t, leaf_ptr, F_LEAF_REFCOUNT),
+                            s.i64(1),
+                        );
+                        s.arrow_set(self.leaf_t, leaf_ptr, F_LEAF_REFCOUNT, new_refcount);
 
-            s.ret_void();
-        }
+                        s.if_(s.eq(new_refcount, s.i64(0)), |s| {
+                            s.for_(s.i64(self.items_per_leaf), |s, i| {
+                                gen_rc_op(
+                                    DerivedRcOp::Release,
+                                    s,
+                                    instances,
+                                    globals,
+                                    &self.item_scheme,
+                                    s.arr_get(
+                                        self.item_t,
+                                        s.gep(self.leaf_t, leaf_ptr, F_LEAF_ITEMS),
+                                        i,
+                                    ),
+                                )
+                            });
+                            s.free(leaf_ptr);
+                        });
+                    },
+                    |s| {
+                        let branch_ptr = leaf_or_branch_ptr;
+                        let new_refcount = s.sub(
+                            s.arrow(self.branch_t, i64_t, branch_ptr, F_BRANCH_REFCOUNT),
+                            s.i64(1),
+                        );
+                        s.arrow_set(self.branch_t, branch_ptr, F_BRANCH_REFCOUNT, new_refcount);
 
-        // define 'derived_retain_array'
-        {
-            let s = context.scope(self.derived_retain_array);
-            let array = s.arg(0);
+                        s.if_(s.eq(new_refcount, s.i64(0)), |s| {
+                            let i = s.alloca(i64_t);
+                            s.ptr_set(i, s.i64(0));
 
-            if self.mode == Mode::Owned {
+                            s.while_(
+                                |s| {
+                                    s.and_lazy(
+                                        s.ult(s.ptr_get(i64_t, i), s.i64(BRANCHING_FACTOR)),
+                                        |s| {
+                                            s.not(s.is_null(s.arr_get(
+                                                node_ptr_t,
+                                                s.gep(self.branch_t, branch_ptr, F_BRANCH_CHILDREN),
+                                                s.ptr_get(i64_t, i),
+                                            )))
+                                        },
+                                    )
+                                },
+                                |s| {
+                                    s.call_void(
+                                        self.release_node,
+                                        &[
+                                            s.arr_get(
+                                                node_ptr_t,
+                                                s.gep(self.branch_t, branch_ptr, F_BRANCH_CHILDREN),
+                                                s.ptr_get(i64_t, i),
+                                            ),
+                                            s.sub(height, s.i64(1)),
+                                        ],
+                                    );
+                                    s.ptr_set(i, s.add(s.ptr_get(i64_t, i), s.i64(1)));
+                                },
+                            );
+                            s.free(branch_ptr);
+                        });
+                    },
+                );
+
+                s.ret_void();
+            }
+
+            // define 'retain_tail'
+            {
+                let s = context.scope(self.retain_tail);
+                let tail = s.arg(0);
+
+                let refcount = s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT);
+                s.arrow_set(
+                    self.leaf_t,
+                    tail,
+                    F_LEAF_REFCOUNT,
+                    s.add(refcount, s.i64(1)),
+                );
+
+                s.ret_void();
+            }
+
+            // define 'release_tail'
+            {
+                let s = context.scope(self.release_tail);
+                let tail = s.arg(0);
+                let tail_len = s.arg(1);
+
+                let refcount = s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT);
+                s.arrow_set(
+                    self.leaf_t,
+                    tail,
+                    F_LEAF_REFCOUNT,
+                    s.sub(refcount, s.i64(1)),
+                );
+
+                s.if_(
+                    s.eq(s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT), s.i64(0)),
+                    |s| {
+                        s.for_(tail_len, |s, i| {
+                            gen_rc_op(
+                                DerivedRcOp::Release,
+                                s,
+                                instances,
+                                globals,
+                                &self.item_scheme,
+                                s.arr_get(self.item_t, s.gep(self.leaf_t, tail, F_LEAF_ITEMS), i),
+                            );
+                        });
+                        s.free(tail);
+                    },
+                );
+
+                s.ret_void();
+            }
+
+            // define 'retain_array'
+            {
+                let s = context.scope(self.retain_array);
+                let array = s.arg(0);
+
                 if let Some(prof_rc) = context.tal().prof_rc() {
                     s.call_void(prof_rc.record_retain(), &[]);
                 }
@@ -839,73 +995,101 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
                         );
                     },
                 );
+
+                s.ret_void();
             }
 
-            s.ret_void();
-        }
+            // define 'derived_retain_array'
+            {
+                let s = context.scope(self.derived_retain_array);
+                let array = s.arg(0);
 
-        // define 'release_array'
-        {
-            let s = context.scope(self.release_array);
-            let array = s.arg(0);
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_retain(), &[]);
+                    }
 
-            if self.mode == Mode::Owned {
-                if let Some(prof_rc) = context.tal().prof_rc() {
-                    s.call_void(prof_rc.record_release(), &[]);
+                    s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
+                        s.call_void(self.retain_tail, &[s.field(array, F_ARR_TAIL)]);
+                    });
+
+                    s.if_(
+                        s.ugt(s.field(array, F_ARR_LEN), s.i64(self.items_per_leaf)),
+                        |s| {
+                            s.call_void(
+                                self.retain_node,
+                                &[s.field(array, F_ARR_BODY), s.field(array, F_ARR_HEIGHT)],
+                            );
+                        },
+                    );
                 }
 
-                s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
-                    s.call_void(
-                        self.release_tail,
-                        &[
-                            s.field(array, F_ARR_TAIL),
-                            s.call(self.tail_len, &[s.field(array, F_ARR_LEN)]),
-                        ],
-                    );
-                });
-
-                s.if_(
-                    s.ugt(s.field(array, F_ARR_LEN), s.i64(self.items_per_leaf)),
-                    |s| {
-                        s.call_void(
-                            self.release_node,
-                            &[s.field(array, F_ARR_BODY), s.field(array, F_ARR_HEIGHT)],
-                        );
-                    },
-                );
+                s.ret_void();
             }
 
-            s.ret_void();
-        }
+            // define 'release_array'
+            {
+                let s = context.scope(self.release_array);
+                let array = s.arg(0);
 
-        // define 'retain_hole'
-        {
-            let s = context.scope(self.retain_hole);
-            let hole = s.arg(0);
+                if self.mode == Mode::Owned {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_release(), &[]);
+                    }
 
-            let array = s.field(hole, F_HOLE_ARRAY);
-            s.call_void(self.retain_array, &[array]);
-            s.ret_void();
-        }
+                    s.if_(s.not(s.eq(s.field(array, F_ARR_LEN), s.i64(0))), |s| {
+                        s.call_void(
+                            self.release_tail,
+                            &[
+                                s.field(array, F_ARR_TAIL),
+                                s.call(self.tail_len, &[s.field(array, F_ARR_LEN)]),
+                            ],
+                        );
+                    });
 
-        // define 'derived_retain_hole'
-        {
-            let s = context.scope(self.derived_retain_hole);
-            let hole = s.arg(0);
+                    s.if_(
+                        s.ugt(s.field(array, F_ARR_LEN), s.i64(self.items_per_leaf)),
+                        |s| {
+                            s.call_void(
+                                self.release_node,
+                                &[s.field(array, F_ARR_BODY), s.field(array, F_ARR_HEIGHT)],
+                            );
+                        },
+                    );
+                }
 
-            let array = s.field(hole, F_HOLE_ARRAY);
-            s.call_void(self.derived_retain_array, &[array]);
-            s.ret_void();
-        }
+                s.ret_void();
+            }
 
-        // define 'release_hole'
-        {
-            let s = context.scope(self.release_hole);
-            let hole = s.arg(0);
+            // define 'retain_hole'
+            {
+                let s = context.scope(self.retain_hole);
+                let hole = s.arg(0);
 
-            let array = s.field(hole, F_HOLE_ARRAY);
-            s.call_void(self.release_array, &[array]);
-            s.ret_void();
+                let array = s.field(hole, F_HOLE_ARRAY);
+                s.call_void(self.retain_array, &[array]);
+                s.ret_void();
+            }
+
+            // define 'derived_retain_hole'
+            {
+                let s = context.scope(self.derived_retain_hole);
+                let hole = s.arg(0);
+
+                let array = s.field(hole, F_HOLE_ARRAY);
+                s.call_void(self.derived_retain_array, &[array]);
+                s.ret_void();
+            }
+
+            // define 'release_hole'
+            {
+                let s = context.scope(self.release_hole);
+                let hole = s.arg(0);
+
+                let array = s.field(hole, F_HOLE_ARRAY);
+                s.call_void(self.release_array, &[array]);
+                s.ret_void();
+            }
         }
 
         // define 'set_next_path'
@@ -1010,171 +1194,6 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
             ));
         }
 
-        // define 'retain_node'
-        {
-            let s = context.scope(self.retain_node);
-            let leaf_or_branch_ptr = s.arg(0);
-            let height = s.arg(1);
-
-            s.if_else2(
-                s.eq(height, s.i64(0)),
-                |s| {
-                    let leaf_ptr = leaf_or_branch_ptr;
-                    let refcount = s.arrow(self.leaf_t, i64_t, leaf_ptr, F_LEAF_REFCOUNT);
-                    s.arrow_set(
-                        self.leaf_t,
-                        leaf_ptr,
-                        F_LEAF_REFCOUNT,
-                        s.add(refcount, s.i64(1)),
-                    );
-                },
-                |s| {
-                    let branch_ptr = leaf_or_branch_ptr;
-                    let refcount = s.arrow(self.branch_t, i64_t, branch_ptr, F_BRANCH_REFCOUNT);
-                    s.arrow_set(
-                        self.branch_t,
-                        branch_ptr,
-                        F_BRANCH_REFCOUNT,
-                        s.add(refcount, s.i64(1)),
-                    );
-                },
-            );
-
-            s.ret_void();
-        }
-
-        // define 'release_node'
-        {
-            let s = context.scope(self.release_node);
-            let leaf_or_branch_ptr = s.arg(0);
-            let height = s.arg(1);
-
-            s.if_else2(
-                s.eq(height, s.i64(0)),
-                |s| {
-                    let leaf_ptr = leaf_or_branch_ptr;
-                    let new_refcount = s.sub(
-                        s.arrow(self.leaf_t, i64_t, leaf_ptr, F_LEAF_REFCOUNT),
-                        s.i64(1),
-                    );
-                    s.arrow_set(self.leaf_t, leaf_ptr, F_LEAF_REFCOUNT, new_refcount);
-
-                    s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                        s.for_(s.i64(self.items_per_leaf), |s, i| {
-                            gen_rc_op(
-                                DerivedRcOp::Release,
-                                s,
-                                instances,
-                                globals,
-                                &self.item_scheme,
-                                s.arr_get(
-                                    self.item_t,
-                                    s.gep(self.leaf_t, leaf_ptr, F_LEAF_ITEMS),
-                                    i,
-                                ),
-                            )
-                        });
-                        s.free(leaf_ptr);
-                    });
-                },
-                |s| {
-                    let branch_ptr = leaf_or_branch_ptr;
-                    let new_refcount = s.sub(
-                        s.arrow(self.branch_t, i64_t, branch_ptr, F_BRANCH_REFCOUNT),
-                        s.i64(1),
-                    );
-                    s.arrow_set(self.branch_t, branch_ptr, F_BRANCH_REFCOUNT, new_refcount);
-
-                    s.if_(s.eq(new_refcount, s.i64(0)), |s| {
-                        let i = s.alloca(i64_t);
-                        s.ptr_set(i, s.i64(0));
-
-                        s.while_(
-                            |s| {
-                                s.and_lazy(
-                                    s.ult(s.ptr_get(i64_t, i), s.i64(BRANCHING_FACTOR)),
-                                    |s| {
-                                        s.not(s.is_null(s.arr_get(
-                                            node_ptr_t,
-                                            s.gep(self.branch_t, branch_ptr, F_BRANCH_CHILDREN),
-                                            s.ptr_get(i64_t, i),
-                                        )))
-                                    },
-                                )
-                            },
-                            |s| {
-                                s.call_void(
-                                    self.release_node,
-                                    &[
-                                        s.arr_get(
-                                            node_ptr_t,
-                                            s.gep(self.branch_t, branch_ptr, F_BRANCH_CHILDREN),
-                                            s.ptr_get(i64_t, i),
-                                        ),
-                                        s.sub(height, s.i64(1)),
-                                    ],
-                                );
-                                s.ptr_set(i, s.add(s.ptr_get(i64_t, i), s.i64(1)));
-                            },
-                        );
-                        s.free(branch_ptr);
-                    });
-                },
-            );
-
-            s.ret_void();
-        }
-
-        // define 'retain_tail'
-        {
-            let s = context.scope(self.retain_tail);
-            let tail = s.arg(0);
-
-            let refcount = s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT);
-            s.arrow_set(
-                self.leaf_t,
-                tail,
-                F_LEAF_REFCOUNT,
-                s.add(refcount, s.i64(1)),
-            );
-
-            s.ret_void();
-        }
-
-        // define 'release_tail'
-        {
-            let s = context.scope(self.release_tail);
-            let tail = s.arg(0);
-            let tail_len = s.arg(1);
-
-            let refcount = s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT);
-            s.arrow_set(
-                self.leaf_t,
-                tail,
-                F_LEAF_REFCOUNT,
-                s.sub(refcount, s.i64(1)),
-            );
-
-            s.if_(
-                s.eq(s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT), s.i64(0)),
-                |s| {
-                    s.for_(tail_len, |s, i| {
-                        gen_rc_op(
-                            DerivedRcOp::Release,
-                            s,
-                            instances,
-                            globals,
-                            &self.item_scheme,
-                            s.arr_get(self.item_t, s.gep(self.leaf_t, tail, F_LEAF_ITEMS), i),
-                        );
-                    });
-                    s.free(tail);
-                },
-            );
-
-            s.ret_void();
-        }
-
         // define 'tail_len'
         {
             let s = context.scope(self.tail_len);
@@ -1191,44 +1210,59 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
             let s = context.scope(self.obtain_unique_leaf);
             let leaf = s.arg(0);
 
-            s.if_(
-                s.eq(s.arrow(self.leaf_t, i64_t, leaf, F_LEAF_REFCOUNT), s.i64(1)),
-                |s| {
-                    s.ret(leaf);
-                },
-            );
-
-            let result = s.calloc(s.usize(1), self.leaf_t);
-            s.arrow_set(self.leaf_t, result, F_LEAF_REFCOUNT, s.i64(1));
-            s.call(
-                context.tal().memcpy(),
-                &[
-                    s.gep(self.leaf_t, result, F_LEAF_ITEMS),
-                    s.gep(self.leaf_t, leaf, F_LEAF_ITEMS),
-                    s.mul(s.size(self.item_t), s.usize(self.items_per_leaf)),
-                ],
-            );
-
-            s.for_(s.i64(self.items_per_leaf), |s, i| {
-                gen_rc_op(
-                    DerivedRcOp::DerivedRetain,
-                    s,
-                    instances,
-                    globals,
-                    &self.item_scheme,
-                    s.arr_get(self.item_t, s.gep(self.leaf_t, leaf, F_LEAF_ITEMS), i),
+            if context.is_gc_on() {
+                let result = s.calloc(s.usize(1), self.leaf_t);
+                s.arrow_set(self.leaf_t, result, F_LEAF_REFCOUNT, s.i64(1));
+                s.call(
+                    context.tal().memcpy(),
+                    &[
+                        s.gep(self.leaf_t, result, F_LEAF_ITEMS),
+                        s.gep(self.leaf_t, leaf, F_LEAF_ITEMS),
+                        s.mul(s.size(self.item_t), s.usize(self.items_per_leaf)),
+                    ],
                 );
-            });
 
-            let refcount = s.arrow(self.leaf_t, i64_t, leaf, F_LEAF_REFCOUNT);
-            s.arrow_set(
-                self.leaf_t,
-                leaf,
-                F_LEAF_REFCOUNT,
-                s.sub(refcount, s.i64(1)),
-            );
+                s.ret(result);
+            } else {
+                s.if_(
+                    s.eq(s.arrow(self.leaf_t, i64_t, leaf, F_LEAF_REFCOUNT), s.i64(1)),
+                    |s| {
+                        s.ret(leaf);
+                    },
+                );
 
-            s.ret(result);
+                let result = s.calloc(s.usize(1), self.leaf_t);
+                s.arrow_set(self.leaf_t, result, F_LEAF_REFCOUNT, s.i64(1));
+                s.call(
+                    context.tal().memcpy(),
+                    &[
+                        s.gep(self.leaf_t, result, F_LEAF_ITEMS),
+                        s.gep(self.leaf_t, leaf, F_LEAF_ITEMS),
+                        s.mul(s.size(self.item_t), s.usize(self.items_per_leaf)),
+                    ],
+                );
+
+                s.for_(s.i64(self.items_per_leaf), |s, i| {
+                    gen_rc_op(
+                        DerivedRcOp::DerivedRetain,
+                        s,
+                        instances,
+                        globals,
+                        &self.item_scheme,
+                        s.arr_get(self.item_t, s.gep(self.leaf_t, leaf, F_LEAF_ITEMS), i),
+                    );
+                });
+
+                let refcount = s.arrow(self.leaf_t, i64_t, leaf, F_LEAF_REFCOUNT);
+                s.arrow_set(
+                    self.leaf_t,
+                    leaf,
+                    F_LEAF_REFCOUNT,
+                    s.sub(refcount, s.i64(1)),
+                );
+
+                s.ret(result);
+            }
         }
 
         // define 'obtain_unique_branch'
@@ -1237,66 +1271,81 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
             let branch = s.arg(0);
             let height = s.arg(1);
 
-            s.if_(
-                s.eq(
-                    s.arrow(self.branch_t, i64_t, branch, F_BRANCH_REFCOUNT),
-                    s.i64(1),
-                ),
-                |s| {
-                    s.ret(branch);
-                },
-            );
+            if context.is_gc_on() {
+                let result = s.calloc(s.usize(1), self.branch_t);
+                s.arrow_set(self.branch_t, result, F_BRANCH_REFCOUNT, s.i64(1));
+                s.call(
+                    context.tal().memcpy(),
+                    &[
+                        s.gep(self.branch_t, result, F_BRANCH_CHILDREN),
+                        s.gep(self.branch_t, branch, F_BRANCH_CHILDREN),
+                        s.mul(s.size(node_ptr_t), s.usize(BRANCHING_FACTOR)),
+                    ],
+                );
 
-            let result = s.calloc(s.usize(1), self.branch_t);
-            s.arrow_set(self.branch_t, result, F_BRANCH_REFCOUNT, s.i64(1));
-            s.call(
-                context.tal().memcpy(),
-                &[
-                    s.gep(self.branch_t, result, F_BRANCH_CHILDREN),
-                    s.gep(self.branch_t, branch, F_BRANCH_CHILDREN),
-                    s.mul(s.size(node_ptr_t), s.usize(BRANCHING_FACTOR)),
-                ],
-            );
+                s.ret(result);
+            } else {
+                s.if_(
+                    s.eq(
+                        s.arrow(self.branch_t, i64_t, branch, F_BRANCH_REFCOUNT),
+                        s.i64(1),
+                    ),
+                    |s| {
+                        s.ret(branch);
+                    },
+                );
 
-            let i = s.alloca(i64_t);
-            s.ptr_set(i, s.i64(0));
-            s.while_(
-                |s| {
-                    s.and_lazy(s.ult(s.ptr_get(i64_t, i), s.i64(BRANCHING_FACTOR)), |s| {
-                        s.not(s.is_null(s.arr_get(
-                            node_ptr_t,
-                            s.gep(self.branch_t, branch, F_BRANCH_CHILDREN),
-                            s.ptr_get(i64_t, i),
-                        )))
-                    })
-                },
-                |s| {
-                    s.call_void(
-                        self.retain_node,
-                        &[
-                            s.arr_get(
+                let result = s.calloc(s.usize(1), self.branch_t);
+                s.arrow_set(self.branch_t, result, F_BRANCH_REFCOUNT, s.i64(1));
+                s.call(
+                    context.tal().memcpy(),
+                    &[
+                        s.gep(self.branch_t, result, F_BRANCH_CHILDREN),
+                        s.gep(self.branch_t, branch, F_BRANCH_CHILDREN),
+                        s.mul(s.size(node_ptr_t), s.usize(BRANCHING_FACTOR)),
+                    ],
+                );
+
+                let i = s.alloca(i64_t);
+                s.ptr_set(i, s.i64(0));
+                s.while_(
+                    |s| {
+                        s.and_lazy(s.ult(s.ptr_get(i64_t, i), s.i64(BRANCHING_FACTOR)), |s| {
+                            s.not(s.is_null(s.arr_get(
                                 node_ptr_t,
                                 s.gep(self.branch_t, branch, F_BRANCH_CHILDREN),
                                 s.ptr_get(i64_t, i),
-                            ),
-                            s.sub(height, s.i64(1)),
-                        ],
-                    );
-                    s.ptr_set(i, s.add(s.ptr_get(i64_t, i), s.i64(1)));
-                },
-            );
+                            )))
+                        })
+                    },
+                    |s| {
+                        s.call_void(
+                            self.retain_node,
+                            &[
+                                s.arr_get(
+                                    node_ptr_t,
+                                    s.gep(self.branch_t, branch, F_BRANCH_CHILDREN),
+                                    s.ptr_get(i64_t, i),
+                                ),
+                                s.sub(height, s.i64(1)),
+                            ],
+                        );
+                        s.ptr_set(i, s.add(s.ptr_get(i64_t, i), s.i64(1)));
+                    },
+                );
 
-            s.arrow_set(
-                self.branch_t,
-                branch,
-                F_BRANCH_REFCOUNT,
-                s.sub(
-                    s.arrow(self.branch_t, i64_t, branch, F_BRANCH_REFCOUNT),
-                    s.i64(1),
-                ),
-            );
+                s.arrow_set(
+                    self.branch_t,
+                    branch,
+                    F_BRANCH_REFCOUNT,
+                    s.sub(
+                        s.arrow(self.branch_t, i64_t, branch, F_BRANCH_REFCOUNT),
+                        s.i64(1),
+                    ),
+                );
 
-            s.ret(result);
+                s.ret(result);
+            }
         }
 
         // define 'obtain_unique_tail'
@@ -1305,42 +1354,57 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
             let tail = s.arg(0);
             let tail_len = s.arg(1);
 
-            let refcount = s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT);
-
-            s.if_(s.eq(refcount, s.i64(1)), |s| {
-                s.ret(tail);
-            });
-
-            let result = s.calloc(s.usize(1), self.leaf_t);
-            s.arrow_set(self.leaf_t, result, F_LEAF_REFCOUNT, s.i64(1));
-            s.call(
-                context.tal().memcpy(),
-                &[
-                    s.gep(self.leaf_t, result, F_LEAF_ITEMS),
-                    s.gep(self.leaf_t, tail, F_LEAF_ITEMS),
-                    s.mul(s.size(self.item_t), tail_len),
-                ],
-            );
-
-            s.for_(tail_len, |s, i| {
-                gen_rc_op(
-                    DerivedRcOp::DerivedRetain,
-                    s,
-                    instances,
-                    globals,
-                    &self.item_scheme,
-                    s.arr_get(self.item_t, s.gep(self.leaf_t, tail, F_LEAF_ITEMS), i),
+            if context.is_gc_on() {
+                let result = s.calloc(s.usize(1), self.leaf_t);
+                s.arrow_set(self.leaf_t, result, F_LEAF_REFCOUNT, s.i64(1));
+                s.call(
+                    context.tal().memcpy(),
+                    &[
+                        s.gep(self.leaf_t, result, F_LEAF_ITEMS),
+                        s.gep(self.leaf_t, tail, F_LEAF_ITEMS),
+                        s.mul(s.size(self.item_t), tail_len),
+                    ],
                 );
-            });
 
-            s.arrow_set(
-                self.leaf_t,
-                tail,
-                F_LEAF_REFCOUNT,
-                s.sub(refcount, s.i64(1)),
-            );
+                s.ret(result);
+            } else {
+                let refcount = s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT);
 
-            s.ret(result);
+                s.if_(s.eq(refcount, s.i64(1)), |s| {
+                    s.ret(tail);
+                });
+
+                let result = s.calloc(s.usize(1), self.leaf_t);
+                s.arrow_set(self.leaf_t, result, F_LEAF_REFCOUNT, s.i64(1));
+                s.call(
+                    context.tal().memcpy(),
+                    &[
+                        s.gep(self.leaf_t, result, F_LEAF_ITEMS),
+                        s.gep(self.leaf_t, tail, F_LEAF_ITEMS),
+                        s.mul(s.size(self.item_t), tail_len),
+                    ],
+                );
+
+                s.for_(tail_len, |s, i| {
+                    gen_rc_op(
+                        DerivedRcOp::DerivedRetain,
+                        s,
+                        instances,
+                        globals,
+                        &self.item_scheme,
+                        s.arr_get(self.item_t, s.gep(self.leaf_t, tail, F_LEAF_ITEMS), i),
+                    );
+                });
+
+                s.arrow_set(
+                    self.leaf_t,
+                    tail,
+                    F_LEAF_REFCOUNT,
+                    s.sub(refcount, s.i64(1)),
+                );
+
+                s.ret(result);
+            }
         }
 
         // define 'set_tail'

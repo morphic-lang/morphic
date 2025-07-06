@@ -6,6 +6,7 @@ description.workspace = true
 edition.workspace = true
 
 [dependencies]
+find_tool.workspace = true
 morphic_macros.workspace = true
 inkwell.workspace = true
 indicatif.workspace = true
@@ -24,3 +25,4 @@ textwrap.workspace = true
 ansi_term.workspace = true
 tempfile.workspace = true
 crossbeam-channel.workspace = true
+clap.workspace = true

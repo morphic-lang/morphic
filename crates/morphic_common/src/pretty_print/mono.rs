@@ -1,10 +1,7 @@
+use crate::config::MlVariant;
 use crate::data::mono_ast::*;
 use crate::data::profile::ProfilePointId;
 use crate::data::resolved_ast::{ArrayOp, IoOp, VariantId};
-// use crate::data::resolved_ast::{
-//     ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeDef, TypeId, TypeParamId,
-//     VariantId,
-// };
 use crate::util::graph::{self, Graph};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,11 +9,6 @@ use std::io;
 use std::io::Write;
 
 const TAB_SIZE: usize = 2;
-
-enum MlVariant {
-    OCAML,
-    SML,
-}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Precedence {
@@ -79,12 +71,12 @@ impl<'a, 'b> Context<'a, 'b> {
             Type::Bool => self.write("bool")?,
             Type::Byte => self.write("char")?,
             Type::Int => match self.variant {
-                MlVariant::OCAML => self.write("int64")?,
-                MlVariant::SML => self.write("int")?,
+                MlVariant::OCaml => self.write("int64")?,
+                MlVariant::Sml => self.write("int")?,
             },
             Type::Float => match self.variant {
-                MlVariant::OCAML => self.write("float")?,
-                MlVariant::SML => self.write("real")?,
+                MlVariant::OCaml => self.write("float")?,
+                MlVariant::Sml => self.write("real")?,
             },
             Type::Array(item_type) => {
                 self.write_type(item_type, Precedence::Var)?;
@@ -152,7 +144,7 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             Pattern::Var(var_type) => {
                 match self.variant {
-                    MlVariant::OCAML => {
+                    MlVariant::OCaml => {
                         self.write("(")?;
                         self.write("l")?;
                         self.write(self.num_locals)?;
@@ -162,7 +154,7 @@ impl<'a, 'b> Context<'a, 'b> {
                         }
                         self.write(")")?;
                     }
-                    MlVariant::SML => {
+                    MlVariant::Sml => {
                         self.write("l")?;
                         self.write(self.num_locals)?;
                         self.write(" : ")?;
@@ -177,7 +169,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     panic!("length 1 tuple");
                 }
 
-                if let MlVariant::OCAML = self.variant {
+                if let MlVariant::OCaml = self.variant {
                     if write_type {
                         self.write("(")?;
                     }
@@ -196,7 +188,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.remove_locals(total_locals);
                 self.write(")")?;
 
-                if let MlVariant::OCAML = self.variant {
+                if let MlVariant::OCaml = self.variant {
                     if write_type {
                         self.write(" : ")?;
                         fn pat_to_type(p: &Pattern) -> Type {
@@ -321,10 +313,10 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             Expr::Lam(_purity, _arg_type, _ret_type, pattern, body, _prof) => {
                 match self.variant {
-                    MlVariant::OCAML => {
+                    MlVariant::OCaml => {
                         self.write("fun (")?;
                     }
-                    MlVariant::SML => {
+                    MlVariant::Sml => {
                         self.write("fn (")?;
                     }
                 }
@@ -333,10 +325,10 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.add_locals(num_locals);
                 self.write(") ")?;
                 match self.variant {
-                    MlVariant::OCAML => {
+                    MlVariant::OCaml => {
                         self.write("-> ")?;
                     }
-                    MlVariant::SML => {
+                    MlVariant::Sml => {
                         self.write("=> ")?;
                     }
                 }
@@ -351,12 +343,12 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             Expr::Match(expr, patterns, _type) => {
                 match self.variant {
-                    MlVariant::OCAML => {
+                    MlVariant::OCaml => {
                         self.write("match ")?;
                         self.write_expr(expr, Precedence::App)?;
                         self.write(" with")?;
                     }
-                    MlVariant::SML => {
+                    MlVariant::Sml => {
                         self.write("case ")?;
                         self.write_expr(expr, Precedence::App)?;
                         self.write(" of")?;
@@ -375,10 +367,10 @@ impl<'a, 'b> Context<'a, 'b> {
                     self.add_indent();
                     self.add_locals(num_locals);
                     match self.variant {
-                        MlVariant::OCAML => {
+                        MlVariant::OCaml => {
                             self.write(" -> ")?;
                         }
-                        MlVariant::SML => {
+                        MlVariant::Sml => {
                             self.write(" => ")?;
                         }
                     }
@@ -395,12 +387,12 @@ impl<'a, 'b> Context<'a, 'b> {
                 for (i, binding) in bindings.iter().enumerate() {
                     self.writeln()?;
                     match self.variant {
-                        MlVariant::OCAML => {
+                        MlVariant::OCaml => {
                             if i != 0 {
                                 self.write("in let ")?;
                             }
                         }
-                        MlVariant::SML => {
+                        MlVariant::Sml => {
                             self.write("val ")?;
                         }
                     }
@@ -421,7 +413,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.remove_indent();
                 self.remove_locals(total_locals);
 
-                if let MlVariant::SML = self.variant {
+                if let MlVariant::Sml = self.variant {
                     self.writeln()?;
                     self.write("end")?;
                 }
@@ -429,10 +421,10 @@ impl<'a, 'b> Context<'a, 'b> {
             Expr::ArrayLit(_type, elems) => {
                 self.write("PersistentArray.fromList ")?;
                 match self.variant {
-                    MlVariant::OCAML => {
+                    MlVariant::OCaml => {
                         self.write("[|")?;
                     }
-                    MlVariant::SML => {
+                    MlVariant::Sml => {
                         self.write("[")?;
                     }
                 }
@@ -440,20 +432,20 @@ impl<'a, 'b> Context<'a, 'b> {
                     self.write_expr(elem, Precedence::Top)?;
                     if i != elems.len() - 1 {
                         match self.variant {
-                            MlVariant::OCAML => {
+                            MlVariant::OCaml => {
                                 self.write("; ")?;
                             }
-                            MlVariant::SML => {
+                            MlVariant::Sml => {
                                 self.write(", ")?;
                             }
                         }
                     }
                 }
                 match self.variant {
-                    MlVariant::OCAML => {
+                    MlVariant::OCaml => {
                         self.write("|]")?;
                     }
-                    MlVariant::SML => {
+                    MlVariant::Sml => {
                         self.write("]")?;
                     }
                 }
@@ -501,7 +493,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
     fn write_byte_const(&mut self, byte: &u8) -> Result<(), io::Error> {
         match self.variant {
-            MlVariant::OCAML => {
+            MlVariant::OCaml => {
                 self.write("'")?;
                 if *byte == '\'' as u8 {
                     self.write("\\\'")?;
@@ -514,7 +506,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
                 self.write("\'")?;
             }
-            MlVariant::SML => {
+            MlVariant::Sml => {
                 self.write("#\"")?;
                 if *byte == '\"' as u8 {
                     self.write("\\\"")?;
@@ -533,7 +525,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
     fn write_int_const(&mut self, int: i64) -> Result<(), io::Error> {
         self.write(int)?;
-        if let MlVariant::OCAML = self.variant {
+        if let MlVariant::OCaml = self.variant {
             self.write("L")?;
         }
         Ok(())
@@ -555,8 +547,8 @@ impl<'a, 'b> Context<'a, 'b> {
     ) -> io::Result<()> {
         if is_first {
             match self.variant {
-                MlVariant::OCAML => self.write("type ")?,
-                MlVariant::SML => {
+                MlVariant::OCaml => self.write("type ")?,
+                MlVariant::Sml => {
                     self.write("datatype ")?;
                 }
             }
@@ -616,12 +608,12 @@ impl<'a, 'b> Context<'a, 'b> {
         self.write("(* The generated program begins around line 150. *)")?;
         self.writeln()?;
         match self.variant {
-            MlVariant::OCAML => {
+            MlVariant::OCaml => {
                 self.write(PRELUDE_PERSISTENT_OCAML)?;
                 self.writeln()?;
                 self.write(PRELUDE_OCAML)?;
             }
-            MlVariant::SML => {
+            MlVariant::Sml => {
                 self.write(PRELUDE_PERSISTENT_SML)?;
                 self.writeln()?;
                 self.write(PRELUDE_SML)?;
@@ -698,7 +690,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     if let Some(prof_id) = prof {
                         profile_points.insert(*prof_id, *id);
                         match self.variant {
-                            MlVariant::OCAML => {
+                            MlVariant::OCaml => {
                                 self.write("let total_calls_")?;
                                 self.write(id.0)?;
                                 self.write(" = ref 0")?;
@@ -708,7 +700,7 @@ impl<'a, 'b> Context<'a, 'b> {
                                 self.write(" = ref 0")?;
                                 self.writeln()?;
                             }
-                            MlVariant::SML => {
+                            MlVariant::Sml => {
                                 self.write("val total_calls_")?;
                                 self.write(id.0)?;
                                 self.write(" = ref 0")?;
@@ -723,10 +715,10 @@ impl<'a, 'b> Context<'a, 'b> {
 
                     if i == 0 {
                         match self.variant {
-                            MlVariant::OCAML => {
+                            MlVariant::OCaml => {
                                 self.write("let rec ")?;
                             }
-                            MlVariant::SML => {
+                            MlVariant::Sml => {
                                 self.write("fun ")?;
                             }
                         }
@@ -740,10 +732,10 @@ impl<'a, 'b> Context<'a, 'b> {
                     self.write_type(&ret_type, Precedence::Top)?;
                     if let Some(_) = prof {
                         match self.variant {
-                            MlVariant::OCAML => {
+                            MlVariant::OCaml => {
                                 self.write(" = let start = Unix.gettimeofday () in let res =")?;
                             }
-                            MlVariant::SML => {
+                            MlVariant::Sml => {
                                 self.write(" = let val start = Time.now () val res =")?;
                             }
                         }
@@ -761,7 +753,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
                     if let Some(_) = prof {
                         match self.variant {
-                            MlVariant::OCAML => {
+                            MlVariant::OCaml => {
                                 self.write(" in let stop = Unix.gettimeofday () in let _ = incr total_calls_")?;
                                 self.write(id.0)?;
                                 self.write(" in let _ = total_clock_nanos_")?;
@@ -770,7 +762,7 @@ impl<'a, 'b> Context<'a, 'b> {
                                 self.write(id.0)?;
                                 self.write(" in res")?;
                             }
-                            MlVariant::SML => {
+                            MlVariant::Sml => {
                                 self.write(" val stop = Time.now () val _ = total_calls_")?;
                                 self.write(id.0)?;
                                 self.write(" := !total_calls_")?;
@@ -788,10 +780,10 @@ impl<'a, 'b> Context<'a, 'b> {
                 } else {
                     if i == 0 {
                         match self.variant {
-                            MlVariant::OCAML => {
+                            MlVariant::OCaml => {
                                 self.write("let rec ")?;
                             }
-                            MlVariant::SML => {
+                            MlVariant::Sml => {
                                 self.write("fun ")?;
                             }
                         }
@@ -815,10 +807,10 @@ impl<'a, 'b> Context<'a, 'b> {
         }
         self.writeln()?;
         match self.variant {
-            MlVariant::OCAML => {
+            MlVariant::OCaml => {
                 self.write("let _ = main_")?;
             }
-            MlVariant::SML => {
+            MlVariant::Sml => {
                 self.write("val _ = main_")?;
             }
         }
@@ -828,7 +820,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
         if !profile_points.is_empty() {
             match self.variant {
-                MlVariant::OCAML => {
+                MlVariant::OCaml => {
                     self.write("let profile_path = Sys.getenv_opt(\"MORPHIC_PROFILE_PATH\");")?;
                     self.writeln()?;
                     self.write("in match profile_path with")?;
@@ -858,7 +850,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     )?;
                     self.writeln()?;
                 }
-                MlVariant::SML => {
+                MlVariant::Sml => {
                     self.write("val profile_path = OS.Process.getEnv(\"MORPHIC_PROFILE_PATH\");")?;
                     self.writeln()?;
                     self.write("val _ = case profile_path of")?;
@@ -982,21 +974,13 @@ fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
     }
 }
 
-pub fn write_sml_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
+pub fn write_ml_program(
+    w: &mut dyn Write,
+    program: &Program,
+    variant: MlVariant,
+) -> io::Result<()> {
     let mut context = Context {
-        variant: MlVariant::SML,
-        writer: w,
-        indentation: 0,
-        num_locals: 0,
-        prog: program,
-    };
-    context.write_program(program)?;
-    Ok(())
-}
-
-pub fn write_ocaml_program(w: &mut dyn Write, program: &Program) -> io::Result<()> {
-    let mut context = Context {
-        variant: MlVariant::OCAML,
+        variant,
         writer: w,
         indentation: 0,
         num_locals: 0,

@@ -95,6 +95,7 @@ impl PartialOrd for KitwareVersion {
 
 impl Ord for KitwareVersion {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // `extra` is ignored for comparison purposes.
         self.major
             .cmp(&other.major)
             .then(self.minor.cmp(&other.minor))
@@ -137,8 +138,8 @@ fn check_kitware(name: &str, exe: &Path, min_version: &KitwareVersion) -> Result
         .strip_prefix(&format!("{name} version "))
         .ok_or("Unexpected --version output format")?;
 
-    let (version_str, extra) = if let Some((v, p)) = version_str.split_once('-') {
-        (v, Some(p.to_string()))
+    let (version_str, extra) = if let Some((v, e)) = version_str.split_once('-') {
+        (v, Some(e.to_string()))
     } else {
         (version_str, None)
     };
@@ -191,6 +192,44 @@ pub fn find_ctest(min_version: KitwareVersion) -> Result<Tool, String> {
         .with_strategy(Strategy::Which("ctest".into()))
         .with_validator(Validator::new("check ctest version", move |tool| {
             check_kitware("ctest", tool.path(), &min_version)
+        }))
+        .find_tool()
+}
+
+pub fn find_mlton() -> Result<Tool, String> {
+    ToolFinder::new("mlton")
+        .with_strategy(Strategy::EnvVar(
+            "MORPHIC_MLTON_PATH".into(),
+            EnvVarKind::Hard,
+        ))
+        .with_strategy(Strategy::Which("mlton".into()))
+        .find_tool()
+}
+
+pub fn find_ocamlopt() -> Result<Tool, String> {
+    ToolFinder::new("ocamlopt")
+        .with_strategy(Strategy::EnvVar(
+            "MORPHIC_OCAMLOPT_PATH".into(),
+            EnvVarKind::Hard,
+        ))
+        .with_strategy(Strategy::Which("ocamlopt".into()))
+        .find_tool()
+}
+
+pub fn find_valgrind() -> Result<Tool, String> {
+    ToolFinder::new("valgrind")
+        .with_strategy(Strategy::EnvVar(
+            "MORPHIC_VALGRIND_PATH".into(),
+            EnvVarKind::Hard,
+        ))
+        .with_strategy(Strategy::Which("valgrind".into()))
+        .with_validator(Validator::new("check valgrind version", move |tool| {
+            let output = get_cmd_out(&mut Cmd::new(tool.path()).arg("--version"))?;
+            if output.starts_with("valgrind") {
+                Ok(())
+            } else {
+                Err("Running 'valgrind --version' failed.".into())
+            }
         }))
         .find_tool()
 }

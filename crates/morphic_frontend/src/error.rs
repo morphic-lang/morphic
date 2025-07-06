@@ -12,6 +12,10 @@ pub enum Error {
     TypeInferFailed(type_infer::Error),
     CheckExhaustiveFailed(check_exhaustive::Error),
     CheckMainFailed(check_main::Error),
+    FindMltonFailed(String),
+    RunMltonFailed(io::Error),
+    FindOCamloptFailed(String),
+    RunOCamloptFailed(io::Error),
 }
 
 impl Reportable for Error {
@@ -32,6 +36,10 @@ impl Reportable for Error {
                 "Could not write intermediate representation artifacts: {}",
                 err
             ),
+            FindMltonFailed(err) => writeln!(dest, "mlton not found:\n{}", err),
+            RunMltonFailed(err) => writeln!(dest, "mlton failed: {}", err),
+            FindOCamloptFailed(err) => writeln!(dest, "ocamlopt not found:\n{}", err),
+            RunOCamloptFailed(err) => writeln!(dest, "ocamlopt failed: {}", err),
         }
     }
 

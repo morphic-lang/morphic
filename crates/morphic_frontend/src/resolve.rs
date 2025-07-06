@@ -17,7 +17,7 @@ use crate::lex;
 use crate::parse;
 use crate::parse_error;
 use id_collections::IdVec;
-use morphic_common::config as cfg;
+use morphic_common::config::{self as cfg, ProfileMode};
 use morphic_common::intrinsic_config::INTRINSIC_NAMES;
 use morphic_common::lines;
 use morphic_common::report_error::{locate_path, locate_span, Locate, Reportable};
@@ -417,8 +417,10 @@ pub fn resolve_program(
     files: &mut FileCache,
     file_path: &Path,
     profile_syms: &[cfg::SymbolName],
-    profile_record_rc: bool,
+    profile_mode: ProfileMode,
 ) -> Result<res::Program, Error> {
+    let profile_record_rc = profile_mode == ProfileMode::RecordRc;
+
     let mut ctx = GlobalContext {
         mods: IdVec::new(),
         mod_symbols: IdVec::new(),

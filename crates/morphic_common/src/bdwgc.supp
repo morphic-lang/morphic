@@ -1,0 +1,14 @@
+{
+   BWDGC-Cond
+   Memcheck:Cond
+   ...
+   fun:GC_*
+   ...
+}
+{
+   BWDGC-Value8
+   Memcheck:Value8
+   ...
+   fun:GC_*
+   ...
+}

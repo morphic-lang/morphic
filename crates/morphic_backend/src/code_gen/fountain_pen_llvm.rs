@@ -24,14 +24,21 @@ use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
 
+macro_rules! out_file {
+    ($name:expr) => {
+        include_bytes!(concat!(env!("OUT_DIR"), "/", $name))
+    };
+}
+
 mod native {
-    pub const TAL_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native/tal.o"));
-    pub const GC_A: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native/gc/libgc.a"));
+    pub const TAL_O: &'static [u8] = out_file!("native/tal.o");
+    pub const BDW_EXT_O: &'static [u8] = out_file!("native/bdw_ext.o");
+    pub const GC_A: &'static [u8] = out_file!("native/gc/libgc.a");
 }
 
 mod wasm {
-    pub const MALLOC_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wasm/malloc.o"));
-    pub const TAL_O: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wasm/tal.o"));
+    pub const MALLOC_O: &'static [u8] = out_file!("wasm/malloc.o");
+    pub const TAL_O: &'static [u8] = out_file!("wasm/tal.o");
     pub const INDEX_HTML: &'static [u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tal/wasm/dist/index.html"
@@ -532,12 +539,12 @@ impl<'a> Tal<'a> {
                 void_t.fn_type(&[], false),
                 Some(Linkage::External),
             )),
-            GcKind::None => None,
+            GcKind::Rc => None,
         };
         let malloc = module.add_function(
             match gc {
                 GcKind::Bdw => "GC_malloc",
-                GcKind::None => "malloc",
+                GcKind::Rc => "malloc",
             },
             i8_ptr_t.fn_type(&[usize_t.into()], false),
             Some(Linkage::External),
@@ -545,7 +552,7 @@ impl<'a> Tal<'a> {
         let calloc = module.add_function(
             match gc {
                 GcKind::Bdw => "morphic_GC_calloc",
-                GcKind::None => "calloc",
+                GcKind::Rc => "calloc",
             },
             i8_ptr_t.fn_type(&[usize_t.into(), usize_t.into()], false),
             Some(Linkage::External),
@@ -553,7 +560,7 @@ impl<'a> Tal<'a> {
         let realloc = module.add_function(
             match gc {
                 GcKind::Bdw => "GC_realloc",
-                GcKind::None => "realloc",
+                GcKind::Rc => "realloc",
             },
             i8_ptr_t.fn_type(&[i8_ptr_t.into(), usize_t.into()], false),
             Some(Linkage::External),
@@ -561,7 +568,7 @@ impl<'a> Tal<'a> {
         let free = module.add_function(
             match gc {
                 GcKind::Bdw => "GC_free",
-                GcKind::None => "free",
+                GcKind::Rc => "free",
             },
             void_t.fn_type(&[i8_ptr_t.into()], false),
             Some(Linkage::External),
@@ -807,7 +814,7 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
     type Tal = Tal<'a>;
 
     fn is_gc_on(&self) -> bool {
-        self.gc != GcKind::None
+        self.gc != GcKind::Rc
     }
 
     fn tal(&self) -> &Self::Tal {
@@ -2030,18 +2037,18 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
 }
 
 fn get_target_machine(
-    target: cfg::LlvmConfig,
+    target: cfg::TargetConfig,
     opt_level: OptimizationLevel,
 ) -> Result<TargetMachine, Error> {
     Target::initialize_all(&InitializationConfig::default());
 
     let (target_triple, target_cpu, target_features) = match target {
-        cfg::LlvmConfig::Native => (
+        cfg::TargetConfig::Native => (
             TargetMachine::get_default_triple(),
             TargetMachine::get_host_cpu_name().to_string(),
             TargetMachine::get_host_cpu_features().to_string(),
         ),
-        cfg::LlvmConfig::Wasm => (
+        cfg::TargetConfig::Wasm => (
             TargetTriple::create("wasm32-unknown-unknown"),
             "".to_owned(),
             "".to_owned(),
@@ -2109,43 +2116,33 @@ fn check_valid_dir_path(path: &Path) -> Result<(), Error> {
 }
 
 fn run_cc(
-    _gc: GcKind,
-    target: cfg::LlvmConfig,
+    gc: GcKind,
+    target: cfg::TargetConfig,
     obj_path: &Path,
     exe_path: &Path,
 ) -> Result<(), Error> {
     check_valid_file_path(obj_path)?;
-    check_valid_file_path(exe_path)?;
+
+    let create_temp_o = |bytes| -> Result<tempfile::NamedTempFile, Error> {
+        let mut file = tempfile::Builder::new()
+            .suffix(".o")
+            .tempfile_in("")
+            .map_err(Error::CouldNotCreateTempFile)?;
+        file.write_all(bytes).map_err(Error::CouldNotWriteObjFile)?;
+        Ok(file)
+    };
 
     match target {
-        cfg::LlvmConfig::Native => {
+        cfg::TargetConfig::Native => {
+            check_valid_file_path(exe_path)?;
+
             let clang = find_default_clang(ClangKind::C).map_err(Error::CouldNotFindClang)?;
 
-            let mut tal_file = tempfile::Builder::new()
-                .suffix(".o")
-                .tempfile_in("")
-                .map_err(Error::CouldNotCreateTempFile)?;
-            tal_file
-                .write_all(native::TAL_O)
-                .map_err(Error::CouldNotWriteObjFile)?;
-            let mut gc_file = tempfile::Builder::new()
-                .suffix(".a")
-                .tempfile_in("")
-                .map_err(Error::CouldNotCreateTempFile)?;
-            gc_file
-                .write_all(native::GC_A)
-                .map_err(Error::CouldNotWriteObjFile)?;
+            let tal_file = create_temp_o(native::TAL_O)?;
+            let bdw_ext_file = create_temp_o(native::BDW_EXT_O)?;
+            let gc_file = create_temp_o(native::GC_A)?;
 
             let mut cmd = std::process::Command::new(clang.path());
-            // cmd.arg("-g")
-            //     .arg("-O0")
-            //     .arg("-fno-omit-frame-pointer")
-            //     .arg("-fPIC")
-            //     .arg("-o")
-            //     .arg(exe_path)
-            //     .arg(obj_path)
-            //     .arg(tal_file.path())
-            //     .arg(gc_file.path());
             cmd.arg("-O3")
                 .arg("-ffunction-sections")
                 .arg("-fdata-sections")
@@ -2158,31 +2155,17 @@ fn run_cc(
                 .arg("-o")
                 .arg(exe_path)
                 .arg(obj_path)
-                .arg(tal_file.path())
-                .arg(gc_file.path());
+                .arg(tal_file.path());
+            if gc == GcKind::Bdw {
+                cmd.arg(bdw_ext_file.path()).arg(gc_file.path());
+            }
             cmd.status().map_err(Error::ClangFailed)?;
         }
-        cfg::LlvmConfig::Wasm => {
-            // materialize files to link with
-            let mut tal_file = tempfile::Builder::new()
-                .suffix(".o")
-                .tempfile_in("")
-                .map_err(Error::CouldNotCreateTempFile)?;
-            tal_file
-                .write_all(wasm::TAL_O)
-                .map_err(Error::CouldNotWriteObjFile)?;
-            let mut malloc_file = tempfile::Builder::new()
-                .suffix(".o")
-                .tempfile_in("")
-                .map_err(Error::CouldNotCreateTempFile)?;
-            malloc_file
-                .write_all(wasm::MALLOC_O)
-                .map_err(Error::CouldNotWriteObjFile)?;
-
+        cfg::TargetConfig::Wasm => {
             check_valid_dir_path(exe_path)?;
-            if !exe_path.exists() {
-                std::fs::create_dir(exe_path).map_err(Error::CouldNotCreateOutputDir)?;
-            }
+
+            let tal_file = create_temp_o(wasm::TAL_O)?;
+            let malloc_file = create_temp_o(wasm::MALLOC_O)?;
 
             let index_path = exe_path.join("index.html");
             let mut index_file =
@@ -2302,7 +2285,7 @@ pub fn compile_to_executable(
     gc: GcKind,
     array_kind: ArrayKind,
     program: low::Program,
-    target: cfg::LlvmConfig,
+    target: cfg::TargetConfig,
     opt_level: OptimizationLevel,
     artifact_paths: ArtifactPaths,
     progress: progress_ui::ProgressMode,

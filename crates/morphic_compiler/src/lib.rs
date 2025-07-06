@@ -5,11 +5,10 @@ mod test;
 
 pub mod cli;
 
-use morphic_backend::{code_gen, compile_to_low_ast, interpreter, BuildConfig};
+use morphic_backend::{code_gen, interpreter};
 use morphic_common::config as cfg;
 use morphic_common::report_error::Reportable;
 use morphic_common::{file_cache, progress_ui, pseudoprocess};
-use morphic_frontend::compile_to_first_order_ast;
 use std::io;
 
 #[derive(Debug)]
@@ -86,78 +85,142 @@ pub fn handle_config(config: cli::Config, files: &mut file_cache::FileCache) -> 
 }
 
 pub fn run(
-    config: cli::RunConfig,
+    config: cfg::RunConfig,
     files: &mut file_cache::FileCache,
 ) -> Result<pseudoprocess::Child, Error> {
-    let first_order = compile_to_first_order_ast(
+    let first_order = morphic_frontend::compile_to_first_order_ast(
         &config.src_path,
-        config.purity_mode,
         &[],
-        false,
+        cfg::ProfileMode::NoRecordRc,
         None,
         files,
         progress_ui::ProgressMode::Hidden,
-        &config.pass_options,
+        config.purity_mode,
+        config.defunc_mode,
     )
     .map_err(ErrorKind::FrontendError)?;
-    let lowered = compile_to_low_ast(
+    let lowered = morphic_backend::compile_to_low_ast(
         first_order,
         None,
         progress_ui::ProgressMode::Hidden,
-        &config.pass_options,
+        &config.llvm_config,
     )
     .map_err(ErrorKind::BackendError)?;
 
-    match config.mode {
-        cli::RunMode::Compile { valgrind } => {
+    match config.run_mode {
+        cfg::RunMode::Compile { valgrind } => {
             Ok(
-                code_gen::run(config.stdio, lowered, &config.pass_options, valgrind)
+                code_gen::run(config.stdio, lowered, &config.llvm_config, valgrind)
                     .map_err(ErrorKind::BackendError)?,
             )
         }
-        cli::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
+        cfg::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
     }
 }
 
-pub fn build(config: BuildConfig, files: &mut file_cache::FileCache) -> Result<(), Error> {
-    match config.target {
-        cfg::TargetConfig::Llvm(_) => {
-            let first_order = compile_to_first_order_ast(
+pub fn build(config: cfg::BuildConfig, files: &mut file_cache::FileCache) -> Result<(), Error> {
+    match config.backend_opts {
+        cfg::BackendOptions::Llvm(llvm_config) => {
+            let first_order = morphic_frontend::compile_to_first_order_ast(
                 &config.src_path,
-                config.purity_mode,
                 &config.profile_syms,
-                config.profile_record_rc,
+                config.profile_mode,
                 config.artifact_dir.as_ref(),
                 files,
                 config.progress,
-                &config.pass_options,
+                config.purity_mode,
+                config.defunc_mode,
             )
             .map_err(ErrorKind::FrontendError)?;
-            let lowered = compile_to_low_ast(
+
+            let lowered = morphic_backend::compile_to_low_ast(
                 first_order,
                 config.artifact_dir.as_ref(),
                 config.progress,
-                &config.pass_options,
+                &llvm_config,
             )
             .map_err(ErrorKind::BackendError)?;
-            Ok(code_gen::build(lowered, &config).map_err(ErrorKind::BackendError)?)
+
+            code_gen::build(
+                lowered,
+                config.artifact_dir.as_ref(),
+                &config.output_path,
+                config.progress,
+                &llvm_config,
+            )
+            .map_err(ErrorKind::BackendError)?;
+
+            Ok(())
         }
-        cfg::TargetConfig::Ml(_) => match config.artifact_dir {
-            None => Err(Error {
-                kind: ErrorKind::ArtifactDirMissing,
-            }),
-            Some(_) => {
-                compile_to_first_order_ast(
+        cfg::BackendOptions::Ml(ml_config) => match ml_config.stage {
+            cfg::CompilationStage::Typed => {
+                let typed = morphic_frontend::compile_to_typed_ast(
                     &config.src_path,
-                    config.purity_mode,
                     &config.profile_syms,
-                    config.profile_record_rc,
+                    config.profile_mode,
                     config.artifact_dir.as_ref(),
                     files,
                     config.progress,
-                    &config.pass_options,
+                    config.purity_mode,
                 )
                 .map_err(ErrorKind::FrontendError)?;
+
+                morphic_frontend::compile_typed_to_ml(
+                    typed,
+                    ml_config.variant,
+                    config.artifact_dir.as_ref(),
+                    &config.output_path,
+                    config.progress,
+                )
+                .map_err(ErrorKind::FrontendError)?;
+
+                Ok(())
+            }
+            cfg::CompilationStage::Mono => {
+                let mono = morphic_frontend::compile_to_mono_ast(
+                    &config.src_path,
+                    &config.profile_syms,
+                    config.profile_mode,
+                    config.artifact_dir.as_ref(),
+                    files,
+                    config.progress,
+                    config.purity_mode,
+                )
+                .map_err(ErrorKind::FrontendError)?;
+
+                morphic_frontend::compile_mono_to_ml(
+                    mono,
+                    ml_config.variant,
+                    config.artifact_dir.as_ref(),
+                    &config.output_path,
+                    config.progress,
+                )
+                .map_err(ErrorKind::FrontendError)?;
+
+                Ok(())
+            }
+            cfg::CompilationStage::FirstOrder => {
+                let first_order = morphic_frontend::compile_to_first_order_ast(
+                    &config.src_path,
+                    &config.profile_syms,
+                    config.profile_mode,
+                    config.artifact_dir.as_ref(),
+                    files,
+                    config.progress,
+                    config.purity_mode,
+                    config.defunc_mode,
+                )
+                .map_err(ErrorKind::FrontendError)?;
+
+                morphic_frontend::compile_first_order_to_ml(
+                    first_order,
+                    ml_config.variant,
+                    config.artifact_dir.as_ref(),
+                    &config.output_path,
+                    config.progress,
+                )
+                .map_err(ErrorKind::FrontendError)?;
+
                 Ok(())
             }
         },

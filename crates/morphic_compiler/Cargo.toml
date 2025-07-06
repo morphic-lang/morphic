@@ -12,3 +12,4 @@ morphic_frontend.workspace = true
 clap.workspace = true
 inkwell.workspace = true
 better-panic.workspace = true
+tempfile.workspace = true

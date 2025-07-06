@@ -6,6 +6,7 @@
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::io::{self, BufRead, Cursor, Read, Write};
+use std::path::Path;
 use std::process;
 use std::thread;
 use tempfile::TempPath;
@@ -141,21 +142,6 @@ pub fn spawn_thread(
     }
 }
 
-fn check_valgrind() -> io::Result<()> {
-    match process::Command::new("valgrind").arg("--version").output() {
-        Ok(out) if out.status.success() => Ok(()),
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            "valgrind appears to have a problem.  Running 'valgrind --version' failed.",
-        )),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "You don't appear to have valgrind installed in your environment.",
-        )),
-        Err(err) => Err(err),
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValgrindConfig {
     /// It is sometimes useful to disable leak checking, such as when you expect the program under
@@ -169,17 +155,21 @@ pub fn spawn_process(
     valgrind: Option<ValgrindConfig>,
 ) -> io::Result<Child> {
     let mut command = if let Some(ValgrindConfig { leak_check }) = valgrind {
-        check_valgrind()?;
+        let valgrind = find_tool::finders::find_valgrind().map_err(io::Error::other)?;
+        let supressions = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("bdwgc.supp");
 
-        let mut command = process::Command::new("valgrind");
-        command.arg("--quiet");
-        command.arg("--error-exitcode=2");
+        let mut command = process::Command::new(valgrind.path());
+        command
+            .arg("--quiet")
+            .arg("--error-exitcode=2")
+            .arg(&format!("--suppressions={}", supressions.to_str().unwrap()));
         if leak_check {
             command.arg("--leak-check=full");
         } else {
             command.arg("--leak-check=no");
         }
-        // command.arg("--suppressions=/home/ben/code/morphic/bdwgc.supp");
         command.arg("--").arg(&path);
         command
     } else {

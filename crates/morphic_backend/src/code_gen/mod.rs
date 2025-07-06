@@ -28,7 +28,6 @@ use crate::code_gen::zero_sized_array::{
 };
 use crate::error::Error as CrateError;
 use crate::pretty_print::utils::TailFuncRenderer;
-use crate::BuildConfig;
 use id_collections::{IdMap, IdVec};
 use id_graph_sccs::{SccKind, Sccs};
 use morphic_common::config::ArrayKind;
@@ -44,7 +43,7 @@ use morphic_common::util::progress_logger::{ProgressLogger, ProgressSession};
 use morphic_common::{config as cfg, progress_ui};
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 #[derive(thiserror::Error, Debug)]
@@ -1171,10 +1170,10 @@ pub fn gen_program<T: Context>(
 pub fn run(
     stdio: Stdio,
     program: low::Program,
-    config: &cfg::PassOptions,
+    config: &cfg::LlvmConfig,
     valgrind: Option<ValgrindConfig>,
 ) -> std::result::Result<Child, CrateError> {
-    let target = cfg::LlvmConfig::Native;
+    let target = cfg::TargetConfig::Native;
     let opt_level = cfg::default_llvm_opt_level();
 
     let obj_path = tempfile::Builder::new()
@@ -1212,28 +1211,28 @@ pub fn run(
         .map_err(|err| CrateError::CodeGenFailed(Error::CouldNotSpawnChild(err)))
 }
 
-pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result<(), CrateError> {
-    let target = if let cfg::TargetConfig::Llvm(target) = config.target {
-        target
-    } else {
-        unreachable!("not an llvm target")
-    };
-
-    if let Some(artifact_dir) = &config.artifact_dir {
+pub fn build(
+    program: low::Program,
+    artifact_dir: Option<&cfg::ArtifactDir>,
+    output_path: &Path,
+    progress: progress_ui::ProgressMode,
+    config: &cfg::LlvmConfig,
+) -> std::result::Result<(), CrateError> {
+    if let Some(artifact_dir) = artifact_dir {
         compile_to_executable(
-            config.pass_options.gc_kind,
-            config.pass_options.array_kind,
+            config.gc_kind,
+            config.array_kind,
             program,
-            target,
-            config.llvm_opt_level,
+            config.target,
+            config.opt_level,
             ArtifactPaths {
                 ll: Some(&artifact_dir.artifact_path("ll")),
                 opt_ll: Some(&artifact_dir.artifact_path("opt.ll")),
                 asm: Some(&artifact_dir.artifact_path("s")),
                 obj: &artifact_dir.artifact_path("o"),
-                exe: &config.output_path,
+                exe: output_path,
             },
-            config.progress,
+            progress,
         )
         .map_err(CrateError::CodeGenFailed)
     } else {
@@ -1244,19 +1243,19 @@ pub fn build(program: low::Program, config: &BuildConfig) -> std::result::Result
             .into_temp_path();
 
         compile_to_executable(
-            config.pass_options.gc_kind,
-            config.pass_options.array_kind,
+            config.gc_kind,
+            config.array_kind,
             program,
-            target,
-            config.llvm_opt_level,
+            config.target,
+            config.opt_level,
             ArtifactPaths {
                 ll: None,
                 opt_ll: None,
                 asm: None,
                 obj: &obj_path,
-                exe: &config.output_path,
+                exe: output_path,
             },
-            config.progress,
+            progress,
         )
         .map_err(CrateError::CodeGenFailed)
     }

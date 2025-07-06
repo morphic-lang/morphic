@@ -18,31 +18,12 @@ pub mod interpreter;
 use crate::error::Error;
 use morphic_common::{config as cfg, data, pretty_print, progress_ui};
 use std::fs;
-use std::path::PathBuf;
-
-#[derive(Debug)]
-pub struct BuildConfig {
-    pub src_path: PathBuf,
-    pub purity_mode: cfg::PurityMode,
-
-    pub profile_syms: Vec<cfg::SymbolName>,
-    pub profile_record_rc: bool,
-
-    pub target: cfg::TargetConfig,
-    pub llvm_opt_level: inkwell::OptimizationLevel,
-
-    pub output_path: PathBuf,
-    pub artifact_dir: Option<cfg::ArtifactDir>,
-    pub progress: progress_ui::ProgressMode,
-
-    pub pass_options: cfg::PassOptions,
-}
 
 pub fn compile_to_low_ast(
     first_order: data::first_order_ast::Program,
     artifact_dir: Option<&cfg::ArtifactDir>,
     progress: progress_ui::ProgressMode,
-    pass_options: &cfg::PassOptions,
+    config: &cfg::LlvmConfig,
 ) -> Result<data::low_ast::Program, Error> {
     let split = split_custom_types::split_custom_types(
         &first_order,
@@ -70,7 +51,7 @@ pub fn compile_to_low_ast(
 
     let interner = crate::data::mode_annot_ast::Interner::empty();
     let mode_annot = annot_modes::annot_modes(
-        pass_options.rc_strat,
+        config.rc_strat,
         &interner,
         guarded,
         progress_ui::bar(progress, "annot_modes"),

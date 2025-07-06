@@ -1,5 +1,5 @@
 use id_collections::IdVec;
-use morphic_common::config::PassOptions;
+use morphic_common::config::LlvmConfig;
 use morphic_common::data::low_ast::*;
 use morphic_common::data::metadata::Metadata;
 use morphic_common::data::mode_annot_ast::Mode;
@@ -93,5 +93,5 @@ fn test_print_hello() {
     builder.build_output(s);
 
     let prog = builder.finish();
-    let _child = super::run(Stdio::Piped, prog, &PassOptions::default(), None).unwrap();
+    let _child = super::run(Stdio::Piped, prog, &LlvmConfig::default(), None).unwrap();
 }

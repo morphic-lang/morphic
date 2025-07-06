@@ -1,7 +1,7 @@
-use crate::cli::{RunConfig, RunMode};
 use crate::pseudoprocess::{ExitStatus, Stdio};
 use morphic_common::config as cfg;
 use morphic_common::file_cache::FileCache;
+use morphic_common::progress_ui;
 use std::path::Path;
 
 // TODO: Add support for testing input/output sequences with "synchronization points," such as
@@ -9,7 +9,7 @@ use std::path::Path;
 // requiring that the program conusmes certain input before the test harness expects output.
 
 pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: AsRef<[u8]>>(
-    mode: RunMode,
+    run_mode: cfg::RunMode,
     rc_strat: cfg::RcStrategy,
     path: SrcPath,
     given_in: In,
@@ -17,14 +17,16 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
     expected_err: Err,
     expected_status: ExitStatus,
 ) {
-    let config = RunConfig {
+    let config = cfg::RunConfig {
         src_path: path.as_ref().to_owned(),
+        progress: progress_ui::ProgressMode::Hidden,
         purity_mode: cfg::PurityMode::Checked,
-        mode,
-        pass_options: cfg::PassOptions {
+        defunc_mode: cfg::DefuncMode::Specialize,
+        llvm_config: cfg::LlvmConfig {
             rc_strat,
             ..Default::default()
         },
+        run_mode,
         stdio: Stdio::Piped,
     };
 
@@ -72,14 +74,14 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
             expected: {expected_status:?}
             ---------------------------------------------
             stdout (length = {actual_stdout_len} bytes):
-{actual_stdout:?}
+{actual_stdout}
             expected stdout (length = {expected_stdout_len} bytes):
-{expected_stdout:?}
+{expected_stdout}
             ---------------------------------------------
             stderr (length = {actual_stderr_len} bytes):
-{actual_stderr:?}
+{actual_stderr}
             expected stderr (length = {expected_stderr_len} bytes):
-{expected_stderr:?}"#,
+{expected_stderr}"#,
         actual_status = status,
         expected_status = expected_status,
         actual_stdout = String::from_utf8_lossy(&output),
@@ -124,7 +126,7 @@ macro_rules! sample_interpret {
             )?
 
             crate::test::run_sample::run_sample(
-                crate::cli::RunMode::Interpret,
+                morphic_common::config::RunMode::Interpret,
                 rc_strat,
                 $path,
                 $stdin,
@@ -175,7 +177,7 @@ macro_rules! sample_compile {
             )?
 
             crate::test::run_sample::run_sample(
-                crate::cli::RunMode::Compile { valgrind: Some(valgrind) },
+                morphic_common::config::RunMode::Compile { valgrind: Some(valgrind) },
                 rc_strat,
                 $path,
                 $stdin,

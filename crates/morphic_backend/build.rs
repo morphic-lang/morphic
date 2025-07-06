@@ -63,16 +63,24 @@ fn compile_tal(paths: &Paths) -> anyhow::Result<()> {
     }
 
     let native_tal_c = paths.manifest_dir.join("tal/native/tal.c");
+    let native_bdw_ext_c = paths.manifest_dir.join("tal/native/bdw_ext.c");
     let wasm_tal_c = paths.manifest_dir.join("tal/wasm/src/tal.c");
     let wasm_malloc_c = paths.manifest_dir.join("tal/wasm/src/malloc.c");
 
     // Change the CWD so that clang outputs artifacts to the right location.
     env::set_current_dir(native_out_dir)?;
     let status = Command::new(paths.clang.path())
+        .arg("-O3")
         .arg("-c")
         .arg(native_tal_c)
+        .status()?;
+    assert!(status.success());
+    let status = Command::new(paths.clang.path())
+        .arg("-O3")
         .arg("-I")
         .arg(paths.root_dir.join("vendor/bdwgc/include"))
+        .arg("-c")
+        .arg(native_bdw_ext_c)
         .status()?;
     assert!(status.success());
 
@@ -83,12 +91,12 @@ fn compile_tal(paths: &Paths) -> anyhow::Result<()> {
     let status = Command::new(paths.cmake.path())
         .arg(format!("-DCMAKE_C_COMPILER={}", clang_str))
         .arg(format!("-DCMAKE_CXX_COMPILER={}", clangxx_str))
-        .arg("-DCMAKE_BUILD_TYPE=Debug")
+        .arg("-DCMAKE_BUILD_TYPE=Release")
         .arg("-DBUILD_SHARED_LIBS=OFF")
         .arg("-Dbuild_tests=ON")
         .arg("-Denable_threads=OFF")
-        .arg("-Denable_gc_assertions=ON")
-        .arg("-Denable_valgrind_tracking=ON")
+        // .arg("-Denable_gc_assertions=ON")
+        // .arg("-Denable_valgrind_tracking=ON")
         .arg(paths.root_dir.join("vendor/bdwgc"))
         .status()?;
     assert!(status.success());

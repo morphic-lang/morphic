@@ -37,6 +37,27 @@ let intrinsic_IntShiftRight ((x, y) : int64 * int64): int64 = Int64.shift_right_
 let intrinsic_IntBitAnd ((x, y) : int64 * int64): int64 = Int64.logand x y
 let intrinsic_IntBitOr ((x, y) : int64 * int64): int64 = Int64.logor x y
 let intrinsic_IntBitXor ((x, y) : int64 * int64): int64 = Int64.logxor x y
+let intrinsic_IntCtpop (x : int64) : int64 =
+    let rec count_bits n acc =
+        if n >= 64 then acc
+        else if Int64.logand (Int64.shift_right_logical x n) 1L = 1L then
+            count_bits (n + 1) (acc + 1)
+        else
+            count_bits (n + 1) acc
+    in Int64.of_int (count_bits 0 0)
+let intrinsic_IntCtlz (x : int64) : int64 = 
+    let rec count_leading n =
+        if n >= 64 then 64
+        else if Int64.logand (Int64.shift_right_logical x (63 - n)) 1L <> 0L then n
+        else count_leading (n + 1)
+    in Int64.of_int (count_leading 0)
+let intrinsic_IntCttz (x : int64) : int64 = 
+    let rec count_trailing n =
+        if n >= 64 then 64
+        else if Int64.logand x (Int64.shift_left 1L n) <> 0L then n
+        else count_trailing (n + 1)
+    in Int64.of_int (count_trailing 0)
+
 
 let intrinsic_get ((l, i) : 'a PersistentArray.array * int64): 'a = PersistentArray.sub (l, (Int64.to_int i))
 let intrinsic_extract ((l, i) : 'a PersistentArray.array * int64): 'a * ('a -> 'a PersistentArray.array) = (PersistentArray.sub (l, (Int64.to_int i)), fun new_ -> PersistentArray.update (l, Int64.to_int i, new_))

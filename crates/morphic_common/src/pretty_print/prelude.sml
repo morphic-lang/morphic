@@ -37,6 +37,40 @@ fun intrinsic_IntShiftRight(x : Int.int, y : Int.int): Int.int = Word64.toIntX (
 fun intrinsic_IntBitAnd(x : Int.int, y : Int.int): Int.int = Word64.toIntX (Word64.andb (Word64.fromInt x, Word64.fromInt y))
 fun intrinsic_IntBitOr(x : Int.int, y : Int.int): Int.int = Word64.toIntX (Word64.orb (Word64.fromInt x, Word64.fromInt y))
 fun intrinsic_IntBitXor(x : Int.int, y : Int.int): Int.int = Word64.toIntX (Word64.xorb (Word64.fromInt x, Word64.fromInt y))
+fun intrinsic_IntCtpop(x : Int.int): Int.int = 
+    let
+        fun count_bits(0w0 : Word64.word) = 0
+          | count_bits(w) = Word64.toInt(Word64.andb(w, 0w1)) + count_bits(Word64.>>(w, 0w1))
+    in
+        count_bits(Word64.fromInt x)
+    end
+
+fun intrinsic_IntCtlz(x : Int.int): Int.int =
+    let 
+        fun count_leading_zeros(w : Word64.word, acc : int) =
+            if w = 0w0 then
+                64
+            else if Word64.andb(Word64.>>(w, 0w63), 0w1) = 0w1 then
+                acc
+            else
+                count_leading_zeros(Word64.<<(w, 0w1), acc + 1)
+    in
+        count_leading_zeros(Word64.fromInt x, 0)
+    end
+
+fun intrinsic_IntCttz(x : Int.int): Int.int =
+    let
+        fun count_trailing_zeros(w : Word64.word, acc : int) =
+            if w = 0w0 then
+                64
+            else if Word64.andb(w, 0w1) = 0w1 then
+                acc
+            else
+                count_trailing_zeros(Word64.>>(w, 0w1), acc + 1)
+    in
+        count_trailing_zeros(Word64.fromInt x, 0)
+    end
+
 
 fun intrinsic_get(l : 'a PersistentArray.array, i : Int.int): 'a = PersistentArray.sub (l, i)
 fun intrinsic_extract(l : 'a PersistentArray.array, i : Int.int): 'a * ('a -> 'a PersistentArray.array) = (PersistentArray.sub (l, i), fn new => PersistentArray.update (l, i, new))

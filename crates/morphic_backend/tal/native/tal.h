@@ -29,12 +29,4 @@ uint64_t morphic_prof_rc_get_retain_count(void);
 uint64_t morphic_prof_rc_get_release_count(void);
 uint64_t morphic_prof_rc_get_rc1_count(void);
 
-/* bdwgc provides function `GC_init`, but instructs us to call the `GC_INIT`
-   macro, which does additional work dependent on the flags used to compile
-   bdwgc. We wrap this macro to call it from morphic programs. */
-void morphic_GC_init(void);
-
-/* bdwgc does not provide a calloc. */
-void *morphic_GC_calloc(size_t num, size_t size);
-
 #endif

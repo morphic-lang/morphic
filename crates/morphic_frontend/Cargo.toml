@@ -11,9 +11,11 @@ anyhow.workspace = true
 lalrpop.workspace = true
 
 [dependencies]
+find_tool.workspace = true
 lalrpop-util.workspace = true
 morphic_common.workspace = true
 im-rc.workspace = true
 id_collections.workspace = true
 once_cell.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
