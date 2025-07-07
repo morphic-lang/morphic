@@ -193,7 +193,7 @@ pub enum GcKind {
 
 impl Default for GcKind {
     fn default() -> Self {
-        Self::Bdw
+        Self::Rc
     }
 }
 

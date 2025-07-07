@@ -8,7 +8,7 @@ pub mod cli;
 use morphic_backend::{code_gen, interpreter};
 use morphic_common::config as cfg;
 use morphic_common::report_error::Reportable;
-use morphic_common::{file_cache, progress_ui, pseudoprocess};
+use morphic_common::{file_cache, pseudoprocess};
 use std::io;
 
 #[derive(Debug)]
@@ -94,7 +94,7 @@ pub fn run(
         cfg::ProfileMode::NoRecordRc,
         None,
         files,
-        progress_ui::ProgressMode::Hidden,
+        config.progress,
         config.purity_mode,
         config.defunc_mode,
     )
@@ -102,7 +102,7 @@ pub fn run(
     let lowered = morphic_backend::compile_to_low_ast(
         first_order,
         None,
-        progress_ui::ProgressMode::Hidden,
+        config.progress,
         &config.llvm_config,
     )
     .map_err(ErrorKind::BackendError)?;

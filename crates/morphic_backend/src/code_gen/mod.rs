@@ -449,7 +449,10 @@ fn gen_rc_op<T: Context>(
     arg: T::Value,
 ) {
     if s.is_gc_on() {
-        s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+        s.panic(
+            "gen_rc_op: cannot use rc operations in garbage collected mode\n",
+            &[],
+        );
         return;
     }
 

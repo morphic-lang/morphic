@@ -202,9 +202,9 @@ fn build_exe(
     src_path: impl AsRef<Path> + Clone,
     profile_mod: &[&str],
     profile_func: &str,
-    variant: &Variant,
+    experiment: &Experiment,
 ) -> (PathBuf, ArtifactDir) {
-    let variant_name = format!("{bench_name}-{tag}");
+    let name = format!("{bench_name}-{tag}");
 
     if !std::env::current_dir().unwrap().join(OUT_DIR).exists() {
         std::fs::create_dir(std::env::current_dir().unwrap().join(OUT_DIR)).unwrap();
@@ -213,7 +213,7 @@ fn build_exe(
     let exe_path = std::env::current_dir()
         .unwrap()
         .join(OUT_DIR)
-        .join(variant_name.clone());
+        .join(name.clone());
 
     let artifact_path = std::env::current_dir()
         .unwrap()
@@ -232,7 +232,7 @@ fn build_exe(
     let mut files = FileCache::new();
 
     build(
-        variant.build_config(
+        experiment.build_config(
             src_path.as_ref().to_path_buf(),
             profile_mod,
             profile_func,
@@ -247,7 +247,7 @@ fn build_exe(
 }
 
 #[derive(Clone, Debug)]
-struct LlvmVariant {
+struct LlvmExperiment {
     rc_strat: RcStrategy,
     profile_mode: ProfileMode,
     gc_kind: GcKind,
@@ -255,47 +255,47 @@ struct LlvmVariant {
 }
 
 #[derive(Clone, Debug)]
-struct MlVariant {
+struct MlExperiment {
     variant: cfg::MlVariant,
     stage: cfg::CompilationStage,
 }
 
 #[derive(Clone, Debug)]
-enum Variant {
-    Llvm(LlvmVariant),
-    Ml(MlVariant),
+enum Experiment {
+    Llvm(LlvmExperiment),
+    Ml(MlExperiment),
 }
 
-impl Variant {
+impl Experiment {
     fn tag(&self) -> String {
         match self {
-            Variant::Llvm(llvm_variant) => {
-                let profile_mode_str = match llvm_variant.profile_mode {
-                    ProfileMode::RecordRc => "record_counts",
+            Experiment::Llvm(experiment) => {
+                let profile_mode_str = match experiment.profile_mode {
+                    ProfileMode::RecordRc => "record_rc",
                     ProfileMode::NoRecordRc => "record_time",
                 };
                 format!(
-                    "{}-{}-{}-{}",
-                    llvm_variant.rc_strat.to_str(),
+                    "llvm-{}-{}-{}-{}",
                     profile_mode_str,
-                    llvm_variant.gc_kind.to_str(),
-                    llvm_variant.array_kind.to_str(),
+                    experiment.rc_strat.to_str(),
+                    experiment.gc_kind.to_str(),
+                    experiment.array_kind.to_str(),
                 )
             }
-            Variant::Ml(ml_variant) => {
-                let ml_variant_str = match ml_variant.variant {
+            Experiment::Ml(experiment) => {
+                let variant_str = match experiment.variant {
                     cfg::MlVariant::Sml => "sml",
                     cfg::MlVariant::OCaml => "ocaml",
                 };
-                format!("{}-{}", ml_variant_str, ml_variant.stage.to_str())
+                format!("{}-{}", variant_str, experiment.stage.to_str())
             }
         }
     }
 
     fn record_rc(&self) -> bool {
         match self {
-            Variant::Llvm(llvm_variant) => llvm_variant.profile_mode == ProfileMode::RecordRc,
-            Variant::Ml(_) => false,
+            Experiment::Llvm(experiment) => experiment.profile_mode == ProfileMode::RecordRc,
+            Experiment::Ml(_) => false,
         }
     }
 
@@ -317,11 +317,11 @@ impl Variant {
             func = profile_func,
         ))];
         match self {
-            Variant::Llvm(llvm_variant) => {
+            Experiment::Llvm(experiment) => {
                 let llvm_config = cfg::LlvmConfig {
-                    rc_strat: llvm_variant.rc_strat,
-                    gc_kind: llvm_variant.gc_kind,
-                    array_kind: llvm_variant.array_kind,
+                    rc_strat: experiment.rc_strat,
+                    gc_kind: experiment.gc_kind,
+                    array_kind: experiment.array_kind,
                     opt_level: cfg::default_llvm_opt_level(),
                     target: cfg::TargetConfig::Native,
                 };
@@ -332,15 +332,15 @@ impl Variant {
                     defunc_mode: cfg::DefuncMode::Specialize,
                     backend_opts: cfg::BackendOptions::Llvm(llvm_config),
                     profile_syms,
-                    profile_mode: llvm_variant.profile_mode,
+                    profile_mode: experiment.profile_mode,
                     output_path,
                     artifact_dir,
                 }
             }
-            Variant::Ml(ml_variant) => {
+            Experiment::Ml(experiment) => {
                 let ml_config = cfg::MlConfig {
-                    variant: ml_variant.variant,
-                    stage: ml_variant.stage,
+                    variant: experiment.variant,
+                    stage: experiment.stage,
                 };
                 cfg::BuildConfig {
                     src_path,
@@ -358,13 +358,13 @@ impl Variant {
     }
 }
 
-fn variants() -> Vec<Variant> {
-    let mut variants = Vec::new();
+fn experiments() -> Vec<Experiment> {
+    let mut experiments = Vec::new();
 
     // Run time and retain count comparison with Perceus.
     for rc_strat in [RcStrategy::Default, RcStrategy::Perceus] {
         for profile_mode in [ProfileMode::RecordRc, ProfileMode::NoRecordRc] {
-            variants.push(Variant::Llvm(LlvmVariant {
+            experiments.push(Experiment::Llvm(LlvmExperiment {
                 rc_strat,
                 profile_mode,
                 gc_kind: GcKind::Rc,
@@ -375,7 +375,7 @@ fn variants() -> Vec<Variant> {
 
     // Run time comparison with BDWGC.
     for gc_kind in [GcKind::Rc, GcKind::Bdw] {
-        variants.push(Variant::Llvm(LlvmVariant {
+        experiments.push(Experiment::Llvm(LlvmExperiment {
             rc_strat: RcStrategy::Default,
             profile_mode: ProfileMode::NoRecordRc,
             gc_kind,
@@ -384,19 +384,16 @@ fn variants() -> Vec<Variant> {
     }
 
     // Run time for SML and OCaml.
-    for ml_variant in [cfg::MlVariant::Sml, cfg::MlVariant::OCaml] {
+    for variant in [cfg::MlVariant::Sml, cfg::MlVariant::OCaml] {
         for stage in [
             cfg::CompilationStage::Typed,
             cfg::CompilationStage::FirstOrder,
         ] {
-            variants.push(Variant::Ml(MlVariant {
-                variant: ml_variant,
-                stage,
-            }));
+            experiments.push(Experiment::Ml(MlExperiment { variant, stage }));
         }
     }
 
-    variants
+    experiments
 }
 
 fn compile_sample(
@@ -405,8 +402,8 @@ fn compile_sample(
     profile_mod: &[&str],
     profile_func: &str,
 ) {
-    for variant in variants() {
-        let tag = variant.tag();
+    for experiment in experiments() {
+        let tag = experiment.tag();
         println!("compiling {bench_name}-{tag}");
         let (exe_path, _artifact_dir) = build_exe(
             bench_name,
@@ -414,7 +411,7 @@ fn compile_sample(
             src_path.clone(),
             profile_mod,
             profile_func,
-            &variant,
+            &experiment,
         );
 
         write_binary_size(&format!("{bench_name}-{tag}"), &exe_path);
@@ -429,24 +426,24 @@ fn bench_sample(
     extra_stdin: &str,
     expected_stdout: &str,
 ) {
-    for variant in variants() {
-        let variant_name = format!("{bench_name}-{tag}", tag = variant.tag());
-        println!("benchmarking {}", variant_name);
+    for experiment in experiments() {
+        let name = format!("{bench_name}-{tag}", tag = experiment.tag());
+        println!("benchmarking {}", name);
 
         let exe_path = std::env::current_dir()
             .unwrap()
             .join(OUT_DIR)
-            .join(variant_name.clone());
+            .join(name.clone());
 
-        let needed_iters_0 = if variant.record_rc() { 1 } else { 1 };
-        let needed_iters_1 = if variant.record_rc() { 1 } else { 1 };
+        let needed_iters_0 = if experiment.record_rc() { 1 } else { iters.0 };
+        let needed_iters_1 = if experiment.record_rc() { 1 } else { iters.1 };
 
         let mut results = Vec::new();
         let mut counts: Option<Vec<RcCounts>> = None;
 
         for _ in 0..needed_iters_0 {
-            match variant {
-                Variant::Llvm(_) => {
+            match experiment {
+                Experiment::Llvm(_) => {
                     let report: ProfReport =
                         run_exe(&exe_path, needed_iters_1, extra_stdin, expected_stdout);
 
@@ -485,7 +482,7 @@ fn bench_sample(
                         }
                     }
                 }
-                Variant::Ml(_) => {
+                Experiment::Ml(_) => {
                     let report: MlProfReport =
                         run_exe(&exe_path, iters.1, extra_stdin, expected_stdout);
 
@@ -498,10 +495,10 @@ fn bench_sample(
             }
         }
 
-        write_run_time(&variant_name, results);
+        write_run_time(&name, results);
 
         if let Some(counts) = counts {
-            write_rc_counts(&variant_name, counts);
+            write_rc_counts(&name, counts);
         }
     }
 }

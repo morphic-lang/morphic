@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Display};
 
 pub trait ProfileRc: Clone {
-    type FunctionValue: Copy;
+    type FunctionValue: Copy + Debug;
 
     /// () -> ()
     fn record_retain(&self) -> Self::FunctionValue;
@@ -23,7 +23,7 @@ pub trait ProfileRc: Clone {
 }
 
 pub trait Tal: Clone {
-    type FunctionValue: Copy;
+    type FunctionValue: Copy + Debug;
     type ProfileRc: ProfileRc<FunctionValue = Self::FunctionValue>;
 
     /// (i8*, i8*, usize) -> i8*
@@ -140,12 +140,12 @@ pub trait Context: Clone {
         Value = Self::Value,
     >;
 
-    type TailTarget: Copy;
-    type VariantsType: Clone;
+    type TailTarget: Copy + Debug;
+    type VariantsType: Clone + Debug;
     type Type: Copy + Debug + Display;
-    type GlobalValue: Copy;
-    type FunctionValue: Copy;
-    type Value: Copy;
+    type GlobalValue: Copy + Debug;
+    type FunctionValue: Copy + Debug;
+    type Value: Copy + Debug;
 
     type ProfileRc: ProfileRc<FunctionValue = Self::FunctionValue>;
     type Tal: Tal<FunctionValue = Self::FunctionValue, ProfileRc = Self::ProfileRc>;
@@ -245,12 +245,12 @@ pub trait Scope {
         Value = Self::Value,
     >;
 
-    type TailTarget: Copy;
-    type VariantsType: Clone;
+    type TailTarget: Copy + Debug;
+    type VariantsType: Clone + Debug;
     type Type: Copy + Debug + Display;
-    type GlobalValue: Copy;
-    type FunctionValue: Copy;
-    type Value: Copy;
+    type GlobalValue: Copy + Debug;
+    type FunctionValue: Copy + Debug;
+    type Value: Copy + Debug;
 
     fn context(&self) -> &Self::Context;
 

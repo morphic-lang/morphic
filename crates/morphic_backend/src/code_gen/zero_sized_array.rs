@@ -213,7 +213,13 @@ impl<T: Context> ArrayImpl<T> for ZeroSizedArrayImpl<T> {
                 self.release_hole,
             ] {
                 let s = context.scope(func);
-                s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+                s.panic(
+                    &format!(
+                        "{:?}: cannot use rc operations in garbage collected mode\n",
+                        func
+                    ),
+                    &[],
+                );
                 s.ret_void();
             }
         } else {

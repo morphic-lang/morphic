@@ -58,7 +58,7 @@ impl<'a> std::fmt::Display for Type<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VariantsType<'a> {
     inner: inkwell::types::StructType<'a>,
     variants: Rc<[BasicTypeEnum<'a>]>,
@@ -254,11 +254,21 @@ impl<'a> VariantsType<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GlobalValue<'a>(inkwell::values::GlobalValue<'a>);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FunctionValue<'a>(inkwell::values::FunctionValue<'a>);
+
+impl<'a> std::fmt::Debug for FunctionValue<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Ok(name) = self.0.get_name().to_str() {
+            write!(f, "FunctionValue({:?})", name)
+        } else {
+            write!(f, "FunctionValue(?)")
+        }
+    }
+}
 
 impl<'a> FunctionValue<'a> {
     fn has_name(&self, name: &str) -> bool {
@@ -270,7 +280,7 @@ impl<'a> FunctionValue<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Value<'a>(values::BasicValueEnum<'a>);
 
 #[derive(Clone)]

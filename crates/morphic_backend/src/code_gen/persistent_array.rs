@@ -463,14 +463,16 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
 
             let item = s.call(self.get, &[arr, idx]);
 
-            gen_rc_op(
-                DerivedRcOp::DerivedRetain,
-                &s,
-                instances,
-                globals,
-                &self.item_scheme,
-                item,
-            );
+            if !context.is_gc_on() {
+                gen_rc_op(
+                    DerivedRcOp::DerivedRetain,
+                    &s,
+                    instances,
+                    globals,
+                    &self.item_scheme,
+                    item,
+                );
+            }
 
             s.ret(s.make_tup(&[item, hole_array]));
         }
@@ -804,7 +806,13 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
                 self.release_hole,
             ] {
                 let s = context.scope(func);
-                s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+                s.panic(
+                    &format!(
+                        "{:?}: cannot use rc operations in garbage collected mode\n",
+                        func
+                    ),
+                    &[],
+                );
                 s.ret_void();
             }
         } else {
@@ -1418,18 +1426,20 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
             if self.mode == Mode::Owned {
                 let result = s.call(self.obtain_unique_tail, &[tail, tail_len]);
 
-                gen_rc_op(
-                    DerivedRcOp::Release,
-                    &s,
-                    instances,
-                    globals,
-                    &self.item_scheme,
-                    s.arr_get(
-                        self.item_t,
-                        s.gep(self.leaf_t, result, F_LEAF_ITEMS),
-                        index_in_tail,
-                    ),
-                );
+                if !context.is_gc_on() {
+                    gen_rc_op(
+                        DerivedRcOp::Release,
+                        &s,
+                        instances,
+                        globals,
+                        &self.item_scheme,
+                        s.arr_get(
+                            self.item_t,
+                            s.gep(self.leaf_t, result, F_LEAF_ITEMS),
+                            index_in_tail,
+                        ),
+                    );
+                }
 
                 s.arr_set(
                     self.item_t,
@@ -1458,18 +1468,20 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
                 s.if_(s.eq(node_height, s.i64(0)), |s| {
                     let result = s.call(self.obtain_unique_leaf, &[node]);
 
-                    gen_rc_op(
-                        DerivedRcOp::Release,
-                        s,
-                        instances,
-                        globals,
-                        &self.item_scheme,
-                        s.arr_get(
-                            self.item_t,
-                            s.gep(self.leaf_t, result, F_LEAF_ITEMS),
-                            index_in_child,
-                        ),
-                    );
+                    if !context.is_gc_on() {
+                        gen_rc_op(
+                            DerivedRcOp::Release,
+                            s,
+                            instances,
+                            globals,
+                            &self.item_scheme,
+                            s.arr_get(
+                                self.item_t,
+                                s.gep(self.leaf_t, result, F_LEAF_ITEMS),
+                                index_in_child,
+                            ),
+                        );
+                    }
 
                     s.arr_set(
                         self.item_t,

@@ -109,7 +109,13 @@ impl<T: Context> RcBuiltin<T> for RcBuiltinImpl<T> {
         if context.is_gc_on() {
             for func in [self.retain, self.derived_retain, self.release] {
                 let s = context.scope(func);
-                s.panic("cannot use rc operations in garbage collected mode\n", &[]);
+                s.panic(
+                    &format!(
+                        "{:?}: cannot use rc operations in garbage collected mode\n",
+                        func
+                    ),
+                    &[],
+                );
                 s.ret_void();
             }
         } else {
