@@ -3,4 +3,5 @@
     "rust-analyzer.imports.prefix": "crate",
     "rust-analyzer.imports.merge.glob": false,
     "rust-analyzer.imports.granularity.enforce": true,
+    "python.analysis.typeCheckingMode": "standard",
 }

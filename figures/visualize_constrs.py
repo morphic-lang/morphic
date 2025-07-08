@@ -6,10 +6,9 @@ Graph visualization script for constraint data from `annot_modes.rs` (borrow inf
 import matplotlib.pyplot as plt
 import networkx as nx
 import re
-from typing import Dict, Set, Tuple
 
 
-def parse_graph_data(data_str: str) -> Tuple[Dict[int, Set[int]], Dict[int, str]]:
+def parse_graph_data(data_str: str) -> tuple[dict[int, set[int]], dict[int, str]]:
     graph = {}
     constraints = {}
 
@@ -37,7 +36,7 @@ def parse_graph_data(data_str: str) -> Tuple[Dict[int, Set[int]], Dict[int, str]
     return graph, constraints
 
 
-def create_directed_graph(graph_data: Dict[int, Set[int]]) -> nx.DiGraph:
+def create_directed_graph(graph_data: dict[int, set[int]]) -> nx.DiGraph:
     G = nx.DiGraph()
 
     all_nodes = set(graph_data.keys())
@@ -55,9 +54,9 @@ def create_directed_graph(graph_data: Dict[int, Set[int]]) -> nx.DiGraph:
 
 def visualize_graph(
     G: nx.DiGraph,
-    constraints: Dict[int, str] = None,
+    constraints: dict[int, str] | None = None,
     title: str = "Graph Visualization",
-    figsize: Tuple[int, int] = (12, 8),
+    figsize: tuple[int, int] = (12, 8),
     node_size: int = 1000,
     font_size: int = 12,
     arrow_size: int = 20,
@@ -75,9 +74,9 @@ def visualize_graph(
 
 def visualize_graph_single(
     G: nx.DiGraph,
-    constraints: Dict[int, str] = None,
+    constraints: dict[int, str] | None = None,
     title: str = "Graph Visualization",
-    figsize: Tuple[int, int] = (12, 8),
+    figsize: tuple[int, int] = (12, 8),
     node_size: int = 1000,
     font_size: int = 12,
     arrow_size: int = 20,
@@ -132,9 +131,9 @@ def visualize_graph_single(
 
 def visualize_graph_components(
     G: nx.DiGraph,
-    constraints: Dict[int, str] = None,
+    constraints: dict[int, str] | None = None,
     title: str = "Graph Visualization",
-    figsize: Tuple[int, int] = (12, 8),
+    figsize: tuple[int, int] = (12, 8),
     node_size: int = 1000,
     font_size: int = 12,
     arrow_size: int = 20,
