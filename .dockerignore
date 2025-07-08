@@ -1,8 +1,9 @@
 **/*
 !crates/
+!figures/
 !samples/
+!vendor/
 !Cargo.lock
 !Cargo.toml
 !Dockerfile
 !README.md
-!summarize_speedup.py
