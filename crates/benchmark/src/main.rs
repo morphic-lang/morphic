@@ -18,6 +18,183 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
+fn out_dir() -> PathBuf {
+    let mut path = std::env::current_dir().unwrap();
+    path.push("out2");
+    path
+}
+
+fn rc_count_file() -> PathBuf {
+    let mut path = std::env::current_dir().unwrap();
+    path.push("target");
+    path.push("rc_counts.csv");
+    path
+}
+
+fn run_time_file() -> PathBuf {
+    let mut path = std::env::current_dir().unwrap();
+    path.push("target");
+    path.push("run_times.csv");
+    path
+}
+
+fn binary_sizes_file() -> PathBuf {
+    let mut path = std::env::current_dir().unwrap();
+    path.push("target");
+    path.push("binary_sizes.csv");
+    path
+}
+
+// Output we get from benchmark executables:
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MlProfReportEntry {
+    func_id: u64,
+    total_calls: u64,
+    total_clock_nanos: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(transparent)]
+struct MlProfReport {
+    entries: Vec<MlProfReportEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfSpecialization {
+    low_func_id: u64,
+    total_calls: u64,
+    total_clock_nanos: u64,
+    total_retain_count: Option<u64>,
+    total_release_count: Option<u64>,
+    total_rc1_count: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfSkippedTail {
+    low_func_id: u64,
+    tail_func_id: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfTiming {
+    module: Vec<String>,
+    function: String,
+    specializations: Vec<ProfSpecialization>,
+    skipped_tail_rec_specializations: Vec<ProfSkippedTail>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfReport {
+    clock_res_nanos: u64,
+    timings: Vec<ProfTiming>,
+}
+
+// The summary data we output:
+
+type Dataframe<T> = Vec<(String, Vec<(Experiment, T)>)>;
+
+#[derive(Clone, Copy, Serialize)]
+struct RcCounts {
+    total_retain_count: u64,
+    total_release_count: u64,
+    total_rc1_count: u64,
+}
+
+struct Output {
+    binary_sizes: Dataframe<u64>,
+    run_times: Dataframe<Vec<Duration>>,
+    rc_counts: Dataframe<RcCounts>,
+}
+
+fn get_binary_size(exe_path: impl AsRef<Path>) -> u64 {
+    let disp = exe_path.as_ref().display();
+    exe_path
+        .as_ref()
+        .metadata()
+        .expect(&format!("Could not get metadata for binary {}", disp))
+        .len()
+}
+
+fn write_binary_size(dataframe: &Dataframe<u64>) {
+    let mut file = File::create(binary_sizes_file()).expect("Could not open binary sizes file");
+    assert!(file.metadata().unwrap().len() == 0, "File is not empty");
+
+    // Suitable for consumption by pandas.
+    let header = ",benchmark,config,size (bytes)";
+    writeln!(file, "{}", header).expect("Could not write header to file");
+
+    let mut i = 0;
+    for (benchmark, configs) in dataframe {
+        for (config, size) in configs {
+            writeln!(file, "{},{},{},{}", i, benchmark, config.tag(), size)
+                .expect("Could not write binary size to file");
+            i += 1;
+        }
+    }
+}
+
+fn write_run_time(dataframe: &Dataframe<Vec<Duration>>) {
+    let mut file = File::create(run_time_file()).expect("Could not open run time file");
+    assert!(file.metadata().unwrap().len() == 0, "File is not empty");
+
+    // Suitable for consumption by pandas.
+    let header = ",benchmark,config,time (ns)";
+    writeln!(file, "{}", header).expect("Could not write header to file");
+
+    let mut i = 0;
+    for (benchmark, configs) in dataframe {
+        for (config, times) in configs {
+            for time in times {
+                assert!(!config.record_rc());
+                writeln!(
+                    file,
+                    "{},{},{},{}",
+                    i,
+                    benchmark,
+                    config.tag(),
+                    time.as_nanos(),
+                )
+                .expect("Could not write run time to file");
+                i += 1;
+            }
+        }
+    }
+}
+
+fn write_rc_counts(dataframe: &Dataframe<RcCounts>) {
+    let mut file = File::create(rc_count_file()).expect("Could not open rc count file");
+    assert!(file.metadata().unwrap().len() == 0, "File is not empty");
+
+    // Suitable for consumption by pandas.
+    let header = ",benchmark,config,retain count,release count,rc1 count";
+    writeln!(file, "{}", header).expect("Could not write header to file");
+
+    let mut i = 0;
+    for (benchmark, configs) in dataframe {
+        for (config, rc_counts) in configs {
+            assert!(config.record_rc());
+            writeln!(
+                file,
+                "{},{},{},{},{},{}",
+                i,
+                benchmark,
+                config.tag(),
+                rc_counts.total_retain_count,
+                rc_counts.total_release_count,
+                rc_counts.total_rc1_count
+            )
+            .expect("Could not write rc counts to file");
+            i += 1;
+        }
+    }
+}
+
 fn drive_subprocess(
     mut child: process::Child,
     iters: u64,
@@ -95,107 +272,6 @@ fn run_exe<Report: for<'a> Deserialize<'a>>(
     report
 }
 
-const BINARY_SIZES_DIR: &str = "target/binary_sizes";
-
-fn write_binary_size(benchmark_name: &str, exe_path: impl AsRef<Path>) {
-    let disp = exe_path.as_ref().display();
-    let size = exe_path
-        .as_ref()
-        .metadata()
-        .expect(&format!("Could not get metadata for binary {}", disp))
-        .len();
-
-    std::fs::create_dir_all(BINARY_SIZES_DIR).expect("Could not create binary sizes directory");
-
-    let mut file = File::create(format!("{}/{}.txt", BINARY_SIZES_DIR, benchmark_name))
-        .expect("Could not create binary size file");
-
-    writeln!(file, "{}", size).expect("Could not write binary size to file");
-}
-
-const RUN_TIME_DIR: &str = "target/run_time";
-
-fn write_run_time(benchmark_name: &str, data: Vec<Duration>) {
-    std::fs::create_dir_all(RUN_TIME_DIR).expect("Could not create run_time directory");
-
-    let mut file = File::create(format!("{}/{}.txt", RUN_TIME_DIR, benchmark_name))
-        .expect("Could not create run time file");
-
-    let nanoseconds: Vec<u128> = data.iter().map(|d| d.as_nanos()).collect();
-
-    writeln!(file, "{}", serde_json::to_string(&nanoseconds).unwrap())
-        .expect("Could not write run time to file");
-}
-
-#[derive(Clone, Copy, Serialize)]
-struct RcCounts {
-    total_retain_count: u64,
-    total_release_count: u64,
-    total_rc1_count: u64,
-}
-
-const RC_COUNT_DIR: &str = "target/rc_count";
-
-fn write_rc_counts(benchmark_name: &str, data: Vec<RcCounts>) {
-    std::fs::create_dir_all(RC_COUNT_DIR).expect("Could not create rc_count directory");
-
-    let mut file = File::create(format!("{}/{}.txt", RC_COUNT_DIR, benchmark_name))
-        .expect("Could not create rc counts file");
-
-    writeln!(file, "{}", serde_json::to_string(&data).unwrap())
-        .expect("Could not write rc counts to file");
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(transparent)]
-struct MlProfReport {
-    entries: Vec<MlProfReportEntry>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MlProfReportEntry {
-    func_id: u64,
-    total_calls: u64,
-    total_clock_nanos: u64,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfReport {
-    clock_res_nanos: u64,
-    timings: Vec<ProfTiming>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfTiming {
-    module: Vec<String>,
-    function: String,
-    specializations: Vec<ProfSpecialization>,
-    skipped_tail_rec_specializations: Vec<ProfSkippedTail>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfSpecialization {
-    low_func_id: u64,
-    total_calls: u64,
-    total_clock_nanos: u64,
-    total_retain_count: Option<u64>,
-    total_release_count: Option<u64>,
-    total_rc1_count: Option<u64>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfSkippedTail {
-    low_func_id: u64,
-    tail_func_id: u64,
-}
-
-const OUT_DIR: &str = "out2";
-
 fn build_exe(
     bench_name: &str,
     tag: &str,
@@ -204,45 +280,29 @@ fn build_exe(
     profile_func: &str,
     experiment: &Experiment,
 ) -> (PathBuf, ArtifactDir) {
-    let name = format!("{bench_name}-{tag}");
-
-    if !std::env::current_dir().unwrap().join(OUT_DIR).exists() {
-        std::fs::create_dir(std::env::current_dir().unwrap().join(OUT_DIR)).unwrap();
-    }
-
-    let exe_path = std::env::current_dir()
-        .unwrap()
-        .join(OUT_DIR)
-        .join(name.clone());
-
-    let artifact_path = std::env::current_dir()
-        .unwrap()
-        .join(OUT_DIR)
-        .join(format!("{bench_name}-{tag}-artifacts"));
+    let out_dir = out_dir();
+    let exe_path = out_dir.join(format!("{bench_name}-{tag}"));
+    let artifact_path = out_dir.join(format!("{bench_name}-{tag}-artifacts"));
 
     let artifact_dir = ArtifactDir {
-        dir_path: artifact_path.clone(),
+        dir_path: artifact_path,
         filename_prefix: exe_path.file_name().unwrap().into(),
     };
 
     if !artifact_dir.dir_path.exists() {
-        std::fs::create_dir(artifact_dir.dir_path.clone()).unwrap();
+        std::fs::create_dir(&artifact_dir.dir_path).unwrap();
     }
 
     let mut files = FileCache::new();
+    let build_config = experiment.build_config(
+        src_path.as_ref().to_path_buf(),
+        profile_mod,
+        profile_func,
+        exe_path.clone(),
+        Some(artifact_dir.clone()),
+    );
 
-    build(
-        experiment.build_config(
-            src_path.as_ref().to_path_buf(),
-            profile_mod,
-            profile_func,
-            exe_path.clone(),
-            Some(artifact_dir.clone()),
-        ),
-        &mut files,
-    )
-    .expect("Compilation failed");
-
+    build(build_config, &mut files).expect("Compilation failed");
     (exe_path, artifact_dir)
 }
 
@@ -269,25 +329,26 @@ enum Experiment {
 impl Experiment {
     fn tag(&self) -> String {
         match self {
-            Experiment::Llvm(experiment) => {
-                let profile_mode_str = match experiment.profile_mode {
+            &Experiment::Llvm(LlvmExperiment {
+                profile_mode,
+                rc_strat,
+                gc_kind,
+                array_kind,
+            }) => {
+                let profile_mode_str = match profile_mode {
                     ProfileMode::RecordRc => "record_rc",
                     ProfileMode::NoRecordRc => "record_time",
                 };
                 format!(
                     "llvm-{}-{}-{}-{}",
                     profile_mode_str,
-                    experiment.rc_strat.to_str(),
-                    experiment.gc_kind.to_str(),
-                    experiment.array_kind.to_str(),
+                    rc_strat.to_str(),
+                    gc_kind.to_str(),
+                    array_kind.to_str(),
                 )
             }
-            Experiment::Ml(experiment) => {
-                let variant_str = match experiment.variant {
-                    cfg::MlVariant::Sml => "sml",
-                    cfg::MlVariant::OCaml => "ocaml",
-                };
-                format!("{}-{}", variant_str, experiment.stage.to_str())
+            &Experiment::Ml(MlExperiment { variant, stage }) => {
+                format!("{}-{}", variant.to_str(), stage.to_str())
             }
         }
     }
@@ -317,11 +378,16 @@ impl Experiment {
             func = profile_func,
         ))];
         match self {
-            Experiment::Llvm(experiment) => {
+            &Experiment::Llvm(LlvmExperiment {
+                rc_strat,
+                profile_mode,
+                gc_kind,
+                array_kind,
+            }) => {
                 let llvm_config = cfg::LlvmConfig {
-                    rc_strat: experiment.rc_strat,
-                    gc_kind: experiment.gc_kind,
-                    array_kind: experiment.array_kind,
+                    rc_strat,
+                    gc_kind,
+                    array_kind,
                     opt_level: cfg::default_llvm_opt_level(),
                     target: cfg::TargetConfig::Native,
                 };
@@ -332,16 +398,13 @@ impl Experiment {
                     defunc_mode: cfg::DefuncMode::Specialize,
                     backend_opts: cfg::BackendOptions::Llvm(llvm_config),
                     profile_syms,
-                    profile_mode: experiment.profile_mode,
+                    profile_mode,
                     output_path,
                     artifact_dir,
                 }
             }
-            Experiment::Ml(experiment) => {
-                let ml_config = cfg::MlConfig {
-                    variant: experiment.variant,
-                    stage: experiment.stage,
-                };
+            &Experiment::Ml(MlExperiment { variant, stage }) => {
+                let ml_config = cfg::MlConfig { variant, stage };
                 cfg::BuildConfig {
                     src_path,
                     progress: ProgressMode::Visible,
@@ -373,30 +436,31 @@ fn experiments() -> Vec<Experiment> {
         }
     }
 
-    // Run time comparison with BDWGC.
-    for gc_kind in [GcKind::Rc, GcKind::Bdw] {
-        experiments.push(Experiment::Llvm(LlvmExperiment {
-            rc_strat: RcStrategy::Default,
-            profile_mode: ProfileMode::NoRecordRc,
-            gc_kind,
-            array_kind: ArrayKind::Persistent,
-        }));
-    }
+    // // Run time comparison with BDWGC.
+    // for gc_kind in [GcKind::Rc, GcKind::Bdw] {
+    //     experiments.push(Experiment::Llvm(LlvmExperiment {
+    //         rc_strat: RcStrategy::Default,
+    //         profile_mode: ProfileMode::NoRecordRc,
+    //         gc_kind,
+    //         array_kind: ArrayKind::Persistent,
+    //     }));
+    // }
 
-    // Run time for SML and OCaml.
-    for variant in [cfg::MlVariant::Sml, cfg::MlVariant::OCaml] {
-        for stage in [
-            cfg::CompilationStage::Typed,
-            cfg::CompilationStage::FirstOrder,
-        ] {
-            experiments.push(Experiment::Ml(MlExperiment { variant, stage }));
-        }
-    }
+    // // Run time for SML and OCaml.
+    // for variant in [cfg::MlVariant::Sml, cfg::MlVariant::OCaml] {
+    //     for stage in [
+    //         cfg::CompilationStage::Typed,
+    //         cfg::CompilationStage::FirstOrder,
+    //     ] {
+    //         experiments.push(Experiment::Ml(MlExperiment { variant, stage }));
+    //     }
+    // }
 
     experiments
 }
 
 fn compile_sample(
+    output: &mut Output,
     bench_name: &str,
     src_path: impl AsRef<Path> + Clone,
     profile_mod: &[&str],
@@ -405,6 +469,7 @@ fn compile_sample(
     for experiment in experiments() {
         let tag = experiment.tag();
         println!("compiling {bench_name}-{tag}");
+
         let (exe_path, _artifact_dir) = build_exe(
             bench_name,
             &tag,
@@ -414,11 +479,14 @@ fn compile_sample(
             &experiment,
         );
 
-        write_binary_size(&format!("{bench_name}-{tag}"), &exe_path);
+        let size = get_binary_size(&exe_path);
+        let entry = (bench_name.to_string(), vec![(experiment, size)]);
+        output.binary_sizes.push(entry);
     }
 }
 
 fn bench_sample(
+    output: &mut Output,
     iters: (u64, u64),
     bench_name: &str,
     profile_mod: &[&str],
@@ -429,60 +497,75 @@ fn bench_sample(
     for experiment in experiments() {
         let name = format!("{bench_name}-{tag}", tag = experiment.tag());
         println!("benchmarking {}", name);
+        let exe_path = out_dir().join(name);
 
-        let exe_path = std::env::current_dir()
-            .unwrap()
-            .join(OUT_DIR)
-            .join(name.clone());
+        fn check_prof_report<'a>(
+            report: &'a ProfReport,
+            profile_mod: &[&str],
+            profile_func: &str,
+            needed_iters_1: u64,
+        ) -> &'a ProfSpecialization {
+            let timing = &report.timings[0];
+            assert_eq!(&timing.module, profile_mod);
+            assert_eq!(&timing.function, profile_func);
+            assert_eq!(timing.specializations.len(), 1);
+            assert_eq!(timing.skipped_tail_rec_specializations.len(), 0);
 
-        let needed_iters_0 = if experiment.record_rc() { 1 } else { iters.0 };
-        let needed_iters_1 = if experiment.record_rc() { 1 } else { iters.1 };
+            let specialization = &timing.specializations[0];
+            assert_eq!(specialization.total_calls, needed_iters_1);
 
-        let mut results = Vec::new();
-        let mut counts: Option<Vec<RcCounts>> = None;
+            specialization
+        }
 
-        for _ in 0..needed_iters_0 {
-            match experiment {
-                Experiment::Llvm(_) => {
+        match experiment {
+            Experiment::Llvm(LlvmExperiment {
+                profile_mode: ProfileMode::NoRecordRc,
+                ..
+            }) => {
+                let mut results = Vec::new();
+
+                for _ in 0..iters.0 {
                     let report: ProfReport =
-                        run_exe(&exe_path, needed_iters_1, extra_stdin, expected_stdout);
+                        run_exe(&exe_path, iters.1, extra_stdin, expected_stdout);
 
-                    let timing = &report.timings[0];
-                    assert_eq!(&timing.module, profile_mod);
-                    assert_eq!(&timing.function, profile_func);
-                    assert_eq!(timing.specializations.len(), 1);
-                    assert_eq!(timing.skipped_tail_rec_specializations.len(), 0);
-
-                    let specialization = &timing.specializations[0];
-                    assert_eq!(specialization.total_calls, needed_iters_1);
+                    let specialization =
+                        check_prof_report(&report, profile_mod, profile_func, iters.1);
 
                     let total_nanos = specialization.total_clock_nanos;
                     results.push(Duration::from_nanos(total_nanos));
-
-                    match (
-                        specialization.total_retain_count,
-                        specialization.total_release_count,
-                        specialization.total_rc1_count,
-                    ) {
-                        (
-                            Some(total_retain_count),
-                            Some(total_release_count),
-                            Some(total_rc1_count),
-                        ) => {
-                            let counts = counts.get_or_insert_with(|| Vec::new());
-                            counts.push(RcCounts {
-                                total_retain_count: total_retain_count * iters.1,
-                                total_release_count: total_release_count * iters.1,
-                                total_rc1_count: total_rc1_count * iters.1,
-                            });
-                        }
-                        (None, None, None) => {}
-                        _ => {
-                            panic!("Expected all counts to be present or none");
-                        }
-                    }
                 }
-                Experiment::Ml(_) => {
+
+                let entry = (bench_name.to_string(), vec![(experiment, results)]);
+                output.run_times.push(entry);
+            }
+            Experiment::Llvm(LlvmExperiment {
+                profile_mode: ProfileMode::RecordRc,
+                ..
+            }) => {
+                let actual_iters_1 = 1;
+
+                let report: ProfReport =
+                    run_exe(&exe_path, actual_iters_1, extra_stdin, expected_stdout);
+
+                let specialization =
+                    check_prof_report(&report, profile_mod, profile_func, actual_iters_1);
+
+                let total_retain_count = specialization.total_retain_count.unwrap();
+                let total_release_count = specialization.total_release_count.unwrap();
+                let total_rc1_count = specialization.total_rc1_count.unwrap();
+
+                let counts = RcCounts {
+                    total_retain_count: total_retain_count * iters.1,
+                    total_release_count: total_release_count * iters.1,
+                    total_rc1_count: total_rc1_count * iters.1,
+                };
+                let entry = (bench_name.to_string(), vec![(experiment, counts)]);
+                output.rc_counts.push(entry);
+            }
+            Experiment::Ml(_) => {
+                let mut results = Vec::new();
+
+                for _ in 0..iters.0 {
                     let report: MlProfReport =
                         run_exe(&exe_path, iters.1, extra_stdin, expected_stdout);
 
@@ -492,18 +575,15 @@ fn bench_sample(
                     let total_nanos = report.entries[0].total_clock_nanos;
                     results.push(Duration::from_nanos(total_nanos));
                 }
+
+                let entry = (bench_name.to_string(), vec![(experiment, results)]);
+                output.run_times.push(entry);
             }
-        }
-
-        write_run_time(&name, results);
-
-        if let Some(counts) = counts {
-            write_rc_counts(&name, counts);
         }
     }
 }
 
-fn sample_primes() {
+fn sample_primes(output: &mut Output) {
     // let iters = (10, 100);
     let iters = (10, 10);
 
@@ -511,6 +591,7 @@ fn sample_primes() {
     let stdout = "There are 9592 primes <= 100000\n";
 
     compile_sample(
+        output,
         "bench_primes_iter.mor",
         "samples/bench_primes_iter.mor",
         &[],
@@ -518,6 +599,7 @@ fn sample_primes() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_primes_iter.mor",
         &[],
@@ -527,7 +609,7 @@ fn sample_primes() {
     );
 }
 
-fn sample_quicksort() {
+fn sample_quicksort(output: &mut Output) {
     // let iters = (10, 1000);
     let iters = (10, 100);
 
@@ -556,6 +638,7 @@ fn sample_quicksort() {
     );
 
     compile_sample(
+        output,
         "bench_quicksort.mor",
         "samples/bench_quicksort.mor",
         &[],
@@ -563,6 +646,7 @@ fn sample_quicksort() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_quicksort.mor",
         &[],
@@ -572,7 +656,7 @@ fn sample_quicksort() {
     );
 }
 
-fn sample_primes_sieve() {
+fn sample_primes_sieve(output: &mut Output) {
     // let iters = (10, 1000);
     let iters = (10, 100);
 
@@ -580,16 +664,25 @@ fn sample_primes_sieve() {
     let stdout = include_str!("../../../samples/expected-output/primes_10000.txt");
 
     compile_sample(
+        output,
         "bench_primes_sieve.mor",
         "samples/bench_primes_sieve.mor",
         &[],
         "sieve",
     );
 
-    bench_sample(iters, "bench_primes_sieve.mor", &[], "sieve", stdin, stdout);
+    bench_sample(
+        output,
+        iters,
+        "bench_primes_sieve.mor",
+        &[],
+        "sieve",
+        stdin,
+        stdout,
+    );
 }
 
-fn sample_parse_json() {
+fn sample_parse_json(output: &mut Output) {
     // let iters = (10, 100);
     let iters = (10, 10);
 
@@ -600,6 +693,7 @@ fn sample_parse_json() {
     let stdout = "-7199371743916571250\n";
 
     compile_sample(
+        output,
         "bench_parse_json.mor",
         "samples/bench_parse_json.mor",
         &[],
@@ -607,6 +701,7 @@ fn sample_parse_json() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_parse_json.mor",
         &[],
@@ -616,7 +711,7 @@ fn sample_parse_json() {
     );
 }
 
-fn sample_calc() {
+fn sample_calc(output: &mut Output) {
     // let iters = (10, 2000);
     let iters = (10, 200);
 
@@ -630,16 +725,25 @@ fn sample_calc() {
     );
 
     compile_sample(
+        output,
         "bench_calc.mor",
         "samples/bench_calc.mor",
         &[],
         "eval_exprs",
     );
 
-    bench_sample(iters, "bench_calc.mor", &[], "eval_exprs", stdin, stdout);
+    bench_sample(
+        output,
+        iters,
+        "bench_calc.mor",
+        &[],
+        "eval_exprs",
+        stdin,
+        stdout,
+    );
 }
 
-fn sample_unify() {
+fn sample_unify(output: &mut Output) {
     let iters = (10, 1);
 
     let stdin = concat!(
@@ -649,6 +753,7 @@ fn sample_unify() {
     let stdout = include_str!("../../../samples/expected-output/unify_solutions.txt");
 
     compile_sample(
+        output,
         "bench_unify.mor",
         "samples/bench_unify.mor",
         &[],
@@ -656,6 +761,7 @@ fn sample_unify() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_unify.mor",
         &[],
@@ -665,7 +771,7 @@ fn sample_unify() {
     );
 }
 
-fn sample_words_trie() {
+fn sample_words_trie(output: &mut Output) {
     let iters = (10, 10);
 
     let stdin = concat!(
@@ -678,6 +784,7 @@ fn sample_words_trie() {
     let stdout = include_str!("../../../samples/expected-output/udhr_query_counts.txt");
 
     compile_sample(
+        output,
         "bench_words_trie.mor",
         "samples/bench_words_trie.mor",
         &[],
@@ -685,6 +792,7 @@ fn sample_words_trie() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_words_trie.mor",
         &[],
@@ -694,7 +802,7 @@ fn sample_words_trie() {
     );
 }
 
-fn sample_text_stats() {
+fn sample_text_stats(output: &mut Output) {
     let iters = (10, 30);
 
     let stdin = include_str!("../../../samples/sample-input/shakespeare.txt");
@@ -702,6 +810,7 @@ fn sample_text_stats() {
     let stdout = "317\n";
 
     compile_sample(
+        output,
         "bench_text_stats.mor",
         "samples/bench_text_stats.mor",
         &[],
@@ -709,6 +818,7 @@ fn sample_text_stats() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_text_stats.mor",
         &[],
@@ -718,7 +828,7 @@ fn sample_text_stats() {
     );
 }
 
-fn sample_lisp() {
+fn sample_lisp(output: &mut Output) {
     let iters = (10, 30);
 
     let stdin = include_str!("../../../samples/sample-input/lisp-interpreter.lisp");
@@ -726,54 +836,79 @@ fn sample_lisp() {
     let stdout = "((O . ()) . ((O . (O . ())) . ((O . (O . (O . ()))) . ((O . (O . (O . (O . ())))) . ((O . (O . (O . (O . (O . ()))))) . ())))))\n";
 
     compile_sample(
+        output,
         "bench_lisp.mor",
         "samples/bench_lisp.mor",
         &[],
         "run_program",
     );
 
-    bench_sample(iters, "bench_lisp.mor", &[], "run_program", stdin, stdout);
+    bench_sample(
+        output,
+        iters,
+        "bench_lisp.mor",
+        &[],
+        "run_program",
+        stdin,
+        stdout,
+    );
 }
-
-fn sample_cfold() {
+fn sample_cfold(output: &mut Output) {
     let iters = (10, 10);
 
     let stdin = "16\n";
     let stdout = "192457\n";
 
     compile_sample(
+        output,
         "bench_cfold.mor",
         "samples/bench_cfold.mor",
         &[],
         "test_cfold",
     );
 
-    bench_sample(iters, "bench_cfold.mor", &[], "test_cfold", stdin, stdout);
+    bench_sample(
+        output,
+        iters,
+        "bench_cfold.mor",
+        &[],
+        "test_cfold",
+        stdin,
+        stdout,
+    );
 }
-
-fn sample_deriv() {
+fn sample_deriv(output: &mut Output) {
     let iters = (10, 10);
 
     let stdin = "8\n";
     let stdout = "598592\n";
 
     compile_sample(
+        output,
         "bench_deriv.mor",
         "samples/bench_deriv.mor",
         &[],
         "run_deriv",
     );
 
-    bench_sample(iters, "bench_deriv.mor", &[], "run_deriv", stdin, stdout);
+    bench_sample(
+        output,
+        iters,
+        "bench_deriv.mor",
+        &[],
+        "run_deriv",
+        stdin,
+        stdout,
+    );
 }
-
-fn sample_nqueens_functional() {
+fn sample_nqueens_functional(output: &mut Output) {
     let iters = (10, 5);
 
     let stdin = "nqueens-functional\n13\n";
     let stdout = "73712\n";
 
     compile_sample(
+        output,
         "bench_nqueens_functional.mor",
         "samples/bench_nqueens.mor",
         &[],
@@ -781,6 +916,7 @@ fn sample_nqueens_functional() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_nqueens_functional.mor",
         &[],
@@ -790,13 +926,14 @@ fn sample_nqueens_functional() {
     );
 }
 
-fn sample_nqueens_iterative() {
+fn sample_nqueens_iterative(output: &mut Output) {
     let iters = (10, 5);
 
     let stdin = "nqueens-iterative\n13\n";
     let stdout = "73712\n";
 
     compile_sample(
+        output,
         "bench_nqueens_iterative.mor",
         "samples/bench_nqueens.mor",
         &[],
@@ -804,6 +941,7 @@ fn sample_nqueens_iterative() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_nqueens_iterative.mor",
         &[],
@@ -813,29 +951,39 @@ fn sample_nqueens_iterative() {
     );
 }
 
-fn sample_rbtree() {
+fn sample_rbtree(output: &mut Output) {
     let iters = (10, 10);
 
     let stdin = "rbtree\n420000";
     let stdout = "42000\n";
 
     compile_sample(
+        output,
         "bench_rbtree.mor",
         "samples/bench_rbtree.mor",
         &[],
         "test_rbtree",
     );
 
-    bench_sample(iters, "bench_rbtree.mor", &[], "test_rbtree", stdin, stdout);
+    bench_sample(
+        output,
+        iters,
+        "bench_rbtree.mor",
+        &[],
+        "test_rbtree",
+        stdin,
+        stdout,
+    );
 }
 
-fn sample_rbtreeck() {
+fn sample_rbtreeck(output: &mut Output) {
     let iters = (10, 10);
 
     let stdin = "rbtree-ck\n420000";
     let stdout = "42000\n";
 
     compile_sample(
+        output,
         "bench_rbtree_ck.mor",
         "samples/bench_rbtree.mor",
         &[],
@@ -843,6 +991,7 @@ fn sample_rbtreeck() {
     );
 
     bench_sample(
+        output,
         iters,
         "bench_rbtree_ck.mor",
         &[],
@@ -864,21 +1013,53 @@ fn main() {
         std::process::exit(1);
     }
 
+    std::fs::create_dir_all(out_dir()).expect("Could not create out directory");
+
+    let mut existing = Vec::new();
+    if binary_sizes_file().exists() {
+        existing.push(binary_sizes_file());
+    }
+    if run_time_file().exists() {
+        existing.push(run_time_file());
+    }
+    if rc_count_file().exists() {
+        existing.push(rc_count_file());
+    }
+
+    if !existing.is_empty() {
+        eprintln!("Files already exist:");
+        for path in existing {
+            eprintln!("    {}", path.display());
+        }
+        eprintln!("Please delete or rename the files and try again.");
+        std::process::exit(1);
+    }
+
+    let mut output = Output {
+        binary_sizes: Vec::new(),
+        run_times: Vec::new(),
+        rc_counts: Vec::new(),
+    };
+
     // these have 0 retains omitted (there are 0 retains to begin with), so we don't run them
     // sample_quicksort();
     // sample_primes();
 
-    sample_calc();
-    sample_cfold();
-    sample_deriv();
-    sample_lisp();
-    sample_nqueens_functional();
-    sample_nqueens_iterative();
-    sample_parse_json();
-    sample_primes_sieve();
-    sample_rbtree();
-    sample_rbtreeck();
-    sample_text_stats();
-    sample_unify();
-    sample_words_trie();
+    sample_calc(&mut output);
+    sample_cfold(&mut output);
+    // sample_deriv(&mut output);
+    // sample_lisp(&mut output);
+    // sample_nqueens_functional(&mut output);
+    // sample_nqueens_iterative(&mut output);
+    // sample_parse_json(&mut output);
+    // sample_primes_sieve(&mut output);
+    // sample_rbtree(&mut output);
+    // sample_rbtreeck(&mut output);
+    // sample_text_stats(&mut output);
+    // sample_unify(&mut output);
+    // sample_words_trie(&mut output);
+
+    write_binary_size(&output.binary_sizes);
+    write_run_time(&output.run_times);
+    write_rc_counts(&output.rc_counts);
 }

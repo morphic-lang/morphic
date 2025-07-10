@@ -293,6 +293,13 @@ pub enum MlVariant {
 }
 
 impl MlVariant {
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            Self::Sml => "sml",
+            Self::OCaml => "ocaml",
+        }
+    }
+
     pub fn extension(&self) -> &'static str {
         match self {
             Self::Sml => "sml",
