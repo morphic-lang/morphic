@@ -119,7 +119,7 @@ void morphic_prof_rc_record_release(void) {
 }
 
 void morphic_prof_rc_record_rc1(void) {
-    prof_rc_release_count++;
+    prof_rc_rc1_count++;
 }
 
 uint64_t morphic_prof_rc_get_retain_count(void) {

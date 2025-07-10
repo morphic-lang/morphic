@@ -1235,6 +1235,9 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
                 s.if_(
                     s.eq(s.arrow(self.leaf_t, i64_t, leaf, F_LEAF_REFCOUNT), s.i64(1)),
                     |s| {
+                        if let Some(prof_rc) = context.tal().prof_rc() {
+                            s.call_void(prof_rc.record_rc1(), &[]);
+                        }
                         s.ret(leaf);
                     },
                 );
@@ -1299,6 +1302,9 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
                         s.i64(1),
                     ),
                     |s| {
+                        if let Some(prof_rc) = context.tal().prof_rc() {
+                            s.call_void(prof_rc.record_rc1(), &[]);
+                        }
                         s.ret(branch);
                     },
                 );
@@ -1379,6 +1385,9 @@ impl<T: Context> ArrayImpl<T> for PersistentArrayImpl<T> {
                 let refcount = s.arrow(self.leaf_t, i64_t, tail, F_LEAF_REFCOUNT);
 
                 s.if_(s.eq(refcount, s.i64(1)), |s| {
+                    if let Some(prof_rc) = context.tal().prof_rc() {
+                        s.call_void(prof_rc.record_rc1(), &[]);
+                    }
                     s.ret(tail);
                 });
 
