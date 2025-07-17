@@ -426,35 +426,37 @@ fn experiments() -> Vec<Experiment> {
 
     // Run time and retain count comparison with Perceus.
     for rc_strat in [RcStrategy::Default, RcStrategy::Perceus] {
-        for profile_mode in [ProfileMode::RecordRc, ProfileMode::NoRecordRc] {
-            experiments.push(Experiment::Llvm(LlvmExperiment {
-                rc_strat,
-                profile_mode,
-                gc_kind: GcKind::Rc,
-                array_kind: ArrayKind::Cow,
-            }));
+        for array_kind in [ArrayKind::Cow, ArrayKind::Persistent] {
+            for profile_mode in [ProfileMode::RecordRc, ProfileMode::NoRecordRc] {
+                experiments.push(Experiment::Llvm(LlvmExperiment {
+                    rc_strat,
+                    profile_mode,
+                    gc_kind: GcKind::Rc,
+                    array_kind,
+                }));
+            }
         }
     }
 
-    // // Run time comparison with BDWGC.
-    // for gc_kind in [GcKind::Rc, GcKind::Bdw] {
-    //     experiments.push(Experiment::Llvm(LlvmExperiment {
-    //         rc_strat: RcStrategy::Default,
-    //         profile_mode: ProfileMode::NoRecordRc,
-    //         gc_kind,
-    //         array_kind: ArrayKind::Persistent,
-    //     }));
-    // }
+    // Run time comparison with BDWGC.
+    for rc_strat in [RcStrategy::Default, RcStrategy::Perceus] {
+        experiments.push(Experiment::Llvm(LlvmExperiment {
+            rc_strat,
+            profile_mode: ProfileMode::NoRecordRc,
+            gc_kind: GcKind::Bdw,
+            array_kind: ArrayKind::Persistent,
+        }));
+    }
 
-    // // Run time for SML and OCaml.
-    // for variant in [cfg::MlVariant::Sml, cfg::MlVariant::OCaml] {
-    //     for stage in [
-    //         cfg::CompilationStage::Typed,
-    //         cfg::CompilationStage::FirstOrder,
-    //     ] {
-    //         experiments.push(Experiment::Ml(MlExperiment { variant, stage }));
-    //     }
-    // }
+    // Run time for SML and OCaml.
+    for variant in [cfg::MlVariant::Sml, cfg::MlVariant::OCaml] {
+        for stage in [
+            cfg::CompilationStage::Typed,
+            cfg::CompilationStage::FirstOrder,
+        ] {
+            experiments.push(Experiment::Ml(MlExperiment { variant, stage }));
+        }
+    }
 
     experiments
 }
@@ -1047,17 +1049,17 @@ fn main() {
 
     sample_calc(&mut output);
     sample_cfold(&mut output);
-    // sample_deriv(&mut output);
-    // sample_lisp(&mut output);
-    // sample_nqueens_functional(&mut output);
-    // sample_nqueens_iterative(&mut output);
-    // sample_parse_json(&mut output);
-    // sample_primes_sieve(&mut output);
-    // sample_rbtree(&mut output);
-    // sample_rbtreeck(&mut output);
-    // sample_text_stats(&mut output);
-    // sample_unify(&mut output);
-    // sample_words_trie(&mut output);
+    sample_deriv(&mut output);
+    sample_lisp(&mut output);
+    sample_nqueens_functional(&mut output);
+    sample_nqueens_iterative(&mut output);
+    sample_parse_json(&mut output);
+    sample_primes_sieve(&mut output);
+    sample_rbtree(&mut output);
+    sample_rbtreeck(&mut output);
+    sample_text_stats(&mut output);
+    sample_unify(&mut output);
+    sample_words_trie(&mut output);
 
     write_binary_size(&output.binary_sizes);
     write_run_time(&output.run_times);
