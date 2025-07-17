@@ -5,6 +5,7 @@ ARG USERNAME=ubuntu
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential \
+    cmake \
     ca-certificates \
     curl \
     git \
@@ -14,15 +15,15 @@ RUN apt-get update \
     valgrind \
     vim \
     zlib1g-dev \
-    libzstd-dev
-  #   sudo \
-  #   # GHC for Haskell benchmarks
-  #   ghc \
-  #   ghc-prof \
-  #   # Opam for OCaml benchmarks (see https://github.com/ocaml/opam/issues/5968#issuecomment-2151748424)
-  #   opam \
-  #   apparmor-profiles \
-  # && ln -s /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/
+    libzstd-dev \
+    libgmp3-dev \
+    # Required for OCaml benchmarks
+    opam \
+    # Required for `summarize_results.py`
+    python3-matplotlib \
+    python3-seaborn \
+    python3-numpy \
+    python3-pandas
 
 RUN gpg-agent --daemon \
   && curl -L https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - \
@@ -38,16 +39,20 @@ RUN gpg-agent --daemon \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# RUN curl -LJo /tmp/mlton.tgz https://github.com/MLton/mlton/releases/download/on-20241230-release/mlton-20241230-1.amd64-linux.ubuntu-24.04_static.tgz \
-#   && tar xf /tmp/mlton.tgz -C /tmp \
-#   && cd /tmp/mlton-20241230-1.amd64-linux.ubuntu-24.04_static \
-#   && make install
+# Required for MLton benchmarks
+RUN curl -LO https://github.com/MLton/mlton/releases/download/on-20241230-release/mlton-20241230-1.amd64-linux.ubuntu-24.04_static.tgz \
+  && tar xzf mlton-20241230-1.amd64-linux.ubuntu-24.04_static.tgz \
+  && rm mlton-20241230-1.amd64-linux.ubuntu-24.04_static.tgz \
+  && mv mlton-20241230-1.amd64-linux.ubuntu-24.04_static /usr/local/mlton
+
+ENV PATH="/usr/local/mlton/bin:${PATH}"
 
 USER "ubuntu"
 
-# RUN opam init --bare --auto-setup \
-#   && opam switch create 5.3.0 \
-#   && eval $(opam env)
+# Required for OCaml benchmarks
+RUN opam init --bare --auto-setup --disable-sandboxing \
+  && opam switch create 5.3.0 \
+  && echo 'eval $(opam env)' >> /home/$USERNAME/.bashrc
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 
@@ -56,7 +61,9 @@ ENV PATH="/home/$USERNAME/.cargo/bin:${PATH}"
 COPY --chown=$USERNAME:$USERNAME . /home/$USERNAME/morphic
 WORKDIR /home/$USERNAME/morphic
 
-RUN rm -rf .git \
-  && cargo vendor \
-  && cargo build \
-  && cargo test
+RUN mkdir .cargo \
+  # Use 'vendor-rust' to avoid overwriting our existing 'vendor' directory.
+  && cargo vendor vendor-rust > .cargo/config.toml \
+  && cargo test \
+  # Increase stack size with a safety margin. Required for `bench_lisp.mor` with persistent arrays.
+  && echo 'ulimit -s 262144' >> /home/$USERNAME/.bashrc

@@ -1043,23 +1043,44 @@ fn main() {
         rc_counts: Vec::new(),
     };
 
+    let start_time = std::time::Instant::now();
+    let print_time = |n: usize| {
+        let elapsed = start_time.elapsed();
+        let minutes = elapsed.as_secs() / 60;
+        let seconds = elapsed.as_secs() % 60;
+        println!("Finished benchmark {n:02}/13; total time elapsed: {minutes}m {seconds}s");
+    };
+
     // these have 0 retains omitted (there are 0 retains to begin with), so we don't run them
     // sample_quicksort();
     // sample_primes();
 
     sample_calc(&mut output);
+    print_time(1);
     sample_cfold(&mut output);
+    print_time(2);
     sample_deriv(&mut output);
+    print_time(3);
     sample_lisp(&mut output);
+    print_time(4);
     sample_nqueens_functional(&mut output);
+    print_time(5);
     sample_nqueens_iterative(&mut output);
+    print_time(6);
     sample_parse_json(&mut output);
+    print_time(7);
     sample_primes_sieve(&mut output);
+    print_time(8);
     sample_rbtree(&mut output);
+    print_time(9);
     sample_rbtreeck(&mut output);
+    print_time(10);
     sample_text_stats(&mut output);
+    print_time(11);
     sample_unify(&mut output);
+    print_time(12);
     sample_words_trie(&mut output);
+    print_time(13);
 
     write_binary_size(&output.binary_sizes);
     write_run_time(&output.run_times);
