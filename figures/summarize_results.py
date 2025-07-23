@@ -1,20 +1,38 @@
 #!/usr/bin/env python3
 # %%
 
+# In the acmart.cls with acmsmall we have font sizes:
+# - normal = 10pt
+# - scriptsize = 7pt
+#
+# You can test this with: \fontname\font\ at \the\fontdimen6\font
 
 from pathlib import Path
+import matplotlib
 from matplotlib.container import BarContainer
-from matplotlib.patches import Rectangle
-from matplotlib.ticker import FuncFormatter
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 import seaborn as sns
 from typing import cast
 
+OUTPUT_FORMAT = "pgf"
+
+# Configure matplotlib for PGF output to fix spacing issues
+if OUTPUT_FORMAT == "pgf":
+    matplotlib.rcParams.update({
+        'pgf.rcfonts': False,  # Don't setup fonts from rc parameters
+        'font.family': 'serif',
+        'text.usetex': True,
+        # 'pgf.preamble': [
+        #     r'\usepackage{amsmath}',
+        #     r'\usepackage{amssymb}',
+        # ]
+    })
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-IN_DIR = ROOT_DIR / "results"
+IN_DIR = ROOT_DIR / "target"
+# IN_DIR = Path("/home/ben/code/morphic-results-07-16-25")
 OUT_DIR = ROOT_DIR / "figure_out"
 
 
@@ -27,12 +45,12 @@ TIME_CONFIG_NAMES = {
     "ocaml-first_order": "OCaml (first order)",
     "sml-typed": "SML",
     "sml-first_order": "SML (first order)",
-    "llvm-record_time-default-bdw-persistent": "Morphic (BDWGC)",
-    "llvm-record_time-default-rc-persistent": "Morphic (persistent)",
-    "llvm-record_time-perceus-rc-cow": "Morphic (perceus)",
-    "llvm-record_time-default-rc-cow": "Morphic",
-    "llvm-record_time-perceus-rc-persistent": "Perceus (persistent)",
-    "llvm-record_time-perceus-bdw-persistent": "Perceus (BDWGC)",
+    "llvm-record_time-default-bdw-persistent": "Morphic (GC; persistent)",
+    "llvm-record_time-perceus-bdw-persistent": "Morphic (GC; persistent; no spec)",
+    "llvm-record_time-default-rc-persistent": "Morphic (borrows; persistent)",
+    "llvm-record_time-perceus-rc-persistent": "Morphic (Perceus; persistent)",
+    "llvm-record_time-perceus-rc-cow": "Morphic (Perceus; COW)",
+    "llvm-record_time-default-rc-cow": "Morphic (borrows; COW)",
 }
 
 TIME_NAMES = list(TIME_CONFIG_NAMES.keys())
@@ -51,6 +69,10 @@ def clean_benchmark_name(name: str) -> str:
     if name.endswith(".mor"):
         name = name[:-len(".mor")]
     
+    # Underscores are special characters in LaTeX. We must escape them if we output PGF.
+    if OUTPUT_FORMAT == "pgf":
+        name = name.replace("_", "\\_")
+    
     return name
 
 
@@ -59,7 +81,6 @@ def load_rt_df() -> pd.DataFrame:
     print(f"Reading data from {IN_DIR / f'{name}.csv'}")
     df = pd.read_csv(IN_DIR / f"{name}.csv")
     df["name"] = df["config"].map(lambda x: TIME_CONFIG_NAMES[x])
-    # Underscores are special characters in LaTeX. We must escape them if we output PGF.
     df["benchmark"] = df["benchmark"].apply(clean_benchmark_name)
     return df
 
@@ -98,9 +119,6 @@ retains_df = load_retains_df()
 print(f"Writing summary to {OUT_DIR / 'summary_df.csv'}")
 summary_df.to_csv(OUT_DIR / "summary_df.csv", index=False)
 
-sns.set_style("whitegrid")
-sns.set_style({"axes.edgecolor": "black"})
-
 ####################
 # OCaml vs. SML vs. Morphic (BDWGC) - Mean Runtime
 ####################
@@ -109,6 +127,8 @@ sns.set_style({"axes.edgecolor": "black"})
 # %%
 
 def make_ocaml_sml_gc():
+    sns.set_style("whitegrid")
+    sns.set_style({"axes.edgecolor": "black"})
     plt.figure()
     g_configs = [
         "ocaml-first_order",
@@ -119,16 +139,16 @@ def make_ocaml_sml_gc():
         kind="bar",
         data=rt_df.loc[rt_df["config"].isin(g_configs)].reset_index(),
         col="benchmark",
-        col_wrap=7,
+        col_wrap=5,
         sharey=False,
-        height=2.5,
-        aspect=1,
+        height=0.75,
+        aspect=1.5,
         ##########
         x="name",
         y="time (ms)",
         order=[TIME_CONFIG_NAMES[config] for config in g_configs],
         estimator="mean",
-        errorbar="sd",
+        errorbar="se",
         # capsize=0.15,
         # err_kws={"linewidth": 1.5},
         palette=[OCAML_COLOR, SML_COLOR, MORPHIC_COLOR],
@@ -139,22 +159,43 @@ def make_ocaml_sml_gc():
 
     g.tick_params(labelbottom=False)
     g.tick_params(axis="x", width=0)
-    g.set_titles(col_template="{col_name}", fontweight="bold")
-    g.set_axis_labels("", "Mean Runtime (ms)")
+    g.set_titles(col_template="{col_name}", fontweight="normal")
+    g.set_axis_labels("", "")
+    
+    # # Fix PGF y-axis label spacing issue by setting a consistent formatter
+    # if OUTPUT_FORMAT == "pgf":
+    #     def y_formatter(x, pos):
+    #         if x == 0:
+    #             return "0"
+    #         elif x >= 1000:
+    #             return f"{x/1000:.0f}k"
+    #         elif x >= 100:
+    #             return f"{x:.0f}"
+    #         elif x >= 10:
+    #             return f"{x:.1f}"
+    #         else:
+    #             return f"{x:.2f}"
+        
+    #     for ax in g.axes.flat:
+    #         ax.yaxis.set_major_formatter(FuncFormatter(y_formatter))
+    #         # Alternative: Use string method formatter if the above doesn't work
+    #         # from matplotlib.ticker import StrMethodFormatter
+    #         # ax.yaxis.set_major_formatter(StrMethodFormatter("{x:.1f}"))
+    
     sns.move_legend(
         g,
         loc="upper left",
         title="Legend",
         alignment="left",
-        bbox_to_anchor=(0.78, 0.4),
-        title_fontproperties=FontProperties(weight="bold", size=12),
-        fontsize=12,
+        bbox_to_anchor=(0.5, 0.39),
+        title_fontproperties=FontProperties(weight="normal", size=8),
+        fontsize=8,
     )
 
     g.tight_layout()
 
-    print(f"Saving figure to {OUT_DIR / 'ocaml_sml_gc.png'}")
-    plt.savefig(OUT_DIR / "ocaml_sml_gc.png", bbox_inches="tight")
+    print(f"Saving figure to {OUT_DIR / f'ocaml_sml_gc.{OUTPUT_FORMAT}'}")
+    plt.savefig(OUT_DIR / f"ocaml_sml_gc.{OUTPUT_FORMAT}", bbox_inches="tight")
 
 make_ocaml_sml_gc()
 
@@ -165,34 +206,37 @@ make_ocaml_sml_gc()
 # %%
 
 
-def plot_gc_vs_rc():
+def plot_speedup(numer_name: str, numer_config: str, denom_name: str, denom_config: str):
+    sns.set_style("whitegrid")
     plt.figure()
-    gc_config = "llvm-record_time-default-bdw-persistent"
-    rc_config = "llvm-record_time-default-rc-persistent"
 
     stats = (
-        rt_df[rt_df["config"].isin([gc_config, rc_config])]
+        rt_df[rt_df["config"].isin([numer_config, denom_config])]
         .groupby(["benchmark", "config"])["time (ms)"]
-        .agg(["median", "min", "max", lambda x: x.quantile(0.25), lambda x: x.quantile(0.75)])
+        .agg(["median", "min", "max", ("q25", lambda x: x.quantile(0.25)), ("q75", lambda x: x.quantile(0.75))])
         .unstack("config")
     )
 
     ratios = pd.DataFrame(
         {
             "benchmark": stats.index,
-            "gc_median": stats[("median", gc_config)],
-            "rc_median": stats[("median", rc_config)],
-            "ratio": stats[("median", gc_config)] / stats[("median", rc_config)],
-            "upper_bound": stats[("max", gc_config)] / stats[("min", rc_config)],
-            "lower_bound": stats[("min", gc_config)] / stats[("max", rc_config)],
+            "ratio": stats[("median", numer_config)] / stats[("median", denom_config)],
+            "upper_bound": stats[("max", numer_config)] / stats[("min", denom_config)],
+            "lower_bound": stats[("min", numer_config)] / stats[("max", denom_config)],
         }
-    ).round(4)
+    )
 
     # Calculate error bar values
     upper_error = ratios["upper_bound"] - ratios["ratio"]
     lower_error = ratios["ratio"] - ratios["lower_bound"]
 
+    LABEL_FONT_SIZE = 7
+    TITLE_FONT_SIZE = 7
+
+    fig, ax = plt.subplots(figsize=(3, 2.5))
+    ax.tick_params(axis="x", labelsize=LABEL_FONT_SIZE)
     g = sns.barplot(
+        ax=ax,
         data=ratios,
         x="benchmark",
         y="ratio",
@@ -202,19 +246,33 @@ def plot_gc_vs_rc():
         color=MORPHIC_COLOR,
     )
 
-    g.bar_label(cast(BarContainer, g.containers[1]), fmt="%.2f")
+    g.bar_label(cast(BarContainer, g.containers[1]), fmt="%.2f$\\times$", fontsize=LABEL_FONT_SIZE)
     
     g.set_xticklabels(
         g.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor"
     )
     g.axhline(1, color="black", linestyle="--", linewidth=1)
+    g.set_ylabel(f"Ratio of Runtimes", fontsize=LABEL_FONT_SIZE)
+    g.set_xlabel("")
+    g.set_title(f"Speedup: {numer_name} / {denom_name}", fontweight="bold", fontsize=TITLE_FONT_SIZE)
+    
+    # Remove the top spine/line
+    g.spines['top'].set_visible(False)
+    g.spines['right'].set_visible(False)
+
     plt.tight_layout()
 
-    print(f"Saving figure to {OUT_DIR / 'gc_vs_rc.png'}")
-    plt.savefig(OUT_DIR / "gc_vs_rc.png", bbox_inches="tight")
+    filename = f"{numer_name.replace(' ', '-')}_vs_{denom_name.replace(' ', '-')}.{OUTPUT_FORMAT}"
+    print(f"Saving figure to {OUT_DIR / filename}")
+    plt.savefig(OUT_DIR / filename, bbox_inches="tight")
 
 
-plot_gc_vs_rc()
+plot_speedup(
+    "GC",
+    "llvm-record_time-default-bdw-persistent",
+    "Borrow Inference",
+    "llvm-record_time-default-rc-persistent",
+)
 
 ####################
 # Speedup vs. Perceus (COW) - Median Runtime Ratio
@@ -222,69 +280,13 @@ plot_gc_vs_rc()
 
 
 # %% 
-def plot_speedup_vs_perceus_cow():
-    plt.figure()
-    baseline_config = "llvm-record_time-perceus-rc-cow"
-    comparison_config = "llvm-record_time-default-rc-cow"
 
-    # Get all individual samples for each benchmark/config combination
-    baseline_data = rt_df[rt_df["config"] == baseline_config].groupby("benchmark")["time (ms)"].apply(list)
-    comparison_data = rt_df[rt_df["config"] == comparison_config].groupby("benchmark")["time (ms)"].apply(list)
-    
-    ratios_list = []
-    
-    for benchmark in baseline_data.index:
-        if benchmark in comparison_data.index:
-            baseline_samples = baseline_data[benchmark]
-            comparison_samples = comparison_data[benchmark]
-            
-            # Calculate all possible ratios (baseline_sample / comparison_sample)
-            all_ratios = []
-            for baseline_val in baseline_samples:
-                for comparison_val in comparison_samples:
-                    all_ratios.append(baseline_val / comparison_val)
-            
-            # Calculate mean and standard deviation
-            import numpy as np
-            mean_ratio = np.mean(all_ratios)
-            std_ratio = np.std(all_ratios)
-            
-            ratios_list.append({
-                "benchmark": benchmark,
-                "speedup": mean_ratio,
-                "std_ratio": std_ratio,
-            })
-    
-    ratios = pd.DataFrame(ratios_list)
-
-    # Calculate error bar values using standard deviation
-    upper_error = ratios["std_ratio"]
-    lower_error = ratios["std_ratio"]
-
-    g = sns.barplot(
-        data=ratios,
-        x="benchmark",
-        y="speedup",
-        yerr=[lower_error, upper_error],
-        capsize=0.15,
-        err_kws={"linewidth": 1.5},
-        color=MORPHIC_COLOR,
-    )
-
-    g.bar_label(cast(BarContainer, g.containers[1]), fmt="%.2fx")
-    
-    g.set_xticklabels(
-        g.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor"
-    )
-    g.axhline(1, color="black", linestyle="--", linewidth=1)
-    g.set_ylabel("Speedup (Perceus COW / Morphic COW)")
-    g.set_title("Speedup vs. Perceus (COW)", fontweight="bold")
-    plt.tight_layout()
-
-    print(f"Saving figure to {OUT_DIR / 'speedup_vs_perceus_cow.png'}")
-    plt.savefig(OUT_DIR / "speedup_vs_perceus_cow.png", bbox_inches="tight")
-
-plot_speedup_vs_perceus_cow()
+plot_speedup(
+    "Perceus COW",
+    "llvm-record_time-perceus-rc-cow",
+    "Morphic COW",
+    "llvm-record_time-default-rc-cow",
+)
 
 ####################
 # Speedup vs. Perceus (Persistent) - Median Runtime Ratio
@@ -292,77 +294,19 @@ plot_speedup_vs_perceus_cow()
 
 # %%
 
-def plot_speedup_vs_perceus_persistent():
-    plt.figure()
-    baseline_config = "llvm-record_time-perceus-rc-persistent"
-    comparison_config = "llvm-record_time-default-rc-persistent"
-
-    # Get all individual samples for each benchmark/config combination
-    baseline_data = rt_df[rt_df["config"] == baseline_config].groupby("benchmark")["time (ms)"].apply(list)
-    comparison_data = rt_df[rt_df["config"] == comparison_config].groupby("benchmark")["time (ms)"].apply(list)
-    
-    ratios_list = []
-    
-    for benchmark in baseline_data.index:
-        if benchmark in comparison_data.index:
-            baseline_samples = baseline_data[benchmark]
-            comparison_samples = comparison_data[benchmark]
-            
-            # Calculate all possible ratios (baseline_sample / comparison_sample)
-            all_ratios = []
-            for baseline_val in baseline_samples:
-                for comparison_val in comparison_samples:
-                    all_ratios.append(baseline_val / comparison_val)
-            
-            # Calculate mean and standard deviation
-            import numpy as np
-            mean_ratio = np.mean(all_ratios)
-            std_ratio = np.std(all_ratios)
-            
-            ratios_list.append({
-                "benchmark": benchmark,
-                "speedup": mean_ratio,
-                "std_ratio": std_ratio,
-            })
-    
-    ratios = pd.DataFrame(ratios_list)
-
-    print(ratios)
-
-    # Calculate error bar values
-    upper_error = ratios["std_ratio"]
-    lower_error = ratios["std_ratio"]
-
-    g = sns.barplot(
-        data=ratios,
-        x="benchmark",
-        y="speedup",
-        yerr=[lower_error, upper_error],
-        capsize=0.15,
-        err_kws={"linewidth": 1.5},
-        color=MORPHIC_COLOR,
-    )
-    
-    g.bar_label(cast(BarContainer, g.containers[1]), fmt="%.2fx")
-    
-    g.set_xticklabels(
-        g.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor"
-    )
-    g.axhline(1, color="black", linestyle="--", linewidth=1)
-    g.set_ylabel("Speedup (Perceus Persistent / Morphic Persistent)")
-    g.set_title("Speedup vs. Perceus (Persistent)", fontweight="bold")
-    plt.tight_layout()
-
-    print(f"Saving figure to {OUT_DIR / 'speedup_vs_perceus_persistent.png'}")
-    plt.savefig(OUT_DIR / "speedup_vs_perceus_persistent.png", bbox_inches="tight")
-
-plot_speedup_vs_perceus_persistent()
+plot_speedup(
+    "Perceus Persistent",
+    "llvm-record_time-perceus-rc-persistent",
+    "Morphic Persistent",
+    "llvm-record_time-default-rc-persistent",
+)
 
 ####################
 # Data Table with Absolute Values for All Configurations
 ####################
 
 def create_absolute_values_table():
+    sns.set_style("whitegrid")
     # Create a comprehensive table with all configurations
     table_data = []
     
@@ -421,8 +365,8 @@ def create_absolute_values_table():
     plt.title('Absolute Runtime Values (Median in ms)', fontsize=16, fontweight='bold', pad=20)
     plt.tight_layout()
     
-    print(f"Saving table visualization to {OUT_DIR / 'absolute_values_table.png'}")
-    plt.savefig(OUT_DIR / "absolute_values_table.png", bbox_inches="tight", dpi=300)
+    print(f"Saving table visualization to {OUT_DIR / f'absolute_values_table.{OUTPUT_FORMAT}'}")
+    plt.savefig(OUT_DIR / f"absolute_values_table.{OUTPUT_FORMAT}", bbox_inches="tight", dpi=300)
     
     # Also create a formatted version for display
     print("\nAbsolute Values Table (Median Runtime in ms):")
@@ -432,7 +376,7 @@ def create_absolute_values_table():
     
     return medians
 
-create_absolute_values_table()
+# create_absolute_values_table()
 
 ####################
 # Retains Eliminated vs. Perceus (COW)
@@ -440,13 +384,18 @@ create_absolute_values_table()
 
 # %%
 
-def plot_retains_eliminated_vs_perceus_cow():
+def plot_retains_eliminated(
+    baseline_name: str,
+    baseline_config: str,
+    other_name: str,
+    other_config: str,
+    label_offsets: dict[str, float] = {},
+):
+    sns.set_style("whitegrid")
     plt.figure()
-    perceus_config = "llvm-record_rc-perceus-rc-cow"
-    default_config = "llvm-record_rc-default-rc-cow"
 
     # Process the retains data
-    retain_data = retains_df[retains_df["config"].isin([perceus_config, default_config])].copy()
+    retain_data = retains_df[retains_df["config"].isin([baseline_config, other_config])].copy()
     
     # Pivot to get side-by-side comparison
     retain_pivot = retain_data.pivot(index="benchmark", columns="config", values="retain count")
@@ -454,8 +403,8 @@ def plot_retains_eliminated_vs_perceus_cow():
     # Calculate percentage of retains eliminated
     # Formula: (Perceus_retains - Default_retains) / Perceus_retains * 100
     # When Perceus_retains = 0, set to 0% (no retains to eliminate)
-    perceus_retains = retain_pivot[perceus_config]
-    default_retains = retain_pivot[default_config]
+    perceus_retains = retain_pivot[baseline_config]
+    default_retains = retain_pivot[other_config]
     
     retains_eliminated_pct = []
     benchmark_names = []
@@ -485,29 +434,63 @@ def plot_retains_eliminated_vs_perceus_cow():
         "benchmark": benchmark_names,
         "retains_eliminated_pct": retains_eliminated_pct
     })
+
+    LABEL_FONT_SIZE = 7
+    TITLE_FONT_SIZE = 7
     
+    fig, ax = plt.subplots(figsize=(3, 2.5))
+    ax.tick_params(axis="x", labelsize=LABEL_FONT_SIZE)
+    ax.tick_params(axis="y", labelsize=LABEL_FONT_SIZE)
     g = sns.barplot(
+        ax=ax,
         data=plot_data,
         x="benchmark",
         y="retains_eliminated_pct",
         color=MORPHIC_COLOR,
     )
 
-    g.bar_label(cast(BarContainer, g.containers[0]), fmt="%.1f%%")
+    fmt = "%.1f%%" if OUTPUT_FORMAT == "pgf" else "%.1f\\%%"
+    
+    # Get the bars and their positions
+    bars = g.containers[0]
+    
+    # Add labels with offset for the specific bar
+    for i, (bar, pct) in enumerate(zip(bars, plot_data["retains_eliminated_pct"])):
+        x_offset = label_offsets.get(i, 0)
+        label = fmt % pct
+        g.annotate(label, 
+                  xy=(bar.get_x() + bar.get_width()/2 + x_offset, bar.get_height()),
+                  xytext=(0, 0.5),
+                  textcoords="offset points",
+                  ha='center', va='bottom',
+                  fontsize=LABEL_FONT_SIZE)
+
     
     g.set_xticklabels(
         g.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor"
     )
-    g.set_ylabel("Retains Eliminated (%)")
-    g.set_title("Retains Eliminated vs. Perceus (COW)", fontweight="bold")
+    g.set_ylabel("Retains Eliminated (%)", fontsize=LABEL_FONT_SIZE)
+    g.set_xlabel("")
+    g.set_title(f"Retains Eliminated: {baseline_name} vs. {other_name}", fontweight="bold", fontsize=TITLE_FONT_SIZE)
     g.set_ylim(0, 105)  # Set y-axis from 0% to 105% for better visibility
+    
+    # Remove the top spine/line
+    g.spines['top'].set_visible(False)
+    g.spines['right'].set_visible(False)
     
     plt.tight_layout()
 
-    print(f"Saving figure to {OUT_DIR / 'retains_eliminated_vs_perceus_cow.png'}")
-    plt.savefig(OUT_DIR / "retains_eliminated_vs_perceus_cow.png", bbox_inches="tight")
+    filename = f"retains_eliminated_{baseline_name.replace(' ', '-')}_vs_{other_name.replace(' ', '-')}.{OUTPUT_FORMAT}"
+    print(f"Saving figure to {OUT_DIR / filename}")
+    plt.savefig(OUT_DIR / filename, bbox_inches="tight")
 
-plot_retains_eliminated_vs_perceus_cow()
+plot_retains_eliminated(
+    "Perceus COW",
+    "llvm-record_rc-perceus-rc-cow",
+    "Morphic COW",
+    "llvm-record_rc-default-rc-cow",
+    {8: -0.5},
+)
 
 ####################
 # Retains Eliminated vs. Perceus (Persistent)
@@ -515,70 +498,9 @@ plot_retains_eliminated_vs_perceus_cow()
 
 # %%
 
-def plot_retains_eliminated_vs_perceus_persistent():
-    plt.figure()
-    perceus_config = "llvm-record_rc-perceus-rc-persistent"
-    default_config = "llvm-record_rc-default-rc-persistent"
-
-    # Process the retains data
-    retain_data = retains_df[retains_df["config"].isin([perceus_config, default_config])].copy()
-    
-    # Pivot to get side-by-side comparison
-    retain_pivot = retain_data.pivot(index="benchmark", columns="config", values="retain count")
-    
-    # Calculate percentage of retains eliminated
-    # Formula: (Perceus_retains - Default_retains) / Perceus_retains * 100
-    # When Perceus_retains = 0, set to 0% (no retains to eliminate)
-    perceus_retains = retain_pivot[perceus_config]
-    default_retains = retain_pivot[default_config]
-    
-    retains_eliminated_pct = []
-    benchmark_names = []
-    
-    for i in range(len(perceus_retains)):
-        benchmark = str(retain_pivot.index[i])
-        p_retains = perceus_retains.iloc[i]
-        d_retains = default_retains.iloc[i]
-        
-        if pd.isna(p_retains) or pd.isna(d_retains):
-            continue  # Skip benchmarks with missing data
-            
-        if p_retains == 0:
-            # No retains in Perceus, so 0% eliminated (nothing to eliminate)
-            pct = 0.0
-        else:
-            # Calculate percentage eliminated
-            pct = (p_retains - d_retains) / p_retains * 100
-            pct = max(0.0, pct)  # Cap at 0% minimum
-        
-        retains_eliminated_pct.append(pct)
-        benchmark_names.append(benchmark)  # Use the name as-is since it's already cleaned
-    
-    # Create DataFrame for plotting
-    plot_data = pd.DataFrame({
-        "benchmark": benchmark_names,
-        "retains_eliminated_pct": retains_eliminated_pct
-    })
-    
-    g = sns.barplot(
-        data=plot_data,
-        x="benchmark",
-        y="retains_eliminated_pct",
-        color=MORPHIC_COLOR,
-    )
-    
-    g.bar_label(cast(BarContainer, g.containers[0]), fmt="%.1f%%")
-    
-    g.set_xticklabels(
-        g.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor"
-    )
-    g.set_ylabel("Retains Eliminated (%)")
-    g.set_title("Retains Eliminated vs. Perceus (Persistent)", fontweight="bold")
-    g.set_ylim(0, 105)  # Set y-axis from 0% to 105% for better visibility
-    
-    plt.tight_layout()
-
-    print(f"Saving figure to {OUT_DIR / 'retains_eliminated_vs_perceus_persistent.png'}")
-    plt.savefig(OUT_DIR / "retains_eliminated_vs_perceus_persistent.png", bbox_inches="tight")
-
-plot_retains_eliminated_vs_perceus_persistent()
+plot_retains_eliminated(
+    "Perceus Persistent",
+    "llvm-record_rc-perceus-rc-persistent",
+    "Morphic Persistent",
+    "llvm-record_rc-default-rc-persistent",
+)
