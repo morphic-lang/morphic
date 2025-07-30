@@ -16,7 +16,7 @@ from matplotlib.font_manager import FontProperties
 import seaborn as sns
 from typing import cast
 
-OUTPUT_FORMAT = "pgf"
+OUTPUT_FORMAT = "png"
 
 # Configure matplotlib for PGF output to fix spacing issues
 if OUTPUT_FORMAT == "pgf":
@@ -45,15 +45,13 @@ TIME_CONFIG_NAMES = {
     "ocaml-first_order": "OCaml (first order)",
     "sml-typed": "SML",
     "sml-first_order": "SML (first order)",
-    "llvm-record_time-default-bdw-persistent": "Morphic (GC; persistent)",
-    "llvm-record_time-perceus-bdw-persistent": "Morphic (GC; persistent; no spec)",
-    "llvm-record_time-default-rc-persistent": "Morphic (borrows; persistent)",
-    "llvm-record_time-perceus-rc-persistent": "Morphic (Perceus; persistent)",
-    "llvm-record_time-perceus-rc-cow": "Morphic (Perceus; COW)",
-    "llvm-record_time-default-rc-cow": "Morphic (borrows; COW)",
+    "llvm-record_time-default-bdw-persistent": "Morphic (GC, persistent; spec)",
+    "llvm-record_time-perceus-bdw-persistent": "BDWGC",
+    "llvm-record_time-default-rc-persistent": "Morphic (borrows, persistent)",
+    "llvm-record_time-perceus-rc-persistent": "Morphic (Perceus, persistent)",
+    "llvm-record_time-perceus-rc-cow": "Morphic (Perceus, COW)",
+    "llvm-record_time-default-rc-cow": "Morphic (borrows, COW)",
 }
-
-TIME_NAMES = list(TIME_CONFIG_NAMES.keys())
 
 
 def is_interactive() -> bool:
@@ -130,10 +128,14 @@ def make_ocaml_sml_gc():
     sns.set_style("whitegrid")
     sns.set_style({"axes.edgecolor": "black"})
     plt.figure()
+
+    LABEL_FONT_SIZE = 7
+    TITLE_FONT_SIZE = 7
+
     g_configs = [
         "ocaml-first_order",
         "sml-first_order",
-        "llvm-record_time-default-bdw-persistent",
+        "llvm-record_time-perceus-bdw-persistent",
     ]
     g = sns.catplot(
         kind="bar",
@@ -148,7 +150,7 @@ def make_ocaml_sml_gc():
         y="time (ms)",
         order=[TIME_CONFIG_NAMES[config] for config in g_configs],
         estimator="mean",
-        errorbar="se",
+        errorbar="sd",
         # capsize=0.15,
         # err_kws={"linewidth": 1.5},
         palette=[OCAML_COLOR, SML_COLOR, MORPHIC_COLOR],
@@ -159,37 +161,22 @@ def make_ocaml_sml_gc():
 
     g.tick_params(labelbottom=False)
     g.tick_params(axis="x", width=0)
-    g.set_titles(col_template="{col_name}", fontweight="normal")
+    g.set_titles(col_template="{col_name}", fontweight="normal", fontsize=LABEL_FONT_SIZE)
     g.set_axis_labels("", "")
     
-    # # Fix PGF y-axis label spacing issue by setting a consistent formatter
-    # if OUTPUT_FORMAT == "pgf":
-    #     def y_formatter(x, pos):
-    #         if x == 0:
-    #             return "0"
-    #         elif x >= 1000:
-    #             return f"{x/1000:.0f}k"
-    #         elif x >= 100:
-    #             return f"{x:.0f}"
-    #         elif x >= 10:
-    #             return f"{x:.1f}"
-    #         else:
-    #             return f"{x:.2f}"
-        
-    #     for ax in g.axes.flat:
-    #         ax.yaxis.set_major_formatter(FuncFormatter(y_formatter))
-    #         # Alternative: Use string method formatter if the above doesn't work
-    #         # from matplotlib.ticker import StrMethodFormatter
-    #         # ax.yaxis.set_major_formatter(StrMethodFormatter("{x:.1f}"))
+    # Set font size for tick labels
+    for ax in g.axes.flat:
+        ax.set_title(ax.get_title(), fontsize=LABEL_FONT_SIZE)
+        ax.tick_params(axis='both', which='major', labelsize=LABEL_FONT_SIZE)
     
     sns.move_legend(
         g,
         loc="upper left",
         title="Legend",
         alignment="left",
-        bbox_to_anchor=(0.5, 0.39),
-        title_fontproperties=FontProperties(weight="normal", size=8),
-        fontsize=8,
+        bbox_to_anchor=(0.5, 0.35),
+        title_fontproperties=FontProperties(weight="normal", size=LABEL_FONT_SIZE),
+        fontsize=LABEL_FONT_SIZE,
     )
 
     g.tight_layout()
@@ -206,7 +193,7 @@ make_ocaml_sml_gc()
 # %%
 
 
-def plot_speedup(numer_name: str, numer_config: str, denom_name: str, denom_config: str):
+def plot_speedup(title: str, numer_name: str, numer_config: str, denom_name: str, denom_config: str, label_offsets: dict[int, float] = {}):
     sns.set_style("whitegrid")
     plt.figure()
 
@@ -233,7 +220,7 @@ def plot_speedup(numer_name: str, numer_config: str, denom_name: str, denom_conf
     LABEL_FONT_SIZE = 7
     TITLE_FONT_SIZE = 7
 
-    fig, ax = plt.subplots(figsize=(3, 2.5))
+    fig, ax = plt.subplots(figsize=(3, 2.2))
     ax.tick_params(axis="x", labelsize=LABEL_FONT_SIZE)
     g = sns.barplot(
         ax=ax,
@@ -246,7 +233,23 @@ def plot_speedup(numer_name: str, numer_config: str, denom_name: str, denom_conf
         color=MORPHIC_COLOR,
     )
 
-    g.bar_label(cast(BarContainer, g.containers[1]), fmt="%.2f$\\times$", fontsize=LABEL_FONT_SIZE)
+    fmt = "%.2f$\\times$"
+
+    # Get the bars and their positions
+    bars = g.containers[1]
+    
+    # Add labels with offset for the specific bar, accounting for error bars
+    for i, (bar, pct) in enumerate(zip(bars, ratios["ratio"])):
+        x_offset = label_offsets.get(i, 0)
+        label = fmt % pct
+        # Place label above the error bar (bar height + upper error)
+        y_position = bar.get_height() + upper_error[i]
+        g.annotate(label, 
+                  xy=(bar.get_x() + bar.get_width()/2 + x_offset, y_position),
+                  xytext=(0, 2),
+                  textcoords="offset points",
+                  ha='center', va='bottom',
+                  fontsize=LABEL_FONT_SIZE)
     
     g.set_xticklabels(
         g.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor"
@@ -254,7 +257,7 @@ def plot_speedup(numer_name: str, numer_config: str, denom_name: str, denom_conf
     g.axhline(1, color="black", linestyle="--", linewidth=1)
     g.set_ylabel(f"Ratio of Runtimes", fontsize=LABEL_FONT_SIZE)
     g.set_xlabel("")
-    g.set_title(f"Speedup: {numer_name} / {denom_name}", fontweight="bold", fontsize=TITLE_FONT_SIZE)
+    g.set_title(title, fontweight="bold", fontsize=TITLE_FONT_SIZE)
     
     # Remove the top spine/line
     g.spines['top'].set_visible(False)
@@ -268,10 +271,12 @@ def plot_speedup(numer_name: str, numer_config: str, denom_name: str, denom_conf
 
 
 plot_speedup(
+    "Speedup Relative to BDWGC",
     "GC",
-    "llvm-record_time-default-bdw-persistent",
+    "llvm-record_time-perceus-bdw-persistent",
     "Borrow Inference",
     "llvm-record_time-default-rc-persistent",
+    {0: -0.4, 1: -0.2},
 )
 
 ####################
@@ -282,6 +287,7 @@ plot_speedup(
 # %% 
 
 plot_speedup(
+    "Speedup Relative to Perceus",
     "Perceus COW",
     "llvm-record_time-perceus-rc-cow",
     "Morphic COW",
@@ -295,88 +301,12 @@ plot_speedup(
 # %%
 
 plot_speedup(
+    "Speedup Relative to Perceus (persistent arrays)",
     "Perceus Persistent",
     "llvm-record_time-perceus-rc-persistent",
     "Morphic Persistent",
     "llvm-record_time-default-rc-persistent",
 )
-
-####################
-# Data Table with Absolute Values for All Configurations
-####################
-
-def create_absolute_values_table():
-    sns.set_style("whitegrid")
-    # Create a comprehensive table with all configurations
-    table_data = []
-    
-    # Get median values for all config/benchmark combinations
-    medians = (
-        rt_df.groupby(["benchmark", "config"])["time (ms)"]
-        .median()
-        .reset_index()
-        .pivot(index="benchmark", columns="config", values="time (ms)")
-    )
-    
-    # Add configuration names for better readability
-    medians.columns = [TIME_CONFIG_NAMES.get(col, col) for col in medians.columns]
-    
-    # Round to 2 decimal places
-    medians = medians.round(2)
-    
-    print(f"Writing absolute values table to {OUT_DIR / 'absolute_values_table.csv'}")
-    medians.to_csv(OUT_DIR / "absolute_values_table.csv")
-    
-    # Create a visualization of the table
-    fig, ax = plt.subplots(figsize=(16, 10))
-    ax.axis('tight')
-    ax.axis('off')
-    
-    # Create the table
-    table = ax.table(
-        cellText=medians.values.astype(str).tolist(),
-        rowLabels=list(medians.index),
-        colLabels=list(medians.columns),
-        cellLoc='center',
-        loc='center'
-    )
-    
-    # Style the table
-    table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    table.scale(1, 2)
-    
-    # Color the header row
-    for i in range(len(medians.columns)):
-        table[(0, i)].set_facecolor('#4CAF50')
-        table[(0, i)].set_text_props(weight='bold', color='white')
-    
-    # Color the row labels
-    for i in range(len(medians.index)):
-        table[(i+1, -1)].set_facecolor('#E8F5E8')
-        table[(i+1, -1)].set_text_props(weight='bold')
-    
-    # Add alternating row colors for better readability
-    for i in range(len(medians.index)):
-        if i % 2 == 0:
-            for j in range(len(medians.columns)):
-                table[(i+1, j)].set_facecolor('#F5F5F5')
-    
-    plt.title('Absolute Runtime Values (Median in ms)', fontsize=16, fontweight='bold', pad=20)
-    plt.tight_layout()
-    
-    print(f"Saving table visualization to {OUT_DIR / f'absolute_values_table.{OUTPUT_FORMAT}'}")
-    plt.savefig(OUT_DIR / f"absolute_values_table.{OUTPUT_FORMAT}", bbox_inches="tight", dpi=300)
-    
-    # Also create a formatted version for display
-    print("\nAbsolute Values Table (Median Runtime in ms):")
-    print("=" * 80)
-    print(medians.to_string())
-    print("=" * 80)
-    
-    return medians
-
-# create_absolute_values_table()
 
 ####################
 # Retains Eliminated vs. Perceus (COW)
@@ -385,6 +315,7 @@ def create_absolute_values_table():
 # %%
 
 def plot_retains_eliminated(
+    title: str,
     baseline_name: str,
     baseline_config: str,
     other_name: str,
@@ -438,7 +369,7 @@ def plot_retains_eliminated(
     LABEL_FONT_SIZE = 7
     TITLE_FONT_SIZE = 7
     
-    fig, ax = plt.subplots(figsize=(3, 2.5))
+    fig, ax = plt.subplots(figsize=(3, 2.2))
     ax.tick_params(axis="x", labelsize=LABEL_FONT_SIZE)
     ax.tick_params(axis="y", labelsize=LABEL_FONT_SIZE)
     g = sns.barplot(
@@ -471,7 +402,7 @@ def plot_retains_eliminated(
     )
     g.set_ylabel("Retains Eliminated (%)", fontsize=LABEL_FONT_SIZE)
     g.set_xlabel("")
-    g.set_title(f"Retains Eliminated: {baseline_name} vs. {other_name}", fontweight="bold", fontsize=TITLE_FONT_SIZE)
+    g.set_title(title, fontweight="bold", fontsize=TITLE_FONT_SIZE)
     g.set_ylim(0, 105)  # Set y-axis from 0% to 105% for better visibility
     
     # Remove the top spine/line
@@ -485,6 +416,7 @@ def plot_retains_eliminated(
     plt.savefig(OUT_DIR / filename, bbox_inches="tight")
 
 plot_retains_eliminated(
+    "Retains Eliminated Relative to Perceus",
     "Perceus COW",
     "llvm-record_rc-perceus-rc-cow",
     "Morphic COW",
@@ -499,6 +431,7 @@ plot_retains_eliminated(
 # %%
 
 plot_retains_eliminated(
+    "Retains Eliminated Relative to Perceus (persistent arrays)",
     "Perceus Persistent",
     "llvm-record_rc-perceus-rc-persistent",
     "Morphic Persistent",

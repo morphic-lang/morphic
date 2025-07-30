@@ -906,8 +906,8 @@ fn sample_deriv(output: &mut Output) {
 fn sample_nqueens_functional(output: &mut Output) {
     let iters = (10, 5);
 
-    let stdin = "nqueens-functional\n13\n";
-    let stdout = "73712\n";
+    let stdin = "nqueens-functional\n12\n";
+    let stdout = "14200\n";
 
     compile_sample(
         output,
@@ -931,8 +931,8 @@ fn sample_nqueens_functional(output: &mut Output) {
 fn sample_nqueens_iterative(output: &mut Output) {
     let iters = (10, 5);
 
-    let stdin = "nqueens-iterative\n13\n";
-    let stdout = "73712\n";
+    let stdin = "nqueens-iterative\n12\n";
+    let stdout = "14200\n";
 
     compile_sample(
         output,
