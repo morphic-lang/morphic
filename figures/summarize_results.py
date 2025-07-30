@@ -187,7 +187,7 @@ def make_ocaml_sml_gc():
 make_ocaml_sml_gc()
 
 ####################
-# Morphic (BDWGC) vs. Morphic (persistent) - Median Runtime Ratio
+# Morphic (BDWGC) vs. Morphic (persistent) - Mean Runtime Ratio
 ####################
 
 # %%
@@ -200,14 +200,14 @@ def plot_speedup(title: str, numer_name: str, numer_config: str, denom_name: str
     stats = (
         rt_df[rt_df["config"].isin([numer_config, denom_config])]
         .groupby(["benchmark", "config"])["time (ms)"]
-        .agg(["median", "min", "max", ("q25", lambda x: x.quantile(0.25)), ("q75", lambda x: x.quantile(0.75))])
+        .agg(["mean", "min", "max", ("q25", lambda x: x.quantile(0.25)), ("q75", lambda x: x.quantile(0.75))])
         .unstack("config")
     )
 
     ratios = pd.DataFrame(
         {
             "benchmark": stats.index,
-            "ratio": stats[("median", numer_config)] / stats[("median", denom_config)],
+            "ratio": stats[("mean", numer_config)] / stats[("mean", denom_config)],
             "upper_bound": stats[("max", numer_config)] / stats[("min", denom_config)],
             "lower_bound": stats[("min", numer_config)] / stats[("max", denom_config)],
         }
@@ -280,7 +280,7 @@ plot_speedup(
 )
 
 ####################
-# Speedup vs. Perceus (COW) - Median Runtime Ratio
+# Speedup vs. Perceus (COW) - Mean Runtime Ratio
 ####################
 
 
@@ -295,7 +295,7 @@ plot_speedup(
 )
 
 ####################
-# Speedup vs. Perceus (Persistent) - Median Runtime Ratio
+# Speedup vs. Perceus (Persistent) - Mean Runtime Ratio
 ####################
 
 # %%
