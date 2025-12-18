@@ -373,7 +373,7 @@ impl<'a> std::fmt::Display for DisplayCondition<'a> {
 }
 
 impl Condition {
-    pub fn display(&self) -> DisplayCondition {
+    pub fn display(&self) -> DisplayCondition<'_> {
         DisplayCondition {
             type_renderer: None,
             cond: self,

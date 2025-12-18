@@ -52,7 +52,7 @@ impl fmt::Display for DisplayLocalLt<'_> {
 }
 
 impl LocalLt {
-    pub fn display(&self) -> DisplayLocalLt {
+    pub fn display(&self) -> DisplayLocalLt<'_> {
         DisplayLocalLt(self)
     }
 }
@@ -89,7 +89,7 @@ impl fmt::Display for DisplayLt<'_> {
 }
 
 impl Lt {
-    pub fn display(&self) -> DisplayLt {
+    pub fn display(&self) -> DisplayLt<'_> {
         DisplayLt(self)
     }
 }
@@ -111,7 +111,7 @@ impl fmt::Display for DisplayPath<'_> {
 }
 
 impl Path {
-    pub fn display(&self) -> DisplayPath {
+    pub fn display(&self) -> DisplayPath<'_> {
         DisplayPath(self)
     }
 }

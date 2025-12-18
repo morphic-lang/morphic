@@ -235,7 +235,7 @@ impl Context {
         self.vars.push(RefCell::new(assign))
     }
 
-    fn obtain(&self, var: TypeVar) -> Result<RefMut<Assign>, UnifyError> {
+    fn obtain(&self, var: TypeVar) -> Result<RefMut<'_, Assign>, UnifyError> {
         self.vars[var]
             .try_borrow_mut()
             .map_err(|_| UnifyError::Recursive)
@@ -509,7 +509,7 @@ fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> res::TypeScheme {
 }
 
 // Sounds ominous...
-pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<res::TypeScheme> {
+pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<'_, res::TypeScheme> {
     use crate::data::resolved_ast::Type::*;
     use crate::data::resolved_ast::TypeId::*;
 

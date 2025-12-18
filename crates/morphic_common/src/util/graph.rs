@@ -117,7 +117,7 @@ pub enum Scc<NodeId> {
 }
 
 impl<NodeId> Scc<NodeId> {
-    pub fn iter(&self) -> SccIter<NodeId> {
+    pub fn iter(&self) -> SccIter<'_, NodeId> {
         self.into_iter()
     }
 }
