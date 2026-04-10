@@ -17,7 +17,7 @@ Morphic features three automatic optimizations which turn functional programming
 
 - Lambdas: Morphic’s lambda set specialization makes lambdas unboxed and statically dispatched, and allows calls to lambdas to be inlined. You can find the details in our [paper](https://doi.org/10.1145/3591260) or [talk](https://www.youtube.com/watch?v=F3z39M0gdJU&t=3540s).
 - Immutable Data Structures: Morphic’s mutation optimization transforms updates to logically-immutable data structures into in-place mutations when doing so does not affect semantics.
-- Automatic Memory Management: Morphic uses a borrow-based reference counting scheme which is able to eliminate almost all reference count increments and decrements for a large class of programs.
+- Automatic Memory Management: Morphic uses a borrow-based reference counting scheme which is able to eliminate almost all reference count increments and decrements for a large class of programs, see the [paper](https://doi.org/10.1145/3798221) for details.
 
 ```rust
 type Primality {
