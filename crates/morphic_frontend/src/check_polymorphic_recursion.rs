@@ -7,7 +7,7 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, Error)]
 pub enum Error {
-    #[error("the value `{name}` is used in polymorphic recursion")]
+    #[error("the function `{name}` is used in polymorphic recursion")]
     ValNonterminating { name: String },
     #[error("the type `{name}` is used in polymorphic recursion")]
     TypeNonterminating { name: String },
@@ -160,8 +160,8 @@ fn check_types(
 }
 
 pub fn check_polymorphic_recursion(program: &typed::Program) -> Result<(), Error> {
-    check_vals(&program.vals, &program.val_symbols)?;
     check_types(&program.custom_types, &program.custom_type_symbols)?;
+    check_vals(&program.vals, &program.val_symbols)?;
     Ok(())
 }
 
@@ -292,5 +292,47 @@ mod tests {
             IdVec::from_vec(vec![type_symbols("Pair", 1), type_symbols("Other", 1)]);
 
         check_types(&custom_types, &custom_type_symbols).unwrap();
+    }
+
+    #[test]
+    fn a_growing_type_is_reported_over_the_function_consuming_it() {
+        let nested_id = CustomTypeId(0);
+
+        let custom_types = IdVec::from_vec(vec![TypeDef {
+            num_params: 1,
+            variants: IdVec::from_vec(vec![
+                Some(res::Type::Var(TypeParamId(0))),
+                Some(res::Type::App(
+                    TypeId::Custom(nested_id),
+                    vec![res::Type::Tuple(vec![
+                        res::Type::Var(TypeParamId(0)),
+                        res::Type::Var(TypeParamId(0)),
+                    ])],
+                )),
+            ]),
+        }]);
+        let custom_type_symbols = IdVec::from_vec(vec![type_symbols("Nested", 2)]);
+
+        let vals = IdVec::from_vec(vec![val_def(
+            1,
+            self_call(vec![res::Type::Tuple(vec![
+                res::Type::Var(TypeParamId(0)),
+                res::Type::Var(TypeParamId(0)),
+            ])]),
+        )]);
+        let val_symbols = IdVec::from_vec(vec![val_symbols("depth")]);
+
+        let program = typed::Program {
+            mod_symbols: IdVec::new(),
+            custom_types,
+            custom_type_symbols,
+            profile_points: IdVec::new(),
+            vals,
+            val_symbols,
+            main: CustomGlobalId(0),
+        };
+
+        let err = check_polymorphic_recursion(&program).unwrap_err();
+        assert!(matches!(err, Error::TypeNonterminating { name } if name == "Nested"));
     }
 }
