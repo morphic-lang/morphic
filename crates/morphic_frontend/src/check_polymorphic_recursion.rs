@@ -7,9 +7,9 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, Error)]
 pub enum Error {
-    #[error("the function `{name}` is used in polymorphic recursion")]
+    #[error("the function `{name}` requires unbounded polymorphic recursion")]
     ValNonterminating { name: String },
-    #[error("the type `{name}` is used in polymorphic recursion")]
+    #[error("the type `{name}` requires unbounded polymorphic recursion")]
     TypeNonterminating { name: String },
 }
 
