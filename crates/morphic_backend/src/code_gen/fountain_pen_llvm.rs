@@ -2099,7 +2099,8 @@ fn check_valid_file_path(path: &Path) -> Result<(), Error> {
     match path.parent() {
         None => return Err(Error::GivenDirExpectedFile(path.to_owned())),
         Some(parent) => {
-            if !parent.exists() {
+            // A bare file name has an empty parent, which refers to the current directory.
+            if !parent.as_os_str().is_empty() && !parent.exists() {
                 return Err(Error::DirectoryDoesNotExist(parent.to_owned()));
             }
         }
@@ -2116,7 +2117,8 @@ fn check_valid_dir_path(path: &Path) -> Result<(), Error> {
     match path.parent() {
         None => {}
         Some(parent) => {
-            if !parent.exists() {
+            // A bare directory name has an empty parent, which refers to the current directory.
+            if !parent.as_os_str().is_empty() && !parent.exists() {
                 return Err(Error::DirectoryDoesNotExist(parent.to_owned()));
             }
         }

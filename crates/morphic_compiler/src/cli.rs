@@ -4,7 +4,6 @@ use inkwell::OptimizationLevel;
 use morphic_common::config::{self as cfg, ValueEnumExt};
 use morphic_common::progress_ui::ProgressMode;
 use morphic_common::pseudoprocess::{Stdio, ValgrindConfig};
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 const LLVM_BACKEND_OPTS: &[&str] = &[
@@ -195,6 +194,7 @@ impl Config {
                         Arg::new("output-path")
                             .short('o')
                             .long("output-path")
+                            .value_parser(clap::value_parser!(PathBuf))
                             .help("Place the output executable at this path.")
                     )
                     .arg(
@@ -330,8 +330,8 @@ impl Config {
                 .into();
 
             let output_path = matches
-                .get_one::<OsString>("output-path")
-                .map(|s| s.to_owned().into())
+                .get_one::<PathBuf>("output-path")
+                .cloned()
                 .unwrap_or(
                     std::env::current_dir()
                         .unwrap()
