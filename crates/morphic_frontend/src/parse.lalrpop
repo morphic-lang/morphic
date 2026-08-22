@@ -172,9 +172,9 @@ TypeDef: syntax::Item = {
       syntax::Item::TypeDef(visibility, name, params, cases),
 };
 
-TypeCase: (Visibility, syntax::CtorName, Option<syntax::Type>) = {
-  <visibility: OptPub> <name: CtorName> <content: ("(" <Types> ")")?> =>
-    (visibility, name, content),
+TypeCase: (Visibility, syntax::CtorName, Option<syntax::Type>, (usize, usize)) = {
+  <lo: @L> <visibility: OptPub> <name: CtorName> <content: ("(" <Types> ")")?> <hi: @R> =>
+    (visibility, name, content, (lo, hi)),
 };
 
 // Value Definitions

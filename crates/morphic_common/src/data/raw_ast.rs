@@ -31,7 +31,8 @@ pub enum Item {
         Visibility,
         TypeName,
         Vec<TypeParam>,
-        Vec<(Visibility, CtorName, Option<Type>)>,
+        // The `(usize, usize)` denotes the span of the variant declaration.
+        Vec<(Visibility, CtorName, Option<Type>, (usize, usize))>,
     ),
     ValDef(Visibility, ValName, Type, Expr),
     ModDef(Visibility, ModName, ModSpec, Vec<ModBinding>, ExposeSpec),

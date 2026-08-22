@@ -95,6 +95,7 @@ pub struct TypeDef {
 #[derive(Clone, Debug)]
 pub struct VariantSymbols {
     pub variant_name: raw::CtorName,
+    pub span: (usize, usize),
 }
 
 #[derive(Clone, Debug)]

@@ -1,167 +1,305 @@
-use crate::data::resolved_ast as res;
+use crate::data::resolved_ast::{self as res, TypeParamId};
 use crate::data::typed_ast as typed;
+use crate::file_cache::FileCache;
 use id_collections::IdVec;
+use morphic_common::report_error::{locate_path, locate_span, Locate, Reportable};
 use morphic_common::util::graph::{self, Graph};
-use std::collections::HashMap;
-use thiserror::Error;
+use std::collections::BTreeMap;
+use std::io;
 
-#[derive(Clone, Debug, Error)]
-pub enum Error {
-    #[error("the function `{name}` requires unbounded polymorphic recursion")]
+#[derive(Clone, Debug)]
+pub enum ErrorKind {
     ValNonterminating { name: String },
-    #[error("the type `{name}` requires unbounded polymorphic recursion")]
     TypeNonterminating { name: String },
 }
 
-type Node<Id> = (Id, usize);
-type Edge<Id> = (Node<Id>, Node<Id>);
+#[derive(Debug)]
+pub struct Error(Locate<ErrorKind>);
 
-fn free_vars(ty: &res::Type) -> Vec<usize> {
+impl Reportable for Error {
+    fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
+        self.0.report_with(dest, files, |err| {
+            (
+                "Unbounded Polymorphic Recursion",
+                match err {
+                    ErrorKind::ValNonterminating { name } => format!(
+                        "The function `{}` requires unbounded polymorphic recursion.",
+                        name
+                    ),
+                    ErrorKind::TypeNonterminating { name } => format!(
+                        "The type `{}` requires unbounded polymorphic recursion.",
+                        name
+                    ),
+                },
+            )
+        })
+    }
+
+    fn exit_status(&self) -> i32 {
+        1
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Growth {
+    Stable,
+    Growing,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClassifiedEdge<N> {
+    from: N,
+    to: N,
+    growth: Growth,
+    span: Option<(usize, usize)>,
+}
+
+fn add_free_vars(ty: &res::Type, vars: &mut Vec<TypeParamId>) {
     match ty {
-        &res::Type::Var(res::TypeParamId(i)) => vec![i],
-        res::Type::App(_, args) => args.iter().flat_map(free_vars).collect(),
-        res::Type::Tuple(items) => items.iter().flat_map(free_vars).collect(),
+        &res::Type::Var(param) => vars.push(param),
+        res::Type::App(_, args) => {
+            for arg in args {
+                add_free_vars(arg, vars);
+            }
+        }
+        res::Type::Tuple(items) => {
+            for item in items {
+                add_free_vars(item, vars);
+            }
+        }
         res::Type::Func(_, arg, ret) => {
-            free_vars(arg).into_iter().chain(free_vars(ret)).collect()
+            add_free_vars(arg, vars);
+            add_free_vars(ret, vars);
         }
     }
 }
 
-fn application_edges<Id: Copy>(source: Id, target: Id, args: &[res::Type]) -> Vec<(Edge<Id>, bool)> {
-    args.iter()
-        .enumerate()
-        .flat_map(|(j, arg)| match arg {
-            &res::Type::Var(res::TypeParamId(i)) => vec![(((source, i), (target, j)), false)],
-            _ => free_vars(arg)
-                .into_iter()
-                .map(|i| (((source, i), (target, j)), true))
-                .collect(),
-        })
-        .collect()
+fn add_application_edges<Id: Copy>(
+    source: Id,
+    target: Id,
+    args: &[res::Type],
+    span: Option<(usize, usize)>,
+    edges: &mut Vec<ClassifiedEdge<(Id, TypeParamId)>>,
+) {
+    // The j-th type argument in an application of `target` instantiates `target`'s j-th type
+    // parameter, so each edge points at the corresponding parameter node of `target`.
+    let mut vars = Vec::new();
+    for (j, arg) in args.iter().enumerate() {
+        match arg {
+            &res::Type::Var(param) => edges.push(ClassifiedEdge {
+                from: (source, param),
+                to: (target, TypeParamId(j)),
+                growth: Growth::Stable,
+                span,
+            }),
+            _ => {
+                vars.clear();
+                add_free_vars(arg, &mut vars);
+                for &param in &vars {
+                    edges.push(ClassifiedEdge {
+                        from: (source, param),
+                        to: (target, TypeParamId(j)),
+                        growth: Growth::Growing,
+                        span,
+                    });
+                }
+            }
+        }
+    }
 }
 
-fn collect_global_calls(expr: &typed::Expr) -> Vec<(res::CustomGlobalId, &[res::Type])> {
+fn add_global_calls<'a>(
+    expr: &'a typed::Expr,
+    span: Option<(usize, usize)>,
+    calls: &mut Vec<(res::CustomGlobalId, &'a [res::Type], Option<(usize, usize)>)>,
+) {
     match expr {
-        typed::Expr::Global(res::GlobalId::Custom(id), args) => vec![(*id, args.as_slice())],
-        typed::Expr::Global(_, _) | typed::Expr::Local(_) => Vec::new(),
-        typed::Expr::Tuple(items) => items.iter().flat_map(collect_global_calls).collect(),
-        typed::Expr::Lam(_, _, _, _, body, _) => collect_global_calls(body),
-        typed::Expr::App(_, func, arg) => collect_global_calls(func)
-            .into_iter()
-            .chain(collect_global_calls(arg))
-            .collect(),
-        typed::Expr::Match(discrim, cases, _) => collect_global_calls(discrim)
-            .into_iter()
-            .chain(cases.iter().flat_map(|(_, body)| collect_global_calls(body)))
-            .collect(),
-        typed::Expr::LetMany(bindings, body) => bindings
-            .iter()
-            .flat_map(|(_, rhs)| collect_global_calls(rhs))
-            .chain(collect_global_calls(body))
-            .collect(),
-        typed::Expr::ArrayLit(_, items) => items.iter().flat_map(collect_global_calls).collect(),
-        typed::Expr::ByteLit(_) | typed::Expr::IntLit(_) | typed::Expr::FloatLit(_) => Vec::new(),
-        typed::Expr::Span(_, _, content) => collect_global_calls(content),
+        typed::Expr::Global(res::GlobalId::Custom(id), args) => {
+            calls.push((*id, args.as_slice(), span))
+        }
+        typed::Expr::Global(_, _) | typed::Expr::Local(_) => {}
+        typed::Expr::Tuple(items) => {
+            for item in items {
+                add_global_calls(item, span, calls);
+            }
+        }
+        typed::Expr::Lam(_, _, _, _, body, _) => add_global_calls(body, span, calls),
+        typed::Expr::App(_, func, arg) => {
+            add_global_calls(func, span, calls);
+            add_global_calls(arg, span, calls);
+        }
+        typed::Expr::Match(discrim, cases, _) => {
+            add_global_calls(discrim, span, calls);
+            for (_, body) in cases {
+                add_global_calls(body, span, calls);
+            }
+        }
+        typed::Expr::LetMany(bindings, body) => {
+            for (_, rhs) in bindings {
+                add_global_calls(rhs, span, calls);
+            }
+            add_global_calls(body, span, calls);
+        }
+        typed::Expr::ArrayLit(_, items) => {
+            for item in items {
+                add_global_calls(item, span, calls);
+            }
+        }
+        typed::Expr::ByteLit(_) | typed::Expr::IntLit(_) | typed::Expr::FloatLit(_) => {}
+        &typed::Expr::Span(lo, hi, ref content) => add_global_calls(content, Some((lo, hi)), calls),
     }
 }
 
-fn collect_type_applications(ty: &res::Type) -> Vec<(res::CustomTypeId, &[res::Type])> {
+fn add_type_applications<'a>(
+    ty: &'a res::Type,
+    apps: &mut Vec<(res::CustomTypeId, &'a [res::Type])>,
+) {
     match ty {
-        res::Type::Var(_) => Vec::new(),
-        res::Type::App(res::TypeId::Custom(id), args) => std::iter::once((*id, args.as_slice()))
-            .chain(args.iter().flat_map(collect_type_applications))
-            .collect(),
-        res::Type::App(_, args) => args.iter().flat_map(collect_type_applications).collect(),
-        res::Type::Tuple(items) => items.iter().flat_map(collect_type_applications).collect(),
-        res::Type::Func(_, arg, ret) => collect_type_applications(arg)
-            .into_iter()
-            .chain(collect_type_applications(ret))
-            .collect(),
+        res::Type::Var(_) => {}
+        res::Type::App(id, args) => {
+            if let res::TypeId::Custom(custom) = id {
+                apps.push((*custom, args.as_slice()));
+            }
+            for arg in args {
+                add_type_applications(arg, apps);
+            }
+        }
+        res::Type::Tuple(items) => {
+            for item in items {
+                add_type_applications(item, apps);
+            }
+        }
+        res::Type::Func(_, arg, ret) => {
+            add_type_applications(arg, apps);
+            add_type_applications(ret, apps);
+        }
     }
 }
 
-fn find_polymorphic_recursion<Id: Copy + Eq + std::hash::Hash>(
-    classified: Vec<(Edge<Id>, bool)>,
-) -> Option<Id> {
-    let mut slots = HashMap::new();
-    let mut slot_of = |node: Node<Id>| {
-        let next = slots.len();
-        *slots.entry(node).or_insert(next)
+fn find_polymorphic_recursion<Id: Copy + Ord>(
+    classified: Vec<ClassifiedEdge<(Id, TypeParamId)>>,
+) -> Option<(Id, Option<(usize, usize)>)> {
+    let mut flat_namespace: BTreeMap<(Id, TypeParamId), usize> = BTreeMap::new();
+    let mut flat_name_of = |node: (Id, TypeParamId)| {
+        let next = flat_namespace.len();
+        *flat_namespace.entry(node).or_insert(next)
     };
 
-    let flat: Vec<(usize, usize, bool)> = classified
+    let flat: Vec<ClassifiedEdge<usize>> = classified
         .into_iter()
-        .map(|((from, to), growing)| (slot_of(from), slot_of(to), growing))
+        .map(|edge| ClassifiedEdge {
+            from: flat_name_of(edge.from),
+            to: flat_name_of(edge.to),
+            growth: edge.growth,
+            span: edge.span,
+        })
         .collect();
 
-    let mut edges_out = vec![Vec::new(); slots.len()];
-    for &(from, to, _) in &flat {
-        edges_out[from].push(to);
+    let mut edges_out = vec![Vec::new(); flat_namespace.len()];
+    for edge in &flat {
+        edges_out[edge.from].push(edge.to);
     }
     let sccs = graph::strongly_connected(&Graph {
         edges_out: IdVec::from_vec(edges_out),
     });
 
-    let scc_of: HashMap<usize, usize> = sccs
+    let scc_of: BTreeMap<usize, usize> = sccs
         .iter()
         .enumerate()
         .flat_map(|(scc_id, nodes)| nodes.iter().map(move |&node| (node, scc_id)))
         .collect();
 
-    let node_of: HashMap<usize, Id> = slots.into_iter().map(|(node, slot)| (slot, node.0)).collect();
+    let node_of: BTreeMap<usize, Id> = flat_namespace
+        .into_iter()
+        .map(|(node, slot)| (slot, node.0))
+        .collect();
 
     flat.into_iter()
-        .find(|&(from, to, growing)| growing && scc_of[&from] == scc_of[&to])
-        .map(|(from, _, _)| node_of[&from])
+        .find(|edge| edge.growth == Growth::Growing && scc_of[&edge.from] == scc_of[&edge.to])
+        .map(|edge| (node_of[&edge.from], edge.span))
+}
+
+fn locate(kind: ErrorKind, file: &std::path::Path, span: Option<(usize, usize)>) -> Error {
+    let mut located: Locate<ErrorKind> = kind.into();
+    located = locate_path(file)(located);
+    if let Some((lo, hi)) = span {
+        located = locate_span(lo, hi)(located);
+    }
+    Error(located)
 }
 
 fn check_vals(
+    mod_symbols: &IdVec<res::ModId, res::ModSymbols>,
     vals: &IdVec<res::CustomGlobalId, typed::ValDef>,
     val_symbols: &IdVec<res::CustomGlobalId, res::ValSymbols>,
 ) -> Result<(), Error> {
-    let classified = vals
-        .iter()
-        .flat_map(|(val_id, def)| {
-            collect_global_calls(&def.body)
-                .into_iter()
-                .flat_map(move |(target, args)| application_edges(val_id, target, args))
-        })
-        .collect();
+    let mut calls = Vec::new();
+    let mut classified = Vec::new();
+    for (val_id, def) in vals.iter() {
+        calls.clear();
+        add_global_calls(&def.body, None, &mut calls);
+        for &(target, args, span) in &calls {
+            add_application_edges(val_id, target, args, span, &mut classified);
+        }
+    }
 
     match find_polymorphic_recursion(classified) {
-        Some(culprit) => Err(Error::ValNonterminating {
-            name: val_symbols[culprit].val_name.0.clone(),
-        }),
+        Some((culprit, span)) => {
+            let symbols = &val_symbols[culprit];
+            Err(locate(
+                ErrorKind::ValNonterminating {
+                    name: symbols.val_name.0.clone(),
+                },
+                &mod_symbols[symbols.mod_].file,
+                span,
+            ))
+        }
         None => Ok(()),
     }
 }
 
 fn check_types(
+    mod_symbols: &IdVec<res::ModId, res::ModSymbols>,
     custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
     custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
 ) -> Result<(), Error> {
-    let classified = custom_types
-        .iter()
-        .flat_map(|(type_id, typedef)| {
-            typedef.variants.values().flatten().flat_map(move |ty| {
-                collect_type_applications(ty)
-                    .into_iter()
-                    .flat_map(move |(target, args)| application_edges(type_id, target, args))
-            })
-        })
-        .collect();
+    let mut apps = Vec::new();
+    let mut classified = Vec::new();
+    for (type_id, typedef) in custom_types.iter() {
+        for (variant_id, variant) in typedef.variants.iter() {
+            if let Some(ty) = variant {
+                let span = custom_type_symbols[type_id].variant_symbols[variant_id].span;
+                apps.clear();
+                add_type_applications(ty, &mut apps);
+                for &(target, args) in &apps {
+                    add_application_edges(type_id, target, args, Some(span), &mut classified);
+                }
+            }
+        }
+    }
 
     match find_polymorphic_recursion(classified) {
-        Some(culprit) => Err(Error::TypeNonterminating {
-            name: custom_type_symbols[culprit].type_name.0.clone(),
-        }),
+        Some((culprit, span)) => {
+            let symbols = &custom_type_symbols[culprit];
+            Err(locate(
+                ErrorKind::TypeNonterminating {
+                    name: symbols.type_name.0.clone(),
+                },
+                &mod_symbols[symbols.mod_].file,
+                span,
+            ))
+        }
         None => Ok(()),
     }
 }
 
 pub fn check_polymorphic_recursion(program: &typed::Program) -> Result<(), Error> {
-    check_types(&program.custom_types, &program.custom_type_symbols)?;
-    check_vals(&program.vals, &program.val_symbols)?;
+    check_types(
+        &program.mod_symbols,
+        &program.custom_types,
+        &program.custom_type_symbols,
+    )?;
+    check_vals(&program.mod_symbols, &program.vals, &program.val_symbols)?;
     Ok(())
 }
 
@@ -170,10 +308,18 @@ mod tests {
     use super::*;
     use crate::data::raw_ast as raw;
     use crate::data::resolved_ast::{
-        CustomGlobalId, CustomTypeId, GlobalId, ModId, TypeDef, TypeId, TypeParamId, TypeScheme,
-        TypeSymbols, ValSymbols, VariantSymbols,
+        CustomGlobalId, CustomTypeId, GlobalId, ModDeclLoc, ModId, ModSymbols, TypeDef, TypeId,
+        TypeParamId, TypeScheme, TypeSymbols, ValSymbols, VariantSymbols,
     };
     use crate::data::typed_ast::{Expr, ValDef};
+    use std::path::PathBuf;
+
+    fn mod_symbols() -> IdVec<ModId, ModSymbols> {
+        IdVec::from_vec(vec![ModSymbols {
+            file: PathBuf::from("main.mor"),
+            decl_loc: ModDeclLoc::Root,
+        }])
+    }
 
     fn val_def(num_params: usize, body: Expr) -> ValDef {
         ValDef {
@@ -193,14 +339,16 @@ mod tests {
         }
     }
 
-    fn type_symbols(name: &str, num_variants: usize) -> TypeSymbols {
+    fn type_symbols(name: &str, variant_spans: &[(usize, usize)]) -> TypeSymbols {
         TypeSymbols {
             mod_: ModId(0),
             type_name: raw::TypeName(name.to_string()),
             variant_symbols: IdVec::from_vec(
-                (0..num_variants)
-                    .map(|_| VariantSymbols {
+                variant_spans
+                    .iter()
+                    .map(|&span| VariantSymbols {
                         variant_name: raw::CtorName("Ctor".to_string()),
+                        span,
                     })
                     .collect(),
             ),
@@ -208,25 +356,31 @@ mod tests {
     }
 
     fn self_call(args: Vec<res::Type>) -> Expr {
-        Expr::Global(
-            GlobalId::Custom(CustomGlobalId(0)),
-            IdVec::from_vec(args),
-        )
+        Expr::Global(GlobalId::Custom(CustomGlobalId(0)), IdVec::from_vec(args))
     }
 
     #[test]
     fn growing_self_recursive_value_is_rejected() {
         let vals = IdVec::from_vec(vec![val_def(
             1,
-            self_call(vec![res::Type::Tuple(vec![
-                res::Type::Var(TypeParamId(0)),
-                res::Type::Var(TypeParamId(0)),
-            ])]),
+            Expr::Span(
+                10,
+                25,
+                Box::new(self_call(vec![res::Type::Tuple(vec![
+                    res::Type::Var(TypeParamId(0)),
+                    res::Type::Var(TypeParamId(0)),
+                ])])),
+            ),
         )]);
         let val_symbols = IdVec::from_vec(vec![val_symbols("depth")]);
 
-        let err = check_vals(&vals, &val_symbols).unwrap_err();
-        assert!(matches!(err, Error::ValNonterminating { name } if name == "depth"));
+        let err = check_vals(&mod_symbols(), &vals, &val_symbols).unwrap_err();
+        assert!(matches!(
+            err.0.error,
+            ErrorKind::ValNonterminating { ref name } if name == "depth"
+        ));
+        assert_eq!(err.0.path, Some(PathBuf::from("main.mor")));
+        assert_eq!(err.0.span, Some((10, 25)));
     }
 
     #[test]
@@ -237,7 +391,7 @@ mod tests {
         )]);
         let val_symbols = IdVec::from_vec(vec![val_symbols("len")]);
 
-        check_vals(&vals, &val_symbols).unwrap();
+        check_vals(&mod_symbols(), &vals, &val_symbols).unwrap();
     }
 
     #[test]
@@ -255,10 +409,16 @@ mod tests {
                 )),
             ]),
         }]);
-        let custom_type_symbols = IdVec::from_vec(vec![type_symbols("Nested", 2)]);
+        let custom_type_symbols =
+            IdVec::from_vec(vec![type_symbols("Nested", &[(5, 14), (20, 41)])]);
 
-        let err = check_types(&custom_types, &custom_type_symbols).unwrap_err();
-        assert!(matches!(err, Error::TypeNonterminating { name } if name == "Nested"));
+        let err = check_types(&mod_symbols(), &custom_types, &custom_type_symbols).unwrap_err();
+        assert!(matches!(
+            err.0.error,
+            ErrorKind::TypeNonterminating { ref name } if name == "Nested"
+        ));
+        assert_eq!(err.0.path, Some(PathBuf::from("main.mor")));
+        assert_eq!(err.0.span, Some((20, 41)));
     }
 
     #[test]
@@ -288,10 +448,12 @@ mod tests {
                 ))]),
             },
         ]);
-        let custom_type_symbols =
-            IdVec::from_vec(vec![type_symbols("Pair", 1), type_symbols("Other", 1)]);
+        let custom_type_symbols = IdVec::from_vec(vec![
+            type_symbols("Pair", &[(0, 10)]),
+            type_symbols("Other", &[(15, 25)]),
+        ]);
 
-        check_types(&custom_types, &custom_type_symbols).unwrap();
+        check_types(&mod_symbols(), &custom_types, &custom_type_symbols).unwrap();
     }
 
     #[test]
@@ -311,7 +473,8 @@ mod tests {
                 )),
             ]),
         }]);
-        let custom_type_symbols = IdVec::from_vec(vec![type_symbols("Nested", 2)]);
+        let custom_type_symbols =
+            IdVec::from_vec(vec![type_symbols("Nested", &[(5, 14), (20, 41)])]);
 
         let vals = IdVec::from_vec(vec![val_def(
             1,
@@ -323,7 +486,7 @@ mod tests {
         let val_symbols = IdVec::from_vec(vec![val_symbols("depth")]);
 
         let program = typed::Program {
-            mod_symbols: IdVec::new(),
+            mod_symbols: mod_symbols(),
             custom_types,
             custom_type_symbols,
             profile_points: IdVec::new(),
@@ -333,6 +496,9 @@ mod tests {
         };
 
         let err = check_polymorphic_recursion(&program).unwrap_err();
-        assert!(matches!(err, Error::TypeNonterminating { name } if name == "Nested"));
+        assert!(matches!(
+            err.0.error,
+            ErrorKind::TypeNonterminating { ref name } if name == "Nested"
+        ));
     }
 }

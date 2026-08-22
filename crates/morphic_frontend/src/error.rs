@@ -34,7 +34,7 @@ impl Reportable for Error {
             TypeInferFailed(err) => err.report(dest, files),
             CheckExhaustiveFailed(err) => err.report(dest, files),
             CheckMainFailed(err) => writeln!(dest, "{}", err),
-            CheckPolymorphicRecursionFailed(err) => writeln!(dest, "{}", err),
+            CheckPolymorphicRecursionFailed(err) => err.report(dest, files),
             WriteIrFailed(err) => writeln!(
                 dest,
                 "Could not write intermediate representation artifacts: {}",
