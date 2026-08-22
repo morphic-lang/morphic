@@ -534,8 +534,9 @@ fn resolve_mod(
                             variant_symbols: IdVec::from_vec(
                                 variants
                                     .iter()
-                                    .map(|(_, variant_name, _)| res::VariantSymbols {
+                                    .map(|(_, variant_name, _, span)| res::VariantSymbols {
                                         variant_name: variant_name.clone(),
+                                        span: *span,
                                     })
                                     .collect(),
                             ),
@@ -551,7 +552,7 @@ fn resolve_mod(
                     .map_err(|()| ErrorKind::DuplicateTypeName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
 
-                    for (idx, (ctor_visibility, ctor_name, _)) in variants.iter().enumerate() {
+                    for (idx, (ctor_visibility, ctor_name, _, _)) in variants.iter().enumerate() {
                         insert_unique(
                             &mut mod_map.ctors,
                             ctor_name.clone(),
@@ -660,7 +661,7 @@ fn resolve_mod(
         let resolved_variants = IdVec::from_vec(
             variants
                 .iter()
-                .map(|(_, _, variant_type)| match variant_type {
+                .map(|(_, _, variant_type, _)| match variant_type {
                     None => Ok(None),
                     Some(variant_type) => Ok(Some(resolve_type(
                         &ctx.mods,

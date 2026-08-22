@@ -317,9 +317,6 @@ fn resolve_typedef(
     }
 }
 
-// TODO: Handle polymorphic recursion with a graceful error.  Currently, we enter an infinite loop
-// and consume all available memory.
-
 pub fn monomorphize(program: typed::Program) -> mono::Program {
     let mut val_insts = ValInstances::new();
     let mut type_insts = TypeInstances::new();

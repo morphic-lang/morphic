@@ -3,6 +3,7 @@
 mod annot_closures;
 mod check_exhaustive;
 mod check_main;
+mod check_polymorphic_recursion;
 mod check_purity;
 mod closure_specialize;
 mod lambda_lift;
@@ -55,6 +56,8 @@ pub fn compile_to_typed_ast(
     let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
     check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;
     check_main::check_main(&typed).map_err(Error::CheckMainFailed)?;
+    check_polymorphic_recursion::check_polymorphic_recursion(&typed)
+        .map_err(Error::CheckPolymorphicRecursionFailed)?;
 
     Ok(typed)
 }
