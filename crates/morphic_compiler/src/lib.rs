@@ -108,13 +108,19 @@ pub fn run(
     .map_err(ErrorKind::BackendError)?;
 
     match config.run_mode {
-        cfg::RunMode::Compile { valgrind } => {
-            Ok(
-                code_gen::run(config.stdio, lowered, &config.llvm_config, valgrind)
-                    .map_err(ErrorKind::BackendError)?,
-            )
-        }
-        cfg::RunMode::Interpret => Ok(interpreter::interpret(config.stdio, lowered)),
+        cfg::RunMode::Compile { valgrind } => Ok(code_gen::run(
+            config.stdio,
+            lowered,
+            &config.llvm_config,
+            config.float_bit_width,
+            valgrind,
+        )
+        .map_err(ErrorKind::BackendError)?),
+        cfg::RunMode::Interpret => Ok(interpreter::interpret(
+            config.stdio,
+            lowered,
+            config.float_bit_width,
+        )),
     }
 }
 
@@ -147,6 +153,7 @@ pub fn build(config: cfg::BuildConfig, files: &mut file_cache::FileCache) -> Res
                 &config.output_path,
                 config.progress,
                 &llvm_config,
+                config.float_bit_width,
             )
             .map_err(ErrorKind::BackendError)?;
 

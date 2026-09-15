@@ -11,6 +11,7 @@ use std::path::Path;
 pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: AsRef<[u8]>>(
     run_mode: cfg::RunMode,
     rc_strat: cfg::RcStrategy,
+    float_bit_width: cfg::FloatBitWidth,
     path: SrcPath,
     given_in: In,
     expected_out: Out,
@@ -22,6 +23,7 @@ pub fn run_sample<SrcPath: AsRef<Path>, In: AsRef<[u8]>, Out: AsRef<[u8]>, Err: 
         progress: progress_ui::ProgressMode::Hidden,
         purity_mode: cfg::PurityMode::Checked,
         defunc_mode: cfg::DefuncMode::Specialize,
+        float_bit_width,
         llvm_config: cfg::LlvmConfig {
             rc_strat,
             ..Default::default()
@@ -99,6 +101,7 @@ macro_rules! sample_interpret {
     (
         $name:ident $path:expr ;
         $( rc_strat = $rc_strat:expr ; )?
+        $( float_bit_width = $float_bit_width:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -109,12 +112,18 @@ macro_rules! sample_interpret {
             #[allow(unused_mut, unused_assignments)]
             let mut rc_strat = crate::cfg::RcStrategy::Default;
             #[allow(unused_mut, unused_assignments)]
+            let mut float_bit_width = crate::cfg::FloatBitWidth::default();
+            #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
             let mut status = crate::pseudoprocess::ExitStatus::Success;
 
             $(
                 rc_strat = $rc_strat;
+            )?
+
+            $(
+                float_bit_width = $float_bit_width;
             )?
 
             $(
@@ -128,6 +137,7 @@ macro_rules! sample_interpret {
             crate::test::run_sample::run_sample(
                 morphic_common::config::RunMode::Interpret,
                 rc_strat,
+                float_bit_width,
                 $path,
                 $stdin,
                 $stdout,
@@ -142,6 +152,7 @@ macro_rules! sample_compile {
     (
         $name:ident $path:expr ;
         $( rc_strat = $rc_strat:expr ; )?
+        $( float_bit_width = $float_bit_width:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -153,12 +164,18 @@ macro_rules! sample_compile {
             #[allow(unused_mut, unused_assignments)]
             let mut rc_strat = crate::cfg::RcStrategy::Default;
             #[allow(unused_mut, unused_assignments)]
+            let mut float_bit_width = crate::cfg::FloatBitWidth::default();
+            #[allow(unused_mut, unused_assignments)]
             let mut stderr: String = "".into();
             #[allow(unused_mut, unused_assignments)]
             let mut status = crate::pseudoprocess::ExitStatus::Success;
 
             $(
                 rc_strat = $rc_strat;
+            )?
+
+            $(
+                float_bit_width = $float_bit_width;
             )?
 
             $(
@@ -179,6 +196,7 @@ macro_rules! sample_compile {
             crate::test::run_sample::run_sample(
                 morphic_common::config::RunMode::Compile { valgrind: Some(valgrind) },
                 rc_strat,
+                float_bit_width,
                 $path,
                 $stdin,
                 $stdout,
@@ -193,6 +211,7 @@ macro_rules! sample_rc_strat {
     (
         $name:ident $path:expr ;
         $( rc_strat = $rc_strat:expr ; )?
+        $( float_bit_width = $float_bit_width:expr ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
         $( stderr = $stderr:expr; )?
@@ -202,6 +221,7 @@ macro_rules! sample_rc_strat {
         sample_interpret! {
             $name $path ;
             $( rc_strat = $rc_strat ; )?
+            $( float_bit_width = $float_bit_width ; )?
             stdin = $stdin ;
             stdout = $stdout ;
             $( stderr = $stderr ; )?
@@ -211,6 +231,7 @@ macro_rules! sample_rc_strat {
         sample_compile! {
             $name $path ;
             $( rc_strat = $rc_strat ; )?
+            $( float_bit_width = $float_bit_width ; )?
             stdin = $stdin ;
             stdout = $stdout ;
             $( stderr = $stderr ; )?
@@ -222,6 +243,7 @@ macro_rules! sample_rc_strat {
     (
         $name:ident $path:expr ;
         $( rc_strat = $rc_strat:expr ; )?
+        $( float_bit_width = $float_bit_width:expr ; )?
         compile_only = true ;
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
@@ -232,6 +254,7 @@ macro_rules! sample_rc_strat {
         sample_compile! {
             $name $path ;
             $( rc_strat = $rc_strat ; )?
+            $( float_bit_width = $float_bit_width ; )?
             stdin = $stdin ;
             stdout = $stdout ;
             $( stderr = $stderr ; )?
@@ -244,6 +267,7 @@ macro_rules! sample_rc_strat {
 macro_rules! sample {
     (
         $name:ident $path:expr ;
+        $( float_bit_width = $float_bit_width:expr ; )?
         $( compile_only = $compile_only:tt ; )?
         stdin = $stdin:expr ;
         stdout = $stdout:expr ;
@@ -261,6 +285,7 @@ macro_rules! sample {
                 sample_rc_strat! {
                     $name $path ;
                     rc_strat = crate::cfg::RcStrategy::Default;
+                    $( float_bit_width = $float_bit_width ; )?
                     $( compile_only = $compile_only ; )?
                     stdin = $stdin ;
                     stdout = $stdout ;
@@ -276,6 +301,7 @@ macro_rules! sample {
                 sample_rc_strat! {
                     $name $path ;
                     rc_strat = crate::cfg::RcStrategy::Perceus;
+                    $( float_bit_width = $float_bit_width ; )?
                     $( compile_only = $compile_only ; )?
                     stdin = $stdin ;
                     stdout = $stdout ;

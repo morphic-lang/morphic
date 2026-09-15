@@ -38,6 +38,17 @@ sample! { arith "../../samples/arith.mor";
     stdout = "Completed all tests\n";
 }
 
+sample! { float_bit_width_default "../../samples/float_bit_width.mor";
+    stdin = "";
+    stdout = "64\n";
+}
+
+sample! { float_bit_width_32 "../../samples/float_bit_width.mor";
+    float_bit_width = crate::cfg::FloatBitWidth::Bits32;
+    stdin = "";
+    stdout = "32\n";
+}
+
 sample! { bool_ops "../../samples/bool_ops.mor";
     stdin = "";
     stdout = lines! [

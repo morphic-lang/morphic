@@ -7,6 +7,7 @@ use crate::data::tail_rec_ast as tail;
 use crate::pretty_print::utils::{FuncRenderer, TailFuncRenderer};
 use id_collections::IdVec;
 use im_rc::Vector;
+use morphic_common::config::FloatBitWidth;
 use morphic_common::pseudoprocess::{spawn_thread, Child, ExitStatus, Stdio};
 use morphic_common::util::iter::IterExt;
 use stacker;
@@ -720,6 +721,20 @@ fn unwrap_int(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<
     }
 }
 
+/// Rounds a float literal or arithmetic result to the width the program is being run at.
+///
+/// The interpreter holds every `Float` in an `f64` whatever the width, so at 32 bits it has to
+/// round after each operation to stay in step with the LLVM backend, which instead emits genuine
+/// `f32` types, literals and instructions. `f64` has more than twice the significand of `f32`, so
+/// for a single `+`, `-`, `*` or `/` on values that are already `f32`-representable, computing in
+/// `f64` and rounding once here gives exactly the `f32` result.
+fn round_float(float_bit_width: FloatBitWidth, val: f64) -> f64 {
+    match float_bit_width {
+        FloatBitWidth::Bits32 => val as f32 as f64,
+        FloatBitWidth::Bits64 => val,
+    }
+}
+
 fn unwrap_float(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> f64 {
     let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap float"));
     if let Value::Num(NumValue::Float(val)) = kind {
@@ -904,6 +919,7 @@ fn interpret_call(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
     program: &Program,
+    float_bit_width: FloatBitWidth,
     heap: &mut Heap,
     stacktrace: StackTrace,
 ) -> Result<HeapId, ExitStatus> {
@@ -927,6 +943,7 @@ fn interpret_call(
         stdout,
         stderr,
         program,
+        float_bit_width,
         &Locals::new(arg_id),
         heap,
         stacktrace.add_frame(format![
@@ -957,6 +974,7 @@ fn interpret_call(
             stdout,
             stderr,
             program,
+            float_bit_width,
             &Locals::new(tail_arg),
             heap,
             stacktrace.add_frame(format![
@@ -1012,6 +1030,7 @@ fn interpret_expr(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
     program: &Program,
+    float_bit_width: FloatBitWidth,
     locals: &Locals,
     heap: &mut Heap,
     stacktrace: StackTrace,
@@ -1028,6 +1047,7 @@ fn interpret_expr(
                 stdout,
                 stderr,
                 program,
+                float_bit_width,
                 heap,
                 stacktrace,
             )?,
@@ -1051,6 +1071,7 @@ fn interpret_expr(
                         stdout,
                         stderr,
                         program,
+                        float_bit_width,
                         locals,
                         heap,
                         stacktrace.add_frame("going into if branch"),
@@ -1063,6 +1084,7 @@ fn interpret_expr(
                         stdout,
                         stderr,
                         program,
+                        float_bit_width,
                         locals,
                         heap,
                         stacktrace.add_frame("going into else branch"),
@@ -1081,6 +1103,7 @@ fn interpret_expr(
                         stdout,
                         stderr,
                         program,
+                        float_bit_width,
                         &new_locals,
                         heap,
                         stacktrace
@@ -1248,7 +1271,10 @@ fn interpret_expr(
             Expr::Intrinsic(Intrinsic::AddFloat, local_id) => {
                 let (lhs, rhs) =
                     unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Float(lhs + rhs)))
+                heap.add(Value::Num(NumValue::Float(round_float(
+                    float_bit_width,
+                    lhs + rhs,
+                ))))
             }
 
             Expr::Intrinsic(Intrinsic::SubByte, local_id) => {
@@ -1266,7 +1292,10 @@ fn interpret_expr(
             Expr::Intrinsic(Intrinsic::SubFloat, local_id) => {
                 let (lhs, rhs) =
                     unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Float(lhs - rhs)))
+                heap.add(Value::Num(NumValue::Float(round_float(
+                    float_bit_width,
+                    lhs - rhs,
+                ))))
             }
 
             Expr::Intrinsic(Intrinsic::MulByte, local_id) => {
@@ -1284,7 +1313,10 @@ fn interpret_expr(
             Expr::Intrinsic(Intrinsic::MulFloat, local_id) => {
                 let (lhs, rhs) =
                     unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Float(lhs * rhs)))
+                heap.add(Value::Num(NumValue::Float(round_float(
+                    float_bit_width,
+                    lhs * rhs,
+                ))))
             }
 
             Expr::Intrinsic(Intrinsic::DivByte, local_id) => {
@@ -1315,7 +1347,10 @@ fn interpret_expr(
                 let (numerator, divisor) =
                     unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
 
-                heap.add(Value::Num(NumValue::Float(numerator / divisor)))
+                heap.add(Value::Num(NumValue::Float(round_float(
+                    float_bit_width,
+                    numerator / divisor,
+                ))))
             }
 
             Expr::Intrinsic(Intrinsic::LtByte, local_id) => {
@@ -1417,6 +1452,8 @@ fn interpret_expr(
                 -unwrap_int(heap, locals[local_id], stacktrace.add_frame("arith")),
             ))),
 
+            // Negation only flips a sign bit, so it needs no rounding: its argument is
+            // already at the configured width.
             Expr::Intrinsic(Intrinsic::NegFloat, local_id) => {
                 heap.add(Value::Num(NumValue::Float(-unwrap_float(
                     heap,
@@ -1838,12 +1875,15 @@ fn interpret_expr(
 
             Expr::IntLit(val) => heap.add(Value::Num(NumValue::Int(Wrapping(*val)))),
 
-            Expr::FloatLit(val) => heap.add(Value::Num(NumValue::Float(*val))),
+            Expr::FloatLit(val) => heap.add(Value::Num(NumValue::Float(round_float(
+                float_bit_width,
+                *val,
+            )))),
         })
     })
 }
 
-pub fn interpret(stdio: Stdio, program: Program) -> Child {
+pub fn interpret(stdio: Stdio, program: Program, float_bit_width: FloatBitWidth) -> Child {
     spawn_thread(stdio, move |stdin, stdout, stderr| {
         let func_renderer = TailFuncRenderer::from_symbols(&program.func_symbols);
         let mut heap = Heap::new(&program);
@@ -1855,6 +1895,7 @@ pub fn interpret(stdio: Stdio, program: Program) -> Child {
             stdout,
             stderr,
             &program,
+            float_bit_width,
             &mut heap,
             StackTrace::new(),
         ) {
@@ -1871,4 +1912,22 @@ pub fn interpret(stdio: Stdio, program: Program) -> Child {
             Err(status) => Ok(status),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_float_matches_its_width() {
+        // 0.1 is representable in neither width, but only 32 bits is coarse enough to lose the
+        // difference against the `f64` literal.
+        assert_eq!(round_float(FloatBitWidth::Bits64, 0.1), 0.1);
+        assert_ne!(round_float(FloatBitWidth::Bits32, 0.1), 0.1);
+        assert_eq!(round_float(FloatBitWidth::Bits32, 0.1), 0.1f32 as f64);
+
+        // 0.5 is exact in both.
+        assert_eq!(round_float(FloatBitWidth::Bits32, 0.5), 0.5);
+        assert_eq!(round_float(FloatBitWidth::Bits64, 0.5), 0.5);
+    }
 }
