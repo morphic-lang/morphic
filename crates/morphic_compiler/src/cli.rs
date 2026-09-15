@@ -7,6 +7,7 @@ use morphic_common::pseudoprocess::{Stdio, ValgrindConfig};
 use std::path::{Path, PathBuf};
 
 const LLVM_BACKEND_OPTS: &[&str] = &[
+    "float-bit-width",
     "rc-strat",
     "gc-kind",
     "array-kind",
@@ -32,6 +33,13 @@ impl RegisterCommonArgs for Command {
                 .help("Set whether or not to specialize during defunctionalization.")
                 .value_parser(EnumValueParser::<cfg::DefuncMode>::new())
                 .default_value(cfg::DefuncMode::default_as_str()),
+        )
+        .arg(
+            Arg::new("float-bit-width")
+                .long("float-bit-width")
+                .help("Set the bit width of the 'Float' type.")
+                .value_parser(EnumValueParser::<cfg::FloatBitWidth>::new())
+                .default_value(cfg::FloatBitWidth::default_as_str()),
         )
         .arg(
             Arg::new("rc-strat")
@@ -83,6 +91,7 @@ struct CommonArgs {
     purity_mode: cfg::PurityMode,
     llvm_opt_level: OptimizationLevel,
     defunc_mode: cfg::DefuncMode,
+    float_bit_width: cfg::FloatBitWidth,
     rc_strat: cfg::RcStrategy,
     gc_kind: cfg::GcKind,
     array_kind: cfg::ArrayKind,
@@ -105,6 +114,9 @@ fn parse_common_args(matches: &ArgMatches) -> CommonArgs {
     };
 
     let defunc_mode = *matches.get_one::<cfg::DefuncMode>("defunc-mode").unwrap();
+    let float_bit_width = *matches
+        .get_one::<cfg::FloatBitWidth>("float-bit-width")
+        .unwrap();
     let rc_strat = *matches.get_one::<cfg::RcStrategy>("rc-strat").unwrap();
     let gc_kind = *matches.get_one::<cfg::GcKind>("gc-kind").unwrap();
     let array_kind = *matches.get_one::<cfg::ArrayKind>("array-kind").unwrap();
@@ -119,6 +131,7 @@ fn parse_common_args(matches: &ArgMatches) -> CommonArgs {
         purity_mode,
         llvm_opt_level,
         defunc_mode,
+        float_bit_width,
         rc_strat,
         gc_kind,
         array_kind,
@@ -295,6 +308,7 @@ impl Config {
                 purity_mode,
                 llvm_opt_level,
                 defunc_mode,
+                float_bit_width,
                 rc_strat,
                 gc_kind,
                 array_kind,
@@ -314,6 +328,7 @@ impl Config {
                 progress,
                 purity_mode,
                 defunc_mode,
+                float_bit_width,
                 llvm_config,
                 run_mode,
                 stdio: Stdio::Inherit,
@@ -355,6 +370,7 @@ impl Config {
                 purity_mode,
                 llvm_opt_level,
                 defunc_mode,
+                float_bit_width,
                 rc_strat,
                 gc_kind,
                 array_kind,
@@ -382,6 +398,7 @@ impl Config {
                     progress,
                     purity_mode,
                     defunc_mode,
+                    float_bit_width,
                     backend_opts: cfg::BackendOptions::Ml(cfg::MlConfig {
                         variant: cfg::MlVariant::Sml,
                         stage,
@@ -403,6 +420,7 @@ impl Config {
                     progress,
                     purity_mode,
                     defunc_mode,
+                    float_bit_width,
                     backend_opts: cfg::BackendOptions::Ml(cfg::MlConfig {
                         variant: cfg::MlVariant::OCaml,
                         stage,
@@ -434,6 +452,7 @@ impl Config {
                     progress,
                     purity_mode,
                     defunc_mode,
+                    float_bit_width,
                     backend_opts,
                     profile_syms,
                     profile_mode,

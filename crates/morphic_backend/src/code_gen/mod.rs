@@ -30,7 +30,7 @@ use crate::error::Error as CrateError;
 use crate::pretty_print::utils::TailFuncRenderer;
 use id_collections::{IdMap, IdVec};
 use id_graph_sccs::{SccKind, Sccs};
-use morphic_common::config::ArrayKind;
+use morphic_common::config::{ArrayKind, FloatBitWidth};
 use morphic_common::data::first_order_ast as first_ord;
 use morphic_common::data::intrinsics::Intrinsic;
 use morphic_common::data::low_ast as low;
@@ -87,6 +87,7 @@ enum IsZeroSized {
 #[derive(Clone)]
 struct Globals<T: Context> {
     array_kind: ArrayKind,
+    float_bit_width: FloatBitWidth,
     context: T,
     custom_raw_types: IdVec<low::CustomTypeId, low::Type>,
     custom_sizes: IdVec<low::CustomTypeId, IsZeroSized>,
@@ -391,7 +392,10 @@ fn low_type_in_context<T: Context>(globals: &Globals<T>, type_: &low::Type) -> T
         low::Type::Bool => globals.context.i1_t(),
         low::Type::Num(first_ord::NumType::Byte) => globals.context.i8_t(),
         low::Type::Num(first_ord::NumType::Int) => globals.context.i64_t(),
-        low::Type::Num(first_ord::NumType::Float) => globals.context.f64_t(),
+        low::Type::Num(first_ord::NumType::Float) => match globals.float_bit_width {
+            FloatBitWidth::Bits32 => globals.context.f32_t(),
+            FloatBitWidth::Bits64 => globals.context.f64_t(),
+        },
         low::Type::Tuple(item_types) => globals.context.struct_t(
             &item_types
                 .iter()
@@ -852,7 +856,10 @@ fn gen_expr<T: Context>(
         E::BoolLit(val) => s.i1(*val),
         E::ByteLit(val) => s.i8(*val),
         E::IntLit(val) => s.i64(*val as u64),
-        E::FloatLit(val) => s.f64(*val),
+        E::FloatLit(val) => match globals.float_bit_width {
+            FloatBitWidth::Bits32 => s.f32(*val as f32),
+            FloatBitWidth::Bits64 => s.f64(*val),
+        },
     }
 }
 
@@ -1076,6 +1083,7 @@ fn find_zero_sized(
 
 pub fn gen_program<T: Context>(
     array_kind: ArrayKind,
+    float_bit_width: FloatBitWidth,
     program: low::Program,
     context: T,
     func_progress: impl ProgressLogger,
@@ -1089,6 +1097,7 @@ pub fn gen_program<T: Context>(
 
     let globals = Globals {
         array_kind,
+        float_bit_width,
         context,
         custom_schemes: program.schemes,
         custom_sizes,
@@ -1174,6 +1183,7 @@ pub fn run(
     stdio: Stdio,
     program: low::Program,
     config: &cfg::LlvmConfig,
+    float_bit_width: FloatBitWidth,
     valgrind: Option<ValgrindConfig>,
 ) -> std::result::Result<Child, CrateError> {
     let target = cfg::TargetConfig::Native;
@@ -1194,6 +1204,7 @@ pub fn run(
     compile_to_executable(
         config.gc_kind,
         config.array_kind,
+        float_bit_width,
         program,
         target,
         opt_level,
@@ -1220,11 +1231,13 @@ pub fn build(
     output_path: &Path,
     progress: progress_ui::ProgressMode,
     config: &cfg::LlvmConfig,
+    float_bit_width: FloatBitWidth,
 ) -> std::result::Result<(), CrateError> {
     if let Some(artifact_dir) = artifact_dir {
         compile_to_executable(
             config.gc_kind,
             config.array_kind,
+            float_bit_width,
             program,
             config.target,
             config.opt_level,
@@ -1248,6 +1261,7 @@ pub fn build(
         compile_to_executable(
             config.gc_kind,
             config.array_kind,
+            float_bit_width,
             program,
             config.target,
             config.opt_level,

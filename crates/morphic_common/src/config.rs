@@ -216,6 +216,37 @@ impl ValueEnum for GcKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FloatBitWidth {
+    Bits32, // IEEE 32-bit
+    Bits64, // IEEE 64-bit
+}
+
+impl Default for FloatBitWidth {
+    fn default() -> Self {
+        Self::Bits64
+    }
+}
+
+impl FloatBitWidth {
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            Self::Bits32 => "32",
+            Self::Bits64 => "64",
+        }
+    }
+}
+
+impl ValueEnum for FloatBitWidth {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Bits32, Self::Bits64]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(PossibleValue::new(self.to_str()))
+    }
+}
+
 pub fn default_llvm_opt_level() -> inkwell::OptimizationLevel {
     inkwell::OptimizationLevel::Aggressive
 }
@@ -338,6 +369,7 @@ pub struct RunConfig {
     pub progress: progress_ui::ProgressMode,
     pub purity_mode: PurityMode,
     pub defunc_mode: DefuncMode,
+    pub float_bit_width: FloatBitWidth,
     pub llvm_config: LlvmConfig,
 
     pub run_mode: RunMode,
@@ -356,10 +388,22 @@ pub struct BuildConfig {
     pub progress: progress_ui::ProgressMode,
     pub purity_mode: PurityMode,
     pub defunc_mode: DefuncMode,
+    pub float_bit_width: FloatBitWidth,
     pub backend_opts: BackendOptions,
 
     pub profile_syms: Vec<SymbolName>,
     pub profile_mode: ProfileMode,
     pub output_path: PathBuf,
     pub artifact_dir: Option<ArtifactDir>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn float_bit_width_defaults_to_64_bits() {
+        assert_eq!(FloatBitWidth::default(), FloatBitWidth::Bits64);
+        assert_eq!(FloatBitWidth::default_as_str(), "64");
+    }
 }

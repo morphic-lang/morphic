@@ -1,0 +1,8 @@
+// `0.1 +. 0.2 =. 0.3` is false in 64-bit arithmetic, but true once every step is rounded to
+// 32 bits, so this is a direct probe of the width chosen by '--float-bit-width'.
+proc main(): () =
+  if 0.1 +. 0.2 =. 0.3 {
+    do output("32\n")
+  } else {
+    do output("64\n")
+  }

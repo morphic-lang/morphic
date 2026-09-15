@@ -14,7 +14,7 @@ use inkwell::types::{BasicType, BasicTypeEnum, IntType};
 use inkwell::values::{self, BasicValue, InstructionOpcode};
 use inkwell::OptimizationLevel;
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
-use morphic_common::config::{self as cfg, ArrayKind, GcKind};
+use morphic_common::config::{self as cfg, ArrayKind, FloatBitWidth, GcKind};
 use morphic_common::data::low_ast as low;
 use morphic_common::progress_ui;
 use morphic_common::util::progress_logger::{ProgressLogger, ProgressSession};
@@ -2296,6 +2296,7 @@ fn analyze_alloca_sizes<'a>(target: &TargetData, module: &Module<'a>) -> AllocaS
 pub fn compile_to_executable(
     gc: GcKind,
     array_kind: ArrayKind,
+    float_bit_width: FloatBitWidth,
     program: low::Program,
     target: cfg::TargetConfig,
     opt_level: OptimizationLevel,
@@ -2329,6 +2330,7 @@ pub fn compile_to_executable(
 
     gen_program(
         array_kind,
+        float_bit_width,
         program,
         context,
         progress_ui::bar(progress, "gen_program: functions"),
