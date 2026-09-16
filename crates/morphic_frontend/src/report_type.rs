@@ -16,6 +16,14 @@ pub enum Type {
     RecursiveOccurrence,
 }
 
+/// Rendering of a type that inference has not determined.  Error messages should refer to this
+/// constant rather than repeating the literal. `render_to` might need to insert parentheses if
+/// this symbol is changed to something that doesn't look atomic, like "...".
+pub const UNKNOWN_TYPE: &str = "?";
+
+/// Rendering of a type that would have to contain itself (an "occurs check" failure).
+pub const RECURSIVE_TYPE: &str = "...";
+
 pub fn is_concrete(type_: &Type) -> bool {
     match type_ {
         Type::Var(_) => true,
@@ -259,13 +267,17 @@ impl<'a> TypeRenderer<'a> {
                 }
             }
 
-            Type::Unknown | Type::RecursiveOccurrence => {
+            Type::Unknown => dest.push_str(UNKNOWN_TYPE),
+
+            Type::RecursiveOccurrence => {
                 let parenthesize = prec > Precedence::Root;
 
                 if parenthesize {
-                    dest.push_str("(...)");
+                    dest.push('(');
+                    dest.push_str(RECURSIVE_TYPE);
+                    dest.push(')');
                 } else {
-                    dest.push_str("...");
+                    dest.push_str(RECURSIVE_TYPE);
                 }
             }
         }

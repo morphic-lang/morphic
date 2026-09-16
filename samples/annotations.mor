@@ -1,0 +1,19 @@
+id(x: a): a = x
+
+twice(f: a -> a, x: a): a =
+  // Local annotations may mention the type parameters of the enclosing signature.
+  let g: a -> a = \y -> f(f(y)) in
+  g(x)
+
+proc main(): () =
+  let n: Int = 1 in
+  let (a: Int, b: Float) = (n, 2.0) in
+  let inc = \(x: Int) -> x + 1 in
+  // Without the annotation, `id` would be ambiguous here because `const` ignores its argument.
+  let f: Int -> Int = id in
+  let _: () = () in
+  if twice(inc, f(a)) = 3 && b =. 2.0 {
+    do output("ok\n")
+  } else {
+    do output("wrong\n")
+  }

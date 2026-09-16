@@ -11,7 +11,8 @@ incr(x: Int) : Int =
 proc main(): () =
   let incr5 = iterate(incr, 5) in
   let five = const(incr5(0))([1, 2, 3]) in
-  let five2 = const(incr5(0))(id) in
+  let id_int: Int -> Int = id in
+  let five2 = const(incr5(0))(id_int) in
   do writeln("The following should both be 5:") then
   do writeln(String.int_to_string(five)) then
   do writeln(String.int_to_string(five2)) then

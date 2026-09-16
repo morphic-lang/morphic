@@ -37,6 +37,7 @@ pub enum ErrorKind {
     DuplicateCtorName(String),
     DuplicateVarName(String),
     TypeNotFound(String),
+    TypeParamNotFound(String),
     VarNotFound(String),
     CtorNotFound(String),
     ModNotFound(String),
@@ -179,6 +180,19 @@ impl Reportable for Error {
                 "Type Not Found",
                 format!(
                     "There is no type named '{}' available in the current scope.",
+                    name
+                ),
+            ),
+            TypeParamNotFound(name) => (
+                "Type Parameter Not Found",
+                format!(
+                    lines![
+                        "There is no type parameter named '{}' in scope.",
+                        "",
+                        "Type variables in a type annotation must come from the signature \
+                         of the enclosing definition or the parameter list of the enclosing \
+                         type declaration.",
+                    ],
                     name
                 ),
             ),
@@ -682,11 +696,17 @@ fn resolve_mod(
     }
 
     for (val_name, val_id, type_, body) in pending_val_defs {
-        let (res_scheme, type_param_names) =
+        let (res_scheme, type_param_names, scheme_params) =
             resolve_scheme(&ctx.mods, &mod_map, &type_).map_err(locate_path(file_path))?;
 
-        let res_body = resolve_expr(&ctx.mods, &mod_map, &mut LocalContext::new(), &body)
-            .map_err(locate_path(file_path))?;
+        let res_body = resolve_expr(
+            &ctx.mods,
+            &mod_map,
+            &scheme_params,
+            &mut LocalContext::new(),
+            &body,
+        )
+        .map_err(locate_path(file_path))?;
 
         debug_assert!(ctx.vals[val_id].is_none());
         ctx.vals[val_id] = Some(res::ValDef {
@@ -940,7 +960,7 @@ fn resolve_type(
             if let Some(&id) = param_map.get(param_name) {
                 Ok(res::Type::Var(id))
             } else {
-                Err(ErrorKind::TypeNotFound(param_name.0.clone()).into())
+                Err(ErrorKind::TypeParamNotFound(param_name.0.clone()).into())
             }
         }
 
@@ -1008,6 +1028,7 @@ fn args_to_expr(args_lo: usize, args_hi: usize, args: Vec<res::Expr>) -> res::Ex
 fn resolve_expr(
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
+    param_map: &BTreeMap<raw::TypeParam, res::TypeParamId>,
     local_ctx: &mut LocalContext,
     expr: &raw::Expr,
 ) -> Result<res::Expr, RawError> {
@@ -1040,18 +1061,19 @@ fn resolve_expr(
         raw::Expr::Tuple(items) => Ok(res::Expr::Tuple(
             items
                 .iter()
-                .map(|item| resolve_expr(global_mods, local_mod_map, local_ctx, item))
+                .map(|item| resolve_expr(global_mods, local_mod_map, param_map, local_ctx, item))
                 .collect::<Result<_, _>>()?,
         )),
 
         raw::Expr::Lam(purity, pattern, body) => local_ctx.new_scope(|local_ctx| {
             let mut vars = Vec::new();
-            let res_pattern = resolve_pattern(global_mods, local_mod_map, pattern, &mut vars)?;
+            let res_pattern =
+                resolve_pattern(global_mods, local_mod_map, param_map, pattern, &mut vars)?;
             for var in vars {
                 local_ctx.insert(var.clone())?;
             }
 
-            let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, body)?;
+            let res_body = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, body)?;
             Ok(res::Expr::Lam(
                 *purity,
                 res_pattern,
@@ -1061,12 +1083,12 @@ fn resolve_expr(
         }),
 
         raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
-            let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, &*func)?;
+            let res_func = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, &*func)?;
             let res_arg = args_to_expr(
                 *args_lo,
                 *args_hi,
                 args.iter()
-                    .map(|arg| resolve_expr(global_mods, local_mod_map, local_ctx, arg))
+                    .map(|arg| resolve_expr(global_mods, local_mod_map, param_map, local_ctx, arg))
                     .collect::<Result<_, _>>()?,
             );
             Ok(res::Expr::App(
@@ -1077,7 +1099,7 @@ fn resolve_expr(
         }
 
         raw::Expr::OpApp(op, arg) => {
-            let res_arg = resolve_expr(global_mods, local_mod_map, local_ctx, arg)?;
+            let res_arg = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, arg)?;
             Ok(res::Expr::App(
                 Purity::Pure,
                 Box::new(res::Expr::Global(res::GlobalId::Intrinsic(*op))),
@@ -1086,20 +1108,27 @@ fn resolve_expr(
         }
 
         raw::Expr::Match(discrim, cases) => {
-            let res_discrim = resolve_expr(global_mods, local_mod_map, local_ctx, discrim)?;
+            let res_discrim =
+                resolve_expr(global_mods, local_mod_map, param_map, local_ctx, discrim)?;
 
             let res_cases = cases
                 .iter()
                 .map(|(pattern, body)| {
                     local_ctx.new_scope(|local_ctx| {
                         let mut vars = Vec::new();
-                        let res_pattern =
-                            resolve_pattern(global_mods, local_mod_map, pattern, &mut vars)?;
+                        let res_pattern = resolve_pattern(
+                            global_mods,
+                            local_mod_map,
+                            param_map,
+                            pattern,
+                            &mut vars,
+                        )?;
                         for var in vars {
                             local_ctx.insert(var.clone())?;
                         }
 
-                        let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, body)?;
+                        let res_body =
+                            resolve_expr(global_mods, local_mod_map, param_map, local_ctx, body)?;
                         Ok((res_pattern, res_body))
                     })
                 })
@@ -1113,11 +1142,17 @@ fn resolve_expr(
             let mut new_bindings = Vec::new();
 
             for (pattern, expr) in bindings {
-                let res_expr = resolve_expr(global_mods, local_mod_map, local_ctx, expr)?;
+                let res_expr =
+                    resolve_expr(global_mods, local_mod_map, param_map, local_ctx, expr)?;
 
                 let mut current_vars = Vec::new();
-                let res_pattern =
-                    resolve_pattern(global_mods, local_mod_map, pattern, &mut current_vars)?;
+                let res_pattern = resolve_pattern(
+                    global_mods,
+                    local_mod_map,
+                    param_map,
+                    pattern,
+                    &mut current_vars,
+                )?;
                 vars.extend(current_vars.clone());
 
                 for var in &current_vars {
@@ -1126,14 +1161,14 @@ fn resolve_expr(
                 new_bindings.push((res_pattern, res_expr));
             }
 
-            let res_body = resolve_expr(global_mods, local_mod_map, local_ctx, &*body)?;
+            let res_body = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, &*body)?;
 
             Ok(res::Expr::LetMany(new_bindings, Box::new(res_body)))
         }),
 
         raw::Expr::And(left, right) => {
-            let res_left = resolve_expr(global_mods, local_mod_map, local_ctx, left)?;
-            let res_right = resolve_expr(global_mods, local_mod_map, local_ctx, right)?;
+            let res_left = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, left)?;
+            let res_right = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, right)?;
 
             let false_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(0), None);
             let false_expr =
@@ -1147,8 +1182,8 @@ fn resolve_expr(
         }
 
         raw::Expr::Or(left, right) => {
-            let res_left = resolve_expr(global_mods, local_mod_map, local_ctx, left)?;
-            let res_right = resolve_expr(global_mods, local_mod_map, local_ctx, right)?;
+            let res_left = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, left)?;
+            let res_right = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, right)?;
 
             let true_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(1), None);
             let true_expr =
@@ -1167,13 +1202,16 @@ fn resolve_expr(
             let (app, respan_app) = unspan(&**left);
             match app {
                 raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
-                    let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, func)?;
+                    let res_func =
+                        resolve_expr(global_mods, local_mod_map, param_map, local_ctx, func)?;
                     let res_arg = args_to_expr(
                         *args_lo,
                         *args_hi,
                         args.iter()
                             .chain(iter::once(&**right))
-                            .map(|arg| resolve_expr(global_mods, local_mod_map, local_ctx, arg))
+                            .map(|arg| {
+                                resolve_expr(global_mods, local_mod_map, param_map, local_ctx, arg)
+                            })
                             .collect::<Result<_, _>>()?,
                     );
                     Ok(respan_app(res::Expr::App(
@@ -1194,19 +1232,26 @@ fn resolve_expr(
                 raw::Expr::App(purity, func, (args_lo, args_hi, args)) => {
                     local_ctx.new_scope(|local_ctx| {
                         let (left_unspanned, respan_left) = unspan(&**left);
-                        let res_left =
-                            resolve_expr(global_mods, local_mod_map, local_ctx, left_unspanned)?;
+                        let res_left = resolve_expr(
+                            global_mods,
+                            local_mod_map,
+                            param_map,
+                            local_ctx,
+                            left_unspanned,
+                        )?;
 
                         let anon_var = res::Expr::Local(local_ctx.insert_anon());
                         let binding = vec![(res::Pattern::Var, respan_left(res_left))];
 
-                        let res_func = resolve_expr(global_mods, local_mod_map, local_ctx, func)?;
+                        let res_func =
+                            resolve_expr(global_mods, local_mod_map, param_map, local_ctx, func)?;
 
                         let mut res_args = vec![respan_left(anon_var)];
                         for arg in args {
                             res_args.push(resolve_expr(
                                 global_mods,
                                 local_mod_map,
+                                param_map,
                                 local_ctx,
                                 arg,
                             )?);
@@ -1231,7 +1276,7 @@ fn resolve_expr(
         raw::Expr::ArrayLit(items) => Ok(res::Expr::ArrayLit(
             items
                 .iter()
-                .map(|item| resolve_expr(global_mods, local_mod_map, local_ctx, item))
+                .map(|item| resolve_expr(global_mods, local_mod_map, param_map, local_ctx, item))
                 .collect::<Result<_, _>>()?,
         )),
 
@@ -1253,7 +1298,7 @@ fn resolve_expr(
             *lo,
             *hi,
             Box::new(
-                resolve_expr(global_mods, local_mod_map, local_ctx, body)
+                resolve_expr(global_mods, local_mod_map, param_map, local_ctx, body)
                     .map_err(locate_span(*lo, *hi))?,
             ),
         )),
@@ -1263,6 +1308,7 @@ fn resolve_expr(
 fn resolve_pattern(
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
+    param_map: &BTreeMap<raw::TypeParam, res::TypeParamId>,
     pattern: &raw::Pattern,
     vars: &mut Vec<raw::ValName>,
 ) -> Result<res::Pattern, RawError> {
@@ -1277,7 +1323,7 @@ fn resolve_pattern(
         raw::Pattern::Tuple(items) => Ok(res::Pattern::Tuple(
             items
                 .iter()
-                .map(|item| resolve_pattern(global_mods, local_mod_map, item, vars))
+                .map(|item| resolve_pattern(global_mods, local_mod_map, param_map, item, vars))
                 .collect::<Result<_, _>>()?,
         )),
 
@@ -1289,6 +1335,7 @@ fn resolve_pattern(
                 Some(Box::new(resolve_pattern(
                     global_mods,
                     local_mod_map,
+                    param_map,
                     content,
                     vars,
                 )?))
@@ -1298,6 +1345,17 @@ fn resolve_pattern(
 
             Ok(res::Pattern::Ctor(type_, variant, res_content))
         }
+
+        raw::Pattern::Annot(content, type_) => Ok(res::Pattern::Annot(
+            Box::new(resolve_pattern(
+                global_mods,
+                local_mod_map,
+                param_map,
+                content,
+                vars,
+            )?),
+            resolve_type(global_mods, local_mod_map, param_map, type_)?,
+        )),
 
         &raw::Pattern::ByteConst(val) => Ok(res::Pattern::ByteConst(val)),
 
@@ -1309,7 +1367,7 @@ fn resolve_pattern(
             *lo,
             *hi,
             Box::new(
-                resolve_pattern(global_mods, local_mod_map, content, vars)
+                resolve_pattern(global_mods, local_mod_map, param_map, content, vars)
                     .map_err(locate_span(*lo, *hi))?,
             ),
         )),
@@ -1353,7 +1411,14 @@ fn resolve_scheme(
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
     scheme: &raw::Type,
-) -> Result<(res::TypeScheme, IdVec<res::TypeParamId, raw::TypeParam>), RawError> {
+) -> Result<
+    (
+        res::TypeScheme,
+        IdVec<res::TypeParamId, raw::TypeParam>,
+        BTreeMap<raw::TypeParam, res::TypeParamId>,
+    ),
+    RawError,
+> {
     let mut scheme_param_names = IdVec::new();
     let mut scheme_params = BTreeMap::new();
     find_scheme_params(scheme, &mut scheme_param_names, &mut scheme_params);
@@ -1365,7 +1430,7 @@ fn resolve_scheme(
         body: res_type,
     };
 
-    Ok((scheme, scheme_param_names))
+    Ok((scheme, scheme_param_names, scheme_params))
 }
 
 fn resolve_profile_points(

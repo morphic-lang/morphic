@@ -1,0 +1,5 @@
+// expect-error: Type Parameter Not Found
+proc main(): () =
+  // `b` is not a type parameter of `main`, and local annotations cannot introduce new ones.
+  let x: b = 5 in
+  ()

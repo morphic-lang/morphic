@@ -1,0 +1,4 @@
+// expect-error: Type Mismatch
+proc main(): () =
+  let x: Int = 1.0 in
+  ()

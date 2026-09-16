@@ -23,6 +23,9 @@ struct TypeVar(usize);
 #[derive(Clone, Copy, Debug)]
 enum RawErrorKind {
     Recursive,
+    Ambiguous {
+        type_: TypeVar,
+    },
     Mismatch {
         expected: TypeVar,
         actual: TypeVar,
@@ -42,6 +45,9 @@ type RawError = Locate<RawErrorKind>;
 #[derive(Clone, Debug)]
 pub enum ErrorKind {
     Recursive,
+    Ambiguous {
+        type_: String,
+    },
     Mismatch {
         expected: String,
         expected_is_concrete: bool,
@@ -70,6 +76,12 @@ impl RawErrorKind {
     ) -> ErrorKind {
         match self {
             RawErrorKind::Recursive => ErrorKind::Recursive,
+
+            RawErrorKind::Ambiguous { type_: type_var } => {
+                let renderer = report_type::TypeRenderer::new(program);
+                let type_ = renderer.render(params, &ctx.extract_report(*type_var));
+                ErrorKind::Ambiguous { type_ }
+            }
 
             RawErrorKind::Mismatch {
                 expected: expected_var,
@@ -128,10 +140,27 @@ impl Reportable for Error {
                     "I couldn't infer a type for this expression.",
                     "",
                     "Any type you could try to give this expression would need to mention itself \
-                     cyclically in order to type-check.  So a hypothetical type that could make \
+                     cyclically in order to type-check. So a hypothetical type that could make \
                      this expression type-check would need to be infinitely big!"
                 ]
                 .to_owned(),
+            ),
+
+            ErrorKind::Ambiguous { type_ } => (
+                "Ambiguous Type",
+                format!(
+                    lines![
+                        "I couldn't fully determine the type of this expression. The type looks like:",
+                        "",
+                        "    {type_}",
+                        "",
+                        "where each '{unknown}' stands for something that this definition \
+                         doesn't pin down. You can fix this by adding a type annotation. For \
+                         example, 'let x: Int = ...' would tell me that 'x' is of type 'Int'.",
+                    ],
+                    type_ = type_,
+                    unknown = report_type::UNKNOWN_TYPE,
+                ),
             ),
 
             ErrorKind::Mismatch {
@@ -224,6 +253,12 @@ struct Context {
 enum UnifyError {
     Recursive,
     Mismatch,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ExtractError {
+    Recursive,
+    Unknown,
 }
 
 impl Context {
@@ -333,15 +368,24 @@ impl Context {
         })
     }
 
+    // Extracts the fully solved type rooted at 'root_var'. If any part of that type is still
+    // unconstrained, the whole type is reported as ambiguous, so that the error message can show
+    // the user which parts of the type they need to pin down with an annotation. We never
+    // silently pick a type for an unconstrained variable since, in the presence of traits (ad hoc
+    // polymorphism), this can lead to some pretty confusing behavior.
     fn extract(&self, root_var: TypeVar) -> Result<res::Type, RawError> {
-        let var = self.follow(root_var).map_err(|_| RawErrorKind::Recursive)?;
-        let assign = self.obtain(var).map_err(|_| RawErrorKind::Recursive)?;
+        self.extract_rec(root_var).map_err(|err| match err {
+            ExtractError::Recursive => RawErrorKind::Recursive.into(),
+            ExtractError::Unknown => RawErrorKind::Ambiguous { type_: root_var }.into(),
+        })
+    }
+
+    fn extract_rec(&self, root_var: TypeVar) -> Result<res::Type, ExtractError> {
+        let var = self.follow(root_var).map_err(|_| ExtractError::Recursive)?;
+        let assign = self.obtain(var).map_err(|_| ExtractError::Recursive)?;
 
         match assign.deref() {
-            Assign::Unknown => {
-                // Unconstrained, so we can choose any type we like
-                Ok(res::Type::Tuple(vec![]))
-            }
+            Assign::Unknown => Err(ExtractError::Unknown),
 
             &Assign::Equal(_) => unreachable!(),
 
@@ -350,21 +394,21 @@ impl Context {
             Assign::App(id, args) => Ok(res::Type::App(
                 *id,
                 args.iter()
-                    .map(|&arg| self.extract(arg))
+                    .map(|&arg| self.extract_rec(arg))
                     .collect::<Result<_, _>>()?,
             )),
 
             Assign::Tuple(items) => Ok(res::Type::Tuple(
                 items
                     .iter()
-                    .map(|&item| self.extract(item))
+                    .map(|&item| self.extract_rec(item))
                     .collect::<Result<_, _>>()?,
             )),
 
             &Assign::Func(purity, arg, ret) => Ok(res::Type::Func(
                 purity,
-                Box::new(self.extract(arg)?),
-                Box::new(self.extract(ret)?),
+                Box::new(self.extract_rec(arg)?),
+                Box::new(self.extract_rec(ret)?),
             )),
         }
     }
@@ -414,12 +458,16 @@ impl Context {
 
 #[derive(Clone, Debug)]
 struct Scope {
+    // The rigid type variables standing in for the enclosing definition's type parameters. Type
+    // annotations inside the body refer to these.
+    rigid_params: IdVec<res::TypeParamId, TypeVar>,
     locals: IdVec<res::LocalId, TypeVar>,
 }
 
 impl Scope {
-    fn new() -> Self {
+    fn new(rigid_params: IdVec<res::TypeParamId, TypeVar>) -> Self {
         Scope {
+            rigid_params,
             locals: IdVec::new(),
         }
     }
@@ -445,7 +493,10 @@ impl Scope {
 
 #[derive(Clone, Debug)]
 enum AnnotExpr {
-    Global(res::GlobalId, IdVec<res::TypeParamId, TypeVar>),
+    // The final 'TypeVar' in each of 'Global', 'Lam', and 'ArrayLit' is the type of the whole
+    // expression.  It is only used to report ambiguities in terms of the type the user sees at
+    // the reported span, rather than in terms of an internal component of that type.
+    Global(res::GlobalId, IdVec<res::TypeParamId, TypeVar>, TypeVar),
     Local(res::LocalId),
     Tuple(Vec<AnnotExpr>),
     Lam(
@@ -455,12 +506,17 @@ enum AnnotExpr {
         AnnotPattern,
         Box<AnnotExpr>,
         Option<prof::ProfilePointId>,
+        TypeVar, // Whole function type
     ),
     App(Purity, Box<AnnotExpr>, Box<AnnotExpr>),
     Match(Box<AnnotExpr>, Vec<(AnnotPattern, AnnotExpr)>, TypeVar),
     LetMany(Vec<(AnnotPattern, AnnotExpr)>, Box<AnnotExpr>),
 
-    ArrayLit(TypeVar, Vec<AnnotExpr>),
+    ArrayLit(
+        TypeVar, // Item type
+        Vec<AnnotExpr>,
+        TypeVar, // Whole array type
+    ),
     ByteLit(u8),
     IntLit(i64),
     FloatLit(f64),
@@ -478,6 +534,7 @@ enum AnnotPattern {
         Vec<TypeVar>,
         res::VariantId,
         Option<Box<AnnotPattern>>,
+        TypeVar, // Whole pattern type, for reporting ambiguities (see 'AnnotExpr')
     ),
 
     ByteConst(u8),
@@ -730,10 +787,24 @@ fn infer_pat(
                 }
             };
 
-            let ctor_annot =
-                AnnotPattern::Ctor(*id, param_vars.into_vec(), *variant, content_annot);
+            let ctor_annot = AnnotPattern::Ctor(
+                *id,
+                param_vars.into_vec(),
+                *variant,
+                content_annot,
+                ctor_var,
+            );
 
             Ok(ctor_annot)
+        }
+
+        res::Pattern::Annot(content, type_) => {
+            // The annotation is what the user declared, so it plays the role of the expected
+            // type; whatever the surrounding context provides is the actual type.  Unify before
+            // descending so that nested patterns see the annotated structure.
+            let annot_var = instantiate_with(ctx, &scope.rigid_params, type_);
+            ctx.unify(annot_var, expected)?;
+            infer_pat(program, ctx, scope, expected, content)
         }
 
         &res::Pattern::ByteConst(val) => {
@@ -776,7 +847,7 @@ fn infer_expr(
             let scheme = global_scheme(program, id);
             let (param_vars, var) = instantiate_scheme(ctx, &scheme);
             ctx.unify(expected, var)?;
-            Ok(AnnotExpr::Global(id, param_vars))
+            Ok(AnnotExpr::Global(id, param_vars, var))
         }
 
         &res::Expr::Local(id) => {
@@ -819,6 +890,7 @@ fn infer_expr(
                 pat_annot,
                 Box::new(body_annot),
                 *prof_id,
+                lam_var,
             );
 
             Ok(lam_annot)
@@ -893,7 +965,7 @@ fn infer_expr(
                 .map(|item| infer_expr(program, ctx, scope, param_var, item))
                 .collect::<Result<_, RawError>>()?;
 
-            let array_annot = AnnotExpr::ArrayLit(param_var, items_annot);
+            let array_annot = AnnotExpr::ArrayLit(param_var, items_annot, array_var);
             Ok(array_annot)
         }
 
@@ -925,14 +997,19 @@ fn infer_expr(
     }
 }
 
-fn instantiate_rigid(ctx: &mut Context, scheme: &res::TypeScheme) -> TypeVar {
+fn instantiate_rigid(
+    ctx: &mut Context,
+    scheme: &res::TypeScheme,
+) -> (IdVec<res::TypeParamId, TypeVar>, TypeVar) {
     let rigid_params = IdVec::from_vec(
         (0..scheme.num_params)
             .map(|idx| ctx.new_var(Assign::Param(res::TypeParamId(idx))))
             .collect(),
     );
 
-    instantiate_with(ctx, &rigid_params, &scheme.body)
+    let root = instantiate_with(ctx, &rigid_params, &scheme.body);
+
+    (rigid_params, root)
 }
 
 fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> Result<typed::Pattern, RawError> {
@@ -948,11 +1025,12 @@ fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> Result<typed::Patt
                 .collect::<Result<_, _>>()?,
         )),
 
-        AnnotPattern::Ctor(id, vars, variant, content) => Ok(typed::Pattern::Ctor(
+        AnnotPattern::Ctor(id, vars, variant, content, whole) => Ok(typed::Pattern::Ctor(
             id,
             vars.into_iter()
                 .map(|var| ctx.extract(var))
-                .collect::<Result<_, _>>()?,
+                .collect::<Result<_, _>>()
+                .map_err(|err| report_ambiguity_at(err, whole))?,
             variant,
             content
                 .map::<Result<_, RawError>, _>(|content| {
@@ -973,11 +1051,29 @@ fn extract_pat_solution(ctx: &Context, body: AnnotPattern) -> Result<typed::Patt
     }
 }
 
+// An ambiguity found while extracting one component of an expression's type (an instantiation
+// parameter of a global, the argument type of a lambda, ...) is reported in terms of the whole
+// expression's type, since that is what the user sees at the reported span.
+fn report_ambiguity_at(err: RawError, whole: TypeVar) -> RawError {
+    err.map(|kind| match kind {
+        RawErrorKind::Ambiguous { .. } => RawErrorKind::Ambiguous { type_: whole },
+        other => other,
+    })
+}
+
+fn annot_expr_span(expr: &AnnotExpr) -> Option<(usize, usize)> {
+    match expr {
+        &AnnotExpr::Span(lo, hi, _) => Some((lo, hi)),
+        _ => None,
+    }
+}
+
 fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawError> {
     match body {
-        AnnotExpr::Global(id, vars) => Ok(typed::Expr::Global(
+        AnnotExpr::Global(id, vars, whole) => Ok(typed::Expr::Global(
             id,
-            vars.try_map(|_param_id, var| ctx.extract(var))?,
+            vars.try_map(|_param_id, var| ctx.extract(var))
+                .map_err(|err| report_ambiguity_at(err, whole))?,
         )),
 
         AnnotExpr::Local(id) => Ok(typed::Expr::Local(id)),
@@ -989,20 +1085,31 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawEr
                 .collect::<Result<_, _>>()?,
         )),
 
-        AnnotExpr::Lam(purity, arg_type, ret_type, pat, body, prof_id) => Ok(typed::Expr::Lam(
-            purity,
-            ctx.extract(arg_type)?,
-            ctx.extract(ret_type)?,
-            extract_pat_solution(ctx, pat)?,
-            Box::new(extract_solution(ctx, *body)?),
-            prof_id,
-        )),
+        AnnotExpr::Lam(purity, arg_type, ret_type, pat, body, prof_id, whole) => {
+            Ok(typed::Expr::Lam(
+                purity,
+                ctx.extract(arg_type)
+                    .map_err(|err| report_ambiguity_at(err, whole))?,
+                ctx.extract(ret_type)
+                    .map_err(|err| report_ambiguity_at(err, whole))?,
+                extract_pat_solution(ctx, pat)?,
+                Box::new(extract_solution(ctx, *body)?),
+                prof_id,
+            ))
+        }
 
-        AnnotExpr::App(purity, func, arg) => Ok(typed::Expr::App(
-            purity,
-            Box::new(extract_solution(ctx, *func)?),
-            Box::new(extract_solution(ctx, *arg)?),
-        )),
+        AnnotExpr::App(purity, func, arg) => {
+            // Extract the argument before the function so that an ambiguity caused by a dead
+            // polymorphic argument (e.g. passing `id` to something that ignores it) is reported at
+            // the argument rather than at the callee whose instantiation merely mentions it.
+            let arg_typed = extract_solution(ctx, *arg)?;
+            let func_typed = extract_solution(ctx, *func)?;
+            Ok(typed::Expr::App(
+                purity,
+                Box::new(func_typed),
+                Box::new(arg_typed),
+            ))
+        }
 
         AnnotExpr::Match(discrim, cases, result_var) => Ok(typed::Expr::Match(
             Box::new(extract_solution(ctx, *discrim)?),
@@ -1022,14 +1129,26 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawEr
             bindings
                 .into_iter()
                 .map(|(lhs, rhs)| {
-                    Ok((extract_pat_solution(ctx, lhs)?, extract_solution(ctx, rhs)?))
+                    // Extract the right-hand side first so that an ambiguity inside it is
+                    // reported at the most specific span available.  If the ambiguity only
+                    // surfaces through the pattern (as with a desugared `then`, whose pattern
+                    // has no span of its own), fall back to the span of the right-hand side.
+                    let rhs_span = annot_expr_span(&rhs);
+                    let rhs_typed = extract_solution(ctx, rhs)?;
+                    let lhs_typed =
+                        extract_pat_solution(ctx, lhs).map_err(|err| match rhs_span {
+                            Some((lo, hi)) => locate_span(lo, hi)(err),
+                            None => err,
+                        })?;
+                    Ok((lhs_typed, rhs_typed))
                 })
                 .collect::<Result<_, RawError>>()?,
             Box::new(extract_solution(ctx, *body)?),
         )),
 
-        AnnotExpr::ArrayLit(item_var, items) => Ok(typed::Expr::ArrayLit(
-            ctx.extract(item_var)?,
+        AnnotExpr::ArrayLit(item_var, items, whole) => Ok(typed::Expr::ArrayLit(
+            ctx.extract(item_var)
+                .map_err(|err| report_ambiguity_at(err, whole))?,
             items
                 .into_iter()
                 .map(|item| extract_solution(ctx, item))
@@ -1058,9 +1177,9 @@ fn infer_def(
     program: &res::Program,
     def: &res::ValDef,
 ) -> Result<typed::ValDef, RawError> {
-    let mut scope = Scope::new();
+    let (rigid_params, declared_type_var) = instantiate_rigid(ctx, &def.scheme);
 
-    let declared_type_var = instantiate_rigid(ctx, &def.scheme);
+    let mut scope = Scope::new(rigid_params);
 
     let body_annot = infer_expr(program, ctx, &mut scope, declared_type_var, &def.body)?;
 

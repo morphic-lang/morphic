@@ -156,6 +156,7 @@ pub enum Pattern {
     Var,
     Tuple(Vec<Pattern>),
     Ctor(TypeId, VariantId, Option<Box<Pattern>>),
+    Annot(Box<Pattern>, Type),
     ByteConst(u8),
     IntConst(i64),
     FloatConst(f64),

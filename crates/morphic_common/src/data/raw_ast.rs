@@ -127,6 +127,9 @@ pub enum Pattern {
     Var(ValName),
     Tuple(Vec<Pattern>),
     Ctor(ModPath, CtorName, Option<Box<Pattern>>),
+    // A pattern with a type annotation, e.g. `x: Int`. Type variables in the annotation refer to
+    // the type parameters of the enclosing definition's signature.
+    Annot(Box<Pattern>, Type),
 
     ByteConst(u8),
     IntConst(i64),

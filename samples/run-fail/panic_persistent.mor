@@ -1,5 +1,5 @@
 proc main(): () =
   let arr = "Goodbye" in
   push(arr, 63b) then
-  panic(arr) then
+  let _: () = panic(arr) in
   do output("Should not run")

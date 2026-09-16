@@ -33,6 +33,11 @@ sample! { increment "../../samples/increment.mor";
     ];
 }
 
+sample! { annotations "../../samples/annotations.mor";
+    stdin = "";
+    stdout = "ok\n";
+}
+
 sample! { arith "../../samples/arith.mor";
     stdin = "";
     stdout = "Completed all tests\n";

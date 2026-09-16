@@ -1,0 +1,7 @@
+// expect-error: Ambiguous Type
+id(x: a): a = x
+
+proc main(): () =
+  // `f` is never used, so nothing determines the type at which `id` is instantiated.
+  let f = id in
+  ()

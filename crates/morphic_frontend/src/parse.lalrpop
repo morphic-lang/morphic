@@ -546,7 +546,7 @@ BlockExpr_: syntax::Expr = {
 
   <left: PipeRightExpr> "<|" <right: BlockExpr> => syntax::Expr::PipeLeft(Box::new(left), Box::new(right)),
 
-  "let" <lhs: Pattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
+  "let" <lhs: AnnotPattern> "=" <rhs: Expr> "in" <body: BlockExpr> => {
     if let syntax::Expr::Span(left, right, body) = body {
       let new_let_expr = match *body {
         // if we already have a LetMany, prepend `lhs = rhs` onto bindings
@@ -638,8 +638,18 @@ Pattern: syntax::Pattern = {
   },
 };
 
+// A pattern optionally followed by a type annotation, e.g. `x: Int`. Annotations are only
+// permitted where the token after the type is unambiguous (`=`, `,` or `)`). A bare `x: a -> b`
+// following a lambda or match arm would be ambiguous with a function type.
+AnnotPattern: syntax::Pattern = {
+  <Pattern>,
+
+  <lo: @L> <pat: Pattern> ":" <type_: Type> <hi: @R> =>
+    syntax::Pattern::Span(lo, hi, Box::new(syntax::Pattern::Annot(Box::new(pat), type_))),
+};
+
 Patterns_: syntax::Pattern = {
-  <patterns: CommaSep<Pattern>> => {
+  <patterns: CommaSep<AnnotPattern>> => {
     if patterns.len() == 1 {
       patterns.into_iter().next().unwrap()
     } else {
