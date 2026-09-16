@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::file_cache::FileCache;
 use crate::lex;
-use morphic_common::report_error::{report_error, Report};
+use morphic_common::report_error::{report_error, ColorMode, Report};
 
 // Clean up a token name from the grammar for display to the user.
 fn format_token_name(name: &str) -> &str {
@@ -24,6 +24,7 @@ fn format_token_name(name: &str) -> &str {
 pub fn report(
     dest: &mut impl io::Write,
     files: &FileCache,
+    color: ColorMode,
     path: Option<&Path>,
     err: &ParseError<usize, lex::Token, lex::Error>,
 ) -> io::Result<()> {
@@ -36,6 +37,7 @@ pub fn report(
             report_error(
                 dest,
                 files,
+                color,
                 Report {
                     path,
                     span: Some((*location, *location + 1)),
@@ -52,6 +54,7 @@ pub fn report(
             report_error(
                 dest,
                 files,
+                color,
                 Report {
                     path,
                     span: Some((*lo, *hi)),
@@ -85,6 +88,7 @@ pub fn report(
             report_error(
                 dest,
                 files,
+                color,
                 Report {
                     path,
                     span: None,
@@ -110,6 +114,7 @@ pub fn report(
             report_error(
                 dest,
                 files,
+                color,
                 Report {
                     path,
                     span: Some((*lo, *hi)),

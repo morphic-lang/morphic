@@ -92,10 +92,70 @@ pub struct TypeDef {
     pub variants: IdVec<VariantId, Option<Type>>,
 }
 
+/// The source spans of a type.  Resolved types do not carry spans directly because they are
+/// compared structurally and used as monomorphization keys. The spans are kept alongside the types
+/// in symbol tables.  Each `TypeSpans` tree has the same shape as the type it describes: an
+/// application's children are its arguments, a tuple's are its items, and a function type's are its
+/// argument and its result.
+#[derive(Clone, Debug)]
+pub struct TypeSpans {
+    pub span: Option<(usize, usize)>,
+    pub children: Vec<TypeSpans>,
+}
+
+impl TypeSpans {
+    pub fn of(type_: &raw::Type) -> TypeSpans {
+        Self::of_rec(type_, None)
+    }
+
+    fn of_rec(type_: &raw::Type, span: Option<(usize, usize)>) -> TypeSpans {
+        let children = |types: &[raw::Type]| types.iter().map(|t| Self::of_rec(t, None)).collect();
+        match type_ {
+            raw::Type::Span(lo, hi, inner) => Self::of_rec(inner, Some((*lo, *hi))),
+            raw::Type::Var(_) => TypeSpans {
+                span,
+                children: Vec::new(),
+            },
+            raw::Type::App(_, _, args) | raw::Type::AppVar(_, args) => TypeSpans {
+                span,
+                children: children(args),
+            },
+            raw::Type::Tuple(items) => TypeSpans {
+                span,
+                children: children(items),
+            },
+            raw::Type::Func(_, arg, ret) => TypeSpans {
+                span,
+                children: vec![Self::of_rec(arg, None), Self::of_rec(ret, None)],
+            },
+        }
+    }
+
+    /// The span of the sub-term reached by following `path` (a sequence of child indices), or of
+    /// the nearest enclosing sub-term that has one.
+    pub fn span_at(&self, path: &[usize]) -> Option<(usize, usize)> {
+        let mut node = self;
+        let mut best = self.span;
+        for &index in path {
+            match node.children.get(index) {
+                Some(child) => {
+                    node = child;
+                    if child.span.is_some() {
+                        best = child.span;
+                    }
+                }
+                None => break,
+            }
+        }
+        best
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct VariantSymbols {
     pub variant_name: raw::CtorName,
     pub span: (usize, usize),
+    pub content_spans: Option<TypeSpans>,
 }
 
 #[derive(Clone, Debug)]
@@ -116,14 +176,36 @@ pub struct ValSymbols {
     pub mod_: ModId,
     pub type_param_names: IdVec<TypeParamId, raw::TypeParam>,
     pub val_name: raw::ValName,
+    pub type_spans: TypeSpans,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TypeHead {
+    Ctor(TypeId),
+    Var(TypeParamId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
-    Var(TypeParamId),
-    App(TypeId, Vec<Type>),
+    /// Application of a type constructor or type parameter to zero or more arguments.  A bare
+    /// constructor or parameter is an application to zero arguments.  An argument may itself be a
+    /// partial application (of a constructor, or of a parameter of higher kind), but a type in
+    /// "value position" (the type of an expression, a variant payload, and so on) always has kind
+    /// `Type`.  Tuples and functions are not applications: a parameter of higher kind never unifies
+    /// with either.
+    App(TypeHead, Vec<Type>),
     Tuple(Vec<Type>),
     Func(Purity, Box<Type>, Box<Type>),
+}
+
+impl Type {
+    pub fn param(id: TypeParamId) -> Type {
+        Type::App(TypeHead::Var(id), Vec::new())
+    }
+
+    pub fn ctor(id: TypeId) -> Type {
+        Type::App(TypeHead::Ctor(id), Vec::new())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

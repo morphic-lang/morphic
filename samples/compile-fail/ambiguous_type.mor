@@ -1,4 +1,4 @@
-// expect-error: Ambiguous Type
+// expect-error: Ambiguous Type @ 6:11
 id(x: a): a = x
 
 proc main(): () =

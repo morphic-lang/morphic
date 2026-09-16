@@ -1,4 +1,5 @@
 {
+    "vim.textwidth": 100,
     "rust-analyzer.imports.granularity.group": "module",
     "rust-analyzer.imports.prefix": "crate",
     "rust-analyzer.imports.merge.glob": false,

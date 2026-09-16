@@ -4,6 +4,7 @@ use std::io;
 use std::ops::{Deref, DerefMut};
 
 use crate::data::intrinsics as intrs;
+use crate::data::kinded_ast as kinded;
 use crate::data::num_type::NumType;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -15,7 +16,7 @@ use crate::report_type;
 use id_collections::{id_type, IdVec};
 use morphic_common::intrinsic_config::intrinsic_sig;
 use morphic_common::lines;
-use morphic_common::report_error::{locate_path, locate_span, Locate, Reportable};
+use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
 
 #[id_type]
 struct TypeVar(usize);
@@ -70,7 +71,7 @@ pub struct Error(Locate<ErrorKind>);
 impl RawErrorKind {
     fn render(
         &self,
-        program: &res::Program,
+        program: &kinded::Program,
         params: &IdVec<res::TypeParamId, raw::TypeParam>,
         ctx: &Context,
     ) -> ErrorKind {
@@ -132,8 +133,13 @@ impl RawErrorKind {
 }
 
 impl Reportable for Error {
-    fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        self.0.report_with(dest, files, |err| match err {
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &FileCache,
+        color: ColorMode,
+    ) -> io::Result<()> {
+        self.0.report_with(dest, files, color, |err| match err {
             ErrorKind::Recursive => (
                 "Cyclic Type",
                 lines![
@@ -222,8 +228,14 @@ impl Reportable for Error {
 enum Assign {
     Unknown,
     Equal(TypeVar),
+    // A rigid type parameter of the enclosing definition of any kind.
     Param(res::TypeParamId),
-    App(res::TypeId, Vec<TypeVar>),
+    // A bare type constructor of any kind.
+    Ctor(res::TypeId),
+    // A head applied to one or more arguments.  A bare head is never wrapped in an empty
+    // application, but a head may itself resolve to an application (see 'unify_head_with_app'),
+    // in which case the two argument lists concatenate.
+    App(TypeVar, Vec<TypeVar>),
     Tuple(Vec<TypeVar>),
     Func(Purity, TypeVar, TypeVar),
 }
@@ -317,18 +329,14 @@ impl Context {
                 }
             }
 
-            (Assign::App(id1, args1), Assign::App(id2, args2)) => {
+            (Assign::Ctor(id1), Assign::Ctor(id2)) => {
                 if id1 != id2 {
                     return Err(UnifyError::Mismatch);
                 }
+            }
 
-                if args1.len() != args2.len() {
-                    return Err(UnifyError::Mismatch);
-                }
-
-                for (&arg1, &arg2) in args1.iter().zip(args2.iter()) {
-                    self.unify_rec(arg1, arg2)?;
-                }
+            (&Assign::App(head1, ref args1), &Assign::App(head2, ref args2)) => {
+                self.unify_apps(head1, args1, head2, args2)?;
             }
 
             (Assign::Tuple(items1), Assign::Tuple(items2)) => {
@@ -361,6 +369,65 @@ impl Context {
         Ok(())
     }
 
+    // Applications unify from the right: the last min(n1, n2) arguments pair up, and whatever is
+    // left of the longer application is unified with the head of the shorter one.  This is what
+    // lets `f a` unify with `Result Int Bool`, giving `f := Result Int`.  It is sound because type
+    // constructor application is injective.
+    fn unify_apps(
+        &self,
+        head1: TypeVar,
+        args1: &[TypeVar],
+        head2: TypeVar,
+        args2: &[TypeVar],
+    ) -> Result<(), UnifyError> {
+        let shared = args1.len().min(args2.len());
+        let (prefix1, suffix1) = args1.split_at(args1.len() - shared);
+        let (prefix2, suffix2) = args2.split_at(args2.len() - shared);
+
+        for (&arg1, &arg2) in suffix1.iter().zip(suffix2.iter()) {
+            self.unify_rec(arg1, arg2)?;
+        }
+
+        match (prefix1.is_empty(), prefix2.is_empty()) {
+            (true, true) => self.unify_rec(head1, head2),
+            (true, false) => self.unify_head_with_app(head1, head2, prefix2),
+            (false, true) => self.unify_head_with_app(head2, head1, prefix1),
+            (false, false) => unreachable!(),
+        }
+    }
+
+    // Unifies a bare head with the (nonempty) prefix of a longer application.  A head that is
+    // still unknown simply becomes that application.  A head that is already an application
+    // recurses, anything else has no arguments to absorb and is a mismatch.
+    fn unify_head_with_app(
+        &self,
+        head: TypeVar,
+        app_head: TypeVar,
+        app_args: &[TypeVar],
+    ) -> Result<(), UnifyError> {
+        debug_assert!(!app_args.is_empty());
+
+        let head = self.follow(head)?;
+        let mut assign = self.obtain(head)?;
+
+        match assign.deref() {
+            Assign::Equal(_) => unreachable!(),
+
+            Assign::Unknown => {
+                *assign = Assign::App(app_head, app_args.to_vec());
+                Ok(())
+            }
+
+            &Assign::App(inner_head, ref inner_args) => {
+                self.unify_apps(inner_head, inner_args, app_head, app_args)
+            }
+
+            Assign::Param(_) | Assign::Ctor(_) | Assign::Tuple(_) | Assign::Func(_, _, _) => {
+                Err(UnifyError::Mismatch)
+            }
+        }
+    }
+
     fn unify(&mut self, expected: TypeVar, actual: TypeVar) -> Result<(), RawError> {
         self.unify_rec(expected, actual).map_err(|err| match err {
             UnifyError::Recursive => RawErrorKind::Recursive.into(),
@@ -389,14 +456,18 @@ impl Context {
 
             &Assign::Equal(_) => unreachable!(),
 
-            &Assign::Param(param) => Ok(res::Type::Var(param)),
+            &Assign::Param(param) => Ok(res::Type::param(param)),
 
-            Assign::App(id, args) => Ok(res::Type::App(
-                *id,
-                args.iter()
+            &Assign::Ctor(id) => Ok(res::Type::ctor(id)),
+
+            Assign::App(head, args) => {
+                let head_type = self.extract_rec(*head)?;
+                let arg_types = args
+                    .iter()
                     .map(|&arg| self.extract_rec(arg))
-                    .collect::<Result<_, _>>()?,
-            )),
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(apply_type(head_type, arg_types))
+            }
 
             Assign::Tuple(items) => Ok(res::Type::Tuple(
                 items
@@ -414,31 +485,36 @@ impl Context {
     }
 
     fn extract_report(&self, root_var: TypeVar) -> report_type::Type {
+        use report_type::{Head, Type};
+
         let var = match self.follow(root_var) {
             Ok(var) => var,
             Err(_) => {
-                return report_type::Type::RecursiveOccurrence;
+                return Type::App(Head::RecursiveOccurrence, Vec::new());
             }
         };
 
         let assign = match self.obtain(var) {
             Ok(assign) => assign,
             Err(_) => {
-                return report_type::Type::RecursiveOccurrence;
+                return Type::App(Head::RecursiveOccurrence, Vec::new());
             }
         };
 
         match assign.deref() {
-            Assign::Unknown => report_type::Type::Unknown,
+            Assign::Unknown => Type::App(Head::Unknown, Vec::new()),
 
             Assign::Equal(_) => unreachable!(),
 
-            Assign::Param(param) => report_type::Type::Var(*param),
+            &Assign::Param(param) => Type::App(Head::Var(param), Vec::new()),
 
-            Assign::App(id, args) => report_type::Type::App(
-                *id,
-                args.iter().map(|&arg| self.extract_report(arg)).collect(),
-            ),
+            &Assign::Ctor(id) => Type::App(Head::Ctor(id), Vec::new()),
+
+            Assign::App(head, args) => {
+                let head_type = self.extract_report(*head);
+                let arg_types = args.iter().map(|&arg| self.extract_report(arg)).collect();
+                apply_report_type(head_type, arg_types)
+            }
 
             Assign::Tuple(items) => report_type::Type::Tuple(
                 items
@@ -454,6 +530,43 @@ impl Context {
             ),
         }
     }
+}
+
+// Applies an extracted head to further arguments.  A head only ever unifies with another head or
+// with an application (see 'unify_head_with_app'), never with a tuple or function type.
+fn apply_type(head: res::Type, args: Vec<res::Type>) -> res::Type {
+    match head {
+        res::Type::App(head, mut head_args) => {
+            head_args.extend(args);
+            res::Type::App(head, head_args)
+        }
+        res::Type::Tuple(_) | res::Type::Func(_, _, _) => unreachable!(),
+    }
+}
+
+fn apply_report_type(head: report_type::Type, args: Vec<report_type::Type>) -> report_type::Type {
+    match head {
+        report_type::Type::App(head, mut head_args) => {
+            head_args.extend(args);
+            report_type::Type::App(head, head_args)
+        }
+        report_type::Type::Tuple(_) | report_type::Type::Func(_, _, _) => unreachable!(),
+    }
+}
+
+// Applies a head variable to argument variables, without wrapping a bare head in an empty
+// application.
+fn app_var(ctx: &mut Context, head: TypeVar, args: Vec<TypeVar>) -> TypeVar {
+    if args.is_empty() {
+        head
+    } else {
+        ctx.new_var(Assign::App(head, args))
+    }
+}
+
+fn ctor_app_var(ctx: &mut Context, id: res::TypeId, args: Vec<TypeVar>) -> TypeVar {
+    let head = ctx.new_var(Assign::Ctor(id));
+    app_var(ctx, head, args)
 }
 
 #[derive(Clone, Debug)]
@@ -544,19 +657,19 @@ enum AnnotPattern {
     Span(usize, usize, Box<AnnotPattern>),
 }
 
-fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> res::TypeScheme {
+fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> kinded::TypeScheme {
     fn trans_type(type_: &intrs::Type) -> res::Type {
         match type_ {
-            intrs::Type::Bool => res::Type::App(res::TypeId::Bool, vec![]),
-            intrs::Type::Num(NumType::Byte) => res::Type::App(res::TypeId::Byte, vec![]),
-            intrs::Type::Num(NumType::Int) => res::Type::App(res::TypeId::Int, vec![]),
-            intrs::Type::Num(NumType::Float) => res::Type::App(res::TypeId::Float, vec![]),
+            intrs::Type::Bool => res::Type::ctor(res::TypeId::Bool),
+            intrs::Type::Num(NumType::Byte) => res::Type::ctor(res::TypeId::Byte),
+            intrs::Type::Num(NumType::Int) => res::Type::ctor(res::TypeId::Int),
+            intrs::Type::Num(NumType::Float) => res::Type::ctor(res::TypeId::Float),
             intrs::Type::Tuple(items) => res::Type::Tuple(items.iter().map(trans_type).collect()),
         }
     }
 
-    res::TypeScheme {
-        num_params: 0,
+    kinded::TypeScheme {
+        param_kinds: IdVec::new(),
         body: res::Type::Func(
             sig.purity,
             Box::new(trans_type(&sig.arg)),
@@ -566,24 +679,28 @@ fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> res::TypeScheme {
 }
 
 // Sounds ominous...
-pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<'_, res::TypeScheme> {
+pub fn global_scheme(
+    program: &kinded::Program,
+    global: res::GlobalId,
+) -> Cow<'_, kinded::TypeScheme> {
     use crate::data::resolved_ast::Type::*;
+    use crate::data::resolved_ast::TypeHead::Ctor;
     use crate::data::resolved_ast::TypeId::*;
 
     fn bool_() -> res::Type {
-        App(Bool, vec![])
+        res::Type::ctor(Bool)
     }
 
     fn byte() -> res::Type {
-        App(Byte, vec![])
+        res::Type::ctor(Byte)
     }
 
     fn int() -> res::Type {
-        App(Int, vec![])
+        res::Type::ctor(Int)
     }
 
     fn array(arg: res::Type) -> res::Type {
-        App(Array, vec![arg])
+        App(Ctor(Array), vec![arg])
     }
 
     fn func(arg: res::Type, ret: res::Type) -> res::Type {
@@ -598,12 +715,16 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<'_, r
         Tuple(vec![fst, snd])
     }
 
-    fn scheme(num_params: usize, body: res::Type) -> res::TypeScheme {
-        res::TypeScheme { num_params, body }
+    // The parameters of builtin globals all have kind `Type`.
+    fn scheme(num_params: usize, body: res::Type) -> kinded::TypeScheme {
+        kinded::TypeScheme {
+            param_kinds: IdVec::from_vec(vec![kinded::Kind::TYPE; num_params]),
+            body,
+        }
     }
 
     fn param(index: usize) -> res::Type {
-        Var(res::TypeParamId(index))
+        res::Type::param(res::TypeParamId(index))
     }
 
     match global {
@@ -637,12 +758,18 @@ pub fn global_scheme(program: &res::Program, global: res::GlobalId) -> Cow<'_, r
 
         res::GlobalId::Ctor(Custom(custom), variant) => {
             let typedef = &program.custom_types[custom];
-            let ret = App(Custom(custom), (0..typedef.num_params).map(param).collect());
-            if let Some(arg) = typedef.variants[variant].clone() {
-                Cow::Owned(scheme(typedef.num_params, func(arg, ret)))
-            } else {
-                Cow::Owned(scheme(typedef.num_params, ret))
-            }
+            let ret = App(
+                Ctor(Custom(custom)),
+                (0..typedef.param_kinds.len()).map(param).collect(),
+            );
+            let body = match typedef.variants[variant].clone() {
+                Some(arg) => func(arg, ret),
+                None => ret,
+            };
+            Cow::Owned(kinded::TypeScheme {
+                param_kinds: typedef.param_kinds.clone(),
+                body,
+            })
         }
 
         res::GlobalId::Ctor(Bool, variant) => {
@@ -662,15 +789,18 @@ fn instantiate_with(
     body: &res::Type,
 ) -> TypeVar {
     match body {
-        res::Type::Var(param) => param_vars[param],
+        res::Type::App(head, args) => {
+            let head_var = match head {
+                res::TypeHead::Var(param) => param_vars[param],
+                res::TypeHead::Ctor(id) => ctx.new_var(Assign::Ctor(*id)),
+            };
 
-        res::Type::App(id, args) => {
             let arg_vars = args
                 .iter()
                 .map(|arg| instantiate_with(ctx, param_vars, arg))
                 .collect();
 
-            ctx.new_var(Assign::App(*id, arg_vars))
+            app_var(ctx, head_var, arg_vars)
         }
 
         res::Type::Tuple(items) => {
@@ -693,10 +823,10 @@ fn instantiate_with(
 
 fn instantiate_scheme(
     ctx: &mut Context,
-    scheme: &res::TypeScheme,
+    scheme: &kinded::TypeScheme,
 ) -> (IdVec<res::TypeParamId, TypeVar>, TypeVar) {
     let param_vars = IdVec::from_vec(
-        (0..scheme.num_params)
+        (0..scheme.param_kinds.len())
             .map(|_| ctx.new_var(Assign::Unknown))
             .collect(),
     );
@@ -707,7 +837,7 @@ fn instantiate_scheme(
 }
 
 fn infer_pat(
-    program: &res::Program,
+    program: &kinded::Program,
     ctx: &mut Context,
     scope: &mut Scope,
     expected: TypeVar,
@@ -743,7 +873,7 @@ fn infer_pat(
                 res::TypeId::Custom(custom) => {
                     let typedef = &program.custom_types[custom];
                     let expected_content = typedef.variants[variant].clone();
-                    (typedef.num_params, expected_content)
+                    (typedef.param_kinds.len(), expected_content)
                 }
 
                 res::TypeId::Bool => (0, None),
@@ -757,7 +887,7 @@ fn infer_pat(
                     .collect(),
             );
 
-            let ctor_var = ctx.new_var(Assign::App(*id, param_vars.clone().into_vec()));
+            let ctor_var = ctor_app_var(ctx, *id, param_vars.clone().into_vec());
 
             ctx.unify(expected, ctor_var)?;
 
@@ -808,19 +938,19 @@ fn infer_pat(
         }
 
         &res::Pattern::ByteConst(val) => {
-            let const_var = ctx.new_var(Assign::App(res::TypeId::Byte, vec![]));
+            let const_var = ctx.new_var(Assign::Ctor(res::TypeId::Byte));
             ctx.unify(expected, const_var)?;
             Ok(AnnotPattern::ByteConst(val))
         }
 
         &res::Pattern::IntConst(val) => {
-            let const_var = ctx.new_var(Assign::App(res::TypeId::Int, vec![]));
+            let const_var = ctx.new_var(Assign::Ctor(res::TypeId::Int));
             ctx.unify(expected, const_var)?;
             Ok(AnnotPattern::IntConst(val))
         }
 
         &res::Pattern::FloatConst(val) => {
-            let const_var = ctx.new_var(Assign::App(res::TypeId::Float, vec![]));
+            let const_var = ctx.new_var(Assign::Ctor(res::TypeId::Float));
             ctx.unify(expected, const_var)?;
             Ok(AnnotPattern::FloatConst(val))
         }
@@ -836,7 +966,7 @@ fn infer_pat(
 }
 
 fn infer_expr(
-    program: &res::Program,
+    program: &kinded::Program,
     ctx: &mut Context,
     scope: &mut Scope,
     expected: TypeVar,
@@ -956,7 +1086,7 @@ fn infer_expr(
 
         res::Expr::ArrayLit(items) => {
             let param_var = ctx.new_var(Assign::Unknown);
-            let array_var = ctx.new_var(Assign::App(res::TypeId::Array, vec![param_var]));
+            let array_var = ctor_app_var(ctx, res::TypeId::Array, vec![param_var]);
 
             ctx.unify(expected, array_var)?;
 
@@ -970,19 +1100,19 @@ fn infer_expr(
         }
 
         &res::Expr::ByteLit(val) => {
-            let lit_var = ctx.new_var(Assign::App(res::TypeId::Byte, vec![]));
+            let lit_var = ctx.new_var(Assign::Ctor(res::TypeId::Byte));
             ctx.unify(expected, lit_var)?;
             Ok(AnnotExpr::ByteLit(val))
         }
 
         &res::Expr::IntLit(val) => {
-            let lit_var = ctx.new_var(Assign::App(res::TypeId::Int, vec![]));
+            let lit_var = ctx.new_var(Assign::Ctor(res::TypeId::Int));
             ctx.unify(expected, lit_var)?;
             Ok(AnnotExpr::IntLit(val))
         }
 
         &res::Expr::FloatLit(val) => {
-            let lit_var = ctx.new_var(Assign::App(res::TypeId::Float, vec![]));
+            let lit_var = ctx.new_var(Assign::Ctor(res::TypeId::Float));
             ctx.unify(expected, lit_var)?;
             Ok(AnnotExpr::FloatLit(val))
         }
@@ -999,10 +1129,10 @@ fn infer_expr(
 
 fn instantiate_rigid(
     ctx: &mut Context,
-    scheme: &res::TypeScheme,
+    scheme: &kinded::TypeScheme,
 ) -> (IdVec<res::TypeParamId, TypeVar>, TypeVar) {
     let rigid_params = IdVec::from_vec(
-        (0..scheme.num_params)
+        (0..scheme.param_kinds.len())
             .map(|idx| ctx.new_var(Assign::Param(res::TypeParamId(idx))))
             .collect(),
     );
@@ -1174,8 +1304,8 @@ fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawEr
 // reporting information if an error occurs.
 fn infer_def(
     ctx: &mut Context,
-    program: &res::Program,
-    def: &res::ValDef,
+    program: &kinded::Program,
+    def: &kinded::ValDef,
 ) -> Result<typed::ValDef, RawError> {
     let (rigid_params, declared_type_var) = instantiate_rigid(ctx, &def.scheme);
 
@@ -1191,7 +1321,7 @@ fn infer_def(
     })
 }
 
-pub fn type_infer(program: res::Program) -> Result<typed::Program, Error> {
+pub fn type_infer(program: kinded::Program) -> Result<typed::Program, Error> {
     let vals_inferred = program
         .vals
         .try_map_refs(|id, def| {

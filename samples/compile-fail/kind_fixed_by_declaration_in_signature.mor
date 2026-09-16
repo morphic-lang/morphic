@@ -1,0 +1,8 @@
+// expect-error: Kind Mismatch @ 6:18
+// Same as `kind_fixed_by_declaration`, but the offending use is in a value signature rather than
+// another type declaration.
+type Phantom a { Phantom }
+
+wrong(x: Phantom Array): Int = 0
+
+proc main(): () = ()

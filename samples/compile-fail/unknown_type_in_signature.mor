@@ -1,0 +1,5 @@
+// expect-error: Type Not Found @ 3:8
+// The error points at the unknown name inside the signature, not at the whole definition.
+foo(x: Nope): Int = 0
+
+proc main(): () = ()

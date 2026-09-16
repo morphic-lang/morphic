@@ -1,8 +1,9 @@
+use crate::data::kinded_ast as kinded;
 use crate::data::resolved_ast::{self as res, TypeParamId};
 use crate::data::typed_ast as typed;
 use crate::file_cache::FileCache;
 use id_collections::IdVec;
-use morphic_common::report_error::{locate_path, locate_span, Locate, Reportable};
+use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
 use morphic_common::util::graph::{self, Graph};
 use std::collections::BTreeMap;
 use std::io;
@@ -17,8 +18,13 @@ pub enum ErrorKind {
 pub struct Error(Locate<ErrorKind>);
 
 impl Reportable for Error {
-    fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        self.0.report_with(dest, files, |err| {
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &FileCache,
+        color: ColorMode,
+    ) -> io::Result<()> {
+        self.0.report_with(dest, files, color, |err| {
             (
                 "Unbounded Polymorphic Recursion",
                 match err {
@@ -56,8 +62,10 @@ struct ClassifiedEdge<N> {
 
 fn add_free_vars(ty: &res::Type, vars: &mut Vec<TypeParamId>) {
     match ty {
-        &res::Type::Var(param) => vars.push(param),
-        res::Type::App(_, args) => {
+        res::Type::App(head, args) => {
+            if let &res::TypeHead::Var(param) = head {
+                vars.push(param);
+            }
             for arg in args {
                 add_free_vars(arg, vars);
             }
@@ -86,12 +94,16 @@ fn add_application_edges<Id: Copy>(
     let mut vars = Vec::new();
     for (j, arg) in args.iter().enumerate() {
         match arg {
-            &res::Type::Var(param) => edges.push(ClassifiedEdge {
-                from: (source, param),
-                to: (target, TypeParamId(j)),
-                growth: Growth::Stable,
-                span,
-            }),
+            // A bare parameter is passed along unchanged.  A parameter applied to arguments, like
+            // any other compound type, is growing.
+            res::Type::App(res::TypeHead::Var(param), args) if args.is_empty() => {
+                edges.push(ClassifiedEdge {
+                    from: (source, *param),
+                    to: (target, TypeParamId(j)),
+                    growth: Growth::Stable,
+                    span,
+                })
+            }
             _ => {
                 vars.clear();
                 add_free_vars(arg, &mut vars);
@@ -155,9 +167,8 @@ fn add_type_applications<'a>(
     apps: &mut Vec<(res::CustomTypeId, &'a [res::Type])>,
 ) {
     match ty {
-        res::Type::Var(_) => {}
-        res::Type::App(id, args) => {
-            if let res::TypeId::Custom(custom) = id {
+        res::Type::App(head, args) => {
+            if let res::TypeHead::Ctor(res::TypeId::Custom(custom)) = head {
                 apps.push((*custom, args.as_slice()));
             }
             for arg in args {
@@ -260,7 +271,7 @@ fn check_vals(
 
 fn check_types(
     mod_symbols: &IdVec<res::ModId, res::ModSymbols>,
-    custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
+    custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
     custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
 ) -> Result<(), Error> {
     let mut apps = Vec::new();
@@ -306,10 +317,11 @@ pub fn check_polymorphic_recursion(program: &typed::Program) -> Result<(), Error
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::kinded_ast::{TypeDef, TypeScheme};
     use crate::data::raw_ast as raw;
     use crate::data::resolved_ast::{
-        CustomGlobalId, CustomTypeId, GlobalId, ModDeclLoc, ModId, ModSymbols, TypeDef, TypeId,
-        TypeParamId, TypeScheme, TypeSymbols, ValSymbols, VariantSymbols,
+        CustomGlobalId, CustomTypeId, GlobalId, ModDeclLoc, ModId, ModSymbols, TypeId, TypeParamId,
+        TypeSymbols, ValSymbols, VariantSymbols,
     };
     use crate::data::typed_ast::{Expr, ValDef};
     use std::path::PathBuf;
@@ -321,10 +333,14 @@ mod tests {
         }])
     }
 
+    fn type_kinds(num_params: usize) -> IdVec<TypeParamId, kinded::Kind> {
+        IdVec::from_vec(vec![kinded::Kind::TYPE; num_params])
+    }
+
     fn val_def(num_params: usize, body: Expr) -> ValDef {
         ValDef {
             scheme: TypeScheme {
-                num_params,
+                param_kinds: type_kinds(num_params),
                 body: res::Type::Tuple(vec![]),
             },
             body,
@@ -336,6 +352,10 @@ mod tests {
             mod_: ModId(0),
             type_param_names: IdVec::new(),
             val_name: raw::ValName(name.to_string()),
+            type_spans: res::TypeSpans {
+                span: None,
+                children: Vec::new(),
+            },
         }
     }
 
@@ -349,6 +369,7 @@ mod tests {
                     .map(|&span| VariantSymbols {
                         variant_name: raw::CtorName("Ctor".to_string()),
                         span,
+                        content_spans: None,
                     })
                     .collect(),
             ),
@@ -367,8 +388,8 @@ mod tests {
                 10,
                 25,
                 Box::new(self_call(vec![res::Type::Tuple(vec![
-                    res::Type::Var(TypeParamId(0)),
-                    res::Type::Var(TypeParamId(0)),
+                    res::Type::param(TypeParamId(0)),
+                    res::Type::param(TypeParamId(0)),
                 ])])),
             ),
         )]);
@@ -387,7 +408,7 @@ mod tests {
     fn ordinary_self_recursive_value_is_accepted() {
         let vals = IdVec::from_vec(vec![val_def(
             1,
-            self_call(vec![res::Type::Var(TypeParamId(0))]),
+            self_call(vec![res::Type::param(TypeParamId(0))]),
         )]);
         let val_symbols = IdVec::from_vec(vec![val_symbols("len")]);
 
@@ -397,14 +418,14 @@ mod tests {
     #[test]
     fn growing_recursive_type_is_rejected() {
         let custom_types = IdVec::from_vec(vec![TypeDef {
-            num_params: 1,
+            param_kinds: type_kinds(1),
             variants: IdVec::from_vec(vec![
-                Some(res::Type::Var(TypeParamId(0))),
+                Some(res::Type::param(TypeParamId(0))),
                 Some(res::Type::App(
-                    TypeId::Custom(CustomTypeId(0)),
+                    res::TypeHead::Ctor(TypeId::Custom(CustomTypeId(0))),
                     vec![res::Type::Tuple(vec![
-                        res::Type::Var(TypeParamId(0)),
-                        res::Type::Var(TypeParamId(0)),
+                        res::Type::param(TypeParamId(0)),
+                        res::Type::param(TypeParamId(0)),
                     ])],
                 )),
             ]),
@@ -428,22 +449,22 @@ mod tests {
 
         let custom_types = IdVec::from_vec(vec![
             TypeDef {
-                num_params: 2,
+                param_kinds: type_kinds(2),
                 variants: IdVec::from_vec(vec![Some(res::Type::App(
-                    TypeId::Custom(other_id),
+                    res::TypeHead::Ctor(TypeId::Custom(other_id)),
                     vec![
-                        res::Type::Var(TypeParamId(1)),
-                        res::Type::Var(TypeParamId(0)),
+                        res::Type::param(TypeParamId(1)),
+                        res::Type::param(TypeParamId(0)),
                     ],
                 ))]),
             },
             TypeDef {
-                num_params: 2,
+                param_kinds: type_kinds(2),
                 variants: IdVec::from_vec(vec![Some(res::Type::App(
-                    TypeId::Custom(pair_id),
+                    res::TypeHead::Ctor(TypeId::Custom(pair_id)),
                     vec![
-                        res::Type::Var(TypeParamId(1)),
-                        res::Type::Var(TypeParamId(0)),
+                        res::Type::param(TypeParamId(1)),
+                        res::Type::param(TypeParamId(0)),
                     ],
                 ))]),
             },
@@ -461,14 +482,14 @@ mod tests {
         let nested_id = CustomTypeId(0);
 
         let custom_types = IdVec::from_vec(vec![TypeDef {
-            num_params: 1,
+            param_kinds: type_kinds(1),
             variants: IdVec::from_vec(vec![
-                Some(res::Type::Var(TypeParamId(0))),
+                Some(res::Type::param(TypeParamId(0))),
                 Some(res::Type::App(
-                    TypeId::Custom(nested_id),
+                    res::TypeHead::Ctor(TypeId::Custom(nested_id)),
                     vec![res::Type::Tuple(vec![
-                        res::Type::Var(TypeParamId(0)),
-                        res::Type::Var(TypeParamId(0)),
+                        res::Type::param(TypeParamId(0)),
+                        res::Type::param(TypeParamId(0)),
                     ])],
                 )),
             ]),
@@ -479,8 +500,8 @@ mod tests {
         let vals = IdVec::from_vec(vec![val_def(
             1,
             self_call(vec![res::Type::Tuple(vec![
-                res::Type::Var(TypeParamId(0)),
-                res::Type::Var(TypeParamId(0)),
+                res::Type::param(TypeParamId(0)),
+                res::Type::param(TypeParamId(0)),
             ])]),
         )]);
         let val_symbols = IdVec::from_vec(vec![val_symbols("depth")]);

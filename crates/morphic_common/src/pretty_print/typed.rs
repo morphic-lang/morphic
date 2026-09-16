@@ -1,7 +1,8 @@
 use crate::config::MlVariant;
+use crate::data::kinded_ast::TypeDef;
 use crate::data::profile::ProfilePointId;
 use crate::data::resolved_ast::{
-    ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeDef, TypeId, TypeParamId,
+    ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeHead, TypeId, TypeParamId,
     VariantId,
 };
 use crate::data::typed_ast::*;
@@ -96,7 +97,6 @@ impl<'a, 'b> Context<'a, 'b> {
 
     fn write_type(&mut self, type_: &Type, precedence: Precedence) -> io::Result<()> {
         let my_precedence = match type_ {
-            Type::Var(_) => Precedence::Var,
             Type::App(_, args) => {
                 if args.len() == 0 {
                     Precedence::Var
@@ -112,8 +112,7 @@ impl<'a, 'b> Context<'a, 'b> {
         }
 
         match type_ {
-            Type::Var(type_var) => self.write_type_var(type_var)?,
-            Type::App(type_id, args) => {
+            Type::App(head, args) => {
                 if args.len() == 1 {
                     self.write_type(&args[0], Precedence::Var)?;
                     self.write(" ")?;
@@ -127,7 +126,17 @@ impl<'a, 'b> Context<'a, 'b> {
                     }
                     self.write(") ")?;
                 }
-                self.write_type_id(type_id)?;
+                match head {
+                    TypeHead::Ctor(type_id) => self.write_type_id(type_id)?,
+                    TypeHead::Var(type_var) => {
+                        // ML has no higher-kinded types, so a parameter can only appear bare.
+                        assert!(
+                            args.is_empty(),
+                            "higher-kinded type application cannot be expressed in ML"
+                        );
+                        self.write_type_var(type_var)?
+                    }
+                }
             }
             Type::Tuple(types) => {
                 if types.len() == 0 {
@@ -231,11 +240,11 @@ impl<'a, 'b> Context<'a, 'b> {
                                     Type::Tuple(pats.iter().map(|x| pat_to_type(x)).collect())
                                 }
                                 Pattern::Ctor(type_id, type_args, _, _) => {
-                                    Type::App(type_id.clone(), type_args.to_vec())
+                                    Type::App(TypeHead::Ctor(*type_id), type_args.to_vec())
                                 }
-                                Pattern::ByteConst(_) => Type::App(TypeId::Byte, Vec::new()),
-                                Pattern::IntConst(_) => Type::App(TypeId::Int, Vec::new()),
-                                Pattern::FloatConst(_) => Type::App(TypeId::Float, Vec::new()),
+                                Pattern::ByteConst(_) => Type::ctor(TypeId::Byte),
+                                Pattern::IntConst(_) => Type::ctor(TypeId::Int),
+                                Pattern::FloatConst(_) => Type::ctor(TypeId::Float),
                                 Pattern::Span(_, _, p) => pat_to_type(p),
                             }
                         }
@@ -615,14 +624,15 @@ impl<'a, 'b> Context<'a, 'b> {
             self.write("and ")?;
         }
 
-        if def.num_params == 1 {
+        let num_params = def.param_kinds.len();
+        if num_params == 1 {
             self.write_type_var(&TypeParamId(0))?;
             self.write(" ")?;
-        } else if def.num_params > 1 {
+        } else if num_params > 1 {
             self.write("(")?;
-            for type_arg in 0..def.num_params {
+            for type_arg in 0..num_params {
                 self.write_type_var(&TypeParamId(type_arg))?;
-                if type_arg != def.num_params - 1 {
+                if type_arg != num_params - 1 {
                     self.write(", ")?;
                 }
             }
@@ -1017,17 +1027,9 @@ fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
 
 fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
     match type_ {
-        Type::Var(_) => {}
-        Type::App(type_id, types) => {
-            match type_id {
-                TypeId::Bool => {}
-                TypeId::Byte => {}
-                TypeId::Int => {}
-                TypeId::Float => {}
-                TypeId::Array => {}
-                TypeId::Custom(custom_type) => {
-                    deps.insert(*custom_type);
-                }
+        Type::App(head, types) => {
+            if let TypeHead::Ctor(TypeId::Custom(custom_type)) = head {
+                deps.insert(*custom_type);
             }
             for type_ in types {
                 add_type_deps(deps, type_);

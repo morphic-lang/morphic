@@ -1,6 +1,6 @@
 use crate::code_gen;
 use morphic_common::file_cache;
-use morphic_common::report_error::Reportable;
+use morphic_common::report_error::{ColorMode, Reportable};
 use std::io;
 
 #[derive(Debug)]
@@ -10,7 +10,12 @@ pub enum Error {
 }
 
 impl Reportable for Error {
-    fn report(&self, dest: &mut impl io::Write, _files: &file_cache::FileCache) -> io::Result<()> {
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        _files: &file_cache::FileCache,
+        _color: ColorMode,
+    ) -> io::Result<()> {
         use Error::*;
 
         match &self {

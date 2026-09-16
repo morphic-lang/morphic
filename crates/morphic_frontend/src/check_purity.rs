@@ -4,7 +4,7 @@ use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::file_cache::FileCache;
 use morphic_common::lines;
-use morphic_common::report_error::{locate_path, locate_span, Locate, Reportable};
+use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
 
 #[derive(Clone, Copy, Debug)]
 pub struct PurityError;
@@ -15,8 +15,13 @@ type RawError = Locate<PurityError>;
 pub struct Error(RawError);
 
 impl Reportable for Error {
-    fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        self.0.report_with(dest, files, |PurityError| {
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &FileCache,
+        color: ColorMode,
+    ) -> io::Result<()> {
+        self.0.report_with(dest, files, color, |PurityError| {
             (
                 "Purity Mismatch",
                 lines![

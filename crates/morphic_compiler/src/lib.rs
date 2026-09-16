@@ -7,7 +7,7 @@ pub mod cli;
 
 use morphic_backend::{code_gen, interpreter};
 use morphic_common::config as cfg;
-use morphic_common::report_error::Reportable;
+use morphic_common::report_error::{ColorMode, Reportable};
 use morphic_common::{file_cache, pseudoprocess};
 use std::io;
 
@@ -34,7 +34,12 @@ impl From<ErrorKind> for Error {
 }
 
 impl Reportable for Error {
-    fn report(&self, dest: &mut impl io::Write, files: &file_cache::FileCache) -> io::Result<()> {
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &file_cache::FileCache,
+        color: ColorMode,
+    ) -> io::Result<()> {
         use ErrorKind::*;
         match &self.kind {
             ArtifactDirMissing => {
@@ -52,8 +57,8 @@ impl Reportable for Error {
                 dest,
                 "Program terminated due to signal.  This probably indicates a SIGTERM or segfault."
             ),
-            FrontendError(err) => err.report(dest, files),
-            BackendError(err) => err.report(dest, files),
+            FrontendError(err) => err.report(dest, files, color),
+            BackendError(err) => err.report(dest, files, color),
         }
     }
 

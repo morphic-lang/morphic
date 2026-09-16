@@ -1,3 +1,4 @@
+use crate::data::kinded_ast as kinded;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -6,7 +7,7 @@ use id_collections::IdVec;
 #[derive(Clone, Debug)]
 pub struct Program {
     pub mod_symbols: IdVec<res::ModId, res::ModSymbols>,
-    pub custom_types: IdVec<res::CustomTypeId, res::TypeDef>,
+    pub custom_types: IdVec<res::CustomTypeId, kinded::TypeDef>,
     pub custom_type_symbols: IdVec<res::CustomTypeId, res::TypeSymbols>,
     pub profile_points: IdVec<prof::ProfilePointId, prof::ProfilePoint>,
     pub vals: IdVec<res::CustomGlobalId, ValDef>,
@@ -16,7 +17,7 @@ pub struct Program {
 
 #[derive(Clone, Debug)]
 pub struct ValDef {
-    pub scheme: res::TypeScheme,
+    pub scheme: kinded::TypeScheme,
     pub body: Expr,
 }
 

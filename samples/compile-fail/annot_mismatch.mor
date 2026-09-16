@@ -1,4 +1,4 @@
-// expect-error: Type Mismatch
+// expect-error: Type Mismatch @ 3:7
 proc main(): () =
   let x: Int = 1.0 in
   ()

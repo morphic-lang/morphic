@@ -69,8 +69,12 @@ pub enum ExposeSpec {
 pub enum Type {
     Var(TypeParam),
     App(ModPath, TypeName, Vec<Type>),
+    // A type parameter applied to one or more arguments, e.g. `f a`.
+    AppVar(TypeParam, Vec<Type>),
     Tuple(Vec<Type>),
     Func(Purity, Box<Type>, Box<Type>),
+
+    Span(usize, usize, Box<Type>),
 }
 
 #[derive(Clone, Debug)]

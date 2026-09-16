@@ -1,8 +1,9 @@
 use crate::{
-    check_exhaustive, check_main, check_polymorphic_recursion, check_purity, resolve, type_infer,
+    check_exhaustive, check_main, check_polymorphic_recursion, check_purity, kind_infer, resolve,
+    type_infer,
 };
 use morphic_common::file_cache;
-use morphic_common::report_error::Reportable;
+use morphic_common::report_error::{ColorMode, Reportable};
 use std::io;
 
 #[derive(Debug)]
@@ -10,6 +11,7 @@ pub enum Error {
     CreateArtifactsFailed(io::Error),
     WriteIrFailed(io::Error),
     ResolveFailed(resolve::Error),
+    KindInferFailed(kind_infer::Error),
     PurityCheckFailed(check_purity::Error),
     TypeInferFailed(type_infer::Error),
     CheckExhaustiveFailed(check_exhaustive::Error),
@@ -22,19 +24,25 @@ pub enum Error {
 }
 
 impl Reportable for Error {
-    fn report(&self, dest: &mut impl io::Write, files: &file_cache::FileCache) -> io::Result<()> {
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &file_cache::FileCache,
+        color: ColorMode,
+    ) -> io::Result<()> {
         use Error::*;
 
         match &self {
             CreateArtifactsFailed(err) => {
                 writeln!(dest, "Could not create artifacts directory: {}", err)
             }
-            ResolveFailed(err) => err.report(dest, files),
-            PurityCheckFailed(err) => err.report(dest, files),
-            TypeInferFailed(err) => err.report(dest, files),
-            CheckExhaustiveFailed(err) => err.report(dest, files),
+            ResolveFailed(err) => err.report(dest, files, color),
+            KindInferFailed(err) => err.report(dest, files, color),
+            PurityCheckFailed(err) => err.report(dest, files, color),
+            TypeInferFailed(err) => err.report(dest, files, color),
+            CheckExhaustiveFailed(err) => err.report(dest, files, color),
             CheckMainFailed(err) => writeln!(dest, "{}", err),
-            CheckPolymorphicRecursionFailed(err) => err.report(dest, files),
+            CheckPolymorphicRecursionFailed(err) => err.report(dest, files, color),
             WriteIrFailed(err) => writeln!(
                 dest,
                 "Could not write intermediate representation artifacts: {}",

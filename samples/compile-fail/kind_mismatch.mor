@@ -1,0 +1,7 @@
+// expect-error: Kind Mismatch @ 5:21
+type Wrap f { Wrap(f Int) }
+
+// `Int` is an ordinary type, but `Wrap` needs a type constructor.
+type Bad { Bad(Wrap Int) }
+
+proc main(): () = ()

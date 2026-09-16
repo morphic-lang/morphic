@@ -6,6 +6,7 @@ mod check_main;
 mod check_polymorphic_recursion;
 mod check_purity;
 mod closure_specialize;
+mod kind_infer;
 mod lambda_lift;
 mod lex;
 mod lower_closures;
@@ -53,7 +54,8 @@ pub fn compile_to_typed_ast(
     if purity_mode == cfg::PurityMode::Checked {
         check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;
     }
-    let typed = type_infer::type_infer(resolved).map_err(Error::TypeInferFailed)?;
+    let kinded = kind_infer::infer_kinds(resolved).map_err(Error::KindInferFailed)?;
+    let typed = type_infer::type_infer(kinded).map_err(Error::TypeInferFailed)?;
     check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;
     check_main::check_main(&typed).map_err(Error::CheckMainFailed)?;
     check_polymorphic_recursion::check_polymorphic_recursion(&typed)

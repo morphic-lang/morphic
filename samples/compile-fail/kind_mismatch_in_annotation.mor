@@ -1,0 +1,5 @@
+// expect-error: Kind Mismatch @ 4:7
+// Kind errors in a local annotation are reported at the annotated pattern.
+proc main(): () =
+  let w: Array Int Int = [] in
+  ()

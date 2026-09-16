@@ -20,7 +20,7 @@ use id_collections::IdVec;
 use morphic_common::config::{self as cfg, ProfileMode};
 use morphic_common::intrinsic_config::INTRINSIC_NAMES;
 use morphic_common::lines;
-use morphic_common::report_error::{locate_path, locate_span, Locate, Reportable};
+use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
 
 #[derive(Debug)]
 pub enum ErrorKind {
@@ -54,7 +54,12 @@ type RawError = Locate<ErrorKind>;
 pub struct Error(RawError);
 
 impl Reportable for Error {
-    fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &FileCache,
+        color: ColorMode,
+    ) -> io::Result<()> {
         use ErrorKind::*;
 
         match &self.0.error {
@@ -66,6 +71,7 @@ impl Reportable for Error {
                 parse_error::report(
                     dest,
                     files,
+                    color,
                     self.0.path.as_ref().map(|path| path.as_ref()),
                     err,
                 )?;
@@ -81,7 +87,7 @@ impl Reportable for Error {
              module by just passing '--profile foo', or you could profile a function \
              'bar' in the module 'Baz' by passing '--profile Baz.bar'.";
 
-        self.0.report_with(dest, files, |kind| match kind {
+        self.0.report_with(dest, files, color, |kind| match kind {
             ReadFailed(path, err) => {
                 // Other cases are handled above
                 assert!(err.kind() == io::ErrorKind::NotFound);
@@ -548,9 +554,14 @@ fn resolve_mod(
                             variant_symbols: IdVec::from_vec(
                                 variants
                                     .iter()
-                                    .map(|(_, variant_name, _, span)| res::VariantSymbols {
-                                        variant_name: variant_name.clone(),
-                                        span: *span,
+                                    .map(|(_, variant_name, variant_type, span)| {
+                                        res::VariantSymbols {
+                                            variant_name: variant_name.clone(),
+                                            span: *span,
+                                            content_spans: variant_type
+                                                .as_ref()
+                                                .map(res::TypeSpans::of),
+                                        }
                                     })
                                     .collect(),
                             ),
@@ -719,6 +730,7 @@ fn resolve_mod(
             mod_: self_mod_id,
             type_param_names,
             val_name,
+            type_spans: res::TypeSpans::of(&type_),
         });
     }
 
@@ -949,6 +961,16 @@ fn resolve_type_with_builtins(
     }
 }
 
+fn resolve_type_param(
+    param_map: &BTreeMap<raw::TypeParam, res::TypeParamId>,
+    param_name: &raw::TypeParam,
+) -> Result<res::TypeParamId, RawError> {
+    param_map
+        .get(param_name)
+        .copied()
+        .ok_or_else(|| ErrorKind::TypeParamNotFound(param_name.0.clone()).into())
+}
+
 fn resolve_type(
     global_mods: &IdVec<res::ModId, ModMap>,
     local_mod_map: &ModMap,
@@ -957,11 +979,19 @@ fn resolve_type(
 ) -> Result<res::Type, RawError> {
     match type_ {
         raw::Type::Var(param_name) => {
-            if let Some(&id) = param_map.get(param_name) {
-                Ok(res::Type::Var(id))
-            } else {
-                Err(ErrorKind::TypeParamNotFound(param_name.0.clone()).into())
-            }
+            let id = resolve_type_param(param_map, param_name)?;
+            Ok(res::Type::param(id))
+        }
+
+        raw::Type::AppVar(param_name, args) => {
+            let id = resolve_type_param(param_map, param_name)?;
+
+            let resolved_args = args
+                .iter()
+                .map(|arg| resolve_type(global_mods, local_mod_map, param_map, arg))
+                .collect::<Result<_, _>>()?;
+
+            Ok(res::Type::App(res::TypeHead::Var(id), resolved_args))
         }
 
         raw::Type::App(path, name, args) => {
@@ -972,7 +1002,7 @@ fn resolve_type(
                 .map(|arg| resolve_type(global_mods, local_mod_map, param_map, arg))
                 .collect::<Result<_, _>>()?;
 
-            Ok(res::Type::App(type_id, resolved_args))
+            Ok(res::Type::App(res::TypeHead::Ctor(type_id), resolved_args))
         }
 
         raw::Type::Tuple(items) => Ok(res::Type::Tuple(
@@ -987,6 +1017,11 @@ fn resolve_type(
             Box::new(resolve_type(global_mods, local_mod_map, param_map, &*arg)?),
             Box::new(resolve_type(global_mods, local_mod_map, param_map, &*ret)?),
         )),
+
+        raw::Type::Span(lo, hi, inner) => {
+            resolve_type(global_mods, local_mod_map, param_map, inner)
+                .map_err(locate_span(*lo, *hi))
+        }
     }
 }
 
@@ -1388,6 +1423,13 @@ fn find_scheme_params(
             }
         }
 
+        raw::Type::AppVar(param, args) => {
+            find_scheme_params(&raw::Type::Var(param.clone()), param_names, params);
+            for arg in args {
+                find_scheme_params(arg, param_names, params);
+            }
+        }
+
         raw::Type::App(_, _, args) => {
             for arg in args {
                 find_scheme_params(arg, param_names, params);
@@ -1404,6 +1446,8 @@ fn find_scheme_params(
             find_scheme_params(&*arg, param_names, params);
             find_scheme_params(&*ret, param_names, params);
         }
+
+        raw::Type::Span(_, _, inner) => find_scheme_params(inner, param_names, params),
     }
 }
 

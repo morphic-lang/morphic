@@ -1,3 +1,4 @@
+use crate::data::kinded_ast as kinded;
 use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
 use crate::file_cache::FileCache;
@@ -5,7 +6,7 @@ use crate::report_pattern;
 use id_collections::IdVec;
 use im_rc::{vector, Vector};
 use morphic_common::lines;
-use morphic_common::report_error::{locate_path, locate_span, Locate, Reportable};
+use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
 use std::collections::BTreeMap;
 use std::io;
 
@@ -36,8 +37,13 @@ impl RawErrorKind {
 }
 
 impl Reportable for Error {
-    fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()> {
-        self.0.report_with(dest, files, |err| {
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &FileCache,
+        color: ColorMode,
+    ) -> io::Result<()> {
+        self.0.report_with(dest, files, color, |err| {
             (
                 "Non-Exhaustive Pattern Match",
                 format!(
@@ -440,7 +446,7 @@ impl DecisionTree {
 
     fn check_exhaustive_rec(
         &self,
-        custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
+        custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
         path: Vector<Decision>,
     ) -> Result<(), Vector<Decision>> {
         match self {
@@ -530,7 +536,7 @@ impl DecisionTree {
 
     fn check_exhaustive(
         &self,
-        custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
+        custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
     ) -> Result<(), RawError> {
         self.check_exhaustive_rec(custom_types, vector![])
             .map_err(|decisions| {
@@ -542,7 +548,10 @@ impl DecisionTree {
     }
 }
 
-fn num_variants(custom_types: &IdVec<res::CustomTypeId, res::TypeDef>, id: res::TypeId) -> usize {
+fn num_variants(
+    custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
+    id: res::TypeId,
+) -> usize {
     match id {
         res::TypeId::Bool => 2,
         res::TypeId::Custom(custom_id) => custom_types[custom_id].variants.len(),
@@ -551,7 +560,7 @@ fn num_variants(custom_types: &IdVec<res::CustomTypeId, res::TypeDef>, id: res::
 }
 
 fn check_irrefutable_pattern(
-    custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
+    custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
     pat: &typed::Pattern,
 ) -> Result<(), RawError> {
     let mut tree = DecisionTree::new();
@@ -566,7 +575,7 @@ fn check_irrefutable_pattern(
 }
 
 fn check_expr(
-    custom_types: &IdVec<res::CustomTypeId, res::TypeDef>,
+    custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
     expr: &typed::Expr,
 ) -> Result<(), RawError> {
     match expr {

@@ -5,8 +5,40 @@ use std::path::Path;
 use std::path::PathBuf;
 use textwrap::{wrap, Options, WordSplitter};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorMode {
+    Color,
+    Plain,
+}
+
+impl ColorMode {
+    /// Colors output only when `stream` is a terminal and the `NO_COLOR` environment variable is
+    /// not set.
+    pub fn for_stream(stream: &impl io::IsTerminal) -> ColorMode {
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
+        if stream.is_terminal() && !no_color {
+            ColorMode::Color
+        } else {
+            ColorMode::Plain
+        }
+    }
+}
+
+fn paint(color: ColorMode, style: ansi_term::Style, text: impl Into<String>) -> String {
+    let text = text.into();
+    match color {
+        ColorMode::Color => style.paint(text).to_string(),
+        ColorMode::Plain => text,
+    }
+}
+
 pub trait Reportable {
-    fn report(&self, dest: &mut impl io::Write, files: &FileCache) -> io::Result<()>;
+    fn report(
+        &self,
+        dest: &mut impl io::Write,
+        files: &FileCache,
+        color: ColorMode,
+    ) -> io::Result<()>;
     fn exit_status(&self) -> i32;
 }
 
@@ -104,6 +136,7 @@ fn format_snippet(
     src: &Lines,
     lo: ByteIdx,
     hi: ByteIdx,
+    color: ColorMode,
 ) -> io::Result<()> {
     let lo_line = src.line_idx(lo);
     let hi_line = src.line_idx_before(hi);
@@ -122,26 +155,33 @@ fn format_snippet(
         writeln!(
             dest,
             "{}",
-            line_num_style.paint(format!(" {empty:>digits$} |", empty = "", digits = digits))
+            paint(
+                color,
+                line_num_style,
+                format!(" {empty:>digits$} |", empty = "", digits = digits)
+            )
         )?;
         writeln!(
             dest,
             "{runner} {content}",
-            runner = line_num_style.paint(format!(
-                " {num:>digits$} |",
-                num = lo_line.0 + 1,
-                digits = digits
-            )),
+            runner = paint(
+                color,
+                line_num_style,
+                format!(" {num:>digits$} |", num = lo_line.0 + 1, digits = digits)
+            ),
             content = content
         )?;
         writeln!(
             dest,
             "{runner} {empty:start_col$}{indicator}",
-            runner =
-                line_num_style.paint(format!(" {empty:>digits$} |", empty = "", digits = digits)),
+            runner = paint(
+                color,
+                line_num_style,
+                format!(" {empty:>digits$} |", empty = "", digits = digits)
+            ),
             empty = "",
             start_col = start_col,
-            indicator = indicator_style.paint("^".repeat(num_cols)),
+            indicator = paint(color, indicator_style, "^".repeat(num_cols)),
         )?;
     } else {
         let start_col = src.col_idx(lo_line, lo);
@@ -162,17 +202,24 @@ fn format_snippet(
         writeln!(
             dest,
             "{runner} {empty:start_col$}{indicator}",
-            runner =
-                line_num_style.paint(format!(" {empty:>digits$} |", empty = "", digits = digits)),
+            runner = paint(
+                color,
+                line_num_style,
+                format!(" {empty:>digits$} |", empty = "", digits = digits)
+            ),
             empty = "",
             start_col = start_col,
-            indicator = indicator_style.paint(format!(
-                "*{}",
-                // Notice that, when you count the contribution of the leading '*', we extend one
-                // character beyond `max_content_len - start_col`.  This is intentional, as it
-                // visually indicates continuation onto multiple lines.
-                "~".repeat(max_content_len - start_col)
-            )),
+            indicator = paint(
+                color,
+                indicator_style,
+                format!(
+                    "*{}",
+                    // Notice that, when you count the contribution of the leading '*', we extend one
+                    // character beyond `max_content_len - start_col`.  This is intentional, as it
+                    // visually indicates continuation onto multiple lines.
+                    "~".repeat(max_content_len - start_col)
+                )
+            ),
         )?;
 
         let should_truncate = hi_line.0 + 1 - lo_line.0
@@ -189,22 +236,26 @@ fn format_snippet(
                 writeln!(
                     dest,
                     "{runner} {content}",
-                    runner = line_num_style.paint(format!(
-                        " {num:>digits$} |",
-                        num = line_idx + 1,
-                        digits = digits
-                    )),
+                    runner = paint(
+                        color,
+                        line_num_style,
+                        format!(" {num:>digits$} |", num = line_idx + 1, digits = digits)
+                    ),
                     content = content
                 )?;
             } else if line_idx == lo_line.0 + MULTILINE_HEAD_TAIL_LINES {
                 writeln!(
                     dest,
                     "{}",
-                    line_num_style.paint(format!(
-                        "{ellipsis:>spacing$}",
-                        ellipsis = "...",
-                        spacing = digits + 3
-                    ))
+                    paint(
+                        color,
+                        line_num_style,
+                        format!(
+                            "{ellipsis:>spacing$}",
+                            ellipsis = "...",
+                            spacing = digits + 3
+                        )
+                    )
                 )?;
             }
         }
@@ -212,9 +263,16 @@ fn format_snippet(
         writeln!(
             dest,
             "{runner}{indicator}",
-            runner =
-                line_num_style.paint(format!(" {empty:>digits$} |", empty = "", digits = digits)),
-            indicator = indicator_style.paint(format!("{}*", "~".repeat(num_cols_on_last_line))),
+            runner = paint(
+                color,
+                line_num_style,
+                format!(" {empty:>digits$} |", empty = "", digits = digits)
+            ),
+            indicator = paint(
+                color,
+                indicator_style,
+                format!("{}*", "~".repeat(num_cols_on_last_line))
+            ),
         )?;
     }
 
@@ -236,6 +294,7 @@ const MESSAGE_WIDTH: usize = 60;
 pub fn report_error(
     dest: &mut impl io::Write,
     files: &FileCache,
+    color: ColorMode,
     report: Report,
 ) -> io::Result<()> {
     let title_style = Color::Blue.bold();
@@ -245,14 +304,18 @@ pub fn report_error(
     writeln!(
         dest,
         "\n{}",
-        title_style.paint(format!(
-            "{leading} {title} {trailing}",
-            leading = "-".repeat(TITLE_LEADING_DASHES),
-            title = report.title,
-            trailing = "-".repeat(
-                TITLE_TOTAL_COLS.saturating_sub(2 + report.title.len() + TITLE_LEADING_DASHES)
-            ),
-        ))
+        paint(
+            color,
+            title_style,
+            format!(
+                "{leading} {title} {trailing}",
+                leading = "-".repeat(TITLE_LEADING_DASHES),
+                title = report.title,
+                trailing = "-".repeat(
+                    TITLE_TOTAL_COLS.saturating_sub(2 + report.title.len() + TITLE_LEADING_DASHES)
+                ),
+            )
+        )
     )?;
 
     match (report.path, report.span) {
@@ -264,21 +327,24 @@ pub fn report_error(
             writeln!(
                 dest,
                 "{}",
-                path_style.paint(format!(
-                    "{}:{}:{}",
-                    path.display(),
-                    lo_line.0 + 1,
-                    lo_col + 1
-                ))
+                paint(
+                    color,
+                    path_style,
+                    format!("{}:{}:{}", path.display(), lo_line.0 + 1, lo_col + 1)
+                )
             )?;
 
             writeln!(dest)?;
 
-            format_snippet(dest, &src, ByteIdx(lo), ByteIdx(hi))?;
+            format_snippet(dest, &src, ByteIdx(lo), ByteIdx(hi), color)?;
         }
 
         (Some(path), None) => {
-            writeln!(dest, "{}", path_style.paint(path.display().to_string()))?;
+            writeln!(
+                dest,
+                "{}",
+                paint(color, path_style, path.display().to_string())
+            )?;
         }
 
         (None, _) => {}
@@ -361,6 +427,7 @@ impl<E> Locate<E> {
         &self,
         dest: &mut impl io::Write,
         files: &FileCache,
+        color: ColorMode,
         reporter: impl FnOnce(&E) -> (Title, Msg),
     ) -> io::Result<()>
     where
@@ -372,6 +439,7 @@ impl<E> Locate<E> {
         report_error(
             dest,
             files,
+            color,
             Report {
                 path: self.path.as_ref().map(|path| path.as_ref()),
                 span: self.span,

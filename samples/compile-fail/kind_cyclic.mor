@@ -1,0 +1,5 @@
+// expect-error: Cyclic Kind @ 3:18
+// `f` is applied to itself, so its kind would have to contain itself.
+type Bad f { Bad(f f) }
+
+proc main(): () = ()

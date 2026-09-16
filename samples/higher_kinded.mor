@@ -1,0 +1,39 @@
+// Higher-kinded type parameters: `f` below has kind `Type -> Type`.
+
+type Opt a { Some(a), None }
+
+type Pair a b { Pair(a, b) }
+
+// A wrapper around an application of an unknown constructor `f` to `Int`.
+type Wrap f { Wrap(f Int) }
+
+// `g` is applied to two arguments, so it has kind `Type -> Type -> Type`.
+type Wrap2 g { Wrap2(g Int Bool) }
+
+// `Compose Opt Array Int` is `Opt (Array Int)`.
+type Compose f g a { Compose(f (g a)) }
+
+unwrap(w: Wrap f): f Int =
+  match w { Wrap(x) -> x }
+
+// Partial application in argument position: `Pair Bool` has kind `Type -> Type`.
+snd_int(w: Wrap (Pair Bool)): Int =
+  match unwrap(w) { Pair(_, n) -> n }
+
+opt_or(o: Opt Int, dflt: Int): Int =
+  match o { Some(n) -> n, None -> dflt }
+
+proc main(): () =
+  // `f` is instantiated with `Opt`, with `Pair Bool`, and (for `Wrap2`) with `Pair` itself.
+  let w1 = Wrap(Some(1)) in
+  let w2 = Wrap(Pair(True, 2)) in
+  let w3 = Wrap2(Pair(3, False)) in
+  let c: Compose Opt Array Int = Compose(Some([4])) in
+  let n3 = match w3 { Wrap2(Pair(n, _)) -> n } in
+  let n4 = match c { Compose(Some(arr)) -> get(arr, 0), Compose(None) -> 0 } in
+  let total = opt_or(unwrap(w1), 0) + snd_int(w2) + n3 + n4 in
+  if total = 10 {
+    do output("ok\n")
+  } else {
+    do output("wrong\n")
+  }

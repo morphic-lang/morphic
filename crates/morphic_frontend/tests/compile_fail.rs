@@ -1,7 +1,8 @@
 //! Check that each program under `samples/compile-fail` is rejected by the frontend with the
-//! error named in its `// expect-error:` header comment.
+//! error named in its `// expect-error:` header comment.  The header may also name the position
+//! the error is expected to be reported at, as in `// expect-error: Kind Mismatch @ 6:12`.
 
-use morphic_common::report_error::Reportable;
+use morphic_common::report_error::{ColorMode, Reportable};
 use morphic_common::{config as cfg, file_cache::FileCache, progress_ui::ProgressMode};
 use std::path::{Path, PathBuf};
 
@@ -20,12 +21,17 @@ fn compile_fail_samples_report_expected_errors() {
     let mut failures = Vec::new();
     for path in &entry_points {
         let src = std::fs::read_to_string(path).unwrap();
-        let expected = src
+        let header = src
             .lines()
             .next()
             .and_then(|line| line.strip_prefix("// expect-error:"))
             .map(str::trim)
             .unwrap_or_else(|| panic!("{}: missing '// expect-error:' header", path.display()));
+
+        let (expected, expected_pos) = match header.split_once(" @ ") {
+            Some((title, pos)) => (title.trim(), Some(pos.trim())),
+            None => (header, None),
+        };
 
         let mut files = FileCache::new();
         let result = morphic_frontend::compile_to_typed_ast(
@@ -46,15 +52,19 @@ fn compile_fail_samples_report_expected_errors() {
             )),
             Err(err) => {
                 let mut rendered = Vec::new();
-                err.report(&mut rendered, &files).unwrap();
+                err.report(&mut rendered, &files, ColorMode::Plain).unwrap();
                 let rendered = String::from_utf8_lossy(&rendered);
-                if rendered.contains(expected) {
+                // The report's location line ends in `<path>:<line>:<col>`.
+                let pos_ok =
+                    expected_pos.map_or(true, |pos| rendered.contains(&format!(".mor:{}\n", pos)));
+                if rendered.contains(expected) && pos_ok {
                     println!("ok: {}", path.display());
                 } else {
                     failures.push(format!(
-                        "{}: expected the error '{}', but got:\n{}",
+                        "{}: expected the error '{}'{}, but got:\n{}",
                         path.display(),
                         expected,
+                        expected_pos.map_or(String::new(), |pos| format!(" at {}", pos)),
                         rendered
                     ));
                 }

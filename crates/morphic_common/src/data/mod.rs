@@ -12,6 +12,8 @@ pub mod profile;
 
 pub mod resolved_ast;
 
+pub mod kinded_ast;
+
 pub mod typed_ast;
 
 pub mod mono_ast;

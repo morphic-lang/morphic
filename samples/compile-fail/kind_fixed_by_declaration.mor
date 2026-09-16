@@ -1,0 +1,8 @@
+// expect-error: Kind Mismatch @ 6:24
+// `Phantom` never applies `a`, so `a` has kind `Type` by virtue of the declaration alone.  A use
+// elsewhere cannot retroactively make it a higher kind.
+type Phantom a { Phantom }
+
+type Use { Use(Phantom Array) }
+
+proc main(): () = ()

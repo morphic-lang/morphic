@@ -299,22 +299,46 @@ QualTypeName: (syntax::ModPath, syntax::TypeName) = {
     (path, name)
 };
 
-AtomicType: syntax::Type = {
+SpannedType<T>: syntax::Type = {
+  <lo: @L> <type_: T> <hi: @R> => {
+    if let syntax::Type::Span(_, _, _) = &type_ {
+      type_
+    } else {
+      syntax::Type::Span(lo, hi, Box::new(type_))
+    }
+  },
+};
+
+AtomicType_: syntax::Type = {
   "(" <Types> ")",
   <TypeParam> => syntax::Type::Var(<>),
   <QualTypeName> => syntax::Type::App(<>.0, <>.1, Vec::new()),
 };
 
-AppType: syntax::Type = {
+AtomicType: syntax::Type = {
+  <SpannedType<AtomicType_>>,
+};
+
+AppType_: syntax::Type = {
   <AtomicType>,
   <name: QualTypeName> <args: AtomicType+> =>
     syntax::Type::App(name.0, name.1, args),
+  <param: TypeParam> <args: AtomicType+> =>
+    syntax::Type::AppVar(param, args),
 };
 
-FuncType: syntax::Type = {
+AppType: syntax::Type = {
+  <SpannedType<AppType_>>,
+};
+
+FuncType_: syntax::Type = {
   <AppType>,
   <purity: OptProc> <arg: AppType> "->" <ret: FuncType> =>
     syntax::Type::Func(purity, Box::new(arg), Box::new(ret)),
+};
+
+FuncType: syntax::Type = {
+  <SpannedType<FuncType_>>,
 };
 
 Type: syntax::Type = {

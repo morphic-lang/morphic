@@ -38,6 +38,11 @@ sample! { annotations "../../samples/annotations.mor";
     stdout = "ok\n";
 }
 
+sample! { higher_kinded "../../samples/higher_kinded.mor";
+    stdin = "";
+    stdout = "ok\n";
+}
+
 sample! { arith "../../samples/arith.mor";
     stdin = "";
     stdout = "Completed all tests\n";

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::data::kinded_ast as kinded;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
@@ -8,11 +9,18 @@ use id_collections::IdVec;
 /// Intermediate representation of partially-inferred types used for error reporting
 #[derive(Clone, Debug)]
 pub enum Type {
-    Var(res::TypeParamId),
-    App(res::TypeId, Vec<Type>),
+    App(Head, Vec<Type>),
     Tuple(Vec<Type>),
     Func(Purity, Box<Type>, Box<Type>),
+}
+
+#[derive(Clone, Debug)]
+pub enum Head {
+    Ctor(res::TypeId),
+    Var(res::TypeParamId),
+    /// A type that inference has not determined.
     Unknown,
+    /// A type that would have to contain itself.
     RecursiveOccurrence,
 }
 
@@ -26,12 +34,15 @@ pub const RECURSIVE_TYPE: &str = "...";
 
 pub fn is_concrete(type_: &Type) -> bool {
     match type_ {
-        Type::Var(_) => true,
-        Type::App(_, args) => args.iter().all(is_concrete),
+        Type::App(head, args) => {
+            let head_concrete = match head {
+                Head::Ctor(_) | Head::Var(_) => true,
+                Head::Unknown | Head::RecursiveOccurrence => false,
+            };
+            head_concrete && args.iter().all(is_concrete)
+        }
         Type::Tuple(items) => items.iter().all(is_concrete),
         Type::Func(_, arg, ret) => is_concrete(arg) && is_concrete(ret),
-        Type::Unknown => false,
-        Type::RecursiveOccurrence => false,
     }
 }
 
@@ -87,13 +98,13 @@ enum Qualification {
 }
 
 pub struct TypeRenderer<'a> {
-    program: &'a res::Program,
+    program: &'a kinded::Program,
 
     builtin_quals: BTreeMap<BuiltinType, Qualification>,
     custom_quals: IdVec<res::CustomTypeId, Qualification>,
 }
 
-fn find_builtin_quals(program: &res::Program) -> BTreeMap<BuiltinType, Qualification> {
+fn find_builtin_quals(program: &kinded::Program) -> BTreeMap<BuiltinType, Qualification> {
     let mut quals: BTreeMap<BuiltinType, Qualification> = BUILTINS
         .iter()
         .map(|&builtin| (builtin, Qualification::Unqualified))
@@ -117,7 +128,7 @@ fn find_builtin_quals(program: &res::Program) -> BTreeMap<BuiltinType, Qualifica
     quals
 }
 
-fn find_custom_quals(program: &res::Program) -> IdVec<res::CustomTypeId, Qualification> {
+fn find_custom_quals(program: &kinded::Program) -> IdVec<res::CustomTypeId, Qualification> {
     let mut name_counts = BTreeMap::<raw::TypeName, u32>::new();
 
     for &builtin in BUILTINS {
@@ -149,7 +160,7 @@ enum Precedence {
 }
 
 impl<'a> TypeRenderer<'a> {
-    pub fn new(program: &'a res::Program) -> Self {
+    pub fn new(program: &'a kinded::Program) -> Self {
         debug_assert_eq!(
             program.custom_types.len(),
             program.custom_type_symbols.len()
@@ -210,18 +221,24 @@ impl<'a> TypeRenderer<'a> {
         prec: Precedence,
     ) {
         match type_ {
-            Type::Var(param) => {
-                dest.push_str(&params[param].0);
-            }
-
-            Type::App(id, args) => {
-                let parenthesize = prec >= Precedence::AppArg && args.len() > 0;
+            Type::App(head, args) => {
+                // A recursive occurrence renders as "...", which does not look atomic, so it is
+                // parenthesized anywhere but at the root even when it has no arguments.
+                let parenthesize = match head {
+                    Head::RecursiveOccurrence if args.is_empty() => prec > Precedence::Root,
+                    _ => prec >= Precedence::AppArg && !args.is_empty(),
+                };
 
                 if parenthesize {
                     dest.push('(');
                 }
 
-                self.render_id_to(*id, dest);
+                match head {
+                    Head::Ctor(id) => self.render_id_to(*id, dest),
+                    Head::Var(param) => dest.push_str(&params[param].0),
+                    Head::Unknown => dest.push_str(UNKNOWN_TYPE),
+                    Head::RecursiveOccurrence => dest.push_str(RECURSIVE_TYPE),
+                }
 
                 for arg in args {
                     dest.push(' ');
@@ -264,20 +281,6 @@ impl<'a> TypeRenderer<'a> {
 
                 if parenthesize {
                     dest.push(')');
-                }
-            }
-
-            Type::Unknown => dest.push_str(UNKNOWN_TYPE),
-
-            Type::RecursiveOccurrence => {
-                let parenthesize = prec > Precedence::Root;
-
-                if parenthesize {
-                    dest.push('(');
-                    dest.push_str(RECURSIVE_TYPE);
-                    dest.push(')');
-                } else {
-                    dest.push_str(RECURSIVE_TYPE);
                 }
             }
         }
