@@ -21,6 +21,45 @@ pub struct ModName(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ModPath(pub Vec<ModName>);
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TraitName(pub String);
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ImplName(pub String);
+
+/// A trait applied to type arguments, as written in a `where` clause, a trait's superclass
+/// list, or an impl signature.
+#[derive(Clone, Debug)]
+pub struct TraitApp {
+    pub path: ModPath,
+    pub trait_name: TraitName,
+    pub args: Vec<Type>,
+    pub span: (usize, usize),
+}
+
+/// A func declared by a trait (a declaration with no body).
+#[derive(Clone, Debug)]
+pub struct TraitFunc {
+    pub name: ValName,
+    pub type_: Type,
+    // The func's additional constraints beyond those of the trait.
+    pub trait_constrs: Vec<TraitApp>,
+    pub span: (usize, usize),
+}
+
+/// A func defined by an impl (a full value definition whose signature must agree with the trait's
+/// declaration under substitution of the information from the impl signature).
+#[derive(Clone, Debug)]
+pub struct ImplFunc {
+    pub name: ValName,
+    pub type_: Type,
+    // The func's additional constraints, which must agree with the trait's declaration.  The impl's
+    // constraints are not repeated here.
+    pub trait_constrs: Vec<TraitApp>,
+    pub body: Expr,
+    pub span: (usize, usize),
+}
+
 // TODO: Rename 'Program' to 'Module'
 #[derive(Clone, Debug)]
 pub struct Program(pub Vec<Item>);
@@ -34,7 +73,17 @@ pub enum Item {
         // The `(usize, usize)` denotes the span of the variant declaration.
         Vec<(Visibility, CtorName, Option<Type>, (usize, usize))>,
     ),
-    ValDef(Visibility, ValName, Type, Expr),
+    ValDef(Visibility, ValName, Type, Vec<TraitApp>, Expr),
+    TraitDef(
+        Visibility,
+        TraitName,
+        Vec<TypeParam>,
+        Vec<TraitApp>,
+        Vec<TraitFunc>,
+    ),
+    // The lone `TraitApp` is the impl signature, i.e., the trait being implemented, applied to
+    // the types it is implemented for. The `Vec<TraitApp>` is a constraint list.
+    ImplDef(Visibility, ImplName, TraitApp, Vec<TraitApp>, Vec<ImplFunc>),
     ModDef(Visibility, ModName, ModSpec, Vec<ModBinding>, ExposeSpec),
     ModImport(ModName, ExposeSpec),
     ModExpose(ModPath, ExposeSpec),
@@ -56,6 +105,8 @@ pub enum ModSpec {
 pub enum ExposeItem {
     Val(Visibility, ValName),
     Type(Visibility, TypeName, Vec<(Visibility, CtorName)>),
+    Trait(Visibility, TraitName, Vec<(Visibility, ValName)>),
+    Impl(Visibility, ImplName),
     Mod(Visibility, ModName, Box<ExposeSpec>),
 }
 

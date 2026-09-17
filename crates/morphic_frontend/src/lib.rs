@@ -5,6 +5,7 @@ mod check_exhaustive;
 mod check_main;
 mod check_polymorphic_recursion;
 mod check_purity;
+mod check_traits;
 mod closure_specialize;
 mod kind_infer;
 mod lambda_lift;
@@ -17,6 +18,7 @@ mod report_pattern;
 mod report_type;
 mod resolve;
 mod shield_functions;
+mod solve_traits_in_bodies;
 mod type_infer;
 mod typecheck_first_order;
 
@@ -32,7 +34,7 @@ use morphic_common::{config as cfg, data, file_cache, pretty_print, progress_ui}
 use std::path::Path;
 use std::{fs, io, process};
 
-pub fn compile_to_typed_ast(
+pub fn compile_to_solved_ast(
     src_path: &Path,
     profile_syms: &[cfg::SymbolName],
     profile_mode: cfg::ProfileMode,
@@ -40,7 +42,7 @@ pub fn compile_to_typed_ast(
     files: &mut file_cache::FileCache,
     _progress: progress_ui::ProgressMode,
     purity_mode: cfg::PurityMode,
-) -> Result<data::typed_ast::Program, Error> {
+) -> Result<data::solved_ast::Program, Error> {
     // Ensure clean artifacts directory, if applicable
     if let Some(artifact_dir) = artifact_dir {
         fs::remove_dir_all(&artifact_dir.dir_path).map_err(Error::CreateArtifactsFailed)?;
@@ -54,14 +56,17 @@ pub fn compile_to_typed_ast(
     if purity_mode == cfg::PurityMode::Checked {
         check_purity::check_purity(&resolved).map_err(Error::PurityCheckFailed)?;
     }
+    check_traits::check_traits(&resolved).map_err(Error::CheckTraitsFailed)?;
     let kinded = kind_infer::infer_kinds(resolved).map_err(Error::KindInferFailed)?;
     let typed = type_infer::type_infer(kinded).map_err(Error::TypeInferFailed)?;
-    check_exhaustive::check_exhaustive(&typed).map_err(Error::CheckExhaustiveFailed)?;
-    check_main::check_main(&typed).map_err(Error::CheckMainFailed)?;
-    check_polymorphic_recursion::check_polymorphic_recursion(&typed)
+    let solved =
+        solve_traits_in_bodies::solve_traits_in_bodies(typed).map_err(Error::SolveTraitsFailed)?;
+    check_exhaustive::check_exhaustive(&solved).map_err(Error::CheckExhaustiveFailed)?;
+    check_main::check_main(&solved).map_err(Error::CheckMainFailed)?;
+    check_polymorphic_recursion::check_polymorphic_recursion(&solved)
         .map_err(Error::CheckPolymorphicRecursionFailed)?;
 
-    Ok(typed)
+    Ok(solved)
 }
 
 pub fn compile_to_mono_ast(
@@ -73,7 +78,7 @@ pub fn compile_to_mono_ast(
     progress: progress_ui::ProgressMode,
     purity_mode: cfg::PurityMode,
 ) -> Result<data::mono_ast::Program, Error> {
-    let typed = compile_to_typed_ast(
+    let solved = compile_to_solved_ast(
         src_path,
         profile_syms,
         profile_mode,
@@ -83,7 +88,7 @@ pub fn compile_to_mono_ast(
         purity_mode,
     )?;
 
-    Ok(monomorphize::monomorphize(typed))
+    Ok(monomorphize::monomorphize(solved))
 }
 
 pub fn compile_to_first_order_ast(
@@ -208,8 +213,8 @@ fn run_ml_compiler(
     }
 }
 
-pub fn compile_typed_to_ml(
-    typed: data::typed_ast::Program,
+pub fn compile_solved_to_ml(
+    solved: data::solved_ast::Program,
     variant: cfg::MlVariant,
     artifact_dir: Option<&cfg::ArtifactDir>,
     output_path: &Path,
@@ -217,7 +222,7 @@ pub fn compile_typed_to_ml(
 ) -> Result<(), Error> {
     let ext = format!("typed.{}", variant.extension());
     let mut file = cfg::OutFile::create(artifact_dir, &ext).map_err(Error::WriteIrFailed)?;
-    pretty_print::typed::write_ml_program(file.file_mut(), &typed, variant)
+    pretty_print::typed::write_ml_program(file.file_mut(), &solved, variant)
         .map_err(Error::WriteIrFailed)?;
     run_ml_compiler(variant, output_path, file.path(), progress)
 }

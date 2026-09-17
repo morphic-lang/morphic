@@ -5,7 +5,7 @@ use crate::data::resolved_ast::{
     ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeHead, TypeId, TypeParamId,
     VariantId,
 };
-use crate::data::typed_ast::*;
+use crate::data::solved_ast::*;
 use crate::util::graph::{self, Graph};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -355,7 +355,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
     fn write_expr(&mut self, expr: &Expr, precedence: Precedence) -> io::Result<()> {
         let my_precedence = match expr {
-            Expr::Global(global, _) => match global {
+            Expr::Global(global, _, _) => match global {
                 GlobalId::Custom(custom_global_id) => {
                     if let Expr::Lam(_, _, _, _, _, _) = self.prog.vals[custom_global_id].body {
                         Precedence::Var
@@ -365,6 +365,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
                 _ => Precedence::Var,
             },
+            Expr::TraitFunc(_, _, _) => unimplemented!("the ML backends do not support traits"),
             Expr::Local(_) => Precedence::Var,
             Expr::Tuple(_) => Precedence::Var,
             Expr::Lam(_, _, _, _, _, _) => Precedence::Top,
@@ -383,9 +384,10 @@ impl<'a, 'b> Context<'a, 'b> {
         }
 
         match expr {
-            Expr::Global(global_id, _type_args) => {
+            Expr::Global(global_id, _type_args, _derivations) => {
                 self.write_global_id(global_id)?;
             }
+            Expr::TraitFunc(_, _, _) => unimplemented!("the ML backends do not support traits"),
             Expr::Local(local_id) => {
                 self.write("l")?;
                 self.write(local_id.0)?;
@@ -978,7 +980,7 @@ const PRELUDE_PERSISTENT_OCAML: &str = include_str!("persistent.ml");
 
 fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
     match expr {
-        Expr::Global(global_id, _) => match global_id {
+        Expr::Global(global_id, _, _) => match global_id {
             GlobalId::Intrinsic(_) => {}
             GlobalId::ArrayOp(_) => {}
             GlobalId::IoOp(_) => {}
@@ -988,6 +990,7 @@ fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
                 deps.insert(*custom_id);
             }
         },
+        Expr::TraitFunc(_, _, _) => unimplemented!("the ML backends do not support traits"),
         Expr::Local(_) => {}
         Expr::Tuple(elems) => {
             for elem in elems {

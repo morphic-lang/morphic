@@ -1,0 +1,18 @@
+// expect-error: Unbounded Polymorphic Recursion @ 14:32
+type Opt a { Some(a), None }
+
+trait Show a {
+  show(x: a): Array Byte,
+}
+
+impl ShowInt of Show Int {
+  show(x: Int): Array Byte = "int"
+}
+
+// Showing an `Opt a` shows an `Opt (Opt a)`, which shows an `Opt (Opt (Opt a))`, and so on.
+impl ShowOpt of Show (Opt a) where Show a {
+  show(o: Opt a): Array Byte = show(Some(o))
+}
+
+proc main(): () =
+  do output(show(Some(1)))

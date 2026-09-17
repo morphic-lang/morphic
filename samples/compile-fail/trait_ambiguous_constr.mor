@@ -1,0 +1,13 @@
+// expect-error: Ambiguous Trait Constraint @ 12:11
+trait Default a {
+  default(): a,
+}
+
+impl DefaultInt of Default Int {
+  default(): Int = 0
+}
+
+proc main(): () =
+  // Nothing determines which `Default` impl is meant.
+  let x = default() in
+  ()

@@ -15,6 +15,10 @@ pub enum Token {
     StringLit(String),
 
     Type,
+    Trait,
+    Impl,
+    Of,
+    Where,
     Match,
     If,
     Else,
@@ -91,6 +95,10 @@ impl fmt::Display for Token {
             Token::IntLit(val) => write!(f, "{}", val),
             Token::StringLit(text) => write!(f, "{:?}", text),
             Token::Type => write!(f, "type"),
+            Token::Trait => write!(f, "trait"),
+            Token::Impl => write!(f, "impl"),
+            Token::Of => write!(f, "of"),
+            Token::Where => write!(f, "where"),
             Token::Match => write!(f, "match"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
@@ -356,6 +364,10 @@ impl<'a> Iterator for Lexer<'a> {
 
             return match &self.src[name_start..name_end] {
                 "type" => Some(Ok((name_start, Token::Type, name_end))),
+                "trait" => Some(Ok((name_start, Token::Trait, name_end))),
+                "impl" => Some(Ok((name_start, Token::Impl, name_end))),
+                "of" => Some(Ok((name_start, Token::Of, name_end))),
+                "where" => Some(Ok((name_start, Token::Where, name_end))),
                 "match" => Some(Ok((name_start, Token::Match, name_end))),
                 "if" => Some(Ok((name_start, Token::If, name_end))),
                 "else" => Some(Ok((name_start, Token::Else, name_end))),

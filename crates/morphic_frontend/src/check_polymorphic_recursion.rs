@@ -1,6 +1,6 @@
 use crate::data::kinded_ast as kinded;
-use crate::data::resolved_ast::{self as res, TypeParamId};
-use crate::data::typed_ast as typed;
+use crate::data::resolved_ast::{self as res, TraitConstrId, TypeParamId};
+use crate::data::solved_ast as solved;
 use crate::file_cache::FileCache;
 use id_collections::IdVec;
 use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
@@ -52,6 +52,14 @@ enum Growth {
     Growing,
 }
 
+/// One position through which an instantiation flows: a type parameter, or a trait constraint,
+/// whose derivation is passed along just like a type argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    Param(TypeParamId),
+    Constr(TraitConstrId),
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ClassifiedEdge<N> {
     from: N,
@@ -82,24 +90,33 @@ fn add_free_vars(ty: &res::Type, vars: &mut Vec<TypeParamId>) {
     }
 }
 
-fn add_application_edges<Id: Copy>(
+/// The arguments of a type application, each paired with the parameter of the head it
+/// instantiates.
+fn positional_args(args: &[res::Type]) -> impl Iterator<Item = (TypeParamId, &res::Type)> {
+    args.iter()
+        .enumerate()
+        .map(|(index, arg)| (TypeParamId(index), arg))
+}
+
+/// Each of `args` instantiates the parameter of `target` it is paired with, so each edge points
+/// at that parameter's slot.
+fn add_application_edges<'a, Id: Copy>(
     source: Id,
     target: Id,
-    args: &[res::Type],
+    args: impl IntoIterator<Item = (TypeParamId, &'a res::Type)>,
     span: Option<(usize, usize)>,
-    edges: &mut Vec<ClassifiedEdge<(Id, TypeParamId)>>,
+    edges: &mut Vec<ClassifiedEdge<(Id, Slot)>>,
 ) {
-    // The j-th type argument in an application of `target` instantiates `target`'s j-th type
-    // parameter, so each edge points at the corresponding parameter node of `target`.
     let mut vars = Vec::new();
-    for (j, arg) in args.iter().enumerate() {
+    for (param, arg) in args {
+        let to = (target, Slot::Param(param));
         match arg {
             // A bare parameter is passed along unchanged.  A parameter applied to arguments, like
             // any other compound type, is growing.
             res::Type::App(res::TypeHead::Var(param), args) if args.is_empty() => {
                 edges.push(ClassifiedEdge {
-                    from: (source, *param),
-                    to: (target, TypeParamId(j)),
+                    from: (source, Slot::Param(*param)),
+                    to,
                     growth: Growth::Stable,
                     span,
                 })
@@ -109,8 +126,8 @@ fn add_application_edges<Id: Copy>(
                 add_free_vars(arg, &mut vars);
                 for &param in &vars {
                     edges.push(ClassifiedEdge {
-                        from: (source, param),
-                        to: (target, TypeParamId(j)),
+                        from: (source, Slot::Param(param)),
+                        to,
                         growth: Growth::Growing,
                         span,
                     });
@@ -120,45 +137,142 @@ fn add_application_edges<Id: Copy>(
     }
 }
 
-fn add_global_calls<'a>(
-    expr: &'a typed::Expr,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum IsNested {
+    Nested,
+    NotNested,
+}
+
+/// The givens a derivation is built from.  A given passed along as it is stays stable; one buried
+/// inside an impl derivation is being wrapped in a bigger derivation, which under the Paterson
+/// conditions means a bigger type, so it is growing.
+fn add_given_uses(
+    deriv: &solved::Derivation,
+    nested: IsNested,
+    uses: &mut Vec<(TraitConstrId, Growth)>,
+) {
+    match deriv {
+        &solved::Derivation::Given(constr) => {
+            let growth = match nested {
+                IsNested::Nested => Growth::Growing,
+                IsNested::NotNested => Growth::Stable,
+            };
+            uses.push((constr, growth));
+        }
+        solved::Derivation::Super(inner, _) => add_given_uses(inner, nested, uses),
+        solved::Derivation::Impl(_, _, subs) => {
+            for (_, sub) in subs {
+                add_given_uses(sub, IsNested::Nested, uses);
+            }
+        }
+    }
+}
+
+/// Edges from the givens of `source` that flow, through `deriv`, into the constraint slot `to`.
+fn add_constraint_edges<Id: Copy>(
+    source: Id,
+    deriv: &solved::Derivation,
+    to: (Id, Slot),
     span: Option<(usize, usize)>,
-    calls: &mut Vec<(res::CustomGlobalId, &'a [res::Type], Option<(usize, usize)>)>,
+    edges: &mut Vec<ClassifiedEdge<(Id, Slot)>>,
+) {
+    let mut uses = Vec::new();
+    add_given_uses(deriv, IsNested::NotNested, &mut uses);
+    for (constr, growth) in uses {
+        edges.push(ClassifiedEdge {
+            from: (source, Slot::Constr(constr)),
+            to,
+            growth,
+            span,
+        });
+    }
+}
+
+/// The given a derivation projects from, if it is not built from an impl.
+fn root_given(deriv: &solved::Derivation) -> Option<TraitConstrId> {
+    match deriv {
+        &solved::Derivation::Given(constr) => Some(constr),
+        solved::Derivation::Super(inner, _) => root_given(inner),
+        solved::Derivation::Impl(_, _, _) => None,
+    }
+}
+
+/// The impl a derivation is built from, if that is known statically.  A superclass projected out
+/// of an impl derivation is only resolved to an impl during monomorphization.
+fn root_impl(deriv: &solved::Derivation) -> Option<res::ImplId> {
+    match deriv {
+        &solved::Derivation::Impl(id, _, _) => Some(id),
+        solved::Derivation::Given(_) | solved::Derivation::Super(_, _) => None,
+    }
+}
+
+enum Call<'a> {
+    Global {
+        callee: res::CustomGlobalId,
+        args: &'a IdVec<TypeParamId, res::Type>,
+        derivs: &'a IdVec<TraitConstrId, solved::Derivation>,
+        span: Option<(usize, usize)>,
+    },
+    TraitFunc {
+        trait_: res::TraitId,
+        func: res::TraitFuncId,
+        inst: &'a res::TraitFuncInst<solved::Derivation>,
+        span: Option<(usize, usize)>,
+    },
+}
+
+fn add_global_calls<'a>(
+    expr: &'a solved::Expr,
+    span: Option<(usize, usize)>,
+    calls: &mut Vec<Call<'a>>,
 ) {
     match expr {
-        typed::Expr::Global(res::GlobalId::Custom(id), args) => {
-            calls.push((*id, args.as_slice(), span))
+        solved::Expr::Global(res::GlobalId::Custom(callee), args, derivs) => {
+            calls.push(Call::Global {
+                callee: *callee,
+                args,
+                derivs,
+                span,
+            })
         }
-        typed::Expr::Global(_, _) | typed::Expr::Local(_) => {}
-        typed::Expr::Tuple(items) => {
+        solved::Expr::TraitFunc(trait_, func, inst) => calls.push(Call::TraitFunc {
+            trait_: *trait_,
+            func: *func,
+            inst,
+            span,
+        }),
+        solved::Expr::Global(_, _, _) | solved::Expr::Local(_) => {}
+        solved::Expr::Tuple(items) => {
             for item in items {
                 add_global_calls(item, span, calls);
             }
         }
-        typed::Expr::Lam(_, _, _, _, body, _) => add_global_calls(body, span, calls),
-        typed::Expr::App(_, func, arg) => {
+        solved::Expr::Lam(_, _, _, _, body, _) => add_global_calls(body, span, calls),
+        solved::Expr::App(_, func, arg) => {
             add_global_calls(func, span, calls);
             add_global_calls(arg, span, calls);
         }
-        typed::Expr::Match(discrim, cases, _) => {
+        solved::Expr::Match(discrim, cases, _) => {
             add_global_calls(discrim, span, calls);
             for (_, body) in cases {
                 add_global_calls(body, span, calls);
             }
         }
-        typed::Expr::LetMany(bindings, body) => {
+        solved::Expr::LetMany(bindings, body) => {
             for (_, rhs) in bindings {
                 add_global_calls(rhs, span, calls);
             }
             add_global_calls(body, span, calls);
         }
-        typed::Expr::ArrayLit(_, items) => {
+        solved::Expr::ArrayLit(_, items) => {
             for item in items {
                 add_global_calls(item, span, calls);
             }
         }
-        typed::Expr::ByteLit(_) | typed::Expr::IntLit(_) | typed::Expr::FloatLit(_) => {}
-        &typed::Expr::Span(lo, hi, ref content) => add_global_calls(content, Some((lo, hi)), calls),
+        solved::Expr::ByteLit(_) | solved::Expr::IntLit(_) | solved::Expr::FloatLit(_) => {}
+        &solved::Expr::Span(lo, hi, ref content) => {
+            add_global_calls(content, Some((lo, hi)), calls)
+        }
     }
 }
 
@@ -188,10 +302,10 @@ fn add_type_applications<'a>(
 }
 
 fn find_polymorphic_recursion<Id: Copy + Ord>(
-    classified: Vec<ClassifiedEdge<(Id, TypeParamId)>>,
+    classified: Vec<ClassifiedEdge<(Id, Slot)>>,
 ) -> Option<(Id, Option<(usize, usize)>)> {
-    let mut flat_namespace: BTreeMap<(Id, TypeParamId), usize> = BTreeMap::new();
-    let mut flat_name_of = |node: (Id, TypeParamId)| {
+    let mut flat_namespace: BTreeMap<(Id, Slot), usize> = BTreeMap::new();
+    let mut flat_name_of = |node: (Id, Slot)| {
         let next = flat_namespace.len();
         *flat_namespace.entry(node).or_insert(next)
     };
@@ -239,18 +353,138 @@ fn locate(kind: ErrorKind, file: &std::path::Path, span: Option<(usize, usize)>)
     Error(located)
 }
 
+/// Edges for every impl derivation appearing anywhere in `deriv`: instantiating an impl at some
+/// type arguments and sub-derivations may instantiate any of its funcs at them.
+fn add_impl_instantiation_edges(
+    source: res::CustomGlobalId,
+    deriv: &solved::Derivation,
+    impls: &IdVec<res::CustomImplId, solved::ImplDef>,
+    span: Option<(usize, usize)>,
+    edges: &mut Vec<ClassifiedEdge<(res::CustomGlobalId, Slot)>>,
+) {
+    match deriv {
+        solved::Derivation::Given(_) => {}
+        solved::Derivation::Super(inner, _) => {
+            add_impl_instantiation_edges(source, inner, impls, span, edges)
+        }
+        solved::Derivation::Impl(res::ImplId::Custom(impl_id), type_args, subs) => {
+            for (_, &func) in &impls[*impl_id].funcs {
+                add_application_edges(source, func, type_args.iter(), span, edges);
+                for (constr, sub) in subs {
+                    add_constraint_edges(source, sub, (func, Slot::Constr(constr)), span, edges);
+                }
+            }
+            for (_, sub) in subs {
+                add_impl_instantiation_edges(source, sub, impls, span, edges);
+            }
+        }
+    }
+}
+
 fn check_vals(
     mod_symbols: &IdVec<res::ModId, res::ModSymbols>,
-    vals: &IdVec<res::CustomGlobalId, typed::ValDef>,
+    vals: &IdVec<res::CustomGlobalId, solved::ValDef>,
     val_symbols: &IdVec<res::CustomGlobalId, res::ValSymbols>,
+    impls: &IdVec<res::CustomImplId, solved::ImplDef>,
 ) -> Result<(), Error> {
     let mut calls = Vec::new();
     let mut classified = Vec::new();
     for (val_id, def) in vals.iter() {
         calls.clear();
         add_global_calls(&def.body, None, &mut calls);
-        for &(target, args, span) in &calls {
-            add_application_edges(val_id, target, args, span, &mut classified);
+        for call in &calls {
+            match call {
+                Call::Global {
+                    callee,
+                    args,
+                    derivs,
+                    span,
+                } => {
+                    add_application_edges(val_id, *callee, args.iter(), *span, &mut classified);
+                    for (constr, deriv) in *derivs {
+                        add_constraint_edges(
+                            val_id,
+                            deriv,
+                            (*callee, Slot::Constr(constr)),
+                            *span,
+                            &mut classified,
+                        );
+                        add_impl_instantiation_edges(val_id, deriv, impls, *span, &mut classified);
+                    }
+                }
+
+                Call::TraitFunc {
+                    trait_,
+                    func,
+                    inst,
+                    span,
+                } => {
+                    // The callee is the func of whichever impl discharges the trait constraint.
+                    // When that is only known to the caller (a given), any impl of the trait
+                    // might be it.
+                    let target_impls: Vec<res::CustomImplId> = match root_impl(&inst.trait_deriv) {
+                        Some(res::ImplId::Custom(impl_id)) => vec![impl_id],
+                        None => impls
+                            .iter()
+                            .filter(|(_, def)| def.trait_ == *trait_)
+                            .map(|(id, _)| id)
+                            .collect(),
+                    };
+                    for impl_id in target_impls {
+                        let impl_def = &impls[impl_id];
+                        let callee = impl_def.funcs[*func];
+                        let layout = impl_def.func_layout();
+                        add_application_edges(
+                            val_id,
+                            callee,
+                            inst.func_args
+                                .iter()
+                                .map(|(param, arg)| (layout.own_param(param), arg)),
+                            *span,
+                            &mut classified,
+                        );
+                        for (constr, deriv) in &inst.func_derivs {
+                            add_constraint_edges(
+                                val_id,
+                                deriv,
+                                (callee, Slot::Constr(layout.own_constr(constr))),
+                                *span,
+                                &mut classified,
+                            );
+                        }
+                        if let Some(given) = root_given(&inst.trait_deriv) {
+                            let from = (val_id, Slot::Constr(given));
+                            for param in layout.num_impl_params {
+                                classified.push(ClassifiedEdge {
+                                    from,
+                                    to: (callee, Slot::Param(param)),
+                                    growth: Growth::Stable,
+                                    span: *span,
+                                });
+                            }
+                            for constr in layout.num_impl_constrs {
+                                classified.push(ClassifiedEdge {
+                                    from,
+                                    to: (callee, Slot::Constr(constr)),
+                                    growth: Growth::Stable,
+                                    span: *span,
+                                });
+                            }
+                        }
+                    }
+
+                    add_impl_instantiation_edges(
+                        val_id,
+                        &inst.trait_deriv,
+                        impls,
+                        *span,
+                        &mut classified,
+                    );
+                    for (_, deriv) in &inst.func_derivs {
+                        add_impl_instantiation_edges(val_id, deriv, impls, *span, &mut classified);
+                    }
+                }
+            }
         }
     }
 
@@ -283,7 +517,13 @@ fn check_types(
                 apps.clear();
                 add_type_applications(ty, &mut apps);
                 for &(target, args) in &apps {
-                    add_application_edges(type_id, target, args, Some(span), &mut classified);
+                    add_application_edges(
+                        type_id,
+                        target,
+                        positional_args(args),
+                        Some(span),
+                        &mut classified,
+                    );
                 }
             }
         }
@@ -304,13 +544,18 @@ fn check_types(
     }
 }
 
-pub fn check_polymorphic_recursion(program: &typed::Program) -> Result<(), Error> {
+pub fn check_polymorphic_recursion(program: &solved::Program) -> Result<(), Error> {
     check_types(
         &program.mod_symbols,
         &program.custom_types,
         &program.custom_type_symbols,
     )?;
-    check_vals(&program.mod_symbols, &program.vals, &program.val_symbols)?;
+    check_vals(
+        &program.mod_symbols,
+        &program.vals,
+        &program.val_symbols,
+        &program.impls,
+    )?;
     Ok(())
 }
 
@@ -323,7 +568,7 @@ mod tests {
         CustomGlobalId, CustomTypeId, GlobalId, ModDeclLoc, ModId, ModSymbols, TypeId, TypeParamId,
         TypeSymbols, ValSymbols, VariantSymbols,
     };
-    use crate::data::typed_ast::{Expr, ValDef};
+    use crate::data::solved_ast::{Expr, ValDef};
     use std::path::PathBuf;
 
     fn mod_symbols() -> IdVec<ModId, ModSymbols> {
@@ -341,6 +586,7 @@ mod tests {
         ValDef {
             scheme: TypeScheme {
                 param_kinds: type_kinds(num_params),
+                trait_constrs: IdVec::new(),
                 body: res::Type::Tuple(vec![]),
             },
             body,
@@ -356,6 +602,8 @@ mod tests {
                 span: None,
                 children: Vec::new(),
             },
+            trait_constr_spans: IdVec::new(),
+            impl_: None,
         }
     }
 
@@ -377,7 +625,18 @@ mod tests {
     }
 
     fn self_call(args: Vec<res::Type>) -> Expr {
-        Expr::Global(GlobalId::Custom(CustomGlobalId(0)), IdVec::from_vec(args))
+        Expr::Global(
+            GlobalId::Custom(CustomGlobalId(0)),
+            IdVec::from_vec(args),
+            IdVec::new(),
+        )
+    }
+
+    fn check_vals_without_traits(
+        vals: &IdVec<CustomGlobalId, ValDef>,
+        val_symbols: &IdVec<CustomGlobalId, ValSymbols>,
+    ) -> Result<(), Error> {
+        check_vals(&mod_symbols(), vals, val_symbols, &IdVec::new())
     }
 
     #[test]
@@ -395,7 +654,7 @@ mod tests {
         )]);
         let val_symbols = IdVec::from_vec(vec![val_symbols("depth")]);
 
-        let err = check_vals(&mod_symbols(), &vals, &val_symbols).unwrap_err();
+        let err = check_vals_without_traits(&vals, &val_symbols).unwrap_err();
         assert!(matches!(
             err.0.error,
             ErrorKind::ValNonterminating { ref name } if name == "depth"
@@ -412,7 +671,7 @@ mod tests {
         )]);
         let val_symbols = IdVec::from_vec(vec![val_symbols("len")]);
 
-        check_vals(&mod_symbols(), &vals, &val_symbols).unwrap();
+        check_vals_without_traits(&vals, &val_symbols).unwrap();
     }
 
     #[test]
@@ -440,6 +699,56 @@ mod tests {
         ));
         assert_eq!(err.0.path, Some(PathBuf::from("main.mor")));
         assert_eq!(err.0.span, Some((20, 41)));
+    }
+
+    #[test]
+    fn a_growing_type_is_reported_over_the_function_consuming_it() {
+        let nested_id = CustomTypeId(0);
+
+        let custom_types = IdVec::from_vec(vec![TypeDef {
+            param_kinds: type_kinds(1),
+            variants: IdVec::from_vec(vec![
+                Some(res::Type::param(TypeParamId(0))),
+                Some(res::Type::App(
+                    res::TypeHead::Ctor(TypeId::Custom(nested_id)),
+                    vec![res::Type::Tuple(vec![
+                        res::Type::param(TypeParamId(0)),
+                        res::Type::param(TypeParamId(0)),
+                    ])],
+                )),
+            ]),
+        }]);
+        let custom_type_symbols =
+            IdVec::from_vec(vec![type_symbols("Nested", &[(5, 14), (20, 41)])]);
+
+        let vals = IdVec::from_vec(vec![val_def(
+            1,
+            self_call(vec![res::Type::Tuple(vec![
+                res::Type::param(TypeParamId(0)),
+                res::Type::param(TypeParamId(0)),
+            ])]),
+        )]);
+        let val_symbols = IdVec::from_vec(vec![val_symbols("depth")]);
+
+        let program = solved::Program {
+            mod_symbols: mod_symbols(),
+            custom_types,
+            custom_type_symbols,
+            profile_points: IdVec::new(),
+            vals,
+            val_symbols,
+            traits: IdVec::new(),
+            trait_symbols: IdVec::new(),
+            impls: IdVec::new(),
+            impl_symbols: IdVec::new(),
+            main: CustomGlobalId(0),
+        };
+
+        let err = check_polymorphic_recursion(&program).unwrap_err();
+        assert!(matches!(
+            err.0.error,
+            ErrorKind::TypeNonterminating { ref name } if name == "Nested"
+        ));
     }
 
     #[test]
@@ -475,51 +784,5 @@ mod tests {
         ]);
 
         check_types(&mod_symbols(), &custom_types, &custom_type_symbols).unwrap();
-    }
-
-    #[test]
-    fn a_growing_type_is_reported_over_the_function_consuming_it() {
-        let nested_id = CustomTypeId(0);
-
-        let custom_types = IdVec::from_vec(vec![TypeDef {
-            param_kinds: type_kinds(1),
-            variants: IdVec::from_vec(vec![
-                Some(res::Type::param(TypeParamId(0))),
-                Some(res::Type::App(
-                    res::TypeHead::Ctor(TypeId::Custom(nested_id)),
-                    vec![res::Type::Tuple(vec![
-                        res::Type::param(TypeParamId(0)),
-                        res::Type::param(TypeParamId(0)),
-                    ])],
-                )),
-            ]),
-        }]);
-        let custom_type_symbols =
-            IdVec::from_vec(vec![type_symbols("Nested", &[(5, 14), (20, 41)])]);
-
-        let vals = IdVec::from_vec(vec![val_def(
-            1,
-            self_call(vec![res::Type::Tuple(vec![
-                res::Type::param(TypeParamId(0)),
-                res::Type::param(TypeParamId(0)),
-            ])]),
-        )]);
-        let val_symbols = IdVec::from_vec(vec![val_symbols("depth")]);
-
-        let program = typed::Program {
-            mod_symbols: mod_symbols(),
-            custom_types,
-            custom_type_symbols,
-            profile_points: IdVec::new(),
-            vals,
-            val_symbols,
-            main: CustomGlobalId(0),
-        };
-
-        let err = check_polymorphic_recursion(&program).unwrap_err();
-        assert!(matches!(
-            err.0.error,
-            ErrorKind::TypeNonterminating { ref name } if name == "Nested"
-        ));
     }
 }

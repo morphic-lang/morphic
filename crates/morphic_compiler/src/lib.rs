@@ -159,7 +159,7 @@ pub fn build(config: cfg::BuildConfig, files: &mut file_cache::FileCache) -> Res
         }
         cfg::BackendOptions::Ml(ml_config) => match ml_config.stage {
             cfg::CompilationStage::Typed => {
-                let typed = morphic_frontend::compile_to_typed_ast(
+                let typed = morphic_frontend::compile_to_solved_ast(
                     &config.src_path,
                     &config.profile_syms,
                     config.profile_mode,
@@ -170,7 +170,7 @@ pub fn build(config: cfg::BuildConfig, files: &mut file_cache::FileCache) -> Res
                 )
                 .map_err(ErrorKind::FrontendError)?;
 
-                morphic_frontend::compile_typed_to_ml(
+                morphic_frontend::compile_solved_to_ml(
                     typed,
                     ml_config.variant,
                     config.artifact_dir.as_ref(),

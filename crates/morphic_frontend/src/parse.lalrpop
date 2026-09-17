@@ -21,6 +21,10 @@ extern {
     "StringLit" => lex::Token::StringLit(<String>),
 
     "type" => lex::Token::Type,
+    "trait" => lex::Token::Trait,
+    "impl" => lex::Token::Impl,
+    "of" => lex::Token::Of,
+    "where" => lex::Token::Where,
     "match" => lex::Token::Match,
     "if" => lex::Token::If,
     "else" => lex::Token::Else,
@@ -139,6 +143,16 @@ ModName: syntax::ModName = {
 };
 
 #[inline]
+TraitName: syntax::TraitName = {
+  <"UpperName"> => syntax::TraitName(<>),
+};
+
+#[inline]
+ImplName: syntax::ImplName = {
+  <"UpperName"> => syntax::ImplName(<>),
+};
+
+#[inline]
 OptProc: Purity = {
   "proc" => Purity::Impure,
   () => Purity::Pure,
@@ -159,6 +173,8 @@ pub Program: syntax::Program = {
 Item: syntax::Item = {
   <TypeDef>,
   <ValDef>,
+  <TraitDef>,
+  <ImplDef>,
   <ModDef>,
   <ModImport>,
   <ModExpose>,
@@ -185,6 +201,7 @@ ValDef: syntax::Item = {
   <name: ValName>
   "(" <args: CommaSep<(<ValName> ":" <Type>)>> ")"
   ":" <ret_type: Type>
+  <constrs: WhereClause>
   "=" <body: Expr> => {
     let (arg_pat, arg_type) = if args.len() == 1 {
       let (arg_name, arg_type) = args.into_iter().next().unwrap();
@@ -204,13 +221,105 @@ ValDef: syntax::Item = {
     let def_type = syntax::Type::Func(purity, Box::new(arg_type), Box::new(ret_type));
     let def_body = syntax::Expr::Lam(purity, arg_pat, Box::new(body));
 
-    syntax::Item::ValDef(visibility, name, def_type, def_body)
+    syntax::Item::ValDef(visibility, name, def_type, constrs, def_body)
   },
 
-  <visibility: OptPub> <name: ValName> ":" <def_type: Type> "=" <val: Expr> => {
-    syntax::Item::ValDef(visibility, name, def_type, val)
+  <visibility: OptPub> <name: ValName> ":" <def_type: Type> <constrs: WhereClause> "=" <val: Expr> => {
+    syntax::Item::ValDef(visibility, name, def_type, constrs, val)
   },
 }
+
+// Traits and Impls
+
+QualTraitName: (syntax::ModPath, syntax::TraitName) = {
+  <path: QualPath> <name: TraitName> =>
+    (path, name)
+};
+
+TraitApp: syntax::TraitApp = {
+  <lo: @L> <name: QualTraitName> <args: AtomicType*> <hi: @R> =>
+    syntax::TraitApp { path: name.0, trait_name: name.1, args, span: (lo, hi) },
+};
+
+// Two or more constraints must be parenthesized, as in Haskell. This way, a comma after a
+// constraint is never confused with the comma separating the funcs of a trait.
+ConstrList: Vec<syntax::TraitApp> = {
+  <TraitApp> => vec![<>],
+  "(" <CommaSep<TraitApp>> ")",
+};
+
+WhereClause: Vec<syntax::TraitApp> = {
+  <constrs: ("where" <ConstrList>)?> => constrs.unwrap_or_default(),
+};
+
+// Desugars a `name(arg: T, ...): R` header into the pattern and function type of the definition
+// it declares, exactly as a value definition does.
+FuncHeader: (syntax::ValName, syntax::Pattern, syntax::Type) = {
+  <purity: OptProc>
+  <name: ValName>
+  "(" <args: CommaSep<(<ValName> ":" <Type>)>> ")"
+  ":" <ret_type: Type> => {
+    let (arg_pat, arg_type) = if args.len() == 1 {
+      let (arg_name, arg_type) = args.into_iter().next().unwrap();
+      (syntax::Pattern::Var(arg_name), arg_type)
+    } else {
+      let mut pat_items = Vec::new();
+      let mut type_items = Vec::new();
+
+      for (pat_item, type_item) in args {
+        pat_items.push(syntax::Pattern::Var(pat_item));
+        type_items.push(type_item);
+      }
+
+      (syntax::Pattern::Tuple(pat_items), syntax::Type::Tuple(type_items))
+    };
+
+    let def_type = syntax::Type::Func(purity, Box::new(arg_type), Box::new(ret_type));
+    (name, arg_pat, def_type)
+  },
+};
+
+TraitDef: syntax::Item = {
+  <visibility: OptPub> "trait" <name: TraitName> <params: TypeParam*> <supers: WhereClause>
+    "{" <funcs: CommaSep<TraitFuncDecl>> "}" =>
+      syntax::Item::TraitDef(visibility, name, params, supers, funcs),
+};
+
+TraitFuncDecl: syntax::TraitFunc = {
+  <lo: @L> <header: FuncHeader> <constrs: WhereClause> <hi: @R> =>
+    syntax::TraitFunc { name: header.0, type_: header.2, trait_constrs: constrs, span: (lo, hi) },
+
+  <lo: @L> <name: ValName> ":" <type_: Type> <constrs: WhereClause> <hi: @R> =>
+    syntax::TraitFunc { name, type_, trait_constrs: constrs, span: (lo, hi) },
+};
+
+// Impl funcs are definitions and so self-delimit, like the definitions of a module. Trait funcs are
+// declarations ending in a type, which necessitates a separator, like the variants of a type.
+ImplDef: syntax::Item = {
+  <visibility: OptPub> "impl" <name: ImplName> "of" <head: TraitApp> <constrs: WhereClause>
+    "{" <funcs: ImplFunc*> "}" =>
+      syntax::Item::ImplDef(visibility, name, head, constrs, funcs),
+};
+
+ImplFunc: syntax::ImplFunc = {
+  <lo: @L> <header: FuncHeader> <constrs: WhereClause> "=" <body: Expr> <hi: @R> => {
+    let (name, arg_pat, def_type) = header;
+    let purity = match &def_type {
+      syntax::Type::Func(purity, _, _) => *purity,
+      _ => unreachable!(),
+    };
+    syntax::ImplFunc {
+      name,
+      type_: def_type,
+      trait_constrs: constrs,
+      body: syntax::Expr::Lam(purity, arg_pat, Box::new(body)),
+      span: (lo, hi),
+    }
+  },
+
+  <lo: @L> <name: ValName> ":" <type_: Type> <constrs: WhereClause> "=" <body: Expr> <hi: @R> =>
+    syntax::ImplFunc { name, type_, trait_constrs: constrs, body, span: (lo, hi) },
+};
 
 // Module Defintions
 
@@ -287,6 +396,12 @@ ExposeItem: syntax::ExposeItem = {
 
   <visibility: OptPub> <name: TypeName> <ctors: ("{" <CommaSep<(OptPub CtorName)>> "}")?> =>
     syntax::ExposeItem::Type(visibility, name, ctors.unwrap_or_default()),
+
+  <visibility: OptPub> "trait" <name: TraitName> <funcs: ("{" <CommaSep<(OptPub ValName)>> "}")?> =>
+    syntax::ExposeItem::Trait(visibility, name, funcs.unwrap_or_default()),
+
+  <visibility: OptPub> "impl" <name: ImplName> =>
+    syntax::ExposeItem::Impl(visibility, name),
 
   <visibility: OptPub> "module" <name: ModName> <expose: OptExposeSpec> =>
     syntax::ExposeItem::Mod(visibility, name, Box::new(expose)),

@@ -43,6 +43,19 @@ sample! { higher_kinded "../../samples/higher_kinded.mor";
     stdout = "ok\n";
 }
 
+sample! { traits "../../samples/traits.mor";
+    stdin = "";
+    stdout = lines! [
+        "Some((1, True))",
+        "5 5",
+        "True",
+        "Some(42)",
+        "True",
+        "3",
+        "1 True",
+    ];
+}
+
 sample! { arith "../../samples/arith.mor";
     stdin = "";
     stdout = "Completed all tests\n";

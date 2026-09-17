@@ -1,0 +1,23 @@
+// expect-error: No Impl in Scope @ 23:13
+// The impl exists but is not imported into this module, so the error suggests it.
+module Show = {
+  pub trait Show a {
+    show(x: a): Array Byte,
+  }
+} expose { trait Show { show } }
+
+module Shapes = {
+  pub type Circle { pub Circle }
+} expose { Circle { Circle } }
+
+module Impls = {
+  import Show expose { trait Show }
+  import Shapes expose { Circle { Circle } }
+
+  pub impl ShowCircle of Show Circle {
+    show(x: Circle): Array Byte = "circle"
+  }
+} with { Show, Shapes }
+
+proc main(): () =
+  do output(show(Circle))

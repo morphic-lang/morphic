@@ -1,6 +1,6 @@
 use crate::data::kinded_ast as kinded;
 use crate::data::resolved_ast as res;
-use crate::data::typed_ast as typed;
+use crate::data::solved_ast as solved;
 use crate::file_cache::FileCache;
 use crate::report_pattern;
 use id_collections::IdVec;
@@ -69,12 +69,12 @@ enum Relevance {
     Irrelevant,
 }
 
-fn relevance(pat: &typed::Pattern) -> Relevance {
+fn relevance(pat: &solved::Pattern) -> Relevance {
     match pat {
-        typed::Pattern::Any(_) => Relevance::Relevant,
-        typed::Pattern::Var(_) => Relevance::Relevant,
+        solved::Pattern::Any(_) => Relevance::Relevant,
+        solved::Pattern::Var(_) => Relevance::Relevant,
 
-        typed::Pattern::Tuple(items) => {
+        solved::Pattern::Tuple(items) => {
             for item in items {
                 if relevance(item) == Relevance::Irrelevant {
                     return Relevance::Irrelevant;
@@ -83,15 +83,15 @@ fn relevance(pat: &typed::Pattern) -> Relevance {
             Relevance::Relevant
         }
 
-        typed::Pattern::Ctor(_, _, _, Some(content)) => relevance(content),
+        solved::Pattern::Ctor(_, _, _, Some(content)) => relevance(content),
 
-        typed::Pattern::Ctor(_, _, _, None) => Relevance::Relevant,
+        solved::Pattern::Ctor(_, _, _, None) => Relevance::Relevant,
 
-        typed::Pattern::ByteConst(_) => Relevance::Irrelevant,
-        typed::Pattern::IntConst(_) => Relevance::Irrelevant,
-        typed::Pattern::FloatConst(_) => Relevance::Irrelevant,
+        solved::Pattern::ByteConst(_) => Relevance::Irrelevant,
+        solved::Pattern::IntConst(_) => Relevance::Irrelevant,
+        solved::Pattern::FloatConst(_) => Relevance::Irrelevant,
 
-        typed::Pattern::Span(_, _, content) => relevance(content),
+        solved::Pattern::Span(_, _, content) => relevance(content),
     }
 }
 
@@ -107,12 +107,12 @@ enum Decision {
     Pop,
 }
 
-fn flatten_to(pat: &typed::Pattern, target: &mut Vec<Decision>) {
+fn flatten_to(pat: &solved::Pattern, target: &mut Vec<Decision>) {
     match pat {
-        typed::Pattern::Any(_) => target.push(Decision::Any),
-        typed::Pattern::Var(_) => target.push(Decision::Any),
+        solved::Pattern::Any(_) => target.push(Decision::Any),
+        solved::Pattern::Var(_) => target.push(Decision::Any),
 
-        typed::Pattern::Tuple(items) => {
+        solved::Pattern::Tuple(items) => {
             target.push(Decision::PushTuple(items.len()));
             for item in items {
                 flatten_to(item, target);
@@ -120,7 +120,7 @@ fn flatten_to(pat: &typed::Pattern, target: &mut Vec<Decision>) {
             target.push(Decision::Pop);
         }
 
-        &typed::Pattern::Ctor(id, _, variant, None) => {
+        &solved::Pattern::Ctor(id, _, variant, None) => {
             target.push(Decision::Ctor {
                 id,
                 variant,
@@ -128,7 +128,7 @@ fn flatten_to(pat: &typed::Pattern, target: &mut Vec<Decision>) {
             });
         }
 
-        &typed::Pattern::Ctor(id, _, variant, Some(ref content)) => {
+        &solved::Pattern::Ctor(id, _, variant, Some(ref content)) => {
             target.push(Decision::Ctor {
                 id,
                 variant,
@@ -138,15 +138,15 @@ fn flatten_to(pat: &typed::Pattern, target: &mut Vec<Decision>) {
             target.push(Decision::Pop);
         }
 
-        typed::Pattern::IntConst(_)
-        | typed::Pattern::ByteConst(_)
-        | typed::Pattern::FloatConst(_) => panic!("Irrelevant patterns should have been skipped"),
+        solved::Pattern::IntConst(_)
+        | solved::Pattern::ByteConst(_)
+        | solved::Pattern::FloatConst(_) => panic!("Irrelevant patterns should have been skipped"),
 
-        typed::Pattern::Span(_, _, content) => flatten_to(content, target),
+        solved::Pattern::Span(_, _, content) => flatten_to(content, target),
     }
 }
 
-fn flatten_decisions(pat: &typed::Pattern) -> Vec<Decision> {
+fn flatten_decisions(pat: &solved::Pattern) -> Vec<Decision> {
     let mut decisions = Vec::new();
     flatten_to(pat, &mut decisions);
     decisions
@@ -233,7 +233,7 @@ impl DecisionTree {
         DecisionTree::Empty
     }
 
-    fn add(&mut self, pat: &typed::Pattern) {
+    fn add(&mut self, pat: &solved::Pattern) {
         match relevance(pat) {
             Relevance::Irrelevant => {}
             Relevance::Relevant => self.add_decisions(&flatten_decisions(pat)),
@@ -561,12 +561,12 @@ fn num_variants(
 
 fn check_irrefutable_pattern(
     custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
-    pat: &typed::Pattern,
+    pat: &solved::Pattern,
 ) -> Result<(), RawError> {
     let mut tree = DecisionTree::new();
     tree.add(pat);
     tree.check_exhaustive(custom_types).map_err(|err| {
-        if let typed::Pattern::Span(lo, hi, _) = pat {
+        if let solved::Pattern::Span(lo, hi, _) = pat {
             locate_span(*lo, *hi)(err)
         } else {
             err
@@ -576,33 +576,35 @@ fn check_irrefutable_pattern(
 
 fn check_expr(
     custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
-    expr: &typed::Expr,
+    expr: &solved::Expr,
 ) -> Result<(), RawError> {
     match expr {
-        typed::Expr::Global(_, _) => Ok(()),
+        solved::Expr::Global(_, _, _) => Ok(()),
 
-        typed::Expr::Local(_) => Ok(()),
+        solved::Expr::TraitFunc(_, _, _) => Ok(()),
 
-        typed::Expr::Tuple(items) => {
+        solved::Expr::Local(_) => Ok(()),
+
+        solved::Expr::Tuple(items) => {
             for item in items {
                 check_expr(custom_types, item)?;
             }
             Ok(())
         }
 
-        typed::Expr::Lam(_purity, _arg_type, _ret_type, lhs, body, _prof_id) => {
+        solved::Expr::Lam(_purity, _arg_type, _ret_type, lhs, body, _prof_id) => {
             check_irrefutable_pattern(custom_types, lhs)?;
             check_expr(custom_types, body)?;
             Ok(())
         }
 
-        typed::Expr::App(_, func, arg) => {
+        solved::Expr::App(_, func, arg) => {
             check_expr(custom_types, func)?;
             check_expr(custom_types, arg)?;
             Ok(())
         }
 
-        typed::Expr::Match(discrim, cases, _) => {
+        solved::Expr::Match(discrim, cases, _) => {
             check_expr(custom_types, discrim)?;
 
             let mut tree = DecisionTree::new();
@@ -618,7 +620,7 @@ fn check_expr(
             Ok(())
         }
 
-        typed::Expr::LetMany(bindings, body) => {
+        solved::Expr::LetMany(bindings, body) => {
             for (lhs, rhs) in bindings {
                 check_irrefutable_pattern(custom_types, lhs)?;
                 check_expr(custom_types, rhs)?;
@@ -628,26 +630,26 @@ fn check_expr(
             Ok(())
         }
 
-        typed::Expr::ArrayLit(_, items) => {
+        solved::Expr::ArrayLit(_, items) => {
             for item in items {
                 check_expr(custom_types, item)?;
             }
             Ok(())
         }
 
-        typed::Expr::ByteLit(_) => Ok(()),
+        solved::Expr::ByteLit(_) => Ok(()),
 
-        typed::Expr::IntLit(_) => Ok(()),
+        solved::Expr::IntLit(_) => Ok(()),
 
-        typed::Expr::FloatLit(_) => Ok(()),
+        solved::Expr::FloatLit(_) => Ok(()),
 
-        typed::Expr::Span(lo, hi, content) => {
+        solved::Expr::Span(lo, hi, content) => {
             check_expr(custom_types, content).map_err(locate_span(*lo, *hi))
         }
     }
 }
 
-pub fn check_exhaustive(program: &typed::Program) -> Result<(), Error> {
+pub fn check_exhaustive(program: &solved::Program) -> Result<(), Error> {
     for (id, def) in &program.vals {
         check_expr(&program.custom_types, &def.body)
             .map_err(locate_path(

@@ -1,6 +1,6 @@
 use crate::{
-    check_exhaustive, check_main, check_polymorphic_recursion, check_purity, kind_infer, resolve,
-    type_infer,
+    check_exhaustive, check_main, check_polymorphic_recursion, check_purity, check_traits,
+    kind_infer, resolve, solve_traits_in_bodies, type_infer,
 };
 use morphic_common::file_cache;
 use morphic_common::report_error::{ColorMode, Reportable};
@@ -13,7 +13,9 @@ pub enum Error {
     ResolveFailed(resolve::Error),
     KindInferFailed(kind_infer::Error),
     PurityCheckFailed(check_purity::Error),
+    CheckTraitsFailed(check_traits::Error),
     TypeInferFailed(type_infer::Error),
+    SolveTraitsFailed(solve_traits_in_bodies::Error),
     CheckExhaustiveFailed(check_exhaustive::Error),
     CheckMainFailed(check_main::Error),
     CheckPolymorphicRecursionFailed(check_polymorphic_recursion::Error),
@@ -39,7 +41,9 @@ impl Reportable for Error {
             ResolveFailed(err) => err.report(dest, files, color),
             KindInferFailed(err) => err.report(dest, files, color),
             PurityCheckFailed(err) => err.report(dest, files, color),
+            CheckTraitsFailed(err) => err.report(dest, files, color),
             TypeInferFailed(err) => err.report(dest, files, color),
+            SolveTraitsFailed(err) => err.report(dest, files, color),
             CheckExhaustiveFailed(err) => err.report(dest, files, color),
             CheckMainFailed(err) => writeln!(dest, "{}", err),
             CheckPolymorphicRecursionFailed(err) => err.report(dest, files, color),

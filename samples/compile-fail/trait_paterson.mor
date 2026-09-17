@@ -1,0 +1,13 @@
+// expect-error: Impl Constraint Too Large @ 9:36
+type Opt a { Some(a), None }
+
+trait Show a {
+  show(x: a): Array Byte,
+}
+
+// The constraint is as large as the head, so resolving it would not make progress.
+impl ShowOpt of Show (Opt a) where Show (Opt a) {
+  show(o: Opt a): Array Byte = "opt"
+}
+
+proc main(): () = ()

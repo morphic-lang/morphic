@@ -2,7 +2,7 @@ use crate::data::kinded_ast as kinded;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
-use crate::data::typed_ast as typed;
+use crate::data::solved_ast as solved;
 use id_collections::IdVec;
 use morphic_common::util::instance_queue::InstanceQueue;
 
@@ -17,9 +17,27 @@ enum ClosedType {
     Func(Purity, Box<ClosedType>, Box<ClosedType>),
 }
 
+/// A derivation with no givens left: every constraint is discharged by an impl, so the impl func a
+/// trait func reference stands for is known.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ClosedDerivation {
+    Impl(res::ImplId, InstArgs, InstDerivs),
+}
+
 type InstArgs = IdVec<res::TypeParamId, ClosedType>;
 
-type ValInstances = InstanceQueue<(res::CustomGlobalId, InstArgs), mono::CustomGlobalId>;
+type InstDerivs = IdVec<res::TraitConstrId, ClosedDerivation>;
+
+/// What identifies one monomorphic copy of a definition: a closed type per type parameter and a
+/// closed derivation per trait constraint.  Two references at the same types but under different
+/// impls yield different copies, which is what makes named, scoped impls coherent within a copy.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Instantiation {
+    args: InstArgs,
+    derivs: InstDerivs,
+}
+
+type ValInstances = InstanceQueue<(res::CustomGlobalId, Instantiation), mono::CustomGlobalId>;
 
 type TypeInstances = InstanceQueue<(res::CustomTypeId, InstArgs), mono::CustomTypeId>;
 
@@ -69,6 +87,7 @@ fn subst_type(inst_args: &InstArgs, type_: &res::Type) -> ClosedType {
 
 struct Instantiator<'a> {
     typedefs: &'a IdVec<res::CustomTypeId, kinded::TypeDef>,
+    impls: &'a IdVec<res::CustomImplId, solved::ImplDef>,
     val_insts: ValInstances,
     type_insts: TypeInstances,
 }
@@ -80,6 +99,11 @@ impl<'a> Instantiator<'a> {
             res::TypeId::Array => 1,
             res::TypeId::Custom(custom) => self.typedefs[custom].param_kinds.len(),
         }
+    }
+
+    fn impl_def(&self, id: res::ImplId) -> &'a solved::ImplDef {
+        let res::ImplId::Custom(custom) = id;
+        &self.impls[custom]
     }
 
     /// Whether a closed type has kind `Type`, i.e. is the type of some expression rather than a
@@ -103,12 +127,12 @@ impl<'a> Instantiator<'a> {
     fn resolve_val_inst(
         &mut self,
         id: res::CustomGlobalId,
-        args: InstArgs,
+        inst: Instantiation,
     ) -> mono::CustomGlobalId {
-        for (_, arg) in &args {
+        for (_, arg) in &inst.args {
             self.register_inst_arg(arg);
         }
-        self.val_insts.resolve((id, args))
+        self.val_insts.resolve((id, inst))
     }
 
     fn resolve_type_inst(&mut self, id: res::CustomTypeId, args: InstArgs) -> mono::CustomTypeId {
@@ -165,44 +189,75 @@ impl<'a> Instantiator<'a> {
         }
     }
 
-    fn resolve_type(&mut self, inst_args: &InstArgs, type_: &res::Type) -> mono::Type {
-        self.mono_type(&subst_type(inst_args, type_))
+    fn resolve_type(&mut self, inst: &Instantiation, type_: &res::Type) -> mono::Type {
+        self.mono_type(&subst_type(&inst.args, type_))
     }
 
-    fn resolve_inst_args(
+    /// Substitutes the current instantiation into a derivation, yielding a closed one.  A given
+    /// becomes the derivation the instantiation supplies for it, and a superclass projection out
+    /// of an impl derivation becomes that impl's stored superclass derivation, instantiated at
+    /// the impl derivation's own arguments.
+    fn subst_derivation(
         &self,
-        inst_args: &InstArgs,
-        args: &IdVec<res::TypeParamId, res::Type>,
-    ) -> InstArgs {
-        args.map_refs(|_param_id, arg| subst_type(inst_args, arg))
+        inst: &Instantiation,
+        deriv: &solved::Derivation,
+    ) -> ClosedDerivation {
+        match deriv {
+            &solved::Derivation::Given(constr) => inst.derivs[constr].clone(),
+
+            solved::Derivation::Impl(id, type_args, subs) => ClosedDerivation::Impl(
+                *id,
+                type_args.map_refs(|_, arg| subst_type(&inst.args, arg)),
+                subs.map_refs(|_, sub| self.subst_derivation(inst, sub)),
+            ),
+
+            solved::Derivation::Super(inner, index) => {
+                let ClosedDerivation::Impl(id, impl_args, impl_derivs) =
+                    self.subst_derivation(inst, inner);
+                let impl_inst = Instantiation {
+                    args: impl_args,
+                    derivs: impl_derivs,
+                };
+                self.subst_derivation(&impl_inst, &self.impl_def(id).supers[*index])
+            }
+        }
     }
 
-    fn resolve_expr(&mut self, inst_args: &InstArgs, expr: &typed::Expr) -> mono::Expr {
+    fn resolve_instantiation(
+        &self,
+        inst: &Instantiation,
+        args: &IdVec<res::TypeParamId, res::Type>,
+        derivs: &IdVec<res::TraitConstrId, solved::Derivation>,
+    ) -> Instantiation {
+        Instantiation {
+            args: args.map_refs(|_, arg| subst_type(&inst.args, arg)),
+            derivs: derivs.map_refs(|_, deriv| self.subst_derivation(inst, deriv)),
+        }
+    }
+
+    fn resolve_expr(&mut self, inst: &Instantiation, expr: &solved::Expr) -> mono::Expr {
         match expr {
-            typed::Expr::Global(res::GlobalId::Intrinsic(intr), args) => {
+            solved::Expr::Global(res::GlobalId::Intrinsic(intr), args, _) => {
                 debug_assert!(args.is_empty());
                 mono::Expr::Intrinsic(*intr)
             }
 
-            typed::Expr::Global(res::GlobalId::ArrayOp(op), args) => {
+            solved::Expr::Global(res::GlobalId::ArrayOp(op), args, _) => {
                 debug_assert_eq!(args.len(), 1);
-                mono::Expr::ArrayOp(
-                    *op,
-                    self.resolve_type(inst_args, &args[res::TypeParamId(0)]),
-                )
+                mono::Expr::ArrayOp(*op, self.resolve_type(inst, &args[res::TypeParamId(0)]))
             }
 
-            typed::Expr::Global(res::GlobalId::IoOp(op), args) => {
+            solved::Expr::Global(res::GlobalId::IoOp(op), args, _) => {
                 debug_assert!(args.is_empty());
                 mono::Expr::IoOp(*op)
             }
 
-            typed::Expr::Global(res::GlobalId::Panic, args) => {
+            solved::Expr::Global(res::GlobalId::Panic, args, _) => {
                 debug_assert_eq!(args.len(), 1);
-                mono::Expr::Panic(self.resolve_type(inst_args, &args[res::TypeParamId(0)]))
+                mono::Expr::Panic(self.resolve_type(inst, &args[res::TypeParamId(0)]))
             }
 
-            typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, variant), args) => {
+            solved::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, variant), args, _) => {
                 debug_assert!(args.is_empty());
 
                 let val = match variant {
@@ -214,34 +269,66 @@ impl<'a> Instantiator<'a> {
                 mono::Expr::BoolLit(val)
             }
 
-            typed::Expr::Global(res::GlobalId::Ctor(res::TypeId::Custom(id), variant), args) => {
-                let args_resolved = self.resolve_inst_args(inst_args, args);
+            solved::Expr::Global(
+                res::GlobalId::Ctor(res::TypeId::Custom(id), variant),
+                args,
+                _,
+            ) => {
+                let args_resolved = args.map_refs(|_, arg| subst_type(&inst.args, arg));
                 let new_id = self.resolve_type_inst(*id, args_resolved);
                 mono::Expr::Ctor(new_id, *variant)
             }
 
-            typed::Expr::Global(res::GlobalId::Ctor(_, _), _) => unreachable!(),
+            solved::Expr::Global(res::GlobalId::Ctor(_, _), _, _) => unreachable!(),
 
-            typed::Expr::Global(res::GlobalId::Custom(id), args) => {
-                let args_resolved = self.resolve_inst_args(inst_args, args);
-                let new_id = self.resolve_val_inst(*id, args_resolved);
+            // A trait func stands for the corresponding func of whichever impl discharges the
+            // trait constraint, instantiated at that impl's arguments and evidence followed by
+            // the func's own.
+            solved::Expr::TraitFunc(_, func, trait_inst) => {
+                let ClosedDerivation::Impl(impl_id, impl_args, impl_derivs) =
+                    self.subst_derivation(inst, &trait_inst.trait_deriv);
+                let impl_def = self.impl_def(impl_id);
+                let layout = impl_def.func_layout();
+
+                let callee_inst = Instantiation {
+                    args: layout.params(
+                        impl_args,
+                        trait_inst
+                            .func_args
+                            .map_refs(|_, arg| subst_type(&inst.args, arg)),
+                    ),
+                    derivs: layout.constrs(
+                        impl_derivs,
+                        trait_inst
+                            .func_derivs
+                            .map_refs(|_, deriv| self.subst_derivation(inst, deriv)),
+                    ),
+                };
+
+                let new_id = self.resolve_val_inst(impl_def.funcs[*func], callee_inst);
                 mono::Expr::Global(new_id)
             }
 
-            &typed::Expr::Local(id) => mono::Expr::Local(id),
+            solved::Expr::Global(res::GlobalId::Custom(id), args, derivs) => {
+                let callee_inst = self.resolve_instantiation(inst, args, derivs);
+                let new_id = self.resolve_val_inst(*id, callee_inst);
+                mono::Expr::Global(new_id)
+            }
 
-            typed::Expr::Tuple(items) => mono::Expr::Tuple(
+            &solved::Expr::Local(id) => mono::Expr::Local(id),
+
+            solved::Expr::Tuple(items) => mono::Expr::Tuple(
                 items
                     .iter()
-                    .map(|item| self.resolve_expr(inst_args, item))
+                    .map(|item| self.resolve_expr(inst, item))
                     .collect(),
             ),
 
-            typed::Expr::Lam(purity, arg_type, ret_type, pat, body, prof_id) => {
-                let pat_resolved = self.resolve_pattern(inst_args, pat);
-                let arg_type_resolved = self.resolve_type(inst_args, arg_type);
-                let ret_type_resolved = self.resolve_type(inst_args, ret_type);
-                let body_resolved = self.resolve_expr(inst_args, body);
+            solved::Expr::Lam(purity, arg_type, ret_type, pat, body, prof_id) => {
+                let pat_resolved = self.resolve_pattern(inst, pat);
+                let arg_type_resolved = self.resolve_type(inst, arg_type);
+                let ret_type_resolved = self.resolve_type(inst, ret_type);
+                let body_resolved = self.resolve_expr(inst, body);
                 mono::Expr::Lam(
                     *purity,
                     arg_type_resolved,
@@ -252,78 +339,78 @@ impl<'a> Instantiator<'a> {
                 )
             }
 
-            typed::Expr::App(purity, func, arg) => {
-                let func_resolved = self.resolve_expr(inst_args, func);
-                let arg_resolved = self.resolve_expr(inst_args, arg);
+            solved::Expr::App(purity, func, arg) => {
+                let func_resolved = self.resolve_expr(inst, func);
+                let arg_resolved = self.resolve_expr(inst, arg);
                 mono::Expr::App(*purity, Box::new(func_resolved), Box::new(arg_resolved))
             }
 
-            typed::Expr::Match(discrim, cases, result_type) => {
-                let discrim_resolved = self.resolve_expr(inst_args, discrim);
+            solved::Expr::Match(discrim, cases, result_type) => {
+                let discrim_resolved = self.resolve_expr(inst, discrim);
 
                 let cases_resolved = cases
                     .iter()
                     .map(|(pat, body)| {
-                        let pat_resolved = self.resolve_pattern(inst_args, pat);
-                        let body_resolved = self.resolve_expr(inst_args, body);
+                        let pat_resolved = self.resolve_pattern(inst, pat);
+                        let body_resolved = self.resolve_expr(inst, body);
                         (pat_resolved, body_resolved)
                     })
                     .collect();
 
-                let result_resolved = self.resolve_type(inst_args, result_type);
+                let result_resolved = self.resolve_type(inst, result_type);
 
                 mono::Expr::Match(Box::new(discrim_resolved), cases_resolved, result_resolved)
             }
 
-            typed::Expr::LetMany(bindings, body) => {
+            solved::Expr::LetMany(bindings, body) => {
                 let mut new_bindings = Vec::new();
 
                 for (lhs, rhs) in bindings {
-                    let lhs_resolved = self.resolve_pattern(inst_args, lhs);
-                    let rhs_resolved = self.resolve_expr(inst_args, rhs);
+                    let lhs_resolved = self.resolve_pattern(inst, lhs);
+                    let rhs_resolved = self.resolve_expr(inst, rhs);
 
                     new_bindings.push((lhs_resolved, rhs_resolved));
                 }
 
-                let body_resolved = self.resolve_expr(inst_args, body);
+                let body_resolved = self.resolve_expr(inst, body);
 
                 mono::Expr::LetMany(new_bindings, Box::new(body_resolved))
             }
 
-            typed::Expr::ArrayLit(type_, items) => {
-                let type_resolved = self.resolve_type(inst_args, type_);
+            solved::Expr::ArrayLit(type_, items) => {
+                let type_resolved = self.resolve_type(inst, type_);
                 let item_resolved = items
                     .iter()
-                    .map(|item| self.resolve_expr(inst_args, item))
+                    .map(|item| self.resolve_expr(inst, item))
                     .collect();
 
                 mono::Expr::ArrayLit(type_resolved, item_resolved)
             }
 
-            &typed::Expr::ByteLit(val) => mono::Expr::ByteLit(val),
-            &typed::Expr::IntLit(val) => mono::Expr::IntLit(val),
-            &typed::Expr::FloatLit(val) => mono::Expr::FloatLit(val),
+            &solved::Expr::ByteLit(val) => mono::Expr::ByteLit(val),
+            &solved::Expr::IntLit(val) => mono::Expr::IntLit(val),
+            &solved::Expr::FloatLit(val) => mono::Expr::FloatLit(val),
 
-            typed::Expr::Span(_, _, content) => self.resolve_expr(inst_args, content),
+            solved::Expr::Span(_, _, content) => self.resolve_expr(inst, content),
         }
     }
 
-    fn resolve_pattern(&mut self, inst_args: &InstArgs, pat: &typed::Pattern) -> mono::Pattern {
+    fn resolve_pattern(&mut self, inst: &Instantiation, pat: &solved::Pattern) -> mono::Pattern {
         match pat {
-            typed::Pattern::Any(type_) => mono::Pattern::Any(self.resolve_type(inst_args, type_)),
+            solved::Pattern::Any(type_) => mono::Pattern::Any(self.resolve_type(inst, type_)),
 
-            typed::Pattern::Var(type_) => mono::Pattern::Var(self.resolve_type(inst_args, type_)),
+            solved::Pattern::Var(type_) => mono::Pattern::Var(self.resolve_type(inst, type_)),
 
-            typed::Pattern::Tuple(items) => {
+            solved::Pattern::Tuple(items) => {
                 let items_resolved = items
                     .iter()
-                    .map(|item| self.resolve_pattern(inst_args, item))
+                    .map(|item| self.resolve_pattern(inst, item))
                     .collect();
 
                 mono::Pattern::Tuple(items_resolved)
             }
 
-            typed::Pattern::Ctor(res::TypeId::Bool, args, variant, None) => {
+            solved::Pattern::Ctor(res::TypeId::Bool, args, variant, None) => {
                 debug_assert!(args.is_empty());
 
                 let val = match variant {
@@ -335,12 +422,12 @@ impl<'a> Instantiator<'a> {
                 mono::Pattern::BoolConst(val)
             }
 
-            typed::Pattern::Ctor(res::TypeId::Custom(id), args, variant, content) => {
+            solved::Pattern::Ctor(res::TypeId::Custom(id), args, variant, content) => {
                 let args_resolved =
-                    IdVec::from_vec(args.iter().map(|arg| subst_type(inst_args, arg)).collect());
+                    IdVec::from_vec(args.iter().map(|arg| subst_type(&inst.args, arg)).collect());
 
                 let content_resolved = if let Some(content) = content {
-                    Some(Box::new(self.resolve_pattern(inst_args, content)))
+                    Some(Box::new(self.resolve_pattern(inst, content)))
                 } else {
                     None
                 };
@@ -350,22 +437,23 @@ impl<'a> Instantiator<'a> {
                 mono::Pattern::Ctor(new_id, *variant, content_resolved)
             }
 
-            typed::Pattern::Ctor(_, _, _, _) => unreachable!(),
+            solved::Pattern::Ctor(_, _, _, _) => unreachable!(),
 
-            &typed::Pattern::ByteConst(val) => mono::Pattern::ByteConst(val),
-            &typed::Pattern::IntConst(val) => mono::Pattern::IntConst(val),
-            &typed::Pattern::FloatConst(val) => mono::Pattern::FloatConst(val),
+            &solved::Pattern::ByteConst(val) => mono::Pattern::ByteConst(val),
+            &solved::Pattern::IntConst(val) => mono::Pattern::IntConst(val),
+            &solved::Pattern::FloatConst(val) => mono::Pattern::FloatConst(val),
 
-            typed::Pattern::Span(_, _, content) => self.resolve_pattern(inst_args, content),
+            solved::Pattern::Span(_, _, content) => self.resolve_pattern(inst, content),
         }
     }
 
-    fn resolve_val_def(&mut self, inst_args: &InstArgs, def: &typed::ValDef) -> mono::ValDef {
-        debug_assert_eq!(inst_args.len(), def.scheme.param_kinds.len());
+    fn resolve_val_def(&mut self, inst: &Instantiation, def: &solved::ValDef) -> mono::ValDef {
+        debug_assert_eq!(inst.args.len(), def.scheme.param_kinds.len());
+        debug_assert_eq!(inst.derivs.len(), def.scheme.trait_constrs.len());
 
-        let type_resolved = self.resolve_type(inst_args, &def.scheme.body);
+        let type_resolved = self.resolve_type(inst, &def.scheme.body);
 
-        let body_resolved = self.resolve_expr(inst_args, &def.body);
+        let body_resolved = self.resolve_expr(inst, &def.body);
 
         mono::ValDef {
             type_: type_resolved,
@@ -380,9 +468,14 @@ impl<'a> Instantiator<'a> {
     ) -> mono::TypeDef {
         debug_assert_eq!(inst_args.len(), typedef.param_kinds.len());
 
+        let inst = Instantiation {
+            args: inst_args.clone(),
+            derivs: IdVec::new(),
+        };
+
         let variants_resolved = typedef.variants.map_refs(|_id, variant| {
             if let Some(variant) = variant {
-                Some(self.resolve_type(inst_args, &variant))
+                Some(self.resolve_type(&inst, &variant))
             } else {
                 None
             }
@@ -394,22 +487,29 @@ impl<'a> Instantiator<'a> {
     }
 }
 
-pub fn monomorphize(program: typed::Program) -> mono::Program {
+pub fn monomorphize(program: solved::Program) -> mono::Program {
     let mut inst = Instantiator {
         typedefs: &program.custom_types,
+        impls: &program.impls,
         val_insts: ValInstances::new(),
         type_insts: TypeInstances::new(),
     };
 
-    let main_new_id = inst.resolve_val_inst(program.main, IdVec::new());
+    let main_new_id = inst.resolve_val_inst(
+        program.main,
+        Instantiation {
+            args: IdVec::new(),
+            derivs: IdVec::new(),
+        },
+    );
 
     let mut val_defs_resolved = IdVec::new();
     let mut val_defs_resolved_symbols = IdVec::new();
 
-    while let Some((new_id, (orig_id, inst_args))) = inst.val_insts.pop_pending() {
+    while let Some((new_id, (orig_id, instantiation))) = inst.val_insts.pop_pending() {
         let def = &program.vals[orig_id];
 
-        let def_resolved = inst.resolve_val_def(&inst_args, def);
+        let def_resolved = inst.resolve_val_def(&instantiation, def);
         let def_resolved_symbols = mono::ValSymbols::Normal(mono::ValSymbolsInner {
             val_name: program.val_symbols[orig_id].val_name.clone(),
         });

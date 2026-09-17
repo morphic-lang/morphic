@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use crate::data::kinded_ast as kinded;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
@@ -22,6 +21,22 @@ pub enum Head {
     Unknown,
     /// A type that would have to contain itself.
     RecursiveOccurrence,
+}
+
+/// A trait applied to partially-inferred types.
+#[derive(Clone, Debug)]
+pub struct TraitApp {
+    pub trait_: res::TraitId,
+    pub args: Vec<Type>,
+}
+
+impl TraitApp {
+    pub fn from_resolved(app: &res::TraitApp) -> TraitApp {
+        TraitApp {
+            trait_: app.trait_,
+            args: app.args.iter().map(Type::from_resolved).collect(),
+        }
+    }
 }
 
 /// Rendering of a type that inference has not determined.  Error messages should refer to this
@@ -98,13 +113,37 @@ enum Qualification {
 }
 
 pub struct TypeRenderer<'a> {
-    program: &'a kinded::Program,
+    mod_symbols: &'a IdVec<res::ModId, res::ModSymbols>,
+    custom_type_symbols: &'a IdVec<res::CustomTypeId, res::TypeSymbols>,
 
     builtin_quals: BTreeMap<BuiltinType, Qualification>,
     custom_quals: IdVec<res::CustomTypeId, Qualification>,
 }
 
-fn find_builtin_quals(program: &kinded::Program) -> BTreeMap<BuiltinType, Qualification> {
+impl Type {
+    pub fn from_resolved(type_: &res::Type) -> Type {
+        match type_ {
+            res::Type::App(head, args) => Type::App(
+                match head {
+                    res::TypeHead::Ctor(id) => Head::Ctor(*id),
+                    res::TypeHead::Var(param) => Head::Var(*param),
+                },
+                args.iter().map(Type::from_resolved).collect(),
+            ),
+            res::Type::Tuple(items) => Type::Tuple(items.iter().map(Type::from_resolved).collect()),
+            res::Type::Func(purity, arg, ret) => Type::Func(
+                *purity,
+                Box::new(Type::from_resolved(arg)),
+                Box::new(Type::from_resolved(ret)),
+            ),
+        }
+    }
+}
+
+fn find_builtin_quals(
+    mod_symbols: &IdVec<res::ModId, res::ModSymbols>,
+    custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
+) -> BTreeMap<BuiltinType, Qualification> {
     let mut quals: BTreeMap<BuiltinType, Qualification> = BUILTINS
         .iter()
         .map(|&builtin| (builtin, Qualification::Unqualified))
@@ -115,8 +154,8 @@ fn find_builtin_quals(program: &kinded::Program) -> BTreeMap<BuiltinType, Qualif
         .map(|&builtin| (builtin_name(builtin), builtin))
         .collect();
 
-    for (_, type_syms) in &program.custom_type_symbols {
-        let in_root_module = program.mod_symbols[type_syms.mod_].decl_loc == res::ModDeclLoc::Root;
+    for (_, type_syms) in custom_type_symbols {
+        let in_root_module = mod_symbols[type_syms.mod_].decl_loc == res::ModDeclLoc::Root;
 
         if in_root_module {
             if let Some(builtin) = names.get(&type_syms.type_name.0 as &str) {
@@ -128,20 +167,22 @@ fn find_builtin_quals(program: &kinded::Program) -> BTreeMap<BuiltinType, Qualif
     quals
 }
 
-fn find_custom_quals(program: &kinded::Program) -> IdVec<res::CustomTypeId, Qualification> {
+fn find_custom_quals(
+    custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
+) -> IdVec<res::CustomTypeId, Qualification> {
     let mut name_counts = BTreeMap::<raw::TypeName, u32>::new();
 
     for &builtin in BUILTINS {
         name_counts.insert(raw::TypeName(builtin_name(builtin).to_owned()), 1);
     }
 
-    for (_, type_syms) in &program.custom_type_symbols {
+    for (_, type_syms) in custom_type_symbols {
         *name_counts.entry(type_syms.type_name.clone()).or_insert(0) += 1;
     }
 
-    let mut quals = IdVec::from_vec(vec![Qualification::Unqualified; program.custom_types.len()]);
+    let mut quals = IdVec::from_vec(vec![Qualification::Unqualified; custom_type_symbols.len()]);
 
-    for (id, type_syms) in &program.custom_type_symbols {
+    for (id, type_syms) in custom_type_symbols {
         debug_assert!(name_counts[&type_syms.type_name] > 0);
         if name_counts[&type_syms.type_name] > 1 {
             quals[id] = Qualification::Qualified;
@@ -160,25 +201,39 @@ enum Precedence {
 }
 
 impl<'a> TypeRenderer<'a> {
-    pub fn new(program: &'a kinded::Program) -> Self {
-        debug_assert_eq!(
-            program.custom_types.len(),
-            program.custom_type_symbols.len()
-        );
-
-        let builtin_quals = find_builtin_quals(program);
-        let custom_quals = find_custom_quals(program);
+    pub fn new(
+        mod_symbols: &'a IdVec<res::ModId, res::ModSymbols>,
+        custom_type_symbols: &'a IdVec<res::CustomTypeId, res::TypeSymbols>,
+    ) -> Self {
+        let builtin_quals = find_builtin_quals(mod_symbols, custom_type_symbols);
+        let custom_quals = find_custom_quals(custom_type_symbols);
 
         TypeRenderer {
-            program,
+            mod_symbols,
+            custom_type_symbols,
 
             builtin_quals,
             custom_quals,
         }
     }
 
+    pub fn render_trait_app(
+        &self,
+        params: &IdVec<res::TypeParamId, raw::TypeParam>,
+        app: &TraitApp,
+        trait_symbols: &IdVec<res::CustomTraitId, res::TraitSymbols>,
+    ) -> String {
+        let res::TraitId::Custom(custom) = app.trait_;
+        let mut result = trait_symbols[custom].trait_name.0.clone();
+        for arg in &app.args {
+            result.push(' ');
+            self.render_to(params, arg, &mut result, Precedence::AppArg);
+        }
+        result
+    }
+
     fn render_mod_path(&self, mod_: res::ModId, dest: &mut String) {
-        match &self.program.mod_symbols[mod_].decl_loc {
+        match &self.mod_symbols[mod_].decl_loc {
             res::ModDeclLoc::ChildOf { parent, name } => {
                 self.render_mod_path(*parent, dest);
                 dest.push_str(&name.0);
@@ -204,11 +259,11 @@ impl<'a> TypeRenderer<'a> {
                 match self.custom_quals[&custom] {
                     Qualification::Unqualified => {}
                     Qualification::Qualified => {
-                        self.render_mod_path(self.program.custom_type_symbols[custom].mod_, dest);
+                        self.render_mod_path(self.custom_type_symbols[custom].mod_, dest);
                     }
                 }
 
-                dest.push_str(&self.program.custom_type_symbols[custom].type_name.0);
+                dest.push_str(&self.custom_type_symbols[custom].type_name.0);
             }
         }
     }
@@ -300,8 +355,8 @@ impl<'a> TypeRenderer<'a> {
             (res::TypeId::Bool, res::VariantId(0)) => "False".to_owned(),
             (res::TypeId::Bool, res::VariantId(1)) => "True".to_owned(),
 
-            (res::TypeId::Custom(custom), _) => self.program.custom_type_symbols[custom]
-                .variant_symbols[variant]
+            (res::TypeId::Custom(custom), _) => self.custom_type_symbols[custom].variant_symbols
+                [variant]
                 .variant_name
                 .0
                 .to_owned(),

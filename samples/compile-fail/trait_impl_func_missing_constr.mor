@@ -1,0 +1,17 @@
+// expect-error: Impl Func Signature Mismatch @ 14:3
+type Opt a { Some(a), None }
+
+trait Show a {
+  show(x: a): Array Byte,
+}
+
+trait Container f {
+  show_all(x: f a): Array Byte where Show a,
+}
+
+// The func's own constraint has to be repeated on the impl func.
+impl ContainerOpt of Container Opt {
+  show_all(x: Opt a): Array Byte = "?"
+}
+
+proc main(): () = ()

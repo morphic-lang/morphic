@@ -21,7 +21,7 @@
 use crate::data::kinded_ast as kinded;
 use crate::data::resolved_ast as res;
 use crate::file_cache::FileCache;
-use id_collections::{id_type, IdVec};
+use id_collections::{id_type, Count, IdVec};
 use morphic_common::lines;
 use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
 use morphic_common::util::graph::{self, Graph};
@@ -246,6 +246,9 @@ struct Inference {
     fixed: IdVec<res::CustomTypeId, Option<IdVec<res::TypeParamId, kinded::Kind>>>,
     // The parameters of the dependency group currently being inferred.
     pending: BTreeMap<res::CustomTypeId, IdVec<res::TypeParamId, KindTerm>>,
+    // Likewise for traits, whose groups are processed after all type declarations.
+    fixed_traits: IdVec<res::CustomTraitId, Option<IdVec<res::TypeParamId, kinded::Kind>>>,
+    pending_traits: BTreeMap<res::CustomTraitId, IdVec<res::TypeParamId, KindTerm>>,
     // The position, within the type currently being checked, of the sub-term being visited (see
     // `RawLocation`).  Only ever modified through `with_child`, which keeps it balanced.
     path: Vec<usize>,
@@ -295,6 +298,35 @@ impl Inference {
         self.ctx
             .unify(expected, actual)
             .map_err(|kind| self.error(kind, expected, actual))
+    }
+
+    fn trait_param_kinds(&self, trait_: res::TraitId) -> Vec<KindTerm> {
+        let res::TraitId::Custom(custom) = trait_;
+        match self.pending_traits.get(&custom) {
+            Some(params) => params.iter().map(|(_, kind)| kind.clone()).collect(),
+            None => self.fixed_traits[custom]
+                .as_ref()
+                .expect("trait dependency groups are processed before their dependents")
+                .iter()
+                .map(|(_, kind)| kind_to_term(kind))
+                .collect(),
+        }
+    }
+
+    /// Checks that a trait constraint applies its trait to arguments of the trait's parameter
+    /// kinds.  Callers locate any error at the constraint as a whole.
+    fn check_constr(
+        &mut self,
+        env: &IdVec<res::TypeParamId, KindTerm>,
+        constr: &res::TraitApp,
+    ) -> Result<(), RawError> {
+        let param_kinds = self.trait_param_kinds(constr.trait_);
+        debug_assert_eq!(param_kinds.len(), constr.args.len());
+        for (param_kind, arg) in param_kinds.iter().zip(&constr.args) {
+            let arg_kind = self.infer(env, arg)?;
+            self.expect(param_kind, &arg_kind)?;
+        }
+        Ok(())
     }
 
     /// Infers the kind of a type, checking that every application inside it is well-kinded.
@@ -466,6 +498,13 @@ impl Inference {
     }
 }
 
+fn at_span(span: (usize, usize)) -> impl FnOnce(RawError) -> RawError {
+    move |err| RawError {
+        location: RawLocation::Span(Some(span)),
+        ..err
+    }
+}
+
 fn locate(
     err: RawError,
     item: String,
@@ -537,12 +576,48 @@ fn type_dependency_groups(program: &res::Program) -> Vec<Vec<res::CustomTypeId>>
     graph::strongly_connected(&deps)
 }
 
+fn add_constr_trait_deps<'a>(
+    constrs: impl IntoIterator<Item = &'a res::TraitApp>,
+    deps: &mut BTreeSet<res::CustomTraitId>,
+) {
+    for constr in constrs {
+        let res::TraitId::Custom(custom) = constr.trait_;
+        deps.insert(custom);
+    }
+}
+
+/// The dependency groups of the program's traits, through superclasses and the constraints of
+/// their funcs, each group before any group that depends on it.
+fn trait_dependency_groups(program: &res::Program) -> Vec<Vec<res::CustomTraitId>> {
+    let deps = Graph {
+        edges_out: program.traits.map_refs(|_, def| {
+            let mut deps = BTreeSet::new();
+            add_constr_trait_deps(def.supers.values(), &mut deps);
+            for (_, func) in &def.funcs {
+                add_constr_trait_deps(func.own_constrs.values(), &mut deps);
+            }
+            deps.into_iter().collect()
+        }),
+    };
+
+    graph::strongly_connected(&deps)
+}
+
+fn fresh_params(
+    ctx: &mut Context,
+    num_params: Count<res::TypeParamId>,
+) -> IdVec<res::TypeParamId, KindTerm> {
+    IdVec::from_count_with(num_params, |_| ctx.fresh())
+}
+
 /// Infers and checks kinds for the whole program, producing the kinded program.
 pub fn infer_kinds(program: res::Program) -> Result<kinded::Program, Error> {
     let mut inference = Inference {
         ctx: Context::new(),
         fixed: program.custom_types.map_refs(|_, _| None),
         pending: BTreeMap::new(),
+        fixed_traits: program.traits.map_refs(|_, _| None),
+        pending_traits: BTreeMap::new(),
         path: Vec::new(),
     };
 
@@ -551,8 +626,7 @@ pub fn infer_kinds(program: res::Program) -> Result<kinded::Program, Error> {
 
         let mut pending = BTreeMap::new();
         for &type_id in &group {
-            let num_params = program.custom_types[type_id].num_params;
-            let params = IdVec::from_vec((0..num_params).map(|_| inference.ctx.fresh()).collect());
+            let params = fresh_params(&mut inference.ctx, program.custom_types[type_id].num_params);
             pending.insert(type_id, params);
         }
         inference.pending = pending;
@@ -586,23 +660,148 @@ pub fn infer_kinds(program: res::Program) -> Result<kinded::Program, Error> {
         }
     }
 
+    // Traits: one dependency group at a time, like type declarations.  A func's own parameters
+    // belong to the group too, since they are only ever constrained within the group.
+    let mut trait_func_kinds: BTreeMap<
+        res::CustomTraitId,
+        IdVec<res::TraitFuncId, IdVec<res::TypeParamId, kinded::Kind>>,
+    > = BTreeMap::new();
+
+    for group in trait_dependency_groups(&program) {
+        inference.ctx = Context::new();
+
+        let mut pending = BTreeMap::new();
+        for &trait_id in &group {
+            let params = fresh_params(&mut inference.ctx, program.traits[trait_id].num_params);
+            pending.insert(trait_id, params);
+        }
+        inference.pending_traits = pending;
+
+        let mut func_envs: BTreeMap<
+            res::CustomTraitId,
+            IdVec<res::TraitFuncId, IdVec<res::TypeParamId, KindTerm>>,
+        > = BTreeMap::new();
+
+        for &trait_id in &group {
+            let def = &program.traits[trait_id];
+            let symbols = &program.trait_symbols[trait_id];
+            let file = &program.mod_symbols[symbols.mod_].file;
+            let item = || format!("the trait '{}'", symbols.trait_name.0);
+            let env = inference.pending_traits[&trait_id].clone();
+
+            for (super_id, constr) in &def.supers {
+                let span = symbols.super_spans[super_id];
+                inference
+                    .check_constr(&env, constr)
+                    .map_err(at_span(span))
+                    .map_err(|err| locate(err, item(), file, None, None))?;
+            }
+
+            let mut envs = IdVec::new();
+            for (func_id, func) in &def.funcs {
+                let func_symbols = &symbols.func_symbols[func_id];
+                let layout = def.func_layout(func_id);
+                let func_env = layout.params(
+                    env.clone(),
+                    IdVec::from_count_with(layout.num_own_params, |_| inference.ctx.fresh()),
+                );
+
+                let func_item = || {
+                    format!(
+                        "the signature of '{}' in {}",
+                        func_symbols.func_name.0,
+                        item()
+                    )
+                };
+
+                inference
+                    .check_is_type(&func_env, &func.body)
+                    .map_err(|err| {
+                        locate(
+                            err,
+                            func_item(),
+                            file,
+                            Some(&func_symbols.type_spans),
+                            Some(func_symbols.span),
+                        )
+                    })?;
+
+                for (constr_id, constr) in &func.own_constrs {
+                    let span = func_symbols.constr_spans[constr_id];
+                    inference
+                        .check_constr(&func_env, constr)
+                        .map_err(at_span(span))
+                        .map_err(|err| locate(err, func_item(), file, None, None))?;
+                }
+
+                let _ = envs.push(func_env);
+            }
+            func_envs.insert(trait_id, envs);
+        }
+
+        for (trait_id, params) in std::mem::take(&mut inference.pending_traits) {
+            let kinds = params.map_refs(|_, kind| inference.ctx.to_kind(kind));
+            inference.fixed_traits[trait_id] = Some(kinds);
+        }
+        for (trait_id, envs) in func_envs {
+            let kinds = envs.map(|_, env| env.map_refs(|_, kind| inference.ctx.to_kind(kind)));
+            trait_func_kinds.insert(trait_id, kinds);
+        }
+    }
+
+    // Impls: each in isolation, against the fixed trait kinds.
+    let mut impl_kinds = Vec::new();
+
+    for (impl_id, def) in &program.impls {
+        inference.ctx = Context::new();
+
+        let symbols = &program.impl_symbols[impl_id];
+        let file = &program.mod_symbols[symbols.mod_].file;
+        let item = || format!("the impl '{}'", symbols.impl_name.0);
+        let env = fresh_params(&mut inference.ctx, def.num_params);
+
+        let head = res::TraitApp {
+            trait_: def.trait_,
+            args: def.head.clone(),
+        };
+        inference
+            .check_constr(&env, &head)
+            .map_err(at_span(symbols.head_span))
+            .map_err(|err| locate(err, item(), file, None, None))?;
+
+        for (constr_id, constr) in &def.trait_constrs {
+            let span = symbols.constr_spans[constr_id];
+            inference
+                .check_constr(&env, constr)
+                .map_err(at_span(span))
+                .map_err(|err| locate(err, item(), file, None, None))?;
+        }
+
+        impl_kinds.push((impl_id, env.map_refs(|_, kind| inference.ctx.to_kind(kind))));
+    }
+
+    // Values: each in isolation, against the fixed constructor and trait kinds.
     let mut val_kinds = Vec::new();
 
     for (val_id, def) in &program.vals {
         inference.ctx = Context::new();
 
         let symbols = &program.val_symbols[val_id];
-        let env = IdVec::from_vec(
-            (0..def.scheme.num_params)
-                .map(|_| inference.ctx.fresh())
-                .collect(),
-        );
+        let env = fresh_params(&mut inference.ctx, def.scheme.num_params);
         let item = || format!("the signature of '{}'", symbols.val_name.0);
         let file = &program.mod_symbols[symbols.mod_].file;
 
         inference
             .check_is_type(&env, &def.scheme.body)
             .map_err(|err| locate(err, item(), file, Some(&symbols.type_spans), None))?;
+
+        for (constr_id, constr) in &def.scheme.trait_constrs {
+            let span = symbols.trait_constr_spans[constr_id];
+            inference
+                .check_constr(&env, constr)
+                .map_err(at_span(span))
+                .map_err(|err| locate(err, item(), file, None, None))?;
+        }
 
         inference
             .check_expr(&env, &def.body)
@@ -614,8 +813,12 @@ pub fn infer_kinds(program: res::Program) -> Result<kinded::Program, Error> {
     let type_kinds = inference
         .fixed
         .map(|_, kinds| kinds.expect("every type declaration belongs to some dependency group"));
+    let trait_kinds = inference
+        .fixed_traits
+        .map(|_, kinds| kinds.expect("every trait belongs to some dependency group"));
 
     let mut val_kinds = val_kinds.into_iter();
+    let mut impl_kinds = impl_kinds.into_iter();
 
     Ok(kinded::Program {
         mod_symbols: program.mod_symbols,
@@ -633,12 +836,48 @@ pub fn infer_kinds(program: res::Program) -> Result<kinded::Program, Error> {
             kinded::ValDef {
                 scheme: kinded::TypeScheme {
                     param_kinds,
+                    trait_constrs: def.scheme.trait_constrs,
                     body: def.scheme.body,
                 },
                 body: def.body,
             }
         }),
         val_symbols: program.val_symbols,
+        traits: program.traits.map(|trait_id, def| {
+            let func_kinds = trait_func_kinds
+                .remove(&trait_id)
+                .expect("kinds were inferred for every trait");
+            let layouts = def.funcs.map_refs(|func_id, _| def.func_layout(func_id));
+            kinded::TraitDef {
+                param_kinds: trait_kinds[trait_id].clone(),
+                supers: def.supers,
+                funcs: def.funcs.map(|func_id, func| {
+                    let param_kinds = &func_kinds[func_id];
+                    let layout = layouts[func_id];
+                    kinded::TraitFuncSig {
+                        own_param_kinds: IdVec::from_count_with(layout.num_own_params, |param| {
+                            param_kinds[layout.own_param(param)].clone()
+                        }),
+                        own_constrs: func.own_constrs,
+                        body: func.body,
+                    }
+                }),
+            }
+        }),
+        trait_symbols: program.trait_symbols,
+        impls: program.impls.map(|impl_id, def| {
+            let (kinds_id, param_kinds) = impl_kinds.next().expect("one per impl");
+            debug_assert_eq!(kinds_id, impl_id);
+            kinded::ImplDef {
+                trait_: def.trait_,
+                param_kinds,
+                head: def.head,
+                trait_constrs: def.trait_constrs,
+                funcs: def.funcs,
+            }
+        }),
+        impl_symbols: program.impl_symbols,
+        impl_scope: program.impl_scope,
         main: program.main,
     })
 }

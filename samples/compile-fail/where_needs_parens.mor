@@ -1,0 +1,13 @@
+// expect-error: Incorrect Syntax @ 11:42
+trait Show a {
+  show(x: a): Array Byte,
+}
+
+trait Eq a {
+  eq(x: a, y: a): Bool,
+}
+
+// Two or more constraints need parentheses: `where (Show a, Eq a)`.
+both(x: a, y: a): Array Byte where Show a, Eq a = show(x)
+
+proc main(): () = ()

@@ -27,6 +27,9 @@ enum RawErrorKind {
     Ambiguous {
         type_: TypeVar,
     },
+    AmbiguousConstr {
+        obligation: typed::ObligationId,
+    },
     Mismatch {
         expected: TypeVar,
         actual: TypeVar,
@@ -48,6 +51,9 @@ pub enum ErrorKind {
     Recursive,
     Ambiguous {
         type_: String,
+    },
+    AmbiguousConstr {
+        constr: String,
     },
     Mismatch {
         expected: String,
@@ -79,16 +85,40 @@ impl RawErrorKind {
             RawErrorKind::Recursive => ErrorKind::Recursive,
 
             RawErrorKind::Ambiguous { type_: type_var } => {
-                let renderer = report_type::TypeRenderer::new(program);
+                let renderer = report_type::TypeRenderer::new(
+                    &program.mod_symbols,
+                    &program.custom_type_symbols,
+                );
                 let type_ = renderer.render(params, &ctx.extract_report(*type_var));
                 ErrorKind::Ambiguous { type_ }
+            }
+
+            RawErrorKind::AmbiguousConstr { obligation } => {
+                let renderer = report_type::TypeRenderer::new(
+                    &program.mod_symbols,
+                    &program.custom_type_symbols,
+                );
+                let obligation = &ctx.obligations[*obligation];
+                let app = report_type::TraitApp {
+                    trait_: obligation.trait_,
+                    args: obligation
+                        .args
+                        .iter()
+                        .map(|&arg| ctx.extract_report(arg))
+                        .collect(),
+                };
+                let constr = renderer.render_trait_app(params, &app, &program.trait_symbols);
+                ErrorKind::AmbiguousConstr { constr }
             }
 
             RawErrorKind::Mismatch {
                 expected: expected_var,
                 actual: actual_var,
             } => {
-                let renderer = report_type::TypeRenderer::new(program);
+                let renderer = report_type::TypeRenderer::new(
+                    &program.mod_symbols,
+                    &program.custom_type_symbols,
+                );
 
                 let expected_type = ctx.extract_report(*expected_var);
                 let actual_type = ctx.extract_report(*actual_var);
@@ -108,7 +138,10 @@ impl RawErrorKind {
             }
 
             RawErrorKind::ExpectedCtorArg { id, variant } => {
-                let renderer = report_type::TypeRenderer::new(program);
+                let renderer = report_type::TypeRenderer::new(
+                    &program.mod_symbols,
+                    &program.custom_type_symbols,
+                );
 
                 let (id_rendered, variant_rendered) = renderer.render_ctor(*id, *variant);
 
@@ -119,7 +152,10 @@ impl RawErrorKind {
             }
 
             RawErrorKind::UnexpectedCtorArg { id, variant } => {
-                let renderer = report_type::TypeRenderer::new(program);
+                let renderer = report_type::TypeRenderer::new(
+                    &program.mod_symbols,
+                    &program.custom_type_symbols,
+                );
 
                 let (id_rendered, variant_rendered) = renderer.render_ctor(*id, *variant);
 
@@ -165,6 +201,23 @@ impl Reportable for Error {
                          example, 'let x: Int = ...' would tell me that 'x' is of type 'Int'.",
                     ],
                     type_ = type_,
+                    unknown = report_type::UNKNOWN_TYPE,
+                ),
+            ),
+
+            ErrorKind::AmbiguousConstr { constr } => (
+                "Ambiguous Trait Constraint",
+                format!(
+                    lines![
+                        "I couldn't fully determine what type this trait constraint applies to.  The \
+                         most I could work out is:",
+                        "",
+                        "    {constr}",
+                        "",
+                        "where each '{unknown}' stands for something that this definition \
+                         doesn't pin down.  You can fix this by adding a type annotation.",
+                    ],
+                    constr = constr,
                     unknown = report_type::UNKNOWN_TYPE,
                 ),
             ),
@@ -240,8 +293,18 @@ enum Assign {
     Func(Purity, TypeVar, TypeVar),
 }
 
+/// A trait constraint required by some reference in the body being inferred, over inference
+/// variables.  It is extracted to an obligation once inference of the definition is complete.
+#[derive(Clone, Debug)]
+struct RawObligation {
+    trait_: res::TraitId,
+    args: Vec<TypeVar>,
+    span: Option<(usize, usize)>,
+}
+
 #[derive(Clone, Debug)]
 struct Context {
+    obligations: IdVec<typed::ObligationId, RawObligation>,
     // The dynamic borrowing state of each 'RefCell' in 'vars' is "load-bearing," because we use it
     // during unification to track whether or not we are currently processing a given type variable
     // higher up in the call stack.
@@ -275,7 +338,10 @@ enum ExtractError {
 
 impl Context {
     fn new() -> Self {
-        Context { vars: IdVec::new() }
+        Context {
+            obligations: IdVec::new(),
+            vars: IdVec::new(),
+        }
     }
 
     fn new_var(&mut self, assign: Assign) -> TypeVar {
@@ -575,6 +641,9 @@ struct Scope {
     // annotations inside the body refer to these.
     rigid_params: IdVec<res::TypeParamId, TypeVar>,
     locals: IdVec<res::LocalId, TypeVar>,
+    // The innermost enclosing span, updated as inference traverses expressions trees.  Used to
+    // attach spans to `RawObligations` so that errors can report where obligtaions arose.
+    span: Option<(usize, usize)>,
 }
 
 impl Scope {
@@ -582,6 +651,7 @@ impl Scope {
         Scope {
             rigid_params,
             locals: IdVec::new(),
+            span: None,
         }
     }
 
@@ -609,7 +679,13 @@ enum AnnotExpr {
     // The final 'TypeVar' in each of 'Global', 'Lam', and 'ArrayLit' is the type of the whole
     // expression.  It is only used to report ambiguities in terms of the type the user sees at
     // the reported span, rather than in terms of an internal component of that type.
-    Global(res::GlobalId, IdVec<res::TypeParamId, TypeVar>, TypeVar),
+    Global(
+        res::GlobalId,
+        IdVec<res::TypeParamId, TypeVar>,
+        TypeVar,
+        IdVec<res::TraitConstrId, typed::ObligationId>,
+    ),
+    TraitFunc(res::TraitId, res::TraitFuncId, AnnotTraitFuncInst),
     Local(res::LocalId),
     Tuple(Vec<AnnotExpr>),
     Lam(
@@ -635,6 +711,18 @@ enum AnnotExpr {
     FloatLit(f64),
 
     Span(usize, usize, Box<AnnotExpr>),
+}
+
+/// A reference to a trait func during inference, see `res::TraitFuncInst`.
+#[derive(Clone, Debug)]
+struct AnnotTraitFuncInst {
+    // Inherited from the trait the function belongs to.
+    trait_vars: IdVec<res::TypeParamId, TypeVar>,
+    trait_obligation: typed::ObligationId,
+    func_vars: IdVec<res::TraitFuncParamId, TypeVar>,
+    func_obligations: IdVec<res::TraitFuncConstrId, typed::ObligationId>,
+    // The type of the whole reference, for reporting ambiguities.
+    whole: TypeVar,
 }
 
 #[derive(Clone, Debug)]
@@ -670,6 +758,7 @@ fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> kinded::TypeScheme {
 
     kinded::TypeScheme {
         param_kinds: IdVec::new(),
+        trait_constrs: IdVec::new(),
         body: res::Type::Func(
             sig.purity,
             Box::new(trans_type(&sig.arg)),
@@ -719,6 +808,7 @@ pub fn global_scheme(
     fn scheme(num_params: usize, body: res::Type) -> kinded::TypeScheme {
         kinded::TypeScheme {
             param_kinds: IdVec::from_vec(vec![kinded::Kind::TYPE; num_params]),
+            trait_constrs: IdVec::new(),
             body,
         }
     }
@@ -768,6 +858,7 @@ pub fn global_scheme(
             };
             Cow::Owned(kinded::TypeScheme {
                 param_kinds: typedef.param_kinds.clone(),
+                trait_constrs: IdVec::new(),
                 body,
             })
         }
@@ -821,10 +912,18 @@ fn instantiate_with(
     }
 }
 
+/// Instantiates a scheme with fresh variables, recording one obligation per trait constraint of
+/// the scheme.  Nothing about the obligations influences inference. They are discharged by the
+/// trait solver once the whole definition has been inferred.
 fn instantiate_scheme(
     ctx: &mut Context,
+    span: Option<(usize, usize)>,
     scheme: &kinded::TypeScheme,
-) -> (IdVec<res::TypeParamId, TypeVar>, TypeVar) {
+) -> (
+    IdVec<res::TypeParamId, TypeVar>,
+    TypeVar,
+    IdVec<res::TraitConstrId, typed::ObligationId>,
+) {
     let param_vars = IdVec::from_vec(
         (0..scheme.param_kinds.len())
             .map(|_| ctx.new_var(Assign::Unknown))
@@ -833,7 +932,20 @@ fn instantiate_scheme(
 
     let root = instantiate_with(ctx, &param_vars, &scheme.body);
 
-    (param_vars, root)
+    let obligations = scheme.trait_constrs.map_refs(|_, constr| {
+        let args = constr
+            .args
+            .iter()
+            .map(|arg| instantiate_with(ctx, &param_vars, arg))
+            .collect();
+        ctx.obligations.push(RawObligation {
+            trait_: constr.trait_,
+            args,
+            span,
+        })
+    });
+
+    (param_vars, root, obligations)
 }
 
 fn infer_pat(
@@ -973,11 +1085,56 @@ fn infer_expr(
     expr: &res::Expr,
 ) -> Result<AnnotExpr, RawError> {
     match expr {
-        &res::Expr::Global(id) => {
+        &res::Expr::Global(res::GlobalRef::Global(id)) => {
             let scheme = global_scheme(program, id);
-            let (param_vars, var) = instantiate_scheme(ctx, &scheme);
+            let (param_vars, var, obligations) = instantiate_scheme(ctx, scope.span, &scheme);
             ctx.unify(expected, var)?;
-            Ok(AnnotExpr::Global(id, param_vars, var))
+            Ok(AnnotExpr::Global(id, param_vars, var, obligations))
+        }
+
+        &res::Expr::Global(res::GlobalRef::TraitFunc(trait_, func)) => {
+            let res::TraitId::Custom(custom) = trait_;
+            let trait_def = &program.traits[custom];
+            let sig = &trait_def.funcs[func];
+            let layout = trait_def.func_layout(func);
+
+            let trait_vars =
+                IdVec::from_count_with(layout.num_trait_params, |_| ctx.new_var(Assign::Unknown));
+            let func_vars =
+                IdVec::from_count_with(layout.num_own_params, |_| ctx.new_var(Assign::Unknown));
+            let all_vars = layout.params(trait_vars.clone(), func_vars.clone());
+            let whole = instantiate_with(ctx, &all_vars, &sig.body);
+
+            let trait_obligation = ctx.obligations.push(RawObligation {
+                trait_,
+                args: trait_vars.iter().map(|(_, &var)| var).collect(),
+                span: scope.span,
+            });
+            let func_obligations = sig.own_constrs.map_refs(|_, constr| {
+                let args = constr
+                    .args
+                    .iter()
+                    .map(|arg| instantiate_with(ctx, &all_vars, arg))
+                    .collect();
+                ctx.obligations.push(RawObligation {
+                    trait_: constr.trait_,
+                    args,
+                    span: scope.span,
+                })
+            });
+
+            ctx.unify(expected, whole)?;
+            Ok(AnnotExpr::TraitFunc(
+                trait_,
+                func,
+                AnnotTraitFuncInst {
+                    trait_vars,
+                    trait_obligation,
+                    func_vars,
+                    func_obligations,
+                    whole,
+                },
+            ))
         }
 
         &res::Expr::Local(id) => {
@@ -1117,13 +1274,13 @@ fn infer_expr(
             Ok(AnnotExpr::FloatLit(val))
         }
 
-        res::Expr::Span(lo, hi, body) => Ok(AnnotExpr::Span(
-            *lo,
-            *hi,
-            Box::new(
-                infer_expr(program, ctx, scope, expected, body).map_err(locate_span(*lo, *hi))?,
-            ),
-        )),
+        res::Expr::Span(lo, hi, body) => {
+            let enclosing = scope.span.replace((*lo, *hi));
+            let body_annot =
+                infer_expr(program, ctx, scope, expected, body).map_err(locate_span(*lo, *hi));
+            scope.span = enclosing;
+            Ok(AnnotExpr::Span(*lo, *hi, Box::new(body_annot?)))
+        }
     }
 }
 
@@ -1131,11 +1288,9 @@ fn instantiate_rigid(
     ctx: &mut Context,
     scheme: &kinded::TypeScheme,
 ) -> (IdVec<res::TypeParamId, TypeVar>, TypeVar) {
-    let rigid_params = IdVec::from_vec(
-        (0..scheme.param_kinds.len())
-            .map(|idx| ctx.new_var(Assign::Param(res::TypeParamId(idx))))
-            .collect(),
-    );
+    let rigid_params = scheme
+        .param_kinds
+        .map_refs(|param, _| ctx.new_var(Assign::Param(param)));
 
     let root = instantiate_with(ctx, &rigid_params, &scheme.body);
 
@@ -1200,10 +1355,28 @@ fn annot_expr_span(expr: &AnnotExpr) -> Option<(usize, usize)> {
 
 fn extract_solution(ctx: &Context, body: AnnotExpr) -> Result<typed::Expr, RawError> {
     match body {
-        AnnotExpr::Global(id, vars, whole) => Ok(typed::Expr::Global(
+        AnnotExpr::Global(id, vars, whole, obligations) => Ok(typed::Expr::Global(
             id,
             vars.try_map(|_param_id, var| ctx.extract(var))
                 .map_err(|err| report_ambiguity_at(err, whole))?,
+            obligations,
+        )),
+
+        AnnotExpr::TraitFunc(trait_, func, inst) => Ok(typed::Expr::TraitFunc(
+            trait_,
+            func,
+            res::TraitFuncInst {
+                trait_args: inst
+                    .trait_vars
+                    .try_map(|_param_id, var| ctx.extract(var))
+                    .map_err(|err| report_ambiguity_at(err, inst.whole))?,
+                trait_deriv: inst.trait_obligation,
+                func_args: inst
+                    .func_vars
+                    .try_map(|_param_id, var| ctx.extract(var))
+                    .map_err(|err| report_ambiguity_at(err, inst.whole))?,
+                func_derivs: inst.func_obligations,
+            },
         )),
 
         AnnotExpr::Local(id) => Ok(typed::Expr::Local(id)),
@@ -1313,11 +1486,42 @@ fn infer_def(
 
     let body_annot = infer_expr(program, ctx, &mut scope, declared_type_var, &def.body)?;
 
+    // Obligations are extracted before the body, so that a variable left undetermined in a trait
+    // constraint is reported as an ambiguous constraint, naming the trait, rather than merely as
+    // an ambiguous type.
+    let obligations = ctx.obligations.try_map_refs(|id, obligation| {
+        let args = obligation
+            .args
+            .iter()
+            .map(|&arg| ctx.extract(arg))
+            .collect::<Result<_, _>>()
+            .map_err(|err: RawError| {
+                err.map(|kind| match kind {
+                    RawErrorKind::Ambiguous { .. } => {
+                        RawErrorKind::AmbiguousConstr { obligation: id }
+                    }
+                    other => other,
+                })
+            })
+            .map_err(|err| match obligation.span {
+                Some((lo, hi)) => locate_span(lo, hi)(err),
+                None => err,
+            })?;
+        Ok::<_, RawError>(typed::Obligation {
+            trait_constr: res::TraitApp {
+                trait_: obligation.trait_,
+                args,
+            },
+            span: obligation.span,
+        })
+    })?;
+
     let body_typed = extract_solution(ctx, body_annot)?;
 
     Ok(typed::ValDef {
         scheme: def.scheme.clone(),
         body: body_typed,
+        obligations,
     })
 }
 
@@ -1344,6 +1548,11 @@ pub fn type_infer(program: kinded::Program) -> Result<typed::Program, Error> {
         profile_points: program.profile_points,
         vals: vals_inferred,
         val_symbols: program.val_symbols,
+        traits: program.traits,
+        trait_symbols: program.trait_symbols,
+        impls: program.impls,
+        impl_symbols: program.impl_symbols,
+        impl_scope: program.impl_scope,
         main: program.main,
     })
 }

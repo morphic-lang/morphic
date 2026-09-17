@@ -1,0 +1,13 @@
+// expect-error: Missing Impl Func @ 9:21
+trait Shape a {
+  area(x: a): Int,
+  name(x: a): Array Byte,
+}
+
+type Square { Square(Int) }
+
+impl ShapeSquare of Shape Square {
+  area(x: Square): Int = match x { Square(side) -> side * side }
+}
+
+proc main(): () = ()

@@ -1,0 +1,124 @@
+module Core = file "lib/core/core.mor"
+  expose { module String expose { int_to_string, bool_to_string, concat } }
+
+type Opt a { Some(a), None }
+
+type Pair a b { Pair(a, b) }
+
+// A trait with one parameter, and impls for a builtin type, a user type, and parameterized types
+// whose impls require impls for the parameters.
+pub trait Show a {
+  show(x: a): Array Byte,
+}
+
+pub impl ShowInt of Show Int {
+  show(x: Int): Array Byte = int_to_string(x)
+}
+
+pub impl ShowBool of Show Bool {
+  show(x: Bool): Array Byte = bool_to_string(x)
+}
+
+pub impl ShowOpt of Show (Opt a) where Show a {
+  show(o: Opt a): Array Byte =
+    match o {
+      Some(x) -> concat("Some(", concat(show(x), ")")),
+      None -> "None",
+    }
+}
+
+pub impl ShowPair of Show (Pair a b) where (Show a, Show b) {
+  show(p: Pair a b): Array Byte =
+    match p {
+      Pair(x, y) -> concat("(", concat(show(x), concat(", ", concat(show(y), ")")))),
+    }
+}
+
+// A superclass: every `Ord` impl needs an `Eq` impl for the same type, and a function that only
+// asks for `Ord a` may use `eq`.
+pub trait Eq a {
+  eq(x: a, y: a): Bool,
+}
+
+pub trait Ord a where Eq a {
+  lt(x: a, y: a): Bool,
+}
+
+pub impl EqInt of Eq Int {
+  eq(x: Int, y: Int): Bool = x = y
+}
+
+pub impl OrdInt of Ord Int {
+  lt(x: Int, y: Int): Bool = x < y
+}
+
+// A higher-kinded trait.
+pub trait Functor f {
+  map(x: f a, g: a -> b): f b,
+}
+
+pub impl FunctorOpt of Functor Opt {
+  map(x: Opt a, g: a -> b): Opt b =
+    match x {
+      Some(v) -> Some(g(v)),
+      None -> None,
+    }
+}
+
+// A trait with two parameters.
+pub trait Convert a b {
+  convert(x: a): b,
+}
+
+pub impl ConvertIntBool of Convert Int Bool {
+  convert(x: Int): Bool = ! (x = 0)
+}
+
+// A func-local constraint: the trait does not require `Show a` of every container func, only
+// this one does, and the impl func repeats it.
+pub trait Container f {
+  show_all(x: f a): Array Byte where Show a,
+}
+
+pub impl ContainerOpt of Container Opt {
+  show_all(x: Opt a): Array Byte where Show a =
+    match x {
+      Some(v) -> show(v),
+      None -> "-",
+    }
+}
+
+// Constrained polymorphic functions, checked in isolation: their bodies know only the givens.
+// Two or more constraints are parenthesized.
+show_both(x: a, y: b): Array Byte where (Show a, Show b) =
+  concat(show(x), concat(" ", show(y)))
+
+larger(x: a, y: a): a where Ord a =
+  if lt(x, y) { y } else { x }
+
+same(x: a, y: a): Bool where Ord a =
+  eq(x, y)
+
+show_twice(x: a): Array Byte where Show a =
+  concat(show(x), concat(" ", show(x)))
+
+double_all(x: f Int): f Int where Functor f =
+  map(x, \n -> n * 2)
+
+proc main(): () =
+  do output(show(Some(Pair(1, True)))) then
+  do output("\n") then
+  do output(show_twice(larger(3, 5))) then
+  do output("\n") then
+  do output(show(same(4, 4))) then
+  do output("\n") then
+  do output(show(double_all(Some(21)))) then
+  do output("\n") then
+  // Without the annotation, nothing would determine `b` in `Convert Int b`.
+  let flag: Bool = convert(7) in
+  do output(show(flag)) then
+  do output("\n") then
+  do output(show_all(Some(3))) then
+  do output("\n") then
+  do output(show_both(1, True)) then
+  do output("\n")

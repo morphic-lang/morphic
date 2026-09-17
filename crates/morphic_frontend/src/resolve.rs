@@ -16,7 +16,8 @@ use crate::file_cache::FileCache;
 use crate::lex;
 use crate::parse;
 use crate::parse_error;
-use id_collections::IdVec;
+use crate::report_type;
+use id_collections::{Count, IdVec};
 use morphic_common::config::{self as cfg, ProfileMode};
 use morphic_common::intrinsic_config::INTRINSIC_NAMES;
 use morphic_common::lines;
@@ -45,6 +46,35 @@ pub enum ErrorKind {
     VarNotVisible(String),
     CtorNotVisible(String),
     ModNotVisible(String),
+    TraitNotFound(String),
+    TraitNotVisible(String),
+    ImplNotFound(String),
+    ImplNotVisible(String),
+    DuplicateTraitName(String),
+    DuplicateImplName(String),
+    TraitArity {
+        trait_: String,
+        expected: usize,
+        actual: usize,
+    },
+    ImplMissingFunc {
+        impl_: String,
+        func: String,
+    },
+    ImplExtraFunc {
+        impl_: String,
+        func: String,
+    },
+    ImplFuncMismatch {
+        impl_: String,
+        func: String,
+        expected: String,
+        actual: String,
+    },
+    TraitFuncNotFound {
+        trait_: String,
+        func: String,
+    },
     MainNotFound,
 }
 
@@ -251,6 +281,100 @@ impl Reportable for Error {
                     name
                 ),
             ),
+            TraitNotFound(name) => (
+                "Trait Not Found",
+                format!(
+                    "There is no trait named '{}' available in the current scope.",
+                    name
+                ),
+            ),
+            TraitNotVisible(name) => (
+                "Trait Not Visible",
+                format!(
+                    "The trait '{}' is private to the module that declares it.",
+                    name
+                ),
+            ),
+            ImplNotFound(name) => (
+                "Impl Not Found",
+                format!(
+                    "There is no impl named '{}' available in the current scope.",
+                    name
+                ),
+            ),
+            ImplNotVisible(name) => (
+                "Impl Not Visible",
+                format!(
+                    "The impl '{}' is private to the module that declares it.",
+                    name
+                ),
+            ),
+            DuplicateTraitName(name) => (
+                "Duplicate Trait Name",
+                format!(
+                    "You have already declared a trait named '{}' in this scope.",
+                    name
+                ),
+            ),
+            DuplicateImplName(name) => (
+                "Duplicate Impl Name",
+                format!(
+                    "You have already declared an impl named '{}' in this scope.",
+                    name
+                ),
+            ),
+            TraitArity {
+                trait_,
+                expected,
+                actual,
+            } => (
+                "Wrong Number of Trait Arguments",
+                format!(
+                    "The trait '{}' takes {} type argument(s), but {} were given here.",
+                    trait_, expected, actual
+                ),
+            ),
+            ImplMissingFunc { impl_, func } => (
+                "Missing Impl Func",
+                format!(
+                    "The impl '{}' does not define '{}', which its trait requires.",
+                    impl_, func
+                ),
+            ),
+            ImplExtraFunc { impl_, func } => (
+                "Unexpected Impl Func",
+                format!(
+                    "The impl '{}' defines '{}', but its trait has no func of that name.",
+                    impl_, func
+                ),
+            ),
+            ImplFuncMismatch {
+                impl_,
+                func,
+                expected,
+                actual,
+            } => (
+                "Impl Func Signature Mismatch",
+                format!(
+                    lines![
+                        "In the impl '{impl_}', the func '{func}' should have the signature",
+                        "",
+                        "    {expected}",
+                        "",
+                        "but it is declared with the signature",
+                        "",
+                        "    {actual}",
+                    ],
+                    impl_ = impl_,
+                    func = func,
+                    expected = expected,
+                    actual = actual,
+                ),
+            ),
+            TraitFuncNotFound { trait_, func } => (
+                "Trait Func Not Found",
+                format!("The trait '{}' has no func named '{}'.", trait_, func),
+            ),
             MainNotFound => (
                 "Main Not Found",
                 format!(
@@ -348,7 +472,24 @@ struct ModMap {
     mods: BTreeMap<raw::ModName, (Visibility, res::ModId)>,
     types: BTreeMap<raw::TypeName, (Visibility, res::TypeId)>,
     ctors: BTreeMap<raw::CtorName, (Visibility, res::CustomTypeId, res::VariantId)>,
-    vals: BTreeMap<raw::ValName, (Visibility, res::GlobalId)>,
+    vals: BTreeMap<raw::ValName, (Visibility, res::GlobalRef)>,
+    traits: BTreeMap<raw::TraitName, (Visibility, res::TraitId)>,
+    // The impls visible in the module, which is exactly the set the trait solver may use for the
+    // module's definitions.
+    impls: BTreeMap<raw::ImplName, (Visibility, res::ImplId)>,
+}
+
+impl ModMap {
+    fn new() -> Self {
+        ModMap {
+            mods: BTreeMap::new(),
+            types: BTreeMap::new(),
+            ctors: BTreeMap::new(),
+            vals: BTreeMap::new(),
+            traits: BTreeMap::new(),
+            impls: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -359,6 +500,13 @@ pub struct GlobalContext {
     type_symbols: IdVec<res::CustomTypeId, res::TypeSymbols>,
     vals: IdVec<res::CustomGlobalId, Option<res::ValDef>>,
     val_symbols: IdVec<res::CustomGlobalId, Option<res::ValSymbols>>,
+    traits: IdVec<res::CustomTraitId, Option<res::TraitDef>>,
+    trait_symbols: IdVec<res::CustomTraitId, Option<res::TraitSymbols>>,
+    // Known from the declaration alone, so that a constraint can be checked for the right number
+    // of arguments before the trait's definition has been resolved.
+    trait_arities: IdVec<res::CustomTraitId, usize>,
+    impls: IdVec<res::CustomImplId, Option<res::ImplDef>>,
+    impl_symbols: IdVec<res::CustomImplId, Option<res::ImplSymbols>>,
 }
 
 #[derive(Clone, Debug)]
@@ -448,6 +596,11 @@ pub fn resolve_program(
         type_symbols: IdVec::new(),
         vals: IdVec::new(),
         val_symbols: IdVec::new(),
+        traits: IdVec::new(),
+        trait_symbols: IdVec::new(),
+        trait_arities: IdVec::new(),
+        impls: IdVec::new(),
+        impl_symbols: IdVec::new(),
     };
 
     let main_mod = resolve_mod_from_file(
@@ -459,7 +612,8 @@ pub fn resolve_program(
     )
     .map_err(Error)?;
 
-    let main_proc = if let Some(&(_, res::GlobalId::Custom(id))) = ctx.mods[main_mod]
+    let main_proc = if let Some(&(_, res::GlobalRef::Global(res::GlobalId::Custom(id)))) = ctx.mods
+        [main_mod]
         .vals
         .get(&raw::ValName("main".to_owned()))
     {
@@ -485,6 +639,10 @@ pub fn resolve_program(
     )
     .map_err(Error)?;
 
+    let impl_scope = ctx
+        .mods
+        .map_refs(|_id, mod_map| mod_map.impls.values().map(|(_, id)| *id).collect());
+
     Ok(res::Program {
         mod_symbols: ctx.mod_symbols,
         custom_types: ctx.types.map(|_id, typedef| typedef.unwrap()),
@@ -492,6 +650,11 @@ pub fn resolve_program(
         profile_points,
         vals,
         val_symbols,
+        traits: ctx.traits.map(|_id, def| def.unwrap()),
+        trait_symbols: ctx.trait_symbols.map(|_id, symbols| symbols.unwrap()),
+        impls: ctx.impls.map(|_id, def| def.unwrap()),
+        impl_symbols: ctx.impl_symbols.map(|_id, symbols| symbols.unwrap()),
+        impl_scope,
         main: main_proc,
     })
 }
@@ -509,12 +672,7 @@ fn resolve_mod(
     //
     // We need to generate this module id early in order to include it in the "symbols" structures
     // associated to this modules' type and value declarations.
-    let self_mod_id = ctx.mods.push(ModMap {
-        mods: BTreeMap::new(),
-        types: BTreeMap::new(),
-        ctors: BTreeMap::new(),
-        vals: BTreeMap::new(),
-    });
+    let self_mod_id = ctx.mods.push(ModMap::new());
 
     {
         let self_mod_symbols_id = ctx.mod_symbols.push(res::ModSymbols {
@@ -532,13 +690,10 @@ fn resolve_mod(
     // each 'ValSymbols' struct at the same time that we resolve the corresponding value's type
     // scheme.
 
-    let (mod_map, pending_type_defs, pending_val_defs) = {
-        let mut mod_map = ModMap {
-            mods: BTreeMap::new(),
-            types: BTreeMap::new(),
-            ctors: BTreeMap::new(),
-            vals: BTreeMap::new(),
-        };
+    let (mod_map, pending_type_defs, pending_trait_defs, pending_impl_defs, pending_val_defs) = {
+        let mut mod_map = ModMap::new();
+        let mut pending_trait_defs = Vec::new();
+        let mut pending_impl_defs = Vec::new();
 
         let mut pending_type_defs = Vec::new();
         let mut pending_val_defs = Vec::new();
@@ -590,7 +745,7 @@ fn resolve_mod(
                     pending_type_defs.push((type_id, params, variants));
                 }
 
-                raw::Item::ValDef(visibility, name, type_, body) => {
+                raw::Item::ValDef(visibility, name, type_, constrs, body) => {
                     let val_id = ctx.vals.push(None);
                     {
                         let val_symbols_id = ctx.val_symbols.push(None);
@@ -600,12 +755,72 @@ fn resolve_mod(
                     insert_unique(
                         &mut mod_map.vals,
                         name.clone(),
-                        (visibility, res::GlobalId::Custom(val_id)),
+                        (
+                            visibility,
+                            res::GlobalRef::Global(res::GlobalId::Custom(val_id)),
+                        ),
                     )
                     .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
 
-                    pending_val_defs.push((name, val_id, type_, body));
+                    pending_val_defs.push((name, val_id, type_, constrs, body));
+                }
+
+                raw::Item::TraitDef(visibility, name, params, supers, funcs) => {
+                    let trait_id = ctx.traits.push(None);
+                    {
+                        let symbols_id = ctx.trait_symbols.push(None);
+                        debug_assert_eq!(trait_id, symbols_id);
+                        let arity_id = ctx.trait_arities.push(params.len());
+                        debug_assert_eq!(trait_id, arity_id);
+                    }
+
+                    insert_unique(
+                        &mut mod_map.traits,
+                        name.clone(),
+                        (visibility, res::TraitId::Custom(trait_id)),
+                    )
+                    .map_err(|()| ErrorKind::DuplicateTraitName(name.0.clone()).into())
+                    .map_err(locate_path(file_path))?;
+
+                    // A trait's funcs are module-scoped values, exactly as a type's constructors
+                    // are module-scoped names.
+                    for (idx, func) in funcs.iter().enumerate() {
+                        insert_unique(
+                            &mut mod_map.vals,
+                            func.name.clone(),
+                            (
+                                visibility,
+                                res::GlobalRef::TraitFunc(
+                                    res::TraitId::Custom(trait_id),
+                                    res::TraitFuncId(idx),
+                                ),
+                            ),
+                        )
+                        .map_err(|()| ErrorKind::DuplicateVarName(func.name.0.clone()).into())
+                        .map_err(locate_span(func.span.0, func.span.1))
+                        .map_err(locate_path(file_path))?;
+                    }
+
+                    pending_trait_defs.push((trait_id, name, params, supers, funcs));
+                }
+
+                raw::Item::ImplDef(visibility, name, head, constrs, funcs) => {
+                    let impl_id = ctx.impls.push(None);
+                    {
+                        let symbols_id = ctx.impl_symbols.push(None);
+                        debug_assert_eq!(impl_id, symbols_id);
+                    }
+
+                    insert_unique(
+                        &mut mod_map.impls,
+                        name.clone(),
+                        (visibility, res::ImplId::Custom(impl_id)),
+                    )
+                    .map_err(|()| ErrorKind::DuplicateImplName(name.0.clone()).into())
+                    .map_err(locate_path(file_path))?;
+
+                    pending_impl_defs.push((impl_id, name, head, constrs, funcs));
                 }
 
                 raw::Item::ModDef(visibility, name, spec, bindings, expose) => {
@@ -670,15 +885,23 @@ fn resolve_mod(
             }
         }
 
-        (mod_map, pending_type_defs, pending_val_defs)
+        (
+            mod_map,
+            pending_type_defs,
+            pending_trait_defs,
+            pending_impl_defs,
+            pending_val_defs,
+        )
     };
 
     // Resolve content of type and value definitions
 
     for (type_id, params, variants) in pending_type_defs {
+        let mut param_names = IdVec::new();
         let mut param_map = BTreeMap::new();
-        for (idx, param_name) in params.into_iter().enumerate() {
-            insert_unique(&mut param_map, param_name.clone(), res::TypeParamId(idx))
+        for param_name in params {
+            let id = param_names.push(param_name.clone());
+            insert_unique(&mut param_map, param_name.clone(), id)
                 .map_err(|()| ErrorKind::DuplicateTypeName(param_name.0).into())
                 .map_err(locate_path(file_path))?;
         }
@@ -701,14 +924,45 @@ fn resolve_mod(
 
         debug_assert!(ctx.types[type_id].is_none());
         ctx.types[type_id] = Some(res::TypeDef {
-            num_params: param_map.len(),
+            num_params: param_names.count(),
             variants: resolved_variants,
         });
     }
 
-    for (val_name, val_id, type_, body) in pending_val_defs {
+    // Traits come before impls, which need the traits' func schemes, and both come before values,
+    // whose bodies may mention trait funcs and whose signatures may mention traits.
+
+    for (trait_id, name, params, supers, funcs) in pending_trait_defs {
+        resolve_trait_def(
+            ctx,
+            &mod_map,
+            self_mod_id,
+            file_path,
+            trait_id,
+            name,
+            params,
+            supers,
+            funcs,
+        )?;
+    }
+
+    for (impl_id, name, head, constrs, funcs) in pending_impl_defs {
+        resolve_impl_def(
+            ctx,
+            &mod_map,
+            self_mod_id,
+            file_path,
+            impl_id,
+            name,
+            head,
+            constrs,
+            funcs,
+        )?;
+    }
+
+    for (val_name, val_id, type_, constrs, body) in pending_val_defs {
         let (res_scheme, type_param_names, scheme_params) =
-            resolve_scheme(&ctx.mods, &mod_map, &type_).map_err(locate_path(file_path))?;
+            resolve_scheme(ctx, &mod_map, &type_, &constrs).map_err(locate_path(file_path))?;
 
         let res_body = resolve_expr(
             &ctx.mods,
@@ -731,6 +985,8 @@ fn resolve_mod(
             type_param_names,
             val_name,
             type_spans: res::TypeSpans::of(&type_),
+            trait_constr_spans: IdVec::from_vec(constrs.iter().map(|constr| constr.span).collect()),
+            impl_: None,
         });
     }
 
@@ -821,7 +1077,7 @@ fn resolve_mod_val(
     global_mods: &IdVec<res::ModId, ModMap>,
     mod_id: res::ModId,
     val_name: &raw::ValName,
-) -> Result<res::GlobalId, RawError> {
+) -> Result<res::GlobalRef, RawError> {
     let (visibility, id) = *global_mods[mod_id]
         .vals
         .get(val_name)
@@ -830,6 +1086,88 @@ fn resolve_mod_val(
         Visibility::Public => Ok(id),
         Visibility::Private => Err(ErrorKind::VarNotVisible(val_name.0.clone()).into()),
     }
+}
+
+fn resolve_mod_trait(
+    global_mods: &IdVec<res::ModId, ModMap>,
+    mod_id: res::ModId,
+    trait_name: &raw::TraitName,
+) -> Result<res::TraitId, RawError> {
+    let (visibility, id) = *global_mods[mod_id]
+        .traits
+        .get(trait_name)
+        .ok_or_else(|| ErrorKind::TraitNotFound(trait_name.0.clone()))?;
+    match visibility {
+        Visibility::Public => Ok(id),
+        Visibility::Private => Err(ErrorKind::TraitNotVisible(trait_name.0.clone()).into()),
+    }
+}
+
+fn resolve_mod_impl(
+    global_mods: &IdVec<res::ModId, ModMap>,
+    mod_id: res::ModId,
+    impl_name: &raw::ImplName,
+) -> Result<res::ImplId, RawError> {
+    let (visibility, id) = *global_mods[mod_id]
+        .impls
+        .get(impl_name)
+        .ok_or_else(|| ErrorKind::ImplNotFound(impl_name.0.clone()))?;
+    match visibility {
+        Visibility::Public => Ok(id),
+        Visibility::Private => Err(ErrorKind::ImplNotVisible(impl_name.0.clone()).into()),
+    }
+}
+
+fn resolve_trait_with_path(
+    global_mods: &IdVec<res::ModId, ModMap>,
+    local_mod_map: &ModMap,
+    path: &raw::ModPath,
+    name: &raw::TraitName,
+) -> Result<res::TraitId, RawError> {
+    if path.0.is_empty() {
+        local_mod_map
+            .traits
+            .get(name)
+            .map(|(_, id)| *id)
+            .ok_or_else(|| ErrorKind::TraitNotFound(name.0.clone()).into())
+    } else {
+        resolve_mod_trait(
+            global_mods,
+            resolve_mod_path(global_mods, &local_mod_map.mods, path)?,
+            name,
+        )
+    }
+}
+
+/// Resolves a trait constraint, checking that the trait is given the right number of arguments.
+/// Errors are located at the constraint.
+fn resolve_trait_app(
+    ctx: &GlobalContext,
+    local_mod_map: &ModMap,
+    param_map: &BTreeMap<raw::TypeParam, res::TypeParamId>,
+    constr: &raw::TraitApp,
+) -> Result<res::TraitApp, RawError> {
+    let resolved = (|| {
+        let trait_ =
+            resolve_trait_with_path(&ctx.mods, local_mod_map, &constr.path, &constr.trait_name)?;
+        let res::TraitId::Custom(custom) = trait_;
+        let expected = ctx.trait_arities[custom];
+        if constr.args.len() != expected {
+            return Err(ErrorKind::TraitArity {
+                trait_: constr.trait_name.0.clone(),
+                expected,
+                actual: constr.args.len(),
+            }
+            .into());
+        }
+        let args = constr
+            .args
+            .iter()
+            .map(|arg| resolve_type(&ctx.mods, local_mod_map, param_map, arg))
+            .collect::<Result<_, RawError>>()?;
+        Ok(res::TraitApp { trait_, args })
+    })();
+    resolved.map_err(locate_span(constr.span.0, constr.span.1))
 }
 
 fn resolve_mod_type(
@@ -908,6 +1246,52 @@ fn resolve_exposures(
                             )
                             .map_err(|()| ErrorKind::DuplicateCtorName(ctor_name.0))?;
                         }
+                    }
+
+                    raw::ExposeItem::Trait(visibility, name, funcs) => {
+                        let resolved_trait = resolve_mod_trait(global_mods, exposed_id, &name)?;
+
+                        insert_unique(
+                            &mut local_mod_map.traits,
+                            name.clone(),
+                            (visibility, resolved_trait),
+                        )
+                        .map_err(|()| ErrorKind::DuplicateTraitName(name.0.clone()))?;
+
+                        for (func_visibility, func_name) in funcs {
+                            let resolved_func =
+                                resolve_mod_val(global_mods, exposed_id, &func_name)?;
+
+                            match resolved_func {
+                                res::GlobalRef::TraitFunc(trait_, _)
+                                    if trait_ == resolved_trait => {}
+                                _ => {
+                                    return Err(ErrorKind::TraitFuncNotFound {
+                                        trait_: name.0,
+                                        func: func_name.0,
+                                    }
+                                    .into());
+                                }
+                            }
+
+                            insert_unique(
+                                &mut local_mod_map.vals,
+                                func_name.clone(),
+                                (func_visibility, resolved_func),
+                            )
+                            .map_err(|()| ErrorKind::DuplicateVarName(func_name.0))?;
+                        }
+                    }
+
+                    raw::ExposeItem::Impl(visibility, name) => {
+                        let resolved_impl = resolve_mod_impl(global_mods, exposed_id, &name)?;
+
+                        insert_unique(
+                            &mut local_mod_map.impls,
+                            name.clone(),
+                            (visibility, resolved_impl),
+                        )
+                        .map_err(|()| ErrorKind::DuplicateImplName(name.0))?;
                     }
 
                     raw::ExposeItem::Mod(visibility, name, sub_expose) => {
@@ -1071,10 +1455,10 @@ fn resolve_expr(
         raw::Expr::Var(name) => {
             if let Some(local_id) = local_ctx.get(name) {
                 Ok(res::Expr::Local(local_id))
-            } else if let Some(&(_, global_id)) = local_mod_map.vals.get(name) {
-                Ok(res::Expr::Global(global_id))
+            } else if let Some(&(_, global_ref)) = local_mod_map.vals.get(name) {
+                Ok(res::Expr::Global(global_ref))
             } else if let Some(&global_id) = BUILTIN_GLOBALS.get(name) {
-                Ok(res::Expr::Global(global_id))
+                Ok(res::Expr::Global(res::GlobalRef::Global(global_id)))
             } else {
                 Err(ErrorKind::VarNotFound(name.0.clone()).into())
             }
@@ -1082,15 +1466,17 @@ fn resolve_expr(
 
         raw::Expr::QualName(path, name) => {
             let mod_id = resolve_mod_path(global_mods, &local_mod_map.mods, path)?;
-            let global_id = resolve_mod_val(global_mods, mod_id, name)?;
-            Ok(res::Expr::Global(global_id))
+            let global_ref = resolve_mod_val(global_mods, mod_id, name)?;
+            Ok(res::Expr::Global(global_ref))
         }
 
         raw::Expr::Ctor(path, name) => {
             let (type_, variant) =
                 resolve_ctor_with_builtins(global_mods, local_mod_map, path, name)?;
 
-            Ok(res::Expr::Global(res::GlobalId::Ctor(type_, variant)))
+            Ok(res::Expr::Global(res::GlobalRef::Global(
+                res::GlobalId::Ctor(type_, variant),
+            )))
         }
 
         raw::Expr::Tuple(items) => Ok(res::Expr::Tuple(
@@ -1137,7 +1523,9 @@ fn resolve_expr(
             let res_arg = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, arg)?;
             Ok(res::Expr::App(
                 Purity::Pure,
-                Box::new(res::Expr::Global(res::GlobalId::Intrinsic(*op))),
+                Box::new(res::Expr::Global(res::GlobalRef::Global(
+                    res::GlobalId::Intrinsic(*op),
+                ))),
                 Box::new(res_arg),
             ))
         }
@@ -1206,8 +1594,10 @@ fn resolve_expr(
             let res_right = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, right)?;
 
             let false_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(0), None);
-            let false_expr =
-                res::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, res::VariantId(0)));
+            let false_expr = res::Expr::Global(res::GlobalRef::Global(res::GlobalId::Ctor(
+                res::TypeId::Bool,
+                res::VariantId(0),
+            )));
             let true_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(1), None);
 
             Ok(res::Expr::Match(
@@ -1221,8 +1611,10 @@ fn resolve_expr(
             let res_right = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, right)?;
 
             let true_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(1), None);
-            let true_expr =
-                res::Expr::Global(res::GlobalId::Ctor(res::TypeId::Bool, res::VariantId(1)));
+            let true_expr = res::Expr::Global(res::GlobalRef::Global(res::GlobalId::Ctor(
+                res::TypeId::Bool,
+                res::VariantId(1),
+            )));
             let false_pattern = res::Pattern::Ctor(res::TypeId::Bool, res::VariantId(0), None);
 
             Ok(res::Expr::Match(
@@ -1452,9 +1844,10 @@ fn find_scheme_params(
 }
 
 fn resolve_scheme(
-    global_mods: &IdVec<res::ModId, ModMap>,
+    ctx: &GlobalContext,
     local_mod_map: &ModMap,
     scheme: &raw::Type,
+    constrs: &[raw::TraitApp],
 ) -> Result<
     (
         res::TypeScheme,
@@ -1466,15 +1859,549 @@ fn resolve_scheme(
     let mut scheme_param_names = IdVec::new();
     let mut scheme_params = BTreeMap::new();
     find_scheme_params(scheme, &mut scheme_param_names, &mut scheme_params);
+    for constr in constrs {
+        for arg in &constr.args {
+            find_scheme_params(arg, &mut scheme_param_names, &mut scheme_params);
+        }
+    }
 
-    let res_type = resolve_type(global_mods, local_mod_map, &scheme_params, scheme)?;
+    let res_type = resolve_type(&ctx.mods, local_mod_map, &scheme_params, scheme)?;
+
+    let trait_constrs = IdVec::from_vec(
+        constrs
+            .iter()
+            .map(|constr| resolve_trait_app(ctx, local_mod_map, &scheme_params, constr))
+            .collect::<Result<_, RawError>>()?,
+    );
 
     let scheme = res::TypeScheme {
-        num_params: scheme_params.len(),
+        num_params: scheme_param_names.count(),
+        trait_constrs,
         body: res_type,
     };
 
     Ok((scheme, scheme_param_names, scheme_params))
+}
+
+fn resolve_trait_def(
+    ctx: &mut GlobalContext,
+    mod_map: &ModMap,
+    self_mod_id: res::ModId,
+    file_path: &Path,
+    trait_id: res::CustomTraitId,
+    name: raw::TraitName,
+    params: Vec<raw::TypeParam>,
+    supers: Vec<raw::TraitApp>,
+    funcs: Vec<raw::TraitFunc>,
+) -> Result<(), RawError> {
+    let mut param_names = IdVec::new();
+    let mut param_map = BTreeMap::new();
+    for param_name in params {
+        let id = param_names.push(param_name.clone());
+        insert_unique(&mut param_map, param_name.clone(), id)
+            .map_err(|()| ErrorKind::DuplicateTypeName(param_name.0).into())
+            .map_err(locate_path(file_path))?;
+    }
+
+    let res_supers = supers
+        .iter()
+        .map(|constr| resolve_trait_app(ctx, mod_map, &param_map, constr))
+        .collect::<Result<Vec<_>, RawError>>()
+        .map_err(locate_path(file_path))?;
+
+    let mut res_funcs = IdVec::new();
+    let mut func_symbols = IdVec::new();
+    for func in &funcs {
+        // Scanning the func's signature with the trait's parameters already in place numbers the
+        // func's own parameters after them, which is the numbering `TraitFuncLayout` describes.
+        let mut func_param_names = param_names.clone();
+        let mut func_param_map = param_map.clone();
+        find_scheme_params(&func.type_, &mut func_param_names, &mut func_param_map);
+        for constr in &func.trait_constrs {
+            for arg in &constr.args {
+                find_scheme_params(arg, &mut func_param_names, &mut func_param_map);
+            }
+        }
+
+        let body = resolve_type(&ctx.mods, mod_map, &func_param_map, &func.type_)
+            .map_err(locate_span(func.span.0, func.span.1))
+            .map_err(locate_path(file_path))?;
+
+        let own_constrs = IdVec::from_vec(
+            func.trait_constrs
+                .iter()
+                .map(|constr| resolve_trait_app(ctx, mod_map, &func_param_map, constr))
+                .collect::<Result<Vec<_>, RawError>>()
+                .map_err(locate_path(file_path))?,
+        );
+
+        let _ = res_funcs.push(res::TraitFuncSig {
+            num_own_params: Count::from_value(func_param_names.len() - param_names.len()),
+            own_constrs,
+            body,
+        });
+        let _ = func_symbols.push(res::TraitFuncSymbols {
+            func_name: func.name.clone(),
+            span: func.span,
+            type_param_names: func_param_names,
+            type_spans: res::TypeSpans::of(&func.type_),
+            constr_spans: IdVec::from_vec(
+                func.trait_constrs
+                    .iter()
+                    .map(|constr| constr.span)
+                    .collect(),
+            ),
+        });
+    }
+
+    debug_assert!(ctx.traits[trait_id].is_none());
+    ctx.traits[trait_id] = Some(res::TraitDef {
+        num_params: param_names.count(),
+        supers: IdVec::from_vec(res_supers),
+        funcs: res_funcs,
+    });
+
+    debug_assert!(ctx.trait_symbols[trait_id].is_none());
+    ctx.trait_symbols[trait_id] = Some(res::TraitSymbols {
+        mod_: self_mod_id,
+        trait_name: name,
+        type_param_names: param_names,
+        super_spans: IdVec::from_vec(supers.iter().map(|constr| constr.span).collect()),
+        func_symbols,
+    });
+
+    Ok(())
+}
+
+fn resolve_impl_def(
+    ctx: &mut GlobalContext,
+    mod_map: &ModMap,
+    self_mod_id: res::ModId,
+    file_path: &Path,
+    impl_id: res::CustomImplId,
+    name: raw::ImplName,
+    head: raw::TraitApp,
+    constrs: Vec<raw::TraitApp>,
+    funcs: Vec<raw::ImplFunc>,
+) -> Result<(), RawError> {
+    // The impl's parameters are whatever its head and constraints mention.
+    let mut param_names = IdVec::new();
+    let mut param_map = BTreeMap::new();
+    for arg in &head.args {
+        find_scheme_params(arg, &mut param_names, &mut param_map);
+    }
+    for constr in &constrs {
+        for arg in &constr.args {
+            find_scheme_params(arg, &mut param_names, &mut param_map);
+        }
+    }
+    let num_impl_params = param_names.count();
+
+    let res_head =
+        resolve_trait_app(ctx, mod_map, &param_map, &head).map_err(locate_path(file_path))?;
+    let res::TraitId::Custom(custom_trait) = res_head.trait_;
+
+    let res_constrs: IdVec<res::TraitConstrId, _> = IdVec::from_vec(
+        constrs
+            .iter()
+            .map(|constr| resolve_trait_app(ctx, mod_map, &param_map, constr))
+            .collect::<Result<Vec<_>, RawError>>()
+            .map_err(locate_path(file_path))?,
+    );
+    let constr_spans: IdVec<res::TraitConstrId, _> =
+        IdVec::from_vec(constrs.iter().map(|constr| constr.span).collect());
+
+    // Traits are resolved before impls, in this module and in every module it imports.
+    let trait_def = ctx.traits[custom_trait]
+        .clone()
+        .expect("traits are resolved before impls");
+    let trait_symbols = ctx.trait_symbols[custom_trait]
+        .clone()
+        .expect("traits are resolved before impls");
+
+    let mut provided: BTreeMap<raw::ValName, &raw::ImplFunc> = BTreeMap::new();
+    for func in &funcs {
+        if provided.insert(func.name.clone(), func).is_some() {
+            return Err(locate_path(file_path)(locate_span(
+                func.span.0,
+                func.span.1,
+            )(
+                ErrorKind::DuplicateVarName(func.name.0.clone()).into(),
+            )));
+        }
+    }
+
+    let layout = res::ImplFuncLayout {
+        num_impl_params,
+        num_impl_constrs: res_constrs.count(),
+    };
+
+    let mut res_funcs = IdVec::new();
+    for (func_id, trait_sig) in &trait_def.funcs {
+        let trait_func_symbols = &trait_symbols.func_symbols[func_id];
+        let func_name = &trait_func_symbols.func_name;
+
+        let func = provided.remove(func_name).ok_or_else(|| {
+            locate_path(file_path)(locate_span(head.span.0, head.span.1)(
+                ErrorKind::ImplMissingFunc {
+                    impl_: name.0.clone(),
+                    func: func_name.0.clone(),
+                }
+                .into(),
+            ))
+        })?;
+
+        let trait_layout = trait_def.func_layout(func_id);
+        let (expected, expected_locals) = expected_impl_func_scheme(
+            layout,
+            trait_layout,
+            trait_sig,
+            &res_head.args,
+            &res_constrs,
+        );
+
+        // The declared header is resolved with the impl's parameters fixed, so that anything else
+        // it mentions is one of the func's own parameters.
+        let mut declared_names = param_names.clone();
+        let mut declared_map = param_map.clone();
+        find_scheme_params(&func.type_, &mut declared_names, &mut declared_map);
+        for constr in &func.trait_constrs {
+            for arg in &constr.args {
+                find_scheme_params(arg, &mut declared_names, &mut declared_map);
+            }
+        }
+        let declared = resolve_type(&ctx.mods, mod_map, &declared_map, &func.type_)
+            .map_err(locate_span(func.span.0, func.span.1))
+            .map_err(locate_path(file_path))?;
+        let declared_constrs = func
+            .trait_constrs
+            .iter()
+            .map(|constr| resolve_trait_app(ctx, mod_map, &declared_map, constr))
+            .collect::<Result<Vec<_>, RawError>>()
+            .map_err(locate_path(file_path))?;
+
+        let (mapping, constr_order) = alpha_map(&expected.body, &declared, num_impl_params)
+            .filter(|mapping| mapping.len() == trait_layout.num_own_params.to_value())
+            .and_then(|mapping| {
+                let renamed: Vec<_> = declared_constrs
+                    .iter()
+                    .map(|constr| {
+                        rename_params(constr, &mapping, num_impl_params, declared_names.count())
+                    })
+                    .collect();
+                match_constrs(&expected_locals, &renamed).map(|order| (mapping, order))
+            })
+            .ok_or_else(|| {
+                let renderer = report_type::TypeRenderer::new(&ctx.mod_symbols, &ctx.type_symbols);
+                let expected_names = expected_impl_func_param_names(
+                    layout,
+                    &param_names,
+                    trait_layout,
+                    &trait_func_symbols.type_param_names,
+                );
+                let trait_symbols = ctx.trait_symbols.map_refs(|_, symbols| {
+                    symbols.clone().expect("traits are resolved before impls")
+                });
+                locate_path(file_path)(locate_span(func.span.0, func.span.1)(
+                    ErrorKind::ImplFuncMismatch {
+                        impl_: name.0.clone(),
+                        func: func_name.0.clone(),
+                        expected: render_signature(
+                            &renderer,
+                            &expected_names,
+                            &expected.body,
+                            expected_locals.as_slice(),
+                            &trait_symbols,
+                        ),
+                        actual: render_signature(
+                            &renderer,
+                            &declared_names,
+                            &declared,
+                            &declared_constrs,
+                            &trait_symbols,
+                        ),
+                    }
+                    .into(),
+                ))
+            })?;
+
+        // The body is resolved against the expected numbering, so that the definition's parameters
+        // are the impl's followed by the trait func's own, in the trait's order.
+        let mut body_param_map = BTreeMap::new();
+        let mut type_param_names =
+            IdVec::from_count_with(expected.num_params, |_| raw::TypeParam(String::new()));
+        for (declared_id, param_name) in &declared_names {
+            let expected_id = if num_impl_params.contains(declared_id) {
+                declared_id
+            } else {
+                mapping[&declared_id]
+            };
+            body_param_map.insert(param_name.clone(), expected_id);
+            type_param_names[expected_id] = param_name.clone();
+        }
+
+        let body = resolve_expr(
+            &ctx.mods,
+            mod_map,
+            &body_param_map,
+            &mut LocalContext::new(),
+            &func.body,
+        )
+        .map_err(locate_path(file_path))?;
+
+        let val_id = ctx.vals.push(Some(res::ValDef {
+            scheme: expected,
+            body,
+        }));
+        // Constraint spans follow the expected scheme's layout, with the func's own in the
+        // trait's order.
+        let trait_constr_spans = layout.constrs(
+            constr_spans.clone(),
+            constr_order.map_refs(|_, &declared_index| func.trait_constrs[declared_index].span),
+        );
+
+        let val_symbols_id = ctx.val_symbols.push(Some(res::ValSymbols {
+            mod_: self_mod_id,
+            type_param_names,
+            val_name: func_name.clone(),
+            type_spans: res::TypeSpans::of(&func.type_),
+            trait_constr_spans,
+            impl_: Some(impl_id),
+        }));
+        debug_assert_eq!(val_id, val_symbols_id);
+
+        let _ = res_funcs.push(val_id);
+    }
+
+    if let Some((extra_name, extra)) = provided.into_iter().next() {
+        return Err(locate_path(file_path)(locate_span(
+            extra.span.0,
+            extra.span.1,
+        )(
+            ErrorKind::ImplExtraFunc {
+                impl_: name.0.clone(),
+                func: extra_name.0,
+            }
+            .into(),
+        )));
+    }
+
+    debug_assert!(ctx.impls[impl_id].is_none());
+    ctx.impls[impl_id] = Some(res::ImplDef {
+        trait_: res_head.trait_,
+        num_params: num_impl_params,
+        head: res_head.args,
+        trait_constrs: res_constrs,
+        funcs: res_funcs,
+    });
+
+    debug_assert!(ctx.impl_symbols[impl_id].is_none());
+    ctx.impl_symbols[impl_id] = Some(res::ImplSymbols {
+        mod_: self_mod_id,
+        impl_name: name,
+        type_param_names: param_names,
+        head_span: head.span,
+        constr_spans,
+    });
+
+    Ok(())
+}
+
+/// The scheme an impl func must have, and separately the constraints the func itself must
+/// declare: the trait func's signature with the impl head substituted for the trait's
+/// parameters, laid out as `ImplFuncLayout` describes.  The impl's constraints are not repeated
+/// on the func, and the trait's own constraint needs no counterpart, since the impl is what
+/// discharges it.
+fn expected_impl_func_scheme(
+    layout: res::ImplFuncLayout,
+    trait_layout: res::TraitFuncLayout,
+    trait_sig: &res::TraitFuncSig,
+    head: &[res::Type],
+    impl_constrs: &IdVec<res::TraitConstrId, res::TraitApp>,
+) -> (
+    res::TypeScheme,
+    IdVec<res::TraitFuncConstrId, res::TraitApp>,
+) {
+    // From the signature's numbering to the impl func's: the head stands for the trait's
+    // parameters, and the impl func's own parameters for the func's own.
+    let subst = trait_layout.params(
+        IdVec::from_vec(head.to_vec()),
+        IdVec::from_count_with(trait_layout.num_own_params, |param| {
+            res::Type::param(layout.own_param(param))
+        }),
+    );
+
+    let own_constrs = trait_sig
+        .own_constrs
+        .map_refs(|_, constr| constr.subst(&subst));
+
+    let scheme = res::TypeScheme {
+        num_params: layout.num_params(trait_layout.num_own_params),
+        trait_constrs: layout.constrs(impl_constrs.clone(), own_constrs.clone()),
+        body: res::subst_type(&subst, &trait_sig.body),
+    };
+    (scheme, own_constrs)
+}
+
+/// Parameter names for rendering an expected impl func scheme: the impl's, then the trait func's
+/// own as the trait declared them.
+fn expected_impl_func_param_names(
+    layout: res::ImplFuncLayout,
+    impl_param_names: &IdVec<res::TypeParamId, raw::TypeParam>,
+    trait_layout: res::TraitFuncLayout,
+    trait_func_param_names: &IdVec<res::TypeParamId, raw::TypeParam>,
+) -> IdVec<res::TypeParamId, raw::TypeParam> {
+    layout.params(
+        impl_param_names.clone(),
+        IdVec::from_count_with(trait_layout.num_own_params, |param| {
+            trait_func_param_names[trait_layout.own_param(param)].clone()
+        }),
+    )
+}
+
+/// Renders a signature as it would be written: the type, then its constraints if any.
+fn render_signature(
+    renderer: &report_type::TypeRenderer,
+    params: &IdVec<res::TypeParamId, raw::TypeParam>,
+    type_: &res::Type,
+    constrs: &[res::TraitApp],
+    trait_symbols: &IdVec<res::CustomTraitId, res::TraitSymbols>,
+) -> String {
+    let mut result = renderer.render(params, &report_type::Type::from_resolved(type_));
+    let rendered: Vec<_> = constrs
+        .iter()
+        .map(|constr| {
+            renderer.render_trait_app(
+                params,
+                &report_type::TraitApp::from_resolved(constr),
+                trait_symbols,
+            )
+        })
+        .collect();
+    match rendered.len() {
+        0 => {}
+        1 => result.push_str(&format!(" where {}", rendered[0])),
+        _ => result.push_str(&format!(" where ({})", rendered.join(", "))),
+    }
+    result
+}
+
+/// Renames the func-local parameters of a declared constraint into the expected numbering.
+fn rename_params(
+    constr: &res::TraitApp,
+    mapping: &BTreeMap<res::TypeParamId, res::TypeParamId>,
+    fixed: Count<res::TypeParamId>,
+    num_declared_params: Count<res::TypeParamId>,
+) -> res::TraitApp {
+    let subst = IdVec::from_count_with(num_declared_params, |id| {
+        if fixed.contains(id) {
+            res::Type::param(id)
+        } else {
+            res::Type::param(mapping[&id])
+        }
+    });
+    constr.subst(&subst)
+}
+
+/// Matches the declared constraints of an impl func against the expected ones regardless of
+/// order, returning for each expected constraint the position of the declared one it matches.
+fn match_constrs(
+    expected: &IdVec<res::TraitFuncConstrId, res::TraitApp>,
+    declared: &[res::TraitApp],
+) -> Option<IdVec<res::TraitFuncConstrId, usize>> {
+    if expected.len() != declared.len() {
+        return None;
+    }
+    let mut used = vec![false; declared.len()];
+    expected
+        .try_map_refs(|_, constr| -> Result<usize, ()> {
+            let index = declared
+                .iter()
+                .enumerate()
+                .position(|(index, candidate)| !used[index] && candidate == constr)
+                .ok_or(())?;
+            used[index] = true;
+            Ok(index)
+        })
+        .ok()
+}
+
+/// Finds the bijection between the func-local type parameters of a declared impl func type and
+/// those of the expected type, treating the first `fixed` parameters (the impl's own) as identical
+/// on both sides.  Returns `None` if the two types are not alpha-equivalent.
+fn alpha_map(
+    expected: &res::Type,
+    declared: &res::Type,
+    fixed: Count<res::TypeParamId>,
+) -> Option<BTreeMap<res::TypeParamId, res::TypeParamId>> {
+    let mut forward = BTreeMap::new();
+    let mut backward = BTreeMap::new();
+    if alpha_rec(expected, declared, fixed, &mut forward, &mut backward) {
+        Some(forward)
+    } else {
+        None
+    }
+}
+
+fn alpha_rec(
+    expected: &res::Type,
+    declared: &res::Type,
+    fixed: Count<res::TypeParamId>,
+    forward: &mut BTreeMap<res::TypeParamId, res::TypeParamId>,
+    backward: &mut BTreeMap<res::TypeParamId, res::TypeParamId>,
+) -> bool {
+    match (expected, declared) {
+        (
+            res::Type::App(expected_head, expected_args),
+            res::Type::App(declared_head, declared_args),
+        ) => {
+            let heads_match = match (expected_head, declared_head) {
+                (res::TypeHead::Ctor(expected_id), res::TypeHead::Ctor(declared_id)) => {
+                    expected_id == declared_id
+                }
+                (res::TypeHead::Var(expected_id), res::TypeHead::Var(declared_id)) => {
+                    if fixed.contains(expected_id) || fixed.contains(declared_id) {
+                        expected_id == declared_id
+                    } else {
+                        match (forward.get(declared_id), backward.get(expected_id)) {
+                            (None, None) => {
+                                forward.insert(*declared_id, *expected_id);
+                                backward.insert(*expected_id, *declared_id);
+                                true
+                            }
+                            (Some(mapped_expected), Some(mapped_declared)) => {
+                                mapped_expected == expected_id && mapped_declared == declared_id
+                            }
+                            _ => false,
+                        }
+                    }
+                }
+                _ => false,
+            };
+            heads_match
+                && expected_args.len() == declared_args.len()
+                && expected_args
+                    .iter()
+                    .zip(declared_args)
+                    .all(|(e, d)| alpha_rec(e, d, fixed, forward, backward))
+        }
+        (res::Type::Tuple(expected_items), res::Type::Tuple(declared_items)) => {
+            expected_items.len() == declared_items.len()
+                && expected_items
+                    .iter()
+                    .zip(declared_items)
+                    .all(|(e, d)| alpha_rec(e, d, fixed, forward, backward))
+        }
+        (
+            res::Type::Func(expected_purity, expected_arg, expected_ret),
+            res::Type::Func(declared_purity, declared_arg, declared_ret),
+        ) => {
+            expected_purity == declared_purity
+                && alpha_rec(expected_arg, declared_arg, fixed, forward, backward)
+                && alpha_rec(expected_ret, declared_ret, fixed, forward, backward)
+        }
+        _ => false,
+    }
 }
 
 fn resolve_profile_points(
@@ -1508,7 +2435,7 @@ fn resolve_profile_points(
             .vals
             .get(&val_name)
             .and_then(|(_visibility, global_id)| match global_id {
-                &res::GlobalId::Custom(custom) => Some(custom),
+                &res::GlobalRef::Global(res::GlobalId::Custom(custom)) => Some(custom),
                 _ => None,
             })
             .ok_or_else(|| ErrorKind::ResolveProfileSymFailed(sym_name.clone()))?;

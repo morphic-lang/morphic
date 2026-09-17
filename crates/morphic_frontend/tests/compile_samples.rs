@@ -4,7 +4,7 @@ use morphic_common::{config as cfg, file_cache::FileCache, progress_ui::Progress
 use std::path::{Path, PathBuf};
 
 #[test]
-fn all_samples_compile_to_typed_ast() {
+fn all_samples_compile_to_solved_ast() {
     let samples_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples");
 
     let mut entry_points: Vec<PathBuf> = Vec::new();
@@ -21,7 +21,7 @@ fn all_samples_compile_to_typed_ast() {
 
     let mut failures = Vec::new();
     for path in &entry_points {
-        let result = morphic_frontend::compile_to_typed_ast(
+        let result = morphic_frontend::compile_to_solved_ast(
             path,
             &[],
             cfg::ProfileMode::NoRecordRc,

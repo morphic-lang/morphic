@@ -1,0 +1,10 @@
+// expect-error: Impl Func Signature Mismatch @ 7:3
+trait Show a {
+  show(x: a): Array Byte,
+}
+
+impl ShowInt of Show Int {
+  show(x: Int): Int = x
+}
+
+proc main(): () = ()

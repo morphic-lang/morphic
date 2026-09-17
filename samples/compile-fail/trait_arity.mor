@@ -1,0 +1,10 @@
+// expect-error: Wrong Number of Trait Arguments @ 6:17
+trait Show a {
+  show(x: a): Array Byte,
+}
+
+impl ShowInt of Show Int Bool {
+  show(x: Int): Array Byte = "int"
+}
+
+proc main(): () = ()

@@ -34,7 +34,7 @@ fn compile_fail_samples_report_expected_errors() {
         };
 
         let mut files = FileCache::new();
-        let result = morphic_frontend::compile_to_typed_ast(
+        let result = morphic_frontend::compile_to_solved_ast(
             path,
             &[],
             cfg::ProfileMode::NoRecordRc,
