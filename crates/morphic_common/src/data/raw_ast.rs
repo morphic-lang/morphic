@@ -70,10 +70,19 @@ pub enum Item {
         Visibility,
         TypeName,
         Vec<TypeParam>,
+        Vec<TraitApp>,
         // The `(usize, usize)` denotes the span of the variant declaration.
         Vec<(Visibility, CtorName, Option<Type>, (usize, usize))>,
     ),
-    ValDef(Visibility, ValName, Type, Vec<TraitApp>, Expr),
+    // The `(usize, usize)` denotes the span of the whole definition.
+    ValDef(
+        Visibility,
+        ValName,
+        Type,
+        Vec<TraitApp>,
+        Expr,
+        (usize, usize),
+    ),
     TraitDef(
         Visibility,
         TraitName,

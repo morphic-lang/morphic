@@ -1,4 +1,4 @@
-use crate::data::kinded_ast as kinded;
+use crate::data::elaborated_ast as elab;
 use crate::data::mono_ast as mono;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -41,10 +41,16 @@ type ValInstances = InstanceQueue<(res::CustomGlobalId, Instantiation), mono::Cu
 
 type TypeInstances = InstanceQueue<(res::CustomTypeId, InstArgs), mono::CustomTypeId>;
 
-/// Substitutes closed types for the type parameters of `type_`.
-fn subst_type(inst_args: &InstArgs, type_: &res::Type) -> ClosedType {
+/// Instantiates an elaborated type at closed types, giving a closed type.
+///
+/// The type's evidence does not survive.  A monomorphic type is a representation,
+/// and a `Set Int` is represented the same way whichever `Ord Int` impl it was built under; type
+/// checking has already kept values built under different impls apart.  What does depend on
+/// evidence is which copy of a definition a reference calls, and that is keyed by the closed
+/// derivations of its instantiation rather than by the types in it.
+fn subst_type(inst_args: &InstArgs, type_: &elab::Type) -> ClosedType {
     match type_ {
-        res::Type::App(res::TypeHead::Var(param), args) => {
+        elab::Type::App(res::TypeHead::Var(param), args) => {
             let mut result = inst_args[param].clone();
 
             if args.is_empty() {
@@ -65,19 +71,24 @@ fn subst_type(inst_args: &InstArgs, type_: &res::Type) -> ClosedType {
             }
         }
 
-        res::Type::App(res::TypeHead::Ctor(id), args) => ClosedType::App(
+        elab::Type::App(res::TypeHead::Ctor(id), args) => ClosedType::App(
             *id,
             args.iter().map(|arg| subst_type(inst_args, arg)).collect(),
         ),
 
-        res::Type::Tuple(items) => ClosedType::Tuple(
+        elab::Type::Constrained(id, args, _) => ClosedType::App(
+            res::TypeId::Custom(*id),
+            args.iter().map(|arg| subst_type(inst_args, arg)).collect(),
+        ),
+
+        elab::Type::Tuple(items) => ClosedType::Tuple(
             items
                 .iter()
                 .map(|item| subst_type(inst_args, item))
                 .collect(),
         ),
 
-        res::Type::Func(purity, arg, ret) => ClosedType::Func(
+        elab::Type::Func(purity, arg, ret) => ClosedType::Func(
             *purity,
             Box::new(subst_type(inst_args, arg)),
             Box::new(subst_type(inst_args, ret)),
@@ -86,8 +97,8 @@ fn subst_type(inst_args: &InstArgs, type_: &res::Type) -> ClosedType {
 }
 
 struct Instantiator<'a> {
-    typedefs: &'a IdVec<res::CustomTypeId, kinded::TypeDef>,
-    impls: &'a IdVec<res::CustomImplId, solved::ImplDef>,
+    typedefs: &'a IdVec<res::CustomTypeId, elab::TypeDef>,
+    impls: &'a IdVec<res::CustomImplId, elab::ImplDef>,
     val_insts: ValInstances,
     type_insts: TypeInstances,
 }
@@ -101,7 +112,7 @@ impl<'a> Instantiator<'a> {
         }
     }
 
-    fn impl_def(&self, id: res::ImplId) -> &'a solved::ImplDef {
+    fn impl_def(&self, id: res::ImplId) -> &'a elab::ImplDef {
         let res::ImplId::Custom(custom) = id;
         &self.impls[custom]
     }
@@ -189,7 +200,7 @@ impl<'a> Instantiator<'a> {
         }
     }
 
-    fn resolve_type(&mut self, inst: &Instantiation, type_: &res::Type) -> mono::Type {
+    fn resolve_type(&mut self, inst: &Instantiation, type_: &elab::Type) -> mono::Type {
         self.mono_type(&subst_type(&inst.args, type_))
     }
 
@@ -226,7 +237,7 @@ impl<'a> Instantiator<'a> {
     fn resolve_instantiation(
         &self,
         inst: &Instantiation,
-        args: &IdVec<res::TypeParamId, res::Type>,
+        args: &IdVec<res::TypeParamId, elab::Type>,
         derivs: &IdVec<res::TraitConstrId, solved::Derivation>,
     ) -> Instantiation {
         Instantiation {
@@ -461,11 +472,7 @@ impl<'a> Instantiator<'a> {
         }
     }
 
-    fn resolve_typedef(
-        &mut self,
-        inst_args: &InstArgs,
-        typedef: &kinded::TypeDef,
-    ) -> mono::TypeDef {
+    fn resolve_typedef(&mut self, inst_args: &InstArgs, typedef: &elab::TypeDef) -> mono::TypeDef {
         debug_assert_eq!(inst_args.len(), typedef.param_kinds.len());
 
         let inst = Instantiation {
@@ -475,7 +482,7 @@ impl<'a> Instantiator<'a> {
 
         let variants_resolved = typedef.variants.map_refs(|_id, variant| {
             if let Some(variant) = variant {
-                Some(self.resolve_type(&inst, &variant))
+                Some(self.resolve_type(&inst, variant))
             } else {
                 None
             }

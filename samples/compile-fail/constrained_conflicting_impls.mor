@@ -1,0 +1,72 @@
+// expect-error: Conflicting Impls @ 71:21
+module Ord = {
+  pub trait Ord a {
+    lt(x: a, y: a): Bool,
+  }
+
+  pub impl OrdInt of Ord Int {
+    lt(x: Int, y: Int): Bool = x < y
+  }
+
+  pub impl OrdIntRev of Ord Int {
+    lt(x: Int, y: Int): Bool = y < x
+  }
+} expose { trait Ord { lt }, impl OrdInt }
+
+module Set = {
+  import Ord expose { trait Ord { lt } }
+
+  // A sorted array.  The ordering it is sorted by is part of its type: a `Set Int` built under
+  // `OrdInt` is a different type from one built under `OrdIntRev`.
+  pub type Set a where Ord a {
+    pub Set(Array a)
+  }
+
+  pub empty(): Set a where Ord a = Set([])
+
+  pub insert(s: Set a, x: a): Set a where Ord a =
+    match s { Set(arr) -> Set(insert_rec(arr, x, 0, [])) }
+
+  insert_rec(arr: Array a, x: a, i: Int, out: Array a): Array a where Ord a =
+    match i < len(arr) {
+      False -> push(out, x),
+      True ->
+        let y = get(arr, i) in
+        match lt(x, y) {
+          True -> append_from(push(out, x), arr, i),
+          False -> insert_rec(arr, x, i + 1, push(out, y)),
+        },
+    }
+
+  append_from(out: Array a, arr: Array a, i: Int): Array a =
+    match i < len(arr) {
+      False -> out,
+      True -> append_from(push(out, get(arr, i)), arr, i + 1),
+    }
+
+  pub to_array(s: Set a): Array a where Ord a =
+    match s { Set(arr) -> arr }
+} with { Ord } expose { Set { Set }, empty, insert, to_array }
+
+module Fwd = {
+  import Ord expose { trait Ord, impl OrdInt }
+  import Set expose { Set { Set }, empty, insert }
+
+  pub make(): Set Int = insert(insert(insert(empty(), 3), 1), 2)
+} with { Ord, Set }
+
+module Rev = {
+  import Ord expose { trait Ord, impl OrdIntRev }
+  import Set expose { Set { Set }, empty, insert }
+
+  pub make(): Set Int = insert(insert(insert(empty(), 3), 1), 2)
+} with { Ord, Set }
+
+// The signature of `size` is elaborated in this module, where `OrdInt` is in scope, so it takes
+// a `Set Int` built under `OrdInt`; a set built under `OrdIntRev` is a different type.
+size(s: Set Int): Int =
+  len(to_array(s))
+
+proc main(): () =
+  let n: Int = size(Rev.make()) in
+  ()

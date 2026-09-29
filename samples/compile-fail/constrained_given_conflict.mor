@@ -1,0 +1,23 @@
+// expect-error: Conflicting Impls @ 21:3
+trait Eq a {
+  eq(x: a, y: a): Bool,
+}
+
+trait Ord a where Eq a {
+  lt(x: a, y: a): Bool,
+}
+
+type Boxed a where Eq a {
+  Boxed(a)
+}
+
+// The parameter's evidence is the `Eq a` superclass of the `Ord a` given.
+same(x: Boxed a, y: Boxed a): Bool where Ord a =
+  match (x, y) { (Boxed(a), Boxed(b)) -> eq(a, b) }
+
+// Here `Boxed a` carries the definition's own `Eq a` given, which is not provably the superclass
+// evidence of its `Ord a` given.
+both(x: Boxed a): Bool where (Ord a, Eq a) =
+  same(x, x)
+
+proc main(): () = ()

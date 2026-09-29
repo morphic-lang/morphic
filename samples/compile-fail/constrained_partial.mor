@@ -1,0 +1,19 @@
+// expect-error: Partially Applied Constrained Type @ 15:22
+trait Ord a {
+  lt(x: a, y: a): Bool,
+}
+
+pub type Set a where Ord a {
+  pub Set(Array a)
+}
+
+trait Container f {
+  size(x: f a): Int,
+}
+
+// A constrained type cannot be applied to fewer arguments than its constraints mention.
+impl ContainerSet of Container Set {
+  size(x: Set a): Int = 0
+}
+
+proc main(): () = ()

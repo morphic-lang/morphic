@@ -56,6 +56,11 @@ sample! { traits "../../samples/traits.mor";
     ];
 }
 
+sample! { constrained_types "../../samples/constrained_types.mor";
+    stdin = "";
+    stdout = "1 2 3\n3 2 1\nTrue\n11 21\n";
+}
+
 sample! { arith "../../samples/arith.mor";
     stdin = "";
     stdout = "Completed all tests\n";

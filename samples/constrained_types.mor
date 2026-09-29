@@ -1,0 +1,150 @@
+module Core = file "lib/core/core.mor"
+  expose { module String expose { int_to_string, bool_to_string, concat } }
+
+// A type declaration may carry trait constraints.  Every occurrence of such a type carries
+// evidence for each of them, so a `Set Int` built under `OrdInt` is a different type from
+// one built under `OrdIntRev`: the evidence is unified along with the type.
+
+module Ord = {
+  pub trait Eq a {
+    eq(x: a, y: a): Bool,
+  }
+
+  pub trait Ord a where Eq a {
+    lt(x: a, y: a): Bool,
+  }
+
+  pub impl EqInt of Eq Int {
+    eq(x: Int, y: Int): Bool = x = y
+  }
+
+  pub impl OrdInt of Ord Int {
+    lt(x: Int, y: Int): Bool = x < y
+  }
+
+  pub impl OrdIntRev of Ord Int {
+    lt(x: Int, y: Int): Bool = y < x
+  }
+} expose { trait Eq { eq }, trait Ord { lt }, impl EqInt, impl OrdInt }
+
+module Set = {
+  import Ord expose { trait Ord { lt } }
+
+  // A sorted array.  The ordering it is sorted by is part of its type.
+  pub type Set a where Ord a {
+    pub Set(Array a)
+  }
+
+  pub empty(): Set a where Ord a = Set([])
+
+  pub insert(s: Set a, x: a): Set a where Ord a =
+    match s { Set(arr) -> Set(insert_rec(arr, x, 0, [])) }
+
+  insert_rec(arr: Array a, x: a, i: Int, out: Array a): Array a where Ord a =
+    match i < len(arr) {
+      False -> push(out, x),
+      True ->
+        let y = get(arr, i) in
+        match lt(x, y) {
+          True -> append_from(push(out, x), arr, i),
+          False -> insert_rec(arr, x, i + 1, push(out, y)),
+        },
+    }
+
+  append_from(out: Array a, arr: Array a, i: Int): Array a =
+    match i < len(arr) {
+      False -> out,
+      True -> append_from(push(out, get(arr, i)), arr, i + 1),
+    }
+
+  pub to_array(s: Set a): Array a where Ord a =
+    match s { Set(arr) -> arr }
+} with { Ord } expose { Set { Set }, empty, insert, to_array }
+
+// The same code builds a differently ordered set in a module where a different impl is in scope.
+module Fwd = {
+  import Ord expose { trait Ord, impl OrdInt }
+  import Set expose { Set { Set }, empty, insert }
+
+  pub make(): Set Int = insert(insert(insert(empty(), 3), 1), 2)
+} with { Ord, Set }
+
+module Rev = {
+  import Ord expose { trait Ord, impl OrdIntRev }
+  import Set expose { Set { Set }, empty, insert }
+
+  pub make(): Set Int = insert(insert(insert(empty(), 3), 1), 2)
+} with { Ord, Set }
+
+// A type constrained by a superclass: in `same`, the evidence for `Boxed a` is the `Eq a`
+// superclass of the `Ord a` constraint.
+type Boxed a where Eq a {
+  Boxed(a)
+}
+
+same(x: Boxed a, y: Boxed a): Bool where Ord a =
+  match (x, y) { (Boxed(a), Boxed(b)) -> eq(a, b) }
+
+// A constrained constructor applied to the parameters its constraints mention carries all of
+// its evidence, so it can stand for a type constructor variable: `Map k`'s only constraint is
+// `Ord k`, so `Map k` is a `Functor` over its values.
+type Map k v where Ord k {
+  Map(Array (k, v))
+}
+
+trait Functor f {
+  map(x: f a, g: a -> b): f b,
+}
+
+impl FunctorMap of Functor (Map k) where Ord k {
+  map(x: Map k a, g: a -> b): Map k b =
+    match x { Map(pairs) -> Map(map_pairs(pairs, g, 0, [])) }
+}
+
+// A constraint can be all that determines a parameter's kind: `f` occurs in no variant of
+// `Marker`, and gets the kind `Type -> Type` from `Functor f`.
+type Marker f where Functor f {
+  Marker
+}
+
+mark(): Marker (Map Int) = Marker
+
+map_pairs(pairs: Array (k, a), g: a -> b, i: Int, out: Array (k, b)): Array (k, b) =
+  match i < len(pairs) {
+    False -> out,
+    True ->
+      let (key, value) = get(pairs, i) in
+      map_pairs(pairs, g, i + 1, push(out, (key, g(value)))),
+  }
+
+values(m: Map k v): Array v where Ord k =
+  match m { Map(pairs) -> values_rec(pairs, 0, []) }
+
+values_rec(pairs: Array (k, v), i: Int, out: Array v): Array v =
+  match i < len(pairs) {
+    False -> out,
+    True ->
+      let (_, value) = get(pairs, i) in
+      values_rec(pairs, i + 1, push(out, value)),
+  }
+
+render(arr: Array Int, i: Int, acc: Array Byte): Array Byte =
+  match i < len(arr) {
+    False -> acc,
+    True ->
+      let sep = match i = 0 { True -> "", False -> " " } in
+      render(arr, i + 1, concat(acc, concat(sep, int_to_string(get(arr, i))))),
+  }
+
+// The evidence a set carries flows into the constraint of a generic function, so a set built
+// under either ordering can be passed to `to_array`, whichever impl is in scope here.
+proc main(): () =
+  let _ = do output(render(to_array(Fwd.make()), 0, "")) in
+  let _ = do output("\n") in
+  let _ = do output(render(to_array(Rev.make()), 0, "")) in
+  let _ = do output("\n") in
+  let _ = do output(bool_to_string(same(Boxed(1), Boxed(1)))) in
+  let _ = do output("\n") in
+  let m: Map Int Int = Map([(1, 10), (2, 20)]) in
+  let _ = do output(render(values(map(m, \v -> v + 1)), 0, "")) in
+  do output("\n")

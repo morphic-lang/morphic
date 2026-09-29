@@ -700,12 +700,16 @@ fn resolve_mod(
 
         for item in content.0 {
             match item {
-                raw::Item::TypeDef(visibility, name, params, variants) => {
+                raw::Item::TypeDef(visibility, name, params, constrs, variants) => {
                     let type_id = ctx.types.push(None);
                     {
                         let type_symbols_id = ctx.type_symbols.push(res::TypeSymbols {
                             mod_: self_mod_id,
                             type_name: name.clone(),
+                            type_param_names: IdVec::from_vec(params.clone()),
+                            constr_spans: IdVec::from_vec(
+                                constrs.iter().map(|constr| constr.span).collect(),
+                            ),
                             variant_symbols: IdVec::from_vec(
                                 variants
                                     .iter()
@@ -742,10 +746,10 @@ fn resolve_mod(
                         .map_err(locate_path(file_path))?;
                     }
 
-                    pending_type_defs.push((type_id, params, variants));
+                    pending_type_defs.push((type_id, params, constrs, variants));
                 }
 
-                raw::Item::ValDef(visibility, name, type_, constrs, body) => {
+                raw::Item::ValDef(visibility, name, type_, constrs, body, span) => {
                     let val_id = ctx.vals.push(None);
                     {
                         let val_symbols_id = ctx.val_symbols.push(None);
@@ -763,7 +767,7 @@ fn resolve_mod(
                     .map_err(|()| ErrorKind::DuplicateVarName(name.0.clone()).into())
                     .map_err(locate_path(file_path))?;
 
-                    pending_val_defs.push((name, val_id, type_, constrs, body));
+                    pending_val_defs.push((name, val_id, type_, constrs, body, span));
                 }
 
                 raw::Item::TraitDef(visibility, name, params, supers, funcs) => {
@@ -896,7 +900,7 @@ fn resolve_mod(
 
     // Resolve content of type and value definitions
 
-    for (type_id, params, variants) in pending_type_defs {
+    for (type_id, params, constrs, variants) in pending_type_defs {
         let mut param_names = IdVec::new();
         let mut param_map = BTreeMap::new();
         for param_name in params {
@@ -922,9 +926,18 @@ fn resolve_mod(
                 .map_err(locate_path(file_path))?,
         );
 
+        let trait_constrs = IdVec::from_vec(
+            constrs
+                .iter()
+                .map(|constr| resolve_trait_app(&ctx, &mod_map, &param_map, constr))
+                .collect::<Result<Vec<_>, RawError>>()
+                .map_err(locate_path(file_path))?,
+        );
+
         debug_assert!(ctx.types[type_id].is_none());
         ctx.types[type_id] = Some(res::TypeDef {
             num_params: param_names.count(),
+            trait_constrs,
             variants: resolved_variants,
         });
     }
@@ -960,7 +973,7 @@ fn resolve_mod(
         )?;
     }
 
-    for (val_name, val_id, type_, constrs, body) in pending_val_defs {
+    for (val_name, val_id, type_, constrs, body, span) in pending_val_defs {
         let (res_scheme, type_param_names, scheme_params) =
             resolve_scheme(ctx, &mod_map, &type_, &constrs).map_err(locate_path(file_path))?;
 
@@ -984,6 +997,7 @@ fn resolve_mod(
             mod_: self_mod_id,
             type_param_names,
             val_name,
+            span,
             type_spans: res::TypeSpans::of(&type_),
             trait_constr_spans: IdVec::from_vec(constrs.iter().map(|constr| constr.span).collect()),
             impl_: None,
@@ -2164,6 +2178,7 @@ fn resolve_impl_def(
             mod_: self_mod_id,
             type_param_names,
             val_name: func_name.clone(),
+            span: func.span,
             type_spans: res::TypeSpans::of(&func.type_),
             trait_constr_spans,
             impl_: Some(impl_id),

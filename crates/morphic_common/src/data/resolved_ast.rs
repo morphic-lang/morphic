@@ -193,22 +193,9 @@ impl TraitFuncLayout {
     }
 }
 
-/// A reference to a trait func at particular types.  `D` is the evidence for a trait constraint:
-/// an obligation id after type inference, a derivation after trait solving.
-#[derive(Clone, Debug)]
-pub struct TraitFuncInst<D> {
-    /// The trait's parameters, and the evidence for the trait constraint at them, which is what
-    /// determines the impl whose func is meant.
-    pub trait_args: IdVec<TypeParamId, Type>,
-    pub trait_deriv: D,
-    /// The func's own parameters, and the evidence for its own constraints.
-    pub func_args: IdVec<TraitFuncParamId, Type>,
-    pub func_derivs: IdVec<TraitFuncConstrId, D>,
-}
-
-/// How the scheme of the definition implementing a trait func is laid out: the impl's parameters
-/// and constraints come first, then the trait func's own.  Resolution builds such schemes and
-/// monomorphization instantiates them through this type, so the layout is defined in one place.
+/// How the scheme for an impl of a trait func is laid out: the impl's parameters and constraints
+/// come first, then the func's own. Resolution builds such schemes and monomorphization
+/// instantiates them through this type.
 #[derive(Clone, Copy, Debug)]
 pub struct ImplFuncLayout {
     pub num_impl_params: Count<TypeParamId>,
@@ -309,7 +296,43 @@ pub struct ModSymbols {
 #[derive(Clone, Debug)]
 pub struct TypeDef {
     pub num_params: Count<TypeParamId>,
+    pub trait_constrs: IdVec<TraitConstrId, TraitApp>,
     pub variants: IdVec<VariantId, Option<Type>>,
+}
+
+impl TypeDef {
+    pub fn constrained_prefix(&self) -> Count<TypeParamId> {
+        constrained_prefix(&self.trait_constrs)
+    }
+}
+
+/// How many arguments, at least, a constructor with these constraints must be applied to so
+/// that evidence for all of its constraints is determined.
+///
+/// Concretely, this is one more than the largest parameter index any constraint mentions.  For
+/// example, for `type Map k v where Ord k` it is 1, so `Map k` is a valid partial application,
+/// while for `type Map k v where Show v` it is 2.
+pub fn constrained_prefix(constrs: &IdVec<TraitConstrId, TraitApp>) -> Count<TypeParamId> {
+    fn extend(type_: &Type, prefix: &mut usize) {
+        match type_ {
+            Type::App(head, args) => {
+                if let TypeHead::Var(param) = head {
+                    *prefix = (*prefix).max(param.0 + 1);
+                }
+                args.iter().for_each(|arg| extend(arg, prefix));
+            }
+            Type::Tuple(items) => items.iter().for_each(|item| extend(item, prefix)),
+            Type::Func(_, arg, ret) => {
+                extend(arg, prefix);
+                extend(ret, prefix);
+            }
+        }
+    }
+    let mut prefix = 0;
+    for (_, constr) in constrs {
+        constr.args.iter().for_each(|arg| extend(arg, &mut prefix));
+    }
+    Count::from_value(prefix)
 }
 
 /// The source spans of a type.  Resolved types do not carry spans directly because they are
@@ -382,6 +405,8 @@ pub struct VariantSymbols {
 pub struct TypeSymbols {
     pub mod_: ModId,
     pub type_name: raw::TypeName,
+    pub type_param_names: IdVec<TypeParamId, raw::TypeParam>,
+    pub constr_spans: IdVec<TraitConstrId, (usize, usize)>,
     pub variant_symbols: IdVec<VariantId, VariantSymbols>,
 }
 
@@ -396,6 +421,8 @@ pub struct ValSymbols {
     pub mod_: ModId,
     pub type_param_names: IdVec<TypeParamId, raw::TypeParam>,
     pub val_name: raw::ValName,
+    /// The span of the whole definition.
+    pub span: (usize, usize),
     pub type_spans: TypeSpans,
     pub trait_constr_spans: IdVec<TraitConstrId, (usize, usize)>,
     // The impl this definition implements a func of, if any.

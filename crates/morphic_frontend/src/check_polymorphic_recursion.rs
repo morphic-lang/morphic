@@ -1,4 +1,4 @@
-use crate::data::kinded_ast as kinded;
+use crate::data::elaborated_ast as elab;
 use crate::data::resolved_ast::{self as res, TraitConstrId, TypeParamId};
 use crate::data::solved_ast as solved;
 use crate::file_cache::FileCache;
@@ -68,9 +68,11 @@ struct ClassifiedEdge<N> {
     span: Option<(usize, usize)>,
 }
 
-fn add_free_vars(ty: &res::Type, vars: &mut Vec<TypeParamId>) {
+/// The type parameters occurring in a type.  A constrained type's evidence mentions no parameter
+/// beyond those in its arguments, so it is not looked into.
+fn add_free_vars(ty: &solved::Type, vars: &mut Vec<TypeParamId>) {
     match ty {
-        res::Type::App(head, args) => {
+        solved::Type::App(head, args) => {
             if let &res::TypeHead::Var(param) = head {
                 vars.push(param);
             }
@@ -78,12 +80,17 @@ fn add_free_vars(ty: &res::Type, vars: &mut Vec<TypeParamId>) {
                 add_free_vars(arg, vars);
             }
         }
-        res::Type::Tuple(items) => {
+        solved::Type::Constrained(_, args, _) => {
+            for arg in args {
+                add_free_vars(arg, vars);
+            }
+        }
+        solved::Type::Tuple(items) => {
             for item in items {
                 add_free_vars(item, vars);
             }
         }
-        res::Type::Func(_, arg, ret) => {
+        solved::Type::Func(_, arg, ret) => {
             add_free_vars(arg, vars);
             add_free_vars(ret, vars);
         }
@@ -92,7 +99,7 @@ fn add_free_vars(ty: &res::Type, vars: &mut Vec<TypeParamId>) {
 
 /// The arguments of a type application, each paired with the parameter of the head it
 /// instantiates.
-fn positional_args(args: &[res::Type]) -> impl Iterator<Item = (TypeParamId, &res::Type)> {
+fn positional_args(args: &[solved::Type]) -> impl Iterator<Item = (TypeParamId, &solved::Type)> {
     args.iter()
         .enumerate()
         .map(|(index, arg)| (TypeParamId(index), arg))
@@ -103,7 +110,7 @@ fn positional_args(args: &[res::Type]) -> impl Iterator<Item = (TypeParamId, &re
 fn add_application_edges<'a, Id: Copy>(
     source: Id,
     target: Id,
-    args: impl IntoIterator<Item = (TypeParamId, &'a res::Type)>,
+    args: impl IntoIterator<Item = (TypeParamId, &'a solved::Type)>,
     span: Option<(usize, usize)>,
     edges: &mut Vec<ClassifiedEdge<(Id, Slot)>>,
 ) {
@@ -113,7 +120,7 @@ fn add_application_edges<'a, Id: Copy>(
         match arg {
             // A bare parameter is passed along unchanged.  A parameter applied to arguments, like
             // any other compound type, is growing.
-            res::Type::App(res::TypeHead::Var(param), args) if args.is_empty() => {
+            solved::Type::App(res::TypeHead::Var(param), args) if args.is_empty() => {
                 edges.push(ClassifiedEdge {
                     from: (source, Slot::Param(*param)),
                     to,
@@ -209,14 +216,14 @@ fn root_impl(deriv: &solved::Derivation) -> Option<res::ImplId> {
 enum Call<'a> {
     Global {
         callee: res::CustomGlobalId,
-        args: &'a IdVec<TypeParamId, res::Type>,
+        args: &'a IdVec<TypeParamId, solved::Type>,
         derivs: &'a IdVec<TraitConstrId, solved::Derivation>,
         span: Option<(usize, usize)>,
     },
     TraitFunc {
         trait_: res::TraitId,
         func: res::TraitFuncId,
-        inst: &'a res::TraitFuncInst<solved::Derivation>,
+        inst: &'a elab::TraitFuncInst<solved::Derivation>,
         span: Option<(usize, usize)>,
     },
 }
@@ -277,11 +284,11 @@ fn add_global_calls<'a>(
 }
 
 fn add_type_applications<'a>(
-    ty: &'a res::Type,
-    apps: &mut Vec<(res::CustomTypeId, &'a [res::Type])>,
+    ty: &'a solved::Type,
+    apps: &mut Vec<(res::CustomTypeId, &'a [solved::Type])>,
 ) {
     match ty {
-        res::Type::App(head, args) => {
+        solved::Type::App(head, args) => {
             if let res::TypeHead::Ctor(res::TypeId::Custom(custom)) = head {
                 apps.push((*custom, args.as_slice()));
             }
@@ -289,12 +296,18 @@ fn add_type_applications<'a>(
                 add_type_applications(arg, apps);
             }
         }
-        res::Type::Tuple(items) => {
+        solved::Type::Constrained(custom, args, _) => {
+            apps.push((*custom, args.as_slice()));
+            for arg in args {
+                add_type_applications(arg, apps);
+            }
+        }
+        solved::Type::Tuple(items) => {
             for item in items {
                 add_type_applications(item, apps);
             }
         }
-        res::Type::Func(_, arg, ret) => {
+        solved::Type::Func(_, arg, ret) => {
             add_type_applications(arg, apps);
             add_type_applications(ret, apps);
         }
@@ -358,7 +371,7 @@ fn locate(kind: ErrorKind, file: &std::path::Path, span: Option<(usize, usize)>)
 fn add_impl_instantiation_edges(
     source: res::CustomGlobalId,
     deriv: &solved::Derivation,
-    impls: &IdVec<res::CustomImplId, solved::ImplDef>,
+    impls: &IdVec<res::CustomImplId, elab::ImplDef>,
     span: Option<(usize, usize)>,
     edges: &mut Vec<ClassifiedEdge<(res::CustomGlobalId, Slot)>>,
 ) {
@@ -385,7 +398,7 @@ fn check_vals(
     mod_symbols: &IdVec<res::ModId, res::ModSymbols>,
     vals: &IdVec<res::CustomGlobalId, solved::ValDef>,
     val_symbols: &IdVec<res::CustomGlobalId, res::ValSymbols>,
-    impls: &IdVec<res::CustomImplId, solved::ImplDef>,
+    impls: &IdVec<res::CustomImplId, elab::ImplDef>,
 ) -> Result<(), Error> {
     let mut calls = Vec::new();
     let mut classified = Vec::new();
@@ -505,7 +518,7 @@ fn check_vals(
 
 fn check_types(
     mod_symbols: &IdVec<res::ModId, res::ModSymbols>,
-    custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
+    custom_types: &IdVec<res::CustomTypeId, elab::TypeDef>,
     custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
 ) -> Result<(), Error> {
     let mut apps = Vec::new();
@@ -562,7 +575,8 @@ pub fn check_polymorphic_recursion(program: &solved::Program) -> Result<(), Erro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::kinded_ast::{TypeDef, TypeScheme};
+    use crate::data::elaborated_ast::{self as elab, TypeDef, TypeScheme};
+    use crate::data::kinded_ast as kinded;
     use crate::data::raw_ast as raw;
     use crate::data::resolved_ast::{
         CustomGlobalId, CustomTypeId, GlobalId, ModDeclLoc, ModId, ModSymbols, TypeId, TypeParamId,
@@ -587,7 +601,7 @@ mod tests {
             scheme: TypeScheme {
                 param_kinds: type_kinds(num_params),
                 trait_constrs: IdVec::new(),
-                body: res::Type::Tuple(vec![]),
+                body: elab::Type::Tuple(vec![]),
             },
             body,
         }
@@ -598,6 +612,7 @@ mod tests {
             mod_: ModId(0),
             type_param_names: IdVec::new(),
             val_name: raw::ValName(name.to_string()),
+            span: (0, 0),
             type_spans: res::TypeSpans {
                 span: None,
                 children: Vec::new(),
@@ -611,6 +626,8 @@ mod tests {
         TypeSymbols {
             mod_: ModId(0),
             type_name: raw::TypeName(name.to_string()),
+            type_param_names: IdVec::new(),
+            constr_spans: IdVec::new(),
             variant_symbols: IdVec::from_vec(
                 variant_spans
                     .iter()
@@ -624,7 +641,7 @@ mod tests {
         }
     }
 
-    fn self_call(args: Vec<res::Type>) -> Expr {
+    fn self_call(args: Vec<elab::Type>) -> Expr {
         Expr::Global(
             GlobalId::Custom(CustomGlobalId(0)),
             IdVec::from_vec(args),
@@ -646,9 +663,9 @@ mod tests {
             Expr::Span(
                 10,
                 25,
-                Box::new(self_call(vec![res::Type::Tuple(vec![
-                    res::Type::param(TypeParamId(0)),
-                    res::Type::param(TypeParamId(0)),
+                Box::new(self_call(vec![elab::Type::Tuple(vec![
+                    elab::Type::param(TypeParamId(0)),
+                    elab::Type::param(TypeParamId(0)),
                 ])])),
             ),
         )]);
@@ -667,7 +684,7 @@ mod tests {
     fn ordinary_self_recursive_value_is_accepted() {
         let vals = IdVec::from_vec(vec![val_def(
             1,
-            self_call(vec![res::Type::param(TypeParamId(0))]),
+            self_call(vec![elab::Type::param(TypeParamId(0))]),
         )]);
         let val_symbols = IdVec::from_vec(vec![val_symbols("len")]);
 
@@ -678,13 +695,14 @@ mod tests {
     fn growing_recursive_type_is_rejected() {
         let custom_types = IdVec::from_vec(vec![TypeDef {
             param_kinds: type_kinds(1),
+            trait_constrs: IdVec::new(),
             variants: IdVec::from_vec(vec![
-                Some(res::Type::param(TypeParamId(0))),
-                Some(res::Type::App(
+                Some(elab::Type::param(TypeParamId(0))),
+                Some(elab::Type::App(
                     res::TypeHead::Ctor(TypeId::Custom(CustomTypeId(0))),
-                    vec![res::Type::Tuple(vec![
-                        res::Type::param(TypeParamId(0)),
-                        res::Type::param(TypeParamId(0)),
+                    vec![elab::Type::Tuple(vec![
+                        elab::Type::param(TypeParamId(0)),
+                        elab::Type::param(TypeParamId(0)),
                     ])],
                 )),
             ]),
@@ -707,13 +725,14 @@ mod tests {
 
         let custom_types = IdVec::from_vec(vec![TypeDef {
             param_kinds: type_kinds(1),
+            trait_constrs: IdVec::new(),
             variants: IdVec::from_vec(vec![
-                Some(res::Type::param(TypeParamId(0))),
-                Some(res::Type::App(
+                Some(elab::Type::param(TypeParamId(0))),
+                Some(elab::Type::App(
                     res::TypeHead::Ctor(TypeId::Custom(nested_id)),
-                    vec![res::Type::Tuple(vec![
-                        res::Type::param(TypeParamId(0)),
-                        res::Type::param(TypeParamId(0)),
+                    vec![elab::Type::Tuple(vec![
+                        elab::Type::param(TypeParamId(0)),
+                        elab::Type::param(TypeParamId(0)),
                     ])],
                 )),
             ]),
@@ -723,9 +742,9 @@ mod tests {
 
         let vals = IdVec::from_vec(vec![val_def(
             1,
-            self_call(vec![res::Type::Tuple(vec![
-                res::Type::param(TypeParamId(0)),
-                res::Type::param(TypeParamId(0)),
+            self_call(vec![elab::Type::Tuple(vec![
+                elab::Type::param(TypeParamId(0)),
+                elab::Type::param(TypeParamId(0)),
             ])]),
         )]);
         let val_symbols = IdVec::from_vec(vec![val_symbols("depth")]);
@@ -759,21 +778,23 @@ mod tests {
         let custom_types = IdVec::from_vec(vec![
             TypeDef {
                 param_kinds: type_kinds(2),
-                variants: IdVec::from_vec(vec![Some(res::Type::App(
+                trait_constrs: IdVec::new(),
+                variants: IdVec::from_vec(vec![Some(elab::Type::App(
                     res::TypeHead::Ctor(TypeId::Custom(other_id)),
                     vec![
-                        res::Type::param(TypeParamId(1)),
-                        res::Type::param(TypeParamId(0)),
+                        elab::Type::param(TypeParamId(1)),
+                        elab::Type::param(TypeParamId(0)),
                     ],
                 ))]),
             },
             TypeDef {
                 param_kinds: type_kinds(2),
-                variants: IdVec::from_vec(vec![Some(res::Type::App(
+                trait_constrs: IdVec::new(),
+                variants: IdVec::from_vec(vec![Some(elab::Type::App(
                     res::TypeHead::Ctor(TypeId::Custom(pair_id)),
                     vec![
-                        res::Type::param(TypeParamId(1)),
-                        res::Type::param(TypeParamId(0)),
+                        elab::Type::param(TypeParamId(1)),
+                        elab::Type::param(TypeParamId(0)),
                     ],
                 ))]),
             },

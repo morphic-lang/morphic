@@ -183,9 +183,9 @@ Item: syntax::Item = {
 // Type Definitions
 
 TypeDef: syntax::Item = {
-  <visibility: OptPub> "type" <name: TypeName> <params: TypeParam*>
+  <visibility: OptPub> "type" <name: TypeName> <params: TypeParam*> <constrs: WhereClause>
     "{" <cases: CommaSep<TypeCase>> "}" =>
-      syntax::Item::TypeDef(visibility, name, params, cases),
+      syntax::Item::TypeDef(visibility, name, params, constrs, cases),
 };
 
 TypeCase: (Visibility, syntax::CtorName, Option<syntax::Type>, (usize, usize)) = {
@@ -196,13 +196,15 @@ TypeCase: (Visibility, syntax::CtorName, Option<syntax::Type>, (usize, usize)) =
 // Value Definitions
 
 ValDef: syntax::Item = {
+  <lo: @L>
   <visibility: OptPub>
   <purity: OptProc>
   <name: ValName>
   "(" <args: CommaSep<(<ValName> ":" <Type>)>> ")"
   ":" <ret_type: Type>
   <constrs: WhereClause>
-  "=" <body: Expr> => {
+  "=" <body: Expr>
+  <hi: @R> => {
     let (arg_pat, arg_type) = if args.len() == 1 {
       let (arg_name, arg_type) = args.into_iter().next().unwrap();
       (syntax::Pattern::Var(arg_name), arg_type)
@@ -221,11 +223,12 @@ ValDef: syntax::Item = {
     let def_type = syntax::Type::Func(purity, Box::new(arg_type), Box::new(ret_type));
     let def_body = syntax::Expr::Lam(purity, arg_pat, Box::new(body));
 
-    syntax::Item::ValDef(visibility, name, def_type, constrs, def_body)
+    syntax::Item::ValDef(visibility, name, def_type, constrs, def_body, (lo, hi))
   },
 
-  <visibility: OptPub> <name: ValName> ":" <def_type: Type> <constrs: WhereClause> "=" <val: Expr> => {
-    syntax::Item::ValDef(visibility, name, def_type, constrs, val)
+  <lo: @L> <visibility: OptPub> <name: ValName> ":" <def_type: Type> <constrs: WhereClause>
+    "=" <val: Expr> <hi: @R> => {
+    syntax::Item::ValDef(visibility, name, def_type, constrs, val, (lo, hi))
   },
 }
 

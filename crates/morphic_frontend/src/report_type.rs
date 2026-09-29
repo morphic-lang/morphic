@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::data::elaborated_ast as elab;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
@@ -35,6 +36,13 @@ impl TraitApp {
         TraitApp {
             trait_: app.trait_,
             args: app.args.iter().map(Type::from_resolved).collect(),
+        }
+    }
+
+    pub fn from_elab<E>(app: &elab::TraitApp<E>) -> TraitApp {
+        TraitApp {
+            trait_: app.trait_,
+            args: app.args.iter().map(Type::from_elab).collect(),
         }
     }
 }
@@ -135,6 +143,29 @@ impl Type {
                 *purity,
                 Box::new(Type::from_resolved(arg)),
                 Box::new(Type::from_resolved(ret)),
+            ),
+        }
+    }
+
+    /// Rendering ignores a type's evidence.
+    pub fn from_elab<E>(type_: &elab::Type<E>) -> Type {
+        match type_ {
+            elab::Type::App(head, args) => Type::App(
+                match head {
+                    res::TypeHead::Ctor(id) => Head::Ctor(*id),
+                    res::TypeHead::Var(param) => Head::Var(*param),
+                },
+                args.iter().map(Type::from_elab).collect(),
+            ),
+            elab::Type::Constrained(id, args, _) => Type::App(
+                Head::Ctor(res::TypeId::Custom(*id)),
+                args.iter().map(Type::from_elab).collect(),
+            ),
+            elab::Type::Tuple(items) => Type::Tuple(items.iter().map(Type::from_elab).collect()),
+            elab::Type::Func(purity, arg, ret) => Type::Func(
+                *purity,
+                Box::new(Type::from_elab(arg)),
+                Box::new(Type::from_elab(ret)),
             ),
         }
     }

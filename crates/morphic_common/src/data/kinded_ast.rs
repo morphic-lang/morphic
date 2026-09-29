@@ -82,7 +82,15 @@ impl ImplDef {
 #[derive(Clone, Debug)]
 pub struct TypeDef {
     pub param_kinds: IdVec<res::TypeParamId, Kind>,
+    pub trait_constrs: IdVec<res::TraitConstrId, res::TraitApp>,
     pub variants: IdVec<res::VariantId, Option<res::Type>>,
+}
+
+impl TypeDef {
+    /// See `res::constrained_prefix`.
+    pub fn constrained_prefix(&self) -> id_collections::Count<res::TypeParamId> {
+        res::constrained_prefix(&self.trait_constrs)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

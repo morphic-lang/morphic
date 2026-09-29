@@ -560,47 +560,89 @@ fn add_custom_type_deps(type_: &res::Type, deps: &mut BTreeSet<res::CustomTypeId
 
 /// The dependency groups of the program's type declarations, each group before any group that
 /// depends on it.
-fn type_dependency_groups(program: &res::Program) -> Vec<Vec<res::CustomTypeId>> {
-    let deps = Graph {
-        edges_out: program.custom_types.map_refs(|_, def| {
-            let mut deps = BTreeSet::new();
-            for (_, variant) in &def.variants {
-                if let Some(type_) = variant {
-                    add_custom_type_deps(type_, &mut deps);
-                }
-            }
-            deps.into_iter().collect()
-        }),
-    };
-
-    graph::strongly_connected(&deps)
+/// A type or trait declaration.  The kinds of a declaration's parameters are inferred together
+/// with those of the declarations it depends on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Item {
+    Type(res::CustomTypeId),
+    Trait(res::CustomTraitId),
 }
 
-fn add_constr_trait_deps<'a>(
-    constrs: impl IntoIterator<Item = &'a res::TraitApp>,
-    deps: &mut BTreeSet<res::CustomTraitId>,
+#[id_type]
+struct ItemId(usize);
+
+fn add_constr_deps(
+    constr: &res::TraitApp,
+    types: &mut BTreeSet<res::CustomTypeId>,
+    traits: &mut BTreeSet<res::CustomTraitId>,
 ) {
-    for constr in constrs {
-        let res::TraitId::Custom(custom) = constr.trait_;
-        deps.insert(custom);
+    let res::TraitId::Custom(custom) = constr.trait_;
+    traits.insert(custom);
+    for arg in &constr.args {
+        add_custom_type_deps(arg, types);
     }
 }
 
-/// The dependency groups of the program's traits, through superclasses and the constraints of
-/// their funcs, each group before any group that depends on it.
-fn trait_dependency_groups(program: &res::Program) -> Vec<Vec<res::CustomTraitId>> {
-    let deps = Graph {
-        edges_out: program.traits.map_refs(|_, def| {
-            let mut deps = BTreeSet::new();
-            add_constr_trait_deps(def.supers.values(), &mut deps);
-            for (_, func) in &def.funcs {
-                add_constr_trait_deps(func.own_constrs.values(), &mut deps);
-            }
-            deps.into_iter().collect()
-        }),
-    };
+/// The dependency groups of the program's type and trait declarations, each group before any
+/// group that depends on it.  A type depends on the types its variants mention and on
+/// everything its constraints mention; a trait depends on everything its superclasses and its funcs'
+/// signatures mention.  A group is inferred jointly, so a constraint can determine a parameter's
+/// kind whether it is a type's constraint or a trait's superclass.
+fn dependency_groups(program: &res::Program) -> Vec<Vec<Item>> {
+    let mut items: IdVec<ItemId, Item> = IdVec::new();
+    let mut ids: BTreeMap<Item, ItemId> = BTreeMap::new();
+    for (type_id, _) in &program.custom_types {
+        let item = Item::Type(type_id);
+        ids.insert(item, items.push(item));
+    }
+    for (trait_id, _) in &program.traits {
+        let item = Item::Trait(trait_id);
+        ids.insert(item, items.push(item));
+    }
 
-    graph::strongly_connected(&deps)
+    let edges_out = items.map_refs(|_, item| {
+        let mut types = BTreeSet::new();
+        let mut traits = BTreeSet::new();
+        match *item {
+            Item::Type(type_id) => {
+                let def = &program.custom_types[type_id];
+                for (_, variant) in &def.variants {
+                    if let Some(type_) = variant {
+                        add_custom_type_deps(type_, &mut types);
+                    }
+                }
+                for (_, constr) in &def.trait_constrs {
+                    add_constr_deps(constr, &mut types, &mut traits);
+                }
+            }
+            Item::Trait(trait_id) => {
+                let def = &program.traits[trait_id];
+                for (_, super_) in &def.supers {
+                    add_constr_deps(super_, &mut types, &mut traits);
+                }
+                for (_, func) in &def.funcs {
+                    add_custom_type_deps(&func.body, &mut types);
+                    for (_, constr) in &func.own_constrs {
+                        add_constr_deps(constr, &mut types, &mut traits);
+                    }
+                }
+            }
+        }
+        types
+            .into_iter()
+            .map(|type_id| ids[&Item::Type(type_id)])
+            .chain(
+                traits
+                    .into_iter()
+                    .map(|trait_id| ids[&Item::Trait(trait_id)]),
+            )
+            .collect()
+    });
+
+    graph::strongly_connected(&Graph { edges_out })
+        .into_iter()
+        .map(|group| group.into_iter().map(|id| items[id]).collect())
+        .collect()
 }
 
 fn fresh_params(
@@ -621,33 +663,130 @@ pub fn infer_kinds(program: res::Program) -> Result<kinded::Program, Error> {
         path: Vec::new(),
     };
 
-    for group in type_dependency_groups(&program) {
+    // A func's own parameters belong to its trait's group too, since they are only ever
+    // constrained within the group.
+    let mut trait_func_kinds: BTreeMap<
+        res::CustomTraitId,
+        IdVec<res::TraitFuncId, IdVec<res::TypeParamId, kinded::Kind>>,
+    > = BTreeMap::new();
+
+    for group in dependency_groups(&program) {
         inference.ctx = Context::new();
 
         let mut pending = BTreeMap::new();
-        for &type_id in &group {
-            let params = fresh_params(&mut inference.ctx, program.custom_types[type_id].num_params);
-            pending.insert(type_id, params);
+        let mut pending_traits = BTreeMap::new();
+        for &item in &group {
+            match item {
+                Item::Type(type_id) => {
+                    let params =
+                        fresh_params(&mut inference.ctx, program.custom_types[type_id].num_params);
+                    pending.insert(type_id, params);
+                }
+                Item::Trait(trait_id) => {
+                    let params =
+                        fresh_params(&mut inference.ctx, program.traits[trait_id].num_params);
+                    pending_traits.insert(trait_id, params);
+                }
+            }
         }
         inference.pending = pending;
+        inference.pending_traits = pending_traits;
 
-        for &type_id in &group {
-            let def = &program.custom_types[type_id];
-            let symbols = &program.custom_type_symbols[type_id];
-            let env = inference.pending[&type_id].clone();
+        let mut func_envs: BTreeMap<
+            res::CustomTraitId,
+            IdVec<res::TraitFuncId, IdVec<res::TypeParamId, KindTerm>>,
+        > = BTreeMap::new();
 
-            for (variant_id, variant) in &def.variants {
-                if let Some(type_) = variant {
-                    let variant_symbols = &symbols.variant_symbols[variant_id];
-                    inference.check_is_type(&env, type_).map_err(|err| {
-                        locate(
-                            err,
-                            format!("the type declaration '{}'", symbols.type_name.0),
-                            &program.mod_symbols[symbols.mod_].file,
-                            variant_symbols.content_spans.as_ref(),
-                            Some(variant_symbols.span),
-                        )
-                    })?;
+        for &item in &group {
+            match item {
+                Item::Type(type_id) => {
+                    let def = &program.custom_types[type_id];
+                    let symbols = &program.custom_type_symbols[type_id];
+                    let file = &program.mod_symbols[symbols.mod_].file;
+                    let item = || format!("the type declaration '{}'", symbols.type_name.0);
+                    let env = inference.pending[&type_id].clone();
+
+                    for (variant_id, variant) in &def.variants {
+                        if let Some(type_) = variant {
+                            let variant_symbols = &symbols.variant_symbols[variant_id];
+                            inference.check_is_type(&env, type_).map_err(|err| {
+                                locate(
+                                    err,
+                                    item(),
+                                    file,
+                                    variant_symbols.content_spans.as_ref(),
+                                    Some(variant_symbols.span),
+                                )
+                            })?;
+                        }
+                    }
+
+                    for (constr_id, constr) in &def.trait_constrs {
+                        let span = symbols.constr_spans[constr_id];
+                        inference
+                            .check_constr(&env, constr)
+                            .map_err(at_span(span))
+                            .map_err(|err| locate(err, item(), file, None, None))?;
+                    }
+                }
+
+                Item::Trait(trait_id) => {
+                    let def = &program.traits[trait_id];
+                    let symbols = &program.trait_symbols[trait_id];
+                    let file = &program.mod_symbols[symbols.mod_].file;
+                    let item = || format!("the trait '{}'", symbols.trait_name.0);
+                    let env = inference.pending_traits[&trait_id].clone();
+
+                    for (super_id, constr) in &def.supers {
+                        let span = symbols.super_spans[super_id];
+                        inference
+                            .check_constr(&env, constr)
+                            .map_err(at_span(span))
+                            .map_err(|err| locate(err, item(), file, None, None))?;
+                    }
+
+                    let mut envs = IdVec::new();
+                    for (func_id, func) in &def.funcs {
+                        let func_symbols = &symbols.func_symbols[func_id];
+                        let layout = def.func_layout(func_id);
+                        let func_env = layout.params(
+                            env.clone(),
+                            IdVec::from_count_with(layout.num_own_params, |_| {
+                                inference.ctx.fresh()
+                            }),
+                        );
+
+                        let func_item = || {
+                            format!(
+                                "the signature of '{}' in {}",
+                                func_symbols.func_name.0,
+                                item()
+                            )
+                        };
+
+                        inference
+                            .check_is_type(&func_env, &func.body)
+                            .map_err(|err| {
+                                locate(
+                                    err,
+                                    func_item(),
+                                    file,
+                                    Some(&func_symbols.type_spans),
+                                    Some(func_symbols.span),
+                                )
+                            })?;
+
+                        for (constr_id, constr) in &func.own_constrs {
+                            let span = func_symbols.constr_spans[constr_id];
+                            inference
+                                .check_constr(&func_env, constr)
+                                .map_err(at_span(span))
+                                .map_err(|err| locate(err, func_item(), file, None, None))?;
+                        }
+
+                        let _ = envs.push(func_env);
+                    }
+                    func_envs.insert(trait_id, envs);
                 }
             }
         }
@@ -658,87 +797,6 @@ pub fn infer_kinds(program: res::Program) -> Result<kinded::Program, Error> {
             let kinds = params.map_refs(|_, kind| inference.ctx.to_kind(kind));
             inference.fixed[type_id] = Some(kinds);
         }
-    }
-
-    // Traits: one dependency group at a time, like type declarations.  A func's own parameters
-    // belong to the group too, since they are only ever constrained within the group.
-    let mut trait_func_kinds: BTreeMap<
-        res::CustomTraitId,
-        IdVec<res::TraitFuncId, IdVec<res::TypeParamId, kinded::Kind>>,
-    > = BTreeMap::new();
-
-    for group in trait_dependency_groups(&program) {
-        inference.ctx = Context::new();
-
-        let mut pending = BTreeMap::new();
-        for &trait_id in &group {
-            let params = fresh_params(&mut inference.ctx, program.traits[trait_id].num_params);
-            pending.insert(trait_id, params);
-        }
-        inference.pending_traits = pending;
-
-        let mut func_envs: BTreeMap<
-            res::CustomTraitId,
-            IdVec<res::TraitFuncId, IdVec<res::TypeParamId, KindTerm>>,
-        > = BTreeMap::new();
-
-        for &trait_id in &group {
-            let def = &program.traits[trait_id];
-            let symbols = &program.trait_symbols[trait_id];
-            let file = &program.mod_symbols[symbols.mod_].file;
-            let item = || format!("the trait '{}'", symbols.trait_name.0);
-            let env = inference.pending_traits[&trait_id].clone();
-
-            for (super_id, constr) in &def.supers {
-                let span = symbols.super_spans[super_id];
-                inference
-                    .check_constr(&env, constr)
-                    .map_err(at_span(span))
-                    .map_err(|err| locate(err, item(), file, None, None))?;
-            }
-
-            let mut envs = IdVec::new();
-            for (func_id, func) in &def.funcs {
-                let func_symbols = &symbols.func_symbols[func_id];
-                let layout = def.func_layout(func_id);
-                let func_env = layout.params(
-                    env.clone(),
-                    IdVec::from_count_with(layout.num_own_params, |_| inference.ctx.fresh()),
-                );
-
-                let func_item = || {
-                    format!(
-                        "the signature of '{}' in {}",
-                        func_symbols.func_name.0,
-                        item()
-                    )
-                };
-
-                inference
-                    .check_is_type(&func_env, &func.body)
-                    .map_err(|err| {
-                        locate(
-                            err,
-                            func_item(),
-                            file,
-                            Some(&func_symbols.type_spans),
-                            Some(func_symbols.span),
-                        )
-                    })?;
-
-                for (constr_id, constr) in &func.own_constrs {
-                    let span = func_symbols.constr_spans[constr_id];
-                    inference
-                        .check_constr(&func_env, constr)
-                        .map_err(at_span(span))
-                        .map_err(|err| locate(err, func_item(), file, None, None))?;
-                }
-
-                let _ = envs.push(func_env);
-            }
-            func_envs.insert(trait_id, envs);
-        }
-
         for (trait_id, params) in std::mem::take(&mut inference.pending_traits) {
             let kinds = params.map_refs(|_, kind| inference.ctx.to_kind(kind));
             inference.fixed_traits[trait_id] = Some(kinds);
@@ -824,6 +882,7 @@ pub fn infer_kinds(program: res::Program) -> Result<kinded::Program, Error> {
         mod_symbols: program.mod_symbols,
         custom_types: program.custom_types.map(|type_id, def| kinded::TypeDef {
             param_kinds: type_kinds[type_id].clone(),
+            trait_constrs: def.trait_constrs,
             variants: def.variants,
         }),
         custom_type_symbols: program.custom_type_symbols,

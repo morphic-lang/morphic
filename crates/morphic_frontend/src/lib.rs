@@ -19,6 +19,8 @@ mod report_type;
 mod resolve;
 mod shield_functions;
 mod solve_traits_in_bodies;
+mod solve_traits_in_signatures;
+mod trait_solver;
 mod type_infer;
 mod typecheck_first_order;
 
@@ -58,7 +60,9 @@ pub fn compile_to_solved_ast(
     }
     check_traits::check_traits(&resolved).map_err(Error::CheckTraitsFailed)?;
     let kinded = kind_infer::infer_kinds(resolved).map_err(Error::KindInferFailed)?;
-    let typed = type_infer::type_infer(kinded).map_err(Error::TypeInferFailed)?;
+    let elaborated = solve_traits_in_signatures::solve_traits_in_signatures(kinded)
+        .map_err(Error::SolveSignaturesFailed)?;
+    let typed = type_infer::type_infer(elaborated).map_err(Error::TypeInferFailed)?;
     let solved =
         solve_traits_in_bodies::solve_traits_in_bodies(typed).map_err(Error::SolveTraitsFailed)?;
     check_exhaustive::check_exhaustive(&solved).map_err(Error::CheckExhaustiveFailed)?;

@@ -1,6 +1,5 @@
-use crate::data::kinded_ast as kinded;
+use crate::data::elaborated_ast as elab;
 use crate::data::purity::Purity;
-use crate::data::resolved_ast as res;
 use crate::data::solved_ast as solved;
 use id_collections::IdVec;
 use thiserror::Error;
@@ -12,13 +11,13 @@ pub struct Error;
 pub fn check_main(program: &solved::Program) -> Result<(), Error> {
     let main_scheme = &program.vals[program.main].scheme;
 
-    let expected_scheme = kinded::TypeScheme {
+    let expected_scheme = elab::TypeScheme {
         param_kinds: IdVec::new(),
         trait_constrs: IdVec::new(),
-        body: res::Type::Func(
+        body: elab::Type::Func(
             Purity::Impure,
-            Box::new(res::Type::Tuple(vec![])),
-            Box::new(res::Type::Tuple(vec![])),
+            Box::new(elab::Type::Tuple(vec![])),
+            Box::new(elab::Type::Tuple(vec![])),
         ),
     };
 

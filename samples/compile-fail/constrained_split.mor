@@ -1,0 +1,19 @@
+// expect-error: Constrained Type as Constructor @ 18:25
+trait Ord a {
+  lt(x: a, y: a): Bool,
+}
+
+impl OrdInt of Ord Int {
+  lt(x: Int, y: Int): Bool = x < y
+}
+
+pub type Set a where Ord a {
+  pub Set(Array a)
+}
+
+keep(x: f Int): f Int = x
+
+// `Set Int` cannot instantiate the constructor variable `f`.
+proc main(): () =
+  let s: Set Int = keep(Set([])) in
+  ()

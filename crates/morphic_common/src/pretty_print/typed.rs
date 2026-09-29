@@ -1,9 +1,8 @@
 use crate::config::MlVariant;
-use crate::data::kinded_ast::TypeDef;
+use crate::data::elaborated_ast::TypeDef;
 use crate::data::profile::ProfilePointId;
 use crate::data::resolved_ast::{
-    ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, Type, TypeHead, TypeId, TypeParamId,
-    VariantId,
+    ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, TypeHead, TypeId, TypeParamId, VariantId,
 };
 use crate::data::solved_ast::*;
 use crate::util::graph::{self, Graph};
@@ -97,7 +96,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
     fn write_type(&mut self, type_: &Type, precedence: Precedence) -> io::Result<()> {
         let my_precedence = match type_ {
-            Type::App(_, args) => {
+            Type::App(_, args) | Type::Constrained(_, args, _) => {
                 if args.len() == 0 {
                     Precedence::Var
                 } else {
@@ -112,7 +111,15 @@ impl<'a, 'b> Context<'a, 'b> {
         }
 
         match type_ {
-            Type::App(head, args) => {
+            Type::App(_, _) | Type::Constrained(_, _, _) => {
+                // A constrained type's evidence has no counterpart in ML.
+                let (head, args) = match type_ {
+                    Type::App(head, args) => (*head, args.as_slice()),
+                    Type::Constrained(id, args, _) => {
+                        (TypeHead::Ctor(TypeId::Custom(*id)), args.as_slice())
+                    }
+                    Type::Tuple(_) | Type::Func(_, _, _) => unreachable!(),
+                };
                 if args.len() == 1 {
                     self.write_type(&args[0], Precedence::Var)?;
                     self.write(" ")?;
@@ -127,14 +134,14 @@ impl<'a, 'b> Context<'a, 'b> {
                     self.write(") ")?;
                 }
                 match head {
-                    TypeHead::Ctor(type_id) => self.write_type_id(type_id)?,
+                    TypeHead::Ctor(type_id) => self.write_type_id(&type_id)?,
                     TypeHead::Var(type_var) => {
                         // ML has no higher-kinded types, so a parameter can only appear bare.
                         assert!(
                             args.is_empty(),
                             "higher-kinded type application cannot be expressed in ML"
                         );
-                        self.write_type_var(type_var)?
+                        self.write_type_var(&type_var)?
                     }
                 }
             }
@@ -699,7 +706,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 for variant in &type_def.variants {
                     match variant.1 {
                         Some(type_) => {
-                            add_type_deps(&mut deps, &type_);
+                            add_type_deps(&mut deps, type_);
                         }
                         None => {}
                     }
@@ -1034,6 +1041,12 @@ fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
             if let TypeHead::Ctor(TypeId::Custom(custom_type)) = head {
                 deps.insert(*custom_type);
             }
+            for type_ in types {
+                add_type_deps(deps, type_);
+            }
+        }
+        Type::Constrained(custom_type, types, _) => {
+            deps.insert(*custom_type);
             for type_ in types {
                 add_type_deps(deps, type_);
             }

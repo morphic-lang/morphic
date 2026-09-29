@@ -1,27 +1,31 @@
 //! Discharges the trait obligations recorded by type inference, producing the solved program.
 //!
-//! Every obligation is a trait constraint over the enclosing definition's own type parameters.  It
-//! is discharged either by one of the definition's own trait constraints (a "given"), possibly
-//! through a superclass, or by an impl visible in the definition's module whose head matches it,
-//! whose own constraints are then discharged recursively.  Exactly one impl head may match; impl
-//! constraints play no part in choosing.  Together with the Paterson conditions on impl
-//! constraints (see `check_traits`) this makes solving a deterministic search that always
-//! terminates.
+//! Every obligation is a trait constraint over the enclosing definition's own type parameters.
+//! Where unification determined its evidence, by equating the evidence of constrained types,
+//! that evidence is used.  Otherwise it is discharged either by one of the definition's own
+//! trait constraints (a "given"), possibly through a superclass, or by an impl visible in the
+//! definition's module whose head matches it, whose own constraints are then discharged
+//! recursively.  Exactly one impl head may match; impl constraints play no part in choosing.
+//! Together with the Paterson conditions on impl constraints (see `check_traits`) this makes
+//! solving a deterministic search that always terminates.
 //!
-//! An impl's superclass derivations are solved here as well, in the impl's own module and relative
-//! to its own constraints, since monomorphization needs them to project a superclass out of an
-//! impl-derived constraint.
+//! Equations between evidence that inference had to defer, because a superclass projection is
+//! not injective, are checked once everything is solved.
 
-use crate::data::kinded_ast as kinded;
+use crate::data::elaborated_ast as elab;
+use crate::data::elaborated_ast::{Derivation, Subst, TraitApp, TraitSelfConstr, Type};
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
 use crate::data::solved_ast as solved;
 use crate::data::typed_ast as typed;
 use crate::file_cache::FileCache;
 use crate::report_type::{self, TypeRenderer};
-use id_collections::IdVec;
+use crate::trait_solver::{
+    closed_givens, normalize_derivation, normalize_trait_app, Facts, ImplFacts, SolveError, Solver,
+};
+use id_collections::{Count, IdVec};
 use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
-use std::collections::BTreeSet;
+use std::convert::Infallible;
 use std::io;
 
 #[derive(Clone, Debug)]
@@ -34,6 +38,15 @@ pub enum ErrorKind {
     AmbiguousImpl {
         constr: String,
         candidates: Vec<String>,
+    },
+    CyclicConstrs {
+        impl_: String,
+    },
+    ConflictingEvidence {
+        constr: String,
+        /// The evidence at the reported expression, and the evidence it is expected to agree with.
+        located: String,
+        other: String,
     },
 }
 
@@ -94,6 +107,31 @@ impl Reportable for Error {
                     indented_list(candidates)
                 ),
             ),
+
+            ErrorKind::CyclicConstrs { impl_ } => (
+                "Cyclic Impl Constraints",
+                format!(
+                    "The constraints of the impl '{}' refer to each other's evidence in a cycle, \
+                     so none of them can be established first.",
+                    impl_
+                ),
+            ),
+
+            ErrorKind::ConflictingEvidence {
+                constr,
+                located,
+                other,
+            } => (
+                "Conflicting Impls",
+                format!(
+                    "This expression's type carries evidence for the trait constraint\n\n    \
+                     {}\n\nfrom {}.\n\nBut here the same type is expected with evidence from \
+                     {}.\n\nA type declared with trait constraints is a different type under \
+                     each impl of those constraints, so a value built under one impl cannot be \
+                     used where the other is expected.",
+                    constr, located, other
+                ),
+            ),
         })
     }
 
@@ -102,208 +140,172 @@ impl Reportable for Error {
     }
 }
 
-enum RawErrorKind {
-    NoImpl {
-        goal: res::TraitApp,
-        chain: Vec<res::TraitApp>,
-        importable: Vec<res::ImplId>,
-    },
-    Ambiguous {
-        goal: res::TraitApp,
-        candidates: Vec<res::ImplId>,
-    },
-}
-
-/// Matches an impl head (a pattern over the impl's parameters) against the arguments of a goal,
-/// binding the impl's parameters.  Type parameters of the goal are rigid: they only ever match a
-/// bare pattern parameter.
-fn match_head(
-    head: &[res::Type],
-    goal_args: &[res::Type],
-    num_params: usize,
-) -> Option<IdVec<res::TypeParamId, res::Type>> {
-    debug_assert_eq!(head.len(), goal_args.len());
-    let mut subst = vec![None; num_params];
-    for (pattern, target) in head.iter().zip(goal_args) {
-        if !match_type(pattern, target, &mut subst) {
-            return None;
-        }
-    }
-    subst
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .map(IdVec::from_vec)
-}
-
-fn bind(param: res::TypeParamId, type_: res::Type, subst: &mut [Option<res::Type>]) -> bool {
-    match &subst[param.0] {
-        Some(existing) => *existing == type_,
-        None => {
-            subst[param.0] = Some(type_);
-            true
-        }
-    }
-}
-
-fn match_type(pattern: &res::Type, target: &res::Type, subst: &mut [Option<res::Type>]) -> bool {
-    match (pattern, target) {
-        // A pattern parameter, possibly applied to further patterns, absorbs the corresponding
-        // prefix of the target application: `f a` against `Result Int Bool` binds `f` to
-        // `Result Int` and `a` to `Bool`.
-        (res::Type::App(res::TypeHead::Var(param), pattern_args), res::Type::App(head, args)) => {
-            if args.len() < pattern_args.len() {
-                return false;
-            }
-            let split = args.len() - pattern_args.len();
-            for (pattern_arg, arg) in pattern_args.iter().zip(&args[split..]) {
-                if !match_type(pattern_arg, arg, subst) {
-                    return false;
-                }
-            }
-            bind(*param, res::Type::App(*head, args[..split].to_vec()), subst)
-        }
-
-        (res::Type::App(res::TypeHead::Var(param), pattern_args), _) => {
-            pattern_args.is_empty() && bind(*param, target.clone(), subst)
-        }
-
-        (
-            res::Type::App(res::TypeHead::Ctor(pattern_id), pattern_args),
-            res::Type::App(res::TypeHead::Ctor(id), args),
-        ) => {
-            pattern_id == id
-                && pattern_args.len() == args.len()
-                && pattern_args
-                    .iter()
-                    .zip(args)
-                    .all(|(pattern_arg, arg)| match_type(pattern_arg, arg, subst))
-        }
-
-        (res::Type::Tuple(pattern_items), res::Type::Tuple(items)) => {
-            pattern_items.len() == items.len()
-                && pattern_items
-                    .iter()
-                    .zip(items)
-                    .all(|(pattern_item, item)| match_type(pattern_item, item, subst))
-        }
-
-        (
-            res::Type::Func(pattern_purity, pattern_arg, pattern_ret),
-            res::Type::Func(purity, arg, ret),
-        ) => {
-            pattern_purity == purity
-                && match_type(pattern_arg, arg, subst)
-                && match_type(pattern_ret, ret, subst)
-        }
-
-        _ => false,
-    }
-}
-
-/// The givens of an item, closed under superclass projection: each is paired with its
-/// derivation relative to the item's own trait constraints.
-fn closed_givens(
-    traits: &IdVec<res::CustomTraitId, kinded::TraitDef>,
-    constrs: &IdVec<res::TraitConstrId, res::TraitApp>,
-) -> Vec<(res::TraitApp, solved::Derivation)> {
-    let mut result: Vec<(res::TraitApp, solved::Derivation)> = constrs
-        .iter()
-        .map(|(constr_id, constr)| (constr.clone(), solved::Derivation::Given(constr_id)))
-        .collect();
-
-    // The superclass graph is acyclic (see `check_traits`), so this terminates.
-    let mut index = 0;
-    while index < result.len() {
-        let (constr, deriv) = result[index].clone();
-        let res::TraitId::Custom(custom) = constr.trait_;
-        let subst = IdVec::from_vec(constr.args.clone());
-        for (super_id, super_) in &traits[custom].supers {
-            result.push((
-                super_.subst(&subst),
-                solved::Derivation::Super(Box::new(deriv.clone()), super_id),
-            ));
-        }
-        index += 1;
-    }
-
-    result
-}
-
-struct Solver<'a> {
+/// The solver's facts, read off the program.
+struct ProgramFacts<'a> {
     program: &'a typed::Program,
-    scope: &'a BTreeSet<res::ImplId>,
-    givens: Vec<(res::TraitApp, solved::Derivation)>,
 }
 
-impl<'a> Solver<'a> {
-    fn impl_def(&self, id: res::ImplId) -> &'a kinded::ImplDef {
-        let res::ImplId::Custom(custom) = id;
-        &self.program.impls[custom]
+impl<'a> Facts for ProgramFacts<'a> {
+    type Error = Infallible;
+
+    fn supers(
+        &self,
+        trait_: res::TraitId,
+    ) -> Result<IdVec<res::SuperId, TraitApp<Derivation<elab::TraitSelfConstr>>>, Infallible> {
+        let res::TraitId::Custom(custom) = trait_;
+        Ok(self.program.traits[custom].supers.clone())
     }
 
-    fn matching_impls(
-        &self,
-        goal: &res::TraitApp,
-        candidates: impl Iterator<Item = res::ImplId>,
-    ) -> Vec<(res::ImplId, IdVec<res::TypeParamId, res::Type>)> {
-        candidates
-            .filter_map(|id| {
-                let def = self.impl_def(id);
-                if def.trait_ != goal.trait_ {
-                    return None;
-                }
-                match_head(&def.head, &goal.args, def.param_kinds.len()).map(|subst| (id, subst))
-            })
+    fn impl_facts(&self, id: res::ImplId) -> Result<ImplFacts, Infallible> {
+        let res::ImplId::Custom(custom) = id;
+        let def = &self.program.impls[custom];
+        Ok(ImplFacts {
+            trait_: def.trait_,
+            num_params: def.param_kinds.count(),
+            head: def.head.clone(),
+            trait_constrs: def.trait_constrs.clone(),
+        })
+    }
+
+    fn impl_supers(&self, id: res::ImplId) -> Result<IdVec<res::SuperId, Derivation>, Infallible> {
+        let res::ImplId::Custom(custom) = id;
+        Ok(self.program.impls[custom].supers.clone())
+    }
+
+    fn all_impls(&self) -> Vec<res::ImplId> {
+        self.program
+            .impls
+            .iter()
+            .map(|(id, _)| res::ImplId::Custom(id))
             .collect()
     }
 
-    fn solve(
-        &self,
-        goal: &res::TraitApp,
-        chain: &mut Vec<res::TraitApp>,
-    ) -> Result<solved::Derivation, RawErrorKind> {
-        if let Some((_, deriv)) = self.givens.iter().find(|(constr, _)| constr == goal) {
-            return Ok(deriv.clone());
+    fn constrained_prefix(&self, id: res::CustomTypeId) -> Count<res::TypeParamId> {
+        self.program.custom_types[id].constrained_prefix()
+    }
+}
+
+fn infallible<T>(result: Result<T, Infallible>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(never) => match never {},
+    }
+}
+
+enum RawErrorKind {
+    Solve(SolveError<res::TraitConstrId, Infallible>),
+    /// Two obligations whose evidence had to agree but does not; the error is located at the
+    /// first, and the message explains both.
+    ConflictingEvidence {
+        located: typed::ObligationId,
+        other: typed::ObligationId,
+        solutions: IdVec<typed::ObligationId, Derivation>,
+    },
+}
+
+struct RawError {
+    kind: RawErrorKind,
+    span: (usize, usize),
+}
+
+enum Memo {
+    Pending,
+    InProgress,
+    Done(Derivation),
+}
+
+/// Resolves the obligations of one definition to derivations, each after the obligations its
+/// goal and evidence refer to.
+struct Resolver<'a> {
+    def: &'a typed::ValDef,
+    facts: &'a ProgramFacts<'a>,
+    solver: &'a Solver<'a, res::TraitConstrId, ProgramFacts<'a>>,
+    solutions: IdVec<typed::ObligationId, Memo>,
+}
+
+impl<'a> Resolver<'a> {
+    fn resolve(&mut self, id: typed::ObligationId) -> Result<Derivation, RawError> {
+        match &self.solutions[id] {
+            Memo::Done(deriv) => return Ok(deriv.clone()),
+            // An obligation's goal and evidence only refer to obligations for smaller
+            // constraints, so the references are acyclic.
+            Memo::InProgress => unreachable!("obligations refer to each other acyclically"),
+            Memo::Pending => {}
         }
+        self.solutions[id] = Memo::InProgress;
 
-        let mut candidates = self.matching_impls(goal, self.scope.iter().copied());
+        let obligation = &self.def.obligations[id];
+        let goal = self.trait_app(&obligation.goal)?;
+        let deriv = match &obligation.evidence {
+            typed::Evidence::Unknown => {
+                let goal = infallible(normalize_trait_app(self.facts, &goal));
+                self.solver
+                    .solve(&goal, &mut Vec::new())
+                    .map_err(|err| RawError {
+                        kind: RawErrorKind::Solve(err),
+                        span: obligation.span,
+                    })?
+            }
+            &typed::Evidence::Given(given) => Derivation::Given(given),
+            typed::Evidence::Impl(impl_id, args, subs) => Derivation::Impl(
+                *impl_id,
+                args.try_map_refs(|_, arg| self.type_(arg))?,
+                subs.try_map_refs(|_, &sub| self.resolve(sub))?,
+            ),
+            &typed::Evidence::Super(inner, index) => {
+                let inner = self.resolve(inner)?;
+                infallible(normalize_derivation(
+                    self.facts,
+                    &Derivation::Super(Box::new(inner), index),
+                ))
+            }
+        };
 
-        match candidates.len() {
-            0 => {
-                let elsewhere = self
-                    .program
-                    .impls
+        self.solutions[id] = Memo::Done(deriv.clone());
+        Ok(deriv)
+    }
+
+    fn type_(&mut self, type_: &Type<typed::ObligationId>) -> Result<elab::Type, RawError> {
+        match type_ {
+            Type::App(head, args) => Ok(Type::App(
+                *head,
+                args.iter()
+                    .map(|arg| self.type_(arg))
+                    .collect::<Result<_, _>>()?,
+            )),
+            Type::Constrained(id, args, evidence) => Ok(Type::Constrained(
+                *id,
+                args.iter()
+                    .map(|arg| self.type_(arg))
+                    .collect::<Result<_, _>>()?,
+                evidence.try_map_refs(|_, &obligation| self.resolve(obligation))?,
+            )),
+            Type::Tuple(items) => Ok(Type::Tuple(
+                items
                     .iter()
-                    .map(|(id, _)| res::ImplId::Custom(id))
-                    .filter(|id| !self.scope.contains(id));
-                let importable = self
-                    .matching_impls(goal, elsewhere)
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect();
-                Err(RawErrorKind::NoImpl {
-                    goal: goal.clone(),
-                    chain: chain.clone(),
-                    importable,
-                })
-            }
-
-            1 => {
-                let (id, subst) = candidates.pop().unwrap();
-                let def = self.impl_def(id);
-                chain.push(goal.clone());
-                let subs = def
-                    .trait_constrs
-                    .try_map_refs(|_, constr| self.solve(&constr.subst(&subst), chain));
-                chain.pop();
-                Ok(solved::Derivation::Impl(id, subst, subs?))
-            }
-
-            _ => Err(RawErrorKind::Ambiguous {
-                goal: goal.clone(),
-                candidates: candidates.into_iter().map(|(id, _)| id).collect(),
-            }),
+                    .map(|item| self.type_(item))
+                    .collect::<Result<_, _>>()?,
+            )),
+            Type::Func(purity, arg, ret) => Ok(Type::Func(
+                *purity,
+                Box::new(self.type_(arg)?),
+                Box::new(self.type_(ret)?),
+            )),
         }
+    }
+
+    fn trait_app(
+        &mut self,
+        app: &TraitApp<typed::ObligationId>,
+    ) -> Result<elab::TraitApp, RawError> {
+        Ok(TraitApp {
+            trait_: app.trait_,
+            args: app
+                .args
+                .iter()
+                .map(|arg| self.type_(arg))
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 
@@ -317,83 +319,294 @@ fn render_impl(program: &typed::Program, id: res::ImplId) -> String {
     )
 }
 
+fn render_constr<E>(
+    program: &typed::Program,
+    renderer: &TypeRenderer,
+    params: &IdVec<res::TypeParamId, raw::TypeParam>,
+    constr: &TraitApp<E>,
+) -> String {
+    renderer.render_trait_app(
+        params,
+        &report_type::TraitApp::from_elab(constr),
+        &program.trait_symbols,
+    )
+}
+
+/// Explains where the evidence of an obligation came from, for the conflict error.
+struct Explainer<'a> {
+    program: &'a typed::Program,
+    renderer: &'a TypeRenderer<'a>,
+    params: &'a IdVec<res::TypeParamId, raw::TypeParam>,
+    def: &'a typed::ValDef,
+    solutions: &'a IdVec<typed::ObligationId, Derivation>,
+}
+
+impl Explainer<'_> {
+    fn constr<E>(&self, app: &TraitApp<E>) -> String {
+        render_constr(self.program, self.renderer, self.params, app)
+    }
+
+    fn impl_name(&self, id: res::ImplId) -> String {
+        let res::ImplId::Custom(custom) = id;
+        self.program.impl_symbols[custom].impl_name.0.clone()
+    }
+
+    fn global_name(&self, id: res::GlobalId) -> String {
+        match id {
+            res::GlobalId::Custom(custom) => {
+                format!("'{}'", self.program.val_symbols[custom].val_name.0)
+            }
+            res::GlobalId::Ctor(type_, variant) => {
+                let (_, ctor) = self.renderer.render_ctor(type_, variant);
+                format!("the constructor '{}'", ctor)
+            }
+            res::GlobalId::Intrinsic(_)
+            | res::GlobalId::ArrayOp(_)
+            | res::GlobalId::IoOp(_)
+            | res::GlobalId::Panic => "a builtin".to_owned(),
+        }
+    }
+
+    fn trait_func_name(&self, trait_: res::TraitId, func: res::TraitFuncId) -> String {
+        let res::TraitId::Custom(custom) = trait_;
+        let symbols = &self.program.trait_symbols[custom];
+        format!(
+            "'{}' of the trait '{}'",
+            symbols.func_symbols[func].func_name.0, symbols.trait_name.0
+        )
+    }
+
+    /// The constraint a given-rooted derivation proves.
+    fn given_goal(&self, deriv: &Derivation) -> Option<elab::TraitApp> {
+        match deriv {
+            Derivation::Given(given) => Some(self.def.scheme.trait_constrs[*given].clone()),
+            Derivation::Super(inner, index) => {
+                let inner_goal = self.given_goal(inner)?;
+                let res::TraitId::Custom(custom) = inner_goal.trait_;
+                let super_ = &self.program.traits[custom].supers[*index];
+                let types = IdVec::from_vec(inner_goal.args);
+                let subst = Subst {
+                    types: &types,
+                    givens: &|TraitSelfConstr| (**inner).clone(),
+                };
+                Some(subst.trait_app(super_))
+            }
+            Derivation::Impl(_, _, _) => None,
+        }
+    }
+
+    /// Names a derivation: an impl, or a given and the superclasses projected out of it.
+    fn describe(&self, deriv: &Derivation) -> String {
+        match deriv {
+            Derivation::Given(given) => format!(
+                "the constraint '{}' of this definition",
+                self.constr(&self.def.scheme.trait_constrs[*given])
+            ),
+            Derivation::Impl(id, _, _) => format!("the impl '{}'", self.impl_name(*id)),
+            Derivation::Super(inner, _) => {
+                let goal = self
+                    .given_goal(deriv)
+                    .expect("a normalized projection is out of a given");
+                format!(
+                    "the '{}' superclass of {}",
+                    self.constr(&goal),
+                    self.describe(inner)
+                )
+            }
+        }
+    }
+
+    /// What required the constraint of an obligation that was solved in scope.
+    fn subject(&self, origin: &typed::Origin) -> String {
+        match origin {
+            typed::Origin::OwnConstr(_) => "this definition".to_owned(),
+            typed::Origin::GlobalConstr(id, _) => self.global_name(*id),
+            typed::Origin::TraitFuncTrait(trait_, func)
+            | typed::Origin::TraitFuncConstr(trait_, func, _) => {
+                self.trait_func_name(*trait_, *func)
+            }
+            typed::Origin::Carried(signature) => self.source(*signature),
+            typed::Origin::Annotation(_, _) => "this type annotation".to_owned(),
+            typed::Origin::Pattern(_, _) => "this pattern".to_owned(),
+        }
+    }
+
+    /// The signature that fixed the evidence an obligation carries.
+    fn source(&self, signature: typed::Signature) -> String {
+        match signature {
+            typed::Signature::Own => "this definition's own signature".to_owned(),
+            typed::Signature::Global(id) => {
+                format!("the declared type of {}", self.global_name(id))
+            }
+            typed::Signature::TraitFunc(trait_, func) => {
+                format!("the signature of {}", self.trait_func_name(trait_, func))
+            }
+            typed::Signature::TypeDecl(id) => format!(
+                "the declaration of the type '{}'",
+                self.program.custom_type_symbols[id].type_name.0
+            ),
+        }
+    }
+
+    /// Describes the evidence an obligation ended up with, and why.
+    fn explain(&self, id: typed::ObligationId) -> String {
+        let obligation = &self.def.obligations[id];
+        let solution = &self.solutions[id];
+        let goal = self.constr(&obligation.goal);
+        match &obligation.evidence {
+            typed::Evidence::Unknown => match solution {
+                Derivation::Impl(_, _, _) => format!(
+                    "{}, the impl in scope for the '{}' that {} requires",
+                    self.describe(solution),
+                    goal,
+                    self.subject(&obligation.origin)
+                ),
+                _ => format!(
+                    "{}, which provides the '{}' that {} requires",
+                    self.describe(solution),
+                    goal,
+                    self.subject(&obligation.origin)
+                ),
+            },
+            typed::Evidence::Given(_) => self.describe(solution),
+            typed::Evidence::Impl(_, _, _) => match &obligation.origin {
+                typed::Origin::Carried(signature) => format!(
+                    "{}, as {} specifies",
+                    self.describe(solution),
+                    self.source(*signature)
+                ),
+                _ => self.describe(solution),
+            },
+            typed::Evidence::Super(inner, _) => {
+                let projection = format!(
+                    "the '{}' superclass evidence of {}",
+                    goal,
+                    self.explain(*inner)
+                );
+                match solution {
+                    Derivation::Impl(_, _, _) => {
+                        format!("{}, {}", self.describe(solution), projection)
+                    }
+                    _ => projection,
+                }
+            }
+        }
+    }
+}
+
 fn render_error(
     program: &typed::Program,
     renderer: &TypeRenderer,
     params: &IdVec<res::TypeParamId, raw::TypeParam>,
+    def: &typed::ValDef,
     err: RawErrorKind,
 ) -> ErrorKind {
-    let render_constr = |constr: &res::TraitApp| {
-        renderer.render_trait_app(
-            params,
-            &report_type::TraitApp::from_resolved(constr),
-            &program.trait_symbols,
-        )
-    };
+    let render_goal = |constr: &elab::TraitApp| render_constr(program, renderer, params, constr);
     match err {
-        RawErrorKind::NoImpl {
+        RawErrorKind::Solve(SolveError::NoImpl {
             goal,
             chain,
             importable,
-        } => ErrorKind::NoImpl {
-            constr: render_constr(&goal),
-            required_by: chain.iter().rev().map(render_constr).collect(),
+        }) => ErrorKind::NoImpl {
+            constr: render_goal(&goal),
+            required_by: chain.iter().rev().map(render_goal).collect(),
             importable: importable
                 .into_iter()
                 .map(|id| render_impl(program, id))
                 .collect(),
         },
-        RawErrorKind::Ambiguous { goal, candidates } => ErrorKind::AmbiguousImpl {
-            constr: render_constr(&goal),
-            candidates: candidates
-                .into_iter()
-                .map(|id| render_impl(program, id))
-                .collect(),
+        RawErrorKind::Solve(SolveError::Ambiguous { goal, candidates }) => {
+            ErrorKind::AmbiguousImpl {
+                constr: render_goal(&goal),
+                candidates: candidates
+                    .into_iter()
+                    .map(|id| render_impl(program, id))
+                    .collect(),
+            }
+        }
+        RawErrorKind::Solve(SolveError::CyclicConstrs { impl_ }) => ErrorKind::CyclicConstrs {
+            impl_: render_impl(program, impl_),
         },
+        RawErrorKind::Solve(SolveError::Facts(never)) => match never {},
+        RawErrorKind::ConflictingEvidence {
+            located,
+            other,
+            solutions,
+        } => {
+            let explainer = Explainer {
+                program,
+                renderer,
+                params,
+                def,
+                solutions: &solutions,
+            };
+            ErrorKind::ConflictingEvidence {
+                constr: render_constr(program, renderer, params, &def.obligations[located].goal),
+                located: explainer.explain(located),
+                other: explainer.explain(other),
+            }
+        }
     }
 }
 
-fn convert_pattern(pat: &typed::Pattern) -> solved::Pattern {
+/// Replaces every obligation in a body type by its derivation.
+fn subst_type(
+    type_: &typed::Type,
+    solutions: &IdVec<typed::ObligationId, Derivation>,
+) -> solved::Type {
+    type_.map_evidence(&mut |&obligation| solutions[obligation].clone())
+}
+
+fn subst_pattern(
+    pat: &typed::Pattern,
+    solutions: &IdVec<typed::ObligationId, Derivation>,
+) -> solved::Pattern {
     match pat {
-        typed::Pattern::Any(type_) => solved::Pattern::Any(type_.clone()),
-        typed::Pattern::Var(type_) => solved::Pattern::Var(type_.clone()),
-        typed::Pattern::Tuple(items) => {
-            solved::Pattern::Tuple(items.iter().map(convert_pattern).collect())
-        }
+        typed::Pattern::Any(type_) => solved::Pattern::Any(subst_type(type_, solutions)),
+        typed::Pattern::Var(type_) => solved::Pattern::Var(subst_type(type_, solutions)),
+        typed::Pattern::Tuple(items) => solved::Pattern::Tuple(
+            items
+                .iter()
+                .map(|item| subst_pattern(item, solutions))
+                .collect(),
+        ),
         typed::Pattern::Ctor(id, args, variant, content) => solved::Pattern::Ctor(
             *id,
-            args.clone(),
+            args.iter().map(|arg| subst_type(arg, solutions)).collect(),
             *variant,
             content
                 .as_ref()
-                .map(|content| Box::new(convert_pattern(content))),
+                .map(|content| Box::new(subst_pattern(content, solutions))),
         ),
         &typed::Pattern::ByteConst(val) => solved::Pattern::ByteConst(val),
         &typed::Pattern::IntConst(val) => solved::Pattern::IntConst(val),
         &typed::Pattern::FloatConst(val) => solved::Pattern::FloatConst(val),
-        &typed::Pattern::Span(lo, hi, ref content) => {
-            solved::Pattern::Span(lo, hi, Box::new(convert_pattern(content)))
+        typed::Pattern::Span(lo, hi, content) => {
+            solved::Pattern::Span(*lo, *hi, Box::new(subst_pattern(content, solutions)))
         }
     }
 }
 
+/// Replaces every obligation in a body by its derivation.
 fn subst_expr(
     expr: &typed::Expr,
-    solutions: &IdVec<typed::ObligationId, solved::Derivation>,
+    solutions: &IdVec<typed::ObligationId, Derivation>,
 ) -> solved::Expr {
     match expr {
         typed::Expr::Global(id, type_args, obligations) => solved::Expr::Global(
             *id,
-            type_args.clone(),
+            type_args.map_refs(|_, arg| subst_type(arg, solutions)),
             obligations.map_refs(|_, &obligation| solutions[obligation].clone()),
         ),
         typed::Expr::TraitFunc(trait_, func, inst) => solved::Expr::TraitFunc(
             *trait_,
             *func,
-            res::TraitFuncInst {
-                trait_args: inst.trait_args.clone(),
+            elab::TraitFuncInst {
+                trait_args: inst
+                    .trait_args
+                    .map_refs(|_, arg| subst_type(arg, solutions)),
                 trait_deriv: solutions[inst.trait_deriv].clone(),
-                func_args: inst.func_args.clone(),
+                func_args: inst.func_args.map_refs(|_, arg| subst_type(arg, solutions)),
                 func_derivs: inst
                     .func_derivs
                     .map_refs(|_, &obligation| solutions[obligation].clone()),
@@ -408,9 +621,9 @@ fn subst_expr(
         ),
         typed::Expr::Lam(purity, arg_type, ret_type, pat, body, prof_id) => solved::Expr::Lam(
             *purity,
-            arg_type.clone(),
-            ret_type.clone(),
-            convert_pattern(pat),
+            subst_type(arg_type, solutions),
+            subst_type(ret_type, solutions),
+            subst_pattern(pat, solutions),
             Box::new(subst_expr(body, solutions)),
             *prof_id,
         ),
@@ -419,23 +632,23 @@ fn subst_expr(
             Box::new(subst_expr(func, solutions)),
             Box::new(subst_expr(arg, solutions)),
         ),
-        typed::Expr::Match(discrim, cases, result_type) => solved::Expr::Match(
+        typed::Expr::Match(discrim, cases, type_) => solved::Expr::Match(
             Box::new(subst_expr(discrim, solutions)),
             cases
                 .iter()
-                .map(|(pat, body)| (convert_pattern(pat), subst_expr(body, solutions)))
+                .map(|(pat, body)| (subst_pattern(pat, solutions), subst_expr(body, solutions)))
                 .collect(),
-            result_type.clone(),
+            subst_type(type_, solutions),
         ),
         typed::Expr::LetMany(bindings, body) => solved::Expr::LetMany(
             bindings
                 .iter()
-                .map(|(lhs, rhs)| (convert_pattern(lhs), subst_expr(rhs, solutions)))
+                .map(|(pat, rhs)| (subst_pattern(pat, solutions), subst_expr(rhs, solutions)))
                 .collect(),
             Box::new(subst_expr(body, solutions)),
         ),
         typed::Expr::ArrayLit(type_, items) => solved::Expr::ArrayLit(
-            type_.clone(),
+            subst_type(type_, solutions),
             items
                 .iter()
                 .map(|item| subst_expr(item, solutions))
@@ -444,81 +657,94 @@ fn subst_expr(
         &typed::Expr::ByteLit(val) => solved::Expr::ByteLit(val),
         &typed::Expr::IntLit(val) => solved::Expr::IntLit(val),
         &typed::Expr::FloatLit(val) => solved::Expr::FloatLit(val),
-        &typed::Expr::Span(lo, hi, ref body) => {
-            solved::Expr::Span(lo, hi, Box::new(subst_expr(body, solutions)))
+        typed::Expr::Span(lo, hi, body) => {
+            solved::Expr::Span(*lo, *hi, Box::new(subst_expr(body, solutions)))
         }
     }
 }
 
-pub fn solve_traits_in_bodies(program: typed::Program) -> Result<solved::Program, Error> {
-    let (impls, vals) = {
-        let renderer = TypeRenderer::new(&program.mod_symbols, &program.custom_type_symbols);
+fn solve_def(
+    program: &typed::Program,
+    facts: &ProgramFacts,
+    val_id: res::CustomGlobalId,
+    def: &typed::ValDef,
+) -> Result<solved::ValDef, RawError> {
+    let symbols = &program.val_symbols[val_id];
+    let givens = infallible(closed_givens(
+        facts,
+        def.scheme
+            .trait_constrs
+            .iter()
+            .map(|(given, constr)| (constr.clone(), Derivation::Given(given)))
+            .collect(),
+    ));
+    let solver = Solver {
+        facts,
+        scope: &program.impl_scope[symbols.mod_],
+        givens: &givens,
+    };
+    let mut resolver = Resolver {
+        def,
+        facts,
+        solver: &solver,
+        solutions: def.obligations.map_refs(|_, _| Memo::Pending),
+    };
 
-        let impls = program.impls.try_map_refs(|impl_id, def| {
-            let symbols = &program.impl_symbols[impl_id];
-            let file = &program.mod_symbols[symbols.mod_].file;
-            let solver = Solver {
-                program: &program,
-                scope: &program.impl_scope[symbols.mod_],
-                givens: closed_givens(&program.traits, &def.trait_constrs),
+    let solutions = def.obligations.try_map_refs(|id, _| resolver.resolve(id))?;
+
+    // The derivations are normalized, so structural equality is equality of evidence.
+    for &(expected, actual) in &def.evidence_equations {
+        if solutions[expected] != solutions[actual] {
+            // Point at a side that arose in the body if there is one, since an obligation from
+            // the definition's own signature is located at the whole definition.
+            let from_own_signature = |id: typed::ObligationId| {
+                matches!(
+                    def.obligations[id].origin,
+                    typed::Origin::OwnConstr(_) | typed::Origin::Carried(typed::Signature::Own)
+                )
             };
+            let (located, other) = if from_own_signature(actual) && !from_own_signature(expected) {
+                (expected, actual)
+            } else {
+                (actual, expected)
+            };
+            return Err(RawError {
+                kind: RawErrorKind::ConflictingEvidence {
+                    located,
+                    other,
+                    solutions: solutions.clone(),
+                },
+                span: def.obligations[located].span,
+            });
+        }
+    }
 
-            let res::TraitId::Custom(custom_trait) = def.trait_;
-            let head_subst = IdVec::from_vec(def.head.clone());
-            let supers = program.traits[custom_trait]
-                .supers
-                .try_map_refs(|_, super_| {
-                    solver
-                        .solve(&super_.subst(&head_subst), &mut Vec::new())
-                        .map_err(|err| {
-                            let kind =
-                                render_error(&program, &renderer, &symbols.type_param_names, err);
-                            let (lo, hi) = symbols.head_span;
-                            Error(locate_path(file)(locate_span(lo, hi)(kind.into())))
-                        })
-                })?;
+    Ok(solved::ValDef {
+        scheme: def.scheme.clone(),
+        body: subst_expr(&def.body, &solutions),
+    })
+}
 
-            Ok(solved::ImplDef {
-                trait_: def.trait_,
-                param_kinds: def.param_kinds.clone(),
-                head: def.head.clone(),
-                trait_constrs: def.trait_constrs.clone(),
-                supers,
-                funcs: def.funcs.clone(),
-            })
-        })?;
+pub fn solve_traits_in_bodies(program: typed::Program) -> Result<solved::Program, Error> {
+    let vals = {
+        let renderer = TypeRenderer::new(&program.mod_symbols, &program.custom_type_symbols);
+        let facts = ProgramFacts { program: &program };
 
-        let vals = program.vals.try_map_refs(|val_id, def| {
+        program.vals.try_map_refs(|val_id, def| {
             let symbols = &program.val_symbols[val_id];
             let file = &program.mod_symbols[symbols.mod_].file;
-            let solver = Solver {
-                program: &program,
-                scope: &program.impl_scope[symbols.mod_],
-                givens: closed_givens(&program.traits, &def.scheme.trait_constrs),
-            };
-
-            let solutions = def.obligations.try_map_refs(|_, obligation| {
-                solver
-                    .solve(&obligation.trait_constr, &mut Vec::new())
-                    .map_err(|err| {
-                        let kind =
-                            render_error(&program, &renderer, &symbols.type_param_names, err);
-                        let mut located: Locate<ErrorKind> = kind.into();
-                        located = locate_path(file)(located);
-                        if let Some((lo, hi)) = obligation.span {
-                            located = locate_span(lo, hi)(located);
-                        }
-                        Error(located)
-                    })
-            })?;
-
-            Ok(solved::ValDef {
-                scheme: def.scheme.clone(),
-                body: subst_expr(&def.body, &solutions),
+            solve_def(&program, &facts, val_id, def).map_err(|err| {
+                let kind = render_error(
+                    &program,
+                    &renderer,
+                    &symbols.type_param_names,
+                    def,
+                    err.kind,
+                );
+                let (lo, hi) = err.span;
+                Error(locate_path(file)(locate_span(lo, hi)(kind.into())))
             })
-        })?;
-
-        (impls, vals)
+        })?
     };
 
     Ok(solved::Program {
@@ -530,7 +756,7 @@ pub fn solve_traits_in_bodies(program: typed::Program) -> Result<solved::Program
         val_symbols: program.val_symbols,
         traits: program.traits,
         trait_symbols: program.trait_symbols,
-        impls,
+        impls: program.impls,
         impl_symbols: program.impl_symbols,
         main: program.main,
     })

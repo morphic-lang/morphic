@@ -1,0 +1,15 @@
+// expect-error: No Impl in Scope @ 12:11
+trait Ord a {
+  lt(x: a, y: a): Bool,
+}
+
+pub type Set a where Ord a {
+  pub Set(Array a)
+}
+
+// `Bad` mentions `Set a` without requiring `Ord a` itself, so there is no evidence for it.
+pub type Bad a {
+  pub Bad(Set a)
+}
+
+proc main(): () = ()

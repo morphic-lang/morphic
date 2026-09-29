@@ -1,6 +1,6 @@
 use crate::{
     check_exhaustive, check_main, check_polymorphic_recursion, check_purity, check_traits,
-    kind_infer, resolve, solve_traits_in_bodies, type_infer,
+    kind_infer, resolve, solve_traits_in_bodies, solve_traits_in_signatures, type_infer,
 };
 use morphic_common::file_cache;
 use morphic_common::report_error::{ColorMode, Reportable};
@@ -15,6 +15,7 @@ pub enum Error {
     PurityCheckFailed(check_purity::Error),
     CheckTraitsFailed(check_traits::Error),
     TypeInferFailed(type_infer::Error),
+    SolveSignaturesFailed(solve_traits_in_signatures::Error),
     SolveTraitsFailed(solve_traits_in_bodies::Error),
     CheckExhaustiveFailed(check_exhaustive::Error),
     CheckMainFailed(check_main::Error),
@@ -43,6 +44,7 @@ impl Reportable for Error {
             PurityCheckFailed(err) => err.report(dest, files, color),
             CheckTraitsFailed(err) => err.report(dest, files, color),
             TypeInferFailed(err) => err.report(dest, files, color),
+            SolveSignaturesFailed(err) => err.report(dest, files, color),
             SolveTraitsFailed(err) => err.report(dest, files, color),
             CheckExhaustiveFailed(err) => err.report(dest, files, color),
             CheckMainFailed(err) => writeln!(dest, "{}", err),

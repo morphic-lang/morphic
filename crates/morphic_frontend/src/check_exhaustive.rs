@@ -1,4 +1,4 @@
-use crate::data::kinded_ast as kinded;
+use crate::data::elaborated_ast as elab;
 use crate::data::resolved_ast as res;
 use crate::data::solved_ast as solved;
 use crate::file_cache::FileCache;
@@ -446,7 +446,7 @@ impl DecisionTree {
 
     fn check_exhaustive_rec(
         &self,
-        custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
+        custom_types: &IdVec<res::CustomTypeId, elab::TypeDef>,
         path: Vector<Decision>,
     ) -> Result<(), Vector<Decision>> {
         match self {
@@ -536,7 +536,7 @@ impl DecisionTree {
 
     fn check_exhaustive(
         &self,
-        custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
+        custom_types: &IdVec<res::CustomTypeId, elab::TypeDef>,
     ) -> Result<(), RawError> {
         self.check_exhaustive_rec(custom_types, vector![])
             .map_err(|decisions| {
@@ -548,10 +548,7 @@ impl DecisionTree {
     }
 }
 
-fn num_variants(
-    custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
-    id: res::TypeId,
-) -> usize {
+fn num_variants(custom_types: &IdVec<res::CustomTypeId, elab::TypeDef>, id: res::TypeId) -> usize {
     match id {
         res::TypeId::Bool => 2,
         res::TypeId::Custom(custom_id) => custom_types[custom_id].variants.len(),
@@ -560,7 +557,7 @@ fn num_variants(
 }
 
 fn check_irrefutable_pattern(
-    custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
+    custom_types: &IdVec<res::CustomTypeId, elab::TypeDef>,
     pat: &solved::Pattern,
 ) -> Result<(), RawError> {
     let mut tree = DecisionTree::new();
@@ -575,7 +572,7 @@ fn check_irrefutable_pattern(
 }
 
 fn check_expr(
-    custom_types: &IdVec<res::CustomTypeId, kinded::TypeDef>,
+    custom_types: &IdVec<res::CustomTypeId, elab::TypeDef>,
     expr: &solved::Expr,
 ) -> Result<(), RawError> {
     match expr {
