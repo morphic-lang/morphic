@@ -30,7 +30,7 @@ get_words_rec(x : Array Byte, index: Int, acc: Array String, current_word: Array
     }
   } else {
     let char = Array.get(x, index) in
-    if((char >=& 65b && char <=& 90b) || (char >=& 97b && char <=& 122b)) {
+    if((char >= 65b && char <= 90b) || (char >= 97b && char <= 122b)) {
       // Character is A-Z or a-z, add to current word
       get_words_rec(x, index + 1, acc, Array.push(current_word, char))
     } else {

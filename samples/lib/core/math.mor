@@ -38,10 +38,10 @@ pub pow(a: Int, b: Int): Int =
   pow_rec(1, a, b)
 
 byte_pow_rec(accum: Byte, a: Byte, b: Byte): Byte =
-  if (b =& 0b) {
+  if (b = 0b) {
     accum
   } else {
-    byte_pow_rec(a *& accum, a, b -& 1b)
+    byte_pow_rec(a * accum, a, b - 1b)
   }
 
 pub byte_pow(a: Byte, b: Byte): Byte =
@@ -51,26 +51,26 @@ pub float_pow(base: Float, exp: Int): Float =
   if exp = 0 {
     1.0
   } else if exp < 0 {
-    1.0 /. float_pow(base, -exp)
+    1.0 / float_pow(base, -exp)
   } else if int_bit_and(exp, 1) = 0 {
-    float_pow(base *. base, int_shift_right(exp, 1))
+    float_pow(base * base, int_shift_right(exp, 1))
   } else {
-    base *. float_pow(base *. base, int_shift_right(exp, 1))
+    base * float_pow(base * base, int_shift_right(exp, 1))
   }
 
 int_to_float_rec(accum: Float, n: Int): Float =
   if n = 0 {
     accum
   } else if int_bit_and(n, 1) = 0 {
-    int_to_float_rec(accum *. 2.0, int_shift_right(n, 1))
+    int_to_float_rec(accum * 2.0, int_shift_right(n, 1))
   } else {
-    int_to_float_rec(accum *. 2.0 +. 1.0, int_shift_right(n, 1))
+    int_to_float_rec(accum * 2.0 + 1.0, int_shift_right(n, 1))
   }
 
 // TODO: This needs to be an intrinsic!
 pub int_to_float(n: Int): Float =
   if n < 0 {
-    -.int_to_float_rec(0.0, -n)
+    -int_to_float_rec(0.0, -n)
   } else {
     int_to_float_rec(0.0, n)
   }

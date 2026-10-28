@@ -1,0 +1,10 @@
+// expect-error: Ambiguous Impl @ 9:11
+// The builtin impls are in scope everywhere unless covered up by an impl of the same name, so a
+// second impl of `Add Int` under another name makes `+` ambiguous at `Int`.
+impl AddIntDouble of Add Int {
+  add(x: Int, y: Int): Int = x * 2
+}
+
+proc main(): () =
+  let n = 1 + 2 in
+  ()

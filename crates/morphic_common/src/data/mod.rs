@@ -16,6 +16,8 @@ pub mod kinded_ast;
 
 pub mod elaborated_ast;
 
+pub mod builtin_traits;
+
 pub mod typed_ast;
 
 pub mod solved_ast;

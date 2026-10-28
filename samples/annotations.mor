@@ -12,7 +12,7 @@ proc main(): () =
   // Without the annotation, `id` would be ambiguous here because `const` ignores its argument.
   let f: Int -> Int = id in
   let _: () = () in
-  if twice(inc, f(a)) = 3 && b =. 2.0 {
+  if twice(inc, f(a)) = 3 && b = 2.0 {
     do output("ok\n")
   } else {
     do output("wrong\n")

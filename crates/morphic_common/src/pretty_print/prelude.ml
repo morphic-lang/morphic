@@ -3,6 +3,7 @@ let intrinsic_SubByte ((x, y) : char * char): char = Char.chr (((Char.code x - C
 let intrinsic_MulByte ((x, y) : char * char): char = Char.chr (((Char.code x * Char.code y) mod 256 + 256) mod 256)
 let intrinsic_DivByte ((x, y) : char * char): char = Char.chr (((Char.code x / Char.code y) mod 256 + 256) mod 256)
 let intrinsic_NegByte (x: char) = Char.chr (((-Char.code x) mod 256 + 256) mod 256)
+let intrinsic_EqBool ((x, y) : bool * bool): bool = x = y
 let intrinsic_EqByte ((x, y) : char * char): bool = x = y
 let intrinsic_LtByte ((x, y) : char * char): bool = x < y
 let intrinsic_LteByte ((x, y) : char * char): bool = x <= y
@@ -37,6 +38,7 @@ let intrinsic_IntShiftRight ((x, y) : int64 * int64): int64 = Int64.shift_right_
 let intrinsic_IntBitAnd ((x, y) : int64 * int64): int64 = Int64.logand x y
 let intrinsic_IntBitOr ((x, y) : int64 * int64): int64 = Int64.logor x y
 let intrinsic_IntBitXor ((x, y) : int64 * int64): int64 = Int64.logxor x y
+let intrinsic_IntBitNot (x : int64): int64 = Int64.lognot x
 let intrinsic_IntCtpop (x : int64) : int64 =
     let rec count_bits n acc =
         if n >= 64 then acc

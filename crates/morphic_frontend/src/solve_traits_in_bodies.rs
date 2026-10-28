@@ -12,6 +12,9 @@
 //! Equations between evidence that inference had to defer, because a superclass projection is
 //! not injective, are checked once everything is solved.
 
+use crate::data::builtin_traits::{
+    builtin_impl_supers, elab_trait_def, trait_func_name, trait_name,
+};
 use crate::data::elaborated_ast as elab;
 use crate::data::elaborated_ast::{Derivation, Subst, TraitApp, TraitSelfConstr, Type};
 use crate::data::raw_ast as raw;
@@ -21,7 +24,8 @@ use crate::data::typed_ast as typed;
 use crate::file_cache::FileCache;
 use crate::report_type::{self, TypeRenderer};
 use crate::trait_solver::{
-    closed_givens, normalize_derivation, normalize_trait_app, Facts, ImplFacts, SolveError, Solver,
+    closed_givens, impl_facts_of, normalize_derivation, normalize_trait_app, Facts, ImplFacts,
+    SolveError, Solver,
 };
 use id_collections::{Count, IdVec};
 use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
@@ -34,6 +38,7 @@ pub enum ErrorKind {
         constr: String,
         required_by: Vec<String>,
         importable: Vec<String>,
+        covered: Vec<String>,
     },
     AmbiguousImpl {
         constr: String,
@@ -61,6 +66,24 @@ fn indented_list(items: &[String]) -> String {
         .join("\n")
 }
 
+/// A note that the builtin impls `covered`, which is not empty, would satisfy a constraint but
+/// are covered up.
+fn covered_up_note(covered: &[String]) -> String {
+    if let [name] = covered {
+        format!(
+            "The builtin impl\n\n    {}\n\nwould satisfy it, but an impl of the same name \
+             declared or imported in the current module covers it up.\n\n",
+            name
+        )
+    } else {
+        format!(
+            "These builtin impls would satisfy it, but impls of the same names declared or \
+             imported in the current module cover them up:\n\n{}\n\n",
+            indented_list(covered)
+        )
+    }
+}
+
 impl Reportable for Error {
     fn report(
         &self,
@@ -73,6 +96,7 @@ impl Reportable for Error {
                 constr,
                 required_by,
                 importable,
+                covered,
             } => {
                 let mut message = format!(
                     "I couldn't find an impl in scope for the trait constraint\n\n    {}\n\n",
@@ -90,9 +114,13 @@ impl Reportable for Error {
                         indented_list(importable)
                     ));
                 }
+                if !covered.is_empty() {
+                    message.push_str(&covered_up_note(covered));
+                }
                 message.push_str(
-                    "Only the impls declared or imported in the current module are considered, \
-                     together with the trait constraints of the enclosing definition.",
+                    "Only the builtin impls and the impls declared or imported in the current \
+                     module are considered, together with the trait constraints of the enclosing \
+                     definition.",
                 );
                 ("No Impl in Scope", message)
             }
@@ -152,24 +180,18 @@ impl<'a> Facts for ProgramFacts<'a> {
         &self,
         trait_: res::TraitId,
     ) -> Result<IdVec<res::SuperId, TraitApp<Derivation<elab::TraitSelfConstr>>>, Infallible> {
-        let res::TraitId::Custom(custom) = trait_;
-        Ok(self.program.traits[custom].supers.clone())
+        Ok(elab_trait_def(&self.program.traits, trait_).supers.clone())
     }
 
     fn impl_facts(&self, id: res::ImplId) -> Result<ImplFacts, Infallible> {
-        let res::ImplId::Custom(custom) = id;
-        let def = &self.program.impls[custom];
-        Ok(ImplFacts {
-            trait_: def.trait_,
-            num_params: def.param_kinds.count(),
-            head: def.head.clone(),
-            trait_constrs: def.trait_constrs.clone(),
-        })
+        Ok(impl_facts_of(&self.program.impls, id))
     }
 
     fn impl_supers(&self, id: res::ImplId) -> Result<IdVec<res::SuperId, Derivation>, Infallible> {
-        let res::ImplId::Custom(custom) = id;
-        Ok(self.program.impls[custom].supers.clone())
+        match id {
+            res::ImplId::Builtin(builtin) => Ok(builtin_impl_supers(builtin)),
+            res::ImplId::Custom(custom) => Ok(self.program.impls[custom].supers.clone()),
+        }
     }
 
     fn all_impls(&self) -> Vec<res::ImplId> {
@@ -310,13 +332,17 @@ impl<'a> Resolver<'a> {
 }
 
 fn render_impl(program: &typed::Program, id: res::ImplId) -> String {
-    let res::ImplId::Custom(custom) = id;
-    let symbols = &program.impl_symbols[custom];
-    format!(
-        "{} (in {})",
-        symbols.impl_name.0,
-        program.mod_symbols[symbols.mod_].file.display()
-    )
+    match id {
+        res::ImplId::Builtin(builtin) => builtin.name(),
+        res::ImplId::Custom(custom) => {
+            let symbols = &program.impl_symbols[custom];
+            format!(
+                "{} (in {})",
+                symbols.impl_name.0,
+                program.mod_symbols[symbols.mod_].file.display()
+            )
+        }
+    }
 }
 
 fn render_constr<E>(
@@ -347,8 +373,10 @@ impl Explainer<'_> {
     }
 
     fn impl_name(&self, id: res::ImplId) -> String {
-        let res::ImplId::Custom(custom) = id;
-        self.program.impl_symbols[custom].impl_name.0.clone()
+        match id {
+            res::ImplId::Builtin(builtin) => builtin.name(),
+            res::ImplId::Custom(custom) => self.program.impl_symbols[custom].impl_name.0.clone(),
+        }
     }
 
     fn global_name(&self, id: res::GlobalId) -> String {
@@ -368,11 +396,10 @@ impl Explainer<'_> {
     }
 
     fn trait_func_name(&self, trait_: res::TraitId, func: res::TraitFuncId) -> String {
-        let res::TraitId::Custom(custom) = trait_;
-        let symbols = &self.program.trait_symbols[custom];
         format!(
             "'{}' of the trait '{}'",
-            symbols.func_symbols[func].func_name.0, symbols.trait_name.0
+            trait_func_name(&self.program.trait_symbols, trait_, func),
+            trait_name(&self.program.trait_symbols, trait_)
         )
     }
 
@@ -382,8 +409,8 @@ impl Explainer<'_> {
             Derivation::Given(given) => Some(self.def.scheme.trait_constrs[*given].clone()),
             Derivation::Super(inner, index) => {
                 let inner_goal = self.given_goal(inner)?;
-                let res::TraitId::Custom(custom) = inner_goal.trait_;
-                let super_ = &self.program.traits[custom].supers[*index];
+                let super_ =
+                    &elab_trait_def(&self.program.traits, inner_goal.trait_).supers[*index];
                 let types = IdVec::from_vec(inner_goal.args);
                 let subst = Subst {
                     types: &types,
@@ -507,10 +534,15 @@ fn render_error(
             goal,
             chain,
             importable,
+            covered,
         }) => ErrorKind::NoImpl {
             constr: render_goal(&goal),
             required_by: chain.iter().rev().map(render_goal).collect(),
             importable: importable
+                .into_iter()
+                .map(|id| render_impl(program, id))
+                .collect(),
+            covered: covered
                 .into_iter()
                 .map(|id| render_impl(program, id))
                 .collect(),

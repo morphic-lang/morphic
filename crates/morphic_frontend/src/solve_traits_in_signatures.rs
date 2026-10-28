@@ -11,6 +11,7 @@
 //! Impl heads, type constraints and trait superclasses are elaborated on demand, since solving may
 //! need them in any order, and a dependency of one on itself is an error.
 
+use crate::data::builtin_traits::builtin_impl_supers;
 use crate::data::elaborated_ast as elab;
 use crate::data::elaborated_ast::{Derivation, Subst, TraitApp, TraitGiven, TraitSelfConstr, Type};
 use crate::data::kinded_ast as kinded;
@@ -23,8 +24,8 @@ use crate::data::resolved_ast::{
 use crate::file_cache::FileCache;
 use crate::report_type::{self, TypeRenderer};
 use crate::trait_solver::{
-    add_referenced_givens, closed_givens, normalize_trait_app, normalize_type, Facts, ImplFacts,
-    SolveError, Solver,
+    add_referenced_givens, builtin_impl_facts, closed_givens, normalize_trait_app, normalize_type,
+    Facts, ImplFacts, SolveError, Solver,
 };
 use id_collections::{Count, Id, IdVec};
 use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
@@ -33,14 +34,44 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
+/// Why an item's signature needs evidence for a trait constraint.
+#[derive(Clone, Debug)]
+pub enum Need {
+    /// A type in the signature mentions a constrained type constructor.
+    ConstrainedType,
+    /// The trait the named impl implements has the constraint as a superclass.
+    ImplSuper { impl_: String },
+}
+
+impl Need {
+    /// Describes the need for evidence for `constr`, up to a clause saying what went wrong.
+    fn describe(&self, constr: &str) -> String {
+        match self {
+            Need::ConstrainedType => format!(
+                "This type mentions a type constructor with trait constraints, so it needs \
+                 evidence for the trait constraint\n\n    {}\n\n",
+                constr
+            ),
+            Need::ImplSuper { impl_ } => format!(
+                "The impl '{}' needs evidence for the superclass trait constraint\n\n    {}\n\nof \
+                 the trait it implements, ",
+                impl_, constr
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ErrorKind {
     NoImpl {
+        need: Need,
         constr: String,
         required_by: Vec<String>,
         importable: Vec<String>,
+        covered: Vec<String>,
     },
     AmbiguousImpl {
+        need: Need,
         constr: String,
         candidates: Vec<String>,
     },
@@ -68,6 +99,24 @@ fn indented_list(items: &[String]) -> String {
         .join("\n")
 }
 
+/// A note that the builtin impls `covered`, which is not empty, would satisfy a constraint but
+/// are covered up.
+fn covered_up_note(covered: &[String]) -> String {
+    if let [name] = covered {
+        format!(
+            "The builtin impl\n\n    {}\n\nwould satisfy it, but an impl of the same name \
+             declared or imported in the current module covers it up.\n\n",
+            name
+        )
+    } else {
+        format!(
+            "These builtin impls would satisfy it, but impls of the same names declared or \
+             imported in the current module cover them up:\n\n{}\n\n",
+            indented_list(covered)
+        )
+    }
+}
+
 impl Reportable for Error {
     fn report(
         &self,
@@ -77,16 +126,14 @@ impl Reportable for Error {
     ) -> io::Result<()> {
         self.0.report_with(dest, files, color, |err| match err {
             ErrorKind::NoImpl {
+                need,
                 constr,
                 required_by,
                 importable,
+                covered,
             } => {
-                let mut message = format!(
-                    "This type mentions a type constructor with trait constraints, so it needs evidence \
-                     for the trait constraint\n\n    {}\n\nbut I couldn't find an impl in scope \
-                     for it.\n\n",
-                    constr
-                );
+                let mut message = need.describe(constr);
+                message.push_str("but I couldn't find an impl in scope for it.\n\n");
                 if !required_by.is_empty() {
                     message.push_str(&format!(
                         "It is needed in turn by:\n\n{}\n\n",
@@ -99,21 +146,27 @@ impl Reportable for Error {
                         indented_list(importable)
                     ));
                 }
+                if !covered.is_empty() {
+                    message.push_str(&covered_up_note(covered));
+                }
                 message.push_str(
-                    "Only the impls declared or imported in the current module are considered, \
-                     together with the trait constraints of the enclosing item that mention no \
-                     constrained type.",
+                    "Only the builtin impls and the impls declared or imported in the current \
+                     module are considered, together with the trait constraints of the enclosing \
+                     item that mention no constrained type.",
                 );
                 ("No Impl in Scope", message)
             }
 
-            ErrorKind::AmbiguousImpl { constr, candidates } => (
+            ErrorKind::AmbiguousImpl {
+                need,
+                constr,
+                candidates,
+            } => (
                 "Ambiguous Impl",
                 format!(
-                    "This type needs evidence for the trait constraint\n\n    {}\n\nbut more \
-                     than one impl in scope matches it, namely:\n\n{}\n\nExactly one impl has to \
-                     match; adjust which impls are imported so that only one does.",
-                    constr,
+                    "{}but more than one impl in scope matches it, namely:\n\n{}\n\nExactly one \
+                     impl has to match; adjust which impls are imported so that only one does.",
+                    need.describe(constr),
                     indented_list(candidates)
                 ),
             ),
@@ -162,11 +215,14 @@ impl Reportable for Error {
 #[derive(Clone, Debug)]
 enum RawErrorKind<G> {
     NoImpl {
+        need: Need,
         goal: TraitApp<Derivation<G>>,
         chain: Vec<TraitApp<Derivation<G>>>,
         importable: Vec<ImplId>,
+        covered: Vec<ImplId>,
     },
     Ambiguous {
+        need: Need,
         goal: TraitApp<Derivation<G>>,
         candidates: Vec<ImplId>,
     },
@@ -210,23 +266,31 @@ fn raw<G>(kind: RawErrorKind<G>, path: &[usize]) -> ElabError<G> {
     })
 }
 
-fn raw_solve<G>(err: SolveError<G, Error>, path: &[usize]) -> ElabError<G> {
+fn raw_solve<G>(err: SolveError<G, Error>, path: &[usize], need: Need) -> ElabError<G> {
     match err {
         SolveError::NoImpl {
             goal,
             chain,
             importable,
+            covered,
         } => raw(
             RawErrorKind::NoImpl {
+                need,
                 goal,
                 chain,
                 importable,
+                covered,
             },
             path,
         ),
-        SolveError::Ambiguous { goal, candidates } => {
-            raw(RawErrorKind::Ambiguous { goal, candidates }, path)
-        }
+        SolveError::Ambiguous { goal, candidates } => raw(
+            RawErrorKind::Ambiguous {
+                need,
+                goal,
+                candidates,
+            },
+            path,
+        ),
         SolveError::CyclicConstrs { impl_ } => raw(RawErrorKind::CyclicConstrs { impl_ }, path),
         SolveError::Facts(err) => ElabError::Nested(err),
     }
@@ -292,18 +356,24 @@ impl<'a> Facts for Elaborator<'a> {
         &self,
         trait_: TraitId,
     ) -> Result<IdVec<SuperId, TraitApp<Derivation<TraitSelfConstr>>>, Error> {
-        let TraitId::Custom(custom) = trait_;
-        self.trait_supers_of(custom)
+        match trait_ {
+            TraitId::Builtin(builtin) => Ok(builtin.elab_def().supers.clone()),
+            TraitId::Custom(custom) => self.trait_supers_of(custom),
+        }
     }
 
     fn impl_facts(&self, id: ImplId) -> Result<ImplFacts, Error> {
-        let ImplId::Custom(custom) = id;
-        self.impl_facts_of(custom)
+        match id {
+            ImplId::Builtin(builtin) => Ok(builtin_impl_facts(builtin)),
+            ImplId::Custom(custom) => self.impl_facts_of(custom),
+        }
     }
 
     fn impl_supers(&self, id: ImplId) -> Result<IdVec<SuperId, elab::Derivation>, Error> {
-        let ImplId::Custom(custom) = id;
-        self.impl_supers_of(custom)
+        match id {
+            ImplId::Builtin(builtin) => Ok(builtin_impl_supers(builtin)),
+            ImplId::Custom(custom) => self.impl_supers_of(custom),
+        }
     }
 
     fn all_impls(&self) -> Vec<ImplId> {
@@ -361,13 +431,17 @@ impl<'a> Elaborator<'a> {
     // ---- error rendering ----
 
     fn render_impl(&self, id: ImplId) -> String {
-        let ImplId::Custom(custom) = id;
-        let symbols = &self.program.impl_symbols[custom];
-        format!(
-            "{} (in {})",
-            symbols.impl_name.0,
-            self.file(symbols.mod_).display()
-        )
+        match id {
+            ImplId::Builtin(builtin) => builtin.name(),
+            ImplId::Custom(custom) => {
+                let symbols = &self.program.impl_symbols[custom];
+                format!(
+                    "{} (in {})",
+                    symbols.impl_name.0,
+                    self.file(symbols.mod_).display()
+                )
+            }
+        }
     }
 
     fn render_constr<G>(
@@ -411,10 +485,13 @@ impl<'a> Elaborator<'a> {
             .or(fallback);
         let kind = match kind {
             RawErrorKind::NoImpl {
+                need,
                 goal,
                 chain,
                 importable,
+                covered,
             } => ErrorKind::NoImpl {
+                need,
                 constr: self.render_constr(params, &goal),
                 required_by: chain
                     .iter()
@@ -425,8 +502,14 @@ impl<'a> Elaborator<'a> {
                     .into_iter()
                     .map(|id| self.render_impl(id))
                     .collect(),
+                covered: covered.into_iter().map(|id| self.render_impl(id)).collect(),
             },
-            RawErrorKind::Ambiguous { goal, candidates } => ErrorKind::AmbiguousImpl {
+            RawErrorKind::Ambiguous {
+                need,
+                goal,
+                candidates,
+            } => ErrorKind::AmbiguousImpl {
+                need,
                 constr: self.render_constr(params, &goal),
                 candidates: candidates
                     .into_iter()
@@ -590,7 +673,7 @@ impl<'a> Elaborator<'a> {
         };
         let deriv = solver
             .solve(&goal, &mut Vec::new())
-            .map_err(|err| raw_solve(err, path))?;
+            .map_err(|err| raw_solve(err, path, Need::ConstrainedType))?;
         evidence[constr] = Some(deriv);
         Ok(())
     }
@@ -966,8 +1049,11 @@ impl<'a> Elaborator<'a> {
                 self.supers(facts.trait_)?.try_map_refs(|_, super_| {
                     let goal = normalize_trait_app(self, &at_head.trait_app(super_))?;
                     solver.solve(&goal, &mut Vec::new()).map_err(|err| {
+                        let need = Need::ImplSuper {
+                            impl_: symbols.impl_name.0.clone(),
+                        };
                         self.locate(
-                            raw_solve(err, &[]),
+                            raw_solve(err, &[], need),
                             &symbols.type_param_names,
                             file,
                             None,
@@ -991,8 +1077,10 @@ impl<'a> Elaborator<'a> {
         let def = &self.program.impls[impl_id];
         let facts = self.impl_facts_of(impl_id)?;
         let layout = def.func_layout();
-        let TraitId::Custom(custom_trait) = def.trait_;
-        let trait_layout = self.program.traits[custom_trait].func_layout(func_id);
+        let trait_layout = match def.trait_ {
+            TraitId::Builtin(builtin) => builtin.elab_def().func_layout(func_id),
+            TraitId::Custom(custom_trait) => self.program.traits[custom_trait].func_layout(func_id),
+        };
 
         let types = trait_layout.params(
             IdVec::from_vec(facts.head.clone()),
@@ -1029,8 +1117,11 @@ impl<'a> Elaborator<'a> {
         trait_sigs: &IdVec<CustomTraitId, IdVec<TraitFuncId, elab::TraitFuncSig>>,
     ) -> Result<elab::TypeScheme, Error> {
         if let Some(&(impl_id, func_id)) = self.impl_funcs.get(&val_id) {
-            let TraitId::Custom(custom_trait) = self.program.impls[impl_id].trait_;
-            return self.impl_func_scheme(impl_id, func_id, &trait_sigs[custom_trait][func_id]);
+            let sig = match self.program.impls[impl_id].trait_ {
+                TraitId::Builtin(builtin) => &builtin.elab_def().funcs[func_id],
+                TraitId::Custom(custom_trait) => &trait_sigs[custom_trait][func_id],
+            };
+            return self.impl_func_scheme(impl_id, func_id, sig);
         }
 
         let def = &self.program.vals[val_id];

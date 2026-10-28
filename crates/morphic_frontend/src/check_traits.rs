@@ -99,9 +99,10 @@ fn check_superclasses(program: &res::Program) -> Result<(), Error> {
         edges_out: program.traits.map_refs(|_, def| {
             def.supers
                 .iter()
-                .map(|(_, constr)| {
-                    let res::TraitId::Custom(custom) = constr.trait_;
-                    custom
+                .filter_map(|(_, constr)| match constr.trait_ {
+                    res::TraitId::Custom(custom) => Some(custom),
+                    // A builtin trait has only builtin superclasses, so it closes no cycle.
+                    res::TraitId::Builtin(_) => None,
                 })
                 .collect()
         }),

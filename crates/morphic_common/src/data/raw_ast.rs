@@ -1,4 +1,4 @@
-use crate::data::intrinsics::Intrinsic;
+use crate::data::builtin_traits::BuiltinTraitFunc;
 use crate::data::purity::Purity;
 use crate::data::visibility::Visibility;
 use std::collections::VecDeque;
@@ -154,14 +154,15 @@ pub enum Expr {
     //
     // The `usize`s denote the span of the argument list.
     App(Purity, Box<Expr>, (usize, usize, Vec<Expr>)),
-    // This distinguishes function applications arising from operator expressions from all other
-    // function applications. Without this variant, error messages for `(a + b) <| c` would be
-    // horrible.
-    OpApp(Intrinsic, Box<Expr>),
+    // An operator applied to its operands, which every operator desugars to: the func of a
+    // builtin trait, applied to the operand or to the tuple of operands.  This distinguishes
+    // function applications arising from operator expressions from all other function
+    // applications. Without this variant, error messages for `(a + b) <| c` would be horrible.
+    OpApp(BuiltinTraitFunc, Box<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
     LetMany(VecDeque<(Pattern, Expr)>, Box<Expr>),
 
-    // `!` can be treated as an ordinary `OpApp`, since it follows normal evaluation rules
+    // `&&` and `||` short-circuit, so they are not `OpApp`s; `!` is one, since it does not.
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
 
@@ -177,12 +178,12 @@ pub enum Expr {
     Span(usize, usize, Box<Expr>),
 }
 
-pub fn binop(op: Intrinsic, left: Expr, right: Expr) -> Expr {
-    Expr::OpApp(op, Box::new(Expr::Tuple(vec![left, right])))
+pub fn binop(func: BuiltinTraitFunc, left: Expr, right: Expr) -> Expr {
+    Expr::OpApp(func, Box::new(Expr::Tuple(vec![left, right])))
 }
 
-pub fn unop(op: Intrinsic, arg: Expr) -> Expr {
-    Expr::OpApp(op, Box::new(arg))
+pub fn unop(func: BuiltinTraitFunc, arg: Expr) -> Expr {
+    Expr::OpApp(func, Box::new(arg))
 }
 
 #[derive(Clone, Debug)]

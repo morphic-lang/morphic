@@ -8,6 +8,7 @@ use std::io;
 use std::iter;
 use std::path::{Path, PathBuf};
 
+use crate::data::builtin_traits::{BuiltinImpl, BuiltinTrait, BuiltinTraitFunc};
 use crate::data::intrinsics as intrs;
 use crate::data::profile as prof;
 use crate::data::raw_ast as raw;
@@ -415,6 +416,29 @@ static BUILTIN_CTORS: Lazy<BTreeMap<raw::CtorName, (res::TypeId, res::VariantId)
 
         ctor_map
     });
+/// The funcs of the builtin traits are builtin value names, so that `add` can be passed along
+/// or called directly, and so that a user impl of a builtin trait can be checked by name.
+static BUILTIN_TRAIT_FUNCS: Lazy<BTreeMap<raw::ValName, res::GlobalRef>> = Lazy::new(|| {
+    BuiltinTraitFunc::ALL
+        .into_iter()
+        .map(|func| {
+            (
+                raw::ValName(func.name().to_owned()),
+                res::GlobalRef::TraitFunc(res::TraitId::Builtin(func.trait_()), func.id()),
+            )
+        })
+        .collect()
+});
+
+/// The builtin impls are in scope in every module, except where a declared or imported impl of
+/// the same name covers one up, as a declared or imported type, value, or trait covers up the
+/// builtin one.
+static BUILTIN_IMPLS: Lazy<BTreeMap<raw::ImplName, res::ImplId>> = Lazy::new(|| {
+    BuiltinImpl::all()
+        .map(|impl_| (raw::ImplName(impl_.name()), res::ImplId::Builtin(impl_)))
+        .collect()
+});
+
 static BUILTIN_GLOBALS: Lazy<BTreeMap<raw::ValName, res::GlobalId>> = Lazy::new(|| {
     let mut global_map = BTreeMap::new();
 
@@ -639,9 +663,14 @@ pub fn resolve_program(
     )
     .map_err(Error)?;
 
-    let impl_scope = ctx
-        .mods
-        .map_refs(|_id, mod_map| mod_map.impls.values().map(|(_, id)| *id).collect());
+    let impl_scope = ctx.mods.map_refs(|_id, mod_map| {
+        BUILTIN_IMPLS
+            .iter()
+            .filter(|(name, _)| !mod_map.impls.contains_key(name))
+            .map(|(_, id)| *id)
+            .chain(mod_map.impls.values().map(|(_, id)| *id))
+            .collect()
+    });
 
     Ok(res::Program {
         mod_symbols: ctx.mod_symbols,
@@ -1139,10 +1168,12 @@ fn resolve_trait_with_path(
     name: &raw::TraitName,
 ) -> Result<res::TraitId, RawError> {
     if path.0.is_empty() {
+        // A builtin trait is in scope everywhere, like a builtin type, unless shadowed.
         local_mod_map
             .traits
             .get(name)
             .map(|(_, id)| *id)
+            .or_else(|| BuiltinTrait::from_name(&name.0).map(res::TraitId::Builtin))
             .ok_or_else(|| ErrorKind::TraitNotFound(name.0.clone()).into())
     } else {
         resolve_mod_trait(
@@ -1164,8 +1195,10 @@ fn resolve_trait_app(
     let resolved = (|| {
         let trait_ =
             resolve_trait_with_path(&ctx.mods, local_mod_map, &constr.path, &constr.trait_name)?;
-        let res::TraitId::Custom(custom) = trait_;
-        let expected = ctx.trait_arities[custom];
+        let expected = match trait_ {
+            res::TraitId::Builtin(_) => BuiltinTrait::num_params().to_value(),
+            res::TraitId::Custom(custom) => ctx.trait_arities[custom],
+        };
         if constr.args.len() != expected {
             return Err(ErrorKind::TraitArity {
                 trait_: constr.trait_name.0.clone(),
@@ -1473,6 +1506,8 @@ fn resolve_expr(
                 Ok(res::Expr::Global(global_ref))
             } else if let Some(&global_id) = BUILTIN_GLOBALS.get(name) {
                 Ok(res::Expr::Global(res::GlobalRef::Global(global_id)))
+            } else if let Some(&global_ref) = BUILTIN_TRAIT_FUNCS.get(name) {
+                Ok(res::Expr::Global(global_ref))
             } else {
                 Err(ErrorKind::VarNotFound(name.0.clone()).into())
             }
@@ -1533,13 +1568,12 @@ fn resolve_expr(
             ))
         }
 
-        raw::Expr::OpApp(op, arg) => {
+        raw::Expr::OpApp(func, arg) => {
             let res_arg = resolve_expr(global_mods, local_mod_map, param_map, local_ctx, arg)?;
+            let func = res::GlobalRef::TraitFunc(res::TraitId::Builtin(func.trait_()), func.id());
             Ok(res::Expr::App(
                 Purity::Pure,
-                Box::new(res::Expr::Global(res::GlobalRef::Global(
-                    res::GlobalId::Intrinsic(*op),
-                ))),
+                Box::new(res::Expr::Global(func)),
                 Box::new(res_arg),
             ))
         }
@@ -2013,7 +2047,6 @@ fn resolve_impl_def(
 
     let res_head =
         resolve_trait_app(ctx, mod_map, &param_map, &head).map_err(locate_path(file_path))?;
-    let res::TraitId::Custom(custom_trait) = res_head.trait_;
 
     let res_constrs: IdVec<res::TraitConstrId, _> = IdVec::from_vec(
         constrs
@@ -2025,13 +2058,41 @@ fn resolve_impl_def(
     let constr_spans: IdVec<res::TraitConstrId, _> =
         IdVec::from_vec(constrs.iter().map(|constr| constr.span).collect());
 
-    // Traits are resolved before impls, in this module and in every module it imports.
-    let trait_def = ctx.traits[custom_trait]
-        .clone()
-        .expect("traits are resolved before impls");
-    let trait_symbols = ctx.trait_symbols[custom_trait]
-        .clone()
-        .expect("traits are resolved before impls");
+    // The trait's definition, and the name and parameter names of each of its funcs.  Traits are
+    // resolved before impls, in this module and in every module it imports.
+    let (trait_def, func_names, func_param_names) = match res_head.trait_ {
+        res::TraitId::Custom(custom_trait) => {
+            let def = ctx.traits[custom_trait]
+                .clone()
+                .expect("traits are resolved before impls");
+            let symbols = ctx.trait_symbols[custom_trait]
+                .as_ref()
+                .expect("traits are resolved before impls");
+            (
+                def,
+                symbols
+                    .func_symbols
+                    .map_refs(|_, func| func.func_name.clone()),
+                symbols
+                    .func_symbols
+                    .map_refs(|_, func| func.type_param_names.clone()),
+            )
+        }
+        res::TraitId::Builtin(builtin) => {
+            let def = builtin.res_def();
+            let names = IdVec::from_vec(
+                builtin
+                    .funcs()
+                    .iter()
+                    .map(|func| raw::ValName(func.name().to_owned()))
+                    .collect(),
+            );
+            let params = def
+                .funcs
+                .map_refs(|_, _| IdVec::from_vec(vec![raw::TypeParam("a".to_owned())]));
+            (def, names, params)
+        }
+    };
 
     let mut provided: BTreeMap<raw::ValName, &raw::ImplFunc> = BTreeMap::new();
     for func in &funcs {
@@ -2052,8 +2113,7 @@ fn resolve_impl_def(
 
     let mut res_funcs = IdVec::new();
     for (func_id, trait_sig) in &trait_def.funcs {
-        let trait_func_symbols = &trait_symbols.func_symbols[func_id];
-        let func_name = &trait_func_symbols.func_name;
+        let func_name = &func_names[func_id];
 
         let func = provided.remove(func_name).ok_or_else(|| {
             locate_path(file_path)(locate_span(head.span.0, head.span.1)(
@@ -2111,7 +2171,7 @@ fn resolve_impl_def(
                     layout,
                     &param_names,
                     trait_layout,
-                    &trait_func_symbols.type_param_names,
+                    &func_param_names[func_id],
                 );
                 let trait_symbols = ctx.trait_symbols.map_refs(|_, symbols| {
                     symbols.clone().expect("traits are resolved before impls")

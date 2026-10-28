@@ -117,13 +117,13 @@ pub byte: Parse Byte =
   )
 
 pub byte_eq(b: Byte): Parse Byte =
-  guard(byte, \x -> x =& b)
+  guard(byte, \x -> x = b)
 
 pub byte_ne(b: Byte): Parse Byte =
-  guard(byte, \x -> ! (x =& b))
+  guard(byte, \x -> ! (x = b))
 
 pub byte_range(lo: Byte, hi: Byte): Parse Byte =
-  guard(byte, \x -> lo <=& x && x <=& hi)
+  guard(byte, \x -> lo <= x && x <= hi)
 
 lit_from(s: Array Byte, i: Int): Parse (Array Byte) =
   lazy(\() ->

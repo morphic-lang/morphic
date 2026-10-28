@@ -3,6 +3,7 @@ fun intrinsic_SubByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromIn
 fun intrinsic_MulByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) * Word8.fromInt (ord y)))
 fun intrinsic_DivByte(x : char, y : char): char = chr (Word8.toInt (Word8.fromInt (ord x) div Word8.fromInt (ord y)))
 fun intrinsic_NegByte(x : char): char = chr (Word8.toInt (~ (Word8.fromInt (ord x))))
+fun intrinsic_EqBool(x : bool, y : bool): bool = x = y
 fun intrinsic_EqByte(x : char, y : char): bool = x = y
 fun intrinsic_LtByte(x : char, y : char): bool = x < y
 fun intrinsic_LteByte(x : char, y : char): bool = x <= y
@@ -37,6 +38,7 @@ fun intrinsic_IntShiftRight(x : Int.int, y : Int.int): Int.int = Word64.toIntX (
 fun intrinsic_IntBitAnd(x : Int.int, y : Int.int): Int.int = Word64.toIntX (Word64.andb (Word64.fromInt x, Word64.fromInt y))
 fun intrinsic_IntBitOr(x : Int.int, y : Int.int): Int.int = Word64.toIntX (Word64.orb (Word64.fromInt x, Word64.fromInt y))
 fun intrinsic_IntBitXor(x : Int.int, y : Int.int): Int.int = Word64.toIntX (Word64.xorb (Word64.fromInt x, Word64.fromInt y))
+fun intrinsic_IntBitNot(x : Int.int): Int.int = Word64.toIntX (Word64.notb (Word64.fromInt x))
 fun intrinsic_IntCtpop(x : Int.int): Int.int = 
     let
         fun count_bits(0w0 : Word64.word) = 0

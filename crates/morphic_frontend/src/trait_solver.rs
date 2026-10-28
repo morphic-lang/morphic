@@ -2,10 +2,11 @@
 //! elaborated types, so a goal's arguments carry their own evidence, which matching an impl head
 //! reads off instead of searching for.
 
+use crate::data::builtin_traits::BuiltinImpl;
 use crate::data::elaborated_ast as elab;
 use crate::data::elaborated_ast::{Derivation, Subst, TraitApp, TraitSelfConstr, Type};
 use crate::data::resolved_ast::{
-    CustomTypeId, ImplId, SuperId, TraitConstrId, TraitId, TypeHead, TypeParamId,
+    CustomImplId, CustomTypeId, ImplId, SuperId, TraitConstrId, TraitId, TypeHead, TypeParamId,
 };
 use id_collections::{Count, IdVec};
 use std::collections::BTreeSet;
@@ -34,10 +35,37 @@ pub trait Facts {
 
     fn impl_supers(&self, id: ImplId) -> Result<IdVec<SuperId, elab::Derivation>, Self::Error>;
 
+    /// The declared impls, in every module, for suggesting imports.
     fn all_impls(&self) -> Vec<ImplId>;
 
     /// See `res::constrained_prefix`.
     fn constrained_prefix(&self, id: CustomTypeId) -> Count<TypeParamId>;
+}
+
+/// The facts about a builtin impl: it is for one builtin type and has no constraints.
+pub fn builtin_impl_facts(impl_: BuiltinImpl) -> ImplFacts {
+    ImplFacts {
+        trait_: TraitId::Builtin(impl_.trait_()),
+        num_params: Count::from_value(0),
+        head: vec![Type::ctor(impl_.type_().type_id())],
+        trait_constrs: IdVec::new(),
+    }
+}
+
+/// The facts about an impl, declared or builtin.
+pub fn impl_facts_of(impls: &IdVec<CustomImplId, elab::ImplDef>, id: ImplId) -> ImplFacts {
+    match id {
+        ImplId::Builtin(builtin) => builtin_impl_facts(builtin),
+        ImplId::Custom(custom) => {
+            let def = &impls[custom];
+            ImplFacts {
+                trait_: def.trait_,
+                num_params: def.param_kinds.count(),
+                head: def.head.clone(),
+                trait_constrs: def.trait_constrs.clone(),
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -45,7 +73,11 @@ pub enum SolveError<G, E> {
     NoImpl {
         goal: TraitApp<Derivation<G>>,
         chain: Vec<TraitApp<Derivation<G>>>,
+        /// The impls declared in other modules that would match the goal if imported.
         importable: Vec<ImplId>,
+        /// The builtin impls that would match the goal, but which impls of the same name
+        /// declared or imported in the current module cover up.
+        covered: Vec<ImplId>,
     },
     Ambiguous {
         goal: TraitApp<Derivation<G>>,
@@ -449,10 +481,20 @@ impl<'a, G: Clone + Eq + Ord, F: Facts> Solver<'a, G, F> {
                     .into_iter()
                     .map(|(id, _, _)| id)
                     .collect();
+                // A builtin impl is out of scope only where an impl of the same name covers it up.
+                let covered_up = BuiltinImpl::all()
+                    .map(ImplId::Builtin)
+                    .filter(|id| !self.scope.contains(id));
+                let covered = self
+                    .matching_impls(goal, covered_up)?
+                    .into_iter()
+                    .map(|(id, _, _)| id)
+                    .collect();
                 Err(SolveError::NoImpl {
                     goal: goal.clone(),
                     chain: chain.clone(),
                     importable,
+                    covered,
                 })
             }
 

@@ -769,6 +769,10 @@ fn gen_expr<T: Context>(
                 let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
                 s.oeq(lhs, rhs)
             }
+            Intrinsic::EqBool => {
+                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
+                s.eq(lhs, rhs)
+            }
             Intrinsic::NegByte => s.neg(locals[local_id]),
             Intrinsic::NegInt => s.neg(locals[local_id]),
             Intrinsic::NegFloat => s.fneg(locals[local_id]),
@@ -805,6 +809,7 @@ fn gen_expr<T: Context>(
                 let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
                 s.xor(lhs, rhs)
             }
+            Intrinsic::IntBitNot => s.not(locals[local_id]),
             Intrinsic::IntCtpop => s.ctpop(locals[local_id]),
             Intrinsic::IntCtlz => s.ctlz(locals[local_id]),
             Intrinsic::IntCttz => s.cttz(locals[local_id]),

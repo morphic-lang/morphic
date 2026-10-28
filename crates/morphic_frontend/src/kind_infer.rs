@@ -301,7 +301,11 @@ impl Inference {
     }
 
     fn trait_param_kinds(&self, trait_: res::TraitId) -> Vec<KindTerm> {
-        let res::TraitId::Custom(custom) = trait_;
+        let custom = match trait_ {
+            // Every builtin trait has one parameter, of kind `Type`.
+            res::TraitId::Builtin(_) => return vec![KindTerm::Type],
+            res::TraitId::Custom(custom) => custom,
+        };
         match self.pending_traits.get(&custom) {
             Some(params) => params.iter().map(|(_, kind)| kind.clone()).collect(),
             None => self.fixed_traits[custom]
@@ -576,8 +580,9 @@ fn add_constr_deps(
     types: &mut BTreeSet<res::CustomTypeId>,
     traits: &mut BTreeSet<res::CustomTraitId>,
 ) {
-    let res::TraitId::Custom(custom) = constr.trait_;
-    traits.insert(custom);
+    if let res::TraitId::Custom(custom) = constr.trait_ {
+        traits.insert(custom);
+    }
     for arg in &constr.args {
         add_custom_type_deps(arg, types);
     }

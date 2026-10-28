@@ -205,7 +205,7 @@ ascii_comma: Byte = 44b
 
 parse_digit: Parse Int =
   Parse.byte_range(ascii_zero, ascii_nine)
-  |> Parse.map(\x -> byte_to_int(x -& ascii_zero))
+  |> Parse.map(\x -> byte_to_int(x - ascii_zero))
 
 parse_int: Parse Int =
   Parse.many1_fold(parse_digit, 0, \(x, y) -> x * 10 + y)

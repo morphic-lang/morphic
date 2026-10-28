@@ -49,12 +49,12 @@ ascii_colon: Byte = 58b
 
 digit: Parse Int =
   Parse.byte_range(ascii_zero, ascii_nine)
-  |> Parse.map(\x -> byte_to_int(x -& ascii_zero))
+  |> Parse.map(\x -> byte_to_int(x - ascii_zero))
 
 hex_digit: Parse Int =
-  Parse.or(Parse.map(Parse.byte_range(ascii_zero, ascii_nine), \d -> byte_to_int(d -& ascii_zero))) <|
-  Parse.or(Parse.map(Parse.byte_range(ascii_A, ascii_F), \d -> byte_to_int(d -& ascii_A) + 10)) <|
-  Parse.map(Parse.byte_range(ascii_a, ascii_f), \d -> byte_to_int(d -& ascii_a) + 10)
+  Parse.or(Parse.map(Parse.byte_range(ascii_zero, ascii_nine), \d -> byte_to_int(d - ascii_zero))) <|
+  Parse.or(Parse.map(Parse.byte_range(ascii_A, ascii_F), \d -> byte_to_int(d - ascii_A) + 10)) <|
+  Parse.map(Parse.byte_range(ascii_a, ascii_f), \d -> byte_to_int(d - ascii_a) + 10)
 
 int: Parse Int =
   Parse.skip_pre(Parse.not_followed_by(Parse.byte_eq(ascii_zero))) <|
@@ -66,7 +66,7 @@ fractional_part: Parse Float =
     Parse.many1_fold(
       digit,
       (0.0, 0.1),
-      \((accum, place), d) -> (accum +. int_to_float(d) *. place, place /. 10.0)
+      \((accum, place), d) -> (accum + int_to_float(d) * place, place / 10.0)
     ),
     \(accum, _) -> accum,
   )
@@ -83,7 +83,7 @@ exponent_part: Parse Float =
   Parse.pure(float_pow(10.0, sign * exp))
 
 opt_minus: Parse Float =
-  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_minus), Parse.pure(-.1.0))) <|
+  Parse.or(Parse.skip_pre(Parse.byte_eq(ascii_minus), Parse.pure(-1.0))) <|
   Parse.pure(1.0)
 
 number: Parse Float =
@@ -91,7 +91,7 @@ number: Parse Float =
   Parse.and_then(int) <| \int_part ->
   Parse.and_then(Parse.or(fractional_part, Parse.pure(0.0))) <| \frac_part ->
   Parse.and_then(Parse.or(exponent_part, Parse.pure(1.0))) <| \exp_part ->
-  Parse.pure(sign *. (int_to_float(int_part) +. frac_part) *. exp_part)
+  Parse.pure(sign * (int_to_float(int_part) + frac_part) * exp_part)
 
 space: Parse () =
   Parse.skip_post(Parse.pure(())) <|
@@ -183,7 +183,7 @@ string: Parse (Array Byte) =
   Parse.many0_fold(
     Parse.or(
       Parse.byte
-      |> Parse.guard(\x -> x >=& 20b && ! (x =& ascii_quote || x =& ascii_backslash))
+      |> Parse.guard(\x -> x >= 20b && ! (x = ascii_quote || x = ascii_backslash))
       |> Parse.map(\x -> \s -> Array.push(s, x)),
     ) <|
     Parse.or(Parse.map(parse_ascii_escape, \x -> \s -> Array.push(s, x))) <|

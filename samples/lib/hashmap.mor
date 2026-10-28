@@ -164,7 +164,7 @@ pub string_hash(s: Array Byte): Int =
   )
 
 pub string_eq(a: Array Byte, b: Array Byte): Bool =
-  Array.equal(a, b, \(p, q) -> p =& q)
+  Array.equal(a, b, \(p, q) -> p = q)
 
 // Create a HashMap specialized for string keys
 pub string_hashmap: HashMap (Array Byte) v =

@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use crate::data::builtin_traits::{BuiltinImpl, BuiltinTrait};
 use crate::data::intrinsics::Intrinsic;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -77,6 +78,7 @@ pub struct CustomTraitId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TraitId {
+    Builtin(BuiltinTrait),
     Custom(CustomTraitId),
 }
 
@@ -89,6 +91,7 @@ pub struct CustomImplId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImplId {
+    Builtin(BuiltinImpl),
     Custom(CustomImplId),
 }
 

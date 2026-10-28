@@ -1,0 +1,14 @@
+// expect-error: No Impl in Scope @ 13:11
+// An impl named like a builtin impl covers it up, whatever trait it is of, so `+` at `Int` has no
+// impl in scope here.
+trait Show a {
+  show(x: a): Array Byte,
+}
+
+impl AddInt of Show Int {
+  show(x: Int): Array Byte = "Int"
+}
+
+proc main(): () =
+  let n = 1 + 2 in
+  ()

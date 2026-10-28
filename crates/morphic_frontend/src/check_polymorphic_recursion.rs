@@ -380,6 +380,8 @@ fn add_impl_instantiation_edges(
         solved::Derivation::Super(inner, _) => {
             add_impl_instantiation_edges(source, inner, impls, span, edges)
         }
+        // A builtin impl has no funcs and no constraints.
+        solved::Derivation::Impl(res::ImplId::Builtin(_), _, _) => {}
         solved::Derivation::Impl(res::ImplId::Custom(impl_id), type_args, subs) => {
             for (_, &func) in &impls[*impl_id].funcs {
                 add_application_edges(source, func, type_args.iter(), span, edges);
@@ -437,6 +439,7 @@ fn check_vals(
                     // might be it.
                     let target_impls: Vec<res::CustomImplId> = match root_impl(&inst.trait_deriv) {
                         Some(res::ImplId::Custom(impl_id)) => vec![impl_id],
+                        Some(res::ImplId::Builtin(_)) => Vec::new(),
                         None => impls
                             .iter()
                             .filter(|(_, def)| def.trait_ == *trait_)

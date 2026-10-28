@@ -71,6 +71,7 @@ define_intrinsic_names![
     (LteFloat, op_name("lte_float")),
     (GtFloat, op_name("gt_float")),
     (GteFloat, op_name("gte_float")),
+    (EqBool, op_name("eq_bool")),
     (Not, op_name("not")),
     // Intrinsic numeric functions
     // These names are used in the source language
@@ -82,6 +83,7 @@ define_intrinsic_names![
     (IntBitAnd, name("int_bit_and")),
     (IntBitOr, name("int_bit_or")),
     (IntBitXor, name("int_bit_xor")),
+    (IntBitNot, op_name("int_bit_not")),
     (IntCtpop, name("int_count_ones")),
     (IntCtlz, name("int_leading_zeros")),
     (IntCttz, name("int_trailing_zeros")),
@@ -142,6 +144,7 @@ pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
         EqInt | LtInt | LteInt | GtInt | GteInt => pure(tuple!(int(), int()), bool()),
         EqFloat | LtFloat | LteFloat | GtFloat | GteFloat => pure(tuple!(float(), float()), bool()),
 
+        EqBool => pure(tuple!(bool(), bool()), bool()),
         Not => pure(bool(), bool()),
 
         ByteToInt => pure(byte(), int()),
@@ -152,6 +155,7 @@ pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
         IntBitAnd => pure(tuple!(int(), int()), int()),
         IntBitOr => pure(tuple!(int(), int()), int()),
         IntBitXor => pure(tuple!(int(), int()), int()),
+        IntBitNot => pure(int(), int()),
         IntCtpop => pure(int(), int()),
         IntCtlz => pure(int(), int()),
         IntCttz => pure(int(), int()),

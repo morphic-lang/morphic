@@ -43,7 +43,7 @@ ascii_close_paren: Byte = 41b
 
 digit: Parse Int =
   Parse.byte_range(ascii_zero, ascii_nine)
-  |> Parse.map(\x -> byte_to_int(x -& ascii_zero))
+  |> Parse.map(\x -> byte_to_int(x - ascii_zero))
 
 int: Parse Int =
   Parse.many1_fold(digit, 0, \(x, y) -> x * 10 + y)

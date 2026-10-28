@@ -2,7 +2,8 @@ use crate::config::MlVariant;
 use crate::data::elaborated_ast::TypeDef;
 use crate::data::profile::ProfilePointId;
 use crate::data::resolved_ast::{
-    ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, IoOp, TypeHead, TypeId, TypeParamId, VariantId,
+    ArrayOp, CustomGlobalId, CustomTypeId, GlobalId, ImplId, IoOp, TypeHead, TypeId, TypeParamId,
+    VariantId,
 };
 use crate::data::solved_ast::*;
 use crate::util::graph::{self, Graph};
@@ -372,7 +373,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
                 _ => Precedence::Var,
             },
-            Expr::TraitFunc(_, _, _) => unimplemented!("the ML backends do not support traits"),
+            Expr::TraitFunc(_, _, _) => Precedence::Var,
             Expr::Local(_) => Precedence::Var,
             Expr::Tuple(_) => Precedence::Var,
             Expr::Lam(_, _, _, _, _, _) => Precedence::Top,
@@ -394,7 +395,14 @@ impl<'a, 'b> Context<'a, 'b> {
             Expr::Global(global_id, _type_args, _derivations) => {
                 self.write_global_id(global_id)?;
             }
-            Expr::TraitFunc(_, _, _) => unimplemented!("the ML backends do not support traits"),
+            // A trait func resolved to a builtin impl is the intrinsic implementing it.  Nothing
+            // else can be expressed without dictionaries.
+            Expr::TraitFunc(_, func, inst) => match &inst.trait_deriv {
+                Derivation::Impl(ImplId::Builtin(impl_), _, _) => {
+                    self.write_global_id(&GlobalId::Intrinsic(impl_.func_intrinsic(*func)))?;
+                }
+                _ => unimplemented!("the ML backends do not support traits"),
+            },
             Expr::Local(local_id) => {
                 self.write("l")?;
                 self.write(local_id.0)?;
@@ -997,7 +1005,10 @@ fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
                 deps.insert(*custom_id);
             }
         },
-        Expr::TraitFunc(_, _, _) => unimplemented!("the ML backends do not support traits"),
+        Expr::TraitFunc(_, _, inst) => match &inst.trait_deriv {
+            Derivation::Impl(ImplId::Builtin(_), _, _) => {}
+            _ => unimplemented!("the ML backends do not support traits"),
+        },
         Expr::Local(_) => {}
         Expr::Tuple(elems) => {
             for elem in elems {

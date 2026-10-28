@@ -61,6 +61,30 @@ sample! { constrained_types "../../samples/constrained_types.mor";
     stdout = "1 2 3\n3 2 1\nTrue\n11 21\n";
 }
 
+sample! { builtin_traits "../../samples/builtin_traits.mor";
+    stdin = "";
+    stdout = lines! [
+        "10",
+        "5",
+        "(4, 6)",
+        "(2, 3)",
+        "True",
+        "14",
+        "True",
+        "(2, 0)",
+        "False",
+        "True",
+        "True",
+        "6",
+        "True",
+        "True",
+        "1 2 3",
+        "(1, 5) (2, 1)",
+        "-6",
+        "Off",
+    ];
+}
+
 sample! { arith "../../samples/arith.mor";
     stdin = "";
     stdout = "Completed all tests\n";

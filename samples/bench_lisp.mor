@@ -97,7 +97,7 @@ skip_comment(input_: Array Byte, i: Int): Int =
   if i >= Array.len(input_) {
     i
   } else {
-    if Array.get(input_, i) =& 10b {
+    if Array.get(input_, i) = 10b {
       i + 1
     } else {
       skip_comment(input_, i + 1)

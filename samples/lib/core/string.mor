@@ -79,7 +79,7 @@ pub string_to_nat(str: Array Byte): Option Int =
 pub string_to_int(str: Array Byte): Option Int =
   match Iter.items(str) |> Iter.next() {
     Some(first, rest) ->
-      if first =& get("-", 0) {
+      if first = get("-", 0) {
         chars_to_nat(rest)
       } else {
         string_to_nat(str)
@@ -90,7 +90,7 @@ pub string_to_int(str: Array Byte): Option Int =
   }
 
 pub equal(a: Array Byte, b: Array Byte): Bool =
-  Array.equal(a, b, \(x, y) -> x =& y)
+  Array.equal(a, b, \(x, y) -> x = y)
 
 pub concat(x : Array Byte, y : Array Byte): Array Byte = Array.concat(x, y)
 

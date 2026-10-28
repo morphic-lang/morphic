@@ -112,11 +112,6 @@ impl<'a> Instantiator<'a> {
         }
     }
 
-    fn impl_def(&self, id: res::ImplId) -> &'a elab::ImplDef {
-        let res::ImplId::Custom(custom) = id;
-        &self.impls[custom]
-    }
-
     /// Whether a closed type has kind `Type`, i.e. is the type of some expression rather than a
     /// partial application.
     fn has_kind_type(&self, type_: &ClosedType) -> bool {
@@ -225,11 +220,22 @@ impl<'a> Instantiator<'a> {
             solved::Derivation::Super(inner, index) => {
                 let ClosedDerivation::Impl(id, impl_args, impl_derivs) =
                     self.subst_derivation(inst, inner);
-                let impl_inst = Instantiation {
-                    args: impl_args,
-                    derivs: impl_derivs,
-                };
-                self.subst_derivation(&impl_inst, &self.impl_def(id).supers[*index])
+                match id {
+                    // A builtin impl's superclass evidence is the builtin impl of the same type
+                    // for the superclass.
+                    res::ImplId::Builtin(builtin) => ClosedDerivation::Impl(
+                        res::ImplId::Builtin(builtin.supers()[*index]),
+                        IdVec::new(),
+                        IdVec::new(),
+                    ),
+                    res::ImplId::Custom(custom) => {
+                        let impl_inst = Instantiation {
+                            args: impl_args,
+                            derivs: impl_derivs,
+                        };
+                        self.subst_derivation(&impl_inst, &self.impls[custom].supers[*index])
+                    }
+                }
             }
         }
     }
@@ -298,7 +304,14 @@ impl<'a> Instantiator<'a> {
             solved::Expr::TraitFunc(_, func, trait_inst) => {
                 let ClosedDerivation::Impl(impl_id, impl_args, impl_derivs) =
                     self.subst_derivation(inst, &trait_inst.trait_deriv);
-                let impl_def = self.impl_def(impl_id);
+                let impl_def = match impl_id {
+                    // A builtin impl's func is the intrinsic implementing it, so the operators
+                    // on builtin types compile exactly as before there were traits.
+                    res::ImplId::Builtin(builtin) => {
+                        return mono::Expr::Intrinsic(builtin.func_intrinsic(*func));
+                    }
+                    res::ImplId::Custom(custom) => &self.impls[custom],
+                };
                 let layout = impl_def.func_layout();
 
                 let callee_inst = Instantiation {

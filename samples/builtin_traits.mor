@@ -1,0 +1,173 @@
+module Core = file "lib/core/core.mor"
+  expose { module String expose { int_to_string, bool_to_string, concat } }
+
+// The operators `+`, `-`, `*`, `/`, `=`, `<`, `<=`, `>`, `>=`, unary `-`, and `!` are the funcs
+// of the builtin traits `Add`, `Sub`, `Mul`, `Div`, `PartialEq`, `PartialOrd`, `Neg`, and `Not`.
+// The number types implement the arithmetic and comparison traits, `Bool` implements `PartialEq`
+// and `Not`, `Int` implements `Not` as bitwise not, and a user type may implement any of them.
+
+type Vec2 { Vec2(Int, Int) }
+
+impl AddVec2 of Add Vec2 {
+  add(x: Vec2, y: Vec2): Vec2 =
+    match (x, y) { (Vec2(a, b), Vec2(c, d)) -> Vec2(a + c, b + d) }
+}
+
+impl SubVec2 of Sub Vec2 {
+  sub(x: Vec2, y: Vec2): Vec2 =
+    match (x, y) { (Vec2(a, b), Vec2(c, d)) -> Vec2(a - c, b - d) }
+}
+
+impl NegVec2 of Neg Vec2 {
+  neg(x: Vec2): Vec2 =
+    match x { Vec2(a, b) -> Vec2(-a, -b) }
+}
+
+// `Eq` and `Ord` are marker traits with the superclasses `PartialEq` and `PartialOrd`: an impl
+// of either has no funcs, and promises that the comparison it requires is total.  `Float`
+// implements only the partial traits.
+impl PartialEqVec2 of PartialEq Vec2 {
+  eq(x: Vec2, y: Vec2): Bool =
+    match (x, y) { (Vec2(a, b), Vec2(c, d)) -> (a = c) && (b = d) }
+}
+
+impl EqVec2 of Eq Vec2 {}
+
+// Lexicographic.  An impl func may use the operator it helps define.
+impl PartialOrdVec2 of PartialOrd Vec2 {
+  lt(x: Vec2, y: Vec2): Bool =
+    match (x, y) { (Vec2(a, b), Vec2(c, d)) -> (a < c) || ((a = c) && (b < d)) }
+
+  lte(x: Vec2, y: Vec2): Bool = ! (y < x)
+
+  gt(x: Vec2, y: Vec2): Bool = y < x
+
+  gte(x: Vec2, y: Vec2): Bool = ! (x < y)
+}
+
+impl OrdVec2 of Ord Vec2 {}
+
+// `!` is logical not for `Bool`, bitwise not for `Int`, and whatever an impl of `Not` says.
+type Switch { On, Off }
+
+impl NotSwitch of Not Switch {
+  not(s: Switch): Switch = match s { On -> Off, Off -> On }
+}
+
+render_switch(s: Switch): Array Byte = match s { On -> "On", Off -> "Off" }
+
+// Functions constrained by the builtin traits serve every type with an impl in scope, builtin
+// or user-defined.
+module Sum = {
+  pub sum(arr: Array a, zero: a): a where Add a = sum_rec(arr, zero, 0)
+
+  sum_rec(arr: Array a, acc: a, i: Int): a where Add a =
+    if i < len(arr) { sum_rec(arr, acc + get(arr, i), i + 1) } else { acc }
+} expose { sum }
+
+// A declared or imported impl covers up the builtin impl of the same name, as a declared type,
+// func, or trait covers up a builtin one.  Here `+` at `Int` is `max`, so `sum` resolves `Add Int`
+// to it and computes a maximum.
+module Max = {
+  import Sum expose { sum }
+
+  impl AddInt of Add Int {
+    add(x: Int, y: Int): Int = if x < y { y } else { x }
+  }
+
+  pub max_of(arr: Array Int): Int = sum(arr, 0)
+} with { Sum }
+
+largest(x: a, y: a): a where PartialOrd a = if x < y { y } else { x }
+
+// `Eq a` and `Ord a` provide `=` and `<=` through their superclasses.
+contains(arr: Array a, x: a): Bool where Eq a = contains_rec(arr, x, 0)
+
+contains_rec(arr: Array a, x: a, i: Int): Bool where Eq a =
+  if i < len(arr) { (get(arr, i) = x) || contains_rec(arr, x, i + 1) } else { False }
+
+is_sorted(arr: Array a): Bool where Ord a = is_sorted_rec(arr, 1)
+
+is_sorted_rec(arr: Array a, i: Int): Bool where Ord a =
+  if i < len(arr) { (get(arr, i - 1) <= get(arr, i)) && is_sorted_rec(arr, i + 1) } else { True }
+
+// The builtin trait funcs are ordinary values.
+fold(arr: Array a, init: b, f: (b, a) -> b): b = fold_rec(arr, init, f, 0)
+
+fold_rec(arr: Array a, acc: b, f: (b, a) -> b, i: Int): b =
+  if i < len(arr) { fold_rec(arr, f(acc, get(arr, i)), f, i + 1) } else { acc }
+
+// A type constrained by a builtin trait.
+type Sorted a where Ord a {
+  Sorted(Array a)
+}
+
+empty(): Sorted a where Ord a = Sorted([])
+
+insert(s: Sorted a, x: a): Sorted a where Ord a =
+  match s { Sorted(arr) -> Sorted(insert_rec(arr, x, 0, [])) }
+
+insert_rec(arr: Array a, x: a, i: Int, out: Array a): Array a where Ord a =
+  if i < len(arr) {
+    let y = get(arr, i) in
+    if x < y { append_from(push(out, x), arr, i) } else { insert_rec(arr, x, i + 1, push(out, y)) }
+  } else {
+    push(out, x)
+  }
+
+append_from(out: Array a, arr: Array a, i: Int): Array a =
+  if i < len(arr) { append_from(push(out, get(arr, i)), arr, i + 1) } else { out }
+
+to_array(s: Sorted a): Array a where Ord a =
+  match s { Sorted(arr) -> arr }
+
+render_vec(v: Vec2): Array Byte =
+  match v { Vec2(a, b) -> concat("(", concat(int_to_string(a), concat(", ", concat(int_to_string(b), ")")))) }
+
+render(arr: Array a, show: a -> Array Byte): Array Byte = render_rec(arr, show, 0, "")
+
+render_rec(arr: Array a, show: a -> Array Byte, i: Int, acc: Array Byte): Array Byte =
+  if i < len(arr) {
+    let sep = if i = 0 { "" } else { " " } in
+    render_rec(arr, show, i + 1, concat(acc, concat(sep, show(get(arr, i)))))
+  } else {
+    acc
+  }
+
+proc main(): () =
+  do output(int_to_string(sum([1, 2, 3, 4], 0))) then
+  do output("\n") then
+  do output(int_to_string(Max.max_of([1, 5, 3]))) then
+  do output("\n") then
+  do output(render_vec(sum([Vec2(1, 2), Vec2(3, 4)], Vec2(0, 0)))) then
+  do output("\n") then
+  do output(render_vec(-(Vec2(1, 2) - Vec2(3, 5)))) then
+  do output("\n") then
+  do output(bool_to_string(sum([1.5, 2.25], 0.0) = 3.75)) then
+  do output("\n") then
+  do output(int_to_string(byte_to_int(largest(3b, 7b) * 2b))) then
+  do output("\n") then
+  do output(bool_to_string(largest(2.5, -1.5) = 2.5)) then
+  do output("\n") then
+  do output(render_vec(largest(Vec2(2, 0), Vec2(1, 9)))) then
+  do output("\n") then
+  do output(bool_to_string(Vec2(1, 2) >= Vec2(1, 3))) then
+  do output("\n") then
+  do output(bool_to_string(contains([Vec2(1, 1), Vec2(2, 2)], Vec2(2, 2)))) then
+  do output("\n") then
+  do output(bool_to_string(is_sorted([1, 2, 2, 5]) && ! is_sorted([Vec2(1, 1), Vec2(0, 0)]))) then
+  do output("\n") then
+  do output(int_to_string(fold([1, 2, 3], 0, add))) then
+  do output("\n") then
+  do output(bool_to_string(fold([1.5, 2.5], 0.0, add) = 4.0)) then
+  do output("\n") then
+  do output(bool_to_string((True = False) = (7 / 2 + -3 = 1))) then
+  do output("\n") then
+  do output(render(to_array(insert(insert(insert(empty(), 3), 1), 2)), int_to_string)) then
+  do output("\n") then
+  do output(render(to_array(insert(insert(empty(), Vec2(2, 1)), Vec2(1, 5))), render_vec)) then
+  do output("\n") then
+  do output(int_to_string(!5)) then
+  do output("\n") then
+  do output(render_switch(!On)) then
+  do output("\n")

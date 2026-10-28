@@ -1,0 +1,23 @@
+// expect-error: No Impl in Scope @ 21:17
+// An impl of `Ord` requires impls of its superclasses `Eq` and `PartialOrd` for the same type.
+type Vec2 { Vec2(Int, Int) }
+
+impl PartialEqVec2 of PartialEq Vec2 {
+  eq(x: Vec2, y: Vec2): Bool =
+    match (x, y) { (Vec2(a, b), Vec2(c, d)) -> (a = c) && (b = d) }
+}
+
+impl PartialOrdVec2 of PartialOrd Vec2 {
+  lt(x: Vec2, y: Vec2): Bool =
+    match (x, y) { (Vec2(a, b), Vec2(c, d)) -> (a < c) || ((a = c) && (b < d)) }
+
+  lte(x: Vec2, y: Vec2): Bool = ! (y < x)
+
+  gt(x: Vec2, y: Vec2): Bool = y < x
+
+  gte(x: Vec2, y: Vec2): Bool = ! (x < y)
+}
+
+impl OrdVec2 of Ord Vec2 {}
+
+proc main(): () = ()

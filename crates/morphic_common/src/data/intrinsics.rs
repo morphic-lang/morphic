@@ -50,6 +50,7 @@ pub enum Intrinsic {
     GtFloat,
     GteFloat,
 
+    EqBool,
     Not,
 
     // Intrinsic numeric functions
@@ -61,6 +62,7 @@ pub enum Intrinsic {
     IntBitAnd,
     IntBitOr,
     IntBitXor,
+    IntBitNot,
     IntCtpop,
     IntCtlz,
     IntCttz,

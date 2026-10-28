@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::data::builtin_traits::trait_name;
 use crate::data::elaborated_ast as elab;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
@@ -254,8 +255,7 @@ impl<'a> TypeRenderer<'a> {
         app: &TraitApp,
         trait_symbols: &IdVec<res::CustomTraitId, res::TraitSymbols>,
     ) -> String {
-        let res::TraitId::Custom(custom) = app.trait_;
-        let mut result = trait_symbols[custom].trait_name.0.clone();
+        let mut result = trait_name(trait_symbols, app.trait_);
         for arg in &app.args {
             result.push(' ');
             self.render_to(params, arg, &mut result, Precedence::AppArg);

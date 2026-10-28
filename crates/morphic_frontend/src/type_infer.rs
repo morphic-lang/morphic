@@ -3,6 +3,7 @@ use std::cell::{RefCell, RefMut};
 use std::io;
 use std::ops::{Deref, DerefMut};
 
+use crate::data::builtin_traits::elab_trait_def;
 use crate::data::elaborated_ast as elab;
 use crate::data::elaborated_ast::{Derivation, TraitGiven, TraitSelfConstr};
 use crate::data::intrinsics as intrs;
@@ -15,6 +16,7 @@ use crate::data::resolved_ast as res;
 use crate::data::typed_ast as typed;
 use crate::file_cache::FileCache;
 use crate::report_type;
+use crate::trait_solver::impl_facts_of;
 use id_collections::{id_type, Count, IdVec};
 use morphic_common::intrinsic_config::intrinsic_sig;
 use morphic_common::lines;
@@ -1257,8 +1259,7 @@ impl<'a, 'b, 'c, G> Inst<'a, 'b, 'c, G> {
             Derivation::Impl(id, args, subs) => {
                 let arg_vars = args.map_refs(|_, arg| self.type_(arg));
                 let sub_vars = subs.map_refs(|_, sub| self.derivation(sub));
-                let res::ImplId::Custom(custom) = id;
-                let impl_def = &self.program.impls[*custom];
+                let impl_facts = impl_facts_of(&self.program.impls, *id);
                 let goal_args = Inst {
                     ctx: &mut *self.ctx,
                     program: self.program,
@@ -1267,9 +1268,9 @@ impl<'a, 'b, 'c, G> Inst<'a, 'b, 'c, G> {
                     param_vars: &arg_vars,
                     given_of: &|given: &res::TraitConstrId| sub_vars[*given],
                 }
-                .types(&impl_def.head);
+                .types(&impl_facts.head);
                 self.ctx.new_obligation(
-                    impl_def.trait_,
+                    impl_facts.trait_,
                     goal_args,
                     self.span,
                     typed::Origin::Carried(self.signature),
@@ -1286,8 +1287,7 @@ impl<'a, 'b, 'c, G> Inst<'a, 'b, 'c, G> {
                         IdVec::from_vec(inner_obligation.args.clone()),
                     )
                 };
-                let res::TraitId::Custom(custom) = inner_trait;
-                let super_ = &self.program.traits[custom].supers[*index];
+                let super_ = &elab_trait_def(&self.program.traits, inner_trait).supers[*index];
                 let goal_args = Inst {
                     ctx: &mut *self.ctx,
                     program: self.program,
@@ -1676,8 +1676,7 @@ fn infer_expr(
         }
 
         &res::Expr::Global(res::GlobalRef::TraitFunc(trait_, func)) => {
-            let res::TraitId::Custom(custom) = trait_;
-            let trait_def = &program.traits[custom];
+            let trait_def = elab_trait_def(&program.traits, trait_);
             let sig = &trait_def.funcs[func];
             let layout = trait_def.func_layout(func);
 

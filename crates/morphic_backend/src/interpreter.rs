@@ -1390,6 +1390,14 @@ fn interpret_expr(
                 heap.add(Value::Bool(lhs >= rhs))
             }
 
+            Expr::Intrinsic(Intrinsic::EqBool, local_id) => {
+                let (lhs_id, rhs_id) =
+                    unwrap_pair(heap, locals[local_id], stacktrace.add_frame("eq bool"));
+                let lhs = unwrap_bool(heap, lhs_id, stacktrace.add_frame("eq bool"));
+                let rhs = unwrap_bool(heap, rhs_id, stacktrace.add_frame("eq bool"));
+                heap.add(Value::Bool(lhs == rhs))
+            }
+
             Expr::Intrinsic(Intrinsic::EqByte, local_id) => {
                 let (lhs, rhs) =
                     unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
@@ -1497,6 +1505,11 @@ fn interpret_expr(
                 let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_xor"));
                 let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_xor"));
                 heap.add(Value::Num(NumValue::Int(left ^ right)))
+            }
+
+            Expr::Intrinsic(Intrinsic::IntBitNot, local_id) => {
+                let value = unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_bit_not"));
+                heap.add(Value::Num(NumValue::Int(!value)))
             }
 
             Expr::Intrinsic(Intrinsic::IntCtpop, local_id) => {

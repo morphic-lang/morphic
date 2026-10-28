@@ -1,0 +1,6 @@
+// expect-error: Missing Impl Func @ 4:17
+type Vec2 { Vec2(Int, Int) }
+
+impl AddVec2 of Add Vec2 {}
+
+proc main(): () = ()
