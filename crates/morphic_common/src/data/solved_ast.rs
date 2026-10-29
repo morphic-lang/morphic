@@ -1,4 +1,5 @@
 use crate::data::elaborated_ast as elab;
+use crate::data::num_type::NumLit;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -60,9 +61,7 @@ pub enum Expr {
     LetMany(Vec<(Pattern, Expr)>, Box<Expr>),
 
     ArrayLit(Type, Vec<Expr>),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 
     Span(usize, usize, Box<Expr>),
 }
@@ -73,9 +72,7 @@ pub enum Pattern {
     Var(Type),
     Tuple(Vec<Pattern>),
     Ctor(res::TypeId, Vec<Type>, res::VariantId, Option<Box<Pattern>>),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 
     Span(usize, usize, Box<Pattern>),
 }

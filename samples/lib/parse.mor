@@ -6,16 +6,16 @@ import Core expose {
 }
 
 pub type Parse a {
-  Parse((Int, Array Byte) -> Option (Int, a)),
+  Parse((I64, Array U8) -> Option (I64, a)),
 }
 
-pub parse_from(i: Int, s: Array Byte, p: Parse a): Option (Int, a) =
+pub parse_from(i: I64, s: Array U8, p: Parse a): Option (I64, a) =
   let Parse(f) = p in f(i, s)
 
-pub parse_prefix(s: Array Byte, p: Parse a): Option (Int, a) =
+pub parse_prefix(s: Array U8, p: Parse a): Option (I64, a) =
   parse_from(0, s, p)
 
-pub parse_all(s: Array Byte, p: Parse a): Option a =
+pub parse_all(s: Array U8, p: Parse a): Option a =
   s
   |> parse_prefix(p)
   |> Option.and_then(\(i, x) -> if i = Array.len(s) { Some(x) } else { None })
@@ -107,7 +107,7 @@ pub between(open: Parse a, close: Parse b, p: Parse c): Parse c =
 pub guard(p: Parse a, f: a -> Bool): Parse a =
   and_then(p, \x -> if f(x) { pure(x) } else { fail })
 
-pub byte: Parse Byte =
+pub u8: Parse U8 =
   Parse(\(i, s) ->
     if i < Array.len(s) {
       Some(i + 1, Array.get(s, i))
@@ -116,23 +116,23 @@ pub byte: Parse Byte =
     }
   )
 
-pub byte_eq(b: Byte): Parse Byte =
-  guard(byte, \x -> x = b)
+pub u8_eq(b: U8): Parse U8 =
+  guard(u8, \x -> x = b)
 
-pub byte_ne(b: Byte): Parse Byte =
-  guard(byte, \x -> ! (x = b))
+pub u8_ne(b: U8): Parse U8 =
+  guard(u8, \x -> ! (x = b))
 
-pub byte_range(lo: Byte, hi: Byte): Parse Byte =
-  guard(byte, \x -> lo <= x && x <= hi)
+pub u8_range(lo: U8, hi: U8): Parse U8 =
+  guard(u8, \x -> lo <= x && x <= hi)
 
-lit_from(s: Array Byte, i: Int): Parse (Array Byte) =
+lit_from(s: Array U8, i: I64): Parse (Array U8) =
   lazy(\() ->
     if i = Array.len(s) {
       pure(s)
     } else {
-      skip_pre(byte_eq(Array.get(s, i)), lit_from(s, i + 1))
+      skip_pre(u8_eq(Array.get(s, i)), lit_from(s, i + 1))
     }
   )
 
-pub lit(s: Array Byte): Parse (Array Byte) =
+pub lit(s: Array U8): Parse (Array U8) =
   lit_from(s, 0)

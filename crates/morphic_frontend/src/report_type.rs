@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::iter;
 
 use crate::data::builtin_traits::trait_name;
 use crate::data::elaborated_ast as elab;
+use crate::data::num_type::NumType;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
@@ -73,26 +75,20 @@ pub fn is_concrete(type_: &Type) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum BuiltinType {
     Bool,
-    Byte,
-    Int,
-    Float,
+    Num(NumType),
     Array,
 }
 
-const BUILTINS: &[BuiltinType] = &[
-    BuiltinType::Bool,
-    BuiltinType::Byte,
-    BuiltinType::Int,
-    BuiltinType::Float,
-    BuiltinType::Array,
-];
+fn builtins() -> impl Iterator<Item = BuiltinType> {
+    iter::once(BuiltinType::Bool)
+        .chain(NumType::ALL.into_iter().map(BuiltinType::Num))
+        .chain(iter::once(BuiltinType::Array))
+}
 
 fn builtin_name(type_: BuiltinType) -> &'static str {
     match type_ {
         BuiltinType::Bool => "Bool",
-        BuiltinType::Byte => "Byte",
-        BuiltinType::Int => "Int",
-        BuiltinType::Float => "Float",
+        BuiltinType::Num(num) => num.name(),
         BuiltinType::Array => "Array",
     }
 }
@@ -106,9 +102,7 @@ enum CategorizedTypeId {
 fn categorize(type_id: res::TypeId) -> CategorizedTypeId {
     match type_id {
         res::TypeId::Bool => CategorizedTypeId::Builtin(BuiltinType::Bool),
-        res::TypeId::Byte => CategorizedTypeId::Builtin(BuiltinType::Byte),
-        res::TypeId::Int => CategorizedTypeId::Builtin(BuiltinType::Int),
-        res::TypeId::Float => CategorizedTypeId::Builtin(BuiltinType::Float),
+        res::TypeId::Num(num) => CategorizedTypeId::Builtin(BuiltinType::Num(num)),
         res::TypeId::Array => CategorizedTypeId::Builtin(BuiltinType::Array),
 
         res::TypeId::Custom(custom) => CategorizedTypeId::Custom(custom),
@@ -176,14 +170,12 @@ fn find_builtin_quals(
     mod_symbols: &IdVec<res::ModId, res::ModSymbols>,
     custom_type_symbols: &IdVec<res::CustomTypeId, res::TypeSymbols>,
 ) -> BTreeMap<BuiltinType, Qualification> {
-    let mut quals: BTreeMap<BuiltinType, Qualification> = BUILTINS
-        .iter()
-        .map(|&builtin| (builtin, Qualification::Unqualified))
+    let mut quals: BTreeMap<BuiltinType, Qualification> = builtins()
+        .map(|builtin| (builtin, Qualification::Unqualified))
         .collect();
 
-    let names: BTreeMap<&'static str, BuiltinType> = BUILTINS
-        .iter()
-        .map(|&builtin| (builtin_name(builtin), builtin))
+    let names: BTreeMap<&'static str, BuiltinType> = builtins()
+        .map(|builtin| (builtin_name(builtin), builtin))
         .collect();
 
     for (_, type_syms) in custom_type_symbols {
@@ -204,7 +196,7 @@ fn find_custom_quals(
 ) -> IdVec<res::CustomTypeId, Qualification> {
     let mut name_counts = BTreeMap::<raw::TypeName, u32>::new();
 
-    for &builtin in BUILTINS {
+    for builtin in builtins() {
         name_counts.insert(raw::TypeName(builtin_name(builtin).to_owned()), 1);
     }
 

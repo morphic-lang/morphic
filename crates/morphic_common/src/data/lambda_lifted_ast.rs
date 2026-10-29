@@ -1,5 +1,6 @@
 use crate::data::intrinsics::Intrinsic;
 use crate::data::mono_ast as mono;
+use crate::data::num_type::NumLit;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
@@ -36,9 +37,7 @@ pub enum Expr {
 
     ArrayLit(mono::Type, Vec<Expr>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]

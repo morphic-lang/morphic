@@ -29,12 +29,12 @@ pub remove(heap: Heap a): (Heap a, Option a) =
     (Heap(cmp, arr), None)
   }
 
-swap(arr: Array a, i: Int, j: Int): Array a =
+swap(arr: Array a, i: I64, j: I64): Array a =
   let item_i = Array.get(arr, i) in
   let (item_j, hole_j) = extract(arr, j) in
   Array.set(hole_j(item_i), i, item_j)
 
-sift_up(heap: Heap a, i: Int): Heap a =
+sift_up(heap: Heap a, i: I64): Heap a =
   let Heap(cmp, arr) = heap in
   let parent = (i - 1) / 2 in
   if i = 0 || cmp(Array.get(arr, parent), Array.get(arr, i)) {
@@ -44,7 +44,7 @@ sift_up(heap: Heap a, i: Int): Heap a =
     sift_up(new_heap, parent)
   }
 
-sift_down(heap: Heap a, i: Int): Heap a =
+sift_down(heap: Heap a, i: I64): Heap a =
   let Heap(cmp, arr) = heap in
   let left_idx = 2 * i + 1 in
   let right_idx = 2 * i + 2 in

@@ -2,6 +2,7 @@ use crate::data::first_order_ast as first_ord;
 use crate::data::low_ast as low;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast::Mode;
+use crate::data::num_type::NumLit;
 use crate::data::obligation_annot_ast::CustomTypeId;
 use crate::data::rc_specialized_ast::{self as rc, ModeScheme};
 use crate::data::tail_rec_ast as tail;
@@ -212,8 +213,8 @@ fn lower_expr(
             );
 
             let capacity_id = builder.add_expr(
-                low::Type::Num(first_ord::NumType::Int),
-                low::Expr::IntLit(elems.len() as i64),
+                low::Type::Num(first_ord::NumType::I64),
+                low::Expr::NumLit(NumLit::I64(elems.len() as i64)),
             );
 
             result_id = builder.add_expr(
@@ -238,9 +239,7 @@ fn lower_expr(
             low::Expr::Local(result_id)
         }
         tail::Expr::BoolLit(val) => low::Expr::BoolLit(*val),
-        tail::Expr::ByteLit(val) => low::Expr::ByteLit(*val),
-        tail::Expr::IntLit(val) => low::Expr::IntLit(*val),
-        tail::Expr::FloatLit(val) => low::Expr::FloatLit(*val),
+        tail::Expr::NumLit(lit) => low::Expr::NumLit(*lit),
     };
     builder.add_expr_with_metadata(result_type.clone(), new_expr, metadata.clone())
 }

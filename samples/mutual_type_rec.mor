@@ -1,10 +1,10 @@
 type MyCustomA {
-  SomeA(Array Int, MyCustomB),
+  SomeA(Array I64, MyCustomB),
   NoneA,
 }
 
 type MyCustomB {
-  SomeB(Array Int, MyCustomA),
+  SomeB(Array I64, MyCustomA),
   NoneB,
 }
 

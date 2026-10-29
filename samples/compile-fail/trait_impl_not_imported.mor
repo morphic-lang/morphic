@@ -2,7 +2,7 @@
 // The impl exists but is not imported into this module, so the error suggests it.
 module Show = {
   pub trait Show a {
-    show(x: a): Array Byte,
+    show(x: a): Array U8,
   }
 } expose { trait Show { show } }
 
@@ -15,7 +15,7 @@ module Impls = {
   import Shapes expose { Circle { Circle } }
 
   pub impl ShowCircle of Show Circle {
-    show(x: Circle): Array Byte = "circle"
+    show(x: Circle): Array U8 = "circle"
   }
 } with { Show, Shapes }
 

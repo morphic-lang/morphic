@@ -1,6 +1,6 @@
 // expect-error: No Impl in Scope @ 21:17
 // An impl of `Ord` requires impls of its superclasses `Eq` and `PartialOrd` for the same type.
-type Vec2 { Vec2(Int, Int) }
+type Vec2 { Vec2(I64, I64) }
 
 impl PartialEqVec2 of PartialEq Vec2 {
   eq(x: Vec2, y: Vec2): Bool =

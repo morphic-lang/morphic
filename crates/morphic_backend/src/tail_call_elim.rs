@@ -250,9 +250,7 @@ fn trans_expr(
         rc::Expr::ArrayLit(scheme, items) => tail::Expr::ArrayLit(scheme.clone(), items.clone()),
 
         &rc::Expr::BoolLit(val) => tail::Expr::BoolLit(val),
-        &rc::Expr::ByteLit(val) => tail::Expr::ByteLit(val),
-        &rc::Expr::IntLit(val) => tail::Expr::IntLit(val),
-        &rc::Expr::FloatLit(val) => tail::Expr::FloatLit(val),
+        &rc::Expr::NumLit(lit) => tail::Expr::NumLit(lit),
     }
 }
 

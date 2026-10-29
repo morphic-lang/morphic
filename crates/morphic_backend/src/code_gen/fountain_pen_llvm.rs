@@ -16,6 +16,7 @@ use inkwell::OptimizationLevel;
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use morphic_common::config::{self as cfg, ArrayKind, GcKind};
 use morphic_common::data::low_ast as low;
+use morphic_common::data::num_type::{self, Signedness};
 use morphic_common::progress_ui;
 use morphic_common::util::progress_logger::{ProgressLogger, ProgressSession};
 use std::cell::RefCell;
@@ -321,6 +322,67 @@ impl<'a> fountain_pen::ProfileRc for ProfileRc<'a> {
     }
 }
 
+/// A value for each integer width, such as the declaration of an LLVM intrinsic at each width.
+/// LLVM integers are signless, so the signed and unsigned types of one width share an entry.
+#[derive(Clone, Copy, Debug)]
+struct PerIntWidth<T> {
+    i8: T,
+    i16: T,
+    i32: T,
+    i64: T,
+}
+
+impl<T> PerIntWidth<T> {
+    fn new(mut make: impl FnMut(num_type::IntWidth) -> T) -> Self {
+        PerIntWidth {
+            i8: make(num_type::IntWidth::Bits8),
+            i16: make(num_type::IntWidth::Bits16),
+            i32: make(num_type::IntWidth::Bits32),
+            i64: make(num_type::IntWidth::Bits64),
+        }
+    }
+}
+
+impl<T> std::ops::Index<num_type::IntWidth> for PerIntWidth<T> {
+    type Output = T;
+
+    fn index(&self, width: num_type::IntWidth) -> &T {
+        match width {
+            num_type::IntWidth::Bits8 => &self.i8,
+            num_type::IntWidth::Bits16 => &self.i16,
+            num_type::IntWidth::Bits32 => &self.i32,
+            num_type::IntWidth::Bits64 => &self.i64,
+        }
+    }
+}
+
+/// A value for each float type.
+#[derive(Clone, Copy, Debug)]
+struct PerFloatType<T> {
+    f32: T,
+    f64: T,
+}
+
+impl<T> PerFloatType<T> {
+    fn new(mut make: impl FnMut(num_type::FloatType) -> T) -> Self {
+        PerFloatType {
+            f32: make(num_type::FloatType::F32),
+            f64: make(num_type::FloatType::F64),
+        }
+    }
+}
+
+impl<T> std::ops::Index<num_type::FloatType> for PerFloatType<T> {
+    type Output = T;
+
+    fn index(&self, float: num_type::FloatType) -> &T {
+        match float {
+            num_type::FloatType::F32 => &self.f32,
+            num_type::FloatType::F64 => &self.f64,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Tal<'a> {
     memcpy: FunctionValue<'a>,
@@ -350,18 +412,32 @@ pub struct Tal<'a> {
     expect_i1: FunctionValue<'a>,
     umul_with_overflow_i64: FunctionValue<'a>,
 
-    /// (i64) -> i64
-    ctpop_i64: FunctionValue<'a>,
-
-    /// The second argument is a bool indicating whether the output is poison if the input is 0.
+    /// `llvm.ctpop` at each integer width.
     ///
-    /// (i64, i1) -> i64
-    ctlz_i64: FunctionValue<'a>,
+    /// (int) -> int
+    ctpop: PerIntWidth<FunctionValue<'a>>,
 
-    /// The second argument is a bool indicating whether the output is poison if the input is 0.
+    /// `llvm.ctlz` at each integer width.  The second argument is a bool indicating whether the
+    /// output is poison if the input is 0.
     ///
-    /// (i64, i1) -> i64
-    cttz_i64: FunctionValue<'a>,
+    /// (int, i1) -> int
+    ctlz: PerIntWidth<FunctionValue<'a>>,
+
+    /// `llvm.cttz` at each integer width.  The second argument is a bool indicating whether the
+    /// output is poison if the input is 0.
+    ///
+    /// (int, i1) -> int
+    cttz: PerIntWidth<FunctionValue<'a>>,
+
+    /// `llvm.fptosi.sat` at each pair of float type and integer width.
+    ///
+    /// (float) -> int
+    fptosi_sat: PerFloatType<PerIntWidth<FunctionValue<'a>>>,
+
+    /// `llvm.fptoui.sat` at each pair of float type and integer width.
+    ///
+    /// (float) -> int
+    fptoui_sat: PerFloatType<PerIntWidth<FunctionValue<'a>>>,
 }
 
 impl<'a> fountain_pen::Tal for Tal<'a> {
@@ -452,16 +528,32 @@ impl<'a> fountain_pen::Tal for Tal<'a> {
         self.umul_with_overflow_i64
     }
 
-    fn ctpop_i64(&self) -> Self::FunctionValue {
-        self.ctpop_i64
+    fn ctpop(&self, width: num_type::IntWidth) -> Self::FunctionValue {
+        self.ctpop[width]
     }
 
-    fn ctlz_i64(&self) -> Self::FunctionValue {
-        self.ctlz_i64
+    fn ctlz(&self, width: num_type::IntWidth) -> Self::FunctionValue {
+        self.ctlz[width]
     }
 
-    fn cttz_i64(&self) -> Self::FunctionValue {
-        self.cttz_i64
+    fn cttz(&self, width: num_type::IntWidth) -> Self::FunctionValue {
+        self.cttz[width]
+    }
+
+    fn fptosi_sat(
+        &self,
+        float: num_type::FloatType,
+        width: num_type::IntWidth,
+    ) -> Self::FunctionValue {
+        self.fptosi_sat[float][width]
+    }
+
+    fn fptoui_sat(
+        &self,
+        float: num_type::FloatType,
+        width: num_type::IntWidth,
+    ) -> Self::FunctionValue {
+        self.fptoui_sat[float][width]
     }
 }
 
@@ -660,21 +752,45 @@ impl<'a> Tal<'a> {
                 .fn_type(&[i64_t.into(), i64_t.into()], false),
             Some(Linkage::External),
         );
-        let ctpop_i64 = module.add_function(
-            "llvm.ctpop.i64",
-            i64_t.fn_type(&[i64_t.into()], false),
-            Some(Linkage::External),
-        );
-        let ctlz_i64 = module.add_function(
-            "llvm.ctlz.i64",
-            i64_t.fn_type(&[i64_t.into(), i1_t.into()], false),
-            Some(Linkage::External),
-        );
-        let cttz_i64 = module.add_function(
-            "llvm.cttz.i64",
-            i64_t.fn_type(&[i64_t.into(), i1_t.into()], false),
-            Some(Linkage::External),
-        );
+        let ctpop = PerIntWidth::new(|width| {
+            let int_t = int_t(context, width);
+            FunctionValue(module.add_function(
+                &format!("llvm.ctpop.i{}", width.bits()),
+                int_t.fn_type(&[int_t.into()], false),
+                Some(Linkage::External),
+            ))
+        });
+        let ctlz = PerIntWidth::new(|width| {
+            let int_t = int_t(context, width);
+            FunctionValue(module.add_function(
+                &format!("llvm.ctlz.i{}", width.bits()),
+                int_t.fn_type(&[int_t.into(), i1_t.into()], false),
+                Some(Linkage::External),
+            ))
+        });
+        let cttz = PerIntWidth::new(|width| {
+            let int_t = int_t(context, width);
+            FunctionValue(module.add_function(
+                &format!("llvm.cttz.i{}", width.bits()),
+                int_t.fn_type(&[int_t.into(), i1_t.into()], false),
+                Some(Linkage::External),
+            ))
+        });
+        // `op` is `fptosi` or `fptoui`; both families are overloaded by the integer and float
+        // widths.
+        let declare_fp_to_int_sat = |op: &str| {
+            PerFloatType::new(|float| {
+                PerIntWidth::new(|width| {
+                    FunctionValue(module.add_function(
+                        &format!("llvm.{}.sat.i{}.f{}", op, width.bits(), float.bits()),
+                        int_t(context, width).fn_type(&[float_t(context, float).into()], false),
+                        Some(Linkage::External),
+                    ))
+                })
+            })
+        };
+        let fptosi_sat = declare_fp_to_int_sat("fptosi");
+        let fptoui_sat = declare_fp_to_int_sat("fptoui");
 
         let prof_rc = if profile_record_rc {
             Some(ProfileRc::declare(context, module))
@@ -709,9 +825,11 @@ impl<'a> Tal<'a> {
 
             expect_i1: FunctionValue(expect_i1),
             umul_with_overflow_i64: FunctionValue(umul_with_overflow_i64),
-            ctpop_i64: FunctionValue(ctpop_i64),
-            ctlz_i64: FunctionValue(ctlz_i64),
-            cttz_i64: FunctionValue(cttz_i64),
+            ctpop,
+            ctlz,
+            cttz,
+            fptosi_sat,
+            fptoui_sat,
         }
     }
 }
@@ -768,6 +886,27 @@ fn usize_t<'a>(context: &'a inkwell::context::Context, target: &TargetData) -> I
     let bits_per_byte = 8;
     let ptr_size = target.get_pointer_byte_size(Some(AddressSpace::default())) * bits_per_byte;
     return context.custom_width_int_type(ptr_size);
+}
+
+/// The LLVM type of the Morphic integer types of a width, which LLVM doesn't tell apart.
+fn int_t<'a>(context: &'a inkwell::context::Context, width: num_type::IntWidth) -> IntType<'a> {
+    match width {
+        num_type::IntWidth::Bits8 => context.i8_type(),
+        num_type::IntWidth::Bits16 => context.i16_type(),
+        num_type::IntWidth::Bits32 => context.i32_type(),
+        num_type::IntWidth::Bits64 => context.i64_type(),
+    }
+}
+
+/// The LLVM type of a Morphic float type.
+fn float_t<'a>(
+    context: &'a inkwell::context::Context,
+    float: num_type::FloatType,
+) -> inkwell::types::FloatType<'a> {
+    match float {
+        num_type::FloatType::F32 => context.f32_type(),
+        num_type::FloatType::F64 => context.f64_type(),
+    }
 }
 
 macro_rules! impl_int_cmp {
@@ -966,6 +1105,10 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
         Type(self.context.i8_type().into())
     }
 
+    fn i16_t(&self) -> Self::Type {
+        Type(self.context.i16_type().into())
+    }
+
     fn i32_t(&self) -> Self::Type {
         Type(self.context.i32_type().into())
     }
@@ -1025,6 +1168,10 @@ impl<'a, 'b> fountain_pen::Context for Context<'a, 'b> {
 
     fn i8(&self, val: u8) -> Value<'a> {
         Value(self.context.i8_type().const_int(val as u64, false).into())
+    }
+
+    fn i16(&self, val: u16) -> Value<'a> {
+        Value(self.context.i16_type().const_int(val as u64, false).into())
     }
 
     fn i32(&self, val: u32) -> Value<'a> {
@@ -1933,6 +2080,71 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         )
     }
 
+    fn fp_extend(&self, result_type: Type<'a>, value: Value<'a>) -> Value<'a> {
+        Value(
+            self.builder
+                .build_float_ext(
+                    value.0.into_float_value(),
+                    result_type.0.into_float_type(),
+                    "fp_extend",
+                )
+                .unwrap()
+                .into(),
+        )
+    }
+
+    fn fp_truncate(&self, result_type: Type<'a>, value: Value<'a>) -> Value<'a> {
+        Value(
+            self.builder
+                .build_float_trunc(
+                    value.0.into_float_value(),
+                    result_type.0.into_float_type(),
+                    "fp_truncate",
+                )
+                .unwrap()
+                .into(),
+        )
+    }
+
+    fn ui_to_fp(&self, result_type: Type<'a>, value: Value<'a>) -> Value<'a> {
+        Value(
+            self.builder
+                .build_unsigned_int_to_float(
+                    value.0.into_int_value(),
+                    result_type.0.into_float_type(),
+                    "ui_to_fp",
+                )
+                .unwrap()
+                .into(),
+        )
+    }
+
+    fn si_to_fp(&self, result_type: Type<'a>, value: Value<'a>) -> Value<'a> {
+        Value(
+            self.builder
+                .build_signed_int_to_float(
+                    value.0.into_int_value(),
+                    result_type.0.into_float_type(),
+                    "si_to_fp",
+                )
+                .unwrap()
+                .into(),
+        )
+    }
+
+    fn fp_to_int_sat(
+        &self,
+        float: num_type::FloatType,
+        int: num_type::IntType,
+        value: Value<'a>,
+    ) -> Value<'a> {
+        let decls = match int.signedness() {
+            Signedness::Signed => &self.context.tal.fptosi_sat,
+            Signedness::Unsigned => &self.context.tal.fptoui_sat,
+        };
+        self.call(decls[float][int.width()], &[value])
+    }
+
     fn sll(&self, arg1: Value<'a>, arg2: Value<'a>) -> Value<'a> {
         Value(
             self.builder
@@ -2031,18 +2243,18 @@ impl<'a, 'b> fountain_pen::Scope for Scope<'a, 'b> {
         )
     }
 
-    fn ctpop(&self, arg: Value<'a>) -> Value<'a> {
-        self.call(self.context.tal.ctpop_i64, &[arg])
+    fn ctpop(&self, int: num_type::IntType, arg: Value<'a>) -> Value<'a> {
+        self.call(self.context.tal.ctpop[int.width()], &[arg])
     }
 
-    fn ctlz(&self, arg: Value<'a>) -> Value<'a> {
+    fn ctlz(&self, int: num_type::IntType, arg: Value<'a>) -> Value<'a> {
         let zero_is_poison = self.i1(false);
-        self.call(self.context.tal.ctlz_i64, &[arg, zero_is_poison])
+        self.call(self.context.tal.ctlz[int.width()], &[arg, zero_is_poison])
     }
 
-    fn cttz(&self, arg: Value<'a>) -> Value<'a> {
+    fn cttz(&self, int: num_type::IntType, arg: Value<'a>) -> Value<'a> {
         let zero_is_poison = self.i1(false);
-        self.call(self.context.tal.cttz_i64, &[arg, zero_is_poison])
+        self.call(self.context.tal.cttz[int.width()], &[arg, zero_is_poison])
     }
 }
 

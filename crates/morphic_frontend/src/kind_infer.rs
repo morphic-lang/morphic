@@ -257,9 +257,7 @@ struct Inference {
 impl Inference {
     fn ctor_kind(&self, id: res::TypeId) -> KindTerm {
         match id {
-            res::TypeId::Bool | res::TypeId::Byte | res::TypeId::Int | res::TypeId::Float => {
-                KindTerm::Type
-            }
+            res::TypeId::Bool | res::TypeId::Num(_) => KindTerm::Type,
             res::TypeId::Array => {
                 KindTerm::Arrow(Box::new(KindTerm::Type), Box::new(KindTerm::Type))
             }
@@ -417,11 +415,7 @@ impl Inference {
         enclosing: Option<(usize, usize)>,
     ) -> Result<(), RawError> {
         match pat {
-            res::Pattern::Any
-            | res::Pattern::Var
-            | res::Pattern::ByteConst(_)
-            | res::Pattern::IntConst(_)
-            | res::Pattern::FloatConst(_) => Ok(()),
+            res::Pattern::Any | res::Pattern::Var | res::Pattern::NumConst(_) => Ok(()),
 
             res::Pattern::Tuple(items) => {
                 for item in items {
@@ -457,11 +451,7 @@ impl Inference {
         expr: &res::Expr,
     ) -> Result<(), RawError> {
         match expr {
-            res::Expr::Global(_)
-            | res::Expr::Local(_)
-            | res::Expr::ByteLit(_)
-            | res::Expr::IntLit(_)
-            | res::Expr::FloatLit(_) => Ok(()),
+            res::Expr::Global(_) | res::Expr::Local(_) | res::Expr::NumLit(_) => Ok(()),
 
             res::Expr::Tuple(items) | res::Expr::ArrayLit(items) => {
                 for item in items {

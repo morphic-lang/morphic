@@ -1,4 +1,5 @@
 use crate::data::intrinsics::Intrinsic;
+use crate::data::num_type::{NumLit, NumType};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
@@ -11,9 +12,7 @@ pub struct CustomTypeId(pub usize);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bool,
-    Byte,
-    Int,
-    Float,
+    Num(NumType),
     Array(Box<Type>),
     Tuple(Vec<Type>),
     Func(Purity, Box<Type>, Box<Type>),
@@ -58,9 +57,7 @@ pub enum Expr {
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]
@@ -70,9 +67,7 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(CustomTypeId, res::VariantId, Option<Box<Pattern>>),
     BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 }
 
 #[derive(Clone, Debug)]

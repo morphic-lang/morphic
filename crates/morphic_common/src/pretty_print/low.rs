@@ -1,11 +1,10 @@
-use crate::data::first_order_ast::NumType;
 use crate::data::low_ast::{ArrayOp, CustomFuncId, Expr, FuncDef, IoOp, LocalId, Program, Type};
 use crate::data::obligation_annot_ast::CustomTypeId;
 use crate::data::rc_specialized_ast::RcOp;
 use crate::data::tail_rec_ast::TailFuncId;
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{
-    write_metadata, CustomTypeRenderer, FuncRenderer, TailFuncRenderer,
+    write_metadata, write_num_lit, CustomTypeRenderer, FuncRenderer, TailFuncRenderer,
 };
 use std::io;
 use std::io::Write;
@@ -39,9 +38,7 @@ fn write_type(
 ) -> io::Result<()> {
     match type_ {
         Type::Bool => write![w, "Bool"],
-        Type::Num(NumType::Byte) => write![w, "Byte"],
-        Type::Num(NumType::Int) => write![w, "Int"],
-        Type::Num(NumType::Float) => write![w, "Float"],
+        Type::Num(num_type) => write![w, "{}", num_type.name()],
         Type::Array(item_type) => {
             write![w, "Array ("]?;
             write_type(w, type_renderer, item_type)?;
@@ -259,9 +256,7 @@ fn write_expr(
         Expr::Panic(_ret_type, _input_type, local_id) => write_single(w, "panic", local_id),
 
         Expr::BoolLit(val) => write![w, "{}", if *val { "True" } else { "False" }],
-        Expr::ByteLit(val) => write![w, "{:?}", (*val as char)],
-        Expr::IntLit(val) => write![w, "{}", val],
-        Expr::FloatLit(val) => write![w, "{}", val],
+        Expr::NumLit(lit) => write_num_lit(w, *lit),
     }
 }
 

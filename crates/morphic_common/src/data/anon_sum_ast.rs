@@ -12,6 +12,7 @@
 
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::{self as intrs, Intrinsic};
+use crate::data::num_type::NumLit;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -109,9 +110,7 @@ pub enum Expr {
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]
@@ -130,9 +129,7 @@ pub enum Pattern {
     ),
     Custom(first_ord::CustomTypeId, Box<Pattern>),
     BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 }
 
 #[derive(Clone, Debug)]

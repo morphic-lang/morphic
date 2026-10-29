@@ -1,10 +1,10 @@
 // expect-error: Cyclic Superclass @ 6:17
 trait A a where B a {
-  a(x: a): Int,
+  a(x: a): I64,
 }
 
 trait B a where A a {
-  b(x: a): Int,
+  b(x: a): I64,
 }
 
 proc main(): () = ()

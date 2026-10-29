@@ -7,12 +7,12 @@ compiler in the `compile` function, which invokes each pass of the compiler and
 threads the appropriate state between them.
 
 The compiler is primarily structured as a sequence alternating **abstract interpretation
-passes** which analyze code, synthesize "type variables" (think: converting `Array<Int>` to
-`Array<repr, Int>` where `repr` can concretely be either `persistent` or `flat`) with constraints based on
+passes** which analyze code, synthesize "type variables" (think: converting `Array<I64>` to
+`Array<repr, I64>` where `repr` can concretely be either `persistent` or `flat`) with constraints based on
 that analysis, and **monomorphization passes** which generate specialized instances of
 each function to meet the type taken on by those "type variables" at each callsite
-(think: generating `sum_mut : Array<flat, Int> -> Int` and `sum_immut : Array<persistent, Int> -> Int` from
-a single `sum : Array<Int> -> Int` function).
+(think: generating `sum_mut : Array<flat, I64> -> I64` and `sum_immut : Array<persistent, I64> -> I64` from
+a single `sum : Array<I64> -> I64` function).
 
 In most of these passes there is only one public function, i.e. the one invoked in `fn compile`.
 
@@ -36,8 +36,8 @@ In most of these passes there is only one public function, i.e. the one invoked 
   types of variables they capture alongside argument types.
 
 - `fn annot_closures::annot_closures` synthesizes _type variables for the types of closure-environments
-  for each lambda callsite_. In other words, what was before a parameter with a concrete type `Int -> Int`
-  is now a generic type, which can be thought of as `forall T. Closure<Arg=Int, Ret=Int, Env=T>` (in pseudocode).
+  for each lambda callsite_. In other words, what was before a parameter with a concrete type `I64 -> I64`
+  is now a generic type, which can be thought of as `forall T. Closure<Arg=I64, Ret=I64, Env=T>` (in pseudocode).
 
   (Note that a lot of the complexity comes from counting the appropriate number
   of type variables to generate in mutually recursive functions, i.e. in strongly-connected-components of the

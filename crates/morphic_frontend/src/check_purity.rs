@@ -93,11 +93,7 @@ fn check_expr(ctx: Purity, expr: &res::Expr) -> Result<(), RawError> {
             Ok(())
         }
 
-        res::Expr::ByteLit(_) => Ok(()),
-
-        res::Expr::IntLit(_) => Ok(()),
-
-        res::Expr::FloatLit(_) => Ok(()),
+        res::Expr::NumLit(_) => Ok(()),
 
         res::Expr::Span(lo, hi, body) => check_expr(ctx, body).map_err(locate_span(*lo, *hi)),
     }

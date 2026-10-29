@@ -3,6 +3,7 @@ use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast as low;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast::Mode;
+use crate::data::num_type::NumLit;
 use crate::data::obligation_annot_ast::{CustomFuncId, CustomTypeId};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -142,9 +143,7 @@ pub enum Expr {
         Vec<LocalId>, // Elements
     ),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]

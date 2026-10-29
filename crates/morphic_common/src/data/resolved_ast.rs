@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::data::builtin_traits::{BuiltinImpl, BuiltinTrait};
 use crate::data::intrinsics::Intrinsic;
+use crate::data::num_type::{NumLit, NumType};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
@@ -17,9 +18,7 @@ pub struct ModId(pub usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TypeId {
     Bool,
-    Byte,
-    Int,
-    Float,
+    Num(NumType),
     Array,
     Custom(CustomTypeId),
 }
@@ -521,9 +520,7 @@ pub enum Expr {
     LetMany(Vec<(Pattern, Expr)>, Box<Expr>),
 
     ArrayLit(Vec<Expr>),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 
     Span(usize, usize, Box<Expr>),
 }
@@ -535,9 +532,7 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(TypeId, VariantId, Option<Box<Pattern>>),
     Annot(Box<Pattern>, Type),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 
     Span(usize, usize, Box<Pattern>),
 }

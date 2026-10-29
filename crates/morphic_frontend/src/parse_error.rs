@@ -11,9 +11,7 @@ fn format_token_name(name: &str) -> &str {
     match name {
         "\"UpperName\"" => "uppercase name",
         "\"LowerName\"" => "lowercase name",
-        "\"FloatLit\"" => "float literal",
-        "\"ByteLit\"" => "byte literal",
-        "\"IntLit\"" => "int literal",
+        "\"NumLit\"" => "number literal",
         "\"StringLit\"" => "string literal",
         // Elder Backslash
         "\"\\\\\"" => "\"\\\"",

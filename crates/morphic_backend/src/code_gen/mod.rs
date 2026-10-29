@@ -35,12 +35,14 @@ use morphic_common::data::first_order_ast as first_ord;
 use morphic_common::data::intrinsics::Intrinsic;
 use morphic_common::data::low_ast as low;
 use morphic_common::data::mode_annot_ast::Mode;
+use morphic_common::data::num_type::{IntType, NumKind, NumLit, Signedness};
 use morphic_common::data::profile as prof;
 use morphic_common::data::rc_specialized_ast::{ModeScheme, ModeSchemeId, RcOp};
 use morphic_common::data::tail_rec_ast::TailFuncId;
 use morphic_common::pseudoprocess::{spawn_process, Child, Stdio, ValgrindConfig};
 use morphic_common::util::progress_logger::{ProgressLogger, ProgressSession};
 use morphic_common::{config as cfg, progress_ui};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
@@ -264,11 +266,11 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
 
         let owned_string = ModeScheme::Array(
             Mode::Owned,
-            Box::new(ModeScheme::Num(first_ord::NumType::Byte)),
+            Box::new(ModeScheme::Num(first_ord::NumType::U8)),
         );
         let borrowed_string = ModeScheme::Array(
             Mode::Borrowed,
-            Box::new(ModeScheme::Num(first_ord::NumType::Byte)),
+            Box::new(ModeScheme::Num(first_ord::NumType::U8)),
         );
 
         let (owned_string_builtin, borrowed_string_builtin, array_io) = match globals.array_kind {
@@ -389,9 +391,7 @@ impl<'a, T: Context + 'a> Instances<'a, T> {
 fn low_type_in_context<T: Context>(globals: &Globals<T>, type_: &low::Type) -> T::Type {
     match type_ {
         low::Type::Bool => globals.context.i1_t(),
-        low::Type::Num(first_ord::NumType::Byte) => globals.context.i8_t(),
-        low::Type::Num(first_ord::NumType::Int) => globals.context.i64_t(),
-        low::Type::Num(first_ord::NumType::Float) => globals.context.f64_t(),
+        low::Type::Num(num) => globals.context.num_t(*num),
         low::Type::Tuple(item_types) => globals.context.struct_t(
             &item_types
                 .iter()
@@ -540,9 +540,10 @@ fn gen_rc_op<T: Context>(
     }
 }
 
-// Helper function to check divisor for non-zero using s._ API
-fn check_divisor_nonzero<T: Scope>(s: &T, divisor: T::Value) {
-    s.if_(s.eq(divisor, s.i64(0)), |s| {
+// Helper function to check divisor for non-zero using s._ API. `zero` must be a zero constant of
+// the divisor's type.
+fn check_divisor_nonzero<T: Scope>(s: &T, divisor: T::Value, zero: T::Value) {
+    s.if_(s.eq(divisor, zero), |s| {
         s.panic("panicked due to division by zero\n", &[]);
     });
 }
@@ -552,6 +553,14 @@ fn extract_binop_args<T: Scope>(s: &T, args: T::Value) -> (T::Value, T::Value) {
     let lhs = s.field(args, 0);
     let rhs = s.field(args, 1);
     (lhs, rhs)
+}
+
+/// Reduces a shift amount mod the operand's width, as the shift intrinsics require.  Shifting by
+/// at least the width produces a poison value, so we mask the amount by `width - 1`.  This appears
+/// to be what rustc does.
+fn mask_shift_amount<T: Scope>(s: &T, int: IntType, amount: T::Value) -> T::Value {
+    let mask = s.int(int, u64::from(int.bits() - 1));
+    s.and(amount, mask)
 }
 
 fn gen_expr<T: Context>(
@@ -657,163 +666,150 @@ fn gen_expr<T: Context>(
             }
             s.make_tup(&[])
         }
-        E::Intrinsic(intr, local_id) => match intr {
-            Intrinsic::Not => s.not(locals[local_id]),
-            Intrinsic::AddByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.add(lhs, rhs)
+        E::Intrinsic(intr, local_id) => {
+            let arg = locals[local_id];
+            match *intr {
+                Intrinsic::Add(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(_) => s.add(lhs, rhs),
+                        NumKind::Float(_) => s.fadd(lhs, rhs),
+                    }
+                }
+                Intrinsic::Sub(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(_) => s.sub(lhs, rhs),
+                        NumKind::Float(_) => s.fsub(lhs, rhs),
+                    }
+                }
+                Intrinsic::Mul(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(_) => s.mul(lhs, rhs),
+                        NumKind::Float(_) => s.fmul(lhs, rhs),
+                    }
+                }
+                Intrinsic::Div(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(int) => {
+                            check_divisor_nonzero(s, rhs, s.int(int, 0));
+                            match int.signedness() {
+                                Signedness::Unsigned => s.udiv(lhs, rhs),
+                                Signedness::Signed => s.sdiv(lhs, rhs),
+                            }
+                        }
+                        NumKind::Float(_) => s.fdiv(lhs, rhs),
+                    }
+                }
+                Intrinsic::Neg(num) => match num.kind() {
+                    NumKind::Int(_) => s.neg(arg),
+                    NumKind::Float(_) => s.fneg(arg),
+                },
+                Intrinsic::Eq(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(_) => s.eq(lhs, rhs),
+                        NumKind::Float(_) => s.oeq(lhs, rhs),
+                    }
+                }
+                Intrinsic::Lt(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(int) => match int.signedness() {
+                            Signedness::Unsigned => s.ult(lhs, rhs),
+                            Signedness::Signed => s.slt(lhs, rhs),
+                        },
+                        NumKind::Float(_) => s.olt(lhs, rhs),
+                    }
+                }
+                Intrinsic::Lte(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(int) => match int.signedness() {
+                            Signedness::Unsigned => s.ule(lhs, rhs),
+                            Signedness::Signed => s.sle(lhs, rhs),
+                        },
+                        NumKind::Float(_) => s.ole(lhs, rhs),
+                    }
+                }
+                Intrinsic::Gt(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(int) => match int.signedness() {
+                            Signedness::Unsigned => s.ugt(lhs, rhs),
+                            Signedness::Signed => s.sgt(lhs, rhs),
+                        },
+                        NumKind::Float(_) => s.ogt(lhs, rhs),
+                    }
+                }
+                Intrinsic::Gte(num) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    match num.kind() {
+                        NumKind::Int(int) => match int.signedness() {
+                            Signedness::Unsigned => s.uge(lhs, rhs),
+                            Signedness::Signed => s.sge(lhs, rhs),
+                        },
+                        NumKind::Float(_) => s.oge(lhs, rhs),
+                    }
+                }
+                Intrinsic::EqBool => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    s.eq(lhs, rhs)
+                }
+                Intrinsic::Not => s.not(arg),
+                Intrinsic::BitAnd(_) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    s.and(lhs, rhs)
+                }
+                Intrinsic::BitOr(_) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    s.or(lhs, rhs)
+                }
+                Intrinsic::BitXor(_) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    s.xor(lhs, rhs)
+                }
+                Intrinsic::BitNot(_) => s.not(arg),
+                Intrinsic::ShiftLeft(int) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    s.sll(lhs, mask_shift_amount(s, int, rhs))
+                }
+                Intrinsic::ShiftRight(int) => {
+                    let (lhs, rhs) = extract_binop_args(s, arg);
+                    s.srl(lhs, mask_shift_amount(s, int, rhs))
+                }
+                Intrinsic::Ctpop(int) => s.ctpop(int, arg),
+                Intrinsic::Ctlz(int) => s.ctlz(int, arg),
+                Intrinsic::Cttz(int) => s.cttz(int, arg),
+                Intrinsic::Convert(from, to) => match (from.kind(), to.kind()) {
+                    (NumKind::Int(from), NumKind::Int(to)) => match to.bits().cmp(&from.bits()) {
+                        Ordering::Greater => match from.signedness() {
+                            Signedness::Unsigned => s.z_extend(s.int_t(to), arg),
+                            Signedness::Signed => s.s_extend(s.int_t(to), arg),
+                        },
+                        Ordering::Less => s.truncate(s.int_t(to), arg),
+                        // The types differ only in signedness, which LLVM integers don't carry,
+                        // so the value already has the target type.
+                        Ordering::Equal => arg,
+                    },
+                    (NumKind::Int(from), NumKind::Float(to)) => match from.signedness() {
+                        Signedness::Unsigned => s.ui_to_fp(s.float_t(to), arg),
+                        Signedness::Signed => s.si_to_fp(s.float_t(to), arg),
+                    },
+                    (NumKind::Float(from), NumKind::Int(to)) => s.fp_to_int_sat(from, to, arg),
+                    (NumKind::Float(from), NumKind::Float(to)) => {
+                        match to.bits().cmp(&from.bits()) {
+                            Ordering::Greater => s.fp_extend(s.float_t(to), arg),
+                            Ordering::Less => s.fp_truncate(s.float_t(to), arg),
+                            // The two float types have different widths.
+                            Ordering::Equal => unreachable!(),
+                        }
+                    }
+                },
             }
-            Intrinsic::AddInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.add(lhs, rhs)
-            }
-            Intrinsic::AddFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.fadd(lhs, rhs)
-            }
-            Intrinsic::SubByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.sub(lhs, rhs)
-            }
-            Intrinsic::SubInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.sub(lhs, rhs)
-            }
-            Intrinsic::SubFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.fsub(lhs, rhs)
-            }
-            Intrinsic::MulByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.mul(lhs, rhs)
-            }
-            Intrinsic::MulInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.mul(lhs, rhs)
-            }
-            Intrinsic::MulFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.fmul(lhs, rhs)
-            }
-            Intrinsic::DivByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                check_divisor_nonzero(s, rhs);
-                s.udiv(lhs, rhs)
-            }
-            Intrinsic::DivInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                check_divisor_nonzero(s, rhs);
-                s.sdiv(lhs, rhs)
-            }
-            Intrinsic::DivFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.fdiv(lhs, rhs)
-            }
-            Intrinsic::LtByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.ult(lhs, rhs)
-            }
-            Intrinsic::LtInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.slt(lhs, rhs)
-            }
-            Intrinsic::LtFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.olt(lhs, rhs)
-            }
-            Intrinsic::LteByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.ule(lhs, rhs)
-            }
-            Intrinsic::LteInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.sle(lhs, rhs)
-            }
-            Intrinsic::LteFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.ole(lhs, rhs)
-            }
-            Intrinsic::GtByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.ugt(lhs, rhs)
-            }
-            Intrinsic::GtInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.sgt(lhs, rhs)
-            }
-            Intrinsic::GtFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.ogt(lhs, rhs)
-            }
-            Intrinsic::GteByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.uge(lhs, rhs)
-            }
-            Intrinsic::GteInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.sge(lhs, rhs)
-            }
-            Intrinsic::GteFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.oge(lhs, rhs)
-            }
-            Intrinsic::EqByte => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.eq(lhs, rhs)
-            }
-            Intrinsic::EqInt => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.eq(lhs, rhs)
-            }
-            Intrinsic::EqFloat => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.oeq(lhs, rhs)
-            }
-            Intrinsic::EqBool => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.eq(lhs, rhs)
-            }
-            Intrinsic::NegByte => s.neg(locals[local_id]),
-            Intrinsic::NegInt => s.neg(locals[local_id]),
-            Intrinsic::NegFloat => s.fneg(locals[local_id]),
-            Intrinsic::ByteToInt => s.z_extend(s.i64_t(), locals[local_id]),
-            Intrinsic::ByteToIntSigned => s.s_extend(s.i64_t(), locals[local_id]),
-            Intrinsic::IntToByte => s.truncate(s.i8_t(), locals[local_id]),
-            Intrinsic::IntShiftLeft => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
-                // 1 (which is the same as taking the rhs mod 64). This appears to be what rustc
-                // does.
-                let mask = s.i64(63);
-                let masked_rhs = s.and(rhs, mask);
-                s.sll(lhs, masked_rhs)
-            }
-            Intrinsic::IntShiftRight => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                // Shifting an i64 by >= 64 bits produces a poison value, so we mask the rhs by 64 -
-                // 1 (which is the same as taking the rhs mod 64). This appears to be what rustc
-                // does.
-                let mask = s.i64(63);
-                let masked_rhs = s.and(rhs, mask);
-                s.srl(lhs, masked_rhs)
-            }
-            Intrinsic::IntBitAnd => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.and(lhs, rhs)
-            }
-            Intrinsic::IntBitOr => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.or(lhs, rhs)
-            }
-            Intrinsic::IntBitXor => {
-                let (lhs, rhs) = extract_binop_args(s, locals[local_id]);
-                s.xor(lhs, rhs)
-            }
-            Intrinsic::IntBitNot => s.not(locals[local_id]),
-            Intrinsic::IntCtpop => s.ctpop(locals[local_id]),
-            Intrinsic::IntCtlz => s.ctlz(locals[local_id]),
-            Intrinsic::IntCttz => s.cttz(locals[local_id]),
-        },
+        }
         E::ArrayOp(mode_scheme, array_op) => {
             let builtin = instances.get_array(globals, mode_scheme);
             match array_op {
@@ -855,9 +851,18 @@ fn gen_expr<T: Context>(
             s.undef(low_type_in_context(globals, ret_type))
         }
         E::BoolLit(val) => s.i1(*val),
-        E::ByteLit(val) => s.i8(*val),
-        E::IntLit(val) => s.i64(*val as u64),
-        E::FloatLit(val) => s.f64(*val),
+        E::NumLit(lit) => match lit {
+            NumLit::I8(val) => s.i8(*val as u8),
+            NumLit::I16(val) => s.i16(*val as u16),
+            NumLit::I32(val) => s.i32(*val as u32),
+            NumLit::I64(val) => s.i64(*val as u64),
+            NumLit::U8(val) => s.i8(*val),
+            NumLit::U16(val) => s.i16(*val),
+            NumLit::U32(val) => s.i32(*val),
+            NumLit::U64(val) => s.i64(*val),
+            NumLit::F32(val) => s.f32(*val),
+            NumLit::F64(val) => s.f64(*val),
+        },
     }
 }
 

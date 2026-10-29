@@ -2,14 +2,14 @@ import Array
 import Option expose { Option { Some, None } }
 import Iter expose { Iter }
 
-pub bool_to_string(b: Bool): Array Byte =
+pub bool_to_string(b: Bool): Array U8 =
   if b {
     "True"
   } else {
     "False"
   }
 
-nat_to_string(i: Int): Array Byte =
+nat_to_string(i: I64): Array U8 =
   let digit_to_string = \d ->
     match d {
         0 -> "0",
@@ -30,7 +30,7 @@ nat_to_string(i: Int): Array Byte =
     Array.concat(nat_to_string(i / 10), digit_to_string(i - i / 10 * 10))
   }
 
-pub int_to_string(i: Int): Array Byte =
+pub i64_to_string(i: I64): Array U8 =
   if i = 0 {
     "0"
   } else if i < 0 {
@@ -39,25 +39,25 @@ pub int_to_string(i: Int): Array Byte =
     nat_to_string(i)
   }
 
-pub digit_ascii_base: Byte = 48b
+pub digit_ascii_base: U8 = 48u8
 
-pub digit_to_nat(char: Byte): Option Int =
+pub digit_to_nat(char: U8): Option I64 =
   match char {
     // 0 is ascii code 48
-    48b -> Some(0),
-    49b -> Some(1),
-    50b -> Some(2),
-    51b -> Some(3),
-    52b -> Some(4),
-    53b -> Some(5),
-    54b -> Some(6),
-    55b -> Some(7),
-    56b -> Some(8),
-    57b -> Some(9),
+    48u8 -> Some(0),
+    49u8 -> Some(1),
+    50u8 -> Some(2),
+    51u8 -> Some(3),
+    52u8 -> Some(4),
+    53u8 -> Some(5),
+    54u8 -> Some(6),
+    55u8 -> Some(7),
+    56u8 -> Some(8),
+    57u8 -> Some(9),
     _ -> None,
   }
 
-chars_to_nat(chars: Iter Byte): Option Int =
+chars_to_nat(chars: Iter U8): Option I64 =
   match Iter.next(chars) {
     None ->
       None,
@@ -73,10 +73,10 @@ chars_to_nat(chars: Iter Byte): Option Int =
       )
   }
 
-pub string_to_nat(str: Array Byte): Option Int =
+pub string_to_nat(str: Array U8): Option I64 =
   chars_to_nat(Iter.items(str))
 
-pub string_to_int(str: Array Byte): Option Int =
+pub string_to_i64(str: Array U8): Option I64 =
   match Iter.items(str) |> Iter.next() {
     Some(first, rest) ->
       if first = get("-", 0) {
@@ -89,11 +89,11 @@ pub string_to_int(str: Array Byte): Option Int =
       None,
   }
 
-pub equal(a: Array Byte, b: Array Byte): Bool =
+pub equal(a: Array U8, b: Array U8): Bool =
   Array.equal(a, b, \(x, y) -> x = y)
 
-pub concat(x : Array Byte, y : Array Byte): Array Byte = Array.concat(x, y)
+pub concat(x : Array U8, y : Array U8): Array U8 = Array.concat(x, y)
 
-pub join(xs: Array (Array Byte), sep: Array Byte): Array Byte =
+pub join(xs: Array (Array U8), sep: Array U8): Array U8 =
   (Iter.join(Iter.items(xs) |> Iter.map(Iter.items), Iter.items(sep)) |> Array.from_iter())
   

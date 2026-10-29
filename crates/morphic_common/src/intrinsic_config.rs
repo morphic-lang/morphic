@@ -1,116 +1,44 @@
-use crate::data::intrinsics::*;
-use crate::data::num_type::NumType;
+use crate::data::intrinsics::{Intrinsic, Name, Signature, Type};
+use crate::data::num_type::{IntType, NumType};
 use crate::data::purity::Purity;
 
-// Names:
-
-macro_rules! define_intrinsic_to_name {
-    ($(($intrinsic : ident, $name : expr)),*) => {
-        pub fn intrinsic_to_name(intr: Intrinsic) -> Name {
-            match intr {
-                $(Intrinsic::$intrinsic => $name),*
-            }
-        }
-    };
-}
-
-macro_rules! define_intrinsic_names_const {
-    ($(($intrinsic : ident, $name : expr)),*) => {
-        pub const INTRINSIC_NAMES: &[(Intrinsic, Name)] = &[
-            $((Intrinsic::$intrinsic, $name)),*
-        ];
+/// How the source language reaches an intrinsic: the operators' intrinsics, which are the funcs
+/// of the builtin traits, are named only in IR dumps, and the rest are builtin functions.
+pub fn intrinsic_to_name(intr: Intrinsic) -> Name {
+    use Intrinsic::*;
+    let num = |num: NumType| num.name().to_lowercase();
+    let int = |int: IntType| NumType::from(int).name().to_lowercase();
+    let op = |debug_name: String| Name::Op { debug_name };
+    let func = |source_name: String| Name::Func { source_name };
+    match intr {
+        Add(t) => op(format!("add_{}", num(t))),
+        Sub(t) => op(format!("sub_{}", num(t))),
+        Mul(t) => op(format!("mul_{}", num(t))),
+        Div(t) => op(format!("div_{}", num(t))),
+        Neg(t) => op(format!("neg_{}", num(t))),
+        Eq(t) => op(format!("eq_{}", num(t))),
+        Lt(t) => op(format!("lt_{}", num(t))),
+        Lte(t) => op(format!("lte_{}", num(t))),
+        Gt(t) => op(format!("gt_{}", num(t))),
+        Gte(t) => op(format!("gte_{}", num(t))),
+        EqBool => op("eq_bool".to_owned()),
+        Not => op("not".to_owned()),
+        BitAnd(t) => op(format!("{}_bit_and", int(t))),
+        BitOr(t) => op(format!("{}_bit_or", int(t))),
+        BitXor(t) => op(format!("{}_bit_xor", int(t))),
+        BitNot(t) => op(format!("{}_bit_not", int(t))),
+        ShiftLeft(t) => op(format!("{}_shift_left", int(t))),
+        ShiftRight(t) => op(format!("{}_shift_right", int(t))),
+        Ctpop(t) => func(format!("{}_count_ones", int(t))),
+        Ctlz(t) => func(format!("{}_leading_zeros", int(t))),
+        Cttz(t) => func(format!("{}_trailing_zeros", int(t))),
+        Convert(from, to) => func(format!("{}_to_{}", num(from), num(to))),
     }
 }
 
-// Watch out!  This macro expects a trailing comma, but the macros it invokes internally do not.
-macro_rules! define_intrinsic_names {
-    ($(($intrinsic : ident, $name : expr)),*,) => {
-        define_intrinsic_to_name!($(($intrinsic, $name)),*);
-        define_intrinsic_names_const!($(($intrinsic, $name)),*);
-    };
-}
-
-const fn op_name(debug_name: &'static str) -> Name {
-    Name::Op { debug_name }
-}
-
-const fn name(source_name: &'static str) -> Name {
-    Name::Func { source_name }
-}
-
-define_intrinsic_names![
-    // Basic arithmetic ops
-    // These names are used only for IR pretty-printing
-    (AddByte, op_name("add_byte")),
-    (SubByte, op_name("sub_byte")),
-    (MulByte, op_name("mul_byte")),
-    (DivByte, op_name("div_byte")),
-    (NegByte, op_name("neg_byte")),
-    (EqByte, op_name("eq_byte")),
-    (LtByte, op_name("lt_byte")),
-    (LteByte, op_name("lte_byte")),
-    (GtByte, op_name("gt_byte")),
-    (GteByte, op_name("gte_byte")),
-    (AddInt, op_name("add_int")),
-    (SubInt, op_name("sub_int")),
-    (MulInt, op_name("mul_int")),
-    (DivInt, op_name("div_int")),
-    (NegInt, op_name("neg_int")),
-    (EqInt, op_name("eq_int")),
-    (LtInt, op_name("lt_int")),
-    (LteInt, op_name("lte_int")),
-    (GtInt, op_name("gt_int")),
-    (GteInt, op_name("gte_int")),
-    (AddFloat, op_name("add_float")),
-    (SubFloat, op_name("sub_float")),
-    (MulFloat, op_name("mul_float")),
-    (DivFloat, op_name("div_float")),
-    (NegFloat, op_name("neg_float")),
-    (EqFloat, op_name("eq_float")),
-    (LtFloat, op_name("lt_float")),
-    (LteFloat, op_name("lte_float")),
-    (GtFloat, op_name("gt_float")),
-    (GteFloat, op_name("gte_float")),
-    (EqBool, op_name("eq_bool")),
-    (Not, op_name("not")),
-    // Intrinsic numeric functions
-    // These names are used in the source language
-    (ByteToInt, name("byte_to_int")),
-    (ByteToIntSigned, name("byte_to_int_signed")),
-    (IntToByte, name("int_to_byte")),
-    (IntShiftLeft, name("int_shift_left")),
-    (IntShiftRight, name("int_shift_right")),
-    (IntBitAnd, name("int_bit_and")),
-    (IntBitOr, name("int_bit_or")),
-    (IntBitXor, name("int_bit_xor")),
-    (IntBitNot, op_name("int_bit_not")),
-    (IntCtpop, name("int_count_ones")),
-    (IntCtlz, name("int_leading_zeros")),
-    (IntCttz, name("int_trailing_zeros")),
-];
-
-// Signatures:
-
-fn bool() -> Type {
-    Type::Bool
-}
-
-fn byte() -> Type {
-    Type::Num(NumType::Byte)
-}
-
-fn int() -> Type {
-    Type::Num(NumType::Int)
-}
-
-fn float() -> Type {
-    Type::Num(NumType::Float)
-}
-
-macro_rules! tuple {
-    ($($item : expr),*) => {
-        Type::Tuple(vec![$($item),*])
-    };
+/// Every intrinsic with its name.
+pub fn intrinsic_names() -> impl Iterator<Item = (Intrinsic, Name)> {
+    Intrinsic::all().map(|intr| (intr, intrinsic_to_name(intr)))
 }
 
 fn pure(arg: Type, ret: Type) -> Signature {
@@ -121,43 +49,24 @@ fn pure(arg: Type, ret: Type) -> Signature {
     }
 }
 
-fn impure(arg: Type, ret: Type) -> Signature {
-    Signature {
-        purity: Purity::Impure,
-        arg,
-        ret,
-    }
+fn pair(left: Type, right: Type) -> Type {
+    Type::Tuple(vec![left, right])
 }
 
 pub fn intrinsic_sig(intr: Intrinsic) -> Signature {
     use Intrinsic::*;
+    let num = |num: NumType| Type::Num(num);
+    let int = |int: IntType| Type::Num(NumType::from(int));
     match intr {
-        AddByte | SubByte | MulByte | DivByte => pure(tuple!(byte(), byte()), byte()),
-        AddInt | SubInt | MulInt | DivInt => pure(tuple!(int(), int()), int()),
-        AddFloat | SubFloat | MulFloat | DivFloat => pure(tuple!(float(), float()), float()),
-
-        NegInt => pure(int(), int()),
-        NegByte => pure(byte(), byte()),
-        NegFloat => pure(float(), float()),
-
-        EqByte | LtByte | LteByte | GtByte | GteByte => pure(tuple!(byte(), byte()), bool()),
-        EqInt | LtInt | LteInt | GtInt | GteInt => pure(tuple!(int(), int()), bool()),
-        EqFloat | LtFloat | LteFloat | GtFloat | GteFloat => pure(tuple!(float(), float()), bool()),
-
-        EqBool => pure(tuple!(bool(), bool()), bool()),
-        Not => pure(bool(), bool()),
-
-        ByteToInt => pure(byte(), int()),
-        ByteToIntSigned => pure(byte(), int()),
-        IntToByte => pure(int(), byte()),
-        IntShiftLeft => pure(tuple!(int(), int()), int()),
-        IntShiftRight => pure(tuple!(int(), int()), int()),
-        IntBitAnd => pure(tuple!(int(), int()), int()),
-        IntBitOr => pure(tuple!(int(), int()), int()),
-        IntBitXor => pure(tuple!(int(), int()), int()),
-        IntBitNot => pure(int(), int()),
-        IntCtpop => pure(int(), int()),
-        IntCtlz => pure(int(), int()),
-        IntCttz => pure(int(), int()),
+        Add(t) | Sub(t) | Mul(t) | Div(t) => pure(pair(num(t), num(t)), num(t)),
+        Neg(t) => pure(num(t), num(t)),
+        Eq(t) | Lt(t) | Lte(t) | Gt(t) | Gte(t) => pure(pair(num(t), num(t)), Type::Bool),
+        EqBool => pure(pair(Type::Bool, Type::Bool), Type::Bool),
+        Not => pure(Type::Bool, Type::Bool),
+        BitAnd(t) | BitOr(t) | BitXor(t) | ShiftLeft(t) | ShiftRight(t) => {
+            pure(pair(int(t), int(t)), int(t))
+        }
+        BitNot(t) | Ctpop(t) | Ctlz(t) | Cttz(t) => pure(int(t), int(t)),
+        Convert(from, to) => pure(num(from), num(to)),
     }
 }

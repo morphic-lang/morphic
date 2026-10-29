@@ -1,4 +1,5 @@
 use crate::data::builtin_traits::BuiltinTraitFunc as Func;
+use crate::data::num_type::NumLit;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as syntax;
 use crate::data::visibility::Visibility;
@@ -15,9 +16,7 @@ extern {
   enum lex::Token {
     "UpperName" => lex::Token::UpperName(<String>),
     "LowerName" => lex::Token::LowerName(<String>),
-    "FloatLit" => lex::Token::FloatLit(<f64>),
-    "ByteLit" => lex::Token::ByteLit(<u8>),
-    "IntLit" => lex::Token::IntLit(<i64>),
+    "NumLit" => lex::Token::NumLit(<NumLit>),
     "StringLit" => lex::Token::StringLit(<String>),
 
     "type" => lex::Token::Type,
@@ -70,6 +69,11 @@ extern {
     "!" => lex::Token::Exclamation,
     "&&" => lex::Token::DoubleAmp,
     "||" => lex::Token::DoubleBar,
+    "&" => lex::Token::Amp,
+    "|" => lex::Token::Bar,
+    "^" => lex::Token::Caret,
+    "<<" => lex::Token::ShiftLeft,
+    ">>" => lex::Token::ShiftRight,
   }
 }
 
@@ -472,11 +476,7 @@ AtomicExpr_: syntax::Expr = {
 
   "[" <CommaSep<Expr>> "]" => syntax::Expr::ArrayLit(<>),
 
-  <"IntLit"> => syntax::Expr::IntLit(<>),
-
-  <"ByteLit"> => syntax::Expr::ByteLit(<>),
-
-  <"FloatLit"> => syntax::Expr::FloatLit(<>),
+  <"NumLit"> => syntax::Expr::NumLit(<>),
 
   <"StringLit"> => syntax::Expr::TextLit(<>),
 
@@ -590,14 +590,57 @@ ArithSumExpr: syntax::Expr = {
 
 // TODO: Translating greater-than to less-than reverses the evaluation order of the operands.
 // If the operands have side effects, this can alter the program's semantics!
-ArithCompExpr_: syntax::Expr = {
+// The bitwise operators sit between the arithmetic and the comparisons, at Rust's precedence:
+// shifts bind looser than sums, then `&`, `^`, and `|` in turn.
+ShiftExpr_: syntax::Expr = {
   <ArithSumExpr>,
 
-  <left: ArithSumExpr> "=" <right: ArithSumExpr> => syntax::binop(Func::Eq, left, right),
-  <left: ArithSumExpr> "<" <right: ArithSumExpr> => syntax::binop(Func::Lt, left, right),
-  <left: ArithSumExpr> "<=" <right: ArithSumExpr> => syntax::binop(Func::Lte, left, right),
-  <left: ArithSumExpr> ">" <right: ArithSumExpr> => syntax::binop(Func::Gt, left, right),
-  <left: ArithSumExpr> ">=" <right: ArithSumExpr> => syntax::binop(Func::Gte, left, right),
+  <left: ShiftExpr> "<<" <right: ArithSumExpr> => syntax::binop(Func::Shl, left, right),
+  <left: ShiftExpr> ">>" <right: ArithSumExpr> => syntax::binop(Func::Shr, left, right),
+};
+
+ShiftExpr: syntax::Expr = {
+  <Spanned<ShiftExpr_>>,
+};
+
+BitAndExpr_: syntax::Expr = {
+  <ShiftExpr>,
+
+  <left: BitAndExpr> "&" <right: ShiftExpr> => syntax::binop(Func::BitAnd, left, right),
+};
+
+BitAndExpr: syntax::Expr = {
+  <Spanned<BitAndExpr_>>,
+};
+
+BitXorExpr_: syntax::Expr = {
+  <BitAndExpr>,
+
+  <left: BitXorExpr> "^" <right: BitAndExpr> => syntax::binop(Func::BitXor, left, right),
+};
+
+BitXorExpr: syntax::Expr = {
+  <Spanned<BitXorExpr_>>,
+};
+
+BitOrExpr_: syntax::Expr = {
+  <BitXorExpr>,
+
+  <left: BitOrExpr> "|" <right: BitXorExpr> => syntax::binop(Func::BitOr, left, right),
+};
+
+BitOrExpr: syntax::Expr = {
+  <Spanned<BitOrExpr_>>,
+};
+
+ArithCompExpr_: syntax::Expr = {
+  <BitOrExpr>,
+
+  <left: BitOrExpr> "=" <right: BitOrExpr> => syntax::binop(Func::Eq, left, right),
+  <left: BitOrExpr> "<" <right: BitOrExpr> => syntax::binop(Func::Lt, left, right),
+  <left: BitOrExpr> "<=" <right: BitOrExpr> => syntax::binop(Func::Lte, left, right),
+  <left: BitOrExpr> ">" <right: BitOrExpr> => syntax::binop(Func::Gt, left, right),
+  <left: BitOrExpr> ">=" <right: BitOrExpr> => syntax::binop(Func::Gte, left, right),
 };
 
 ArithCompExpr: syntax::Expr = {
@@ -718,11 +761,7 @@ Pattern_: syntax::Pattern = {
   <path: QualPath> <ctor: CtorName> "(" <args: Patterns> ")" =>
     syntax::Pattern::Ctor(path, ctor, Some(Box::new(args))),
 
-  <"IntLit"> => syntax::Pattern::IntConst(<>),
-
-  <"ByteLit"> => syntax::Pattern::ByteConst(<>),
-
-  <"FloatLit"> => syntax::Pattern::FloatConst(<>),
+  <"NumLit"> => syntax::Pattern::NumConst(<>),
 };
 
 Pattern: syntax::Pattern = {
@@ -735,7 +774,7 @@ Pattern: syntax::Pattern = {
   },
 };
 
-// A pattern optionally followed by a type annotation, e.g. `x: Int`. Annotations are only
+// A pattern optionally followed by a type annotation, e.g. `x: I64`. Annotations are only
 // permitted where the token after the type is unambiguous (`=`, `,` or `)`). A bare `x: a -> b`
 // following a lambda or match arm would be ambiguous with a function type.
 AnnotPattern: syntax::Pattern = {

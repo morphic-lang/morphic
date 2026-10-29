@@ -1,7 +1,7 @@
 module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
-    module String expose { string_to_nat, int_to_string },
+    module String expose { string_to_nat, i64_to_string },
     module Option expose { Option { Some, None } },
   }
 
@@ -10,7 +10,7 @@ module Bench = file "lib/bench_common.mor" with { Core }
 
 // Trial division is inefficient, but it's a simple test of the performance of basic arithmetic and
 // control flow operations.
-has_divisor_above(n: Int, i: Int): Bool =
+has_divisor_above(n: I64, i: I64): Bool =
   if i * i > n {
     False
   } else if (n / i) * i = n {
@@ -19,10 +19,10 @@ has_divisor_above(n: Int, i: Int): Bool =
     has_divisor_above(n, i + 1)
   }
 
-is_prime(n: Int): Bool =
+is_prime(n: I64): Bool =
   ! has_divisor_above(n, 2)
 
-count_primes_rec(n: Int, accum: Int): Int =
+count_primes_rec(n: I64, accum: I64): I64 =
   if n <= 1 {
     accum
   } else if is_prime(n) {
@@ -31,7 +31,7 @@ count_primes_rec(n: Int, accum: Int): Int =
     count_primes_rec(n - 1, accum)
   }
 
-count_primes(n: Int): Int =
+count_primes(n: I64): I64 =
   count_primes_rec(n, 0)
 
 proc main(): () =
@@ -41,9 +41,9 @@ proc main(): () =
       match result {
         Some(count) ->
           do output("There are ") then
-          do output(int_to_string(count)) then
+          do output(i64_to_string(count)) then
           do output(" primes <= ") then
-          do output(int_to_string(limit)) then
+          do output(i64_to_string(limit)) then
           do output("\n"),
 
         None -> (),

@@ -6,7 +6,7 @@ pub compose(f: a -> b, g: b -> c): (a -> c) =
 pub const(x: a): b -> a =
   \_ -> x
 
-pub iterate(func: a -> a, n: Int): (a -> a) =
+pub iterate(func: a -> a, n: I64): (a -> a) =
   if n <= 0 {
     id
   } else {

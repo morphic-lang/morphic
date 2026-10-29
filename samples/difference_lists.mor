@@ -5,13 +5,13 @@ module Diff = file "lib/diff_list.mor"
   with { Core }
   expose { Diff }
 
-ints_to_diff(a: Int, b: Int, c: Int): Diff =
+ints_to_diff(a: I64, b: I64, c: I64): Diff =
   Diff.concat_diffs(
     Diff.concat_diffs(
-      Diff.string_to_diff(String.int_to_string(a)),
-      Diff.string_to_diff(String.int_to_string(b)),
+      Diff.string_to_diff(String.i64_to_string(a)),
+      Diff.string_to_diff(String.i64_to_string(b)),
     ),
-    Diff.string_to_diff(String.int_to_string(c)),
+    Diff.string_to_diff(String.i64_to_string(c)),
   )
 
 proc main(): () =

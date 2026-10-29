@@ -4,7 +4,7 @@ use crate::data::closure_annot_ast as annot;
 use crate::data::intrinsics as intrs;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
-use crate::data::num_type::NumType;
+use crate::data::num_type::{NumLit, NumType};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
@@ -27,9 +27,7 @@ fn count_params(
 ) -> usize {
     match type_ {
         mono::Type::Bool => 0,
-        mono::Type::Byte => 0,
-        mono::Type::Int => 0,
-        mono::Type::Float => 0,
+        mono::Type::Num(_) => 0,
         mono::Type::Array(item) => count_params(parameterized, item),
         mono::Type::Tuple(items) => items
             .iter()
@@ -55,9 +53,7 @@ fn parameterize(
 ) -> annot::Type<annot::RepParamId> {
     match type_ {
         mono::Type::Bool => annot::Type::Bool,
-        mono::Type::Byte => annot::Type::Byte,
-        mono::Type::Int => annot::Type::Int,
-        mono::Type::Float => annot::Type::Float,
+        mono::Type::Num(num) => annot::Type::Num(*num),
 
         mono::Type::Array(item) => annot::Type::Array(Box::new(parameterize(
             parameterized,
@@ -159,9 +155,7 @@ fn parameterize_typedef_scc(
 fn add_dependencies(type_: &mono::Type, deps: &mut BTreeSet<mono::CustomTypeId>) {
     match type_ {
         mono::Type::Bool => {}
-        mono::Type::Byte => {}
-        mono::Type::Int => {}
-        mono::Type::Float => {}
+        mono::Type::Num(_) => {}
 
         mono::Type::Array(item) => {
             add_dependencies(item, deps);
@@ -280,9 +274,7 @@ enum SolverExpr {
         Vec<SolverExpr>,
     ),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]
@@ -297,9 +289,7 @@ enum SolverPattern {
         Option<Box<SolverPattern>>,
     ),
     BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 }
 
 #[derive(Clone, Debug)]
@@ -317,9 +307,7 @@ fn instantiate_mono(
 ) -> annot::Type<SolverVarId> {
     match type_ {
         mono::Type::Bool => annot::Type::Bool,
-        mono::Type::Byte => annot::Type::Byte,
-        mono::Type::Int => annot::Type::Int,
-        mono::Type::Float => annot::Type::Float,
+        mono::Type::Num(num) => annot::Type::Num(*num),
 
         mono::Type::Array(item) => {
             annot::Type::Array(Box::new(instantiate_mono(typedefs, graph, item)))
@@ -358,9 +346,9 @@ fn equate_types(
 ) {
     match (type1, type2) {
         (annot::Type::Bool, annot::Type::Bool) => {}
-        (annot::Type::Byte, annot::Type::Byte) => {}
-        (annot::Type::Int, annot::Type::Int) => {}
-        (annot::Type::Float, annot::Type::Float) => {}
+        (annot::Type::Num(num1), annot::Type::Num(num2)) => {
+            debug_assert_eq!(num1, num2);
+        }
 
         (annot::Type::Array(item1), annot::Type::Array(item2)) => {
             equate_types(graph, item1, item2);
@@ -406,9 +394,7 @@ fn instantiate_subst(
 ) -> annot::Type<SolverVarId> {
     match type_ {
         annot::Type::Bool => annot::Type::Bool,
-        annot::Type::Byte => annot::Type::Byte,
-        annot::Type::Int => annot::Type::Int,
-        annot::Type::Float => annot::Type::Float,
+        annot::Type::Num(num) => annot::Type::Num(*num),
 
         annot::Type::Array(item) => annot::Type::Array(Box::new(instantiate_subst(vars, item))),
 
@@ -489,11 +475,10 @@ fn instantiate_pattern(
 
         (&mono::Pattern::BoolConst(val), annot::Type::Bool) => SolverPattern::BoolConst(val),
 
-        (&mono::Pattern::ByteConst(val), annot::Type::Byte) => SolverPattern::ByteConst(val),
-
-        (&mono::Pattern::IntConst(val), annot::Type::Int) => SolverPattern::IntConst(val),
-
-        (&mono::Pattern::FloatConst(val), annot::Type::Float) => SolverPattern::FloatConst(val),
+        (&mono::Pattern::NumConst(lit), annot::Type::Num(num)) => {
+            debug_assert_eq!(lit.num_type(), *num);
+            SolverPattern::NumConst(lit)
+        }
 
         (_, _) => unreachable!(),
     }
@@ -506,9 +491,7 @@ fn intrinsic_type(
     fn trans_type(type_: &intrs::Type) -> annot::Type<SolverVarId> {
         match type_ {
             intrs::Type::Bool => annot::Type::Bool,
-            intrs::Type::Num(NumType::Byte) => annot::Type::Byte,
-            intrs::Type::Num(NumType::Int) => annot::Type::Int,
-            intrs::Type::Num(NumType::Float) => annot::Type::Float,
+            intrs::Type::Num(num) => annot::Type::Num(*num),
             intrs::Type::Tuple(items) => annot::Type::Tuple(items.iter().map(trans_type).collect()),
         }
     }
@@ -545,7 +528,7 @@ fn array_op_type(
             op_var,
             Box::new(annot::Type::Tuple(vec![
                 annot::Type::Array(Box::new(solver_item_type.clone())),
-                annot::Type::Int,
+                annot::Type::Num(NumType::I64),
             ])),
             Box::new(solver_item_type.clone()),
         ),
@@ -562,7 +545,7 @@ fn array_op_type(
                 op_var,
                 Box::new(annot::Type::Tuple(vec![
                     annot::Type::Array(Box::new(solver_item_type.clone())),
-                    annot::Type::Int,
+                    annot::Type::Num(NumType::I64),
                 ])),
                 Box::new(annot::Type::Tuple(vec![
                     solver_item_type.clone(),
@@ -580,7 +563,7 @@ fn array_op_type(
             Purity::Pure,
             op_var,
             Box::new(annot::Type::Array(Box::new(solver_item_type))),
-            Box::new(annot::Type::Int),
+            Box::new(annot::Type::Num(NumType::I64)),
         ),
 
         ArrayOp::Push => annot::Type::Func(
@@ -608,13 +591,18 @@ fn array_op_type(
             op_var,
             Box::new(annot::Type::Tuple(vec![
                 annot::Type::Array(Box::new(solver_item_type.clone())),
-                annot::Type::Int,
+                annot::Type::Num(NumType::I64),
             ])),
             Box::new(annot::Type::Array(Box::new(solver_item_type))),
         ),
     };
 
     (op_type, op_var)
+}
+
+/// `Array U8`, the type of text.
+fn u8_array_type() -> annot::Type<SolverVarId> {
+    annot::Type::Array(Box::new(annot::Type::Num(NumType::U8)))
 }
 
 fn io_op_type(
@@ -629,12 +617,12 @@ fn io_op_type(
             Purity::Impure,
             op_var,
             Box::new(annot::Type::Tuple(vec![])),
-            Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
+            Box::new(u8_array_type()),
         ),
         IoOp::Output => annot::Type::Func(
             Purity::Impure,
             op_var,
-            Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
+            Box::new(u8_array_type()),
             Box::new(annot::Type::Tuple(vec![])),
         ),
     };
@@ -652,7 +640,7 @@ fn panic_type(
     let op_type = annot::Type::Func(
         Purity::Pure,
         op_var,
-        Box::new(annot::Type::Array(Box::new(annot::Type::Byte))),
+        Box::new(u8_array_type()),
         Box::new(ret_type),
     );
 
@@ -987,11 +975,7 @@ fn instantiate_expr(
 
         &lifted::Expr::BoolLit(val) => (SolverExpr::BoolLit(val), annot::Type::Bool),
 
-        &lifted::Expr::ByteLit(val) => (SolverExpr::ByteLit(val), annot::Type::Byte),
-
-        &lifted::Expr::IntLit(val) => (SolverExpr::IntLit(val), annot::Type::Int),
-
-        &lifted::Expr::FloatLit(val) => (SolverExpr::FloatLit(val), annot::Type::Float),
+        &lifted::Expr::NumLit(lit) => (SolverExpr::NumLit(lit), annot::Type::Num(lit.num_type())),
     }
 }
 
@@ -1137,9 +1121,7 @@ fn add_mentioned_classes(
 ) {
     match type_ {
         annot::Type::Bool => {}
-        annot::Type::Byte => {}
-        annot::Type::Int => {}
-        annot::Type::Float => {}
+        annot::Type::Num(_) => {}
 
         annot::Type::Array(item) => add_mentioned_classes(equiv_classes, item, mentioned),
 
@@ -1321,9 +1303,7 @@ fn translate_type_for_template(
 ) -> annot::Type<annot::Solution> {
     match type_ {
         annot::Type::Bool => annot::Type::Bool,
-        annot::Type::Byte => annot::Type::Byte,
-        annot::Type::Int => annot::Type::Int,
-        annot::Type::Float => annot::Type::Float,
+        annot::Type::Num(num) => annot::Type::Num(*num),
 
         annot::Type::Array(item_type) => annot::Type::Array(Box::new(translate_type_for_template(
             equiv_classes,
@@ -1605,9 +1585,7 @@ fn extract_type(
 ) -> annot::Type<annot::Solution> {
     match type_ {
         annot::Type::Bool => annot::Type::Bool,
-        annot::Type::Byte => annot::Type::Byte,
-        annot::Type::Int => annot::Type::Int,
-        annot::Type::Float => annot::Type::Float,
+        annot::Type::Num(num) => annot::Type::Num(*num),
 
         annot::Type::Array(item_type) => annot::Type::Array(Box::new(extract_type(
             equiv_classes,
@@ -1667,9 +1645,7 @@ fn extract_pattern(
         ),
 
         &SolverPattern::BoolConst(val) => annot::Pattern::BoolConst(val),
-        &SolverPattern::ByteConst(val) => annot::Pattern::ByteConst(val),
-        &SolverPattern::IntConst(val) => annot::Pattern::IntConst(val),
-        &SolverPattern::FloatConst(val) => annot::Pattern::FloatConst(val),
+        &SolverPattern::NumConst(lit) => annot::Pattern::NumConst(lit),
     }
 }
 
@@ -1801,9 +1777,7 @@ fn extract_expr(
         ),
 
         &SolverExpr::BoolLit(val) => annot::Expr::BoolLit(val),
-        &SolverExpr::ByteLit(val) => annot::Expr::ByteLit(val),
-        &SolverExpr::IntLit(val) => annot::Expr::IntLit(val),
-        &SolverExpr::FloatLit(val) => annot::Expr::FloatLit(val),
+        &SolverExpr::NumLit(lit) => annot::Expr::NumLit(lit),
     }
 }
 
@@ -1825,9 +1799,7 @@ fn extract_sig_type(
 ) -> annot::Type<annot::RepParamId> {
     match type_ {
         annot::Type::Bool => annot::Type::Bool,
-        annot::Type::Byte => annot::Type::Byte,
-        annot::Type::Int => annot::Type::Int,
-        annot::Type::Float => annot::Type::Float,
+        annot::Type::Num(num) => annot::Type::Num(*num),
 
         annot::Type::Array(item_type) => annot::Type::Array(Box::new(extract_sig_type(
             equiv_classes,
@@ -2005,9 +1977,7 @@ fn add_expr_deps(deps: &mut BTreeSet<Item>, expr: &lifted::Expr) {
         }
 
         lifted::Expr::BoolLit(_) => {}
-        lifted::Expr::ByteLit(_) => {}
-        lifted::Expr::IntLit(_) => {}
-        lifted::Expr::FloatLit(_) => {}
+        lifted::Expr::NumLit(_) => {}
     }
 }
 

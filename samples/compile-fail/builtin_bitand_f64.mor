@@ -1,0 +1,5 @@
+// expect-error: No Impl in Scope @ 4:11
+// The floats have no impls of the bitwise traits.
+proc main(): () =
+  let x = 1.5 & 2.5 in
+  ()

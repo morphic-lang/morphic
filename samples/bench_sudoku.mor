@@ -13,25 +13,25 @@ module Test = file "lib/test.mor"
 
 // Basic functions
 
-mod(a: Int, b: Int): Int =
+mod(a: I64, b: I64): I64 =
   a - a / b * b
 
-rc_bp(r: Int, c: Int): (Int, Int) =
+rc_bp(r: I64, c: I64): (I64, I64) =
   (r / 2 * 2 + c / 2, mod(r, 2) * 2 + mod(c, 2))
 
-bp_rc(r: Int, c: Int): (Int, Int) =
+bp_rc(r: I64, c: I64): (I64, I64) =
   rc_bp(r, c)
 
-assert(cond: Bool, msg: Array Byte): () =
+assert(cond: Bool, msg: Array U8): () =
   if !cond { panic(msg) } else { () }
 
-for(init_state: a, start: Int, end: Int, body: ((a, Int) -> a)): a =
+for(init_state: a, start: I64, end: I64, body: ((a, I64) -> a)): a =
   Iter.range(start, end) |> Iter.foldl(init_state, body)
 
 // Rule type
 
 type Rule {
-  Rule(Int)
+  Rule(I64)
 }
 
 type RuleType {
@@ -41,29 +41,29 @@ type RuleType {
   BN,
 }
 
-is_set: Int = int_shift_left(1, 4)
+is_set: I64 = (1 << 4)
 
 new_rule(): Rule =
   Rule(is_set - 1) // 0b1111 (4 ones)
 
-new_single(x: Int): Rule = 
-  Rule(int_bit_or(int_shift_left(1, x), is_set))
+new_single(x: I64): Rule = 
+  Rule((1 << x) | is_set)
 
 check_set(rule: Rule): Bool = 
-  let Rule(r) = rule in (int_bit_and(r, is_set) = is_set)
+  let Rule(r) = rule in ((r & is_set) = is_set)
 
-count_options(rule: Rule): Int =
-  let Rule(r) = rule in int_count_ones(int_bit_and(r, int_bit_not(is_set)))
+count_options(rule: Rule): I64 =
+  let Rule(r) = rule in i64_count_ones(r & i64_bit_not(is_set))
 
-iter_options(rule: Rule): Iter Int =
+iter_options(rule: Rule): Iter I64 =
   let Rule(r) = rule in
   Iter.range(0, 4)
-    |> Iter.filter(\(x) -> !(int_bit_and(r, int_shift_left(1, x)) = 0))
+    |> Iter.filter(\(x) -> !((r & (1 << x)) = 0))
 
-int_bit_not(x: Int): Int = int_bit_xor(x, -1)
+i64_bit_not(x: I64): I64 = (x ^ -1)
 
-set_false(rule: Rule, x: Int): Rule =
-  let Rule(r) = rule in Rule(int_bit_and(r, int_bit_not(int_shift_left(1, x))))
+set_false(rule: Rule, x: I64): Rule =
+  let Rule(r) = rule in Rule(r & i64_bit_not(1 << x))
 
 // Sudoku type
 
@@ -71,7 +71,7 @@ type Sudoku {
   Sudoku(Array Rule)
 }
 
-id_to_type(id: Int): RuleType =
+id_to_type(id: I64): RuleType =
   match id / 16 {
     0 -> RC,
     1 -> RN,
@@ -80,7 +80,7 @@ id_to_type(id: Int): RuleType =
     _ -> panic("invalid rule_id"),
   }
 
-rule_to_id(t: RuleType, a: Int, b: Int): Int =
+rule_to_id(t: RuleType, a: I64, b: I64): I64 =
   match t {
     RC -> 0,
     RN -> 16,
@@ -88,7 +88,7 @@ rule_to_id(t: RuleType, a: Int, b: Int): Int =
     BN -> 16 * 3,
   } + 4 * a + b
 
-rule_to_rcn(idx: Int, x: Int): (Int, Int, Int) =
+rule_to_rcn(idx: I64, x: I64): (I64, I64, I64) =
   let t = id_to_type(idx) in
   let a = mod(idx, 16) / 4 in
   let b = mod(idx, 4) in
@@ -99,7 +99,7 @@ rule_to_rcn(idx: Int, x: Int): (Int, Int, Int) =
     BN -> let (r, c) = bp_rc(a, x) in (r, c, b),
   }
 
-set_pencilmark_false(rules: Array Rule, r: Int, c: Int, n: Int): Array Rule =
+set_pencilmark_false(rules: Array Rule, r: I64, c: I64, n: I64): Array Rule =
   let (b,p) = rc_bp(r, c) in
   rules
   |> Array.update(rule_to_id(RC, r, c), \(rule) -> set_false(rule, n))
@@ -107,7 +107,7 @@ set_pencilmark_false(rules: Array Rule, r: Int, c: Int, n: Int): Array Rule =
   |> Array.update(rule_to_id(CN, c, n), \(rule) -> set_false(rule, r))
   |> Array.update(rule_to_id(BN, b, n), \(rule) -> set_false(rule, p))
 
-set_pencilmark(old: Array Rule, r: Int, c: Int, n: Int): Array Rule =
+set_pencilmark(old: Array Rule, r: I64, c: I64, n: I64): Array Rule =
   let (b,p) = rc_bp(r, c) in
   old
   // RC
@@ -144,7 +144,7 @@ set_pencilmark(old: Array Rule, r: Int, c: Int, n: Int): Array Rule =
     }
   )
 
-new_sudoku(givens: Array Byte): Sudoku =
+new_sudoku(givens: Array U8): Sudoku =
   assert(Array.len(givens) = 4 * 4, "input wrong size") then
   let old = Iter.forever(new_rule())
     |> Iter.take(4 * 4 * 4)
@@ -205,4 +205,4 @@ proc main(): () =
   let givens = ".1..3..14..2..4." in
   let sudoku = new_sudoku(givens) in
   let solutions = solve(sudoku) in
-  do Io.writeln(String.int_to_string(Array.len(solutions)))
+  do Io.writeln(String.i64_to_string(Array.len(solutions)))

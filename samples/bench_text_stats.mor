@@ -3,7 +3,7 @@ module Core = file "lib/core/core.mor"
     module Io expose { writeln },
     module Option expose { Option { Some, None } },
     module Array,
-    module String expose { int_to_string, string_to_nat },
+    module String expose { i64_to_string, string_to_nat },
     module Iter expose { Iter },
   }
 
@@ -12,7 +12,7 @@ module Bench = file "lib/bench_common.mor"
   expose { repeat }
 
 type String {
-    String(Array Byte)
+    String(Array U8)
 }
 
 // Split on 
@@ -21,7 +21,7 @@ get_words(x : String): Array String =
   get_words_rec(bytes, 0, [], [])
   
 
-get_words_rec(x : Array Byte, index: Int, acc: Array String, current_word: Array Byte): Array String =
+get_words_rec(x : Array U8, index: I64, acc: Array String, current_word: Array U8): Array String =
   if(index = Array.len(x)) {
     if(Array.len(current_word) > 0) {
       Array.push(acc, String(current_word))
@@ -30,7 +30,7 @@ get_words_rec(x : Array Byte, index: Int, acc: Array String, current_word: Array
     }
   } else {
     let char = Array.get(x, index) in
-    if((char >= 65b && char <= 90b) || (char >= 97b && char <= 122b)) {
+    if((char >= 65u8 && char <= 90u8) || (char >= 97u8 && char <= 122u8)) {
       // Character is A-Z or a-z, add to current word
       get_words_rec(x, index + 1, acc, Array.push(current_word, char))
     } else {
@@ -43,8 +43,8 @@ get_words_rec(x : Array Byte, index: Int, acc: Array String, current_word: Array
     }
   }
 
-start_text: Array Byte = String.concat("*** START OF THE PROJECT GUTENBERG EBOOK THE COMPLETE WORKS OF WILLIAM SHAKESPEARE ***", "\r")
-end_text: Array Byte = String.concat("*** END OF THE PROJECT GUTENBERG EBOOK THE COMPLETE WORKS OF WILLIAM SHAKESPEARE ***", "\r")
+start_text: Array U8 = String.concat("*** START OF THE PROJECT GUTENBERG EBOOK THE COMPLETE WORKS OF WILLIAM SHAKESPEARE ***", "\r")
+end_text: Array U8 = String.concat("*** END OF THE PROJECT GUTENBERG EBOOK THE COMPLETE WORKS OF WILLIAM SHAKESPEARE ***", "\r")
 
 proc read_preamble(): () =
   let next_line = do input() in
@@ -59,7 +59,7 @@ proc read_text(): String =
 
   String(do read_text_rec([]))
 
-proc read_text_rec(acc: Array Byte): Array Byte=
+proc read_text_rec(acc: Array U8): Array U8=
   let next_line = do input() in
   if String.equal(next_line, end_text) {
     acc
@@ -79,7 +79,7 @@ compute_stats(words : Array String): Array String =
     } in
   let romeo_count = Array.foldl(words, 0, romeo_foldl_fn) in
   
-  [String(int_to_string(romeo_count))]
+  [String(i64_to_string(romeo_count))]
   
   
 

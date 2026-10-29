@@ -1,12 +1,12 @@
 // expect-error: No Impl in Scope @ 13:11
-// An impl named like a builtin impl covers it up, whatever trait it is of, so `+` at `Int` has no
+// An impl named like a builtin impl covers it up, whatever trait it is of, so `+` at `I64` has no
 // impl in scope here.
 trait Show a {
-  show(x: a): Array Byte,
+  show(x: a): Array U8,
 }
 
-impl AddInt of Show Int {
-  show(x: Int): Array Byte = "Int"
+impl AddI64 of Show I64 {
+  show(x: I64): Array U8 = "I64"
 }
 
 proc main(): () =

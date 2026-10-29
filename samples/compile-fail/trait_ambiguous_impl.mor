@@ -1,14 +1,14 @@
 // expect-error: Ambiguous Impl @ 15:13
 trait Show a {
-  show(x: a): Array Byte,
+  show(x: a): Array U8,
 }
 
-impl ShowIntA of Show Int {
-  show(x: Int): Array Byte = "a"
+impl ShowI64A of Show I64 {
+  show(x: I64): Array U8 = "a"
 }
 
-impl ShowIntB of Show Int {
-  show(x: Int): Array Byte = "b"
+impl ShowI64B of Show I64 {
+  show(x: I64): Array U8 = "b"
 }
 
 proc main(): () =

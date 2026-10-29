@@ -5,40 +5,40 @@ module Test = file "lib/test.mor"
   expose { test }
 
 proc main(): () =
-  do test("Add bytes", 1b + 1b = 2b) then
+  do test("Add bytes", 1u8 + 1u8 = 2u8) then
   do test("Add ints", 1 + 1 = 2) then
   do test("Add floats", 1.0 + 1.0 = 2.0) then
 
-  do test("Sub bytes", 5b - 2b = 3b) then
+  do test("Sub bytes", 5u8 - 2u8 = 3u8) then
   do test("Sub ints", 5 - 2 = 3) then
   do test("Sub floats", 5.0 - 2.0 = 3.0) then
 
-  do test("Mul bytes", 3b * 4b = 12b) then
+  do test("Mul bytes", 3u8 * 4u8 = 12u8) then
   do test("Mul ints", 3 * 4 = 12) then
   do test("Mul floats", 3.0 * 4.0 = 12.0) then
 
-  do test("Div bytes exact", 12b / 4b = 3b) then
-  do test("Div bytes truncating", 5b / 2b = 2b) then
+  do test("Div bytes exact", 12u8 / 4u8 = 3u8) then
+  do test("Div bytes truncating", 5u8 / 2u8 = 2u8) then
   do test("Div ints exact", 12 / 4 = 3) then
-  do test("Div int truncating", 5 / 2 = 2) then
+  do test("Div i64 truncating", 5 / 2 = 2) then
   do test("Div floats integral", 12.0 / 4.0 = 3.0) then
   do test("Div floats fractional", 5.0 / 2.0 = 2.5) then
 
-  // don't negate a byte u dummy
-  do test("Neg byte", -1b = 0b - 1b) then
-  do test("Neg int", -1 = 0 - 1) then
-  do test("Neg float", -1.0 = 0.0 - 1.0) then
+  // don't negate a u8 u dummy
+  do test("Neg u8", -1u8 = 0u8 - 1u8) then
+  do test("Neg i64", -1 = 0 - 1) then
+  do test("Neg f64", -1.0 = 0.0 - 1.0) then
 
-  do test("Equate bytes equal", 1b = 1b) then
-  do test("Equate bytes unequal", ! (1b = 2b)) then
+  do test("Equate bytes equal", 1u8 = 1u8) then
+  do test("Equate bytes unequal", ! (1u8 = 2u8)) then
   do test("Equate ints equal", 1 = 1) then
   do test("Equate ints unequal", ! (1 = 2)) then
   do test("Equate floats equal", 1.0 = 1.0) then
   do test("Equate floats unequal", ! (1.0 = 2.0)) then
 
-  do test("Less-than bytes less", 1b < 2b) then
-  do test("Less-than bytes equal", ! (2b < 2b)) then
-  do test("Less-than bytes greater", ! (3b < 2b)) then
+  do test("Less-than bytes less", 1u8 < 2u8) then
+  do test("Less-than bytes equal", ! (2u8 < 2u8)) then
+  do test("Less-than bytes greater", ! (3u8 < 2u8)) then
 
   do test("Less-than ints less", 1 < 2) then
   do test("Less-than ints equal", ! (2 < 2)) then
@@ -48,9 +48,9 @@ proc main(): () =
   do test("Less-than floats equal", ! (2.0 < 2.0)) then
   do test("Less-than floats greater", ! (3.0 < 2.0)) then
 
-  do test("Less-equal bytes less", 1b <= 2b) then
-  do test("Less-equal bytes equal", 2b <= 2b) then
-  do test("Less-equal bytes greater", ! (3b <= 2b)) then
+  do test("Less-equal bytes less", 1u8 <= 2u8) then
+  do test("Less-equal bytes equal", 2u8 <= 2u8) then
+  do test("Less-equal bytes greater", ! (3u8 <= 2u8)) then
 
   do test("Less-equal ints less", 1 <= 2) then
   do test("Less-equal ints equal", 2 <= 2) then
@@ -60,9 +60,9 @@ proc main(): () =
   do test("Less-equal floats equal", 2.0 <= 2.0) then
   do test("Less-equal floats greater", ! (3.0 <= 2.0)) then
 
-  do test("Greater-than bytes less", ! (1b > 2b)) then
-  do test("Greater-than bytes equal", ! (2b > 2b)) then
-  do test("Greater-than bytes greater", 3b > 2b) then
+  do test("Greater-than bytes less", ! (1u8 > 2u8)) then
+  do test("Greater-than bytes equal", ! (2u8 > 2u8)) then
+  do test("Greater-than bytes greater", 3u8 > 2u8) then
 
   do test("Greater-than ints less", ! (1 > 2)) then
   do test("Greater-than ints equal", ! (2 > 2)) then
@@ -72,9 +72,9 @@ proc main(): () =
   do test("Greater-than floats equal", ! (2.0 > 2.0)) then
   do test("Greater-than floats greater", 3.0 > 2.0) then
 
-  do test("Greater-equal bytes less", ! (1b >= 2b)) then
-  do test("Greater-equal bytes equal", 2b >= 2b) then
-  do test("Greater-equal bytes greater", 3b >= 2b) then
+  do test("Greater-equal bytes less", ! (1u8 >= 2u8)) then
+  do test("Greater-equal bytes equal", 2u8 >= 2u8) then
+  do test("Greater-equal bytes greater", 3u8 >= 2u8) then
 
   do test("Greater-equal ints less", ! (1 >= 2)) then
   do test("Greater-equal ints equal", 2 >= 2) then
@@ -84,33 +84,176 @@ proc main(): () =
   do test("Greater-equal floats equal", 2.0 >= 2.0) then
   do test("Greater-equal floats greater", 3.0 >= 2.0) then
 
-  do test("byte_to_int positive", byte_to_int(42b) = 42) then
-  do test("byte_to_int negative", byte_to_int(-42b) = 256 - 42) then
+  do test("u8_to_i64 positive", u8_to_i64(42u8) = 42) then
+  do test("u8_to_i64 negative", u8_to_i64(-42u8) = 256 - 42) then
 
-  do test("byte_to_int_signed positive", byte_to_int_signed(42b) = 42) then
-  do test("byte_to_int_signed negative", byte_to_int_signed(-42b) = -42) then
+  do test("u8_to_i64_signed positive", i8_to_i64(u8_to_i8(42u8)) = 42) then
+  do test("u8_to_i64_signed negative", i8_to_i64(u8_to_i8(-42u8)) = -42) then
 
-  do test("int_to_byte in range", int_to_byte(42) = 42b) then
-  do test("int_to_byte truncate", int_to_byte(300) = 44b) then
-  do test("int_to_byte negative", int_to_byte(-2) = -2b) then
+  do test("i64_to_u8 in range", i64_to_u8(42) = 42u8) then
+  do test("i64_to_u8 truncate", i64_to_u8(300) = 44u8) then
+  do test("i64_to_u8 negative", i64_to_u8(-2) = -2u8) then
 
-  do test("int_shift_left in range", int_shift_left(42, 4) = 672) then
-  do test("int_shift_left shift out", int_shift_left(42, 59) = 5764607523034234880) then
-  // in int shifts, the lower 6 bits of the shift index are used
-  do test("int_shift_left overflow", int_shift_left(42, 64) = 42) then
+  do test("i64_shift_left in range", (42 << 4) = 672) then
+  do test("i64_shift_left shift out", (42 << 59) = 5764607523034234880) then
+  // in i64 shifts, the lower 6 bits of the shift index are used
+  do test("i64_shift_left overflow", (42 << 64) = 42) then
 
-  do test("int_shift_right in range", int_shift_right(80, 3) = 10) then
-  do test("int_shift_right shift out", int_shift_right(42, 3) = 5) then
-  // in int shifts, the lower 6 bits of the shift index are used
-  do test("int_shift_right overflow", int_shift_right(42, 65) = 21) then
-  // int_shift_right is a logical shift, not an arithmetic shift
-  do test("int_shift_right negative", int_shift_right(-1, 1) = 9223372036854775807) then
+  do test("i64_shift_right in range", (80 >> 3) = 10) then
+  do test("i64_shift_right shift out", (42 >> 3) = 5) then
+  // in i64 shifts, the lower 6 bits of the shift index are used
+  do test("i64_shift_right overflow", (42 >> 65) = 21) then
+  // i64_shift_right is a logical shift, not an arithmetic shift
+  do test("i64_shift_right negative", (-1 >> 1) = 9223372036854775807) then
 
-  do test("int_bit_and", int_bit_and(42, 98) = 34) then
-  do test("int_bit_or", int_bit_or(42, 98) = 106) then
-  do test("int_bit_xor", int_bit_xor(42, 98) = 72) then
-  do test("int_count_ones", int_count_ones(42) = 3) then
-  do test("int_leading_zeros", int_leading_zeros(42) = 58) then
-  do test("int_trailing_zeros", int_trailing_zeros(40) = 3) then
+  do test("i64_bit_and", (42 & 98) = 34) then
+  do test("i64_bit_or", (42 | 98) = 106) then
+  do test("i64_bit_xor", (42 ^ 98) = 72) then
+  do test("i64_count_ones", i64_count_ones(42) = 3) then
+  do test("i64_leading_zeros", i64_leading_zeros(42) = 58) then
+  do test("i64_trailing_zeros", i64_trailing_zeros(40) = 3) then
+
+  // The 32-bit types, their conversions, and the masking of shift amounts.
+  do test("Add i32", 1i32 + 1i32 = 2i32) then
+  do test("Add f32", 1.0f32 + 1.0f32 = 2.0f32) then
+  do test("Sub i32", 5i32 - 2i32 = 3i32) then
+  do test("Sub f32", 5.0f32 - 2.0f32 = 3.0f32) then
+  do test("Mul i32", 3i32 * 4i32 = 12i32) then
+  do test("Mul f32", 3.0f32 * 4.0f32 = 12.0f32) then
+  do test("Div i32 exact", 12i32 / 4i32 = 3i32) then
+  do test("Div i32 truncating", 5i32 / 2i32 = 2i32) then
+  do test("Div i32 negative truncates toward zero", (0i32 - 7i32) / 2i32 = 0i32 - 3i32) then
+  do test("Div f32", 5.0f32 / 2.0f32 = 2.5f32) then
+  do test("Neg i32", -5i32 = 0i32 - 5i32) then
+  do test("Neg f32", -1.5f32 = 0.0f32 - 1.5f32) then
+  do test("Lt i32", 1i32 < 2i32) then
+  do test("Lt i32 false", if 2i32 < 1i32 { False } else { True }) then
+  do test("Lte i32", 2i32 <= 2i32) then
+  do test("Gt i32", 3i32 > 2i32) then
+  do test("Gte i32", 2i32 >= 2i32) then
+  do test("Lt f32", 1.0f32 < 2.0f32) then
+  do test("Lt f32 false", if 2.0f32 < 1.0f32 { False } else { True }) then
+  do test("Lte f32", 2.0f32 <= 2.0f32) then
+  do test("Gt f32", 3.0f32 > 2.0f32) then
+  do test("Gte f32", 2.0f32 >= 2.0f32) then
+  do test("Eq i32", 7i32 = 7i32) then
+  do test("Wrapping add i32", 2147483647i32 + 1i32 = 0i32 - 2147483647i32 - 1i32) then
+  do test("Wrapping mul i32", 65536i32 * 65536i32 = 0i32) then
+  do test("u8_to_i32", u8_to_i32(200u8) = 200i32) then
+  do test("u8_to_i32_signed", i8_to_i32(u8_to_i8(-42u8)) = -42i32) then
+  do test("i32_to_u8", i32_to_u8(300i32) = 44u8) then
+  do test("i32_to_i64 negative", i32_to_i64(-5i32) = -5) then
+  do test("i64_to_i32 truncate", i64_to_i32(4294967297) = 1i32) then
+  do test("i64_to_i32 negative", i64_to_i32(-1) = -1i32) then
+  do test("f32_to_f64", f32_to_f64(1.5f32) = 1.5) then
+  do test("f64_to_f32 exact", f64_to_f32(0.25) = 0.25f32) then
+  do test("f64_to_f32 rounds to nearest", f32_to_f64(f64_to_f32(0.1)) = 0.10000000149011612) then
+  do test("i32_shift_left", (42i32 << 4i32) = 672i32) then
+  do test("i32_shift_left shift out", (42i32 << 27i32) = 1342177280i32) then
+  do test("i32_shift_left masks to 5 bits", (42i32 << 32i32) = 42i32) then
+  do test("i32_shift_right", (80i32 >> 3i32) = 10i32) then
+  do test("i32_shift_right masks to 5 bits", (42i32 >> 33i32) = 21i32) then
+  do test("i32_shift_right is logical", (-1i32 >> 1i32) = 2147483647i32) then
+  do test("i32_bit_and", (42i32 & 98i32) = 34i32) then
+  do test("i32_bit_or", (42i32 | 98i32) = 106i32) then
+  do test("i32_bit_xor", (42i32 ^ 98i32) = 72i32) then
+  do test("i32_count_ones", i32_count_ones(42i32) = 3i32) then
+  do test("i32_count_ones all", i32_count_ones(-1i32) = 32i32) then
+  do test("i32_leading_zeros", i32_leading_zeros(42i32) = 26i32) then
+  do test("i32_leading_zeros zero", i32_leading_zeros(0i32) = 32i32) then
+  do test("i32_trailing_zeros", i32_trailing_zeros(40i32) = 3i32) then
+  do test("i32_trailing_zeros zero", i32_trailing_zeros(0i32) = 32i32) then
+
+  // Conversions between the integers and the floats round to nearest one way and truncate
+  // toward zero, saturating, the other way.
+  do test("i64_to_f64", i64_to_f64(3) = 3.0) then
+  do test("i64_to_f64 negative", i64_to_f64(-3) = -3.0) then
+  do test("i64_to_f64 rounds to nearest", i64_to_f64(9007199254740993) = 9007199254740992.0) then
+  do test("i32_to_f32", i32_to_f32(7i32) = 7.0f32) then
+  do test("i64_to_f32", i64_to_f32(-2) = -2.0f32) then
+  do test("u8_to_f64", u8_to_f64(200u8) = 200.0) then
+  do test("u8_to_f32", u8_to_f32(200u8) = 200.0f32) then
+  do test("f64_to_i64 truncates toward zero", f64_to_i64(2.7) = 2) then
+  do test("f64_to_i64 negative truncates toward zero", f64_to_i64(-2.7) = -2) then
+  do test("f64_to_i64 saturates", f64_to_i64(100000000000000000000.0) = 9223372036854775807) then
+  do test("f64_to_i64 saturates negative", f64_to_i64(-100000000000000000000.0) = -9223372036854775807 - 1) then
+  do test("f64_to_i64 nan is zero", f64_to_i64(0.0 / 0.0) = 0) then
+  do test("f64_to_i32", f64_to_i32(-2.5) = -2i32) then
+  do test("f64_to_i32 saturates", f64_to_i32(1000000000000.0) = 2147483647i32) then
+  do test("f32_to_i64", f32_to_i64(1000.5f32) = 1000) then
+  do test("f32_to_i32 saturates negative", f32_to_i32(-1000000000000.0f32) = 0i32 - 2147483647i32 - 1i32) then
+  do test("f64_to_u8", f64_to_u8(200.9) = 200u8) then
+  do test("f64_to_u8 saturates", f64_to_u8(300.5) = 255u8) then
+  do test("f64_to_u8 negative saturates", f64_to_u8(-3.0) = 0u8) then
+  do test("f32_to_u8", f32_to_u8(7.5f32) = 7u8) then
+
+  // The u8 bitwise operations.
+  do test("u8_bit_and", (12u8 & 10u8) = 8u8) then
+  do test("u8_bit_or", (12u8 | 10u8) = 14u8) then
+  do test("u8_bit_xor", (12u8 ^ 10u8) = 6u8) then
+  do test("u8 bit not", !0u8 = 255u8) then
+  do test("u8 bit not twice", !!37u8 = 37u8) then
+  do test("u8_shift_left", (3u8 << 2u8) = 12u8) then
+  do test("u8_shift_left shifts out", (255u8 << 4u8) = 240u8) then
+  do test("u8_shift_left masks to 3 bits", (1u8 << 9u8) = 2u8) then
+  do test("u8_shift_right", (255u8 >> 4u8) = 15u8) then
+  do test("u8_shift_right masks to 3 bits", (16u8 >> 11u8) = 2u8) then
+  do test("u8_count_ones", u8_count_ones(255u8) = 8u8) then
+  do test("u8_leading_zeros", u8_leading_zeros(1u8) = 7u8) then
+  do test("u8_leading_zeros zero", u8_leading_zeros(0u8) = 8u8) then
+  do test("u8_trailing_zeros", u8_trailing_zeros(8u8) = 3u8) then
+  do test("u8_trailing_zeros zero", u8_trailing_zeros(0u8) = 8u8) then
+
+  // The remaining integer types: I8, I16, U16, U32, and U64.  The unsigned types compare as
+  // nonnegative, every type wraps, and a literal is written in its own type's range.
+  do test("i8 wraps", 127i8 + 1i8 = 0i8 - 127i8 - 1i8) then
+  do test("i16 wraps", 32767i16 + 1i16 = 0i16 - 32767i16 - 1i16) then
+  do test("u16 wraps", 65535u16 + 1u16 = 0u16) then
+  do test("u32 wraps", 4294967295u32 + 1u32 = 0u32) then
+  do test("u64 wraps", 18446744073709551615u64 + 1u64 = 0u64) then
+  do test("u64 largest literal", 18446744073709551615u64 > 9223372036854775807u64) then
+  do test("u32 compares as nonnegative", 4000000000u32 > 1u32) then
+  do test("i8 compares as signed", 0i8 - 1i8 < 1i8) then
+  do test("u16 division", 65535u16 / 256u16 = 255u16) then
+  do test("i16 division truncates toward zero", (0i16 - 7i16) / 2i16 = 0i16 - 3i16) then
+  do test("u64 division", 18446744073709551615u64 / 2u64 = 9223372036854775807u64) then
+  do test("neg u32 wraps", -1u32 = 4294967295u32) then
+  do test("same width conversion keeps bits", u8_to_i8(255u8) = -1i8) then
+  do test("same width conversion keeps bits back", i16_to_u16(0i16 - 1i16) = 65535u16) then
+  do test("u64_to_i64 keeps bits", u64_to_i64(18446744073709551615u64) = -1) then
+  do test("i64_to_u64 keeps bits", i64_to_u64(-1) = 18446744073709551615u64) then
+  do test("i8 widens with its sign", i8_to_i64(0i8 - 1i8) = -1) then
+  do test("u16 widens as nonnegative", u16_to_i32(65535u16) = 65535i32) then
+  do test("i32_to_i16 keeps low bits", i32_to_i16(65537i32) = 1i16) then
+  do test("u16_shift_left masks to 4 bits", (1u16 << 17u16) = 2u16) then
+  do test("i8_shift_right is logical", ((0i8 - 1i8) >> 1i8) = 127i8) then
+  do test("u32_bit_xor", (4294967295u32 ^ 1u32) = 4294967294u32) then
+  do test("u64 bit not", !0u64 = 18446744073709551615u64) then
+  do test("u64_count_ones", u64_count_ones(18446744073709551615u64) = 64u64) then
+  do test("i8_leading_zeros", i8_leading_zeros(1i8) = 7i8) then
+  do test("u16_trailing_zeros zero", u16_trailing_zeros(0u16) = 16u16) then
+  do test("u64_to_f64 rounds to nearest", u64_to_f64(18446744073709551615u64) = 18446744073709551616.0) then
+  do test("i8_to_f32", i8_to_f32(0i8 - 127i8) = -127.0f32) then
+  do test("f64_to_u64 saturates", f64_to_u64(100000000000000000000.0) = 18446744073709551615u64) then
+  do test("f64_to_u64 negative saturates", f64_to_u64(-1.0) = 0u64) then
+  do test("f64_to_u64 above i64", f64_to_u64(10000000000000000000.0) = 10000000000000000000u64) then
+  do test("f64_to_i8 saturates", f64_to_i8(1000.0) = 127i8) then
+  do test("f32_to_u16 truncates", f32_to_u16(65535.9f32) = 65535u16) then
+
+  // The bitwise operators are the funcs of `BitAnd`, `BitOr`, `BitXor`, `Shl`, and `Shr`, at
+  // Rust's precedence: shifts bind looser than sums, then `&`, `^`, `|`, and all of them bind
+  // tighter than the comparisons.
+  do test("bit and", 12 & 10 = 8) then
+  do test("bit or", 12 | 10 = 14) then
+  do test("bit xor", 12 ^ 10 = 6) then
+  do test("shift left", 1 << 3 = 8) then
+  do test("shift right is logical", -1 >> 60 = 15) then
+  do test("u8 shift", 255u8 >> 4u8 = 15u8) then
+  do test("u16 shift masks", 1u16 << 17u16 = 2u16) then
+  do test("shift binds looser than sum", 1 + 2 << 1 = 6) then
+  do test("and binds tighter than xor", 2 ^ 3 & 1 = 3) then
+  do test("xor binds tighter than or", 1 | 2 ^ 3 = 1) then
+  do test("bitwise binds tighter than comparison", 6 & 3 = 2 && 1 | 2 = 3) then
+  do test("bitwise funcs", shift_left(1i8, 2i8) = 4i8 && bit_or(1u32, 2u32) = 3u32) then
 
   do output("Completed all tests\n")

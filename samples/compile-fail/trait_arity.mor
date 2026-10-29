@@ -1,10 +1,10 @@
 // expect-error: Wrong Number of Trait Arguments @ 6:17
 trait Show a {
-  show(x: a): Array Byte,
+  show(x: a): Array U8,
 }
 
-impl ShowInt of Show Int Bool {
-  show(x: Int): Array Byte = "int"
+impl ShowI64 of Show I64 Bool {
+  show(x: I64): Array U8 = "i64"
 }
 
 proc main(): () = ()

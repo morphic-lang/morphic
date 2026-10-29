@@ -68,11 +68,7 @@ fn add_expr_deps(expr: &mono::Expr, deps: &mut BTreeSet<mono::CustomGlobalId>) {
 
         mono::Expr::BoolLit(_) => {}
 
-        mono::Expr::ByteLit(_) => {}
-
-        mono::Expr::IntLit(_) => {}
-
-        mono::Expr::FloatLit(_) => {}
+        mono::Expr::NumLit(_) => {}
     }
 }
 
@@ -148,11 +144,7 @@ fn rebind_references(
 
         mono::Expr::BoolLit(_) => {}
 
-        mono::Expr::ByteLit(_) => {}
-
-        mono::Expr::IntLit(_) => {}
-
-        mono::Expr::FloatLit(_) => {}
+        mono::Expr::NumLit(_) => {}
     }
 }
 

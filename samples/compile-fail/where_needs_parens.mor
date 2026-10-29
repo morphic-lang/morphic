@@ -1,6 +1,6 @@
-// expect-error: Incorrect Syntax @ 11:42
+// expect-error: Incorrect Syntax @ 11:40
 trait Show a {
-  show(x: a): Array Byte,
+  show(x: a): Array U8,
 }
 
 trait Eq a {
@@ -8,6 +8,6 @@ trait Eq a {
 }
 
 // Two or more constraints need parentheses: `where (Show a, Eq a)`.
-both(x: a, y: a): Array Byte where Show a, Eq a = show(x)
+both(x: a, y: a): Array U8 where Show a, Eq a = show(x)
 
 proc main(): () = ()

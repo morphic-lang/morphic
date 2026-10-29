@@ -2,7 +2,7 @@ module Core = file "lib/core/core.mor"
   expose {
     module Iter expose { Iter },
     module Array,
-    module String expose { int_to_string, string_to_nat },
+    module String expose { i64_to_string, string_to_nat },
     module Io expose { writeln },
     module Result expose { Result { Ok, Err } },
     module Option expose { Option { Some, None } },
@@ -32,28 +32,28 @@ type Token {
   TIf,
   TCond,
   TLet,
-  TSymbol(Array Byte),
-  TNumber(Int),
+  TSymbol(Array U8),
+  TNumber(I64),
 }
 
 type ParseError {
   UnexpectedToken,
   InvalidToken,
   UnexpectedEndOfInput,
-  InvalidSyntax(Array Byte),
+  InvalidSyntax(Array U8),
 }
 
 type EvalError {
-  UndefinedVariable(Array Byte),
-  TypeError(Array Byte),
-  InvalidArguments(Array Byte),
-  InvalidExpression(Array Byte),
+  UndefinedVariable(Array U8),
+  TypeError(Array U8),
+  InvalidArguments(Array U8),
+  InvalidExpression(Array U8),
 }
 
-tokenize(bytes : Array Byte): Array Token =
+tokenize(bytes : Array U8): Array Token =
   tokenize_rec(bytes, 0, [], [])
 
-parse_token(bytes: Array Byte): Token =
+parse_token(bytes: Array U8): Token =
   if String.equal(bytes, "(") {
     TOpenParen
   } else if String.equal(bytes, ")") {
@@ -93,17 +93,17 @@ parse_token(bytes: Array Byte): Token =
     }
   }
 
-skip_comment(input_: Array Byte, i: Int): Int =
+skip_comment(input_: Array U8, i: I64): I64 =
   if i >= Array.len(input_) {
     i
   } else {
-    if Array.get(input_, i) = 10b {
+    if Array.get(input_, i) = 10u8 {
       i + 1
     } else {
       skip_comment(input_, i + 1)
     }
   }
-tokenize_rec(x : Array Byte, index: Int, acc: Array Token, current_word: Array Byte): Array Token =
+tokenize_rec(x : Array U8, index: I64, acc: Array Token, current_word: Array U8): Array Token =
   let finalize_tokens = \(acc2, current_word2) ->
     if(Array.len(current_word2) > 0) {
       Array.push(acc2, parse_token(current_word2))
@@ -134,14 +134,14 @@ tokenize_rec(x : Array Byte, index: Int, acc: Array Token, current_word: Array B
     in
 
     match char {
-      32b -> handle_whitespace(index + 1), // space
-      9b -> handle_whitespace(index + 1),  // tab
-      10b -> handle_whitespace(index + 1), // newline
-      59b -> handle_whitespace(skip_comment(x, index + 1)), // comment
+      32u8 -> handle_whitespace(index + 1), // space
+      9u8 -> handle_whitespace(index + 1),  // tab
+      10u8 -> handle_whitespace(index + 1), // newline
+      59u8 -> handle_whitespace(skip_comment(x, index + 1)), // comment
       
-      46b -> handle_special(TDot, index + 1),        // dot
-      40b -> handle_special(TOpenParen, index + 1),  // open paren
-      41b -> handle_special(TCloseParen, index + 1), // close paren
+      46u8 -> handle_special(TDot, index + 1),        // dot
+      40u8 -> handle_special(TOpenParen, index + 1),  // open paren
+      41u8 -> handle_special(TCloseParen, index + 1), // close paren
       
       // Everything else gets added to current word
       _ -> tokenize_rec(x, index + 1, acc, Array.push(current_word, char))
@@ -163,8 +163,8 @@ type SpecialForm {
   SIf,
   SCond,
   SLet,
-  SSymbol(Array Byte),
-  SNumber(Int),
+  SSymbol(Array U8),
+  SNumber(I64),
 }
 
 special_form_equal(x: SpecialForm, y: SpecialForm): Bool =
@@ -217,7 +217,7 @@ parse_form(token: Token): SpecialForm =
     _ -> panic("Invalid token for parsing"),
   }
 
-parse_expr(tokens: Array Token, pos: Int): Result (SExp, Int) ParseError =
+parse_expr(tokens: Array Token, pos: I64): Result (SExp, I64) ParseError =
   if pos >= Array.len(tokens) {
     Err(UnexpectedEndOfInput)
   } else {
@@ -228,7 +228,7 @@ parse_expr(tokens: Array Token, pos: Int): Result (SExp, Int) ParseError =
     }
   }
 
-parse_list(tokens: Array Token, parsed: Array SExp, pos: Int): Result (SExp, Int) ParseError =
+parse_list(tokens: Array Token, parsed: Array SExp, pos: I64): Result (SExp, I64) ParseError =
   if pos >= Array.len(tokens) {
     Err(UnexpectedEndOfInput)
   } else {
@@ -264,7 +264,7 @@ parse_list(tokens: Array Token, parsed: Array SExp, pos: Int): Result (SExp, Int
   }
 
 
-token_to_string(x : Token): Array Byte =
+token_to_string(x : Token): Array U8 =
   match x {
     TOpenParen -> "(",
     TDot -> ".",
@@ -284,13 +284,13 @@ token_to_string(x : Token): Array Byte =
     TLet -> "let",
     TCloseParen -> ")",
     TSymbol(s) -> s,
-    TNumber(n) -> String.int_to_string(n),
+    TNumber(n) -> String.i64_to_string(n),
   }
 
-tokens_to_string(x : Array Token): Array Byte = 
+tokens_to_string(x : Array Token): Array U8 = 
   Array.str(x, token_to_string)
 
-sexp_to_string(x : SExp): Array Byte =
+sexp_to_string(x : SExp): Array U8 =
     match x {
       SExpCons(left, right) ->
             Array.concat(
@@ -312,7 +312,7 @@ sexp_to_string(x : SExp): Array Byte =
         Special(form) -> special_form_to_string(form)
     }
 
-special_form_to_string(x : SpecialForm): Array Byte =
+special_form_to_string(x : SpecialForm): Array U8 =
   match x {
     SCar -> "'car",
     SCdr -> "'cdr",
@@ -328,11 +328,11 @@ special_form_to_string(x : SpecialForm): Array Byte =
     SIf -> "'if",
     SCond -> "'cond",
     SLet -> "'let",
-    SNumber(n) -> String.int_to_string(n),
+    SNumber(n) -> String.i64_to_string(n),
     SSymbol(s) -> s,
   }
   
-value_to_string(x: Value): Array Byte =
+value_to_string(x: Value): Array U8 =
   match x {
     VNull -> "null?",
     VCar -> "car",
@@ -354,7 +354,7 @@ value_to_string(x: Value): Array Byte =
       ),
     VTrue -> "true",
     VFalse -> "false",
-    VNumber(n) -> String.int_to_string(n),
+    VNumber(n) -> String.i64_to_string(n),
     VListNil -> "()",
     VList(left, right) -> 
           Array.concat(
@@ -367,12 +367,12 @@ value_to_string(x: Value): Array Byte =
   }
 
 
-env_to_string(env: HashMap (Array Byte) Value): Array Byte =
+env_to_string(env: HashMap (Array U8) Value): Array U8 =
   HashMap.to_string(env, \k -> k, value_to_string)
 
 type Value {
   VSymbol(SpecialForm),
-  VLambda(HashMap (Array Byte) Value, Array (Array Byte), SExp),
+  VLambda(HashMap (Array U8) Value, Array (Array U8), SExp),
   VNull,
   VCar,
   VCdr,
@@ -382,7 +382,7 @@ type Value {
   VPlus,
   VTrue,
   VFalse,
-  VNumber(Int),
+  VNumber(I64),
   VListNil,
   VList(Value, Value),
 }
@@ -398,7 +398,7 @@ match x {
       ),
   }
   
-eval_cond(env: HashMap (Array Byte) Value, cond_clauses: Array SExp): Result Value EvalError =
+eval_cond(env: HashMap (Array U8) Value, cond_clauses: Array SExp): Result Value EvalError =
   if Array.len(cond_clauses) = 0 {
     Ok(VListNil)
   } else {
@@ -418,7 +418,7 @@ eval_cond(env: HashMap (Array Byte) Value, cond_clauses: Array SExp): Result Val
     }
   }
 
-eval_let(env: HashMap (Array Byte) Value, bindings_: Array SExp, body: SExp): Result Value EvalError =
+eval_let(env: HashMap (Array U8) Value, bindings_: Array SExp, body: SExp): Result Value EvalError =
   match Array.get(bindings_, 0) {
     Paren(bindings) -> 
       let process_binding = \(acc, binding) ->
@@ -450,7 +450,7 @@ eval_let(env: HashMap (Array Byte) Value, bindings_: Array SExp, body: SExp): Re
   }
 
 
-eval(env: HashMap (Array Byte) Value, expr: SExp): Result Value EvalError =
+eval(env: HashMap (Array U8) Value, expr: SExp): Result Value EvalError =
 //  do output("running eval on ") then
 //  do output(sexp_to_string(expr)) then
 //  do output(" with env ") then
@@ -573,7 +573,7 @@ eval(env: HashMap (Array Byte) Value, expr: SExp): Result Value EvalError =
 } then
   result
 
-eval_fn(env: HashMap (Array Byte) Value, fn: Value, args: Array Value): Result Value EvalError =
+eval_fn(env: HashMap (Array U8) Value, fn: Value, args: Array Value): Result Value EvalError =
 //do output("running eval_fn with fn ") then
 //do output(value_to_string(fn)) then
 //do output(" and args ") then
@@ -686,7 +686,7 @@ let result = match fn {
  } then
   result
   
-proc read_lines(count: Int, acc: Array Byte): Array Byte =
+proc read_lines(count: I64, acc: Array U8): Array U8 =
       if count <= 0 {
         acc
       } else {
@@ -694,7 +694,7 @@ proc read_lines(count: Int, acc: Array Byte): Array Byte =
         do read_lines(count - 1, Array.concat(acc, Array.concat(line, "\n")))
       }
 
-run_program(inn: Array Byte): Array Byte =
+run_program(inn: Array U8): Array U8 =
   let tokens = tokenize(inn) in
   //let tokens = tokenize("(let ((Y (lambda (f)
   //  ((lambda (x) (x x))

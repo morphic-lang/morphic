@@ -2,11 +2,11 @@
 type Opt a { Some(a), None }
 
 trait Show a {
-  show(x: a): Array Byte,
+  show(x: a): Array U8,
 }
 
-impl ShowInt of Show Int {
-  show(x: Int): Array Byte = "int"
+impl ShowI64 of Show I64 {
+  show(x: I64): Array U8 = "i64"
 }
 
 proc main(): () =

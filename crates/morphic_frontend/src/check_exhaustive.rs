@@ -87,9 +87,7 @@ fn relevance(pat: &solved::Pattern) -> Relevance {
 
         solved::Pattern::Ctor(_, _, _, None) => Relevance::Relevant,
 
-        solved::Pattern::ByteConst(_) => Relevance::Irrelevant,
-        solved::Pattern::IntConst(_) => Relevance::Irrelevant,
-        solved::Pattern::FloatConst(_) => Relevance::Irrelevant,
+        solved::Pattern::NumConst(_) => Relevance::Irrelevant,
 
         solved::Pattern::Span(_, _, content) => relevance(content),
     }
@@ -138,9 +136,7 @@ fn flatten_to(pat: &solved::Pattern, target: &mut Vec<Decision>) {
             target.push(Decision::Pop);
         }
 
-        solved::Pattern::IntConst(_)
-        | solved::Pattern::ByteConst(_)
-        | solved::Pattern::FloatConst(_) => panic!("Irrelevant patterns should have been skipped"),
+        solved::Pattern::NumConst(_) => panic!("Irrelevant patterns should have been skipped"),
 
         solved::Pattern::Span(_, _, content) => flatten_to(content, target),
     }
@@ -634,11 +630,7 @@ fn check_expr(
             Ok(())
         }
 
-        solved::Expr::ByteLit(_) => Ok(()),
-
-        solved::Expr::IntLit(_) => Ok(()),
-
-        solved::Expr::FloatLit(_) => Ok(()),
+        solved::Expr::NumLit(_) => Ok(()),
 
         solved::Expr::Span(lo, hi, content) => {
             check_expr(custom_types, content).map_err(locate_span(*lo, *hi))

@@ -4,10 +4,10 @@ use crate::data::mode_annot_ast::{
     self as annot, ArrayOp, Constrs, CustomTypeDef, FuncDef, HeapModes, IoOp, Lt, LtParam, Mode,
     ModeParam, ModeSolution, ModeVar, Position, Program, Res, ResModes, Shape, ShapeInner,
 };
-use crate::data::num_type::NumType;
+use crate::data::num_type::NumLit;
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::utils::{
-    write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
+    write_delimited, write_metadata, write_num_lit, CustomTypeRenderer, FuncRenderer,
 };
 use core::str;
 use id_collections::Id;
@@ -120,9 +120,7 @@ pub fn write_type_raw<T, I: Id + 'static>(
 ) -> io::Result<()> {
     match &*shape.inner {
         ShapeInner::Bool => write!(w, "Bool"),
-        ShapeInner::Num(NumType::Byte) => write!(w, "Byte"),
-        ShapeInner::Num(NumType::Int) => write!(w, "Int"),
-        ShapeInner::Num(NumType::Float) => write!(w, "Float"),
+        ShapeInner::Num(num_type) => write!(w, "{}", num_type.name()),
         ShapeInner::Tuple(shapes) => {
             let items = annot::iter_shapes(shapes, res);
             write_delimited(w, items, "(", ")", ", ", |w, (shape, res)| {
@@ -198,9 +196,7 @@ fn write_shape_impl<I: Id + 'static>(
     };
     match &*shape.inner {
         ShapeInner::Bool => write!(w, "Bool"),
-        ShapeInner::Num(NumType::Byte) => write!(w, "Byte"),
-        ShapeInner::Num(NumType::Int) => write!(w, "Int"),
-        ShapeInner::Num(NumType::Float) => write!(w, "Float"),
+        ShapeInner::Num(num_type) => write!(w, "{}", num_type.name()),
         ShapeInner::Tuple(shapes) => write_delimited(w, shapes, "(", ")", ", ", |w, shape| {
             write_shape_impl(w, type_renderer, pos, shape)
         }),
@@ -305,7 +301,7 @@ fn match_string_bytes<R, I: Id + 'static, J: Id + 'static>(
 ) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
-        if let (_, annot::Expr::ByteLit(byte), _) = binding {
+        if let (_, annot::Expr::NumLit(NumLit::U8(byte)), _) = binding {
             result_bytes.push(*byte);
         } else {
             break;
@@ -340,7 +336,7 @@ pub fn write_expr<R, I: Id + 'static, J: Id + 'static>(
                     let last_index = index + string.len() - 1;
                     write!(
                         w,
-                        "{}...{}: %{}...%{}: Byte = {:?}",
+                        "{}...{}: %{}...%{}: U8 = {:?}",
                         index,
                         last_index,
                         context.num_locals + index,
@@ -517,9 +513,7 @@ pub fn write_expr<R, I: Id + 'static, J: Id + 'static>(
             Ok(())
         }
         annot::Expr::BoolLit(val) => write!(w, "{}", if *val { "True" } else { "False" }),
-        annot::Expr::ByteLit(val) => write!(w, "{:?}", (*val as char)),
-        annot::Expr::IntLit(val) => write!(w, "{}", val),
-        annot::Expr::FloatLit(val) => write!(w, "{}", val),
+        annot::Expr::NumLit(lit) => write_num_lit(w, *lit),
     }
 }
 

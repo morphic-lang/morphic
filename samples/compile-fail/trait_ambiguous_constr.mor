@@ -3,8 +3,8 @@ trait Default a {
   default(): a,
 }
 
-impl DefaultInt of Default Int {
-  default(): Int = 0
+impl DefaultI64 of Default I64 {
+  default(): I64 = 0
 }
 
 proc main(): () =

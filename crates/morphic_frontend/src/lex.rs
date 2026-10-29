@@ -1,3 +1,4 @@
+use crate::data::num_type::{NumLit, NumType};
 use std::fmt;
 use thiserror::Error;
 
@@ -9,9 +10,7 @@ pub struct Error(pub usize);
 pub enum Token {
     UpperName(String),
     LowerName(String),
-    FloatLit(f64),
-    ByteLit(u8),
-    IntLit(i64),
+    NumLit(NumLit),
     StringLit(String),
 
     Type,
@@ -64,6 +63,11 @@ pub enum Token {
     Exclamation,
     DoubleAmp,
     DoubleBar,
+    Amp,
+    Bar,
+    Caret,
+    ShiftLeft,
+    ShiftRight,
 }
 
 impl fmt::Display for Token {
@@ -71,9 +75,7 @@ impl fmt::Display for Token {
         match self {
             Token::UpperName(name) => write!(f, "{}", name),
             Token::LowerName(name) => write!(f, "{}", name),
-            Token::FloatLit(val) => write!(f, "{}", val),
-            Token::ByteLit(val) => write!(f, "{}", val),
-            Token::IntLit(val) => write!(f, "{}", val),
+            Token::NumLit(val) => write!(f, "{}", val),
             Token::StringLit(text) => write!(f, "{:?}", text),
             Token::Type => write!(f, "type"),
             Token::Trait => write!(f, "trait"),
@@ -120,6 +122,11 @@ impl fmt::Display for Token {
             Token::Exclamation => write!(f, "!"),
             Token::DoubleAmp => write!(f, "&&"),
             Token::DoubleBar => write!(f, "||"),
+            Token::Amp => write!(f, "&"),
+            Token::Bar => write!(f, "|"),
+            Token::Caret => write!(f, "^"),
+            Token::ShiftLeft => write!(f, "<<"),
+            Token::ShiftRight => write!(f, ">>"),
             Token::PipeLeft => write!(f, "<|"),
             Token::PipeRight => write!(f, "|>"),
         }
@@ -221,25 +228,7 @@ fn consume_name(mut pos: usize, src: &str) -> Option<usize> {
     Some(pos)
 }
 
-fn consume_byte(mut pos: usize, src: &str) -> Option<usize> {
-    if !char_at(src, pos)?.is_ascii_digit() {
-        return None;
-    }
-
-    while let Some(c) = char_at(src, pos) {
-        if c.is_ascii_digit() {
-            pos = next_pos(pos, src);
-        } else {
-            break;
-        }
-    }
-
-    pos = consume_exact(pos, src, "b")?;
-
-    Some(pos)
-}
-
-fn consume_int(mut pos: usize, src: &str) -> Option<usize> {
+fn consume_digits(mut pos: usize, src: &str) -> Option<usize> {
     if !char_at(src, pos)?.is_ascii_digit() {
         return None;
     }
@@ -255,16 +244,51 @@ fn consume_int(mut pos: usize, src: &str) -> Option<usize> {
     Some(pos)
 }
 
-fn consume_float(pos: usize, src: &str) -> Option<usize> {
-    let whole_end = consume_int(pos, src)?;
+/// A number literal is digits, optionally a `.` and more digits, and optionally a suffix naming
+/// its type, such as `u8`, `i32`, or `f32`.  Without a suffix, a literal with a fraction is an
+/// `F64` and one without is an `I64`.  Given the end of the leading digits, returns the end of
+/// the literal and its value, which is `None` if the text is not a literal of its type: a
+/// fraction with an integer type, or a value out of the type's range.
+fn lex_num_lit(start: usize, digits_end: usize, src: &str) -> (usize, Option<NumLit>) {
+    let (num_end, has_frac) = match consume_exact(digits_end, src, ".") {
+        Some(frac_start) => (consume_digits(frac_start, src).unwrap_or(frac_start), true),
+        None => (digits_end, false),
+    };
+    let num = &src[start..num_end];
 
-    let frac_start = consume_exact(whole_end, src, ".")?;
+    const SUFFIXES: [(&str, NumType); 10] = [
+        ("i8", NumType::I8),
+        ("i16", NumType::I16),
+        ("i32", NumType::I32),
+        ("i64", NumType::I64),
+        ("u8", NumType::U8),
+        ("u16", NumType::U16),
+        ("u32", NumType::U32),
+        ("u64", NumType::U64),
+        ("f32", NumType::F32),
+        ("f64", NumType::F64),
+    ];
+    let (lit_end, type_) = match consume_one_of(num_end, src, &SUFFIXES) {
+        Some((suffix_end, &type_)) => (suffix_end, type_),
+        None if has_frac => (num_end, NumType::F64),
+        None => (num_end, NumType::I64),
+    };
 
-    if let Some(frac_end) = consume_int(frac_start, src) {
-        Some(frac_end)
-    } else {
-        Some(frac_start)
-    }
+    // An integer literal is parsed in its own type, so every value of the type can be written.
+    let int = |parse: fn(&str) -> Option<NumLit>| if has_frac { None } else { parse(num) };
+    let lit = match type_ {
+        NumType::I8 => int(|num| num.parse().ok().map(NumLit::I8)),
+        NumType::I16 => int(|num| num.parse().ok().map(NumLit::I16)),
+        NumType::I32 => int(|num| num.parse().ok().map(NumLit::I32)),
+        NumType::I64 => int(|num| num.parse().ok().map(NumLit::I64)),
+        NumType::U8 => int(|num| num.parse().ok().map(NumLit::U8)),
+        NumType::U16 => int(|num| num.parse().ok().map(NumLit::U16)),
+        NumType::U32 => int(|num| num.parse().ok().map(NumLit::U32)),
+        NumType::U64 => int(|num| num.parse().ok().map(NumLit::U64)),
+        NumType::F32 => num.parse().ok().map(NumLit::F32),
+        NumType::F64 => num.parse().ok().map(NumLit::F64),
+    };
+    (lit_end, lit)
 }
 
 fn consume_string_lit(mut pos: usize, src: &str) -> Option<(usize, String)> {
@@ -365,40 +389,15 @@ impl<'a> Iterator for Lexer<'a> {
             };
         }
 
-        if let Some(float_end) = consume_float(self.pos, self.src) {
-            let float_start = self.pos;
-            self.pos = float_end;
+        if let Some(digits_end) = consume_digits(self.pos, self.src) {
+            let lit_start = self.pos;
+            let (lit_end, lit) = lex_num_lit(lit_start, digits_end, self.src);
+            self.pos = lit_end;
 
-            return Some(Ok((
-                float_start,
-                Token::FloatLit(self.src[float_start..float_end].parse().unwrap()),
-                float_end,
-            )));
-        }
-
-        if let Some(byte_end) = consume_byte(self.pos, self.src) {
-            let byte_start = self.pos;
-            self.pos = byte_end;
-
-            debug_assert!(byte_start < byte_end);
-
-            return Some(Ok((
-                byte_start,
-                // `- 1` strips trailing 'b'
-                Token::ByteLit(self.src[byte_start..byte_end - 1].parse().unwrap()),
-                byte_end,
-            )));
-        }
-
-        if let Some(int_end) = consume_int(self.pos, self.src) {
-            let int_start = self.pos;
-            self.pos = int_end;
-
-            return Some(Ok((
-                int_start,
-                Token::IntLit(self.src[int_start..int_end].parse().unwrap()),
-                int_end,
-            )));
+            return Some(match lit {
+                Some(lit) => Ok((lit_start, Token::NumLit(lit), lit_end)),
+                None => Err(Error(lit_start)),
+            });
         }
 
         if let Some((string_end, string)) = consume_string_lit(self.pos, self.src) {
@@ -442,6 +441,12 @@ impl<'a> Iterator for Lexer<'a> {
                 ("!", Token::Exclamation),
                 ("&&", Token::DoubleAmp),
                 ("||", Token::DoubleBar),
+                // Bitwise operators
+                ("&", Token::Amp),
+                ("|", Token::Bar),
+                ("^", Token::Caret),
+                ("<<", Token::ShiftLeft),
+                (">>", Token::ShiftRight),
             ],
         ) {
             let sym_start = self.pos;

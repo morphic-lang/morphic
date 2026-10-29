@@ -1,17 +1,17 @@
-// expect-error: Unbounded Polymorphic Recursion @ 14:32
+// expect-error: Unbounded Polymorphic Recursion @ 14:30
 type Opt a { Some(a), None }
 
 trait Show a {
-  show(x: a): Array Byte,
+  show(x: a): Array U8,
 }
 
-impl ShowInt of Show Int {
-  show(x: Int): Array Byte = "int"
+impl ShowI64 of Show I64 {
+  show(x: I64): Array U8 = "i64"
 }
 
 // Showing an `Opt a` shows an `Opt (Opt a)`, which shows an `Opt (Opt (Opt a))`, and so on.
 impl ShowOpt of Show (Opt a) where Show a {
-  show(o: Opt a): Array Byte = show(Some(o))
+  show(o: Opt a): Array U8 = show(Some(o))
 }
 
 proc main(): () =

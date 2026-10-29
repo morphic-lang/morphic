@@ -1,10 +1,10 @@
 // expect-error: Impl Func Signature Mismatch @ 7:3
 trait Show a {
-  show(x: a): Array Byte,
+  show(x: a): Array U8,
 }
 
-impl ShowInt of Show Int {
-  show(x: Int): Int = x
+impl ShowI64 of Show I64 {
+  show(x: I64): I64 = x
 }
 
 proc main(): () = ()

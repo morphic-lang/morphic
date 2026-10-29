@@ -1,4 +1,4 @@
-fact(n: Int): Int =
+fact(n: I64): I64 =
   if n <= 0 { 1 } else { n * fact(n - 1) }
 
 proc main(): () =

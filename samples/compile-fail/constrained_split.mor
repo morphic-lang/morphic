@@ -3,17 +3,17 @@ trait Ord a {
   lt(x: a, y: a): Bool,
 }
 
-impl OrdInt of Ord Int {
-  lt(x: Int, y: Int): Bool = x < y
+impl OrdI64 of Ord I64 {
+  lt(x: I64, y: I64): Bool = x < y
 }
 
 pub type Set a where Ord a {
   pub Set(Array a)
 }
 
-keep(x: f Int): f Int = x
+keep(x: f I64): f I64 = x
 
-// `Set Int` cannot instantiate the constructor variable `f`.
+// `Set I64` cannot instantiate the constructor variable `f`.
 proc main(): () =
-  let s: Set Int = keep(Set([])) in
+  let s: Set I64 = keep(Set([])) in
   ()

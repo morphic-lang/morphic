@@ -1,4 +1,4 @@
-empty_arr: Array Int = []
+empty_arr: Array I64 = []
 
 proc main(): () =
   let _ = pop(empty_arr) in

@@ -2,16 +2,16 @@
 type Opt a { Some(a), None }
 
 trait Show a {
-  show(x: a): Array Byte,
+  show(x: a): Array U8,
 }
 
 trait Container f {
-  show_all(x: f a): Array Byte where Show a,
+  show_all(x: f a): Array U8 where Show a,
 }
 
 // The func's own constraint has to be repeated on the impl func.
 impl ContainerOpt of Container Opt {
-  show_all(x: Opt a): Array Byte = "?"
+  show_all(x: Opt a): Array U8 = "?"
 }
 
 proc main(): () = ()

@@ -1,0 +1,71 @@
+module Core = file "lib/core/core.mor"
+  expose { module String expose { i64_to_string, bool_to_string } }
+
+// The number types are `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32`, `U64`, `F32`, and
+// `F64`.  A literal names its type by suffix (`42i32`, `255u8`, `1.5f32`); without one it is
+// an `I64` or an `F64`.  No two number types convert implicitly: `i32_to_i64`, `u8_to_i8`,
+// `f64_to_f32`, and so on for every pair are the conversions, and each is an explicit call.
+
+show_i32(x: I32): Array U8 = i64_to_string(i32_to_i64(x))
+
+// The builtin traits have impls for every number type, so generic code serves them all.
+largest(x: a, y: a): a where PartialOrd a = if x < y { y } else { x }
+
+sum(arr: Array a, zero: a): a where Add a = sum_rec(arr, zero, 0)
+
+sum_rec(arr: Array a, acc: a, i: I64): a where Add a =
+  if i < len(arr) { sum_rec(arr, acc + get(arr, i), i + 1) } else { acc }
+
+describe(x: I32): Array U8 =
+  match x {
+    0i32 -> "zero",
+    1i32 -> "one",
+    _ -> "many",
+  }
+
+proc main(): () =
+  // Arithmetic wraps at 32 bits.
+  do output(show_i32(2147483647i32 + 1i32)) then
+  do output("\n") then
+  do output(show_i32(sum([1i32, 2i32, 3i32], 0i32))) then
+  do output("\n") then
+  do output(show_i32(largest(-5i32, 3i32) * 7i32)) then
+  do output("\n") then
+  // Conversions are explicit; truncation keeps the low bits and widening extends the sign.
+  do output(show_i32(i64_to_i32(4294967298))) then
+  do output("\n") then
+  do output(i64_to_string(i32_to_i64(-1i32))) then
+  do output("\n") then
+  do output(show_i32(u8_to_i32(255u8))) then
+  do output("\n") then
+  do output(show_i32(i8_to_i32(u8_to_i8(255u8)))) then
+  do output("\n") then
+  do output(i64_to_string(u8_to_i64(i32_to_u8(258i32)))) then
+  do output("\n") then
+  // Shifts use the low five bits of the amount, and `!` is bitwise not.
+  do output(show_i32(1i32 << 33i32)) then
+  do output("\n") then
+  do output(show_i32(-1i32 >> 28i32)) then
+  do output("\n") then
+  do output(show_i32(!0i32)) then
+  do output("\n") then
+  do output(show_i32(i32_count_ones(255i32) + i32_leading_zeros(1i32) + i32_trailing_zeros(8i32))) then
+  do output("\n") then
+  do output(show_i32((12i32 & 10i32) + (12i32 | 10i32) + (12i32 ^ 10i32))) then
+  do output("\n") then
+  do output(describe(1i32)) then
+  do output("\n") then
+  do output(describe(7i32)) then
+  do output("\n") then
+  // `F32` has single precision: a value that survives the round trip through `F32` is exactly
+  // representable, and one that does not is not.
+  do output(bool_to_string(f32_to_f64(f64_to_f32(0.5)) = 0.5)) then
+  do output("\n") then
+  do output(bool_to_string(f32_to_f64(f64_to_f32(0.1)) = 0.1)) then
+  do output("\n") then
+  do output(bool_to_string(1.5f32 + 2.25f32 = 3.75f32)) then
+  do output("\n") then
+  do output(bool_to_string(largest(2.5f32, -1.5f32) = 2.5f32)) then
+  do output("\n") then
+  do output(bool_to_string(sum([0.5f32, 0.25f32], 0.0f32) < 1.0f32)) then
+  do output("\n")

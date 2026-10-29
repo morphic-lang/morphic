@@ -25,7 +25,7 @@ type Primality {
   Composite,
 }
 
-sieve(limit: Int): Array Primality =
+sieve(limit: I64): Array Primality =
   // Array memory is automatically managed statically,
   // without any refcounting overhead in this case.
   let init_arr =

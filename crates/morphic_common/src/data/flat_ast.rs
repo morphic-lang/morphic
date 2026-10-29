@@ -1,6 +1,7 @@
 use crate::data::anon_sum_ast as anon;
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
+use crate::data::num_type::NumLit;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -92,9 +93,7 @@ pub enum Expr {
 
     ArrayLit(anon::Type, Vec<LocalId>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]
@@ -108,9 +107,7 @@ pub enum Condition {
     ),
     Custom(first_ord::CustomTypeId, Box<Condition>),
     BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 }
 
 pub const ARG_LOCAL: LocalId = LocalId(0);

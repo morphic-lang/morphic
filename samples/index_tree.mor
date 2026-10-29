@@ -1,11 +1,11 @@
 module Core = file "lib/core/core.mor"
   expose {
-    module String expose { int_to_string },
+    module String expose { i64_to_string },
     module Io expose { writeln },
     module State expose { State, bind, pure, seq, get, set }
   }
 
-inc: State Int Int =
+inc: State I64 I64 =
   bind(get, \curr -> seq(set(curr + 1), pure(curr)))
 
 type Tree a {
@@ -13,7 +13,7 @@ type Tree a {
   Branch(Tree a, Tree a),
 }
 
-index_leaves(tree: Tree a): State Int (Tree (Int, a)) =
+index_leaves(tree: Tree a): State I64 (Tree (I64, a)) =
   match tree {
     Leaf(val) -> bind(inc, \idx -> pure(Leaf(idx, val))),
 
@@ -25,7 +25,7 @@ index_leaves(tree: Tree a): State Int (Tree (Int, a)) =
       )
   }
 
-proc print_indent(indent: Int): () =
+proc print_indent(indent: I64): () =
   if indent <= 0 {
     ()
   } else {
@@ -33,7 +33,7 @@ proc print_indent(indent: Int): () =
     do print_indent(indent - 1)
   }
 
-proc print_tree_rec(print_leaf: proc a -> (), tree: Tree a, indent: Int): () =
+proc print_tree_rec(print_leaf: proc a -> (), tree: Tree a, indent: I64): () =
   match tree {
     Leaf(x) ->
       do output("Leaf(") then
@@ -56,7 +56,7 @@ proc print_tree(print_leaf: proc a -> (), tree: Tree a): () =
   do print_tree_rec(print_leaf, tree, 0) then
   do output("\n")
 
-proc test(foo: Array Byte, bar: Array Byte, baz: Array Byte, quux: Array Byte): () =
+proc test(foo: Array U8, bar: Array U8, baz: Array U8, quux: Array U8): () =
     let tree = Branch(Leaf(foo), Branch(Branch(Leaf(bar), Leaf(baz)), Leaf(quux))) in
 
     do writeln("Original tree:") then
@@ -67,7 +67,7 @@ proc test(foo: Array Byte, bar: Array Byte, baz: Array Byte, quux: Array Byte): 
     do writeln("Indexed tree:") then
     do print_tree(
       proc \(i, str) ->
-        do output(int_to_string(i)) then
+        do output(i64_to_string(i)) then
         do output(", ") then
         do output(str),
       indexed

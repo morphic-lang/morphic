@@ -3,7 +3,7 @@
 module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
-    module String expose { int_to_string, string_to_nat, equal },
+    module String expose { i64_to_string, string_to_nat, equal },
     module Option expose { Option { Some, None } },
   }
 
@@ -17,16 +17,16 @@ type Color {
 
 type Tree {
   Leaf,
-  Node(Color, Tree, Int, Bool, Tree),
+  Node(Color, Tree, I64, Bool, Tree),
 }
 
-fold(t: Tree, b: a, f: (Int, Bool, a) -> a): a =
+fold(t: Tree, b: a, f: (I64, Bool, a) -> a): a =
   match t {
     Leaf -> b,
     Node(_, l, k, v, r) -> fold(r, f(k, v, fold(l, b, f)), f)
   }
 
-balance1(kv: Int, vv: Bool, t: Tree, s: Tree): Tree =
+balance1(kv: I64, vv: Bool, t: Tree, s: Tree): Tree =
   match s {
     Leaf -> Leaf,
     Node(_, Node(Red, l, kx, vx, r1), ky, vy, r2)
@@ -37,7 +37,7 @@ balance1(kv: Int, vv: Bool, t: Tree, s: Tree): Tree =
       -> Node(Black, Node(Red, l, ky, vy, r), kv, vv, t),
   }
 
-balance2(t: Tree, kv: Int, vv: Bool, s: Tree): Tree =
+balance2(t: Tree, kv: I64, vv: Bool, s: Tree): Tree =
   match s {
     Leaf -> Leaf,
     Node(_, Node(Red, l, kx1, vx1, r1), ky, vy, r2)
@@ -54,7 +54,7 @@ is_red(t : Tree) : Bool =
     _         -> False,
   }
 
-ins(t: Tree, kx: Int, vx: Bool): Tree =
+ins(t: Tree, kx: I64, vx: Bool): Tree =
   match t {
     Leaf
       -> Node(Red, Leaf, kx, vx, Leaf),
@@ -77,40 +77,40 @@ set_black(t: Tree ) : Tree =
   }
 
 
-insert(t: Tree, k: Int, v: Bool): Tree =
+insert(t: Tree, k: I64, v: Bool): Tree =
   if is_red(t) {
     set_black(ins(t, k, v))
   } else {
     ins(t, k, v)
   }
 
-mod(a: Int, b: Int): Int =
+mod(a: I64, b: I64): I64 =
   a - b * (a / b)
 
 
-make_tree_rbtree_aux(n: Int, t: Tree) : Tree =
+make_tree_rbtree_aux(n: I64, t: Tree) : Tree =
   if n <= 0 { t } else {
     let n1 = n - 1 in
     make_tree_rbtree_aux(n1, insert(t, n1, mod(n1, 10) = 0))
   }
 
-make_tree_rbtree(n : Int) : Tree =
+make_tree_rbtree(n : I64) : Tree =
   make_tree_rbtree_aux(n, Leaf)
 
-test_rbtree(n : Int): Int =
+test_rbtree(n : I64): I64 =
   let t = make_tree_rbtree(n) in
   let v = fold(t, 0, \(k,v,r) -> if v { r + 1 } else { r }) in
   v
 
-make_tree_rbtreeck_aux(freq : Int, n: Int, t: Tree, acc : Array Tree): Array Tree=
+make_tree_rbtreeck_aux(freq : I64, n: I64, t: Tree, acc : Array Tree): Array Tree=
   if n <= 0 { push(acc, t) } else {
     let t_ = insert(t, n, mod(n, 10) = 0) in
     make_tree_rbtreeck_aux(freq, n - 1, t_, if (mod(n, freq)=0) { push(acc, t_) } else { acc })
   }
 
-make_tree_rbtreeck(freq : Int, n: Int): Array Tree =
+make_tree_rbtreeck(freq : I64, n: I64): Array Tree =
   make_tree_rbtreeck_aux(freq, n, Leaf, [])
-test_rbtreeck(n : Int): Int =
+test_rbtreeck(n : I64): I64 =
   let trees = make_tree_rbtreeck(5, n) in
   let v = fold(get(trees, len(trees) - 1), 0, \(k,v,r) -> if (v) { r + 1 } else { r }) in
   v
@@ -132,7 +132,7 @@ proc main(): () =
   match (string_to_nat(iter_str), string_to_nat(do input())) {
     (Some(iters), Some(size)) ->
       match repeat(iters, \() -> tree_fn(size)) {
-        Some(n) -> do writeln(int_to_string(n)),
+        Some(n) -> do writeln(i64_to_string(n)),
         None -> (),
       },
     (_, _) ->

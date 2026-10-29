@@ -15,7 +15,7 @@ pub once(x: a): Iter a =
 pub forever(x: a): Iter a =
   Iter(\() -> Some(x, forever(x)))
 
-pub range(lo: Int, hi: Int): Iter Int =
+pub range(lo: I64, hi: I64): Iter I64 =
   Iter(\() ->
     if lo < hi {
       Some(lo, range(lo + 1, hi))
@@ -24,7 +24,7 @@ pub range(lo: Int, hi: Int): Iter Int =
     }
   )
 
-pub ints(lo: Int): Iter Int =
+pub ints(lo: I64): Iter I64 =
   Iter(\() -> Some(lo, ints(lo + 1)))
 
 pub items(arr: Array a): Iter a =
@@ -77,7 +77,7 @@ pub filter(it: Iter a, f: a -> Bool): Iter a =
     }
   )
 
-pub take(it: Iter a, count: Int): Iter a =
+pub take(it: Iter a, count: I64): Iter a =
   if count > 0 {
     Iter(\() ->
       match next(it) {
@@ -109,7 +109,7 @@ pub zip(it1: Iter a, it2: Iter b): Iter (a, b) =
     }
   )
 
-pub enumerate(it: Iter a): Iter (Int, a) =
+pub enumerate(it: Iter a): Iter (I64, a) =
   zip(ints(0), it)
 
 // Consuming iterators:
@@ -129,10 +129,10 @@ pub foldr(it: Iter a, init: b, combine: (a, b) -> b): b =
     None -> init,
   }
 
-pub sum(it: Iter Int): Int =
+pub sum(it: Iter I64): I64 =
   foldl(it, 0, \(x, y) -> x + y)
 
-pub count(it: Iter a): Int =
+pub count(it: Iter a): I64 =
   sum(map(it, \_ -> 1))
 
 pub any(it: Iter a, f: a -> Bool): Bool =
@@ -186,7 +186,7 @@ pub join(it: Iter (Iter a), sep: Iter a): Iter a =
       }
     )
 
-pub find_index(it: Iter a, f: a -> Bool): Option Int =
+pub find_index(it: Iter a, f: a -> Bool): Option I64 =
   find_map(enumerate(it), \(idx, x) -> if f(x) { Some(idx) } else { None })
 
 pub proc for_each(it: Iter a, f: proc a -> ()): () =

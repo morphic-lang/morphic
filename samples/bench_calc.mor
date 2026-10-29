@@ -13,14 +13,14 @@ module Bench = file "lib/bench_common.mor"
   with { Core }
 
 type Expr {
-  Const(Int),
+  Const(I64),
   Add(Expr, Expr),
   Sub(Expr, Expr),
   Mul(Expr, Expr),
   Div(Expr, Expr),
 }
 
-eval(e: Expr): Int =
+eval(e: Expr): I64 =
   match e {
     Const(x) -> x,
     Add(x, y) -> eval(x) + eval(y),
@@ -29,30 +29,30 @@ eval(e: Expr): Int =
     Div(x, y) -> eval(x) / eval(y),
   }
 
-ascii_zero: Byte = 48b
-ascii_nine: Byte = 57b
-ascii_space: Byte = 32b
-ascii_newline: Byte = 10b
-ascii_tab: Byte = 9b
-ascii_asterisk: Byte = 42b
-ascii_slash: Byte = 47b
-ascii_plus: Byte = 43b
-ascii_minus: Byte = 45b
-ascii_open_paren: Byte = 40b
-ascii_close_paren: Byte = 41b
+ascii_zero: U8 = 48u8
+ascii_nine: U8 = 57u8
+ascii_space: U8 = 32u8
+ascii_newline: U8 = 10u8
+ascii_tab: U8 = 9u8
+ascii_asterisk: U8 = 42u8
+ascii_slash: U8 = 47u8
+ascii_plus: U8 = 43u8
+ascii_minus: U8 = 45u8
+ascii_open_paren: U8 = 40u8
+ascii_close_paren: U8 = 41u8
 
-digit: Parse Int =
-  Parse.byte_range(ascii_zero, ascii_nine)
-  |> Parse.map(\x -> byte_to_int(x - ascii_zero))
+digit: Parse I64 =
+  Parse.u8_range(ascii_zero, ascii_nine)
+  |> Parse.map(\x -> u8_to_i64(x - ascii_zero))
 
-int: Parse Int =
+i64: Parse I64 =
   Parse.many1_fold(digit, 0, \(x, y) -> x * 10 + y)
 
 space: Parse () =
   (
-    Parse.or(Parse.byte_eq(ascii_space)) <|
-    Parse.or(Parse.byte_eq(ascii_newline)) <|
-    Parse.byte_eq(ascii_tab)
+    Parse.or(Parse.u8_eq(ascii_space)) <|
+    Parse.or(Parse.u8_eq(ascii_newline)) <|
+    Parse.u8_eq(ascii_tab)
   ) |> Parse.map(\_ -> ())
 
 spaces: Parse () =
@@ -63,10 +63,10 @@ spaced(p: Parse a): Parse a =
   Parse.skip_post(p, spaces)
 
 atomic_expr: Parse Expr =
-  Parse.or(Parse.map(int, \x -> Const(x))) <|
+  Parse.or(Parse.map(i64, \x -> Const(x))) <|
   Parse.lazy() <| \() ->
-  Parse.skip_pre(Parse.byte_eq(ascii_open_paren)) <|
-  Parse.skip_post(spaced(expr), Parse.byte_eq(ascii_close_paren))
+  Parse.skip_pre(Parse.u8_eq(ascii_open_paren)) <|
+  Parse.skip_post(spaced(expr), Parse.u8_eq(ascii_close_paren))
 
 operator_chain(
   elem: Parse Expr,
@@ -84,15 +84,15 @@ operator_chain(
   )
 
 mul_level_operator: Parse ((Expr, Expr) -> Expr) =
-  Parse.or(Parse.byte_eq(ascii_asterisk) |> Parse.map(\_ -> \x -> Mul(x))) <|
-  (Parse.byte_eq(ascii_slash) |> Parse.map(\_ -> \x -> Div(x)))
+  Parse.or(Parse.u8_eq(ascii_asterisk) |> Parse.map(\_ -> \x -> Mul(x))) <|
+  (Parse.u8_eq(ascii_slash) |> Parse.map(\_ -> \x -> Div(x)))
 
 mul_level_expr: Parse Expr =
   operator_chain(atomic_expr, mul_level_operator)
 
 add_level_operator: Parse ((Expr, Expr) -> Expr) =
-  Parse.or(Parse.byte_eq(ascii_plus) |> Parse.map(\_ -> \x -> Add(x))) <|
-  (Parse.byte_eq(ascii_minus) |> Parse.map(\_ -> \x -> Sub(x)))
+  Parse.or(Parse.u8_eq(ascii_plus) |> Parse.map(\_ -> \x -> Add(x))) <|
+  (Parse.u8_eq(ascii_minus) |> Parse.map(\_ -> \x -> Sub(x)))
 
 add_level_expr: Parse Expr =
   operator_chain(mul_level_expr, add_level_operator)
@@ -100,7 +100,7 @@ add_level_expr: Parse Expr =
 expr: Parse Expr =
   spaced(add_level_expr)
 
-eval_exprs(inputs: Iter (Array Byte)): Array Int =
+eval_exprs(inputs: Iter (Array U8)): Array I64 =
   inputs
   |> Iter.map(\str ->
     str
@@ -110,7 +110,7 @@ eval_exprs(inputs: Iter (Array Byte)): Array Int =
   )
   |> Array.from_iter()
 
-proc read_input_rec(exprs: Array (Array Byte)): Array (Array Byte) =
+proc read_input_rec(exprs: Array (Array U8)): Array (Array U8) =
   let line = do input() in
   if Array.len(line) = 0 {
     exprs
@@ -118,7 +118,7 @@ proc read_input_rec(exprs: Array (Array Byte)): Array (Array Byte) =
     do read_input_rec(Array.push(exprs, line))
   }
 
-proc read_input(): Array (Array Byte) =
+proc read_input(): Array (Array U8) =
   do read_input_rec([])
 
 pub proc main(): () =
@@ -128,7 +128,7 @@ pub proc main(): () =
       match Bench.repeat(iters, \() -> eval_exprs(Iter.items(exprs))) {
         Some(results) ->
           Iter.items(results)
-          |> do Iter.for_each(proc \result -> do Io.writeln(String.int_to_string(result))),
+          |> do Iter.for_each(proc \result -> do Io.writeln(String.i64_to_string(result))),
         None -> (),
       },
     None ->

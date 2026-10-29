@@ -12,6 +12,7 @@ use crate::data::guarded_ast::{self as guarded, UnfoldRecipe};
 use crate::data::intrinsics as intrs;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
+use crate::data::num_type::NumLit;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -1179,9 +1180,7 @@ pub enum Expr<R, I, J> {
 
     ArrayLit(Type<R, I>, Vec<Occur<R, I>>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 /// `sig` stores all the constraints on the mode parameters of a function (more accurately SCC)

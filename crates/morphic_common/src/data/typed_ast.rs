@@ -1,4 +1,5 @@
 use crate::data::elaborated_ast as elab;
+use crate::data::num_type::NumLit;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -94,8 +95,8 @@ pub struct ValDef {
     pub obligations: IdVec<ObligationId, Obligation>,
     /// Pairs of obligations whose evidence unification required to be equal but did not
     /// identify: either the two sides already differ, or at least one is a superclass
-    /// projection, which inference cannot compare.  Projection is not injective (two `Ord Int`
-    /// impls may share their `Eq Int` superclass evidence), so whether such sides agree is only
+    /// projection, which inference cannot compare.  Projection is not injective (two `Ord I64`
+    /// impls may share their `Eq I64` superclass evidence), so whether such sides agree is only
     /// known once trait solving has resolved both to derivations.  The body solver checks each
     /// equation then and reports a conflict that explains, through the origins of the
     /// obligations, where each side's evidence came from.  Nothing in inference depends on the
@@ -134,9 +135,7 @@ pub enum Expr {
     LetMany(Vec<(Pattern, Expr)>, Box<Expr>),
 
     ArrayLit(Type, Vec<Expr>),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 
     Span(usize, usize, Box<Expr>),
 }
@@ -148,9 +147,7 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(res::TypeId, Vec<Type>, res::VariantId, Option<Box<Pattern>>),
 
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 
     Span(usize, usize, Box<Pattern>),
 }

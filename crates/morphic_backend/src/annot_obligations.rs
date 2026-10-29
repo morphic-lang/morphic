@@ -359,11 +359,7 @@ fn solve_expr(
 
         annot::Expr::BoolLit(val) => annot::Expr::BoolLit(*val),
 
-        annot::Expr::ByteLit(val) => annot::Expr::ByteLit(*val),
-
-        annot::Expr::IntLit(val) => annot::Expr::IntLit(*val),
-
-        annot::Expr::FloatLit(val) => annot::Expr::FloatLit(*val),
+        annot::Expr::NumLit(lit) => annot::Expr::NumLit(*lit),
     }
 }
 
@@ -1338,11 +1334,7 @@ fn annot_expr(
 
         annot::Expr::BoolLit(val) => Expr::BoolLit(*val),
 
-        annot::Expr::ByteLit(val) => Expr::ByteLit(*val),
-
-        annot::Expr::IntLit(val) => Expr::IntLit(*val),
-
-        annot::Expr::FloatLit(val) => Expr::FloatLit(*val),
+        annot::Expr::NumLit(lit) => Expr::NumLit(*lit),
     }
 }
 

@@ -243,9 +243,7 @@ fn is_atomic(expr: &special::Expr) -> bool {
         | special::Expr::Local(_)
         | special::Expr::Capture(_)
         | special::Expr::BoolLit(_)
-        | special::Expr::ByteLit(_)
-        | special::Expr::IntLit(_)
-        | special::Expr::FloatLit(_) => true,
+        | special::Expr::NumLit(_) => true,
     }
 }
 
@@ -457,7 +455,7 @@ impl<'a> Context<'a> {
                                                 first_ord::Type::Array(Box::new(
                                                     lowered_item_type.clone(),
                                                 )),
-                                                first_ord::Type::Num(first_ord::NumType::Int),
+                                                first_ord::Type::Num(first_ord::NumType::I64),
                                             ],
                                             first_ord::Expr::LetMany(
                                                 vec![(
@@ -522,7 +520,7 @@ impl<'a> Context<'a> {
                                                 first_ord::Type::Array(Box::new(
                                                     lowered_item_type.clone(),
                                                 )),
-                                                first_ord::Type::Num(first_ord::NumType::Int),
+                                                first_ord::Type::Num(first_ord::NumType::I64),
                                             ],
                                             first_ord::Expr::ArrayOp(first_ord::ArrayOp::Reserve(
                                                 lowered_item_type,
@@ -627,9 +625,7 @@ impl<'a> Context<'a> {
     fn lower_type(&mut self, type_: &special::Type) -> first_ord::Type {
         match type_ {
             special::Type::Bool => first_ord::Type::Bool,
-            special::Type::Byte => first_ord::Type::Num(first_ord::NumType::Byte),
-            special::Type::Int => first_ord::Type::Num(first_ord::NumType::Int),
-            special::Type::Float => first_ord::Type::Num(first_ord::NumType::Float),
+            special::Type::Num(num) => first_ord::Type::Num(*num),
 
             special::Type::Array(item_type) => {
                 first_ord::Type::Array(Box::new(self.lower_type(item_type)))
@@ -668,9 +664,7 @@ impl<'a> Context<'a> {
             ),
 
             &special::Pattern::BoolConst(val) => first_ord::Pattern::BoolConst(val),
-            &special::Pattern::ByteConst(val) => first_ord::Pattern::ByteConst(val),
-            &special::Pattern::IntConst(val) => first_ord::Pattern::IntConst(val),
-            &special::Pattern::FloatConst(val) => first_ord::Pattern::FloatConst(val),
+            &special::Pattern::NumConst(lit) => first_ord::Pattern::NumConst(lit),
         }
     }
 
@@ -953,9 +947,7 @@ impl<'a> Context<'a> {
             ),
 
             &special::Expr::BoolLit(val) => first_ord::Expr::BoolLit(val),
-            &special::Expr::ByteLit(val) => first_ord::Expr::ByteLit(val),
-            &special::Expr::IntLit(val) => first_ord::Expr::IntLit(val),
-            &special::Expr::FloatLit(val) => first_ord::Expr::FloatLit(val),
+            &special::Expr::NumLit(lit) => first_ord::Expr::NumLit(lit),
         }
     }
 

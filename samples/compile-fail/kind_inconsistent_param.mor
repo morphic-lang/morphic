@@ -1,5 +1,5 @@
 // expect-error: Kind Mismatch @ 3:15
 // `a` is used both as an ordinary type and applied to an argument.
-both(x: a, y: a Int): Int = 0
+both(x: a, y: a I64): I64 = 0
 
 proc main(): () = ()

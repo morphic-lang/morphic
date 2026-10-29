@@ -1,7 +1,7 @@
 use crate::data::intrinsics::Intrinsic;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
-pub use crate::data::num_type::NumType;
+pub use crate::data::num_type::{NumLit, NumType};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -102,9 +102,7 @@ pub enum Expr {
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]
@@ -114,9 +112,7 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(CustomTypeId, VariantId, Option<Box<Pattern>>),
     BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 }
 
 #[derive(Clone, Debug)]

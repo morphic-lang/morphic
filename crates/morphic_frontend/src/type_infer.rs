@@ -8,7 +8,7 @@ use crate::data::elaborated_ast as elab;
 use crate::data::elaborated_ast::{Derivation, TraitGiven, TraitSelfConstr};
 use crate::data::intrinsics as intrs;
 use crate::data::kinded_ast as kinded;
-use crate::data::num_type::NumType;
+use crate::data::num_type::{NumLit, NumType};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::raw_ast as raw;
@@ -214,7 +214,7 @@ impl Reportable for Error {
                         "",
                         "where each '{unknown}' stands for something that this definition \
                          doesn't pin down. You can fix this by adding a type annotation. For \
-                         example, 'let x: Int = ...' would tell me that 'x' is of type 'Int'.",
+                         example, 'let x: I64 = ...' would tell me that 'x' is of type 'I64'.",
                     ],
                     type_ = type_,
                     unknown = report_type::UNKNOWN_TYPE,
@@ -640,7 +640,7 @@ impl<'a> Context<'a> {
 
     // Applications unify from the right: the last min(n1, n2) arguments pair up, and whatever is
     // left of the longer application is unified with the head of the shorter one.  This is what
-    // lets `f a` unify with `Result Int Bool`, giving `f := Result Int`.  It is sound because type
+    // lets `f a` unify with `Result I64 Bool`, giving `f := Result I64`.  It is sound because type
     // constructor application is injective.
     fn unify_apps(
         &self,
@@ -1011,9 +1011,7 @@ enum AnnotExpr {
         Vec<AnnotExpr>,
         TypeVar, // Whole array type
     ),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 
     Span(usize, usize, Box<AnnotExpr>),
 }
@@ -1043,9 +1041,7 @@ enum AnnotPattern {
         TypeVar, // Whole pattern type, for reporting ambiguities (see 'AnnotExpr')
     ),
 
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 
     Span(usize, usize, Box<AnnotPattern>),
 }
@@ -1054,9 +1050,7 @@ fn intrinsic_sig_to_scheme(sig: &intrs::Signature) -> elab::TypeScheme {
     fn trans_type(type_: &intrs::Type) -> elab::Type {
         match type_ {
             intrs::Type::Bool => elab::Type::ctor(res::TypeId::Bool),
-            intrs::Type::Num(NumType::Byte) => elab::Type::ctor(res::TypeId::Byte),
-            intrs::Type::Num(NumType::Int) => elab::Type::ctor(res::TypeId::Int),
-            intrs::Type::Num(NumType::Float) => elab::Type::ctor(res::TypeId::Float),
+            intrs::Type::Num(num) => elab::Type::ctor(res::TypeId::Num(*num)),
             intrs::Type::Tuple(items) => elab::Type::Tuple(items.iter().map(trans_type).collect()),
         }
     }
@@ -1083,11 +1077,11 @@ pub fn global_scheme(program: &elab::Program, global: res::GlobalId) -> Cow<'_, 
     }
 
     fn byte() -> elab::Type {
-        elab::Type::ctor(Byte)
+        elab::Type::ctor(Num(NumType::U8))
     }
 
     fn int() -> elab::Type {
-        elab::Type::ctor(Int)
+        elab::Type::ctor(Num(NumType::I64))
     }
 
     fn array(arg: elab::Type) -> elab::Type {
@@ -1631,22 +1625,10 @@ fn infer_pat(
             infer_pat(program, ctx, scope, expected, content)
         }
 
-        &res::Pattern::ByteConst(val) => {
-            let const_var = ctx.new_var(Assign::Ctor(res::TypeId::Byte));
+        &res::Pattern::NumConst(lit) => {
+            let const_var = ctx.new_var(Assign::Ctor(res::TypeId::Num(lit.num_type())));
             ctx.unify(expected, const_var)?;
-            Ok(AnnotPattern::ByteConst(val))
-        }
-
-        &res::Pattern::IntConst(val) => {
-            let const_var = ctx.new_var(Assign::Ctor(res::TypeId::Int));
-            ctx.unify(expected, const_var)?;
-            Ok(AnnotPattern::IntConst(val))
-        }
-
-        &res::Pattern::FloatConst(val) => {
-            let const_var = ctx.new_var(Assign::Ctor(res::TypeId::Float));
-            ctx.unify(expected, const_var)?;
-            Ok(AnnotPattern::FloatConst(val))
+            Ok(AnnotPattern::NumConst(lit))
         }
 
         res::Pattern::Span(lo, hi, content) => Ok(AnnotPattern::Span(
@@ -1863,22 +1845,10 @@ fn infer_expr(
             Ok(array_annot)
         }
 
-        &res::Expr::ByteLit(val) => {
-            let lit_var = ctx.new_var(Assign::Ctor(res::TypeId::Byte));
+        &res::Expr::NumLit(lit) => {
+            let lit_var = ctx.new_var(Assign::Ctor(res::TypeId::Num(lit.num_type())));
             ctx.unify(expected, lit_var)?;
-            Ok(AnnotExpr::ByteLit(val))
-        }
-
-        &res::Expr::IntLit(val) => {
-            let lit_var = ctx.new_var(Assign::Ctor(res::TypeId::Int));
-            ctx.unify(expected, lit_var)?;
-            Ok(AnnotExpr::IntLit(val))
-        }
-
-        &res::Expr::FloatLit(val) => {
-            let lit_var = ctx.new_var(Assign::Ctor(res::TypeId::Float));
-            ctx.unify(expected, lit_var)?;
-            Ok(AnnotExpr::FloatLit(val))
+            Ok(AnnotExpr::NumLit(lit))
         }
 
         res::Expr::Span(lo, hi, body) => {
@@ -1926,9 +1896,7 @@ fn extract_pat_solution(
                 .transpose()?,
         )),
 
-        AnnotPattern::ByteConst(val) => Ok(typed::Pattern::ByteConst(val)),
-        AnnotPattern::IntConst(val) => Ok(typed::Pattern::IntConst(val)),
-        AnnotPattern::FloatConst(val) => Ok(typed::Pattern::FloatConst(val)),
+        AnnotPattern::NumConst(lit) => Ok(typed::Pattern::NumConst(lit)),
 
         AnnotPattern::Span(lo, hi, content) => Ok(typed::Pattern::Span(
             lo,
@@ -2066,11 +2034,7 @@ fn extract_solution(
                 .collect::<Result<_, _>>()?,
         )),
 
-        AnnotExpr::ByteLit(val) => Ok(typed::Expr::ByteLit(val)),
-
-        AnnotExpr::IntLit(val) => Ok(typed::Expr::IntLit(val)),
-
-        AnnotExpr::FloatLit(val) => Ok(typed::Expr::FloatLit(val)),
+        AnnotExpr::NumLit(lit) => Ok(typed::Expr::NumLit(lit)),
 
         AnnotExpr::Span(lo, hi, body) => Ok(typed::Expr::Span(
             lo,

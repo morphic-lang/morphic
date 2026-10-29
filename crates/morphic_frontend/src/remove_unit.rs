@@ -211,9 +211,7 @@ impl<'a> Context<'a> {
                     .collect(),
             ),
             Expr::BoolLit(b) => Expr::BoolLit(b),
-            Expr::ByteLit(b) => Expr::ByteLit(b),
-            Expr::IntLit(b) => Expr::IntLit(b),
-            Expr::FloatLit(b) => Expr::FloatLit(b),
+            Expr::NumLit(lit) => Expr::NumLit(lit),
         }
     }
 
@@ -225,9 +223,7 @@ impl<'a> Context<'a> {
                 Pattern::Tuple(pats) => Type::Tuple(pats.iter().map(|x| pat_to_type(x)).collect()),
                 Pattern::Ctor(type_id, _, _) => Type::Custom(*type_id),
                 Pattern::BoolConst(_) => Type::Bool,
-                Pattern::ByteConst(_) => Type::Num(NumType::Byte),
-                Pattern::IntConst(_) => Type::Num(NumType::Int),
-                Pattern::FloatConst(_) => Type::Num(NumType::Float),
+                Pattern::NumConst(lit) => Type::Num(lit.num_type()),
             }
         }
         fn count_bindings(p: &Pattern) -> usize {
@@ -239,9 +235,7 @@ impl<'a> Context<'a> {
                     .as_ref()
                     .map_or_else(|| 0, |pat| count_bindings(&pat)),
                 Pattern::BoolConst(_) => 0,
-                Pattern::ByteConst(_) => 0,
-                Pattern::IntConst(_) => 0,
-                Pattern::FloatConst(_) => 0,
+                Pattern::NumConst(_) => 0,
             }
         }
         match p {
@@ -284,9 +278,7 @@ impl<'a> Context<'a> {
                 }
             }
             Pattern::BoolConst(b) => Pattern::BoolConst(b),
-            Pattern::ByteConst(b) => Pattern::ByteConst(b),
-            Pattern::IntConst(b) => Pattern::IntConst(b),
-            Pattern::FloatConst(b) => Pattern::FloatConst(b),
+            Pattern::NumConst(lit) => Pattern::NumConst(lit),
         }
     }
 
@@ -333,7 +325,7 @@ fn typecheck_expr(ctx: &mut Context, expr: &Expr) -> Type {
             item_type.clone(),
             T::HoleArray(Box::new(item_type.clone())),
         ]),
-        E::ArrayOp(ArrayOp::Len(_item_type, _array)) => T::Num(NumType::Int),
+        E::ArrayOp(ArrayOp::Len(_item_type, _array)) => T::Num(NumType::I64),
         E::ArrayOp(ArrayOp::Push(item_type, _array, _item)) => {
             let array_type = T::Array(Box::new(item_type.clone()));
             array_type
@@ -349,7 +341,7 @@ fn typecheck_expr(ctx: &mut Context, expr: &Expr) -> Type {
             let array_type = T::Array(Box::new(item_type.clone()));
             array_type
         }
-        E::IoOp(IoOp::Input) => T::Array(Box::new(T::Num(NumType::Byte))),
+        E::IoOp(IoOp::Input) => T::Array(Box::new(T::Num(NumType::U8))),
         E::IoOp(IoOp::Output(_output)) => T::Tuple(vec![]),
         E::Panic(ret_type, _message) => ret_type.clone(),
         E::Ctor(type_id, _variant_id, _expr) => T::Custom(*type_id),
@@ -375,9 +367,7 @@ fn typecheck_expr(ctx: &mut Context, expr: &Expr) -> Type {
         }),
         E::ArrayLit(item_type, _items) => T::Array(Box::new(item_type.clone())),
         E::BoolLit(_) => T::Bool,
-        E::ByteLit(_) => T::Num(NumType::Byte),
-        E::IntLit(_) => T::Num(NumType::Int),
-        E::FloatLit(_) => T::Num(NumType::Float),
+        E::NumLit(lit) => T::Num(lit.num_type()),
     }
 }
 
@@ -395,7 +385,7 @@ fn bind_pattern(ctx: &mut Context, pattern: &Pattern) {
             bind_pattern(ctx, arg_pat);
         }
         P::Ctor(_type_id, _variant_id, None) => {}
-        P::BoolConst(_) | P::ByteConst(_) | P::IntConst(_) | P::FloatConst(_) => {}
+        P::BoolConst(_) | P::NumConst(_) => {}
     }
 }
 

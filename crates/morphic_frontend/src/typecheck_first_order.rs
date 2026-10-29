@@ -43,7 +43,7 @@ fn typecheck_expr(
         E::ArrayOp(ast::ArrayOp::Get(item_type, array, index)) => {
             assert_eq!(
                 typecheck_expr(program, locals, &**index),
-                T::Num(ast::NumType::Int)
+                T::Num(ast::NumType::I64)
             );
             assert_eq!(
                 typecheck_expr(program, locals, &**array),
@@ -54,7 +54,7 @@ fn typecheck_expr(
         E::ArrayOp(ast::ArrayOp::Extract(item_type, array, index)) => {
             assert_eq!(
                 typecheck_expr(program, locals, &**index),
-                T::Num(ast::NumType::Int)
+                T::Num(ast::NumType::I64)
             );
             assert_eq!(
                 typecheck_expr(program, locals, &**array),
@@ -70,7 +70,7 @@ fn typecheck_expr(
                 typecheck_expr(program, locals, &**array),
                 T::Array(Box::new(item_type.clone()))
             );
-            T::Num(ast::NumType::Int)
+            T::Num(ast::NumType::I64)
         }
         E::ArrayOp(ast::ArrayOp::Push(item_type, array, item)) => {
             assert_eq!(&typecheck_expr(program, locals, &**item), item_type);
@@ -95,24 +95,24 @@ fn typecheck_expr(
         E::ArrayOp(ast::ArrayOp::Reserve(item_type, array, capacity)) => {
             assert_eq!(
                 &typecheck_expr(program, locals, &**capacity),
-                &T::Num(ast::NumType::Int)
+                &T::Num(ast::NumType::I64)
             );
             let array_type = T::Array(Box::new(item_type.clone()));
             assert_eq!(&typecheck_expr(program, locals, &**array), &array_type);
             array_type
         }
-        E::IoOp(ast::IoOp::Input) => T::Array(Box::new(T::Num(ast::NumType::Byte))),
+        E::IoOp(ast::IoOp::Input) => T::Array(Box::new(T::Num(ast::NumType::U8))),
         E::IoOp(ast::IoOp::Output(output)) => {
             assert_eq!(
                 typecheck_expr(program, locals, &**output),
-                T::Array(Box::new(T::Num(ast::NumType::Byte)))
+                T::Array(Box::new(T::Num(ast::NumType::U8)))
             );
             T::Tuple(vec![])
         }
         E::Panic(ret_type, message) => {
             assert_eq!(
                 typecheck_expr(program, locals, &**message),
-                T::Array(Box::new(T::Num(ast::NumType::Byte)))
+                T::Array(Box::new(T::Num(ast::NumType::U8)))
             );
             ret_type.clone()
         }
@@ -162,9 +162,7 @@ fn typecheck_expr(
             T::Array(Box::new(item_type.clone()))
         }
         E::BoolLit(_) => T::Bool,
-        E::ByteLit(_) => T::Num(ast::NumType::Byte),
-        E::IntLit(_) => T::Num(ast::NumType::Int),
-        E::FloatLit(_) => T::Num(ast::NumType::Float),
+        E::NumLit(lit) => T::Num(lit.num_type()),
     }
 }
 
@@ -203,10 +201,8 @@ fn bind_pattern(
             assert_eq!(type_id, expected);
             assert!(program.custom_types[type_id].variants[variant_id].is_none());
         }
-        (P::BoolConst(_), T::Bool)
-        | (P::ByteConst(_), T::Num(ast::NumType::Byte))
-        | (P::IntConst(_), T::Num(ast::NumType::Int))
-        | (P::FloatConst(_), T::Num(ast::NumType::Float)) => {}
+        (P::BoolConst(_), T::Bool) => {}
+        (P::NumConst(lit), T::Num(num)) if lit.num_type() == *num => {}
         _ => {
             panic!("Pattern {:?} invalid for type {:?}", pattern, expected_type);
         }

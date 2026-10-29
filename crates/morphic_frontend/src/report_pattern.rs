@@ -60,9 +60,7 @@ fn render_to(
                     _ => unreachable!(),
                 },
 
-                res::TypeId::Array | res::TypeId::Byte | res::TypeId::Float | res::TypeId::Int => {
-                    unreachable!()
-                }
+                res::TypeId::Array | res::TypeId::Num(_) => unreachable!(),
             }
 
             if let Some(content) = content {

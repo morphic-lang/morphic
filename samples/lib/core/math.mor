@@ -1,76 +1,59 @@
-pub max_int: Int = 2305843009213693951
+pub max_i64: I64 = 2305843009213693951
 
-pub cmp_max(a: Int, b: Int): Int =
+pub cmp_max(a: I64, b: I64): I64 =
   if a > b {
     a
   } else {
     b
   }
 
-pub cmp_min(a: Int, b: Int): Int =
+pub cmp_min(a: I64, b: I64): I64 =
   if a < b {
     a
   } else {
     b
   }
 
-pub int_bit_not(a: Int): Int =
+pub i64_bit_not(a: I64): I64 =
   -a - 1
 
-pub rem(a: Int, b: Int): Int =
+pub rem(a: I64, b: I64): I64 =
   a - b * (a / b)
 
-pub mod(a: Int, b: Int): Int =
+pub mod(a: I64, b: I64): I64 =
   if a < 0 {
     rem(a, b) + b
   } else {
     rem(a, b)
   }
 
-pow_rec(accum: Int, a: Int, b: Int): Int =
+pow_rec(accum: I64, a: I64, b: I64): I64 =
   if (b = 0) {
     accum
   } else {
     pow_rec(a * accum, a, b - 1)
   }
 
-pub pow(a: Int, b: Int): Int =
+pub pow(a: I64, b: I64): I64 =
   pow_rec(1, a, b)
 
-byte_pow_rec(accum: Byte, a: Byte, b: Byte): Byte =
-  if (b = 0b) {
+u8_pow_rec(accum: U8, a: U8, b: U8): U8 =
+  if (b = 0u8) {
     accum
   } else {
-    byte_pow_rec(a * accum, a, b - 1b)
+    u8_pow_rec(a * accum, a, b - 1u8)
   }
 
-pub byte_pow(a: Byte, b: Byte): Byte =
-  byte_pow_rec(1b, a, b)
+pub u8_pow(a: U8, b: U8): U8 =
+  u8_pow_rec(1u8, a, b)
 
-pub float_pow(base: Float, exp: Int): Float =
+pub f64_pow(base: F64, exp: I64): F64 =
   if exp = 0 {
     1.0
   } else if exp < 0 {
-    1.0 / float_pow(base, -exp)
-  } else if int_bit_and(exp, 1) = 0 {
-    float_pow(base * base, int_shift_right(exp, 1))
+    1.0 / f64_pow(base, -exp)
+  } else if (exp & 1) = 0 {
+    f64_pow(base * base, exp >> 1)
   } else {
-    base * float_pow(base * base, int_shift_right(exp, 1))
-  }
-
-int_to_float_rec(accum: Float, n: Int): Float =
-  if n = 0 {
-    accum
-  } else if int_bit_and(n, 1) = 0 {
-    int_to_float_rec(accum * 2.0, int_shift_right(n, 1))
-  } else {
-    int_to_float_rec(accum * 2.0 + 1.0, int_shift_right(n, 1))
-  }
-
-// TODO: This needs to be an intrinsic!
-pub int_to_float(n: Int): Float =
-  if n < 0 {
-    -int_to_float_rec(0.0, -n)
-  } else {
-    int_to_float_rec(0.0, n)
+    base * f64_pow(base * base, exp >> 1)
   }

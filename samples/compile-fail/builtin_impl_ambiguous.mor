@@ -1,8 +1,8 @@
 // expect-error: Ambiguous Impl @ 9:11
 // The builtin impls are in scope everywhere unless covered up by an impl of the same name, so a
-// second impl of `Add Int` under another name makes `+` ambiguous at `Int`.
-impl AddIntDouble of Add Int {
-  add(x: Int, y: Int): Int = x * 2
+// second impl of `Add I64` under another name makes `+` ambiguous at `I64`.
+impl AddI64Double of Add I64 {
+  add(x: I64, y: I64): I64 = x * 2
 }
 
 proc main(): () =

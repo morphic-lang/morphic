@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::lambda_lifted_ast as lifted;
 use crate::data::mono_ast as mono;
+use crate::data::num_type::{NumLit, NumType};
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast::{self as res, ArrayOp, IoOp};
@@ -22,9 +23,7 @@ pub struct FuncRep(pub BTreeSet<FuncCase>);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bool,
-    Byte,
-    Int,
-    Float,
+    Num(NumType),
     Array(Box<Type>),
     Tuple(Vec<Type>),
     Func(FuncRep),
@@ -75,9 +74,7 @@ pub enum Expr {
 
     ArrayLit(Type, Vec<Expr>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[id_type]
@@ -90,9 +87,7 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Ctor(CustomTypeId, res::VariantId, Option<Box<Pattern>>),
     BoolConst(bool),
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 }
 
 #[derive(Clone, Debug)]

@@ -1,3 +1,4 @@
+use morphic_common::data::num_type::{FloatType, IntType, IntWidth, NumKind, NumType};
 use std::fmt::{Debug, Display};
 
 pub trait ProfileRc: Clone {
@@ -113,20 +114,38 @@ pub trait Tal: Clone {
     /// (i64, i64) -> (i64, i1)
     fn umul_with_overflow_i64(&self) -> Self::FunctionValue;
 
-    /// (i64) -> i64
-    fn ctpop_i64(&self) -> Self::FunctionValue;
+    /// `llvm.ctpop` at the width.
+    ///
+    /// (int) -> int
+    fn ctpop(&self, width: IntWidth) -> Self::FunctionValue;
 
+    /// `llvm.ctlz` at the width.
+    ///
     /// arg1: value to count zeros of
     /// arg2: bool indicating whether the output is poison if the value is 0
     ///
-    /// (i64, i1) -> i64
-    fn ctlz_i64(&self) -> Self::FunctionValue;
+    /// (int, i1) -> int
+    fn ctlz(&self, width: IntWidth) -> Self::FunctionValue;
 
+    /// `llvm.cttz` at the width.
+    ///
     /// arg1: value to count zeros of
     /// arg2: bool indicating whether the output is poison if the value is 0
     ///
-    /// (i64, i1) -> i64
-    fn cttz_i64(&self) -> Self::FunctionValue;
+    /// (int, i1) -> int
+    fn cttz(&self, width: IntWidth) -> Self::FunctionValue;
+
+    /// `llvm.fptosi.sat` from the float type to a signed integer of the width.  Rounds toward
+    /// zero, saturates at the integer's range, and takes NaN to zero.
+    ///
+    /// (float) -> int
+    fn fptosi_sat(&self, float: FloatType, width: IntWidth) -> Self::FunctionValue;
+
+    /// `llvm.fptoui.sat` from the float type to an unsigned integer of the width.  Rounds toward
+    /// zero, saturates at the integer's range, and takes NaN to zero.
+    ///
+    /// (float) -> int
+    fn fptoui_sat(&self, float: FloatType, width: IntWidth) -> Self::FunctionValue;
 }
 
 pub trait Context: Clone {
@@ -196,6 +215,8 @@ pub trait Context: Clone {
 
     fn i8_t(&self) -> Self::Type;
 
+    fn i16_t(&self) -> Self::Type;
+
     fn i32_t(&self) -> Self::Type;
 
     fn i64_t(&self) -> Self::Type;
@@ -205,6 +226,30 @@ pub trait Context: Clone {
     fn f32_t(&self) -> Self::Type;
 
     fn f64_t(&self) -> Self::Type;
+
+    fn num_t(&self, num: NumType) -> Self::Type {
+        match num.kind() {
+            NumKind::Int(int) => self.int_t(int),
+            NumKind::Float(float) => self.float_t(float),
+        }
+    }
+
+    /// The type of the integer type's values, which only its width decides.
+    fn int_t(&self, int: IntType) -> Self::Type {
+        match int.width() {
+            IntWidth::Bits8 => self.i8_t(),
+            IntWidth::Bits16 => self.i16_t(),
+            IntWidth::Bits32 => self.i32_t(),
+            IntWidth::Bits64 => self.i64_t(),
+        }
+    }
+
+    fn float_t(&self, float: FloatType) -> Self::Type {
+        match float {
+            FloatType::F32 => self.f32_t(),
+            FloatType::F64 => self.f64_t(),
+        }
+    }
 
     fn ptr_t(&self) -> Self::Type;
 
@@ -220,6 +265,8 @@ pub trait Context: Clone {
 
     fn i8(&self, val: u8) -> Self::Value;
 
+    fn i16(&self, val: u16) -> Self::Value;
+
     fn i32(&self, val: u32) -> Self::Value;
 
     fn i64(&self, val: u64) -> Self::Value;
@@ -229,6 +276,16 @@ pub trait Context: Clone {
     fn f32(&self, val: f32) -> Self::Value;
 
     fn f64(&self, val: f64) -> Self::Value;
+
+    /// A constant of the integer type, which `val` must fit in.
+    fn int(&self, int: IntType, val: u64) -> Self::Value {
+        match int.width() {
+            IntWidth::Bits8 => self.i8(val.try_into().unwrap()),
+            IntWidth::Bits16 => self.i16(val.try_into().unwrap()),
+            IntWidth::Bits32 => self.i32(val.try_into().unwrap()),
+            IntWidth::Bits64 => self.i64(val),
+        }
+    }
 
     /// Returns an (untyped) null pointer.
     fn null(&self) -> Self::Value;
@@ -284,6 +341,10 @@ pub trait Scope {
         self.context().i8_t()
     }
 
+    fn i16_t(&self) -> Self::Type {
+        self.context().i16_t()
+    }
+
     fn i32_t(&self) -> Self::Type {
         self.context().i32_t()
     }
@@ -302,6 +363,18 @@ pub trait Scope {
 
     fn f64_t(&self) -> Self::Type {
         self.context().f64_t()
+    }
+
+    fn num_t(&self, num: NumType) -> Self::Type {
+        self.context().num_t(num)
+    }
+
+    fn int_t(&self, int: IntType) -> Self::Type {
+        self.context().int_t(int)
+    }
+
+    fn float_t(&self, float: FloatType) -> Self::Type {
+        self.context().float_t(float)
     }
 
     fn ptr_t(&self) -> Self::Type {
@@ -332,6 +405,10 @@ pub trait Scope {
         self.context().i8(val)
     }
 
+    fn i16(&self, val: u16) -> Self::Value {
+        self.context().i16(val)
+    }
+
     fn i32(&self, val: u32) -> Self::Value {
         self.context().i32(val)
     }
@@ -350,6 +427,10 @@ pub trait Scope {
 
     fn f64(&self, val: f64) -> Self::Value {
         self.context().f64(val)
+    }
+
+    fn int(&self, int: IntType, val: u64) -> Self::Value {
+        self.context().int(int, val)
     }
 
     fn null(&self) -> Self::Value {
@@ -553,6 +634,16 @@ pub trait Scope {
     fn fmul(&self, arg1: Self::Value, arg2: Self::Value) -> Self::Value;
     fn fdiv(&self, arg1: Self::Value, arg2: Self::Value) -> Self::Value;
 
+    fn fp_extend(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
+    fn fp_truncate(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
+
+    fn ui_to_fp(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
+    fn si_to_fp(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
+
+    /// Converts a float to an integer, rounding toward zero, saturating at the integer's range,
+    /// and taking NaN to zero.
+    fn fp_to_int_sat(&self, float: FloatType, int: IntType, value: Self::Value) -> Self::Value;
+
     // Bitwise operations
 
     fn sll(&self, arg1: Self::Value, arg2: Self::Value) -> Self::Value;
@@ -567,7 +658,7 @@ pub trait Scope {
     fn s_extend(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
     fn truncate(&self, result_type: Self::Type, value: Self::Value) -> Self::Value;
 
-    fn ctpop(&self, arg: Self::Value) -> Self::Value;
-    fn ctlz(&self, arg: Self::Value) -> Self::Value;
-    fn cttz(&self, arg: Self::Value) -> Self::Value;
+    fn ctpop(&self, int: IntType, arg: Self::Value) -> Self::Value;
+    fn ctlz(&self, int: IntType, arg: Self::Value) -> Self::Value;
+    fn cttz(&self, int: IntType, arg: Self::Value) -> Self::Value;
 }

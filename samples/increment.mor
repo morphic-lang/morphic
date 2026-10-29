@@ -5,15 +5,15 @@ module Core = file "lib/core/core.mor"
     module Io expose { writeln },
   }
 
-incr(x: Int) : Int =
+incr(x: I64) : I64 =
   x + 1
 
 proc main(): () =
   let incr5 = iterate(incr, 5) in
   let five = const(incr5(0))([1, 2, 3]) in
-  let id_int: Int -> Int = id in
-  let five2 = const(incr5(0))(id_int) in
+  let id_i64: I64 -> I64 = id in
+  let five2 = const(incr5(0))(id_i64) in
   do writeln("The following should both be 5:") then
-  do writeln(String.int_to_string(five)) then
-  do writeln(String.int_to_string(five2)) then
+  do writeln(String.i64_to_string(five)) then
+  do writeln(String.i64_to_string(five2)) then
   ()

@@ -1,17 +1,19 @@
 //! The traits the operators desugar to, and their impls for the builtin types.
 //!
-//! `+` means `Add`'s `add`, `=` means `PartialEq`'s `eq`, `!` means `Not`'s `not`, and so on, so
-//! that a user impl of a builtin trait gives its type the operator.  The impls for the builtin
+//! `+` means `Add`'s `add`, `=` means `PartialEq`'s `eq`, `!` means `Not`'s `not`, `&` means
+//! `BitAnd`'s `bit_and`, and so on, so that a user impl of a builtin trait gives its type the
+//! operator.  The impls for the builtin
 //! types map each func to the corresponding intrinsic and are in scope in every module unless a
 //! declared or imported impl of the same name covers one up.  Like Rust's, `Eq` and `Ord` are
-//! markers with no funcs: they refine `PartialEq` and `PartialOrd`, which `Float` has but they do
-//! not; and `Not` is logical not for `Bool` and bitwise not for `Int`.
+//! markers with no funcs: they refine `PartialEq` and `PartialOrd`, which `F64` has but they do
+//! not; `Not` is logical not for `Bool` and bitwise not for the integers; and the integers alone
+//! have the bitwise traits `BitAnd`, `BitOr`, `BitXor`, `Shl`, and `Shr`.
 
 use crate::data::elaborated_ast as elab;
 use crate::data::elaborated_ast::Derivation;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::kinded_ast::Kind;
-use crate::data::num_type::NumType;
+use crate::data::num_type::{IntType, NumKind, NumType};
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
 use crate::data::resolved_ast::{SuperId, TraitFuncId, TraitId, TypeId, TypeParamId};
@@ -30,10 +32,15 @@ pub enum BuiltinTrait {
     Div,
     Neg,
     Not,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BuiltinTrait {
-    pub const ALL: [BuiltinTrait; 10] = [
+    pub const ALL: [BuiltinTrait; 15] = [
         BuiltinTrait::PartialEq,
         BuiltinTrait::Eq,
         BuiltinTrait::PartialOrd,
@@ -44,6 +51,11 @@ impl BuiltinTrait {
         BuiltinTrait::Div,
         BuiltinTrait::Neg,
         BuiltinTrait::Not,
+        BuiltinTrait::BitAnd,
+        BuiltinTrait::BitOr,
+        BuiltinTrait::BitXor,
+        BuiltinTrait::Shl,
+        BuiltinTrait::Shr,
     ];
 
     pub fn name(self) -> &'static str {
@@ -58,6 +70,11 @@ impl BuiltinTrait {
             BuiltinTrait::Div => "Div",
             BuiltinTrait::Neg => "Neg",
             BuiltinTrait::Not => "Not",
+            BuiltinTrait::BitAnd => "BitAnd",
+            BuiltinTrait::BitOr => "BitOr",
+            BuiltinTrait::BitXor => "BitXor",
+            BuiltinTrait::Shl => "Shl",
+            BuiltinTrait::Shr => "Shr",
         }
     }
 
@@ -83,7 +100,12 @@ impl BuiltinTrait {
             | BuiltinTrait::Mul
             | BuiltinTrait::Div
             | BuiltinTrait::Neg
-            | BuiltinTrait::Not => &[],
+            | BuiltinTrait::Not
+            | BuiltinTrait::BitAnd
+            | BuiltinTrait::BitOr
+            | BuiltinTrait::BitXor
+            | BuiltinTrait::Shl
+            | BuiltinTrait::Shr => &[],
         }
     }
 
@@ -102,6 +124,11 @@ impl BuiltinTrait {
             BuiltinTrait::Div => &[BuiltinTraitFunc::Div],
             BuiltinTrait::Neg => &[BuiltinTraitFunc::Neg],
             BuiltinTrait::Not => &[BuiltinTraitFunc::Not],
+            BuiltinTrait::BitAnd => &[BuiltinTraitFunc::BitAnd],
+            BuiltinTrait::BitOr => &[BuiltinTraitFunc::BitOr],
+            BuiltinTrait::BitXor => &[BuiltinTraitFunc::BitXor],
+            BuiltinTrait::Shl => &[BuiltinTraitFunc::Shl],
+            BuiltinTrait::Shr => &[BuiltinTraitFunc::Shr],
             BuiltinTrait::Eq | BuiltinTrait::Ord => &[],
         }
     }
@@ -190,6 +217,11 @@ pub enum BuiltinTraitFunc {
     Div,
     Neg,
     Not,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 /// The signature of a builtin trait func, over the trait's parameter.
@@ -228,7 +260,7 @@ impl FuncShape {
 }
 
 impl BuiltinTraitFunc {
-    pub const ALL: [BuiltinTraitFunc; 11] = [
+    pub const ALL: [BuiltinTraitFunc; 16] = [
         BuiltinTraitFunc::Eq,
         BuiltinTraitFunc::Lt,
         BuiltinTraitFunc::Lte,
@@ -240,6 +272,11 @@ impl BuiltinTraitFunc {
         BuiltinTraitFunc::Div,
         BuiltinTraitFunc::Neg,
         BuiltinTraitFunc::Not,
+        BuiltinTraitFunc::BitAnd,
+        BuiltinTraitFunc::BitOr,
+        BuiltinTraitFunc::BitXor,
+        BuiltinTraitFunc::Shl,
+        BuiltinTraitFunc::Shr,
     ];
 
     pub fn trait_(self) -> BuiltinTrait {
@@ -255,6 +292,11 @@ impl BuiltinTraitFunc {
             BuiltinTraitFunc::Div => BuiltinTrait::Div,
             BuiltinTraitFunc::Neg => BuiltinTrait::Neg,
             BuiltinTraitFunc::Not => BuiltinTrait::Not,
+            BuiltinTraitFunc::BitAnd => BuiltinTrait::BitAnd,
+            BuiltinTraitFunc::BitOr => BuiltinTrait::BitOr,
+            BuiltinTraitFunc::BitXor => BuiltinTrait::BitXor,
+            BuiltinTraitFunc::Shl => BuiltinTrait::Shl,
+            BuiltinTraitFunc::Shr => BuiltinTrait::Shr,
         }
     }
 
@@ -286,6 +328,11 @@ impl BuiltinTraitFunc {
             BuiltinTraitFunc::Div => "div",
             BuiltinTraitFunc::Neg => "neg",
             BuiltinTraitFunc::Not => "not",
+            BuiltinTraitFunc::BitAnd => "bit_and",
+            BuiltinTraitFunc::BitOr => "bit_or",
+            BuiltinTraitFunc::BitXor => "bit_xor",
+            BuiltinTraitFunc::Shl => "shift_left",
+            BuiltinTraitFunc::Shr => "shift_right",
         }
     }
 
@@ -299,7 +346,12 @@ impl BuiltinTraitFunc {
             BuiltinTraitFunc::Add
             | BuiltinTraitFunc::Sub
             | BuiltinTraitFunc::Mul
-            | BuiltinTraitFunc::Div => FuncShape::Binary,
+            | BuiltinTraitFunc::Div
+            | BuiltinTraitFunc::BitAnd
+            | BuiltinTraitFunc::BitOr
+            | BuiltinTraitFunc::BitXor
+            | BuiltinTraitFunc::Shl
+            | BuiltinTraitFunc::Shr => FuncShape::Binary,
             BuiltinTraitFunc::Neg | BuiltinTraitFunc::Not => FuncShape::Unary,
         }
     }
@@ -313,35 +365,31 @@ pub enum BuiltinImplType {
 }
 
 impl BuiltinImplType {
-    pub const ALL: [BuiltinImplType; 4] = [
-        BuiltinImplType::Bool,
-        BuiltinImplType::Num(NumType::Byte),
-        BuiltinImplType::Num(NumType::Int),
-        BuiltinImplType::Num(NumType::Float),
-    ];
+    /// Every type with builtin impls: `Bool` and the number types.
+    pub fn all() -> impl Iterator<Item = BuiltinImplType> {
+        [BuiltinImplType::Bool]
+            .into_iter()
+            .chain(NumType::ALL.into_iter().map(BuiltinImplType::Num))
+    }
 
     pub fn type_id(self) -> TypeId {
         match self {
             BuiltinImplType::Bool => TypeId::Bool,
-            BuiltinImplType::Num(NumType::Byte) => TypeId::Byte,
-            BuiltinImplType::Num(NumType::Int) => TypeId::Int,
-            BuiltinImplType::Num(NumType::Float) => TypeId::Float,
+            BuiltinImplType::Num(num) => TypeId::Num(num),
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             BuiltinImplType::Bool => "Bool",
-            BuiltinImplType::Num(NumType::Byte) => "Byte",
-            BuiltinImplType::Num(NumType::Int) => "Int",
-            BuiltinImplType::Num(NumType::Float) => "Float",
+            BuiltinImplType::Num(num) => num.name(),
         }
     }
 }
 
 /// The impl of a builtin trait for a builtin type.  Only the combinations that exist can be
-/// constructed: `Bool` has equality and `Not` only, `Float` has no total equality or order, and
-/// `Int` is the only number with `Not`.
+/// constructed: `Bool` has equality and `Not` only, and the floats have no total equality or
+/// order and no bitwise traits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BuiltinImpl {
     trait_: BuiltinTrait,
@@ -356,8 +404,17 @@ impl BuiltinImpl {
                 BuiltinImplType::Bool,
             ) => true,
             (_, BuiltinImplType::Bool) => false,
-            (BuiltinTrait::Eq | BuiltinTrait::Ord, BuiltinImplType::Num(NumType::Float)) => false,
-            (BuiltinTrait::Not, BuiltinImplType::Num(num)) => matches!(num, NumType::Int),
+            (
+                BuiltinTrait::Eq
+                | BuiltinTrait::Ord
+                | BuiltinTrait::Not
+                | BuiltinTrait::BitAnd
+                | BuiltinTrait::BitOr
+                | BuiltinTrait::BitXor
+                | BuiltinTrait::Shl
+                | BuiltinTrait::Shr,
+                BuiltinImplType::Num(num),
+            ) => matches!(num.kind(), NumKind::Int(_)),
             (_, BuiltinImplType::Num(_)) => true,
         };
         exists.then_some(BuiltinImpl { trait_, type_ })
@@ -365,9 +422,7 @@ impl BuiltinImpl {
 
     pub fn all() -> impl Iterator<Item = BuiltinImpl> {
         BuiltinTrait::ALL.into_iter().flat_map(|trait_| {
-            BuiltinImplType::ALL
-                .into_iter()
-                .filter_map(move |type_| BuiltinImpl::new(trait_, type_))
+            BuiltinImplType::all().filter_map(move |type_| BuiltinImpl::new(trait_, type_))
         })
     }
 
@@ -406,43 +461,32 @@ impl BuiltinImpl {
             (Eq, BuiltinImplType::Bool) => I::EqBool,
             (Not, BuiltinImplType::Bool) => I::Not,
             (_, BuiltinImplType::Bool) => unreachable!("Bool has equality and not only"),
-            (func, BuiltinImplType::Num(num)) => match (func, num) {
-                (Eq, NumType::Byte) => I::EqByte,
-                (Lt, NumType::Byte) => I::LtByte,
-                (Lte, NumType::Byte) => I::LteByte,
-                (Gt, NumType::Byte) => I::GtByte,
-                (Gte, NumType::Byte) => I::GteByte,
-                (Add, NumType::Byte) => I::AddByte,
-                (Sub, NumType::Byte) => I::SubByte,
-                (Mul, NumType::Byte) => I::MulByte,
-                (Div, NumType::Byte) => I::DivByte,
-                (Neg, NumType::Byte) => I::NegByte,
-                (Eq, NumType::Int) => I::EqInt,
-                (Lt, NumType::Int) => I::LtInt,
-                (Lte, NumType::Int) => I::LteInt,
-                (Gt, NumType::Int) => I::GtInt,
-                (Gte, NumType::Int) => I::GteInt,
-                (Add, NumType::Int) => I::AddInt,
-                (Sub, NumType::Int) => I::SubInt,
-                (Mul, NumType::Int) => I::MulInt,
-                (Div, NumType::Int) => I::DivInt,
-                (Neg, NumType::Int) => I::NegInt,
-                (Eq, NumType::Float) => I::EqFloat,
-                (Lt, NumType::Float) => I::LtFloat,
-                (Lte, NumType::Float) => I::LteFloat,
-                (Gt, NumType::Float) => I::GtFloat,
-                (Gte, NumType::Float) => I::GteFloat,
-                (Add, NumType::Float) => I::AddFloat,
-                (Sub, NumType::Float) => I::SubFloat,
-                (Mul, NumType::Float) => I::MulFloat,
-                (Div, NumType::Float) => I::DivFloat,
-                (Neg, NumType::Float) => I::NegFloat,
-                (Not, NumType::Int) => I::IntBitNot,
-                (Not, NumType::Byte | NumType::Float) => {
-                    unreachable!("Int is the only number with not")
-                }
-            },
+            (Eq, BuiltinImplType::Num(num)) => I::Eq(num),
+            (Lt, BuiltinImplType::Num(num)) => I::Lt(num),
+            (Lte, BuiltinImplType::Num(num)) => I::Lte(num),
+            (Gt, BuiltinImplType::Num(num)) => I::Gt(num),
+            (Gte, BuiltinImplType::Num(num)) => I::Gte(num),
+            (Add, BuiltinImplType::Num(num)) => I::Add(num),
+            (Sub, BuiltinImplType::Num(num)) => I::Sub(num),
+            (Mul, BuiltinImplType::Num(num)) => I::Mul(num),
+            (Div, BuiltinImplType::Num(num)) => I::Div(num),
+            (Neg, BuiltinImplType::Num(num)) => I::Neg(num),
+            (Not, BuiltinImplType::Num(num)) => int_intrinsic(num, I::BitNot),
+            (BitAnd, BuiltinImplType::Num(num)) => int_intrinsic(num, I::BitAnd),
+            (BitOr, BuiltinImplType::Num(num)) => int_intrinsic(num, I::BitOr),
+            (BitXor, BuiltinImplType::Num(num)) => int_intrinsic(num, I::BitXor),
+            (Shl, BuiltinImplType::Num(num)) => int_intrinsic(num, I::ShiftLeft),
+            (Shr, BuiltinImplType::Num(num)) => int_intrinsic(num, I::ShiftRight),
         }
+    }
+}
+
+/// The bitwise intrinsic `make` at `num`, which is an integer type: the floats have no impls of
+/// the bitwise traits.
+fn int_intrinsic(num: NumType, make: fn(IntType) -> Intrinsic) -> Intrinsic {
+    match num.kind() {
+        NumKind::Int(int) => make(int),
+        NumKind::Float(_) => unreachable!("the floats have no bitwise operations"),
     }
 }
 

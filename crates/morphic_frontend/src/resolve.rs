@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::data::builtin_traits::{BuiltinImpl, BuiltinTrait, BuiltinTraitFunc};
 use crate::data::intrinsics as intrs;
+use crate::data::num_type::{NumLit, NumType};
 use crate::data::profile as prof;
 use crate::data::raw_ast as raw;
 use crate::data::resolved_ast as res;
@@ -20,7 +21,7 @@ use crate::parse_error;
 use crate::report_type;
 use id_collections::{Count, IdVec};
 use morphic_common::config::{self as cfg, ProfileMode};
-use morphic_common::intrinsic_config::INTRINSIC_NAMES;
+use morphic_common::intrinsic_config::intrinsic_names;
 use morphic_common::lines;
 use morphic_common::report_error::{locate_path, locate_span, ColorMode, Locate, Reportable};
 
@@ -394,9 +395,9 @@ static BUILTIN_TYPES: Lazy<BTreeMap<raw::TypeName, res::TypeId>> = Lazy::new(|| 
     let mut type_map = BTreeMap::new();
 
     type_map.insert(raw::TypeName("Bool".to_owned()), res::TypeId::Bool);
-    type_map.insert(raw::TypeName("Byte".to_owned()), res::TypeId::Byte);
-    type_map.insert(raw::TypeName("Int".to_owned()), res::TypeId::Int);
-    type_map.insert(raw::TypeName("Float".to_owned()), res::TypeId::Float);
+    for num in NumType::ALL {
+        type_map.insert(raw::TypeName(num.name().to_owned()), res::TypeId::Num(num));
+    }
     type_map.insert(raw::TypeName("Array".to_owned()), res::TypeId::Array);
 
     type_map
@@ -476,12 +477,12 @@ static BUILTIN_GLOBALS: Lazy<BTreeMap<raw::ValName, res::GlobalId>> = Lazy::new(
     );
     global_map.insert(raw::ValName("panic".to_owned()), res::GlobalId::Panic);
 
-    for &(intrinsic, name) in INTRINSIC_NAMES {
+    for (intrinsic, name) in intrinsic_names() {
         match name {
-            intrs::Name::Op { debug_name: _ } => {}
+            intrs::Name::Op { .. } => {}
             intrs::Name::Func { source_name } => {
                 global_map.insert(
-                    raw::ValName(source_name.to_owned()),
+                    raw::ValName(source_name),
                     res::GlobalId::Intrinsic(intrinsic),
                 );
             }
@@ -1755,17 +1756,11 @@ fn resolve_expr(
                 .collect::<Result<_, _>>()?,
         )),
 
-        &raw::Expr::ByteLit(val) => Ok(res::Expr::ByteLit(val)),
-
-        &raw::Expr::IntLit(val) => Ok(res::Expr::IntLit(val)),
-
-        &raw::Expr::FloatLit(val) => Ok(res::Expr::FloatLit(val)),
+        &raw::Expr::NumLit(lit) => Ok(res::Expr::NumLit(lit)),
 
         raw::Expr::TextLit(text) => Ok(res::Expr::ArrayLit(
-            text.clone()
-                .into_bytes()
-                .iter()
-                .map(|byte| res::Expr::ByteLit(*byte))
+            text.bytes()
+                .map(|byte| res::Expr::NumLit(NumLit::U8(byte)))
                 .collect(),
         )),
 
@@ -1832,11 +1827,7 @@ fn resolve_pattern(
             resolve_type(global_mods, local_mod_map, param_map, type_)?,
         )),
 
-        &raw::Pattern::ByteConst(val) => Ok(res::Pattern::ByteConst(val)),
-
-        &raw::Pattern::IntConst(val) => Ok(res::Pattern::IntConst(val)),
-
-        &raw::Pattern::FloatConst(val) => Ok(res::Pattern::FloatConst(val)),
+        &raw::Pattern::NumConst(lit) => Ok(res::Pattern::NumConst(lit)),
 
         raw::Pattern::Span(lo, hi, content) => Ok(res::Pattern::Span(
             *lo,

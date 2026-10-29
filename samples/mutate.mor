@@ -5,7 +5,7 @@ module Core = file "lib/core/core.mor"
     module Io expose { writeln },
   }
 
-map_from(arr: Array a, f: a -> a, idx: Int): Array a =
+map_from(arr: Array a, f: a -> a, idx: I64): Array a =
   if idx = len(arr) {
     arr
   } else {
@@ -16,7 +16,7 @@ map_from(arr: Array a, f: a -> a, idx: Int): Array a =
 map(arr: Array a, f: a -> a): Array a =
   map_from(arr, f, 0)
 
-proc for_each_from(arr: Array a, f: proc a -> b, idx: Int): () =
+proc for_each_from(arr: Array a, f: proc a -> b, idx: I64): () =
   if idx = len(arr) {
     ()
   } else {
@@ -27,16 +27,16 @@ proc for_each_from(arr: Array a, f: proc a -> b, idx: Int): () =
 proc for_each(arr: Array a, f: proc a -> b): () =
   do for_each_from(arr, f, 0)
 
-proc print_all(arr: Array Int): () =
-  do for_each(arr, proc \i -> do writeln(String.int_to_string(i)))
+proc print_all(arr: Array I64): () =
+  do for_each(arr, proc \i -> do writeln(String.i64_to_string(i)))
 
-proc print_and(arr: Array Int): Array Int =
+proc print_and(arr: Array I64): Array I64 =
   do writeln("vvvvvvv") then
   do print_all(arr) then
   do writeln("^^^^^^^") then
   arr
 
-reverse_from(arr: Array a, idx: Int): Array a =
+reverse_from(arr: Array a, idx: I64): Array a =
   if idx >= len(arr) / 2 {
     arr
   } else {
@@ -49,12 +49,12 @@ reverse_from(arr: Array a, idx: Int): Array a =
 reverse(arr: Array a): Array a =
   reverse_from(arr, 0)
 
-swap(arr: Array a, left_idx: Int, right_idx: Int): Array a =
+swap(arr: Array a, left_idx: I64, right_idx: I64): Array a =
   let right_el = get(arr, right_idx) in
   let (left_el, left_hole) = extract(arr, left_idx) in
   set(left_hole(right_el), right_idx, left_el)
 
-favs : Array Int =
+favs : Array I64 =
   [1, 2, 3, 4, 5]
 
 proc main(): () =

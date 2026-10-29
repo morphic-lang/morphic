@@ -1,0 +1,6 @@
+// expect-error: Type Mismatch @ 5:7
+// No number type converts implicitly to another: an `I32` is not an `I64`, and `i32_to_i64` is
+// the explicit conversion.
+proc main(): () =
+  let x: I64 = 1i32 in
+  ()

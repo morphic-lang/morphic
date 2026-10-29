@@ -1,5 +1,5 @@
 // expect-error: Missing Impl Func @ 4:17
-type Vec2 { Vec2(Int, Int) }
+type Vec2 { Vec2(I64, I64) }
 
 impl AddVec2 of Add Vec2 {}
 

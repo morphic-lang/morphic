@@ -1,7 +1,7 @@
 module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
-    module String expose { string_to_nat, int_to_string },
+    module String expose { string_to_nat, i64_to_string },
     module Option expose { Option { Some, None } },
     module Array,
     module Iter,
@@ -10,16 +10,16 @@ module Core = file "lib/core/core.mor"
 module Bench = file "lib/bench_common.mor" with { Core }
   expose { repeat }
 
-swap(arr: Array Int, i: Int, j: Int): Array Int =
+swap(arr: Array I64, i: I64, j: I64): Array I64 =
   let temp = Array.get(arr, i) in
   arr
     |> Array.set(i, Array.get(arr, j))
     |> Array.set(j, temp)
 
-for(start: Int, stop: Int, init: a, func: ((a, Int) -> a)): a =
+for(start: I64, stop: I64, init: a, func: ((a, I64) -> a)): a =
   Iter.range(start, stop) |> Iter.foldl(init, func)
 
-partition(arr: Array Int, lo: Int, hi: Int): (Int, Array Int) =
+partition(arr: Array I64, lo: I64, hi: I64): (I64, Array I64) =
   let pivot = Array.get(arr, hi) in
   for(lo, hi + 1, (lo, arr),
     \((i, a), j) ->
@@ -33,7 +33,7 @@ partition(arr: Array Int, lo: Int, hi: Int): (Int, Array Int) =
   )
 
 
-quicksort_help(arr: Array Int, lo: Int, hi: Int): Array Int =
+quicksort_help(arr: Array I64, lo: I64, hi: I64): Array I64 =
   if lo >= hi {
     arr
   } else {
@@ -43,11 +43,11 @@ quicksort_help(arr: Array Int, lo: Int, hi: Int): Array Int =
       |> quicksort_help(sep + 1, hi)
   }
 
-quicksort(arr: Array Int): Array Int =
+quicksort(arr: Array I64): Array I64 =
   quicksort_help(arr, 0, len(arr) - 1)
 
 
-copy_contents_from_start(dst: Array Int, src: Array Int, start: Int): Array Int =
+copy_contents_from_start(dst: Array I64, src: Array I64, start: I64): Array I64 =
   if start >= len(src) {
     dst
   } else {
@@ -55,28 +55,28 @@ copy_contents_from_start(dst: Array Int, src: Array Int, start: Int): Array Int 
       |> copy_contents_from_start(src, start + 1)
   }
 
-copy(dst: Array Int, src: Array Int): Array Int =
+copy(dst: Array I64, src: Array I64): Array I64 =
   copy_contents_from_start(dst, src, 0)
 
 
-clone(arr: Array Int): Array Int =
+clone(arr: Array I64): Array I64 =
   Array.fill_with(len(arr), \() -> 0)
     |> copy(arr)
 
-proc input_ints_help(ints: Array Int): Array Int =
+proc input_ints_help(ints: Array I64): Array I64 =
   match string_to_nat(do input()) {
-    Some(int) ->
-      push(ints, int)
+    Some(i64) ->
+      push(ints, i64)
         |> do input_ints_help(),
 
     None ->
       ints
   }
 
-proc input_ints(): Array Int =
+proc input_ints(): Array I64 =
   do input_ints_help([])
 
-feedforward_repeat(iters: Int, init: a, op: a -> a): a =
+feedforward_repeat(iters: I64, init: a, op: a -> a): a =
   if iters <= 0 {
     init
   } else {
@@ -90,9 +90,9 @@ proc main(): () =
       let ints = do input_ints() in
       let sorted = feedforward_repeat(iters, clone(ints), \(buf) -> quicksort(copy(buf, ints))) in
       do output("The sorted version of\n  ") then
-      do output(Array.str(ints, int_to_string)) then
+      do output(Array.str(ints, i64_to_string)) then
       do output("\nis\n  ") then
-      do output(Array.str(sorted, int_to_string)) then
+      do output(Array.str(sorted, i64_to_string)) then
       do output("\n"),
 
     None ->

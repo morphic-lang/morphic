@@ -1,0 +1,3 @@
+proc main(): () =
+  1i32 / 0i32 then
+  do output("Successfully divided by zero (!)")

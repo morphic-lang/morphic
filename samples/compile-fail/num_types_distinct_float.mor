@@ -1,0 +1,5 @@
+// expect-error: Type Mismatch @ 4:7
+// Likewise an `F32` is not an `F64`; `f32_to_f64` converts, and rounds the other way.
+proc main(): () =
+  let x: F64 = 1.5f32 in
+  ()

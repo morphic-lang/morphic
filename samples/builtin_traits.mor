@@ -1,12 +1,12 @@
 module Core = file "lib/core/core.mor"
-  expose { module String expose { int_to_string, bool_to_string, concat } }
+  expose { module String expose { i64_to_string, bool_to_string, concat } }
 
 // The operators `+`, `-`, `*`, `/`, `=`, `<`, `<=`, `>`, `>=`, unary `-`, and `!` are the funcs
 // of the builtin traits `Add`, `Sub`, `Mul`, `Div`, `PartialEq`, `PartialOrd`, `Neg`, and `Not`.
 // The number types implement the arithmetic and comparison traits, `Bool` implements `PartialEq`
-// and `Not`, `Int` implements `Not` as bitwise not, and a user type may implement any of them.
+// and `Not`, `I64` implements `Not` as bitwise not, and a user type may implement any of them.
 
-type Vec2 { Vec2(Int, Int) }
+type Vec2 { Vec2(I64, I64) }
 
 impl AddVec2 of Add Vec2 {
   add(x: Vec2, y: Vec2): Vec2 =
@@ -24,7 +24,7 @@ impl NegVec2 of Neg Vec2 {
 }
 
 // `Eq` and `Ord` are marker traits with the superclasses `PartialEq` and `PartialOrd`: an impl
-// of either has no funcs, and promises that the comparison it requires is total.  `Float`
+// of either has no funcs, and promises that the comparison it requires is total.  `F64`
 // implements only the partial traits.
 impl PartialEqVec2 of PartialEq Vec2 {
   eq(x: Vec2, y: Vec2): Bool =
@@ -47,35 +47,35 @@ impl PartialOrdVec2 of PartialOrd Vec2 {
 
 impl OrdVec2 of Ord Vec2 {}
 
-// `!` is logical not for `Bool`, bitwise not for `Int`, and whatever an impl of `Not` says.
+// `!` is logical not for `Bool`, bitwise not for `I64`, and whatever an impl of `Not` says.
 type Switch { On, Off }
 
 impl NotSwitch of Not Switch {
   not(s: Switch): Switch = match s { On -> Off, Off -> On }
 }
 
-render_switch(s: Switch): Array Byte = match s { On -> "On", Off -> "Off" }
+render_switch(s: Switch): Array U8 = match s { On -> "On", Off -> "Off" }
 
 // Functions constrained by the builtin traits serve every type with an impl in scope, builtin
 // or user-defined.
 module Sum = {
   pub sum(arr: Array a, zero: a): a where Add a = sum_rec(arr, zero, 0)
 
-  sum_rec(arr: Array a, acc: a, i: Int): a where Add a =
+  sum_rec(arr: Array a, acc: a, i: I64): a where Add a =
     if i < len(arr) { sum_rec(arr, acc + get(arr, i), i + 1) } else { acc }
 } expose { sum }
 
 // A declared or imported impl covers up the builtin impl of the same name, as a declared type,
-// func, or trait covers up a builtin one.  Here `+` at `Int` is `max`, so `sum` resolves `Add Int`
+// func, or trait covers up a builtin one.  Here `+` at `I64` is `max`, so `sum` resolves `Add I64`
 // to it and computes a maximum.
 module Max = {
   import Sum expose { sum }
 
-  impl AddInt of Add Int {
-    add(x: Int, y: Int): Int = if x < y { y } else { x }
+  impl AddI64 of Add I64 {
+    add(x: I64, y: I64): I64 = if x < y { y } else { x }
   }
 
-  pub max_of(arr: Array Int): Int = sum(arr, 0)
+  pub max_of(arr: Array I64): I64 = sum(arr, 0)
 } with { Sum }
 
 largest(x: a, y: a): a where PartialOrd a = if x < y { y } else { x }
@@ -83,18 +83,18 @@ largest(x: a, y: a): a where PartialOrd a = if x < y { y } else { x }
 // `Eq a` and `Ord a` provide `=` and `<=` through their superclasses.
 contains(arr: Array a, x: a): Bool where Eq a = contains_rec(arr, x, 0)
 
-contains_rec(arr: Array a, x: a, i: Int): Bool where Eq a =
+contains_rec(arr: Array a, x: a, i: I64): Bool where Eq a =
   if i < len(arr) { (get(arr, i) = x) || contains_rec(arr, x, i + 1) } else { False }
 
 is_sorted(arr: Array a): Bool where Ord a = is_sorted_rec(arr, 1)
 
-is_sorted_rec(arr: Array a, i: Int): Bool where Ord a =
+is_sorted_rec(arr: Array a, i: I64): Bool where Ord a =
   if i < len(arr) { (get(arr, i - 1) <= get(arr, i)) && is_sorted_rec(arr, i + 1) } else { True }
 
 // The builtin trait funcs are ordinary values.
 fold(arr: Array a, init: b, f: (b, a) -> b): b = fold_rec(arr, init, f, 0)
 
-fold_rec(arr: Array a, acc: b, f: (b, a) -> b, i: Int): b =
+fold_rec(arr: Array a, acc: b, f: (b, a) -> b, i: I64): b =
   if i < len(arr) { fold_rec(arr, f(acc, get(arr, i)), f, i + 1) } else { acc }
 
 // A type constrained by a builtin trait.
@@ -107,7 +107,7 @@ empty(): Sorted a where Ord a = Sorted([])
 insert(s: Sorted a, x: a): Sorted a where Ord a =
   match s { Sorted(arr) -> Sorted(insert_rec(arr, x, 0, [])) }
 
-insert_rec(arr: Array a, x: a, i: Int, out: Array a): Array a where Ord a =
+insert_rec(arr: Array a, x: a, i: I64, out: Array a): Array a where Ord a =
   if i < len(arr) {
     let y = get(arr, i) in
     if x < y { append_from(push(out, x), arr, i) } else { insert_rec(arr, x, i + 1, push(out, y)) }
@@ -115,18 +115,18 @@ insert_rec(arr: Array a, x: a, i: Int, out: Array a): Array a where Ord a =
     push(out, x)
   }
 
-append_from(out: Array a, arr: Array a, i: Int): Array a =
+append_from(out: Array a, arr: Array a, i: I64): Array a =
   if i < len(arr) { append_from(push(out, get(arr, i)), arr, i + 1) } else { out }
 
 to_array(s: Sorted a): Array a where Ord a =
   match s { Sorted(arr) -> arr }
 
-render_vec(v: Vec2): Array Byte =
-  match v { Vec2(a, b) -> concat("(", concat(int_to_string(a), concat(", ", concat(int_to_string(b), ")")))) }
+render_vec(v: Vec2): Array U8 =
+  match v { Vec2(a, b) -> concat("(", concat(i64_to_string(a), concat(", ", concat(i64_to_string(b), ")")))) }
 
-render(arr: Array a, show: a -> Array Byte): Array Byte = render_rec(arr, show, 0, "")
+render(arr: Array a, show: a -> Array U8): Array U8 = render_rec(arr, show, 0, "")
 
-render_rec(arr: Array a, show: a -> Array Byte, i: Int, acc: Array Byte): Array Byte =
+render_rec(arr: Array a, show: a -> Array U8, i: I64, acc: Array U8): Array U8 =
   if i < len(arr) {
     let sep = if i = 0 { "" } else { " " } in
     render_rec(arr, show, i + 1, concat(acc, concat(sep, show(get(arr, i)))))
@@ -135,9 +135,9 @@ render_rec(arr: Array a, show: a -> Array Byte, i: Int, acc: Array Byte): Array 
   }
 
 proc main(): () =
-  do output(int_to_string(sum([1, 2, 3, 4], 0))) then
+  do output(i64_to_string(sum([1, 2, 3, 4], 0))) then
   do output("\n") then
-  do output(int_to_string(Max.max_of([1, 5, 3]))) then
+  do output(i64_to_string(Max.max_of([1, 5, 3]))) then
   do output("\n") then
   do output(render_vec(sum([Vec2(1, 2), Vec2(3, 4)], Vec2(0, 0)))) then
   do output("\n") then
@@ -145,7 +145,7 @@ proc main(): () =
   do output("\n") then
   do output(bool_to_string(sum([1.5, 2.25], 0.0) = 3.75)) then
   do output("\n") then
-  do output(int_to_string(byte_to_int(largest(3b, 7b) * 2b))) then
+  do output(i64_to_string(u8_to_i64(largest(3u8, 7u8) * 2u8))) then
   do output("\n") then
   do output(bool_to_string(largest(2.5, -1.5) = 2.5)) then
   do output("\n") then
@@ -157,17 +157,17 @@ proc main(): () =
   do output("\n") then
   do output(bool_to_string(is_sorted([1, 2, 2, 5]) && ! is_sorted([Vec2(1, 1), Vec2(0, 0)]))) then
   do output("\n") then
-  do output(int_to_string(fold([1, 2, 3], 0, add))) then
+  do output(i64_to_string(fold([1, 2, 3], 0, add))) then
   do output("\n") then
   do output(bool_to_string(fold([1.5, 2.5], 0.0, add) = 4.0)) then
   do output("\n") then
   do output(bool_to_string((True = False) = (7 / 2 + -3 = 1))) then
   do output("\n") then
-  do output(render(to_array(insert(insert(insert(empty(), 3), 1), 2)), int_to_string)) then
+  do output(render(to_array(insert(insert(insert(empty(), 3), 1), 2)), i64_to_string)) then
   do output("\n") then
   do output(render(to_array(insert(insert(empty(), Vec2(2, 1)), Vec2(1, 5))), render_vec)) then
   do output("\n") then
-  do output(int_to_string(!5)) then
+  do output(i64_to_string(!5)) then
   do output("\n") then
   do output(render_switch(!On)) then
   do output("\n")

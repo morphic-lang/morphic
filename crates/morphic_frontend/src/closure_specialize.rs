@@ -241,9 +241,7 @@ impl<'a> Context<'a> {
     {
         match type_ {
             annot::Type::Bool => special::Type::Bool,
-            annot::Type::Byte => special::Type::Byte,
-            annot::Type::Int => special::Type::Int,
-            annot::Type::Float => special::Type::Float,
+            annot::Type::Num(num) => special::Type::Num(*num),
 
             annot::Type::Array(item_type) => {
                 special::Type::Array(Box::new(self.resolve_type_generic(item_type, resolve_rep)))
@@ -356,11 +354,7 @@ impl<'a> Context<'a> {
 
             &annot::Pattern::BoolConst(val) => special::Pattern::BoolConst(val),
 
-            &annot::Pattern::ByteConst(val) => special::Pattern::ByteConst(val),
-
-            &annot::Pattern::IntConst(val) => special::Pattern::IntConst(val),
-
-            &annot::Pattern::FloatConst(val) => special::Pattern::FloatConst(val),
+            &annot::Pattern::NumConst(lit) => special::Pattern::NumConst(lit),
         }
     }
 
@@ -524,11 +518,7 @@ impl<'a> Context<'a> {
 
             &annot::Expr::BoolLit(val) => special::Expr::BoolLit(val),
 
-            &annot::Expr::ByteLit(val) => special::Expr::ByteLit(val),
-
-            &annot::Expr::IntLit(val) => special::Expr::IntLit(val),
-
-            &annot::Expr::FloatLit(val) => special::Expr::FloatLit(val),
+            &annot::Expr::NumLit(lit) => special::Expr::NumLit(lit),
         }
     }
 
@@ -671,9 +661,7 @@ pub fn check_patterns(program: &special::Program) {
                 assert_eq!(type_id, expected_type_id);
             }
             (P::BoolConst(_), T::Bool) => {}
-            (P::IntConst(_), T::Int) => {}
-            (P::ByteConst(_), T::Byte) => {}
-            (P::FloatConst(_), T::Float) => {}
+            (P::NumConst(lit), T::Num(num)) if lit.num_type() == *num => {}
             _ => {
                 panic!("[{:?}] arg pattern didn't match argument type", i);
             }

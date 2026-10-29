@@ -1,7 +1,8 @@
-use crate::data::first_order_ast::{NumType, VariantId};
+use crate::data::first_order_ast::VariantId;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::low_ast::{ArrayOp, CustomFuncId, Expr, IoOp, LocalId, Program, Type};
 use crate::data::mode_annot_ast::Mode;
+use crate::data::num_type::{NumLit, NumType};
 use crate::data::rc_specialized_ast::{ModeScheme, ModeSchemeId, RcOp};
 use crate::data::tail_rec_ast as tail;
 use crate::pretty_print::utils::{FuncRenderer, TailFuncRenderer};
@@ -21,11 +22,215 @@ use std::rc::Rc;
 
 type RefCount = usize;
 
+/// A number of the type its variant names.  The integers are `Wrapping` because integer
+/// arithmetic wraps.
 #[derive(Debug, Clone, Copy)]
 enum NumValue {
-    Byte(Wrapping<u8>),
-    Int(Wrapping<i64>),
-    Float(f64),
+    I8(Wrapping<i8>),
+    I16(Wrapping<i16>),
+    I32(Wrapping<i32>),
+    I64(Wrapping<i64>),
+    U8(Wrapping<u8>),
+    U16(Wrapping<u16>),
+    U32(Wrapping<u32>),
+    U64(Wrapping<u64>),
+    F32(f32),
+    F64(f64),
+}
+
+impl From<NumLit> for NumValue {
+    fn from(lit: NumLit) -> NumValue {
+        match lit {
+            NumLit::I8(val) => NumValue::I8(Wrapping(val)),
+            NumLit::I16(val) => NumValue::I16(Wrapping(val)),
+            NumLit::I32(val) => NumValue::I32(Wrapping(val)),
+            NumLit::I64(val) => NumValue::I64(Wrapping(val)),
+            NumLit::U8(val) => NumValue::U8(Wrapping(val)),
+            NumLit::U16(val) => NumValue::U16(Wrapping(val)),
+            NumLit::U32(val) => NumValue::U32(Wrapping(val)),
+            NumLit::U64(val) => NumValue::U64(Wrapping(val)),
+            NumLit::F32(val) => NumValue::F32(val),
+            NumLit::F64(val) => NumValue::F64(val),
+        }
+    }
+}
+
+impl NumValue {
+    fn num_type(self) -> NumType {
+        match self {
+            NumValue::I8(_) => NumType::I8,
+            NumValue::I16(_) => NumType::I16,
+            NumValue::I32(_) => NumType::I32,
+            NumValue::I64(_) => NumType::I64,
+            NumValue::U8(_) => NumType::U8,
+            NumValue::U16(_) => NumType::U16,
+            NumValue::U32(_) => NumType::U32,
+            NumValue::U64(_) => NumType::U64,
+            NumValue::F32(_) => NumType::F32,
+            NumValue::F64(_) => NumType::F64,
+        }
+    }
+}
+
+// Each intrinsic is one operation at every number type, so the interpreter writes its body once
+// over the operands' primitive representation and these macros instantiate it at each type.  A
+// body may use only what `Wrapping` of each integer and each float all offer.
+
+/// Applies `body` to two numbers of one type, as a number of that type.
+macro_rules! num_binop {
+    ($lhs:expr, $rhs:expr, |$a:ident, $b:ident| $body:expr) => {
+        match ($lhs, $rhs) {
+            (NumValue::I8($a), NumValue::I8($b)) => NumValue::I8($body),
+            (NumValue::I16($a), NumValue::I16($b)) => NumValue::I16($body),
+            (NumValue::I32($a), NumValue::I32($b)) => NumValue::I32($body),
+            (NumValue::I64($a), NumValue::I64($b)) => NumValue::I64($body),
+            (NumValue::U8($a), NumValue::U8($b)) => NumValue::U8($body),
+            (NumValue::U16($a), NumValue::U16($b)) => NumValue::U16($body),
+            (NumValue::U32($a), NumValue::U32($b)) => NumValue::U32($body),
+            (NumValue::U64($a), NumValue::U64($b)) => NumValue::U64($body),
+            (NumValue::F32($a), NumValue::F32($b)) => NumValue::F32($body),
+            (NumValue::F64($a), NumValue::F64($b)) => NumValue::F64($body),
+            (lhs, rhs) => unreachable!("mismatched number types {:?} and {:?}", lhs, rhs),
+        }
+    };
+}
+
+/// Applies `body` to a number, as a number of its type.
+macro_rules! num_unop {
+    ($value:expr, |$a:ident| $body:expr) => {
+        match $value {
+            NumValue::I8($a) => NumValue::I8($body),
+            NumValue::I16($a) => NumValue::I16($body),
+            NumValue::I32($a) => NumValue::I32($body),
+            NumValue::I64($a) => NumValue::I64($body),
+            NumValue::U8($a) => NumValue::U8($body),
+            NumValue::U16($a) => NumValue::U16($body),
+            NumValue::U32($a) => NumValue::U32($body),
+            NumValue::U64($a) => NumValue::U64($body),
+            NumValue::F32($a) => NumValue::F32($body),
+            NumValue::F64($a) => NumValue::F64($body),
+        }
+    };
+}
+
+/// Applies `body` to two numbers of one type, as whatever the body returns.
+macro_rules! num_cmp {
+    ($lhs:expr, $rhs:expr, |$a:ident, $b:ident| $body:expr) => {
+        match ($lhs, $rhs) {
+            (NumValue::I8($a), NumValue::I8($b)) => $body,
+            (NumValue::I16($a), NumValue::I16($b)) => $body,
+            (NumValue::I32($a), NumValue::I32($b)) => $body,
+            (NumValue::I64($a), NumValue::I64($b)) => $body,
+            (NumValue::U8($a), NumValue::U8($b)) => $body,
+            (NumValue::U16($a), NumValue::U16($b)) => $body,
+            (NumValue::U32($a), NumValue::U32($b)) => $body,
+            (NumValue::U64($a), NumValue::U64($b)) => $body,
+            (NumValue::F32($a), NumValue::F32($b)) => $body,
+            (NumValue::F64($a), NumValue::F64($b)) => $body,
+            (lhs, rhs) => unreachable!("mismatched number types {:?} and {:?}", lhs, rhs),
+        }
+    };
+}
+
+/// Applies `body` to two integers of one type, as an integer of that type.
+macro_rules! int_binop {
+    ($lhs:expr, $rhs:expr, |$a:ident, $b:ident| $body:expr) => {
+        match ($lhs, $rhs) {
+            (NumValue::I8($a), NumValue::I8($b)) => NumValue::I8($body),
+            (NumValue::I16($a), NumValue::I16($b)) => NumValue::I16($body),
+            (NumValue::I32($a), NumValue::I32($b)) => NumValue::I32($body),
+            (NumValue::I64($a), NumValue::I64($b)) => NumValue::I64($body),
+            (NumValue::U8($a), NumValue::U8($b)) => NumValue::U8($body),
+            (NumValue::U16($a), NumValue::U16($b)) => NumValue::U16($body),
+            (NumValue::U32($a), NumValue::U32($b)) => NumValue::U32($body),
+            (NumValue::U64($a), NumValue::U64($b)) => NumValue::U64($body),
+            (lhs, rhs) => unreachable!("expected integers of one type: {:?}, {:?}", lhs, rhs),
+        }
+    };
+}
+
+/// Applies `body` to an integer, as an integer of its type.
+macro_rules! int_unop {
+    ($value:expr, |$a:ident| $body:expr) => {
+        match $value {
+            NumValue::I8($a) => NumValue::I8($body),
+            NumValue::I16($a) => NumValue::I16($body),
+            NumValue::I32($a) => NumValue::I32($body),
+            NumValue::I64($a) => NumValue::I64($body),
+            NumValue::U8($a) => NumValue::U8($body),
+            NumValue::U16($a) => NumValue::U16($body),
+            NumValue::U32($a) => NumValue::U32($body),
+            NumValue::U64($a) => NumValue::U64($body),
+            NumValue::F32(_) | NumValue::F64(_) => {
+                unreachable!("expected an integer, received a float")
+            }
+        }
+    };
+}
+
+/// Shifts an integer's bits right by an amount of the same type, taken modulo the width, filling
+/// with zeros.  Rust's shift of a signed type fills with the sign bit instead, so a signed type
+/// shifts its bits read as unsigned.
+fn shift_right_logical(lhs: NumValue, rhs: NumValue) -> NumValue {
+    match (lhs, rhs) {
+        (NumValue::I8(a), NumValue::I8(b)) => {
+            NumValue::I8(Wrapping((a.0 as u8).wrapping_shr(b.0 as u32) as i8))
+        }
+        (NumValue::I16(a), NumValue::I16(b)) => {
+            NumValue::I16(Wrapping((a.0 as u16).wrapping_shr(b.0 as u32) as i16))
+        }
+        (NumValue::I32(a), NumValue::I32(b)) => {
+            NumValue::I32(Wrapping((a.0 as u32).wrapping_shr(b.0 as u32) as i32))
+        }
+        (NumValue::I64(a), NumValue::I64(b)) => {
+            NumValue::I64(Wrapping((a.0 as u64).wrapping_shr(b.0 as u32) as i64))
+        }
+        (NumValue::U8(a), NumValue::U8(b)) => NumValue::U8(Wrapping(a.0.wrapping_shr(b.0 as u32))),
+        (NumValue::U16(a), NumValue::U16(b)) => {
+            NumValue::U16(Wrapping(a.0.wrapping_shr(b.0 as u32)))
+        }
+        (NumValue::U32(a), NumValue::U32(b)) => {
+            NumValue::U32(Wrapping(a.0.wrapping_shr(b.0 as u32)))
+        }
+        (NumValue::U64(a), NumValue::U64(b)) => {
+            NumValue::U64(Wrapping(a.0.wrapping_shr(b.0 as u32)))
+        }
+        (lhs, rhs) => unreachable!("expected integers of one type: {:?}, {:?}", lhs, rhs),
+    }
+}
+
+/// Converts a number to the type `to` with the semantics of Rust's `as` cast between the
+/// representations, which are the semantics `Intrinsic::Convert` asks for.
+fn convert(value: NumValue, to: NumType) -> NumValue {
+    // `$val` cast to the representation of `to`.
+    macro_rules! cast_to {
+        ($val:expr) => {
+            match to {
+                NumType::I8 => NumValue::I8(Wrapping($val as i8)),
+                NumType::I16 => NumValue::I16(Wrapping($val as i16)),
+                NumType::I32 => NumValue::I32(Wrapping($val as i32)),
+                NumType::I64 => NumValue::I64(Wrapping($val as i64)),
+                NumType::U8 => NumValue::U8(Wrapping($val as u8)),
+                NumType::U16 => NumValue::U16(Wrapping($val as u16)),
+                NumType::U32 => NumValue::U32(Wrapping($val as u32)),
+                NumType::U64 => NumValue::U64(Wrapping($val as u64)),
+                NumType::F32 => NumValue::F32($val as f32),
+                NumType::F64 => NumValue::F64($val as f64),
+            }
+        };
+    }
+    match value {
+        NumValue::I8(val) => cast_to!(val.0),
+        NumValue::I16(val) => cast_to!(val.0),
+        NumValue::I32(val) => cast_to!(val.0),
+        NumValue::I64(val) => cast_to!(val.0),
+        NumValue::U8(val) => cast_to!(val.0),
+        NumValue::U16(val) => cast_to!(val.0),
+        NumValue::U32(val) => cast_to!(val.0),
+        NumValue::U64(val) => cast_to!(val.0),
+        NumValue::F32(val) => cast_to!(val),
+        NumValue::F64(val) => cast_to!(val),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -179,9 +384,17 @@ impl Heap<'_> {
     fn value_to_str(&self, kind: HeapId) -> String {
         match &self[kind] {
             Value::Bool(val) => val.to_string(),
-            Value::Num(NumValue::Byte(Wrapping(val))) => format!("{:?}", *val as char),
-            Value::Num(NumValue::Int(Wrapping(val))) => val.to_string(),
-            Value::Num(NumValue::Float(val)) => val.to_string(),
+            Value::Num(NumValue::I8(Wrapping(val))) => val.to_string(),
+            Value::Num(NumValue::I16(Wrapping(val))) => val.to_string(),
+            Value::Num(NumValue::I32(Wrapping(val))) => val.to_string(),
+            Value::Num(NumValue::I64(Wrapping(val))) => val.to_string(),
+            // A `U8` is usually a character of some text.
+            Value::Num(NumValue::U8(Wrapping(val))) => format!("{:?}", *val as char),
+            Value::Num(NumValue::U16(Wrapping(val))) => val.to_string(),
+            Value::Num(NumValue::U32(Wrapping(val))) => val.to_string(),
+            Value::Num(NumValue::U64(Wrapping(val))) => val.to_string(),
+            Value::Num(NumValue::F32(val)) => val.to_string(),
+            Value::Num(NumValue::F64(val)) => val.to_string(),
             Value::ArrayContent(rc, contents) => {
                 let contents_str = contents
                     .iter()
@@ -555,26 +768,10 @@ fn typecheck_rec(
             }
         }
 
-        Type::Num(NumType::Byte) => {
-            if let Value::Num(NumValue::Byte(_)) = kind {
-            } else {
-                stacktrace.panic(format!["expected a byte received {:?}", kind]);
-            };
-        }
-
-        Type::Num(NumType::Int) => {
-            if let Value::Num(NumValue::Int(_)) = kind {
-            } else {
-                stacktrace.panic(format!["expected an int received {:?}", kind]);
-            };
-        }
-
-        Type::Num(NumType::Float) => {
-            if let Value::Num(NumValue::Float(_)) = kind {
-            } else {
-                stacktrace.panic(format!["expected an float received {:?}", kind]);
-            };
-        }
+        Type::Num(num) => match kind {
+            Value::Num(val) if val.num_type() == *num => {}
+            _ => stacktrace.panic(format!["expected {} received {:?}", num.name(), kind]),
+        },
 
         Type::Array(item_type) => {
             if let Value::Array(_, ptr) = kind {
@@ -702,30 +899,21 @@ fn unwrap_bool(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> bool {
     }
 }
 
-fn unwrap_byte(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<u8> {
+fn unwrap_u8(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<u8> {
     let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap byte"));
-    if let Value::Num(NumValue::Byte(val)) = kind {
+    if let Value::Num(NumValue::U8(val)) = kind {
         *val
     } else {
         stacktrace.panic(format!["expected a byte received {:?}", kind]);
     }
 }
 
-fn unwrap_int(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<i64> {
-    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap int"));
-    if let Value::Num(NumValue::Int(val)) = kind {
+fn unwrap_i64(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> Wrapping<i64> {
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap i64"));
+    if let Value::Num(NumValue::I64(val)) = kind {
         *val
     } else {
-        stacktrace.panic(format!["expected an int received {:?}", kind]);
-    }
-}
-
-fn unwrap_float(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> f64 {
-    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap float"));
-    if let Value::Num(NumValue::Float(val)) = kind {
-        *val
-    } else {
-        stacktrace.panic(format!["expected a float received {:?}", kind]);
+        stacktrace.panic(format!["expected an i64 received {:?}", kind]);
     }
 }
 
@@ -737,35 +925,33 @@ fn unwrap_pair(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (HeapId,
     (pair[0], pair[1])
 }
 
-fn unwrap_binop_bytes(
+/// The number at `heap_id`, which must be of type `expected`; an `IntType` names its number type.
+fn unwrap_num(
     heap: &Heap,
     heap_id: HeapId,
+    expected: impl Into<NumType>,
     stacktrace: StackTrace,
-) -> (Wrapping<u8>, Wrapping<u8>) {
-    let (lhs_id, rhs_id) = unwrap_pair(heap, heap_id, stacktrace.add_frame("unwrap binop bytes"));
-    (
-        unwrap_byte(heap, lhs_id, stacktrace.add_frame("unwrap binop bytes")),
-        unwrap_byte(heap, rhs_id, stacktrace.add_frame("unwrap binop bytes")),
-    )
+) -> NumValue {
+    let expected = expected.into();
+    let kind = assert_live(heap, heap_id, stacktrace.add_frame("unwrap num"));
+    match kind {
+        Value::Num(num) if num.num_type() == expected => *num,
+        _ => stacktrace.panic(format!["expected {} received {:?}", expected.name(), kind]),
+    }
 }
 
-fn unwrap_binop_ints(
+/// The pair of numbers at `heap_id`, both of type `expected`.
+fn unwrap_num_pair(
     heap: &Heap,
     heap_id: HeapId,
+    expected: impl Into<NumType>,
     stacktrace: StackTrace,
-) -> (Wrapping<i64>, Wrapping<i64>) {
-    let (lhs_id, rhs_id) = unwrap_pair(heap, heap_id, stacktrace.add_frame("unwrap binop ints"));
+) -> (NumValue, NumValue) {
+    let expected = expected.into();
+    let (lhs_id, rhs_id) = unwrap_pair(heap, heap_id, stacktrace.add_frame("num pair"));
     (
-        unwrap_int(heap, lhs_id, stacktrace.add_frame("unwrap binop ints")),
-        unwrap_int(heap, rhs_id, stacktrace.add_frame("unwrap binop ints")),
-    )
-}
-
-fn unwrap_binop_floats(heap: &Heap, heap_id: HeapId, stacktrace: StackTrace) -> (f64, f64) {
-    let (lhs_id, rhs_id) = unwrap_pair(heap, heap_id, stacktrace.add_frame("unwrap binop floats"));
-    (
-        unwrap_float(heap, lhs_id, stacktrace.add_frame("unwrap binop floats")),
-        unwrap_float(heap, rhs_id, stacktrace.add_frame("unwrap binop floats")),
+        unwrap_num(heap, lhs_id, expected, stacktrace.add_frame("num pair")),
+        unwrap_num(heap, rhs_id, expected, stacktrace.add_frame("num pair")),
     )
 }
 
@@ -1225,169 +1411,82 @@ fn interpret_expr(
                 heap.add(Value::Bool(*variant_id == local_variant_id))
             }
 
-            Expr::Intrinsic(Intrinsic::Not, local_id) => {
-                let heap_id = locals[local_id];
-
-                let value = !unwrap_bool(heap, heap_id, stacktrace.add_frame("check bool"));
-
-                heap.add(Value::Bool(value))
-            }
-
-            Expr::Intrinsic(Intrinsic::AddByte, local_id) => {
+            Expr::Intrinsic(Intrinsic::Add(num), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Byte(lhs + rhs)))
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("arith"));
+                heap.add(Value::Num(num_binop!(lhs, rhs, |a, b| a + b)))
             }
 
-            Expr::Intrinsic(Intrinsic::AddInt, local_id) => {
+            Expr::Intrinsic(Intrinsic::Sub(num), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Int(lhs + rhs)))
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("arith"));
+                heap.add(Value::Num(num_binop!(lhs, rhs, |a, b| a - b)))
             }
 
-            Expr::Intrinsic(Intrinsic::AddFloat, local_id) => {
+            Expr::Intrinsic(Intrinsic::Mul(num), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Float(lhs + rhs)))
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("arith"));
+                heap.add(Value::Num(num_binop!(lhs, rhs, |a, b| a * b)))
             }
 
-            Expr::Intrinsic(Intrinsic::SubByte, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Byte(lhs - rhs)))
-            }
-
-            Expr::Intrinsic(Intrinsic::SubInt, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Int(lhs - rhs)))
-            }
-
-            Expr::Intrinsic(Intrinsic::SubFloat, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Float(lhs - rhs)))
-            }
-
-            Expr::Intrinsic(Intrinsic::MulByte, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Byte(lhs * rhs)))
-            }
-
-            Expr::Intrinsic(Intrinsic::MulInt, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Int(lhs * rhs)))
-            }
-
-            Expr::Intrinsic(Intrinsic::MulFloat, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Num(NumValue::Float(lhs * rhs)))
-            }
-
-            Expr::Intrinsic(Intrinsic::DivByte, local_id) => {
+            Expr::Intrinsic(Intrinsic::Div(num), local_id) => {
                 let (numerator, divisor) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("arith"));
 
-                if divisor.0 == 0 {
+                // A zero integer divisor is a runtime panic, while a float divides by zero as IEEE
+                // requires.
+                let divisor_is_zero = match divisor {
+                    NumValue::I8(val) => val.0 == 0,
+                    NumValue::I16(val) => val.0 == 0,
+                    NumValue::I32(val) => val.0 == 0,
+                    NumValue::I64(val) => val.0 == 0,
+                    NumValue::U8(val) => val.0 == 0,
+                    NumValue::U16(val) => val.0 == 0,
+                    NumValue::U32(val) => val.0 == 0,
+                    NumValue::U64(val) => val.0 == 0,
+                    NumValue::F32(_) | NumValue::F64(_) => false,
+                };
+                if divisor_is_zero {
                     writeln!(stderr, "panicked due to division by zero").unwrap();
                     return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
                 }
 
-                heap.add(Value::Num(NumValue::Byte(numerator / divisor)))
+                heap.add(Value::Num(num_binop!(numerator, divisor, |a, b| a / b)))
             }
 
-            Expr::Intrinsic(Intrinsic::DivInt, local_id) => {
-                let (numerator, divisor) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-
-                if divisor.0 == 0 {
-                    writeln!(stderr, "panicked due to division by zero").unwrap();
-                    return Err(Interruption::Exit(ExitStatus::Failure(Some(1))));
-                }
-
-                heap.add(Value::Num(NumValue::Int(numerator / divisor)))
+            Expr::Intrinsic(Intrinsic::Neg(num), local_id) => {
+                let value = unwrap_num(heap, locals[local_id], *num, stacktrace.add_frame("arith"));
+                heap.add(Value::Num(num_unop!(value, |a| -a)))
             }
 
-            Expr::Intrinsic(Intrinsic::DivFloat, local_id) => {
-                let (numerator, divisor) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-
-                heap.add(Value::Num(NumValue::Float(numerator / divisor)))
-            }
-
-            Expr::Intrinsic(Intrinsic::LtByte, local_id) => {
+            Expr::Intrinsic(Intrinsic::Eq(num), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs < rhs))
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("cmp"));
+                heap.add(Value::Bool(num_cmp!(lhs, rhs, |a, b| a == b)))
             }
 
-            Expr::Intrinsic(Intrinsic::LtInt, local_id) => {
+            Expr::Intrinsic(Intrinsic::Lt(num), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs < rhs))
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("cmp"));
+                heap.add(Value::Bool(num_cmp!(lhs, rhs, |a, b| a < b)))
             }
 
-            Expr::Intrinsic(Intrinsic::LtFloat, local_id) => {
+            Expr::Intrinsic(Intrinsic::Lte(num), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs < rhs))
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("cmp"));
+                heap.add(Value::Bool(num_cmp!(lhs, rhs, |a, b| a <= b)))
             }
 
-            Expr::Intrinsic(Intrinsic::LteByte, local_id) => {
+            Expr::Intrinsic(Intrinsic::Gt(num), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs <= rhs))
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("cmp"));
+                heap.add(Value::Bool(num_cmp!(lhs, rhs, |a, b| a > b)))
             }
 
-            Expr::Intrinsic(Intrinsic::LteInt, local_id) => {
+            Expr::Intrinsic(Intrinsic::Gte(num), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs <= rhs))
-            }
-
-            Expr::Intrinsic(Intrinsic::LteFloat, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs <= rhs))
-            }
-
-            Expr::Intrinsic(Intrinsic::GtByte, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs > rhs))
-            }
-
-            Expr::Intrinsic(Intrinsic::GtInt, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs > rhs))
-            }
-
-            Expr::Intrinsic(Intrinsic::GtFloat, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs > rhs))
-            }
-
-            Expr::Intrinsic(Intrinsic::GteByte, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs >= rhs))
-            }
-
-            Expr::Intrinsic(Intrinsic::GteInt, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs >= rhs))
-            }
-
-            Expr::Intrinsic(Intrinsic::GteFloat, local_id) => {
-                let (lhs, rhs) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs >= rhs))
+                    unwrap_num_pair(heap, locals[local_id], *num, stacktrace.add_frame("cmp"));
+                heap.add(Value::Bool(num_cmp!(lhs, rhs, |a, b| a >= b)))
             }
 
             Expr::Intrinsic(Intrinsic::EqBool, local_id) => {
@@ -1398,139 +1497,74 @@ fn interpret_expr(
                 heap.add(Value::Bool(lhs == rhs))
             }
 
-            Expr::Intrinsic(Intrinsic::EqByte, local_id) => {
+            Expr::Intrinsic(Intrinsic::Not, local_id) => {
+                let heap_id = locals[local_id];
+
+                let value = !unwrap_bool(heap, heap_id, stacktrace.add_frame("check bool"));
+
+                heap.add(Value::Bool(value))
+            }
+
+            Expr::Intrinsic(Intrinsic::BitAnd(int), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_bytes(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs == rhs))
+                    unwrap_num_pair(heap, locals[local_id], *int, stacktrace.add_frame("logic"));
+                heap.add(Value::Num(int_binop!(lhs, rhs, |a, b| a & b)))
             }
 
-            Expr::Intrinsic(Intrinsic::EqInt, local_id) => {
+            Expr::Intrinsic(Intrinsic::BitOr(int), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_ints(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs == rhs))
+                    unwrap_num_pair(heap, locals[local_id], *int, stacktrace.add_frame("logic"));
+                heap.add(Value::Num(int_binop!(lhs, rhs, |a, b| a | b)))
             }
 
-            Expr::Intrinsic(Intrinsic::EqFloat, local_id) => {
+            Expr::Intrinsic(Intrinsic::BitXor(int), local_id) => {
                 let (lhs, rhs) =
-                    unwrap_binop_floats(heap, locals[local_id], stacktrace.add_frame("arith"));
-                heap.add(Value::Bool(lhs == rhs))
+                    unwrap_num_pair(heap, locals[local_id], *int, stacktrace.add_frame("logic"));
+                heap.add(Value::Num(int_binop!(lhs, rhs, |a, b| a ^ b)))
             }
 
-            // Don't negate a byte u dummy
-            Expr::Intrinsic(Intrinsic::NegByte, local_id) => heap.add(Value::Num(NumValue::Byte(
-                -unwrap_byte(heap, locals[local_id], stacktrace.add_frame("arith")),
-            ))),
-
-            Expr::Intrinsic(Intrinsic::NegInt, local_id) => heap.add(Value::Num(NumValue::Int(
-                -unwrap_int(heap, locals[local_id], stacktrace.add_frame("arith")),
-            ))),
-
-            Expr::Intrinsic(Intrinsic::NegFloat, local_id) => {
-                heap.add(Value::Num(NumValue::Float(-unwrap_float(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("arith"),
-                ))))
+            Expr::Intrinsic(Intrinsic::BitNot(int), local_id) => {
+                let value = unwrap_num(heap, locals[local_id], *int, stacktrace.add_frame("logic"));
+                heap.add(Value::Num(int_unop!(value, |a| !a)))
             }
 
-            Expr::Intrinsic(Intrinsic::ByteToInt, local_id) => {
-                heap.add(Value::Num(NumValue::Int(Wrapping(
-                    unwrap_byte(heap, locals[local_id], stacktrace.add_frame("byte_to_int")).0
-                        as i64,
-                ))))
+            Expr::Intrinsic(Intrinsic::ShiftLeft(int), local_id) => {
+                let (lhs, rhs) =
+                    unwrap_num_pair(heap, locals[local_id], *int, stacktrace.add_frame("shift"));
+                // `wrapping_shl` takes the amount modulo the width.
+                let value = int_binop!(lhs, rhs, |a, b| Wrapping(a.0.wrapping_shl(b.0 as u32)));
+                heap.add(Value::Num(value))
             }
 
-            Expr::Intrinsic(Intrinsic::ByteToIntSigned, local_id) => {
-                heap.add(Value::Num(NumValue::Int(Wrapping(
-                    unwrap_byte(heap, locals[local_id], stacktrace.add_frame("byte_to_int")).0 as i8
-                        as i64,
-                ))))
+            Expr::Intrinsic(Intrinsic::ShiftRight(int), local_id) => {
+                let (lhs, rhs) =
+                    unwrap_num_pair(heap, locals[local_id], *int, stacktrace.add_frame("shift"));
+                heap.add(Value::Num(shift_right_logical(lhs, rhs)))
             }
 
-            Expr::Intrinsic(Intrinsic::IntToByte, local_id) => {
-                heap.add(Value::Num(NumValue::Byte(Wrapping(
-                    unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_to_byte")).0 as u8,
-                ))))
+            // The three bit counts fit in every integer type, so the cast to the operand's type
+            // is exact.
+            Expr::Intrinsic(Intrinsic::Ctpop(int), local_id) => {
+                let value = unwrap_num(heap, locals[local_id], *int, stacktrace.add_frame("count"));
+                let count = int_unop!(value, |a| Wrapping(a.0.count_ones() as _));
+                heap.add(Value::Num(count))
             }
 
-            Expr::Intrinsic(Intrinsic::IntShiftLeft, local_id) => {
-                let args = unwrap_tuple(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("int_shift_left"),
-                );
-                assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_shift_left"));
-                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_shift_left"));
-                heap.add(Value::Num(NumValue::Int(Wrapping(
-                    left.0 << (right.0 as u64 % 64),
-                ))))
+            Expr::Intrinsic(Intrinsic::Ctlz(int), local_id) => {
+                let value = unwrap_num(heap, locals[local_id], *int, stacktrace.add_frame("count"));
+                let count = int_unop!(value, |a| Wrapping(a.0.leading_zeros() as _));
+                heap.add(Value::Num(count))
             }
 
-            Expr::Intrinsic(Intrinsic::IntShiftRight, local_id) => {
-                let args = unwrap_tuple(
-                    heap,
-                    locals[local_id],
-                    stacktrace.add_frame("int_shift_right"),
-                );
-                assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_shift_right"));
-                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_shift_right"));
-                heap.add(Value::Num(NumValue::Int(Wrapping(
-                    ((left.0 as u64) >> (right.0 as u64 % 64)) as i64,
-                ))))
+            Expr::Intrinsic(Intrinsic::Cttz(int), local_id) => {
+                let value = unwrap_num(heap, locals[local_id], *int, stacktrace.add_frame("count"));
+                let count = int_unop!(value, |a| Wrapping(a.0.trailing_zeros() as _));
+                heap.add(Value::Num(count))
             }
 
-            Expr::Intrinsic(Intrinsic::IntBitAnd, local_id) => {
-                let args =
-                    unwrap_tuple(heap, locals[local_id], stacktrace.add_frame("int_bit_and"));
-                assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_and"));
-                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_and"));
-                heap.add(Value::Num(NumValue::Int(left & right)))
-            }
-
-            Expr::Intrinsic(Intrinsic::IntBitOr, local_id) => {
-                let args = unwrap_tuple(heap, locals[local_id], stacktrace.add_frame("int_bit_or"));
-                assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_or"));
-                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_or"));
-                heap.add(Value::Num(NumValue::Int(left | right)))
-            }
-
-            Expr::Intrinsic(Intrinsic::IntBitXor, local_id) => {
-                let args =
-                    unwrap_tuple(heap, locals[local_id], stacktrace.add_frame("int_bit_xor"));
-                assert_eq!(args.len(), 2);
-                let left = unwrap_int(heap, args[0], stacktrace.add_frame("int_bit_xor"));
-                let right = unwrap_int(heap, args[1], stacktrace.add_frame("int_bit_xor"));
-                heap.add(Value::Num(NumValue::Int(left ^ right)))
-            }
-
-            Expr::Intrinsic(Intrinsic::IntBitNot, local_id) => {
-                let value = unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_bit_not"));
-                heap.add(Value::Num(NumValue::Int(!value)))
-            }
-
-            Expr::Intrinsic(Intrinsic::IntCtpop, local_id) => {
-                let value = unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_ctpop"));
-                heap.add(Value::Num(NumValue::Int(Wrapping(
-                    value.0.count_ones() as i64
-                ))))
-            }
-
-            Expr::Intrinsic(Intrinsic::IntCtlz, local_id) => {
-                let value = unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_ctlz"));
-                heap.add(Value::Num(NumValue::Int(Wrapping(
-                    value.0.leading_zeros() as i64
-                ))))
-            }
-
-            Expr::Intrinsic(Intrinsic::IntCttz, local_id) => {
-                let value = unwrap_int(heap, locals[local_id], stacktrace.add_frame("int_cttz"));
-                heap.add(Value::Num(NumValue::Int(Wrapping(
-                    value.0.trailing_zeros() as i64,
-                ))))
+            Expr::Intrinsic(Intrinsic::Convert(from, to), local_id) => {
+                let value = unwrap_num(heap, locals[local_id], *from, stacktrace.add_frame("cast"));
+                heap.add(Value::Num(convert(value, *to)))
             }
 
             Expr::ArrayOp(_scheme, ArrayOp::New) => heap.add(Value::Array(0, None)),
@@ -1543,7 +1577,7 @@ fn interpret_expr(
                 let kind = &heap[array_id];
                 let result = match kind {
                     Value::Array(len, _) => {
-                        heap.add(Value::Num(NumValue::Int(Wrapping(*len as i64))))
+                        heap.add(Value::Num(NumValue::I64(Wrapping(*len as i64))))
                     }
                     _ => {
                         stacktrace.panic(format!["expected an array received {:?}", kind]);
@@ -1618,7 +1652,7 @@ fn interpret_expr(
                 let array_heap_id = locals[array_id];
                 let index_heap_id = locals[index_id];
 
-                let index = unwrap_int(heap, index_heap_id, stacktrace.add_frame("get index"));
+                let index = unwrap_i64(heap, index_heap_id, stacktrace.add_frame("get index"));
 
                 let result = match &heap[array_heap_id] {
                     Value::Array(_, None) => {
@@ -1644,7 +1678,7 @@ fn interpret_expr(
                 let array_id = locals[array_id];
                 let index_heap_id = locals[index_id];
 
-                let index = unwrap_int(heap, index_heap_id, stacktrace.add_frame("extract index"));
+                let index = unwrap_i64(heap, index_heap_id, stacktrace.add_frame("extract index"));
 
                 match &heap[array_id] {
                     Value::Array(_, None) => {
@@ -1708,7 +1742,7 @@ fn interpret_expr(
 
             Expr::ArrayOp(_scheme, ArrayOp::Reserve(array_id, capacity_id)) => {
                 let array_heap_id = locals[array_id];
-                let index = unwrap_int(
+                let index = unwrap_i64(
                     heap,
                     locals[capacity_id],
                     stacktrace.add_frame("reserve capacity"),
@@ -1741,7 +1775,7 @@ fn interpret_expr(
 
                 let mut heap_ids = vec![];
                 for byte in input.into_bytes().into_iter() {
-                    heap_ids.push(heap.add(Value::Num(NumValue::Byte(Wrapping(byte)))));
+                    heap_ids.push(heap.add(Value::Num(NumValue::U8(Wrapping(byte)))));
                 }
 
                 new_array(heap, heap_ids)
@@ -1766,7 +1800,7 @@ fn interpret_expr(
 
                         let mut bytes = vec![];
                         for heap_id in array {
-                            bytes.push(unwrap_byte(
+                            bytes.push(unwrap_u8(
                                 heap,
                                 heap_id,
                                 stacktrace.add_frame("output byte"),
@@ -1816,7 +1850,7 @@ fn interpret_expr(
 
                         let mut bytes = vec![];
                         for heap_id in array {
-                            bytes.push(unwrap_byte(
+                            bytes.push(unwrap_u8(
                                 heap,
                                 heap_id,
                                 stacktrace.add_frame("panic byte"),
@@ -1847,11 +1881,7 @@ fn interpret_expr(
 
             Expr::BoolLit(val) => heap.add(Value::Bool(*val)),
 
-            Expr::ByteLit(val) => heap.add(Value::Num(NumValue::Byte(Wrapping(*val)))),
-
-            Expr::IntLit(val) => heap.add(Value::Num(NumValue::Int(Wrapping(*val)))),
-
-            Expr::FloatLit(val) => heap.add(Value::Num(NumValue::Float(*val))),
+            Expr::NumLit(lit) => heap.add(Value::Num(NumValue::from(*lit))),
         })
     })
 }

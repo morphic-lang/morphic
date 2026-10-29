@@ -3,7 +3,7 @@
 module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
-    module String expose { int_to_string, string_to_nat },
+    module String expose { i64_to_string, string_to_nat },
     module Math expose { cmp_max },
     module Option expose { Option { Some, None } }
   }
@@ -12,13 +12,13 @@ module Bench = file "lib/bench_common.mor" with { Core }
   expose { repeat }
 
 type Expr {
-  Var(Int),
-  Val(Int),
+  Var(I64),
+  Val(I64),
   Add(Expr, Expr),
   Mul(Expr, Expr),
 }
 
-mk_expr(n: Int, v: Int): Expr =
+mk_expr(n: I64, v: I64): Expr =
   if n = 0 {
    if v=0 { Var(1) } else { Val(v) }
   } else {
@@ -73,7 +73,7 @@ cfold( e : Expr) : Expr =
     _ -> e,
   }
 
-eval(e : Expr) : Int =
+eval(e : Expr) : I64 =
   match e {
     Var(_)   -> 0,
     Val(v)   -> v,
@@ -81,7 +81,7 @@ eval(e : Expr) : Int =
     Mul(l,r) -> eval(l) * eval(r),
   }
 
-test_cfold(x : Int): Int =
+test_cfold(x : I64): I64 =
   let e = mk_expr(x, 1) in
   let v1 = eval(e) in
   let v2 = e |> reassoc() |> cfold() |> eval() in
@@ -95,7 +95,7 @@ proc main(): () =
   match (string_to_nat(do input()), string_to_nat(do input())) {
     (Some(iters), Some(depth)) ->
       match repeat(iters, \() -> test_cfold(depth)) {
-        Some(n) -> do writeln(int_to_string(n)),
+        Some(n) -> do writeln(i64_to_string(n)),
         None -> (),
       },
     (_, _) ->

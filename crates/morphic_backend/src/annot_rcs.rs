@@ -979,11 +979,7 @@ fn annot_expr(
 
         ob::Expr::BoolLit(lit) => (rc::Expr::BoolLit(lit), Moves::empty()),
 
-        ob::Expr::ByteLit(lit) => (rc::Expr::ByteLit(lit), Moves::empty()),
-
-        ob::Expr::IntLit(lit) => (rc::Expr::IntLit(lit), Moves::empty()),
-
-        ob::Expr::FloatLit(lit) => (rc::Expr::FloatLit(lit), Moves::empty()),
+        ob::Expr::NumLit(lit) => (rc::Expr::NumLit(lit), Moves::empty()),
     };
 
     (

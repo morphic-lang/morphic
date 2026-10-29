@@ -257,8 +257,8 @@ fn match_type<G: Clone + Eq, F: Facts>(
 ) -> bool {
     match (pattern, target) {
         // A pattern parameter, possibly applied to further patterns, absorbs the corresponding
-        // prefix of the target application: `f a` against `Result Int Bool` binds `f` to
-        // `Result Int` and `a` to `Bool`.
+        // prefix of the target application: `f a` against `Result I64 Bool` binds `f` to
+        // `Result I64` and `a` to `Bool`.
         (Type::App(TypeHead::Var(param), pattern_args), Type::App(head, args)) => {
             if args.len() < pattern_args.len() {
                 return false;

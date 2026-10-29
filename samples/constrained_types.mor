@@ -1,9 +1,9 @@
 module Core = file "lib/core/core.mor"
-  expose { module String expose { int_to_string, bool_to_string, concat } }
+  expose { module String expose { i64_to_string, bool_to_string, concat } }
 
 // A type declaration may carry trait constraints.  Every occurrence of such a type carries
-// evidence for each of them, so a `Set Int` built under `OrdInt` is a different type from
-// one built under `OrdIntRev`: the evidence is unified along with the type.
+// evidence for each of them, so a `Set I64` built under `OrdI64` is a different type from
+// one built under `OrdI64Rev`: the evidence is unified along with the type.
 
 module Ord = {
   pub trait Eq a {
@@ -14,18 +14,18 @@ module Ord = {
     lt(x: a, y: a): Bool,
   }
 
-  pub impl EqInt of Eq Int {
-    eq(x: Int, y: Int): Bool = x = y
+  pub impl EqI64 of Eq I64 {
+    eq(x: I64, y: I64): Bool = x = y
   }
 
-  pub impl OrdInt of Ord Int {
-    lt(x: Int, y: Int): Bool = x < y
+  pub impl OrdI64 of Ord I64 {
+    lt(x: I64, y: I64): Bool = x < y
   }
 
-  pub impl OrdIntRev of Ord Int {
-    lt(x: Int, y: Int): Bool = y < x
+  pub impl OrdI64Rev of Ord I64 {
+    lt(x: I64, y: I64): Bool = y < x
   }
-} expose { trait Eq { eq }, trait Ord { lt }, impl EqInt, impl OrdInt }
+} expose { trait Eq { eq }, trait Ord { lt }, impl EqI64, impl OrdI64 }
 
 module Set = {
   import Ord expose { trait Ord { lt } }
@@ -40,7 +40,7 @@ module Set = {
   pub insert(s: Set a, x: a): Set a where Ord a =
     match s { Set(arr) -> Set(insert_rec(arr, x, 0, [])) }
 
-  insert_rec(arr: Array a, x: a, i: Int, out: Array a): Array a where Ord a =
+  insert_rec(arr: Array a, x: a, i: I64, out: Array a): Array a where Ord a =
     match i < len(arr) {
       False -> push(out, x),
       True ->
@@ -51,7 +51,7 @@ module Set = {
         },
     }
 
-  append_from(out: Array a, arr: Array a, i: Int): Array a =
+  append_from(out: Array a, arr: Array a, i: I64): Array a =
     match i < len(arr) {
       False -> out,
       True -> append_from(push(out, get(arr, i)), arr, i + 1),
@@ -63,17 +63,17 @@ module Set = {
 
 // The same code builds a differently ordered set in a module where a different impl is in scope.
 module Fwd = {
-  import Ord expose { trait Ord, impl OrdInt }
+  import Ord expose { trait Ord, impl OrdI64 }
   import Set expose { Set { Set }, empty, insert }
 
-  pub make(): Set Int = insert(insert(insert(empty(), 3), 1), 2)
+  pub make(): Set I64 = insert(insert(insert(empty(), 3), 1), 2)
 } with { Ord, Set }
 
 module Rev = {
-  import Ord expose { trait Ord, impl OrdIntRev }
+  import Ord expose { trait Ord, impl OrdI64Rev }
   import Set expose { Set { Set }, empty, insert }
 
-  pub make(): Set Int = insert(insert(insert(empty(), 3), 1), 2)
+  pub make(): Set I64 = insert(insert(insert(empty(), 3), 1), 2)
 } with { Ord, Set }
 
 // A type constrained by a superclass: in `same`, the evidence for `Boxed a` is the `Eq a`
@@ -107,9 +107,9 @@ type Marker f where Functor f {
   Marker
 }
 
-mark(): Marker (Map Int) = Marker
+mark(): Marker (Map I64) = Marker
 
-map_pairs(pairs: Array (k, a), g: a -> b, i: Int, out: Array (k, b)): Array (k, b) =
+map_pairs(pairs: Array (k, a), g: a -> b, i: I64, out: Array (k, b)): Array (k, b) =
   match i < len(pairs) {
     False -> out,
     True ->
@@ -120,7 +120,7 @@ map_pairs(pairs: Array (k, a), g: a -> b, i: Int, out: Array (k, b)): Array (k, 
 values(m: Map k v): Array v where Ord k =
   match m { Map(pairs) -> values_rec(pairs, 0, []) }
 
-values_rec(pairs: Array (k, v), i: Int, out: Array v): Array v =
+values_rec(pairs: Array (k, v), i: I64, out: Array v): Array v =
   match i < len(pairs) {
     False -> out,
     True ->
@@ -128,12 +128,12 @@ values_rec(pairs: Array (k, v), i: Int, out: Array v): Array v =
       values_rec(pairs, i + 1, push(out, value)),
   }
 
-render(arr: Array Int, i: Int, acc: Array Byte): Array Byte =
+render(arr: Array I64, i: I64, acc: Array U8): Array U8 =
   match i < len(arr) {
     False -> acc,
     True ->
       let sep = match i = 0 { True -> "", False -> " " } in
-      render(arr, i + 1, concat(acc, concat(sep, int_to_string(get(arr, i))))),
+      render(arr, i + 1, concat(acc, concat(sep, i64_to_string(get(arr, i))))),
   }
 
 // The evidence a set carries flows into the constraint of a generic function, so a set built
@@ -145,6 +145,6 @@ proc main(): () =
   let _ = do output("\n") in
   let _ = do output(bool_to_string(same(Boxed(1), Boxed(1)))) in
   let _ = do output("\n") in
-  let m: Map Int Int = Map([(1, 10), (2, 20)]) in
+  let m: Map I64 I64 = Map([(1, 10), (2, 20)]) in
   let _ = do output(render(values(map(m, \v -> v + 1)), 0, "")) in
   do output("\n")

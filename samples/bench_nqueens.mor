@@ -3,7 +3,7 @@
  module Core = file "lib/core/core.mor"
    expose {
      module Io expose { writeln },
-     module String expose { int_to_string, string_to_nat, equal },
+     module String expose { i64_to_string, string_to_nat, equal },
      module Option expose { Option { Some, None } },
    }
 
@@ -11,14 +11,14 @@ module Bench = file "lib/bench_common.mor" with { Core }
   expose { repeat }
 
  type Solution {
-   Solution(Array Int),
+   Solution(Array I64),
  }
 
  type Solutions {
    Solutions(Array Solution),
  }
 
- safe(queen: Int, diag: Int, xs: Array Int): Bool =
+ safe(queen: I64, diag: I64, xs: Array I64): Bool =
    if len(xs) = 0 {
      True
    } else {
@@ -26,7 +26,7 @@ module Bench = file "lib/bench_common.mor" with { Core }
      !(queen = q) && !(queen = (q + diag)) && !(queen = (q - diag)) && safe(queen, diag + 1, qs)
    }
 
- append_safe(queen: Int, xs: Array Int, xss: Array (Array Int)): Array (Array Int)=
+ append_safe(queen: I64, xs: Array I64, xss: Array (Array I64)): Array (Array I64)=
    if queen <= 0 {
      xss
    }
@@ -38,7 +38,7 @@ module Bench = file "lib/bench_common.mor" with { Core }
      }
    }
 
- extend(queen: Int, acc: Array (Array Int), xss: Array (Array Int)): Array (Array Int) =
+ extend(queen: I64, acc: Array (Array I64), xss: Array (Array I64)): Array (Array I64) =
    if len(xss) = 0 {
      acc
    } else {
@@ -46,14 +46,14 @@ module Bench = file "lib/bench_common.mor" with { Core }
      extend(queen, append_safe(queen, xs, acc), rest)
    }
 
- find_solutions(n : Int, queen: Int): Array (Array Int) =
+ find_solutions(n : I64, queen: I64): Array (Array I64) =
    if queen = 0 {
      [[]]
    } else {
      extend(n, [], find_solutions(n, queen - 1))
    }
 
- nqueens(n : Int) : Int = len(find_solutions(n, n))
+ nqueens(n : I64) : I64 = len(find_solutions(n, n))
 
  proc main(): () =
   let iter_str = do input() in
@@ -68,19 +68,19 @@ module Bench = file "lib/bench_common.mor" with { Core }
    match (string_to_nat(iter_str), string_to_nat(do input())) {
      (Some(iters), Some(n_queens)) ->
        match repeat(iters, \() -> test_fn(n_queens)) {
-         Some(n) -> do writeln(int_to_string(n)),
+         Some(n) -> do writeln(i64_to_string(n)),
          None -> (),
        },
      (_, _) ->
        do writeln("Please enter two positive integers (an iteration count and the number of queens)"),
    }
 
- nqueens2(n: Int): Int =
+ nqueens2(n: I64): I64 =
    let initial = [] in // Empty board to start
    len(find_solutions2(n, initial, []))
  
  // Helper to find all solutions recursively
- find_solutions2(n: Int, current: Array Int, solutions: Array (Array Int)): Array (Array Int) =
+ find_solutions2(n: I64, current: Array I64, solutions: Array (Array I64)): Array (Array I64) =
    if len(current) = n {
      // Found a valid solution, add it to solutions
      push(solutions, current)
@@ -90,7 +90,7 @@ module Bench = file "lib/bench_common.mor" with { Core }
    }
  
  // Try placing queen in each column of current row
- try_placements(n: Int, current: Array Int, solutions: Array (Array Int), col: Int): Array (Array Int) =
+ try_placements(n: I64, current: Array I64, solutions: Array (Array I64), col: I64): Array (Array I64) =
    if col >= n {
      solutions 
    } else {
@@ -104,10 +104,10 @@ module Bench = file "lib/bench_common.mor" with { Core }
    }
  
  // Check if placing a queen at (row,col) is safe
- is_safe(board: Array Int, row: Int, col: Int): Bool =
+ is_safe(board: Array I64, row: I64, col: I64): Bool =
    check_safe_rec(board, row, col, 0)
  
- check_safe_rec(board: Array Int, row: Int, col: Int, i: Int): Bool =
+ check_safe_rec(board: Array I64, row: I64, col: I64, i: I64): Bool =
    if i >= row {
      True
    } else {

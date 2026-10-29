@@ -11,6 +11,7 @@ use crate::data::guarded_ast::UnfoldRecipe;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast::{self as annot, Lt, LtParam, Mode};
+use crate::data::num_type::NumLit;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast as res;
@@ -138,9 +139,7 @@ pub enum Expr {
 
     ArrayLit(Type, Vec<Occur>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]

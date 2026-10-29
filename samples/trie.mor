@@ -7,7 +7,7 @@ module Core = file "lib/core/core.mor"
 
 module Trie = file "lib/trie.mor" with { Core } expose { Trie }
 
-proc interact(trie: Trie (Array Byte) (Array Byte)): () =
+proc interact(trie: Trie (Array U8) (Array U8)): () =
   do output("\n> ") then
   let query = do input() in
 

@@ -4,23 +4,23 @@ type Opt a { Some(a), None }
 
 type Pair a b { Pair(a, b) }
 
-// A wrapper around an application of an unknown constructor `f` to `Int`.
-type Wrap f { Wrap(f Int) }
+// A wrapper around an application of an unknown constructor `f` to `I64`.
+type Wrap f { Wrap(f I64) }
 
 // `g` is applied to two arguments, so it has kind `Type -> Type -> Type`.
-type Wrap2 g { Wrap2(g Int Bool) }
+type Wrap2 g { Wrap2(g I64 Bool) }
 
-// `Compose Opt Array Int` is `Opt (Array Int)`.
+// `Compose Opt Array I64` is `Opt (Array I64)`.
 type Compose f g a { Compose(f (g a)) }
 
-unwrap(w: Wrap f): f Int =
+unwrap(w: Wrap f): f I64 =
   match w { Wrap(x) -> x }
 
 // Partial application in argument position: `Pair Bool` has kind `Type -> Type`.
-snd_int(w: Wrap (Pair Bool)): Int =
+snd_i64(w: Wrap (Pair Bool)): I64 =
   match unwrap(w) { Pair(_, n) -> n }
 
-opt_or(o: Opt Int, dflt: Int): Int =
+opt_or(o: Opt I64, dflt: I64): I64 =
   match o { Some(n) -> n, None -> dflt }
 
 proc main(): () =
@@ -28,10 +28,10 @@ proc main(): () =
   let w1 = Wrap(Some(1)) in
   let w2 = Wrap(Pair(True, 2)) in
   let w3 = Wrap2(Pair(3, False)) in
-  let c: Compose Opt Array Int = Compose(Some([4])) in
+  let c: Compose Opt Array I64 = Compose(Some([4])) in
   let n3 = match w3 { Wrap2(Pair(n, _)) -> n } in
   let n4 = match c { Compose(Some(arr)) -> get(arr, 0), Compose(None) -> 0 } in
-  let total = opt_or(unwrap(w1), 0) + snd_int(w2) + n3 + n4 in
+  let total = opt_or(unwrap(w1), 0) + snd_i64(w2) + n3 + n4 in
   if total = 10 {
     do output("ok\n")
   } else {

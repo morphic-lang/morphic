@@ -8,13 +8,13 @@ module Traits = {
     lt(x: a, y: a): Bool,
   }
 
-  pub impl EqInt of Eq Int {
-    eq(x: Int, y: Int): Bool = x = y
+  pub impl EqI64 of Eq I64 {
+    eq(x: I64, y: I64): Bool = x = y
   }
 
-  // Its superclass evidence is `EqInt`, the `Eq Int` impl in scope here.
-  pub impl OrdInt of Ord Int {
-    lt(x: Int, y: Int): Bool = x < y
+  // Its superclass evidence is `EqI64`, the `Eq I64` impl in scope here.
+  pub impl OrdI64 of Ord I64 {
+    lt(x: I64, y: I64): Bool = x < y
   }
 
   pub type Boxed a where Eq a {
@@ -23,19 +23,19 @@ module Traits = {
 
   pub same(x: Boxed a, y: Boxed a): Bool where Ord a =
     match (x, y) { (Boxed(a), Boxed(b)) -> eq(a, b) }
-} expose { trait Eq { eq }, trait Ord { lt }, impl OrdInt, Boxed { Boxed }, same }
+} expose { trait Eq { eq }, trait Ord { lt }, impl OrdI64, Boxed { Boxed }, same }
 
 module Weird = {
   import Traits expose { trait Eq }
 
-  pub impl EqIntWeird of Eq Int {
-    eq(x: Int, y: Int): Bool = False
+  pub impl EqI64Weird of Eq I64 {
+    eq(x: I64, y: I64): Bool = False
   }
-} with { Traits } expose { impl EqIntWeird }
+} with { Traits } expose { impl EqI64Weird }
 
-// The signature of `mk` is elaborated here, where `EqIntWeird` is the `Eq Int` impl in scope,
-// but `same` needs a `Boxed Int` whose evidence is the superclass of `OrdInt`, which is `EqInt`.
-mk(): Boxed Int = Boxed(1)
+// The signature of `mk` is elaborated here, where `EqI64Weird` is the `Eq I64` impl in scope,
+// but `same` needs a `Boxed I64` whose evidence is the superclass of `OrdI64`, which is `EqI64`.
+mk(): Boxed I64 = Boxed(1)
 
 proc main(): () =
   let _: Bool = same(mk(), mk()) in

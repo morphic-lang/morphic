@@ -1,7 +1,9 @@
 use crate::config::MlVariant;
 use crate::data::mono_ast::*;
+use crate::data::num_type::NumLit;
 use crate::data::profile::ProfilePointId;
 use crate::data::resolved_ast::{ArrayOp, IoOp, VariantId};
+use crate::pretty_print::utils::{ml_num_type_name, ocaml_num_lit_is_negative};
 use crate::util::graph::{self, Graph};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,9 +57,7 @@ impl<'a, 'b> Context<'a, 'b> {
     fn write_type(&mut self, type_: &Type, precedence: Precedence) -> io::Result<()> {
         let my_precedence = match type_ {
             Type::Bool => Precedence::Var,
-            Type::Byte => Precedence::Var,
-            Type::Int => Precedence::Var,
-            Type::Float => Precedence::Var,
+            Type::Num(_) => Precedence::Var,
             Type::Array(_) => Precedence::App,
             Type::Custom(_) => Precedence::App,
             Type::Tuple(_) => Precedence::Fun,
@@ -69,15 +69,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
         match type_ {
             Type::Bool => self.write("bool")?,
-            Type::Byte => self.write("char")?,
-            Type::Int => match self.variant {
-                MlVariant::OCaml => self.write("int64")?,
-                MlVariant::Sml => self.write("int")?,
-            },
-            Type::Float => match self.variant {
-                MlVariant::OCaml => self.write("float")?,
-                MlVariant::Sml => self.write("real")?,
-            },
+            Type::Num(num_type) => self.write(ml_num_type_name(self.variant, *num_type))?,
             Type::Array(item_type) => {
                 self.write_type(item_type, Precedence::Var)?;
                 self.write(" ")?;
@@ -199,9 +191,7 @@ impl<'a, 'b> Context<'a, 'b> {
                                     Type::Tuple(pats.iter().map(|x| pat_to_type(x)).collect())
                                 }
                                 Pattern::Ctor(type_id, _, _) => Type::Custom(type_id.clone()),
-                                Pattern::ByteConst(_) => Type::Byte,
-                                Pattern::IntConst(_) => Type::Int,
-                                Pattern::FloatConst(_) => Type::Float,
+                                Pattern::NumConst(lit) => Type::Num(lit.num_type()),
                                 Pattern::BoolConst(_) => Type::Bool,
                             }
                         }
@@ -235,15 +225,10 @@ impl<'a, 'b> Context<'a, 'b> {
                 };
                 Ok(new_locals)
             }
-            Pattern::ByteConst(byte) => {
-                self.write_byte_const(byte)?;
+            Pattern::NumConst(lit) => {
+                self.write_num_const(*lit)?;
                 Ok(0)
             }
-            Pattern::IntConst(int) => {
-                self.write_int_const(*int)?;
-                Ok(0)
-            }
-            Pattern::FloatConst(_) => todo!(),
             Pattern::BoolConst(b) => match b {
                 true => {
                     self.write("true")?;
@@ -273,9 +258,12 @@ impl<'a, 'b> Context<'a, 'b> {
             Expr::Match(_, _, _) => Precedence::Top,
             Expr::LetMany(_, _) => Precedence::Top,
             Expr::ArrayLit(_, _) => Precedence::App,
-            Expr::ByteLit(_) => Precedence::Var,
-            Expr::IntLit(_) => Precedence::Var,
-            Expr::FloatLit(_) => Precedence::Var,
+            // A negative literal is a prefix negation to OCaml, which binds looser than an
+            // application does, so as an argument it needs parentheses: `f (-1l)`.
+            Expr::NumLit(lit) => match self.variant {
+                MlVariant::OCaml if ocaml_num_lit_is_negative(*lit) => Precedence::App,
+                MlVariant::OCaml | MlVariant::Sml => Precedence::Var,
+            },
             Expr::Intrinsic(_) => Precedence::Var,
             Expr::ArrayOp(_, _) => Precedence::Var,
             Expr::IoOp(_) => Precedence::Var,
@@ -450,18 +438,11 @@ impl<'a, 'b> Context<'a, 'b> {
                     }
                 }
             }
-            Expr::ByteLit(byte) => {
-                self.write_byte_const(byte)?;
-            }
-            Expr::IntLit(int) => {
-                self.write_int_const(*int)?;
-            }
-            Expr::FloatLit(float) => {
-                self.write_float_const(*float)?;
+            Expr::NumLit(lit) => {
+                self.write_num_const(*lit)?;
             }
             Expr::Intrinsic(intrinsic) => {
-                self.write("intrinsic_")?;
-                self.write(&format!("{:?}", intrinsic))?;
+                self.write(&format!("intrinsic_{}", intrinsic))?;
             }
             Expr::ArrayOp(array_op, _array_type) => match array_op {
                 ArrayOp::Get => self.write("intrinsic_get")?,
@@ -491,16 +472,16 @@ impl<'a, 'b> Context<'a, 'b> {
         Ok(())
     }
 
-    fn write_byte_const(&mut self, byte: &u8) -> Result<(), io::Error> {
+    fn write_u8_const(&mut self, byte: u8) -> Result<(), io::Error> {
         match self.variant {
             MlVariant::OCaml => {
                 self.write("'")?;
-                if *byte == '\'' as u8 {
+                if byte == '\'' as u8 {
                     self.write("\\\'")?;
-                } else if *byte == '\\' as u8 {
+                } else if byte == '\\' as u8 {
                     self.write("\\\\")?;
-                } else if !byte.is_ascii_control() {
-                    self.write(*byte as char)?;
+                } else if byte.is_ascii_graphic() || byte == b' ' {
+                    self.write(byte as char)?;
                 } else {
                     self.write(&format!("\\{:03}", byte))?;
                 }
@@ -508,12 +489,12 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             MlVariant::Sml => {
                 self.write("#\"")?;
-                if *byte == '\"' as u8 {
+                if byte == '\"' as u8 {
                     self.write("\\\"")?;
-                } else if *byte == '\\' as u8 {
+                } else if byte == '\\' as u8 {
                     self.write("\\\\")?;
-                } else if !byte.is_ascii_control() {
-                    self.write(*byte as char)?;
+                } else if byte.is_ascii_graphic() || byte == b' ' {
+                    self.write(byte as char)?;
                 } else {
                     self.write(&format!("\\{:03}", byte))?;
                 }
@@ -523,17 +504,64 @@ impl<'a, 'b> Context<'a, 'b> {
         Ok(())
     }
 
-    fn write_int_const(&mut self, int: i64) -> Result<(), io::Error> {
-        self.write(int)?;
-        if let MlVariant::OCaml = self.variant {
-            self.write("L")?;
+    fn write_num_const(&mut self, lit: NumLit) -> Result<(), io::Error> {
+        match lit {
+            // OCaml's `int` holds every narrow integer, so the `I8`, `I16` and `U16` literals are
+            // bare.  SML int literals are overloaded over every int type and word literals over
+            // every word type, so an annotation picks the type.
+            NumLit::I8(int) => match self.variant {
+                MlVariant::OCaml => self.write(int),
+                MlVariant::Sml => self.write(&format!("({} : Int8.int)", int)),
+            },
+            NumLit::I16(int) => match self.variant {
+                MlVariant::OCaml => self.write(int),
+                MlVariant::Sml => self.write(&format!("({} : Int16.int)", int)),
+            },
+            // OCaml spells int32 literals with an `l` suffix and int64 literals with an `L`.
+            NumLit::I32(int) => match self.variant {
+                MlVariant::OCaml => self.write(&format!("{}l", int)),
+                MlVariant::Sml => self.write(&format!("({} : Int32.int)", int)),
+            },
+            NumLit::I64(int) => match self.variant {
+                MlVariant::OCaml => self.write(&format!("{}L", int)),
+                MlVariant::Sml => self.write(int),
+            },
+            NumLit::U8(byte) => self.write_u8_const(byte),
+            NumLit::U16(int) => match self.variant {
+                MlVariant::OCaml => self.write(int),
+                MlVariant::Sml => self.write(&format!("(0w{} : Word16.word)", int)),
+            },
+            // OCaml holds a `U32` or `U64` as the bit pattern of an `int32` or `int64`, which a
+            // literal spells as the signed value.
+            NumLit::U32(int) => match self.variant {
+                MlVariant::OCaml => self.write(&format!("{}l", int as i32)),
+                MlVariant::Sml => self.write(&format!("(0w{} : Word32.word)", int)),
+            },
+            NumLit::U64(int) => match self.variant {
+                MlVariant::OCaml => self.write(&format!("{}L", int as i64)),
+                MlVariant::Sml => self.write(&format!("(0w{} : Word64.word)", int)),
+            },
+            // OCaml has no 32-bit float, so an `F32` literal is an ordinary `float`.  SML real
+            // literals are overloaded over every real type, so an annotation picks `Real32.real`.
+            NumLit::F32(float) => match self.variant {
+                MlVariant::OCaml => self.write_float_const(float),
+                MlVariant::Sml => {
+                    self.write("(")?;
+                    self.write_float_const(float)?;
+                    self.write(" : Real32.real)")
+                }
+            },
+            NumLit::F64(float) => self.write_float_const(float),
         }
-        Ok(())
     }
 
-    fn write_float_const(&mut self, float: f64) -> Result<(), io::Error> {
+    /// Writes a float with a decimal point even when it is integral, as float syntax requires.
+    fn write_float_const(
+        &mut self,
+        float: impl std::fmt::Display + num_traits::Float,
+    ) -> Result<(), io::Error> {
         self.write(float)?;
-        if float.fract() == 0.0 {
+        if float.fract().is_zero() {
             self.write(".0")?;
         }
         Ok(())
@@ -938,9 +966,7 @@ fn add_func_deps(deps: &mut BTreeSet<CustomGlobalId>, expr: &Expr) {
                 add_func_deps(deps, elem);
             }
         }
-        Expr::ByteLit(_) => {}
-        Expr::IntLit(_) => {}
-        Expr::FloatLit(_) => {}
+        Expr::NumLit(_) => {}
         Expr::Intrinsic(_) => {}
         Expr::ArrayOp(_, _) => {}
         Expr::IoOp(_) => {}
@@ -962,9 +988,7 @@ fn add_type_deps(deps: &mut BTreeSet<CustomTypeId>, type_: &Type) {
             add_type_deps(deps, ret_type);
         }
         Type::Bool => {}
-        Type::Byte => {}
-        Type::Int => {}
-        Type::Float => {}
+        Type::Num(_) => {}
         Type::Array(item_type) => {
             add_type_deps(deps, item_type);
         }

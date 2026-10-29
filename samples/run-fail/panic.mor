@@ -1,5 +1,5 @@
-expect_int(i: Int): () = ()
+expect_i64(i: I64): () = ()
 
 proc main(): () =
-  expect_int(panic("Goodbye!\n")) then
+  expect_i64(panic("Goodbye!\n")) then
   do output("Should not run")

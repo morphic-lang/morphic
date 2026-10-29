@@ -8,7 +8,7 @@ use morphic_common::util::instance_queue::InstanceQueue;
 
 /// A type with no type parameters left: every head is a constructor.  This is the form that
 /// instantiation arguments take, and what the instance queues are keyed on.  Unlike a mono type it
-/// may be a partial application such as `Result Int`, which is not the type of any expression:
+/// may be a partial application such as `Result I64`, which is not the type of any expression:
 /// a parameter of higher kind is instantiated with exactly such a term.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ClosedType {
@@ -44,7 +44,7 @@ type TypeInstances = InstanceQueue<(res::CustomTypeId, InstArgs), mono::CustomTy
 /// Instantiates an elaborated type at closed types, giving a closed type.
 ///
 /// The type's evidence does not survive.  A monomorphic type is a representation,
-/// and a `Set Int` is represented the same way whichever `Ord Int` impl it was built under; type
+/// and a `Set I64` is represented the same way whichever `Ord I64` impl it was built under; type
 /// checking has already kept values built under different impls apart.  What does depend on
 /// evidence is which copy of a definition a reference calls, and that is keyed by the closed
 /// derivations of its instantiation rather than by the types in it.
@@ -106,7 +106,7 @@ struct Instantiator<'a> {
 impl<'a> Instantiator<'a> {
     fn arity(&self, id: res::TypeId) -> usize {
         match id {
-            res::TypeId::Bool | res::TypeId::Byte | res::TypeId::Int | res::TypeId::Float => 0,
+            res::TypeId::Bool | res::TypeId::Num(_) => 0,
             res::TypeId::Array => 1,
             res::TypeId::Custom(custom) => self.typedefs[custom].param_kinds.len(),
         }
@@ -157,19 +157,9 @@ impl<'a> Instantiator<'a> {
                 mono::Type::Bool
             }
 
-            ClosedType::App(res::TypeId::Byte, args) => {
+            ClosedType::App(res::TypeId::Num(num), args) => {
                 debug_assert!(args.is_empty());
-                mono::Type::Byte
-            }
-
-            ClosedType::App(res::TypeId::Int, args) => {
-                debug_assert!(args.is_empty());
-                mono::Type::Int
-            }
-
-            ClosedType::App(res::TypeId::Float, args) => {
-                debug_assert!(args.is_empty());
-                mono::Type::Float
+                mono::Type::Num(*num)
             }
 
             ClosedType::App(res::TypeId::Array, args) => {
@@ -411,9 +401,7 @@ impl<'a> Instantiator<'a> {
                 mono::Expr::ArrayLit(type_resolved, item_resolved)
             }
 
-            &solved::Expr::ByteLit(val) => mono::Expr::ByteLit(val),
-            &solved::Expr::IntLit(val) => mono::Expr::IntLit(val),
-            &solved::Expr::FloatLit(val) => mono::Expr::FloatLit(val),
+            &solved::Expr::NumLit(lit) => mono::Expr::NumLit(lit),
 
             solved::Expr::Span(_, _, content) => self.resolve_expr(inst, content),
         }
@@ -463,9 +451,7 @@ impl<'a> Instantiator<'a> {
 
             solved::Pattern::Ctor(_, _, _, _) => unreachable!(),
 
-            &solved::Pattern::ByteConst(val) => mono::Pattern::ByteConst(val),
-            &solved::Pattern::IntConst(val) => mono::Pattern::IntConst(val),
-            &solved::Pattern::FloatConst(val) => mono::Pattern::FloatConst(val),
+            &solved::Pattern::NumConst(lit) => mono::Pattern::NumConst(lit),
 
             solved::Pattern::Span(_, _, content) => self.resolve_pattern(inst, content),
         }

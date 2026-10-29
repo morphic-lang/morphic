@@ -1,7 +1,7 @@
 //! Solves the evidence every written type carries.  A type constructor declared with trait
 //! constraints, like `type Set a where Ord a`, carries evidence for each of them wherever it
 //! occurs, so that a
-//! `Set Int` built under one `Ord Int` impl is a different type from one built under another.
+//! `Set I64` built under one `Ord I64` impl is a different type from one built under another.
 //! This pass solves for that evidence in every signature, type declaration, trait and impl,
 //! before inference, so that inference can unify the evidence structurally.
 //!

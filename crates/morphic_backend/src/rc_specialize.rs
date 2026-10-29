@@ -596,9 +596,7 @@ fn lower_expr(
             )
         }
         annot::Expr::BoolLit(lit) => rc::Expr::BoolLit(*lit),
-        annot::Expr::ByteLit(lit) => rc::Expr::ByteLit(*lit),
-        annot::Expr::IntLit(lit) => rc::Expr::IntLit(*lit),
-        annot::Expr::FloatLit(lit) => rc::Expr::FloatLit(*lit),
+        annot::Expr::NumLit(lit) => rc::Expr::NumLit(*lit),
     };
 
     builder.add_binding_with_metadata(ret_ty.clone(), new_expr, metadata.clone())

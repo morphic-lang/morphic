@@ -8,12 +8,12 @@ pub type Set a where Ord a {
 }
 
 trait Container f {
-  size(x: f a): Int,
+  size(x: f a): I64,
 }
 
 // A constrained type cannot be applied to fewer arguments than its constraints mention.
 impl ContainerSet of Container Set {
-  size(x: Set a): Int = 0
+  size(x: Set a): I64 = 0
 }
 
 proc main(): () = ()

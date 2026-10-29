@@ -364,18 +364,6 @@ fn resolve_type(pos: Position, ctx: &mut Context, type_: RawTerm) -> Result<Type
                 assert_args("Bool", 0, &args)?;
                 Type::Bool
             }
-            "Byte" => {
-                assert_args("Byte", 0, &args)?;
-                Type::Num(NumType::Byte)
-            }
-            "Int" => {
-                assert_args("Int", 0, &args)?;
-                Type::Num(NumType::Int)
-            }
-            "Float" => {
-                assert_args("Float", 0, &args)?;
-                Type::Num(NumType::Float)
-            }
             "Array" => {
                 let (res, type_) = resolve_content("Array", pos, ctx, args)?;
                 Type::Array(res, Box::new(type_))
@@ -388,7 +376,13 @@ fn resolve_type(pos: Position, ctx: &mut Context, type_: RawTerm) -> Result<Type
                 let (res, type_) = resolve_content("Boxed", pos, ctx, args)?;
                 Type::Boxed(res, Box::new(type_))
             }
-            _ => return Err(Error::UnknownType(RawTerm::App(name, args))),
+            other => match NumType::from_name(other) {
+                Some(num_type) => {
+                    assert_args(other, 0, &args)?;
+                    Type::Num(num_type)
+                }
+                None => return Err(Error::UnknownType(RawTerm::App(name, args))),
+            },
         },
         RawTerm::Tuple(fields) => Type::Tuple(
             fields
@@ -696,16 +690,16 @@ declare_signatures! {
     // - u inherits t's storage modes
     // At the top-level:
     // - u's stack mode is t's access mode
-    pub array_get: (Array a m t, Int) -> u
+    pub array_get: (Array a m t, I64) -> u
         where t.lt <- u.lt, u.stack = t.access;
 
-    pub array_extract: (Array a Own t, Int) -> (u, HoleArray b Own t)
+    pub array_extract: (Array a Own t, I64) -> (u, HoleArray b Own t)
         where t.lt <- u.lt, u.stack = t.storage;
 
     /// Since the `len` field of an array lives on the stack, it's technically OK to read it after
     /// the array has been released (i.e. it's backing buffer has been deallocated). Therefore, we
     /// use the empty lifetime.
-    pub array_len: (Array Emp m t) -> Int;
+    pub array_len: (Array Emp m t) -> I64;
 
     // Below the top-level:
     // - u's access modes are t's access modes
@@ -731,12 +725,12 @@ declare_signatures! {
     pub array_replace: (HoleArray a Own t, u) -> Array b Own t
         where u.lt <- t.lt, u.stack = t.storage, u.stack = t.access;
 
-    pub array_reserve: (Array a Own t, Int) -> Array b Own t;
+    pub array_reserve: (Array a Own t, I64) -> Array b Own t;
 
-    pub io_input: () -> Array a Own Byte;
+    pub io_input: () -> Array a Own U8;
 
-    pub io_output: (Array a m Byte) -> ();
+    pub io_output: (Array a m U8) -> ();
 
     /// Panic returns bottom, but it's convenient to model it as returning unit.
-    pub panic: (Array a m Byte) -> ();
+    pub panic: (Array a m U8) -> ();
 }

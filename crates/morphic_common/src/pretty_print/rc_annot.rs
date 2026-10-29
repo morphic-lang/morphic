@@ -1,12 +1,13 @@
 use crate::data::metadata::Metadata;
 use crate::data::mode_annot_ast::SlotId;
+use crate::data::num_type::NumLit;
 use crate::data::obligation_annot_ast::{BindType, CustomFuncId, CustomTypeId};
 use crate::data::rc_annot_ast::{ArrayOp, Expr, FuncDef, IoOp, Occur, Program, RcOp, Selector};
 use crate::intrinsic_config::intrinsic_to_name;
 use crate::pretty_print::mode_annot::{self as annot_pp};
 use crate::pretty_print::obligation_annot::{self as ob_annot_pp};
 use crate::pretty_print::utils::{
-    write_delimited, write_metadata, CustomTypeRenderer, FuncRenderer,
+    write_delimited, write_metadata, write_num_lit, CustomTypeRenderer, FuncRenderer,
 };
 use std::io::{self, Write};
 use std::{fmt, str};
@@ -72,7 +73,7 @@ fn write_double(
 fn match_string_bytes(bindings: &[(BindType, Expr, Metadata)]) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
-        if let (_, Expr::ByteLit(byte), _) = binding {
+        if let (_, Expr::NumLit(NumLit::U8(byte)), _) = binding {
             result_bytes.push(*byte);
         } else {
             break;
@@ -127,7 +128,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
                     let last_index = index + string.len() - 1;
                     write!(
                         w,
-                        "{}...{}: %{}...%{}: Byte = {:?}",
+                        "{}...{}: %{}...%{}: U8 = {:?}",
                         index,
                         last_index,
                         context.num_locals + index,
@@ -290,9 +291,7 @@ fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Result<()
             Ok(())
         }
         Expr::BoolLit(val) => write!(w, "{}", if *val { "True" } else { "False" }),
-        Expr::ByteLit(val) => write!(w, "{:?}", (*val as char)),
-        Expr::IntLit(val) => write!(w, "{}", val),
-        Expr::FloatLit(val) => write!(w, "{}", val),
+        Expr::NumLit(lit) => write_num_lit(w, *lit),
     }
 }
 

@@ -345,9 +345,7 @@ fn trans_expr(
         ),
 
         first_ord::Expr::BoolLit(val) => anon::Expr::BoolLit(*val),
-        first_ord::Expr::ByteLit(val) => anon::Expr::ByteLit(*val),
-        first_ord::Expr::IntLit(val) => anon::Expr::IntLit(*val),
-        first_ord::Expr::FloatLit(val) => anon::Expr::FloatLit(*val),
+        first_ord::Expr::NumLit(lit) => anon::Expr::NumLit(*lit),
     }
 }
 
@@ -399,8 +397,6 @@ fn trans_pattern(
             )
         }
         first_ord::Pattern::BoolConst(val) => anon::Pattern::BoolConst(*val),
-        first_ord::Pattern::ByteConst(val) => anon::Pattern::ByteConst(*val),
-        first_ord::Pattern::IntConst(val) => anon::Pattern::IntConst(*val),
-        first_ord::Pattern::FloatConst(val) => anon::Pattern::FloatConst(*val),
+        first_ord::Pattern::NumConst(lit) => anon::Pattern::NumConst(*lit),
     }
 }

@@ -1,8 +1,8 @@
 // expect-error: Impl Func Signature Mismatch @ 5:3
-type Vec2 { Vec2(Int, Int) }
+type Vec2 { Vec2(I64, I64) }
 
 impl AddVec2 of Add Vec2 {
-  add(x: Vec2, y: Int): Vec2 = x
+  add(x: Vec2, y: I64): Vec2 = x
 }
 
 proc main(): () = ()

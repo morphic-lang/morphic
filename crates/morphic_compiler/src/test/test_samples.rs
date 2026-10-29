@@ -61,6 +61,32 @@ sample! { constrained_types "../../samples/constrained_types.mor";
     stdout = "1 2 3\n3 2 1\nTrue\n11 21\n";
 }
 
+sample! { num_types "../../samples/num_types.mor";
+    stdin = "";
+    stdout = lines! [
+        "-2147483648",
+        "6",
+        "21",
+        "2",
+        "-1",
+        "255",
+        "-1",
+        "2",
+        "2",
+        "15",
+        "-1",
+        "42",
+        "28",
+        "one",
+        "many",
+        "True",
+        "False",
+        "True",
+        "True",
+        "True",
+    ];
+}
+
 sample! { builtin_traits "../../samples/builtin_traits.mor";
     stdin = "";
     stdout = lines! [
@@ -313,7 +339,7 @@ sample! { pop_empty "../../samples/run-fail/pop_empty.mor";
     leak_check = false;
 }
 
-sample! { div_zero_byte "../../samples/run-fail/div_zero_byte.mor";
+sample! { div_zero_u8 "../../samples/run-fail/div_zero_u8.mor";
     stdin = "";
     stdout = "";
     stderr = "panicked due to division by zero\n";
@@ -321,7 +347,15 @@ sample! { div_zero_byte "../../samples/run-fail/div_zero_byte.mor";
     leak_check = false;
 }
 
-sample! { div_zero_int "../../samples/run-fail/div_zero_int.mor";
+sample! { div_zero_i64 "../../samples/run-fail/div_zero_i64.mor";
+    stdin = "";
+    stdout = "";
+    stderr = "panicked due to division by zero\n";
+    status = Failure(Some(1));
+    leak_check = false;
+}
+
+sample! { div_zero_i32 "../../samples/run-fail/div_zero_i32.mor";
     stdin = "";
     stdout = "";
     stderr = "panicked due to division by zero\n";

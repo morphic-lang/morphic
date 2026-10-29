@@ -67,7 +67,7 @@ pub unwrap(res: Result a e): a =
     Err(_) -> panic("Cannot call 'Result.unwrap' on an 'Err' value\n"),
   }
 
-pub str(res: Result a e, fn: a -> Array Byte, err_fn: e -> Array Byte): Array Byte =
+pub str(res: Result a e, fn: a -> Array U8, err_fn: e -> Array U8): Array U8 =
   match res {
     Ok(x) -> concat(concat("Ok(", fn(x)), ")"),
     Err(err) -> concat(concat("Err(", err_fn(err)), ")"),

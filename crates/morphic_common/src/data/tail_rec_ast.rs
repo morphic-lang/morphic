@@ -1,6 +1,7 @@
 use crate::data::first_order_ast as first_ord;
 use crate::data::intrinsics::Intrinsic;
 use crate::data::metadata::Metadata;
+use crate::data::num_type::NumLit;
 use crate::data::obligation_annot_ast::CustomTypeId;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
@@ -62,9 +63,7 @@ pub enum Expr {
         Vec<rc::LocalId>, // Elements
     ),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 #[derive(Clone, Debug)]

@@ -3,7 +3,7 @@
 module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
-    module String expose { int_to_string, string_to_nat, equal },
+    module String expose { i64_to_string, string_to_nat, equal },
     module Option expose { Option { Some, None } },
   }
 
@@ -11,22 +11,22 @@ module Bench = file "lib/bench_common.mor" with { Core }
   expose { repeat }
 
 type Expr {
-  Val(Int),
-  Var(Array Byte),
+  Val(I64),
+  Var(Array U8),
   Add(Expr, Expr),
   Mul(Expr, Expr),
   Pow(Expr, Expr),
   Ln(Expr),
 }
 
-pow_rec(accum: Int, a: Int, b: Int): Int =
+pow_rec(accum: I64, a: I64, b: I64): I64 =
   if (b = 0) {
     accum
   } else {
     pow_rec(a * accum, a, b - 1)
   }
 
-pown(a: Int, b: Int): Int =
+pown(a: I64, b: I64): I64 =
   pow_rec(1, a, b)
 
 add(n0 : Expr, m0 : Expr) : Expr =
@@ -70,7 +70,7 @@ ln(n : Expr) : Expr =
     f      -> Ln(f),
   }
 
-d(x : Array Byte, e : Expr) : Expr =
+d(x : Array U8, e : Expr) : Expr =
   match e {
     Val(_)     -> Val(0),
     Var(y)     -> if equal(x, y) { Val(1) } else { Val(0) },
@@ -80,7 +80,7 @@ d(x : Array Byte, e : Expr) : Expr =
     Ln(f)      -> mul(d(x,f),powr(f,Val(-1))),
   }
 
-count(e : Expr) : Int =
+count(e : Expr) : I64 =
   match e {
     Val(_)   -> 1,
     Var(_)   -> 1,
@@ -90,7 +90,7 @@ count(e : Expr) : Int =
     Ln(f)    -> count(f),
   }
 
-endopow(n : Int, f : a -> a, e : a): a =
+endopow(n : I64, f : a -> a, e : a): a =
   if n = 0 { e } else {
     endopow(n - 1, f, f(e))
   }
@@ -98,7 +98,7 @@ endopow(n : Int, f : a -> a, e : a): a =
 deriv(f : Expr): Expr =
   d("x",f)
 
-run_deriv(i : Int): Int =
+run_deriv(i : I64): I64 =
   let x = Var("x") in
   let f = powr(x,x) in
   let e = endopow(i, deriv, f) in
@@ -108,7 +108,7 @@ proc main(): () =
   match (string_to_nat(do input()), string_to_nat(do input())) {
     (Some(iters), Some(derivs)) ->
       match repeat(iters, \() -> run_deriv(derivs)) {
-        Some(n) -> do writeln(int_to_string(n)),
+        Some(n) -> do writeln(i64_to_string(n)),
         None -> (),
       },
     (_, _) ->

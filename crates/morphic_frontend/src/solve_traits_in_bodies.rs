@@ -610,9 +610,7 @@ fn subst_pattern(
                 .as_ref()
                 .map(|content| Box::new(subst_pattern(content, solutions))),
         ),
-        &typed::Pattern::ByteConst(val) => solved::Pattern::ByteConst(val),
-        &typed::Pattern::IntConst(val) => solved::Pattern::IntConst(val),
-        &typed::Pattern::FloatConst(val) => solved::Pattern::FloatConst(val),
+        &typed::Pattern::NumConst(lit) => solved::Pattern::NumConst(lit),
         typed::Pattern::Span(lo, hi, content) => {
             solved::Pattern::Span(*lo, *hi, Box::new(subst_pattern(content, solutions)))
         }
@@ -686,9 +684,7 @@ fn subst_expr(
                 .map(|item| subst_expr(item, solutions))
                 .collect(),
         ),
-        &typed::Expr::ByteLit(val) => solved::Expr::ByteLit(val),
-        &typed::Expr::IntLit(val) => solved::Expr::IntLit(val),
-        &typed::Expr::FloatLit(val) => solved::Expr::FloatLit(val),
+        &typed::Expr::NumLit(lit) => solved::Expr::NumLit(lit),
         typed::Expr::Span(lo, hi, body) => {
             solved::Expr::Span(*lo, *hi, Box::new(subst_expr(body, solutions)))
         }

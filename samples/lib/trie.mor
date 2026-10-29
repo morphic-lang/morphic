@@ -17,18 +17,18 @@ module SparseArray = {
   pub type SparseArray a {
     SparseArray(
       // Size when nonempty
-      () -> Int,
+      () -> I64,
       // Backing array and number of populated entries.
       // If no entries would be populated, this should be `None`.
-      Option (Array (Option a), Int),
+      Option (Array (Option a), I64),
     )
   }
 
-  pub lazy_size(this: SparseArray a): () -> Int =
+  pub lazy_size(this: SparseArray a): () -> I64 =
     let SparseArray(size, _) = this in
     size
 
-  pub empty(size: () -> Int): SparseArray a =
+  pub empty(size: () -> I64): SparseArray a =
     SparseArray(
       size,
       None,
@@ -38,7 +38,7 @@ module SparseArray = {
     let SparseArray(_, store) = this in
     Option.is_none(store)
 
-  pub get(this: SparseArray a, i: Int): Option a =
+  pub get(this: SparseArray a, i: I64): Option a =
     match this {
       SparseArray(_, Some(arr, _)) -> Array.get(arr, i),
 
@@ -50,7 +50,7 @@ module SparseArray = {
     }
 
   // TODO: Find a better way to fix the name collision here
-  pub sparse_array_extract(this: SparseArray a, i: Int): (Option a, Option a -> SparseArray a) =
+  pub sparse_array_extract(this: SparseArray a, i: I64): (Option a, Option a -> SparseArray a) =
     match this {
       SparseArray(size, Some(arr, num_pop)) ->
         let (val, replace_arr) = extract(arr, i) in
@@ -88,7 +88,7 @@ module SparseArray = {
         }
     }
 
-  pub update(this: SparseArray a, i: Int, f: Option a -> Option a): SparseArray a =
+  pub update(this: SparseArray a, i: I64, f: Option a -> Option a): SparseArray a =
     let (val, replace) = sparse_array_extract(this, i) in
     replace(f(val))
 
@@ -109,14 +109,14 @@ module Node = {
     Node(Option v, SparseArray (Node v))
   }
 
-  pub empty(size: () -> Int): Node v =
+  pub empty(size: () -> I64): Node v =
     Node(None, SparseArray.empty(size))
 
   pub is_empty(this: Node v): Bool =
     let Node(leaf, children) = this in
     Option.is_none(leaf) && SparseArray.is_empty(children)
 
-  pub get(this: Node v, key: Iter Int): Option v =
+  pub get(this: Node v, key: Iter I64): Option v =
     match Iter.next(key) {
       Some(first, rest) ->
         let Node(_, children) = this in
@@ -129,7 +129,7 @@ module Node = {
         leaf,
     }
 
-  pub update(this: Node v, key: Iter Int, f: Option v -> Option v): Node v =
+  pub update(this: Node v, key: Iter I64, f: Option v -> Option v): Node v =
     match Iter.next(key) {
       Some(first, rest) ->
         let Node(leaf, children) = this in
@@ -181,13 +181,13 @@ from Node expose { Node }
 pub type Trie k v {
   Trie(
     // Key components
-    k -> Iter Int,
+    k -> Iter I64,
     // Root
     Node v,
   )
 }
 
-pub empty(alph_size: () -> Int, components: k -> Iter Int): Trie k v =
+pub empty(alph_size: () -> I64, components: k -> Iter I64): Trie k v =
   Trie(components, Node.empty(alph_size))
 
 pub is_empty(this: Trie k v): Bool =
@@ -210,25 +210,25 @@ pub set(this: Trie k v, key: k, opt_val: Option v): Trie k v =
 
 // Concrete tries
 
-pub bytes_trie: Trie (Array Byte) v =
+pub bytes_trie: Trie (Array U8) v =
   empty(
     \() -> 256,
     \bytes ->
       bytes
       |> Iter.items()
-      |> Iter.map(byte_to_int),
+      |> Iter.map(u8_to_i64),
   )
 
-nybbles(bytes: Array Byte): Iter Int =
+nybbles(bytes: Array U8): Iter I64 =
   bytes
   |> Iter.items()
-  |> Iter.flat_map(\byte ->
-    Iter.cons_lazy(\() -> int_bit_and(byte_to_int(byte), 15)) <| \() ->
-    Iter.cons_lazy(\() -> int_shift_right(byte_to_int(byte), 4)) <| \() ->
+  |> Iter.flat_map(\u8 ->
+    Iter.cons_lazy(\() -> (u8_to_i64(u8) & 15)) <| \() ->
+    Iter.cons_lazy(\() -> (u8_to_i64(u8) >> 4)) <| \() ->
     Iter.empty
   )
 
-pub nybbles_trie: Trie (Array Byte) v =
+pub nybbles_trie: Trie (Array U8) v =
   empty(
     \() -> 16,
     nybbles,

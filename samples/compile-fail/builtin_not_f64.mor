@@ -1,0 +1,5 @@
+// expect-error: No Impl in Scope @ 4:11
+// `F64` has no impl of `Not`: `!` is logical not for `Bool` and bitwise not for `I64`.
+proc main(): () =
+  let x = !1.5 in
+  ()

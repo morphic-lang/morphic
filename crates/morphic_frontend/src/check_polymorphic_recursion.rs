@@ -276,7 +276,7 @@ fn add_global_calls<'a>(
                 add_global_calls(item, span, calls);
             }
         }
-        solved::Expr::ByteLit(_) | solved::Expr::IntLit(_) | solved::Expr::FloatLit(_) => {}
+        solved::Expr::NumLit(_) => {}
         &solved::Expr::Span(lo, hi, ref content) => {
             add_global_calls(content, Some((lo, hi)), calls)
         }

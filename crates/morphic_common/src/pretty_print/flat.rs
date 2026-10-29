@@ -1,10 +1,13 @@
 use crate::data::anon_sum_ast::Type;
-use crate::data::first_order_ast::{CustomFuncId, CustomTypeId, NumType};
+use crate::data::first_order_ast::{CustomFuncId, CustomTypeId};
 use crate::data::flat_ast::{
     ArrayOp, Condition, CustomTypeDef, Expr, FuncDef, IoOp, LocalId, Program,
 };
+use crate::data::num_type::NumLit;
 use crate::intrinsic_config::intrinsic_to_name;
-use crate::pretty_print::utils::{write_delimited, CustomTypeRenderer, FuncRenderer};
+use crate::pretty_print::utils::{
+    write_delimited, write_num_lit, CustomTypeRenderer, FuncRenderer,
+};
 use std::io::{self, Write};
 use std::{fmt, str};
 
@@ -74,9 +77,7 @@ pub fn write_condition(
             Ok(())
         }
         Condition::BoolConst(val) => write!(w, "{}", if *val { "True" } else { "False" }),
-        Condition::ByteConst(val) => write!(w, "{:?}", *val as char),
-        Condition::IntConst(val) => write!(w, "{}", val),
-        Condition::FloatConst(val) => write!(w, "{}", val),
+        Condition::NumConst(lit) => write_num_lit(w, *lit),
     }
 }
 
@@ -87,9 +88,7 @@ pub fn write_type(
 ) -> io::Result<()> {
     match type_ {
         Type::Bool => write!(w, "Bool"),
-        Type::Num(NumType::Byte) => write!(w, "Byte"),
-        Type::Num(NumType::Int) => write!(w, "Int"),
-        Type::Num(NumType::Float) => write!(w, "Float"),
+        Type::Num(num_type) => write!(w, "{}", num_type.name()),
         Type::Tuple(types) => write_delimited(w, types, "(", ")", ", ", |w, type_| {
             write_type(w, type_renderer, type_)
         }),
@@ -144,7 +143,7 @@ fn write_double(w: &mut dyn Write, name: &str, local1: LocalId, local2: LocalId)
 fn match_string_bytes(bindings: &[(Type, Expr)]) -> Option<String> {
     let mut result_bytes = Vec::new();
     for binding in bindings {
-        if let (_, Expr::ByteLit(byte)) = binding {
+        if let (_, Expr::NumLit(NumLit::U8(byte))) = binding {
             result_bytes.push(*byte);
         } else {
             break;
@@ -190,7 +189,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
                     new_context.writeln(w)?;
                     write!(
                         w,
-                        "%{}...%{}: Byte = {:?}",
+                        "%{}...%{}: U8 = {:?}",
                         context.num_locals + index,
                         context.num_locals + index + string.len() - 1,
                         string,
@@ -300,9 +299,7 @@ pub fn write_expr(w: &mut dyn Write, expr: &Expr, context: Context) -> io::Resul
             Ok(())
         }
         Expr::BoolLit(val) => write!(w, "{}", if *val { "True" } else { "False" }),
-        Expr::ByteLit(val) => write!(w, "{:?}", (*val as char)),
-        Expr::IntLit(val) => write!(w, "{}", val),
-        Expr::FloatLit(val) => write!(w, "{}", val),
+        Expr::NumLit(lit) => write_num_lit(w, *lit),
     }
 }
 

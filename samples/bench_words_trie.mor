@@ -15,7 +15,7 @@ module Bench = file "lib/bench_common.mor"
   with { Core }
   expose { repeat }
 
-proc read_words_rec(words: Array (Array Byte)): Array (Array Byte) =
+proc read_words_rec(words: Array (Array U8)): Array (Array U8) =
   let line = do input() in
   if len(line) = 0 {
     words
@@ -23,10 +23,10 @@ proc read_words_rec(words: Array (Array Byte)): Array (Array Byte) =
     do read_words_rec(push(words, line))
   }
 
-proc read_words(): Array (Array Byte) =
+proc read_words(): Array (Array U8) =
   do read_words_rec([])
 
-count_words(tokens: Array (Array Byte), queries: Array (Array Byte)): Array Int =
+count_words(tokens: Array (Array U8), queries: Array (Array U8)): Array I64 =
   let counts =
     tokens
     |> Iter.items()
@@ -55,7 +55,7 @@ proc main(): () =
           query_counts
           |> Iter.items()
           |> do Iter.for_each(proc \count ->
-            do writeln(String.int_to_string(count))
+            do writeln(String.i64_to_string(count))
           ),
 
         None -> (),

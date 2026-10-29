@@ -62,19 +62,19 @@ module Bucket = {
 pub type HashMap k v {
   HashMap(
     // Number of buckets
-    Int,
+    I64,
     // Hash function
-    k -> Int,
+    k -> I64,
     // Equality function
     (k, k) -> Bool,
     // Buckets
     Array (Bucket.Bucket k v),
     // Total number of entries
-    Int,
+    I64,
   )
 }
 
-pub empty(hash: k -> Int, eq: (k, k) -> Bool): HashMap k v =
+pub empty(hash: k -> I64, eq: (k, k) -> Bool): HashMap k v =
   HashMap(
     8,
     hash,
@@ -83,11 +83,11 @@ pub empty(hash: k -> Int, eq: (k, k) -> Bool): HashMap k v =
     0,
   )
 
-int_mod(x: Int, y: Int): Int =
+i64_mod(x: I64, y: I64): I64 =
   x - ((x / y) * y)
 
-get_bucket_index(hash: Int, size: Int): Int =
-  int_mod(
+get_bucket_index(hash: I64, size: I64): I64 =
+  i64_mod(
     // Ensure positive
     if hash < 0 { -hash } else { hash },
     size
@@ -155,23 +155,23 @@ pub is_empty(this: HashMap k v): Bool =
   count = 0
 
 // Utility functions for common key types
-pub string_hash(s: Array Byte): Int =
+pub string_hash(s: Array U8): I64 =
   // Simple string hash function
   s
   |> Iter.items()
-  |> Iter.foldl(0, \(acc, byte) ->
-    (acc *  31) + byte_to_int(byte)
+  |> Iter.foldl(0, \(acc, u8) ->
+    (acc *  31) + u8_to_i64(u8)
   )
 
-pub string_eq(a: Array Byte, b: Array Byte): Bool =
+pub string_eq(a: Array U8, b: Array U8): Bool =
   Array.equal(a, b, \(p, q) -> p = q)
 
 // Create a HashMap specialized for string keys
-pub string_hashmap: HashMap (Array Byte) v =
+pub string_hashmap: HashMap (Array U8) v =
   empty(string_hash, string_eq)
 
 
-pub to_string(this: HashMap k v, key_to_str: k -> Array Byte, val_to_str: v -> Array Byte): Array Byte =
+pub to_string(this: HashMap k v, key_to_str: k -> Array U8, val_to_str: v -> Array U8): Array U8 =
   let HashMap(_, _, _, buckets, _) = this in
   String.concat("HashMap{", 
     String.join(

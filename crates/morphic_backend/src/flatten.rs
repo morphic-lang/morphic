@@ -167,16 +167,8 @@ fn add_flattened_binding(
             debug_assert_eq!(rhs_type, &anon::Type::Bool);
         }
 
-        anon::Pattern::ByteConst(_) => {
-            debug_assert_eq!(rhs_type, &anon::Type::Num(first_ord::NumType::Byte));
-        }
-
-        anon::Pattern::IntConst(_) => {
-            debug_assert_eq!(rhs_type, &anon::Type::Num(first_ord::NumType::Int));
-        }
-
-        anon::Pattern::FloatConst(_) => {
-            debug_assert_eq!(rhs_type, &anon::Type::Num(first_ord::NumType::Float));
+        anon::Pattern::NumConst(lit) => {
+            debug_assert_eq!(rhs_type, &anon::Type::Num(lit.num_type()));
         }
     }
 }
@@ -198,9 +190,7 @@ fn to_condition(pat: &anon::Pattern) -> flat::Condition {
             flat::Condition::Custom(*type_id, Box::new(to_condition(content)))
         }
         anon::Pattern::BoolConst(val) => flat::Condition::BoolConst(*val),
-        anon::Pattern::ByteConst(val) => flat::Condition::ByteConst(*val),
-        anon::Pattern::IntConst(val) => flat::Condition::IntConst(*val),
-        anon::Pattern::FloatConst(val) => flat::Condition::FloatConst(*val),
+        anon::Pattern::NumConst(lit) => flat::Condition::NumConst(*lit),
     }
 }
 
@@ -239,7 +229,7 @@ fn flatten_expr(
             let (index_local, index_type) = flatten_expr(orig, ctx, builder, index);
 
             debug_assert_eq!(&anon::Type::Array(Box::new(item_type.clone())), &array_type);
-            debug_assert_eq!(&anon::Type::Num(first_ord::NumType::Int), &index_type);
+            debug_assert_eq!(&anon::Type::Num(first_ord::NumType::I64), &index_type);
 
             bind(
                 builder,
@@ -257,7 +247,7 @@ fn flatten_expr(
             let (index_local, index_type) = flatten_expr(orig, ctx, builder, index);
 
             debug_assert_eq!(&anon::Type::Array(Box::new(item_type.clone())), &array_type);
-            debug_assert_eq!(&anon::Type::Num(first_ord::NumType::Int), &index_type);
+            debug_assert_eq!(&anon::Type::Num(first_ord::NumType::I64), &index_type);
 
             bind(
                 builder,
@@ -280,7 +270,7 @@ fn flatten_expr(
 
             bind(
                 builder,
-                anon::Type::Num(first_ord::NumType::Int),
+                anon::Type::Num(first_ord::NumType::I64),
                 flat::Expr::ArrayOp(flat::ArrayOp::Len(item_type.clone(), array_local)),
             )
         }
@@ -344,7 +334,7 @@ fn flatten_expr(
             let (capacity_local, capacity_type) = flatten_expr(orig, ctx, builder, capacity);
 
             debug_assert_eq!(&anon::Type::Array(Box::new(item_type.clone())), &array_type);
-            debug_assert_eq!(&capacity_type, &anon::Type::Num(first_ord::NumType::Int));
+            debug_assert_eq!(&capacity_type, &anon::Type::Num(first_ord::NumType::I64));
 
             bind(
                 builder,
@@ -359,7 +349,7 @@ fn flatten_expr(
 
         anon::Expr::IoOp(anon::IoOp::Input) => bind(
             builder,
-            anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+            anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::U8))),
             flat::Expr::IoOp(flat::IoOp::Input),
         ),
 
@@ -367,7 +357,7 @@ fn flatten_expr(
             let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
 
             debug_assert_eq!(
-                &anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+                &anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::U8))),
                 &array_type
             );
 
@@ -382,7 +372,7 @@ fn flatten_expr(
             let (array_local, array_type) = flatten_expr(orig, ctx, builder, array);
 
             debug_assert_eq!(
-                &anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::Byte))),
+                &anon::Type::Array(Box::new(anon::Type::Num(first_ord::NumType::U8))),
                 &array_type
             );
 
@@ -532,22 +522,10 @@ fn flatten_expr(
 
         anon::Expr::BoolLit(val) => bind(builder, anon::Type::Bool, flat::Expr::BoolLit(*val)),
 
-        anon::Expr::ByteLit(val) => bind(
+        anon::Expr::NumLit(lit) => bind(
             builder,
-            anon::Type::Num(first_ord::NumType::Byte),
-            flat::Expr::ByteLit(*val),
-        ),
-
-        anon::Expr::IntLit(val) => bind(
-            builder,
-            anon::Type::Num(first_ord::NumType::Int),
-            flat::Expr::IntLit(*val),
-        ),
-
-        anon::Expr::FloatLit(val) => bind(
-            builder,
-            anon::Type::Num(first_ord::NumType::Float),
-            flat::Expr::FloatLit(*val),
+            anon::Type::Num(lit.num_type()),
+            flat::Expr::NumLit(*lit),
         ),
     }
 }

@@ -1,7 +1,7 @@
 module Core = file "lib/core/core.mor"
   expose {
     module Io expose { writeln },
-    module String expose { string_to_nat, int_to_string },
+    module String expose { string_to_nat, i64_to_string },
     module Option expose { Option { Some, None } },
     module Iter expose { Iter },
   }
@@ -9,16 +9,16 @@ module Core = file "lib/core/core.mor"
 module Bench = file "lib/bench_common.mor" with { Core }
   expose { repeat }
 
-is_prime(n: Int): Bool =
+is_prime(n: I64): Bool =
   ! Iter.any(
     Iter.take_while(Iter.ints(2), \i -> i * i <= n),
     \i -> (n / i) * i = n,
   )
 
-primes_to(limit: Int): Iter Int =
+primes_to(limit: I64): Iter I64 =
   Iter.filter(Iter.range(2, limit + 1), is_prime)
 
-count_primes(limit: Int): Int =
+count_primes(limit: I64): I64 =
   Iter.count(primes_to(limit))
 
 proc main(): () =
@@ -27,9 +27,9 @@ proc main(): () =
       match repeat(iters, \() -> count_primes(limit)) {
         Some(count) ->
           do output("There are ") then
-          do output(int_to_string(count)) then
+          do output(i64_to_string(count)) then
           do output(" primes <= ") then
-          do output(int_to_string(limit)) then
+          do output(i64_to_string(limit)) then
           do output("\n"),
         None -> (),
       },

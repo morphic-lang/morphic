@@ -3,6 +3,6 @@
 // another type declaration.
 type Phantom a { Phantom }
 
-wrong(x: Phantom Array): Int = 0
+wrong(x: Phantom Array): I64 = 0
 
 proc main(): () = ()

@@ -2,7 +2,7 @@ module Core = file "lib/core/core.mor"
   expose {
     module Iter expose { Iter },
     module Array,
-    module String expose { int_to_string, string_to_nat },
+    module String expose { i64_to_string, string_to_nat },
     module Io expose { writeln },
     module Option expose { Option { Some, None } },
   }
@@ -15,7 +15,7 @@ type Primality {
   Composite,
 }
 
-sieve(limit: Int): Array Primality =
+sieve(limit: I64): Array Primality =
   let init_arr =
     Array.fill(limit, Prime)
     |> Array.set(0, Composite)
@@ -43,7 +43,7 @@ proc main(): () =
           |> Iter.enumerate()
           |> do Iter.for_each(proc \(i, status) ->
             match status {
-              Prime -> do writeln(int_to_string(i)),
+              Prime -> do writeln(i64_to_string(i)),
               Composite -> (),
             }
           ),

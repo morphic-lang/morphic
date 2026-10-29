@@ -3,31 +3,31 @@ import Option expose { Option { Some, None } }
 
 // TODO: This is a temporary workaround.  We should have a namespacing system for builtins.
 module NoShadow = {
-  pub get_: (Array a, Int) -> a = get
-  pub len_: Array a -> Int = len
+  pub get_: (Array a, I64) -> a = get
+  pub len_: Array a -> I64 = len
   pub push_: (Array a, a) -> Array a = push
 }
 
-pub get: (Array a, Int) -> a = NoShadow.get_
-pub len: Array a -> Int = NoShadow.len_
+pub get: (Array a, I64) -> a = NoShadow.get_
+pub len: Array a -> I64 = NoShadow.len_
 pub push: (Array a, a) -> Array a = NoShadow.push_
 
-pub set(arr: Array a, i: Int, val: a): Array a =
+pub set(arr: Array a, i: I64, val: a): Array a =
   let (_, hole) = extract(arr, i) in
   hole(val)
 
-pub update(arr: Array a, i: Int, f: a -> a): Array a =
+pub update(arr: Array a, i: I64, f: a -> a): Array a =
   let (x, hole) = extract(arr, i) in
   hole(f(x))
 
-pub try_get(arr: Array a, i: Int): Option a =
+pub try_get(arr: Array a, i: I64): Option a =
   if i >= 0 && i < len(arr) {
     Some(get(arr, i))
   } else {
     None
   }
 
-concat_from(a: Array t, b: Array t, i: Int): Array t =
+concat_from(a: Array t, b: Array t, i: I64): Array t =
   if i = len(b) {
     a
   } else {
@@ -37,7 +37,7 @@ concat_from(a: Array t, b: Array t, i: Int): Array t =
 pub concat(a: Array t, b: Array t): Array t =
   concat_from(a, b, 0)
 
-find_index_rec(arr: Array t, p: t -> Bool, i: Int): Option Int =
+find_index_rec(arr: Array t, p: t -> Bool, i: I64): Option I64 =
   if i >= len(arr) {
     None
   } else if p(get(arr, i)) {
@@ -46,10 +46,10 @@ find_index_rec(arr: Array t, p: t -> Bool, i: Int): Option Int =
     find_index_rec(arr, p, i + 1)
   }
 
-pub find_index(arr: Array t, p: t -> Bool):  Option Int =
+pub find_index(arr: Array t, p: t -> Bool):  Option I64 =
   find_index_rec(arr, p, 0)
 
-all_rec(arr: Array a, f: a -> Bool, i: Int): Bool =
+all_rec(arr: Array a, f: a -> Bool, i: I64): Bool =
   if i >= len(arr) {
     True
   } else if !f(get(arr, i)) {
@@ -61,7 +61,7 @@ all_rec(arr: Array a, f: a -> Bool, i: Int): Bool =
 pub all(arr: Array a, f: a -> Bool): Bool =
   all_rec(arr, f, 0)
 
-foldl_rec(arr: Array t, accum: u, f: (u, t) -> u, i: Int): u =
+foldl_rec(arr: Array t, accum: u, f: (u, t) -> u, i: I64): u =
   if i >= len(arr) {
     accum
   } else {
@@ -71,7 +71,7 @@ foldl_rec(arr: Array t, accum: u, f: (u, t) -> u, i: Int): u =
 pub foldl(arr: Array t, accum: accum, f: (accum, t) -> accum): accum =
   foldl_rec(arr, accum, f, 0)
 
-map_rec(arr: Array t, f: t -> u, i: Int): Array u =
+map_rec(arr: Array t, f: t -> u, i: I64): Array u =
   if i < 0 {
     []
   } else {
@@ -83,21 +83,21 @@ pub is_empty(arr: Array a): Bool = len(arr) = 0
 pub map(arr: Array t, f: t -> u): Array u =
   map_rec(arr, f, len(arr) - 1)
 
-slice_rec(arr: Array t, start: Int, end: Int, i: Int): Array t =
+slice_rec(arr: Array t, start: I64, end: I64, i: I64): Array t =
   if i < start {
     []
   } else {
     push(slice_rec(arr, start, end, i - 1), get(arr, i))
   }
 
-pub slice(arr: Array t, start: Int, end: Int): Array t =
+pub slice(arr: Array t, start: I64, end: I64): Array t =
   if start < 0 || end < 0 || start >= len(arr) || end > len(arr) || end <= start {
     []
   } else {
     slice_rec(arr, start, end, end - 1)
   }
 
-zip_rec(a: Array t, b: Array u, i: Int): Array (t, u) =
+zip_rec(a: Array t, b: Array u, i: I64): Array (t, u) =
   if i < 0 {
     []
   } else {
@@ -117,7 +117,7 @@ pub push_front(val: t, arr: Array t): Array t =
   concat([val], arr)
 
 
-equal_rec(arr1: Array a, arr2: Array a, eq: (a, a) -> Bool, i: Int): Bool =
+equal_rec(arr1: Array a, arr2: Array a, eq: (a, a) -> Bool, i: I64): Bool =
   if i >= len(arr1) {
     True
   } else if i >= len(arr2) {
@@ -135,26 +135,26 @@ pub equal(arr1: Array a, arr2: Array a, eq: (a, a) -> Bool): Bool =
     equal_rec(arr1, arr2, eq, 0)
   }
 
-fill_with_rec(arr: Array t, count: Int, mk_val: () -> t): Array t =
+fill_with_rec(arr: Array t, count: I64, mk_val: () -> t): Array t =
   if count > 0 {
     fill_with_rec(push(arr, mk_val()), count - 1, mk_val)
   } else {
     arr
   }
 
-pub fill_with(count: Int, mk_val: () -> t): Array t =
+pub fill_with(count: I64, mk_val: () -> t): Array t =
   fill_with_rec(reserve([], count), count, mk_val)
 
-pub fill(count: Int, val: t): Array t =
+pub fill(count: I64, val: t): Array t =
   fill_with(count, \() -> val)
 
-pub from_iter_with_capacity(iter: Iter a, capacity: Int): Array a =
+pub from_iter_with_capacity(iter: Iter a, capacity: I64): Array a =
   Iter.foldl(iter, reserve([], capacity), push)
 
 pub from_iter(iter: Iter a): Array a =
   from_iter_with_capacity(iter, 0)
 
-reverse_rec(arr: Array t, i: Int, result: Array t): Array t =
+reverse_rec(arr: Array t, i: I64, result: Array t): Array t =
   if i < 0 {
     result
   } else {
@@ -165,7 +165,7 @@ pub reverse(arr: Array t): Array t =
   reverse_rec(arr, len(arr) - 1, [])
 
 
-pub str(arr: Array a, s: a -> Array Byte): Array Byte =
+pub str(arr: Array a, s: a -> Array U8): Array U8 =
   let n = len(arr) - 1 in
   Iter.items(arr)
     |> Iter.take(n)

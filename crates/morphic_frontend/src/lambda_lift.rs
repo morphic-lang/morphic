@@ -72,9 +72,7 @@ fn add_pattern<'a>(ctx: &mut TypeContext<'a>, pat: &'a mono::Pattern) {
         }
 
         mono::Pattern::BoolConst(_) => {}
-        mono::Pattern::ByteConst(_) => {}
-        mono::Pattern::IntConst(_) => {}
-        mono::Pattern::FloatConst(_) => {}
+        mono::Pattern::NumConst(_) => {}
     }
 }
 
@@ -230,11 +228,7 @@ fn lift_expr<'a>(
 
         &mono::Expr::BoolLit(val) => lifted::Expr::BoolLit(val),
 
-        &mono::Expr::ByteLit(val) => lifted::Expr::ByteLit(val),
-
-        &mono::Expr::IntLit(val) => lifted::Expr::IntLit(val),
-
-        &mono::Expr::FloatLit(val) => lifted::Expr::FloatLit(val),
+        &mono::Expr::NumLit(lit) => lifted::Expr::NumLit(lit),
     }
 }
 

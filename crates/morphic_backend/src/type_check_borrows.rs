@@ -339,7 +339,7 @@ fn type_check_expr(
             let ShapeInner::Array(item_shape) = &*ret_ty.shape().inner else {
                 panic!("expected array type");
             };
-            let ShapeInner::Num(NumType::Byte) = &*item_shape.inner else {
+            let ShapeInner::Num(NumType::U8) = &*item_shape.inner else {
                 panic!("expected byte array type");
             };
             assert_eq!(ret_ty.res().len(), 1, "expected byte array type");
@@ -361,9 +361,7 @@ fn type_check_expr(
             }
         }
         Expr::BoolLit(_lit) => {}
-        Expr::ByteLit(_lit) => {}
-        Expr::IntLit(_lit) => {}
-        Expr::FloatLit(_lit) => {}
+        Expr::NumLit(_lit) => {}
     }
 }
 

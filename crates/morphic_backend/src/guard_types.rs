@@ -251,13 +251,14 @@ impl Trans<'_> {
     }
 }
 
-fn build_comp(
+fn build_eq(
     lhs: guard::LocalId,
     rhs: guard::LocalId,
     ty: first_ord::NumType,
-    op: Intrinsic,
     builder: &mut Builder,
 ) -> guard::LocalId {
+    let op = Intrinsic::Eq(ty);
+
     let args = builder.add_binding(
         guard::Type::Tuple(vec![guard::Type::Num(ty), guard::Type::Num(ty)]),
         guard::Expr::Tuple(vec![lhs, rhs]),
@@ -392,48 +393,10 @@ fn lower_condition(
                 )
             }
         }
-        flat::Condition::ByteConst(val) => {
-            let val_id = builder.add_binding(
-                guard::Type::Num(first_ord::NumType::Byte),
-                guard::Expr::ByteLit(*val),
-            );
-
-            build_comp(
-                val_id,
-                discrim,
-                first_ord::NumType::Byte,
-                Intrinsic::EqByte,
-                builder,
-            )
-        }
-        flat::Condition::IntConst(val) => {
-            let val_id = builder.add_binding(
-                guard::Type::Num(first_ord::NumType::Int),
-                guard::Expr::IntLit(*val),
-            );
-
-            build_comp(
-                val_id,
-                discrim,
-                first_ord::NumType::Int,
-                Intrinsic::EqInt,
-                builder,
-            )
-        }
-
-        flat::Condition::FloatConst(val) => {
-            let val_id = builder.add_binding(
-                guard::Type::Num(first_ord::NumType::Float),
-                guard::Expr::FloatLit(*val),
-            );
-
-            build_comp(
-                val_id,
-                discrim,
-                first_ord::NumType::Float,
-                Intrinsic::EqFloat,
-                builder,
-            )
+        flat::Condition::NumConst(lit) => {
+            let ty = lit.num_type();
+            let val_id = builder.add_binding(guard::Type::Num(ty), guard::Expr::NumLit(*lit));
+            build_eq(val_id, discrim, ty, builder)
         }
     }
 }
@@ -639,9 +602,7 @@ fn guard_expr(
             items.map_refs(|item| ctx.local_binding(*item).new_id),
         ),
         &flat::Expr::BoolLit(lit) => guard::Expr::BoolLit(lit),
-        &flat::Expr::ByteLit(lit) => guard::Expr::ByteLit(lit),
-        &flat::Expr::IntLit(lit) => guard::Expr::IntLit(lit),
-        &flat::Expr::FloatLit(lit) => guard::Expr::FloatLit(lit),
+        &flat::Expr::NumLit(lit) => guard::Expr::NumLit(lit),
     };
 
     builder.add_binding(trans.guard(ret_ty), new_expr)

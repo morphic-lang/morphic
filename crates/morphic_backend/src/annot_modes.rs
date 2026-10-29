@@ -12,6 +12,7 @@ use crate::data::mode_annot_ast::{
     self as annot, HeapModes, Lt, LtParam, Mode, ModeParam, ModeSolution, ModeVar, Occur, Path,
     Position, Res, ResModes, ShapeInner, SlotId, SubstHelper,
 };
+use crate::data::num_type::NumLit;
 use crate::data::profile as prof;
 use crate::data::purity::Purity;
 use crate::pretty_print::utils::{CustomTypeRenderer, FuncRenderer};
@@ -116,9 +117,7 @@ enum TailExpr {
 
     ArrayLit(guard::Type, Vec<LocalId>),
     BoolLit(bool),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
 }
 
 fn mark_tail_calls(
@@ -211,9 +210,7 @@ fn mark_tail_calls(
             TailExpr::ArrayLit(item_type.clone(), items.clone())
         }
         guard::Expr::BoolLit(val) => TailExpr::BoolLit(*val),
-        guard::Expr::ByteLit(val) => TailExpr::ByteLit(*val),
-        guard::Expr::IntLit(val) => TailExpr::IntLit(*val),
-        guard::Expr::FloatLit(val) => TailExpr::FloatLit(*val),
+        guard::Expr::NumLit(lit) => TailExpr::NumLit(*lit),
     }
 }
 
@@ -1573,11 +1570,7 @@ fn instantiate_expr(
 
         TailExpr::BoolLit(val) => annot::Expr::BoolLit(*val),
 
-        TailExpr::ByteLit(val) => annot::Expr::ByteLit(*val),
-
-        TailExpr::IntLit(val) => annot::Expr::IntLit(*val),
-
-        TailExpr::FloatLit(val) => annot::Expr::FloatLit(*val),
+        TailExpr::NumLit(lit) => annot::Expr::NumLit(*lit),
     }
 }
 
@@ -1854,9 +1847,7 @@ fn extract_expr(
                 .collect(),
         ),
         E::BoolLit(v) => E::BoolLit(*v),
-        E::ByteLit(v) => E::ByteLit(*v),
-        E::IntLit(v) => E::IntLit(*v),
-        E::FloatLit(v) => E::FloatLit(*v),
+        E::NumLit(lit) => E::NumLit(*lit),
     }
 }
 

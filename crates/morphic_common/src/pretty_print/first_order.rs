@@ -1,10 +1,12 @@
 use crate::config as cfg;
 use crate::data::first_order_ast::*;
+use crate::data::intrinsics as intrs;
 use crate::data::mono_ast::ValSymbols;
-use crate::data::num_type::NumType;
+use crate::data::num_type::NumLit;
 use crate::data::profile::ProfilePointId;
 use crate::data::purity::Purity;
 use crate::data::resolved_ast;
+use crate::pretty_print::utils::{ml_num_type_name, ocaml_num_lit_is_negative};
 use crate::util::graph::{self, Graph};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -95,31 +97,10 @@ impl<'a, 'b> Context<'a, 'b> {
                     self.write("Bool")?;
                 }
             },
-            Type::Num(num_type) => match num_type {
-                NumType::Byte => match self.variant {
-                    Variant::OCaml | Variant::Sml => {
-                        self.write("char")?;
-                    }
-                    Variant::Morphic => {
-                        self.write("Byte")?;
-                    }
-                },
-                NumType::Int => match self.variant {
-                    Variant::OCaml => {
-                        self.write("int64")?;
-                    }
-                    Variant::Sml => {
-                        self.write("int")?;
-                    }
-                    Variant::Morphic => {
-                        self.write("Int")?;
-                    }
-                },
-                NumType::Float => match self.variant {
-                    Variant::OCaml => self.write("float")?,
-                    Variant::Sml => self.write("real")?,
-                    Variant::Morphic => self.write("Float")?,
-                },
+            Type::Num(num_type) => match self.variant {
+                Variant::Morphic => self.write(num_type.name())?,
+                Variant::OCaml => self.write(ml_num_type_name(cfg::MlVariant::OCaml, *num_type))?,
+                Variant::Sml => self.write(ml_num_type_name(cfg::MlVariant::Sml, *num_type))?,
             },
             Type::Array(elem_type) => match self.variant {
                 Variant::Morphic => {
@@ -311,9 +292,7 @@ impl<'a, 'b> Context<'a, 'b> {
                                     }
                                     Pattern::Ctor(type_id, _, _) => Type::Custom(*type_id),
                                     Pattern::BoolConst(_) => Type::Bool,
-                                    Pattern::ByteConst(_) => Type::Num(NumType::Byte),
-                                    Pattern::IntConst(_) => Type::Num(NumType::Int),
-                                    Pattern::FloatConst(_) => Type::Num(NumType::Float),
+                                    Pattern::NumConst(lit) => Type::Num(lit.num_type()),
                                 }
                             }
 
@@ -379,15 +358,10 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
                 Ok(0)
             }
-            Pattern::ByteConst(byte) => {
-                self.write_byte_const(byte)?;
+            Pattern::NumConst(lit) => {
+                self.write_num_const(*lit)?;
                 Ok(0)
             }
-            Pattern::IntConst(int) => {
-                self.write_int_const(*int)?;
-                Ok(0)
-            }
-            Pattern::FloatConst(_) => todo!(),
         }
     }
 
@@ -405,9 +379,12 @@ impl<'a, 'b> Context<'a, 'b> {
             Expr::LetMany(_, _) => Precedence::Top,
             Expr::ArrayLit(_, _) => Precedence::App,
             Expr::BoolLit(_) => Precedence::Var,
-            Expr::ByteLit(_) => Precedence::Var,
-            Expr::IntLit(_) => Precedence::Var,
-            Expr::FloatLit(_) => Precedence::Var,
+            // A negative literal is a prefix negation to OCaml, which binds looser than an
+            // application does, so as an argument it needs parentheses: `f (-1l)`.
+            Expr::NumLit(lit) => match self.variant {
+                Variant::OCaml if ocaml_num_lit_is_negative(*lit) => Precedence::App,
+                Variant::OCaml | Variant::Sml | Variant::Morphic => Precedence::Var,
+            },
         };
 
         if precedence > my_precedence {
@@ -417,12 +394,12 @@ impl<'a, 'b> Context<'a, 'b> {
         match expr {
             Expr::Intrinsic(intrinsic, expr) => match self.variant {
                 Variant::Morphic => {
-                    self.write(&format!("intrinsic_{:?}(", intrinsic))?;
+                    self.write(&format!("intrinsic_{}(", intrinsic))?;
                     self.write_expr(expr, Precedence::Top)?;
                     self.write(")")?;
                 }
                 Variant::OCaml | Variant::Sml => {
-                    self.write(&format!("intrinsic_{:?} ", intrinsic))?;
+                    self.write(&format!("intrinsic_{} ", intrinsic))?;
                     self.write_expr(expr, Precedence::Var)?;
                 }
             },
@@ -800,14 +777,8 @@ impl<'a, 'b> Context<'a, 'b> {
                     }
                 }
             },
-            Expr::ByteLit(byte) => {
-                self.write_byte_const(byte)?;
-            }
-            Expr::IntLit(int) => {
-                self.write_int_const(*int)?;
-            }
-            Expr::FloatLit(float) => {
-                self.write_float_const(*float)?;
+            Expr::NumLit(lit) => {
+                self.write_num_const(*lit)?;
             }
         };
 
@@ -817,16 +788,16 @@ impl<'a, 'b> Context<'a, 'b> {
         Ok(())
     }
 
-    fn write_byte_const(&mut self, byte: &u8) -> Result<(), io::Error> {
+    fn write_u8_const(&mut self, byte: u8) -> Result<(), io::Error> {
         match self.variant {
             Variant::OCaml => {
                 self.write("'")?;
-                if *byte == '\'' as u8 {
+                if byte == '\'' as u8 {
                     self.write("\\\'")?;
-                } else if *byte == '\\' as u8 {
+                } else if byte == '\\' as u8 {
                     self.write("\\\\")?;
-                } else if !byte.is_ascii_control() {
-                    self.write(*byte as char)?;
+                } else if byte.is_ascii_graphic() || byte == b' ' {
+                    self.write(byte as char)?;
                 } else {
                     self.write(&format!("\\{:03}", byte))?;
                 }
@@ -834,12 +805,12 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             Variant::Sml => {
                 self.write("#\"")?;
-                if *byte == '\"' as u8 {
+                if byte == '\"' as u8 {
                     self.write("\\\"")?;
-                } else if *byte == '\\' as u8 {
+                } else if byte == '\\' as u8 {
                     self.write("\\\\")?;
-                } else if !byte.is_ascii_control() {
-                    self.write(*byte as char)?;
+                } else if byte.is_ascii_graphic() || byte == b' ' {
+                    self.write(byte as char)?;
                 } else {
                     self.write(&format!("\\{:03}", byte))?;
                 }
@@ -847,23 +818,80 @@ impl<'a, 'b> Context<'a, 'b> {
             }
             Variant::Morphic => {
                 self.write(byte)?;
-                self.write("b")?;
+                self.write("u8")?;
             }
         }
         Ok(())
     }
 
-    fn write_int_const(&mut self, int: i64) -> Result<(), io::Error> {
-        self.write(int)?;
-        if let Variant::OCaml = self.variant {
-            self.write("L")?;
+    fn write_num_const(&mut self, lit: NumLit) -> Result<(), io::Error> {
+        match lit {
+            // OCaml's `int` holds every narrow integer, so the `I8`, `I16` and `U16` literals are
+            // bare.  SML int literals are overloaded over every int type and word literals over
+            // every word type, so an annotation picks the type.
+            NumLit::I8(int) => match self.variant {
+                Variant::OCaml => self.write(int),
+                Variant::Sml => self.write(&format!("({} : Int8.int)", int)),
+                Variant::Morphic => self.write(&format!("{}i8", int)),
+            },
+            NumLit::I16(int) => match self.variant {
+                Variant::OCaml => self.write(int),
+                Variant::Sml => self.write(&format!("({} : Int16.int)", int)),
+                Variant::Morphic => self.write(&format!("{}i16", int)),
+            },
+            // OCaml spells int32 literals with an `l` suffix and int64 literals with an `L`.
+            NumLit::I32(int) => match self.variant {
+                Variant::OCaml => self.write(&format!("{}l", int)),
+                Variant::Sml => self.write(&format!("({} : Int32.int)", int)),
+                Variant::Morphic => self.write(&format!("{}i32", int)),
+            },
+            NumLit::I64(int) => match self.variant {
+                Variant::OCaml => self.write(&format!("{}L", int)),
+                Variant::Sml | Variant::Morphic => self.write(int),
+            },
+            NumLit::U8(byte) => self.write_u8_const(byte),
+            NumLit::U16(int) => match self.variant {
+                Variant::OCaml => self.write(int),
+                Variant::Sml => self.write(&format!("(0w{} : Word16.word)", int)),
+                Variant::Morphic => self.write(&format!("{}u16", int)),
+            },
+            // OCaml holds a `U32` or `U64` as the bit pattern of an `int32` or `int64`, which a
+            // literal spells as the signed value.
+            NumLit::U32(int) => match self.variant {
+                Variant::OCaml => self.write(&format!("{}l", int as i32)),
+                Variant::Sml => self.write(&format!("(0w{} : Word32.word)", int)),
+                Variant::Morphic => self.write(&format!("{}u32", int)),
+            },
+            NumLit::U64(int) => match self.variant {
+                Variant::OCaml => self.write(&format!("{}L", int as i64)),
+                Variant::Sml => self.write(&format!("(0w{} : Word64.word)", int)),
+                Variant::Morphic => self.write(&format!("{}u64", int)),
+            },
+            // OCaml has no 32-bit float, so an `F32` literal is an ordinary `float`.  SML real
+            // literals are overloaded over every real type, so an annotation picks `Real32.real`.
+            NumLit::F32(float) => match self.variant {
+                Variant::OCaml => self.write_float_const(float),
+                Variant::Sml => {
+                    self.write("(")?;
+                    self.write_float_const(float)?;
+                    self.write(" : Real32.real)")
+                }
+                Variant::Morphic => {
+                    self.write_float_const(float)?;
+                    self.write("f32")
+                }
+            },
+            NumLit::F64(float) => self.write_float_const(float),
         }
-        Ok(())
     }
 
-    fn write_float_const(&mut self, float: f64) -> Result<(), io::Error> {
+    /// Writes a float with a decimal point even when it is integral, as float syntax requires.
+    fn write_float_const(
+        &mut self,
+        float: impl std::fmt::Display + num_traits::Float,
+    ) -> Result<(), io::Error> {
         self.write(float)?;
-        if float.fract() == 0.0 {
+        if float.fract().is_zero() {
             self.write(".0")?;
         }
         Ok(())
@@ -1016,7 +1044,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 self.write(PRELUDE_SML)?;
             }
             Variant::Morphic => {
-                self.write(PRELUDE_MOR)?;
+                self.write(&morphic_prelude())?;
             }
         }
         self.writeln()?;
@@ -1162,9 +1190,7 @@ impl<'a, 'b> Context<'a, 'b> {
                                     Type::Custom(*custom_type_id)
                                 }
                                 Pattern::BoolConst(_) => Type::Bool,
-                                Pattern::ByteConst(_) => Type::Num(NumType::Byte),
-                                Pattern::IntConst(_) => Type::Num(NumType::Int),
-                                Pattern::FloatConst(_) => Type::Num(NumType::Float),
+                                Pattern::NumConst(lit) => Type::Num(lit.num_type()),
                             }
                         }
 
@@ -1341,7 +1367,67 @@ impl<'a, 'b> Context<'a, 'b> {
 
 const PRELUDE_SML: &str = include_str!("prelude.sml");
 const PRELUDE_OCAML: &str = include_str!("prelude.ml");
-const PRELUDE_MOR: &str = include_str!("prelude.mor");
+
+/// The Morphic prelude: a definition of every intrinsic by the operator or builtin function the
+/// source language reaches it through, so that a dump reads as a program.
+fn morphic_prelude() -> String {
+    use crate::data::intrinsics::Intrinsic as I;
+    use crate::intrinsic_config::{intrinsic_sig, intrinsic_to_name};
+    let type_name = |type_: &intrs::Type| match type_ {
+        intrs::Type::Bool => "Bool",
+        intrs::Type::Num(num) => num.name(),
+        intrs::Type::Tuple(_) => unreachable!("intrinsic arguments are scalars or pairs of them"),
+    };
+    let mut prelude = String::new();
+    for intr in I::all() {
+        let sig = intrinsic_sig(intr);
+        let (params, args) = match &sig.arg {
+            intrs::Type::Tuple(items) => {
+                let [left, right] = &items[..] else {
+                    unreachable!("intrinsic arguments are scalars or pairs of them")
+                };
+                (
+                    format!("x : {}, y : {}", type_name(left), type_name(right)),
+                    "x, y",
+                )
+            }
+            scalar => (format!("x : {}", type_name(scalar)), "x"),
+        };
+        let body = match intrinsic_to_name(intr) {
+            intrs::Name::Func { source_name } => format!("{}({})", source_name, args),
+            intrs::Name::Op { .. } => match intr {
+                I::Add(_) => "x + y",
+                I::Sub(_) => "x - y",
+                I::Mul(_) => "x * y",
+                I::Div(_) => "x / y",
+                I::Neg(_) => "-x",
+                I::Eq(_) | I::EqBool => "x = y",
+                I::Lt(_) => "x < y",
+                I::Lte(_) => "x <= y",
+                I::Gt(_) => "x > y",
+                I::Gte(_) => "x >= y",
+                I::Not | I::BitNot(_) => "!x",
+                I::BitAnd(_) => "x & y",
+                I::BitOr(_) => "x | y",
+                I::BitXor(_) => "x ^ y",
+                I::ShiftLeft(_) => "x << y",
+                I::ShiftRight(_) => "x >> y",
+                I::Ctpop(_) | I::Ctlz(_) | I::Cttz(_) | I::Convert(_, _) => {
+                    unreachable!("{} is reached by name", intr)
+                }
+            }
+            .to_owned(),
+        };
+        prelude.push_str(&format!(
+            "intrinsic_{}({}): {} = {}\n",
+            intr,
+            params,
+            type_name(&sig.ret),
+            body
+        ));
+    }
+    prelude
+}
 
 // TODO: Add a flag to control whether we use immutable/mutable arrays in the generated SML code.
 // We hard-code mutable for now because it's sufficient for the benchmarks we're interested in.
@@ -1439,9 +1525,7 @@ fn add_func_deps(deps: &mut BTreeSet<CustomFuncId>, expr: &Expr) {
             }
         }
         Expr::BoolLit(_) => {}
-        Expr::ByteLit(_) => {}
-        Expr::IntLit(_) => {}
-        Expr::FloatLit(_) => {}
+        Expr::NumLit(_) => {}
     }
 }
 

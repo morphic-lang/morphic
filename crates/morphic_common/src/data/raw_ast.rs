@@ -1,4 +1,5 @@
 use crate::data::builtin_traits::BuiltinTraitFunc;
+use crate::data::num_type::NumLit;
 use crate::data::purity::Purity;
 use crate::data::visibility::Visibility;
 use std::collections::VecDeque;
@@ -170,9 +171,7 @@ pub enum Expr {
     PipeRight(Box<Expr>, Box<Expr>),
 
     ArrayLit(Vec<Expr>),
-    ByteLit(u8),
-    IntLit(i64),
-    FloatLit(f64),
+    NumLit(NumLit),
     TextLit(String),
 
     Span(usize, usize, Box<Expr>),
@@ -192,13 +191,11 @@ pub enum Pattern {
     Var(ValName),
     Tuple(Vec<Pattern>),
     Ctor(ModPath, CtorName, Option<Box<Pattern>>),
-    // A pattern with a type annotation, e.g. `x: Int`. Type variables in the annotation refer to
+    // A pattern with a type annotation, e.g. `x: I64`. Type variables in the annotation refer to
     // the type parameters of the enclosing definition's signature.
     Annot(Box<Pattern>, Type),
 
-    ByteConst(u8),
-    IntConst(i64),
-    FloatConst(f64),
+    NumConst(NumLit),
 
     Span(usize, usize, Box<Pattern>),
 }

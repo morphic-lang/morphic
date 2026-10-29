@@ -1,13 +1,13 @@
 // expect-error: Missing Impl Func @ 9:21
 trait Shape a {
-  area(x: a): Int,
-  name(x: a): Array Byte,
+  area(x: a): I64,
+  name(x: a): Array U8,
 }
 
-type Square { Square(Int) }
+type Square { Square(I64) }
 
 impl ShapeSquare of Shape Square {
-  area(x: Square): Int = match x { Square(side) -> side * side }
+  area(x: Square): I64 = match x { Square(side) -> side * side }
 }
 
 proc main(): () = ()
